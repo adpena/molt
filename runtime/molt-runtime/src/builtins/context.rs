@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::builtins::attr::lookup_special_method_bits;
 use crate::builtins::exceptions::{
     ExceptionValue, exception_class, exception_is_instance, exception_traceback,
@@ -111,7 +112,7 @@ fn context_stack_pop(_py: &PyToken<'_>, expected_bits: u64) {
                 ));
             }
         }
-        Err(msg) => raise_exception::<_>(_py, "RuntimeError", msg),
+        Err(msg) => raise_exception::<_>(_py, BuiltinExc::RuntimeError, msg),
     }
 }
 
@@ -126,7 +127,11 @@ unsafe fn call_context_exit(py: &PyToken<'_>, method: u64, exception: u64) -> u6
         )
     } else {
         if !exception_is_instance(py, exception) {
-            return raise_exception(py, "TypeError", "value must be an exception instance");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "value must be an exception instance",
+            );
         }
         let Some(class) = exception_class(py, exception) else {
             return MoltObject::none().bits();
@@ -208,7 +213,7 @@ fn context_stack_unwind_to(_py: &PyToken<'_>, depth: usize, exc_bits: u64) {
                 dec_ref_bits(_py, bits);
             }
         }
-        Err(msg) => raise_exception::<_>(_py, "RuntimeError", msg),
+        Err(msg) => raise_exception::<_>(_py, BuiltinExc::RuntimeError, msg),
     }
 }
 
@@ -226,7 +231,7 @@ pub extern "C" fn molt_context_new(
         if enter_fn.is_null() || exit_fn.is_null() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "context manager hooks must be non-null",
             );
         }
@@ -244,7 +249,11 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ctx_obj = obj_from_bits(ctx_bits);
         let Some(ptr) = ctx_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "context manager must be an object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "context manager must be an object",
+            );
         };
         unsafe {
             let type_id = object_type_id(ptr);
@@ -254,7 +263,7 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                     if enter_fn_addr.is_null() {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "context manager missing __enter__",
                         );
                     }
@@ -289,7 +298,7 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                     let Some(enter_bits) = enter_method else {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "context manager missing __enter__",
                         );
                     };
@@ -313,7 +322,11 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ctx_obj = obj_from_bits(ctx_bits);
         let Some(ptr) = ctx_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "context manager must be an object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "context manager must be an object",
+            );
         };
         unsafe {
             let type_id = object_type_id(ptr);
@@ -323,7 +336,7 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                     if exit_fn_addr.is_null() {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "context manager missing __exit__",
                         );
                     }
@@ -357,7 +370,7 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                     let Some(exit_bits) = exit_method else {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "context manager missing __exit__",
                         );
                     };
@@ -393,7 +406,7 @@ pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 
             _ => {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "context depth must be a non-negative int",
                 );
             }
@@ -467,7 +480,7 @@ mod tests {
                     py,
                     MoltObject::from_ptr(crate::alloc_exception(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "nested body failure",
                     ))
                     .bits(),

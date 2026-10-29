@@ -3,6 +3,7 @@
 //! explicitly owned and never masquerade as borrows from native storage.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::object::foreign::NativeObjectOwner;
 use molt_cpython_abi::{
     abi_types as cabi,
@@ -10,7 +11,7 @@ use molt_cpython_abi::{
     bridge::GLOBAL_BRIDGE,
 };
 
-fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: &str, message: &str) -> T {
+fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: BuiltinExc, message: &str) -> T {
     if exception_pending(py) {
         T::exception_sentinel()
     } else {
@@ -106,12 +107,12 @@ impl ExceptionStorage {
             return None;
         }
         if names.len() != values.len() {
-            return fail(py, "SystemError", "malformed exception keywords");
+            return fail(py, BuiltinExc::SystemError, "malformed exception keywords");
         }
         if owner_root != ExceptionLayoutRoot::Base && owner_root != self.layout_root(py) {
             return fail(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception initializer requires compatible physical storage",
             );
         }
@@ -121,7 +122,7 @@ impl ExceptionStorage {
         {
             return fail(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception initializer requires compatible physical storage",
             );
         }
@@ -139,10 +140,10 @@ impl ExceptionStorage {
                     unsafe { exception_reinit_default_message(py, ptr, args, &[]) }
                 };
                 if let Err(message) = initialized {
-                    return fail(py, "SystemError", message);
+                    return fail(py, BuiltinExc::SystemError, message);
                 }
                 if !names.is_empty() {
-                    let owner = exception_type_bits_from_name(py, owner_root.owner_name());
+                    let owner = exception_class_bits(py, owner_root.owner_kind());
                     crate::call::class_init::apply_builtin_exception_keywords(
                         py,
                         owner,
@@ -226,31 +227,39 @@ impl ExceptionStorage {
         match self {
             Self::Managed(ptr) => match exception_typed_field_get(py, ptr, field) {
                 Some(Ok(bits)) => Some(ExceptionValue::adopt(py, bits)),
-                Some(Err(name)) => fail(py, "AttributeError", name),
+                Some(Err(name)) => fail(py, BuiltinExc::AttributeError, name),
                 None => fail(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "exception field is absent from its layout",
                 ),
             },
             Self::Native(ptr) => unsafe {
                 let Some(layout) = cabi::exception_layout_for_type((*ptr).ob_type) else {
-                    return fail(py, "SystemError", "exception has no native layout");
+                    return fail(
+                        py,
+                        BuiltinExc::SystemError,
+                        "exception has no native layout",
+                    );
                 };
                 let Some(policy) = layout.field_policy(field) else {
                     return fail(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "exception field is absent from its layout",
                     );
                 };
                 if policy.storage == ExceptionFieldStorage::PySsize {
                     let Some(offset) = cabi::exception_typed_field_offset(field) else {
-                        return fail(py, "SystemError", "exception field has no native offset");
+                        return fail(
+                            py,
+                            BuiltinExc::SystemError,
+                            "exception field has no native offset",
+                        );
                     };
                     let raw = *ptr.cast::<u8>().add(offset as usize).cast::<isize>();
                     if policy.missing_read == ExceptionMissingRead::AttributeError && raw == -1 {
-                        return fail(py, "AttributeError", policy.python_name);
+                        return fail(py, BuiltinExc::AttributeError, policy.python_name);
                     }
                     return Some(ExceptionValue::adopt(py, int_bits_from_i64(py, raw as i64)));
                 }
@@ -258,7 +267,7 @@ impl ExceptionStorage {
                 else {
                     return fail(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "exception field is absent from its layout",
                     );
                 };
@@ -269,7 +278,7 @@ impl ExceptionStorage {
                             Some(ExceptionValue::pin(py, MoltObject::none().bits()))
                         }
                         ExceptionMissingRead::AttributeError => {
-                            fail(py, "AttributeError", policy.python_name)
+                            fail(py, BuiltinExc::AttributeError, policy.python_name)
                         }
                     };
                 }
@@ -393,12 +402,16 @@ impl ExceptionStorage {
             Self::Managed(ptr) => {
                 if matches!(field, ExceptionFieldSlot::Traceback) {
                     if !unsafe { exception_publish_field_slot(py, ptr, field, value) } {
-                        return fail(py, "SystemError", "exception traceback publication failed");
+                        return fail(
+                            py,
+                            BuiltinExc::SystemError,
+                            "exception traceback publication failed",
+                        );
                     }
                 } else if let Err(message) =
                     exception_replace_field_bits(py, MoltObject::from_ptr(ptr).bits(), field, value)
                 {
-                    return fail(py, "SystemError", message);
+                    return fail(py, BuiltinExc::SystemError, message);
                 }
                 Some(())
             }

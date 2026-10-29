@@ -3,6 +3,7 @@
 //! State stays with its existing owner; calls preserve transaction and drop order.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 pub(crate) unsafe fn dispatch_init_subclass_hooks(
@@ -250,13 +251,13 @@ pub(super) unsafe fn call_type_with_arguments(
                 if arguments.keyword_count() != 0 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "bool() takes no keyword arguments",
                     );
                 }
                 if pos_args.len() > 1 {
                     let msg = format!("bool expected at most 1 argument, got {}", pos_args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 if pos_args.is_empty() {
                     return MoltObject::from_bool(false).bits();
@@ -272,13 +273,13 @@ pub(super) unsafe fn call_type_with_arguments(
                 if arguments.keyword_count() != 0 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "reversed() takes no keyword arguments",
                     );
                 }
                 if pos_args.len() != 1 {
                     let msg = format!("reversed expected 1 argument, got {}", pos_args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 return crate::object::ops::reversed_new_impl(_py, pos_args[0]);
             }
@@ -287,14 +288,14 @@ pub(super) unsafe fn call_type_with_arguments(
                 if arguments.keyword_count() != 0 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "map() takes no keyword arguments",
                     );
                 }
                 if pos_args.len() < 2 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "map() must have at least two arguments",
                     );
                 }
@@ -305,13 +306,13 @@ pub(super) unsafe fn call_type_with_arguments(
                 if arguments.keyword_count() != 0 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "filter() takes no keyword arguments",
                     );
                 }
                 if pos_args.len() != 2 {
                     let msg = format!("filter expected 2 arguments, got {}", pos_args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 return crate::object::ops::filter_new_impl(_py, pos_args[0], pos_args[1]);
             }
@@ -339,7 +340,7 @@ pub(super) unsafe fn call_type_with_arguments(
                         "enumerate expected at most 2 arguments, got {}",
                         pos_args.len()
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 let mut iterable_opt = pos_args.first().copied();
                 let mut start_opt = pos_args.get(1).copied();
@@ -352,19 +353,19 @@ pub(super) unsafe fn call_type_with_arguments(
                         _ => {
                             let msg =
                                 format!("enumerate() got an unexpected keyword argument '{name}'");
-                            return raise_exception::<_>(_py, "TypeError", &msg);
+                            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                         }
                     };
                     if target.is_some() {
                         let msg = format!("enumerate() got multiple values for argument '{name}'");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                     *target = Some(val_bits);
                 }
                 let Some(iterable_bits) = iterable_opt else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "enumerate() missing required argument 'iterable' (pos 1)",
                     );
                 };
@@ -378,7 +379,7 @@ pub(super) unsafe fn call_type_with_arguments(
                         .unwrap_or_else(|| "<name>".to_string());
                     if name != "strict" {
                         let msg = format!("zip() got an unexpected keyword argument '{name}'");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                     strict = is_truthy(_py, obj_from_bits(val_bits));
                     if exception_pending(_py) {
@@ -402,7 +403,7 @@ pub(super) unsafe fn call_type_with_arguments(
             if !kw_names.is_empty() {
                 let class_name = class_name_for_error(class_bits);
                 let msg = format!("{class_name}() takes no keyword arguments");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             return call_class_init_with_args(_py, call_ptr, pos_args);
         }
@@ -436,10 +437,10 @@ unsafe fn build_class_from_args(
     unsafe {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "class name must be str");
         };
         if object_type_id(name_ptr) != TYPE_ID_STRING {
-            return raise_exception::<_>(_py, "TypeError", "class name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "class name must be str");
         }
 
         let mut bases_vec: Vec<u64> = Vec::new();
@@ -470,7 +471,7 @@ unsafe fn build_class_from_args(
                 _ => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "bases must be a tuple of types",
                     );
                 }
@@ -509,7 +510,7 @@ unsafe fn build_class_from_args(
             }
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
             );
         }

@@ -4,6 +4,7 @@ use super::{
     PROCESS_EXIT_PENDING, ProcessCompletionState, ProcessTaskState, ProcessWaitFutureInstall,
     ProcessWaiterId,
 };
+use crate::BuiltinExc;
 use crate::libc_compat as libc;
 use crate::runtime_flags::RuntimeFlag;
 use crate::*;
@@ -17,13 +18,21 @@ fn string_from_bits_wasm(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<St
     let _owner = obj_from_bits(path).as_ptr().map(crate::PtrDropGuard::new);
     match flavor {
         PathFlavor::Str => string_obj_to_owned(obj_from_bits(path)).ok_or_else(|| {
-            raise_exception::<u64>(_py, "SystemError", "path conversion returned invalid text")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::SystemError,
+                "path conversion returned invalid text",
+            )
         }),
         PathFlavor::Bytes => unsafe {
             let ptr = obj_from_bits(path).as_ptr().expect("validated bytes path");
             let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
             std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
-                raise_exception::<u64>(_py, "TypeError", &format!("{label} bytes must be utf-8"))
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    &format!("{label} bytes must be utf-8"),
+                )
             })
         },
     }
@@ -34,7 +43,7 @@ fn argv_from_bits_wasm(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<String>,
     if obj.is_none() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "args must be a sequence",
         ));
     }
@@ -72,7 +81,7 @@ fn env_from_bits_wasm(
     let Some(ptr) = obj.as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "env must be a dict",
         ));
     };
@@ -80,7 +89,7 @@ fn env_from_bits_wasm(
         if object_type_id(ptr) != TYPE_ID_DICT {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "env must be a dict",
             ));
         }
@@ -229,7 +238,7 @@ pub unsafe extern "C" fn molt_process_spawn(
             Err(bits) => return bits,
         };
         if args.is_empty() {
-            return raise_exception::<_>(_py, "ValueError", "args must not be empty");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "args must not be empty");
         }
         let (mut env_entries, mut overlay) = match env_from_bits_wasm(_py, env_bits) {
             Ok(val) => val,
@@ -314,7 +323,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         }
 
         if rc != 0 || handle == 0 {
-            return raise_exception::<_>(_py, "RuntimeError", "process spawn failed");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "process spawn failed");
         }
 
         let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
@@ -329,7 +338,11 @@ pub unsafe extern "C" fn molt_process_spawn(
                 unsafe {
                     drop(Box::from_raw(ctx_ptr as *mut i64));
                 }
-                return raise_exception::<_>(_py, "RuntimeError", "stdin stream creation failed");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "stdin stream creation failed",
+                );
             }
             opaque_handle_bits(stream_ptr)
         } else {
@@ -347,7 +360,7 @@ pub unsafe extern "C" fn molt_process_spawn(
                     }
                 }
                 let _ = unsafe { crate::molt_process_terminate_host(handle) };
-                return raise_exception::<_>(_py, "RuntimeError", "stdout stream failed");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "stdout stream failed");
             }
             stream_bits
         } else {
@@ -370,7 +383,7 @@ pub unsafe extern "C" fn molt_process_spawn(
                     }
                 }
                 let _ = unsafe { crate::molt_process_terminate_host(handle) };
-                return raise_exception::<_>(_py, "RuntimeError", "stderr stream failed");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "stderr stream failed");
             }
             stream_bits
         } else {
@@ -459,7 +472,7 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
             return MoltObject::none().bits() as i64;
         }
         let Some(state) = process_task_state(_py, obj_ptr) else {
-            return raise_exception::<i64>(_py, "RuntimeError", "process task missing");
+            return raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "process task missing");
         };
         if !state.process.is_pending() {
             task_take_cancel_pending(obj_ptr);
@@ -495,7 +508,7 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
             crate::async_rt::host_progress::register_host_progress_retry(_py, obj_ptr);
             return pending_bits_i64();
         }
-        raise_exception::<i64>(_py, "RuntimeError", "process wait failed")
+        raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "process wait failed")
     })
 }
 
@@ -552,7 +565,7 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
             }
             let rc = unsafe { crate::molt_process_kill_host(handle.state.handle) };
             if rc != 0 {
-                return raise_exception::<_>(_py, "OSError", "process kill failed");
+                return raise_exception::<_>(_py, BuiltinExc::OSError, "process kill failed");
             }
             MoltObject::none().bits()
         })
@@ -575,7 +588,7 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
             }
             let rc = unsafe { crate::molt_process_terminate_host(handle.state.handle) };
             if rc != 0 {
-                return raise_exception::<_>(_py, "OSError", "process terminate failed");
+                return raise_exception::<_>(_py, BuiltinExc::OSError, "process terminate failed");
             }
             MoltObject::none().bits()
         })

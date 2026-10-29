@@ -1,5 +1,6 @@
 //! Activation locals and pre-entry frames project one registered layout.
 use super::*;
+use crate::BuiltinExc;
 use crate::async_rt::generators::FrameState;
 
 const GEN_POLL: u64 = 0x5eed_0001;
@@ -55,10 +56,10 @@ fn store_owned(py: &PyToken<'_>, task: *mut u8, offset: usize, bits: u64) {
     dec_ref_bits(py, bits);
 }
 
-fn take_error(py: &PyToken<'_>, name: &str) {
+fn take_error(py: &PyToken<'_>, name: crate::BuiltinExc) {
     assert!(crate::exception_pending(py));
     let exception = crate::molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         py, exception, name
     ));
     crate::clear_exception(py);
@@ -256,7 +257,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         // reported as the raw slot word.
         store_owned(py, ptr, BASE + 16, int(5));
         assert!(unsafe { activation_locals_bits(py, ptr) }.is_none());
-        take_error(py, "SystemError");
+        take_error(py, crate::BuiltinExc::SystemError);
 
         unsafe {
             crate::async_rt::generators::generator_set_state_for_test(ptr, FrameState::Completed)
@@ -374,7 +375,7 @@ fn malformed_locals_layouts_fail_before_publication() {
         ];
         for (names, fields) in cases {
             register(py, REJECTED_POLL, names, fields);
-            take_error(py, "TypeError");
+            take_error(py, crate::BuiltinExc::TypeError);
             assert!(
                 !crate::runtime_state(py)
                     .stateful_locals
@@ -385,7 +386,7 @@ fn malformed_locals_layouts_fail_before_publication() {
         }
         let bare = tuple(py, &[x]);
         super::activation::molt_stateful_locals_register(REJECTED_POLL, bare, int(1));
-        take_error(py, "TypeError");
+        take_error(py, crate::BuiltinExc::TypeError);
         for bits in [bare, x, free] {
             dec_ref_bits(py, bits);
         }
@@ -454,7 +455,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 // non-None body owner cannot be discarded by allocation-free init.
                 store_owned(py, ptr, BASE + 8, int(77));
                 molt_frame_locals_begin();
-                take_error(py, "SystemError");
+                take_error(py, crate::BuiltinExc::SystemError);
                 assert_eq!(crate::object::aux_header::object_frame_locals_phase(ptr), 0);
                 assert_eq!(unsafe { *ptr.add(BASE + 8).cast::<u64>() }, int(77));
                 store_owned(py, ptr, BASE + 8, MoltObject::none().bits());
@@ -519,7 +520,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                     } else {
                         assert!(obj_from_bits(locals).is_none());
                     }
-                    take_error(py, "SystemError");
+                    take_error(py, crate::BuiltinExc::SystemError);
                     dec_ref_bits(py, locals);
                     dec_ref_bits(py, frame);
                 }
@@ -579,8 +580,11 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
         frame_stack_push_owned(py, code, globals, builtins, 0);
         frame_stack_set_line(10);
         let lazy = frame_stack_trace_payload_bits(py, None, false).unwrap();
-        let prior =
-            crate::builtins::exceptions::alloc_exception(py, "LookupError", "prior trace error");
+        let prior = crate::builtins::exceptions::alloc_exception(
+            py,
+            BuiltinExc::LookupError,
+            "prior trace error",
+        );
         assert!(!prior.is_null());
         let prior = crate::builtins::exceptions::ExceptionValue::adopt(
             py,
@@ -612,9 +616,10 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             assert_eq!(failed, None);
             assert_eq!(
                 crate::builtins::exceptions::pending_exception_class(py),
-                molt_cpython_abi::hooks::PendingExceptionClass::Class(
-                    crate::exception_type_bits_from_name(py, "MemoryError")
-                )
+                molt_cpython_abi::hooks::PendingExceptionClass::Class(crate::exception_class_bits(
+                    py,
+                    BuiltinExc::MemoryError
+                ))
             );
             assert!(crate::exception_last_bits_noinc(py).is_some());
             assert_eq!(

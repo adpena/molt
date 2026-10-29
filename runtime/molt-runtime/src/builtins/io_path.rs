@@ -3,6 +3,7 @@
 //! Split from io.rs to reduce file size. Contains all `molt_path_*`,
 //! `molt_glob*` and `molt_os_*` extern functions.
 
+use crate::BuiltinExc;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
@@ -60,7 +61,7 @@ fn metadata_input(py: &PyToken<'_>, bits: u64, allow_fd: bool) -> Result<Metadat
     if path.as_os_str().as_encoded_bytes().contains(&0) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "embedded null byte",
         ));
     }
@@ -140,7 +141,7 @@ fn metadata_for_input(
 }
 
 fn suppress_predicate_conversion_error(py: &PyToken<'_>, is_link: bool) -> bool {
-    use crate::builtins::exceptions::{ExceptionValue, exception_matches_builtin_name};
+    use crate::builtins::exceptions::{ExceptionValue, exception_matches_kind};
     if !exception_pending(py) {
         return false;
     }
@@ -148,9 +149,10 @@ fn suppress_predicate_conversion_error(py: &PyToken<'_>, is_link: bool) -> bool 
         py,
         crate::builtins::exceptions::molt_exception_last_pending(),
     );
-    let suppress = exception_matches_builtin_name(py, pending.bits(), "OSError")
-        || exception_matches_builtin_name(py, pending.bits(), "ValueError")
-        || (is_link && exception_matches_builtin_name(py, pending.bits(), "AttributeError"));
+    let suppress = exception_matches_kind(py, pending.bits(), crate::BuiltinExc::OSError)
+        || exception_matches_kind(py, pending.bits(), crate::BuiltinExc::ValueError)
+        || (is_link
+            && exception_matches_kind(py, pending.bits(), crate::BuiltinExc::AttributeError));
     if suppress {
         clear_exception(py);
     }
@@ -258,15 +260,19 @@ pub extern "C" fn molt_path_symlink(
             Err(err) => {
                 let msg = err.to_string();
                 match err.kind() {
-                    ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
+                    ErrorKind::AlreadyExists => {
+                        raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg)
+                    }
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
+                    }
                     ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
+                        raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
                     }
                     ErrorKind::Unsupported => {
-                        raise_exception::<_>(_py, "NotImplementedError", &msg)
+                        raise_exception::<_>(_py, BuiltinExc::NotImplementedError, &msg)
                     }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                    _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                 }
             }
         }
@@ -304,12 +310,16 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
             Err(err) => {
                 let msg = err.to_string();
                 match err.kind() {
-                    ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    ErrorKind::AlreadyExists => {
+                        raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg)
                     }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
+                    }
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                    }
+                    _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                 }
             }
         }
@@ -331,12 +341,16 @@ pub extern "C" fn molt_path_unlink(path_bits: u64) -> u64 {
             Err(err) => {
                 let msg = err.to_string();
                 match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
                     }
-                    ErrorKind::IsADirectory => raise_exception::<_>(_py, "IsADirectoryError", &msg),
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                    }
+                    ErrorKind::IsADirectory => {
+                        raise_exception::<_>(_py, BuiltinExc::IsADirectoryError, &msg)
+                    }
+                    _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                 }
             }
         }
@@ -358,12 +372,16 @@ pub extern "C" fn molt_path_rmdir(path_bits: u64) -> u64 {
             Err(err) => {
                 let msg = err.to_string();
                 match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
                     }
-                    ErrorKind::DirectoryNotEmpty => raise_exception::<_>(_py, "OSError", &msg),
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                    }
+                    ErrorKind::DirectoryNotEmpty => {
+                        raise_exception::<_>(_py, BuiltinExc::OSError, &msg)
+                    }
+                    _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                 }
             }
         }
@@ -500,7 +518,7 @@ fn path_join_components(py: &PyToken<'_>, base_bits: u64, parts: &[u64], posix: 
         if part_flavor != flavor {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "Can't mix strings and bytes in path components",
             );
         }
@@ -541,10 +559,10 @@ fn path_join_components(py: &PyToken<'_>, base_bits: u64, parts: &[u64], posix: 
 pub extern "C" fn molt_path_join_many(base_bits: u64, parts_bits: u64, posix_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(ptr) = obj_from_bits(parts_bits).as_ptr() else {
-            return raise_exception::<_>(py, "TypeError", "parts must be tuple");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "parts must be tuple");
         };
         if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-            return raise_exception::<_>(py, "TypeError", "parts must be tuple");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "parts must be tuple");
         }
         // The public variadic tuple is immutable. Retain its owner across fspath
         // callbacks without allocating or retaining a second copy of every item.
@@ -801,19 +819,19 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
                         return MoltObject::none().bits();
                     }
                     let msg = format!("File exists: {}", path.to_string_lossy());
-                    return raise_exception::<_>(_py, "FileExistsError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg);
                 }
                 let msg = format!("File exists: {}", path.to_string_lossy());
-                return raise_exception::<_>(_py, "FileExistsError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg);
             }
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) => {
                 let msg = err.to_string();
                 return match err.kind() {
                     ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
+                        raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
                     }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                    _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                 };
             }
         }
@@ -824,10 +842,16 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
         {
             let msg = err.to_string();
             return match err.kind() {
-                ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
-                ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                ErrorKind::PermissionDenied => raise_exception::<_>(_py, "PermissionError", &msg),
-                _ => raise_exception::<_>(_py, "OSError", &msg),
+                ErrorKind::AlreadyExists => {
+                    raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg)
+                }
+                ErrorKind::NotFound => {
+                    raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
+                }
+                ErrorKind::PermissionDenied => {
+                    raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                }
+                _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             };
         }
         #[cfg(unix)]
@@ -850,17 +874,19 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
                         if exist_ok {
                             match std::fs::metadata(&path) {
                                 Ok(meta) if meta.is_dir() => MoltObject::none().bits(),
-                                _ => raise_exception::<_>(_py, "FileExistsError", &msg),
+                                _ => raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg),
                             }
                         } else {
-                            raise_exception::<_>(_py, "FileExistsError", &msg)
+                            raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg)
                         }
                     }
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
+                    ErrorKind::NotFound => {
+                        raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
                     }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
+                    ErrorKind::PermissionDenied => {
+                        raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                    }
+                    _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                 }
             }
         }
@@ -877,7 +903,7 @@ pub extern "C" fn molt_path_as_uri(path_bits: u64) -> u64 {
         };
         let out = match path_as_uri_text(&path, sep) {
             Ok(out) => out,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         };
         let ptr = alloc_string(_py, out.as_bytes());
         if ptr.is_null() {
@@ -928,7 +954,11 @@ pub extern "C" fn molt_path_glob(
                     true,
                 )
             } else {
-                return raise_exception::<_>(_py, "TypeError", "pattern must be str or bytes");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "pattern must be str or bytes",
+                );
             };
         let recursive = is_truthy(_py, obj_from_bits(recursive_bits));
         if exception_pending(_py) {
@@ -944,21 +974,29 @@ pub extern "C" fn molt_path_glob(
             if modern {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "legacy glob parse is not valid for this target",
                 );
             }
             let Some(pointer) = obj_from_bits(legacy_parsed_bits).as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "legacy glob parse must be a tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "legacy glob parse must be a tuple",
+                );
             };
             let Some(parsed) = (unsafe { crate::object::seq_access::pin_tuple(_py, pointer) })
             else {
-                return raise_exception::<_>(_py, "TypeError", "legacy glob parse must be a tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "legacy glob parse must be a tuple",
+                );
             };
             if parsed.len() != 3 {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "legacy glob parse must have three fields",
                 );
             }
@@ -974,10 +1012,18 @@ pub extern "C" fn molt_path_glob(
                 return CompatibilityError::PathGlobNonRelative { non_relative }.raise(_py);
             }
             let Some(pointer) = obj_from_bits(parsed[2]).as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "legacy glob parts must be a list");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "legacy glob parts must be a list",
+                );
             };
             if unsafe { object_type_id(pointer) } != TYPE_ID_LIST {
-                return raise_exception::<_>(_py, "TypeError", "legacy glob parts must be a list");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "legacy glob parts must be a list",
+                );
             }
             let Some(values) = (unsafe {
                 crate::object::seq_access::snapshot(_py, pointer, "glob parts snapshot")
@@ -989,7 +1035,7 @@ pub extern "C" fn molt_path_glob(
                 let Some(text) = string_obj_bytes(obj_from_bits(value)) else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "legacy glob parts must contain str",
                     );
                 };
@@ -1002,7 +1048,7 @@ pub extern "C" fn molt_path_glob(
             if bytes_pattern && (!native_pattern || recursive) {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "a bytes-like object is required, not 'str'",
                 );
             }
@@ -1033,12 +1079,16 @@ pub extern "C" fn molt_path_glob(
             if bytes_pattern {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "a bytes-like object is required, not 'str'",
                 );
             }
             if !recursive && parsed.is_empty() {
-                return raise_exception::<_>(_py, "ValueError", "Unacceptable pattern: ''");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "Unacceptable pattern: ''",
+                );
             }
             parsed
                 .split(|byte| *byte == sep as u8 || (sep == '\\' && *byte == b'/'))
@@ -1047,7 +1097,7 @@ pub extern "C" fn molt_path_glob(
                 .collect()
         };
         if modern && parts.is_empty() {
-            return raise_exception::<_>(_py, "ValueError", "Unacceptable pattern");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "Unacceptable pattern");
         }
         let mut trailing_separator = pattern
             .last()
@@ -1111,7 +1161,7 @@ pub extern "C" fn molt_path_glob(
         {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Invalid pattern: '**' can only be an entire path component",
             );
         }
@@ -1123,9 +1173,9 @@ pub extern "C" fn molt_path_glob(
         }
         if parts.is_empty() {
             if modern {
-                return raise_exception::<_>(_py, "ValueError", "Unacceptable pattern");
+                return raise_exception::<_>(_py, BuiltinExc::ValueError, "Unacceptable pattern");
             }
-            return raise_exception::<_>(_py, "IndexError", "tuple index out of range");
+            return raise_exception::<_>(_py, BuiltinExc::IndexError, "tuple index out of range");
         }
         // Pattern errors and callbacks precede base filesystem encoding.
         let dir = match path_from_bits(_py, path_bits) {
@@ -1227,13 +1277,13 @@ pub extern "C" fn molt_glob_translate(
             if matches!(type_id, Some(TYPE_ID_BYTES) | Some(TYPE_ID_BYTEARRAY)) {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "cannot use a string pattern on a bytes-like object",
                 );
             }
             let type_name = class_name_for_error(type_of_bits(_py, pathname_bits));
             let msg = format!("expected string or bytes-like object, got '{type_name}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
 
         let recursive = is_truthy(_py, obj_from_bits(recursive_bits));
@@ -1250,7 +1300,7 @@ pub extern "C" fn molt_glob_translate(
         } else if let Some(text) = string_obj_to_owned(obj_from_bits(seps_bits)) {
             Some(text)
         } else {
-            return raise_exception::<_>(_py, "TypeError", "seps must be str or None");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "seps must be str or None");
         };
 
         let out = glob_translate_text(&pattern, recursive, include_hidden, seps.as_deref());
@@ -1346,7 +1396,7 @@ pub(crate) fn glob_parse_args(
         } else {
             "cannot use a string pattern on a bytes-like object"
         };
-        return Err(raise_exception::<_>(_py, "TypeError", msg));
+        return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, msg));
     }
 
     let dir_fd = glob_dir_fd_arg_from_bits(_py, dir_fd_bits)?;
@@ -1372,7 +1422,7 @@ pub(crate) fn glob_parse_args(
         {
             return Err(raise_exception::<_>(
                 _py,
-                "NotImplementedError",
+                BuiltinExc::NotImplementedError,
                 "glob(dir_fd=...) requires fd-backed path resolution on this wasm host",
             ));
         }
@@ -1510,11 +1560,13 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
                 Err(err) => {
                     let msg = err.to_string();
                     match err.kind() {
-                        ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                        ErrorKind::PermissionDenied => {
-                            raise_exception::<_>(_py, "PermissionError", &msg)
+                        ErrorKind::NotFound => {
+                            raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
                         }
-                        _ => raise_exception::<_>(_py, "OSError", &msg),
+                        ErrorKind::PermissionDenied => {
+                            raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                        }
+                        _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                     }
                 }
             }
@@ -1527,11 +1579,13 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
                 Err(err) => {
                     let msg = err.to_string();
                     return match err.kind() {
-                        ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                        ErrorKind::PermissionDenied => {
-                            raise_exception::<_>(_py, "PermissionError", &msg)
+                        ErrorKind::NotFound => {
+                            raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
                         }
-                        _ => raise_exception::<_>(_py, "OSError", &msg),
+                        ErrorKind::PermissionDenied => {
+                            raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                        }
+                        _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                     };
                 }
             };
@@ -1542,11 +1596,13 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
                 Err(err) => {
                     let msg = err.to_string();
                     match err.kind() {
-                        ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                        ErrorKind::PermissionDenied => {
-                            raise_exception::<_>(_py, "PermissionError", &msg)
+                        ErrorKind::NotFound => {
+                            raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg)
                         }
-                        _ => raise_exception::<_>(_py, "OSError", &msg),
+                        ErrorKind::PermissionDenied => {
+                            raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg)
+                        }
+                        _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
                     }
                 }
             }
@@ -1556,7 +1612,7 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
             let _ = mode;
             raise_exception::<_>(
                 _py,
-                "NotImplementedError",
+                BuiltinExc::NotImplementedError,
                 "chmod is unsupported on this platform",
             )
         }
@@ -1919,7 +1975,7 @@ pub(crate) fn at_path_to_cstring(
         Ok(c) => Ok(c),
         Err(_) => Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "embedded null byte",
         )),
     }
@@ -1941,7 +1997,7 @@ pub(crate) fn at_resolve_dir_fd(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<l
         Some(fd) => Ok(fd as libc::c_int),
         None => Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "an integer is required",
         )),
     }
@@ -2142,7 +2198,11 @@ pub extern "C" fn molt_os_rename_at(
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.rename_at", "fs.write", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.write capability",
+            );
         }
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
@@ -2210,7 +2270,11 @@ pub extern "C" fn molt_os_replace_at(
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.replace_at", "fs.write", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.write capability",
+            );
         }
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
@@ -2280,7 +2344,11 @@ pub extern "C" fn molt_os_link_at(
         let allowed = has_capability(_py, "fs.write");
         audit_capability_decision("os.link_at", "fs.write", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.write capability",
+            );
         }
         let src = match path_from_bits(_py, src_bits) {
             Ok(path) => path,
@@ -2434,7 +2502,7 @@ pub extern "C" fn molt_os_open(path_bits: u64, flags_bits: u64, mode_bits: u64) 
                     Err(_) => {
                         return raise_exception::<_>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "embedded null byte in path",
                         );
                     }
@@ -2474,7 +2542,7 @@ pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if fd < 0 {
             return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "close");
@@ -2702,7 +2770,7 @@ pub extern "C" fn molt_os_dup(fd_bits: u64) -> u64 {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if fd < 0 {
             return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "dup");
@@ -2732,7 +2800,7 @@ pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if fd < 0 {
             return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "get_inheritable");
@@ -2792,7 +2860,7 @@ pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
             let msg = format!("an integer is required (got {type_name})");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if fd < 0 {
             return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "set_inheritable");
@@ -2879,14 +2947,18 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if len < 0 {
-            return raise_exception::<_>(_py, "ValueError", "negative argument not allowed");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative argument not allowed",
+            );
         }
         let len = match usize::try_from(len) {
             Ok(val) => val,
             Err(_) => {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "Python int too large to convert to C ssize_t",
                 );
             }
@@ -2906,7 +2978,7 @@ pub extern "C" fn molt_os_urandom(len_bits: u64) -> u64 {
         buf.resize(len, 0);
         if let Err(err) = fill_os_random(&mut buf) {
             let msg = format!("urandom failed: {err}");
-            return raise_exception::<_>(_py, "OSError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::OSError, &msg);
         }
         let ptr = alloc_bytes(_py, &buf);
         if ptr.is_null() {

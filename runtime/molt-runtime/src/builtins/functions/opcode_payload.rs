@@ -3,6 +3,7 @@
 // no longer share the function-object runtime compilation unit.
 
 use super::*;
+use crate::BuiltinExc;
 
 const OPCODE_PAYLOAD_312_JSON: &str = include_str!("../../intrinsics/data/opcode_payload_312.json");
 const OPCODE_METADATA_PAYLOAD_314_JSON: &str =
@@ -359,7 +360,7 @@ pub extern "C" fn molt_opcode_stack_effect(opcode_bits: u64, oparg_bits: u64) ->
                 "'{}' object cannot be interpreted as an integer",
                 type_name(_py, opcode_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
 
         let oparg_obj = obj_from_bits(oparg_bits);
@@ -368,19 +369,21 @@ pub extern "C" fn molt_opcode_stack_effect(opcode_bits: u64, oparg_bits: u64) ->
             if opcode_noarg {
                 return match opcode_stack_effect_core_312(opcode, 0) {
                     Some(effect) => MoltObject::from_int(effect).bits(),
-                    None => raise_exception::<_>(_py, "ValueError", "invalid opcode or oparg"),
+                    None => {
+                        raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid opcode or oparg")
+                    }
                 };
             }
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "stack_effect: opcode requires oparg but oparg was not specified",
             );
         }
         if opcode_noarg {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "stack_effect: opcode does not permit oparg but oparg was specified",
             );
         }
@@ -390,11 +393,11 @@ pub extern "C" fn molt_opcode_stack_effect(opcode_bits: u64, oparg_bits: u64) ->
                 "'{}' object cannot be interpreted as an integer",
                 type_name(_py, oparg_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
 
         let Some(effect) = opcode_stack_effect_core_312(opcode, oparg) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid opcode or oparg");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid opcode or oparg");
         };
         MoltObject::from_int(effect).bits()
     })

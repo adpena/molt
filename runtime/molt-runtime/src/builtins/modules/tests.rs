@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use std::sync::atomic::Ordering;
 
 #[test]
@@ -102,10 +103,10 @@ fn namespace_del_normalizes_non_key_mapping_failures() {
         let _ = molt_namespace_del(MoltObject::none().bits(), key);
         assert!(exception_pending(_py));
         let error = molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
-            "NameError"
+            crate::BuiltinExc::NameError
         ));
         clear_exception(_py);
         dec_ref_bits(_py, error);
@@ -135,10 +136,10 @@ fn namespace_get_preserves_values_absence_and_non_key_errors() {
         let _ = molt_namespace_get(MoltObject::none().bits(), key, missing);
         assert!(exception_pending(_py));
         let error = molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
-            "TypeError"
+            crate::BuiltinExc::TypeError
         ));
         let _ = molt_namespace_get(ns, key, missing);
         let retained = molt_exception_last_pending();
@@ -241,13 +242,13 @@ fn module_cache_restore_preserves_exact_public_membership() {
     });
 }
 
-fn assert_pending_exception_class(_py: &PyToken<'_>, expected: &str) {
+fn assert_pending_exception_class(_py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(_py));
     let exc_bits = molt_exception_last_pending();
     assert!(!obj_from_bits(exc_bits).is_none());
     assert!(
-        crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, expected),
-        "expected pending exception to be {expected}"
+        crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, expected),
+        "expected pending exception to be {expected:?}"
     );
     dec_ref_bits(_py, exc_bits);
     let _ = crate::molt_exception_clear();
@@ -262,10 +263,10 @@ fn assert_pending_module_not_found_metadata(
 ) {
     assert!(exception_pending(py));
     let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         py,
         exception.bits(),
-        "ModuleNotFoundError"
+        crate::BuiltinExc::ModuleNotFoundError
     ));
     clear_exception(py);
     let read = |field: &[u8]| {
@@ -476,9 +477,12 @@ fn import_error_allocation_denial_never_publishes_partial_fields() {
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         let none = MoltObject::none().bits();
-        for kind in ["ImportError", "ModuleNotFoundError"] {
+        for kind in [
+            crate::BuiltinExc::ImportError,
+            crate::BuiltinExc::ModuleNotFoundError,
+        ] {
             let raise = |message: &[u8]| {
-                if kind == "ImportError" {
+                if kind == crate::BuiltinExc::ImportError {
                     raise_import_error(py, message, none, none, none)
                 } else {
                     crate::builtins::exceptions::raise_module_not_found(py, message, none)
@@ -497,7 +501,7 @@ fn import_error_allocation_denial_never_publishes_partial_fields() {
             drop(budget);
             let _ = raise(b"recovered");
             let recovered = ExceptionValue::adopt(py, molt_exception_last_pending());
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 recovered.bits(),
                 kind
@@ -613,7 +617,7 @@ fn generated_native_providers_own_self_and_public_aliases_own_lookup() {
                 8,
             );
             assert!(exception_pending(py));
-            assert_pending_exception_class(py, "NameError");
+            assert_pending_exception_class(py, crate::BuiltinExc::NameError);
             dec_ref_bits(py, absent);
             for bits in [open_name, self_name] {
                 dec_ref_bits(py, bits);
@@ -714,9 +718,9 @@ fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
         );
         assert!(unsafe { dict_del_in_place(py, captured_ptr, len).expect("operation succeeds") });
         assert!(obj_from_bits(molt_module_get_global(module, len)).is_none());
-        assert_pending_exception_class(py, "NameError");
+        assert_pending_exception_class(py, crate::BuiltinExc::NameError);
         assert!(obj_from_bits(molt_module_get_global(module, runtime_only)).is_none());
-        assert_pending_exception_class(py, "NameError");
+        assert_pending_exception_class(py, crate::BuiltinExc::NameError);
 
         for (typo, expected) in [
             (b"custom_toke".as_slice(), Some("custom_token")),
@@ -735,14 +739,14 @@ fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
                 None => assert!(!message.contains("Did you mean:")),
             }
             dec_ref_bits(py, exception);
-            assert_pending_exception_class(py, "NameError");
+            assert_pending_exception_class(py, crate::BuiltinExc::NameError);
             dec_ref_bits(py, typo);
         }
         assert!(unsafe {
             dict_del_in_place(py, captured_ptr, custom).expect("operation succeeds")
         });
         assert!(obj_from_bits(molt_module_get_global(module, len)).is_none());
-        assert_pending_exception_class(py, "NameError");
+        assert_pending_exception_class(py, crate::BuiltinExc::NameError);
         crate::builtins::frames::frame_stack_pop(py);
         assert_eq!(
             molt_module_get_global(module, answer),
@@ -815,10 +819,10 @@ fn module_get_global_captured_unavailable_builtins_does_not_switch_to_cache() {
             assert!(obj_from_bits(found).is_none());
             assert!(exception_pending(py));
             let exception = molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "NameError"
+                crate::BuiltinExc::NameError
             ));
             clear_exception(py);
             dec_ref_bits(py, exception);
@@ -933,7 +937,7 @@ fn module_get_global_respects_present_builtins_dict_miss() {
                 obj_from_bits(missing_bits).is_none(),
                 "deleting builtins.{builtin_name} from a published dictionary must be authoritative"
             );
-            assert_pending_exception_class(_py, "NameError");
+            assert_pending_exception_class(_py, crate::BuiltinExc::NameError);
             dec_ref_bits(_py, name_bits);
         }
 
@@ -1196,8 +1200,11 @@ fn import_attempt_preserves_pending_failure_even_when_its_text_names_the_target(
     crate::with_gil_entry_nopanic!(_py, {
         let name = attr_name_bits_from_bytes(_py, b"pkg.child").unwrap();
         crate::builtins::exceptions::exception_stack_push();
-        let raised =
-            raise_exception::<u64>(_py, "ModuleNotFoundError", "No module named 'pkg.child'");
+        let raised = raise_exception::<u64>(
+            _py,
+            BuiltinExc::ModuleNotFoundError,
+            "No module named 'pkg.child'",
+        );
         dec_ref_bits(_py, raised);
         let original = molt_exception_last_pending();
         assert!(module_import_attempt(name).is_err());
@@ -1229,7 +1236,7 @@ fn canonical_module_dictionary_preserves_none_and_arbitrary_public_values() {
             let pointer = ptr_from_bits(dictionary);
             assert!(unsafe { dict_set_in_place(py, pointer, name, MoltObject::none().bits()) });
             assert!(module_import_attempt(name).is_err());
-            assert_pending_exception_class(py, "ModuleNotFoundError");
+            assert_pending_exception_class(py, crate::BuiltinExc::ModuleNotFoundError);
             let string = MoltObject::from_ptr(alloc_string(py, b"arbitrary public value")).bits();
             assert!(unsafe { dict_set_in_place(py, pointer, name, string) });
             assert!(

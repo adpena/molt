@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
@@ -45,18 +46,18 @@ enum ExactInt {
 }
 
 fn memory_error<T: crate::ExceptionSentinel>(_py: &PyToken<'_>) -> T {
-    raise_exception::<T>(_py, "MemoryError", "buffer2d allocation failed")
+    raise_exception::<T>(_py, BuiltinExc::MemoryError, "buffer2d allocation failed")
 }
 
 fn dimension_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<u64> {
     if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(bits) {
         if value < 0 {
             let message = format!("{name} must be non-negative");
-            return raise_exception::<Option<u64>>(_py, "ValueError", &message);
+            return raise_exception::<Option<u64>>(_py, BuiltinExc::ValueError, &message);
         }
         if value > isize::MAX as i64 {
             let message = format!("{name} is too large");
-            return raise_exception::<Option<u64>>(_py, "OverflowError", &message);
+            return raise_exception::<Option<u64>>(_py, BuiltinExc::OverflowError, &message);
         }
         return Some(value as u64);
     }
@@ -64,11 +65,11 @@ fn dimension_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<u64> 
     let value = crate::builtins::numbers::index_bigint_from_obj(_py, bits, &err)?;
     if value.is_negative() {
         let message = format!("{name} must be non-negative");
-        return raise_exception::<Option<u64>>(_py, "ValueError", &message);
+        return raise_exception::<Option<u64>>(_py, BuiltinExc::ValueError, &message);
     }
     value.to_isize().map(|value| value as u64).or_else(|| {
         let message = format!("{name} is too large");
-        raise_exception::<Option<u64>>(_py, "OverflowError", &message)
+        raise_exception::<Option<u64>>(_py, BuiltinExc::OverflowError, &message)
     })
 }
 
@@ -76,10 +77,14 @@ fn index_from_i64(_py: &PyToken<'_>, value: i64, len: u64) -> Option<usize> {
     let len_i64 = i64::try_from(len).expect("Buffer2D dimensions are bounded by i64::MAX");
     let normalized = if value < 0 { value + len_i64 } else { value };
     if normalized < 0 || normalized >= len_i64 {
-        return raise_exception::<Option<usize>>(_py, "IndexError", "buffer2d index out of range");
+        return raise_exception::<Option<usize>>(
+            _py,
+            BuiltinExc::IndexError,
+            "buffer2d index out of range",
+        );
     }
     usize::try_from(normalized).ok().or_else(|| {
-        raise_exception::<Option<usize>>(_py, "IndexError", "buffer2d index out of range")
+        raise_exception::<Option<usize>>(_py, BuiltinExc::IndexError, "buffer2d index out of range")
     })
 }
 
@@ -99,10 +104,14 @@ fn index_from_bits(_py: &PyToken<'_>, bits: u64, len: u64) -> Option<usize> {
         value
     };
     if normalized.is_negative() || normalized >= len_big {
-        return raise_exception::<Option<usize>>(_py, "IndexError", "buffer2d index out of range");
+        return raise_exception::<Option<usize>>(
+            _py,
+            BuiltinExc::IndexError,
+            "buffer2d index out of range",
+        );
     }
     normalized.to_usize().or_else(|| {
-        raise_exception::<Option<usize>>(_py, "IndexError", "buffer2d index out of range")
+        raise_exception::<Option<usize>>(_py, BuiltinExc::IndexError, "buffer2d index out of range")
     })
 }
 
@@ -251,7 +260,7 @@ fn checked_buffer(_py: &PyToken<'_>, bits: u64) -> Option<*mut Buffer2D> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return raise_exception::<Option<*mut Buffer2D>>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "expected a Buffer2D object",
         );
     };
@@ -259,7 +268,7 @@ fn checked_buffer(_py: &PyToken<'_>, bits: u64) -> Option<*mut Buffer2D> {
         if object_type_id(ptr) != TYPE_ID_BUFFER2D {
             return raise_exception::<Option<*mut Buffer2D>>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "expected a Buffer2D object",
             );
         }
@@ -498,7 +507,7 @@ pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
         let a = unsafe { &*a_ptr };
         let b = unsafe { &*b_ptr };
         if a.cols != b.rows {
-            return raise_exception::<_>(_py, "ValueError", "matmul dimension mismatch");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "matmul dimension mismatch");
         }
         let Some(element_count) = a.rows.checked_mul(b.cols) else {
             return memory_error(_py);

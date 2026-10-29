@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime-asyncio/src/asyncio_core.rs ===
+use molt_runtime_core::{BuiltinExc, ModuleExc};
 //
 // Rust intrinsics for asyncio Future state machine and synchronization primitives
 // (Event, Lock, Semaphore).
@@ -281,38 +282,52 @@ pub extern "C" fn molt_asyncio_future_new() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_future_result(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        enum Outcome {
+            Missing,
+            Pending,
+            Cancelled,
+            Raise(u64),
+            Result(u64),
+        }
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
-        let map = registry.futures.lock().unwrap();
-        let Some(state) = map.get(&handle) else {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
-        };
-
-        if !state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Result is not set.");
-        }
-
-        if state.cancelled {
-            // If an exception was stored (CancelledError with message), raise it.
-            if !obj_from_bits(state.exception_bits).is_none() {
-                // Return the exception bits for the Python layer to re-raise.
-                let exc_bits = state.exception_bits;
-                inc_ref_bits(_py, exc_bits);
-                // Signal that the caller should raise CancelledError.
-                return raise_exception::<u64>(_py, "CancelledError", "");
+        // Decide under the lock; raise after releasing it, because a module
+        // exception runs its class's `__init__`.
+        let outcome = {
+            let map = registry.futures.lock().unwrap();
+            match map.get(&handle) {
+                None => Outcome::Missing,
+                Some(state) if !state.done => Outcome::Pending,
+                Some(state) if !obj_from_bits(state.exception_bits).is_none() => {
+                    // A stored exception (including a cancellation's own
+                    // CancelledError) is raised as stored, as Future.result does.
+                    inc_ref_bits(_py, state.exception_bits);
+                    Outcome::Raise(state.exception_bits)
+                }
+                Some(state) if state.cancelled => Outcome::Cancelled,
+                Some(state) => {
+                    inc_ref_bits(_py, state.result_bits);
+                    Outcome::Result(state.result_bits)
+                }
             }
-            return raise_exception::<u64>(_py, "CancelledError", "");
+        };
+        match outcome {
+            Outcome::Missing => {
+                raise_exception::<u64>(_py, ModuleExc::AsyncioInvalidStateError, "Future not found")
+            }
+            Outcome::Pending => raise_exception::<u64>(
+                _py,
+                ModuleExc::AsyncioInvalidStateError,
+                "Result is not set.",
+            ),
+            Outcome::Cancelled => raise_exception::<u64>(_py, BuiltinExc::CancelledError, ""),
+            Outcome::Raise(exc_bits) => {
+                let raised = molt_runtime_core::rt_raise(exc_bits);
+                dec_ref_bits(_py, exc_bits);
+                raised
+            }
+            Outcome::Result(bits) => bits,
         }
-
-        if !obj_from_bits(state.exception_bits).is_none() {
-            // The Python shim will raise the stored exception.
-            // We return a sentinel to indicate exception state.
-            return raise_exception::<u64>(_py, "FutureException", "exception is set");
-        }
-
-        let result = state.result_bits;
-        inc_ref_bits(_py, result);
-        result
     })
 }
 
@@ -326,18 +341,26 @@ pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
         let registry = asyncio_core_state(_py);
         let map = registry.futures.lock().unwrap();
         let Some(state) = map.get(&handle) else {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::AsyncioInvalidStateError,
+                "Future not found",
+            );
         };
 
         if !state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Exception is not set.");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::AsyncioInvalidStateError,
+                "Exception is not set.",
+            );
         }
 
         if state.cancelled {
             if !obj_from_bits(state.exception_bits).is_none() {
-                return raise_exception::<u64>(_py, "CancelledError", "");
+                return raise_exception::<u64>(_py, BuiltinExc::CancelledError, "");
             }
-            return raise_exception::<u64>(_py, "CancelledError", "");
+            return raise_exception::<u64>(_py, BuiltinExc::CancelledError, "");
         }
 
         let exc = state.exception_bits;
@@ -355,11 +378,19 @@ pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_b
         let registry = asyncio_core_state(_py);
         let mut map = registry.futures.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::AsyncioInvalidStateError,
+                "Future not found",
+            );
         };
 
         if state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "invalid state");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::AsyncioInvalidStateError,
+                "invalid state",
+            );
         }
 
         // Store the result, inc_ref for heap objects.
@@ -381,11 +412,19 @@ pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_b
         let registry = asyncio_core_state(_py);
         let mut map = registry.futures.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::AsyncioInvalidStateError,
+                "Future not found",
+            );
         };
 
         if state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "invalid state");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::AsyncioInvalidStateError,
+                "invalid state",
+            );
         }
 
         // Store the exception, inc_ref for heap objects.
@@ -649,11 +688,11 @@ pub extern "C" fn molt_asyncio_lock_release_fast(handle_bits: u64) -> u64 {
         let registry = asyncio_core_state(_py);
         let mut map = registry.locks.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "Lock not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "Lock not found");
         };
 
         if !state.locked {
-            return raise_exception::<u64>(_py, "RuntimeError", "Lock is not acquired");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "Lock is not acquired");
         }
 
         if !state.waiters.is_empty() {
@@ -706,7 +745,7 @@ pub extern "C" fn molt_asyncio_semaphore_new(value_bits: u64) -> u64 {
         if initial_value < 0 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Semaphore initial value must be >= 0",
             );
         }
@@ -767,7 +806,7 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
         let registry = asyncio_core_state(_py);
         let mut map = registry.semaphores.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "Semaphore not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "Semaphore not found");
         };
 
         if !state.waiters.is_empty() {
@@ -782,7 +821,7 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
             if max_value.is_some_and(|max| state.value >= max) {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "BoundedSemaphore released too many times",
                 );
             }

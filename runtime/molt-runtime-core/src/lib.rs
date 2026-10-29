@@ -225,7 +225,7 @@ macro_rules! with_gil_entry {
         let $py = &__py_token;
 
         $crate::with_gil_entry_body!(raise: |__msg| {
-            $crate::rt_raise_str("RuntimeError", __msg);
+            $crate::rt_raise_str($crate::BuiltinExc::RuntimeError, __msg);
         }, $body)
     }};
 }
@@ -492,14 +492,18 @@ pub mod ffi {
 
         // -- Exception machinery (builtins/exceptions.rs) --------------------
 
-        /// Raise the canonical diagnostic exception. Empty messages carry no
-        /// arguments; nonempty messages carry one string argument.
+        /// Raise the canonical diagnostic exception of an `ExcKind` code.
+        /// Empty messages carry no arguments; nonempty messages carry one
+        /// string argument.
         pub fn molt_bridge_raise_exception(
-            kind_ptr: *const u8,
-            kind_len: usize,
+            kind_code: u16,
             msg_ptr: *const u8,
             msg_len: usize,
         ) -> u64;
+
+        /// The owned class of an `ExcKind` code; None with SystemError pending
+        /// when the code is invalid or its module row is unavailable.
+        pub fn molt_bridge_exception_class(kind_code: u16) -> u64;
 
         /// Create a new exception object.
         /// `kind_bits`: NaN-boxed string for the exception class name.
@@ -894,7 +898,10 @@ pub fn iter_next_owned<'py>(
         Some(false) => Ok(Some(value)),
         Some(true) => Ok(None),
         None => {
-            rt_raise_str("SystemError", "invalid iterator completion result");
+            rt_raise_str(
+                BuiltinExc::SystemError,
+                "invalid iterator completion result",
+            );
             Err(ErrorIndicatorSet)
         }
     }
@@ -924,10 +931,15 @@ pub fn rt_raise(exc_bits: u64) -> u64 {
 /// string argument. Explicit Python arguments use the exception constructors.
 /// Construction and raised-owner transfer remain in the runtime authority.
 #[inline]
-pub fn rt_raise_str(kind: &str, message: &str) -> u64 {
-    unsafe {
-        ffi::molt_bridge_raise_exception(kind.as_ptr(), kind.len(), message.as_ptr(), message.len())
-    }
+pub fn rt_raise_str(kind: impl Into<ExcKind>, message: &str) -> u64 {
+    unsafe { ffi::molt_bridge_raise_exception(kind.into().code(), message.as_ptr(), message.len()) }
+}
+
+/// The owned class of a typed exception kind, for satellites that construct a
+/// module exception with its own arguments. Check `rt_exception_pending`.
+#[inline]
+pub fn rt_exception_class(kind: impl Into<ExcKind>) -> u64 {
+    unsafe { ffi::molt_bridge_exception_class(kind.into().code()) }
 }
 
 /// Raise the owning module's actual exception class, retaining each temporary
@@ -1226,12 +1238,17 @@ pub unsafe fn bridge_owned_u64_to_vec(ptr: *const u64, len: usize) -> Vec<u64> {
 ///
 /// Provides type IDs, object model types, the GIL token, convenience
 /// helpers, and safe wrappers over the runtime FFI.
+/// The typed exception identity (`runtime/exception_kinds.toml`); bridge
+/// raises carry its `u16` code, never a spelling.
+pub use molt_obj_model::{BuiltinExc, ExcKind, ModuleExc};
+
 pub mod prelude {
     pub use crate::HashContextCode;
     pub use crate::type_ids::*;
     pub use crate::with_core_gil;
     pub use crate::with_gil_entry;
     pub use crate::with_gil_entry_body;
+    pub use crate::{BuiltinExc, ExcKind, ModuleExc};
     pub use crate::{
         CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, OwnedBridgeHandleSnapshot,
         OwnedRuntimeValue, ProtectedRuntimeValue, PyToken, bits_from_ptr,
@@ -1266,17 +1283,9 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 10 retires the serial boxed-next transport. Serial consumers use
-// the canonical core owned unboxed iterator contract; later slot offsets move.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 10;
-
-/// Native binascii module exception identities; exported names are metadata.
-#[repr(u32)]
-#[derive(Clone, Copy)]
-pub enum BinasciiException {
-    Error,
-    Incomplete,
-}
+// Version 11 passes typed `ExcKind` codes to the exception slots and retires
+// the binascii class slot; `BuiltinExc` owns those classes.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 11;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1300,14 +1309,12 @@ pub struct RuntimeVtable {
     ) -> *mut u8,
 
     // --- Exception handling ---
-    pub raise_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
-    pub replace_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
+    pub raise_exception: unsafe extern "C" fn(u16, *const u8, usize) -> u64,
+    pub replace_exception: unsafe extern "C" fn(u16, *const u8, usize) -> u64,
     pub exception_pending: unsafe extern "C" fn() -> i32,
     pub exception_new_from_class: unsafe extern "C" fn(u64, u64) -> u64,
     /// Run the actual strict ASCII codec and translate its UnicodeEncodeError.
     pub decode_ascii_input: unsafe extern "C" fn(u64) -> u64,
-    /// Return an owned canonical binascii module exception class.
-    pub binascii_exception_type: unsafe extern "C" fn(BinasciiException) -> u64,
 
     // --- Allocation ---
     pub alloc_tuple: unsafe extern "C" fn(*const u64, usize) -> *mut u8,

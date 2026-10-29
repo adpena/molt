@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashSet;
@@ -203,7 +204,7 @@ fn runtime_class_init_failed(_py: &PyToken<'_>, class_bits: u64, name: &str) -> 
     if !exception_pending(_py) {
         let _ = raise_exception::<u64>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             &format!("{name} class initialization failed"),
         );
     }
@@ -487,16 +488,24 @@ fn set_class_method(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, fn_bits: u
 pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if !crate::builtins::callable::is_callable_impl(_py, func_bits) {
-            return raise_exception::<_>(_py, "TypeError", "types.coroutine() expects a callable");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "types.coroutine() expects a callable",
+            );
         }
         let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "types.coroutine() expects a function");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "types.coroutine() expects a function",
+            );
         };
         unsafe {
             if object_type_id(func_ptr) != crate::TYPE_ID_FUNCTION {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "types.coroutine() runtime path expects a function",
                 );
             }
@@ -504,14 +513,14 @@ pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
             let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "types.coroutine() function has no code object",
                 );
             };
             if object_type_id(code_ptr) != crate::TYPE_ID_CODE {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "types.coroutine() function has invalid code object",
                 );
             }
@@ -548,7 +557,7 @@ pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
                 crate::object::layout::CodeExecutionKind::Direct
                 | crate::object::layout::CodeExecutionKind::AsyncGenerator => raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "types.coroutine() runtime path expects a generator or coroutine function",
                 ),
             }
@@ -1379,7 +1388,11 @@ mod tests {
 
     extern "C" fn method_operand_failure(_self: u64, _other: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception(py, "ValueError", "method function equality witness")
+            raise_exception(
+                py,
+                BuiltinExc::ValueError,
+                "method function equality witness",
+            )
         })
     }
 
@@ -1406,10 +1419,10 @@ mod tests {
             dec_ref_bits(py, hashed);
             assert!(exception_pending(py));
             let error = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             clear_exception(py);
             dec_ref_bits(py, error);
@@ -1457,10 +1470,10 @@ mod tests {
                 "different receivers must not bypass function equality"
             );
             let error = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "ValueError"
+                crate::BuiltinExc::ValueError
             ));
             clear_exception(py);
             dec_ref_bits(py, error);

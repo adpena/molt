@@ -1,5 +1,6 @@
 //! Python ModuleType construction shares storage and initialization with imports.
 
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::builtins::methods::{builtin_func_bits, builtin_variadic_func_bits};
 use crate::builtins::types::{call_vararg_args, call_vararg_kwargs};
@@ -79,7 +80,7 @@ pub(crate) fn initialize_module_namespace(
     else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "descriptor '__init__' requires a 'module' object but received a '{}'",
                 type_name(py, obj_from_bits(module_bits)),
@@ -92,7 +93,7 @@ pub(crate) fn initialize_module_namespace(
     {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "module() argument 'name' must be str, not {}",
                 type_name(py, obj_from_bits(name_bits)),
@@ -104,7 +105,11 @@ pub(crate) fn initialize_module_namespace(
         .as_ptr()
         .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_DICT })
     else {
-        return raise_exception::<_>(py, "SystemError", "module namespace is not a dictionary");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::SystemError,
+            "module namespace is not a dictionary",
+        );
     };
     let inputs = ModuleInputs {
         py,
@@ -171,7 +176,7 @@ pub extern "C" fn molt_module_init(args_bits: u64, kwargs_bits: u64) -> u64 {
         let Some(&receiver) = call.positional.first() else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "descriptor '__init__' of 'module' object needs an argument",
             );
         };
@@ -182,7 +187,7 @@ pub extern "C" fn molt_module_init(args_bits: u64, kwargs_bits: u64) -> u64 {
         {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '__init__' requires a 'module' object but received a '{}'",
                     type_name(py, obj_from_bits(receiver)),

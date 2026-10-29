@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime/src/builtins/shutil.rs ===
+use crate::BuiltinExc;
 //
 // shutil intrinsics: high-level file and directory operations.
 //
@@ -403,7 +404,11 @@ pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.write capability",
+            );
         }
         let path = match require_path_local(_py, path_bits, "path") {
             Ok(p) => p,
@@ -480,7 +485,11 @@ pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let path = match require_path_local(_py, path_bits, "path") {
             Ok(p) => p,
@@ -492,7 +501,7 @@ pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
             let c_path = match std::ffi::CString::new(path.as_os_str().as_bytes()) {
                 Ok(c) => c,
                 Err(_) => {
-                    return raise_exception::<_>(_py, "ValueError", "invalid path");
+                    return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid path");
                 }
             };
             let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -723,11 +732,13 @@ pub extern "C" fn molt_shutil_make_archive(
     crate::with_gil_entry_nopanic!(_py, {
         let base_name = match string_obj_to_owned(obj_from_bits(base_name_bits)) {
             Some(s) => s,
-            None => return raise_exception::<_>(_py, "TypeError", "base_name must be str"),
+            None => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "base_name must be str");
+            }
         };
         let format = match string_obj_to_owned(obj_from_bits(format_bits)) {
             Some(s) => s,
-            None => return raise_exception::<_>(_py, "TypeError", "format must be str"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "format must be str"),
         };
         let (ext, operation) = match format.as_str() {
             // CPython registers zip only when its compression support exists;
@@ -741,7 +752,7 @@ pub extern "C" fn molt_shutil_make_archive(
             other => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("unknown archive format '{other}'"),
                 );
             }
@@ -797,7 +808,11 @@ pub extern "C" fn molt_shutil_make_archive(
                 match cmd.status() {
                     Ok(status) if status.success() => {}
                     Ok(_) => {
-                        return raise_exception::<_>(_py, "OSError", "tar command failed");
+                        return raise_exception::<_>(
+                            _py,
+                            BuiltinExc::OSError,
+                            "tar command failed",
+                        );
                     }
                     Err(err) => return shutil_err(_py, err, "make_archive"),
                 }
@@ -870,7 +885,7 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
         {
             OperationId::ShutilUnpackArchiveExternal
         } else {
-            return raise_exception::<u64>(_py, "ValueError", "unknown archive format");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "unknown archive format");
         };
         if let Err(error) = require_operation(
             _py,
@@ -901,7 +916,7 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
         cmd.arg("-C").arg(&extract_dir);
         match cmd.status() {
             Ok(status) if status.success() => MoltObject::none().bits(),
-            Ok(_) => raise_exception::<_>(_py, "OSError", "tar extraction failed"),
+            Ok(_) => raise_exception::<_>(_py, BuiltinExc::OSError, "tar extraction failed"),
             Err(err) => shutil_err(_py, err, "unpack_archive"),
         }
     })
@@ -957,7 +972,11 @@ pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: 
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.write capability",
+            );
         }
         let path = match require_path_local(_py, path_bits, "path") {
             Ok(p) => p,
@@ -982,13 +1001,17 @@ pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: 
                 };
                 match lookup_uid(&name) {
                     Ok(Some(uid)) => uid,
-                    Err(_) => return raise_exception::<_>(_py, "MemoryError", ""),
+                    Err(_) => return raise_exception::<_>(_py, BuiltinExc::MemoryError, ""),
                     Ok(None) => {
                         return userdb_missing_name(_py, user_bits, "user");
                     }
                 }
             } else {
-                return raise_exception::<_>(_py, "TypeError", "user must be str, int, or None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "user must be str, int, or None",
+                );
             };
 
             let gid: libc::gid_t = if obj_from_bits(group_bits).is_none() {
@@ -1006,18 +1029,22 @@ pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: 
                 };
                 match lookup_gid(&name) {
                     Ok(Some(gid)) => gid,
-                    Err(_) => return raise_exception::<_>(_py, "MemoryError", ""),
+                    Err(_) => return raise_exception::<_>(_py, BuiltinExc::MemoryError, ""),
                     Ok(None) => {
                         return userdb_missing_name(_py, group_bits, "group");
                     }
                 }
             } else {
-                return raise_exception::<_>(_py, "TypeError", "group must be str, int, or None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "group must be str, int, or None",
+                );
             };
 
             let c_path = match std::ffi::CString::new(path.as_os_str().as_bytes()) {
                 Ok(c) => c,
-                Err(_) => return raise_exception::<_>(_py, "ValueError", "invalid path"),
+                Err(_) => return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid path"),
             };
             let rc = unsafe { libc::chown(c_path.as_ptr(), uid, gid) };
             if rc != 0 {
@@ -1044,7 +1071,11 @@ fn userdb_missing_name(py: &PyToken<'_>, bits: u64, kind: &str) -> u64 {
         return MoltObject::none().bits();
     }
     let text = string_obj_to_owned(obj_from_bits(owner.bits())).expect("repr produces text");
-    raise_exception::<u64>(py, "LookupError", &format!("no such {kind}: {text}"))
+    raise_exception::<u64>(
+        py,
+        BuiltinExc::LookupError,
+        &format!("no such {kind}: {text}"),
+    )
 }
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
@@ -1059,12 +1090,12 @@ fn userdb_name(py: &PyToken<'_>, bits: u64) -> Result<std::ffi::CString, u64> {
     if bytes.contains(&0) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "embedded null byte",
         ));
     }
     if bytes.try_reserve(1).is_err() {
-        return Err(raise_exception::<u64>(py, "MemoryError", ""));
+        return Err(raise_exception::<u64>(py, BuiltinExc::MemoryError, ""));
     }
     Ok(std::ffi::CString::new(bytes).expect("NUL checked before native query"))
 }

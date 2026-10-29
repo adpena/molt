@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::exceptions::raise_exception;
 use crate::builtins::numbers::{index_bigint_from_obj, index_i64_integral_bits};
@@ -173,7 +174,7 @@ pub extern "C" fn molt_frame_context_set(
             _ => {
                 return raise_exception::<_>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "invalid executing-frame argument-zero transport",
                 );
             }
@@ -185,7 +186,7 @@ pub extern "C" fn molt_frame_context_set(
         } else {
             return raise_exception::<_>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "invalid executing-frame class-cell transport",
             );
         };
@@ -198,7 +199,7 @@ pub extern "C" fn molt_frame_context_set(
         ) {
             return raise_exception::<_>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "executing-frame context published without a Python frame",
             );
         }
@@ -373,7 +374,7 @@ pub(crate) fn frame_effective_builtins_bits(
         return dictionary.ok_or_else(|| {
             crate::raise_exception::<()>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "canonical builtins initializer did not publish the interpreter dictionary",
             );
         });
@@ -712,7 +713,7 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
             Ok(None) => {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "module locals is not a dictionary",
                 );
             }
@@ -743,7 +744,7 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
                     if builtins_bits == 0 {
                         return raise_exception::<_>(
                             _py,
-                            "SystemError",
+                            BuiltinExc::SystemError,
                             "module execution has no captured builtins namespace",
                         );
                     }
@@ -873,7 +874,7 @@ fn frame_globals_field(_py: &PyToken<'_>, entry: FrameEntry) -> Option<FrameFiel
     }
     raise_exception::<u64>(
         _py,
-        "SystemError",
+        BuiltinExc::SystemError,
         "Python frame has no bound globals namespace",
     );
     None
@@ -993,7 +994,11 @@ pub(crate) unsafe fn suspended_frame_bits(py: &PyToken<'_>, ptr: *mut u8, lasti:
             bindings: bindings::FrameBindings::captured(payload),
         };
         let Some(line) = frame_line_from_entry(entry) else {
-            return raise_exception::<u64>(py, "SystemError", "suspended frame has invalid code");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "suspended frame has invalid code",
+            );
         };
         alloc_frame_obj(py, entry, line, MoltObject::none().bits(), lasti)
             .unwrap_or_else(|| MoltObject::none().bits())
@@ -1221,7 +1226,7 @@ pub(crate) fn frame_at_depth(_py: &PyToken<'_>, depth: usize) -> Result<Option<u
     let frames = unsafe { build_frame_chain(_py, &snapshot.entries) };
     let Some(frames) = frames else {
         if !exception_pending(_py) {
-            raise_exception::<()>(_py, "MemoryError", "frame materialization failed");
+            raise_exception::<()>(_py, BuiltinExc::MemoryError, "frame materialization failed");
         }
         return Err(());
     };
@@ -1234,7 +1239,7 @@ pub(crate) fn frame_at_depth(_py: &PyToken<'_>, depth: usize) -> Result<Option<u
     let Some((selected_bits, _)) = frames.last().copied() else {
         raise_exception::<()>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "selected Python frame was not materialized",
         );
         return Err(());
@@ -1392,7 +1397,11 @@ pub(crate) fn traceback_payload_to_traceback_bits(
             }
         })();
         if result.is_none() && !exception_pending(_py) {
-            raise_exception::<()>(_py, "MemoryError", "traceback materialization failed");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::MemoryError,
+                "traceback materialization failed",
+            );
         }
         result.is_some()
     });
@@ -1444,13 +1453,15 @@ pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
         let Some(depth) = depth else {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "Python int too large to convert to C int",
             );
         };
         match frame_at_depth(_py, depth.max(0) as usize) {
             Ok(Some(bits)) => bits,
-            Ok(None) => raise_exception::<u64>(_py, "ValueError", "call stack is not deep enough"),
+            Ok(None) => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "call stack is not deep enough")
+            }
             Err(()) => MoltObject::none().bits(),
         }
     })
@@ -1636,7 +1647,8 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             frame_stack_push(py, 0);
             let none = MoltObject::none().bits();
-            let _ = crate::raise_exception::<u64>(py, "ValueError", "frame unwind");
+            let _ =
+                crate::raise_exception::<u64>(py, crate::BuiltinExc::ValueError, "frame unwind");
             let before = crate::builtins::exceptions::molt_exception_last_pending();
             assert!(crate::exception_pending(py));
             let result = super::molt_frame_context_set(none, MoltObject::from_int(1).bits(), none);

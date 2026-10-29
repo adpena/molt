@@ -1,10 +1,11 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 pub(super) fn parse_shape(_py: &PyToken, bits: u64, role: &str) -> Result<Vec<usize>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a tuple or list of ints"),
         ));
     };
@@ -12,7 +13,7 @@ pub(super) fn parse_shape(_py: &PyToken, bits: u64, role: &str) -> Result<Vec<us
     if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a tuple or list of ints"),
         ));
     }
@@ -34,12 +35,14 @@ pub(super) fn parse_shape(_py: &PyToken, bits: u64, role: &str) -> Result<Vec<us
         })
     };
     decoded.map_err(|error| match error {
-        ShapeDecodeError::NonInteger => {
-            raise_exception::<_>(_py, "TypeError", &format!("{role} must contain integers"))
-        }
+        ShapeDecodeError::NonInteger => raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            &format!("{role} must contain integers"),
+        ),
         ShapeDecodeError::Negative => raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("{role} dimensions must be non-negative"),
         ),
     })
@@ -67,7 +70,7 @@ pub(super) fn validate_permutation(_py: &PyToken, dims: &[usize], ndim: usize) -
     if dims.len() != ndim {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "permute dims must match tensor rank",
         ));
     }
@@ -76,7 +79,7 @@ pub(super) fn validate_permutation(_py: &PyToken, dims: &[usize], ndim: usize) -
         if dim >= ndim || seen[dim] {
             return Err(raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "permute dims must be a permutation",
             ));
         }
@@ -105,7 +108,7 @@ pub(super) fn apply_binary_op(_py: &PyToken, op_code: i64, a: f64, b: f64) -> Re
         }
         _ => Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("unsupported broadcast op code {}", op_code),
         )),
     }

@@ -1,3 +1,4 @@
+# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-530 expect_molt_returncode=1 expect_molt_stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 """Purpose: validate importlib source-loader package/module resolution metadata."""
 
 import importlib.util

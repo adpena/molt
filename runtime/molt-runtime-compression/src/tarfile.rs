@@ -406,7 +406,7 @@ pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
             other => {
                 return raise_exception(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("unsupported tarfile mode: '{other}'"),
                 );
             }
@@ -418,7 +418,7 @@ pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
                 Err(e) => {
                     return raise_exception(
                         _py,
-                        "FileNotFoundError",
+                        BuiltinExc::FileNotFoundError,
                         &format!("cannot open '{name}': {e}"),
                     );
                 }
@@ -433,7 +433,7 @@ pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
                 Err(e) => {
                     return raise_exception(
                         _py,
-                        "tarfile.ReadError",
+                        ModuleExc::TarfileReadError,
                         &format!("gzip decompression failed: {e}"),
                     );
                 }
@@ -443,7 +443,7 @@ pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
                 Err(e) => {
                     return raise_exception(
                         _py,
-                        "tarfile.ReadError",
+                        ModuleExc::TarfileReadError,
                         &format!("bzip2 decompression failed: {e}"),
                     );
                 }
@@ -474,7 +474,9 @@ pub extern "C" fn molt_tarfile_getnames(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
+            None => {
+                return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
+            }
         };
         let names: Option<Vec<String>> = tar_state(_py)
             .archives
@@ -483,19 +485,19 @@ pub extern "C" fn molt_tarfile_getnames(handle_bits: u64) -> u64 {
             .get(&id)
             .map(|a| a.members.iter().map(|m| m.name.clone()).collect());
         match names {
-            None => raise_exception(_py, "ValueError", "invalid tarfile handle"),
+            None => raise_exception(_py, BuiltinExc::ValueError, "invalid tarfile handle"),
             Some(ns) => {
                 let mut bits = Vec::with_capacity(ns.len());
                 for n in &ns {
                     let ptr = alloc_string(_py, n.as_bytes());
                     if ptr.is_null() {
-                        return raise_exception(_py, "MemoryError", "out of memory");
+                        return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
                     }
                     bits.push(MoltObject::from_ptr(ptr).bits());
                 }
                 let list_ptr = alloc_list(_py, &bits);
                 if list_ptr.is_null() {
-                    return raise_exception(_py, "MemoryError", "out of memory");
+                    return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
                 }
                 MoltObject::from_ptr(list_ptr).bits()
             }
@@ -535,7 +537,7 @@ fn tarinfo_to_tuple(_py: &PyToken, info: &TarInfo) -> u64 {
     let gname_bits = make_str(&info.gname);
 
     if [name_bits, type_bits, link_bits, uname_bits, gname_bits].contains(&0) {
-        return raise_exception(_py, "MemoryError", "out of memory");
+        return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
     }
 
     let tuple_ptr = alloc_tuple(
@@ -546,7 +548,7 @@ fn tarinfo_to_tuple(_py: &PyToken, info: &TarInfo) -> u64 {
         ],
     );
     if tuple_ptr.is_null() {
-        return raise_exception(_py, "MemoryError", "out of memory");
+        return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
@@ -555,7 +557,9 @@ pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
+            None => {
+                return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
+            }
         };
         let members_clone: Option<Vec<TarInfo>> = tar_state(_py)
             .archives
@@ -564,7 +568,7 @@ pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
             .get(&id)
             .map(|a| a.members.clone());
         match members_clone {
-            None => raise_exception(_py, "ValueError", "invalid tarfile handle"),
+            None => raise_exception(_py, BuiltinExc::ValueError, "invalid tarfile handle"),
             Some(members) => {
                 let mut tuple_bits = Vec::with_capacity(members.len());
                 for info in &members {
@@ -576,7 +580,7 @@ pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
                 }
                 let list_ptr = alloc_list(_py, &tuple_bits);
                 if list_ptr.is_null() {
-                    return raise_exception(_py, "MemoryError", "out of memory");
+                    return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
                 }
                 MoltObject::from_ptr(list_ptr).bits()
             }
@@ -588,7 +592,9 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
+            None => {
+                return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
+            }
         };
         let dest = path_from_bits_local(_py, path_bits).unwrap_or_else(|| ".".to_string());
 
@@ -600,7 +606,7 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
             .map(|a| (a.members.clone(), a.data.clone()));
         let (members, data) = match archive_data {
             Some(v) => v,
-            None => return raise_exception(_py, "ValueError", "invalid tarfile handle"),
+            None => return raise_exception(_py, BuiltinExc::ValueError, "invalid tarfile handle"),
         };
 
         for info in &members {
@@ -613,7 +619,7 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
                 if let Err(e) = std::fs::create_dir_all(&out_path) {
                     return raise_exception(
                         _py,
-                        "OSError",
+                        BuiltinExc::OSError,
                         &format!("cannot create directory '{out_path}': {e}"),
                     );
                 }
@@ -626,7 +632,7 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
                 if end > data.len() {
                     return raise_exception(
                         _py,
-                        "tarfile.ReadError",
+                        ModuleExc::TarfileReadError,
                         &format!("member '{0}' data out of bounds", info.name),
                     );
                 }
@@ -634,7 +640,7 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
                 if let Err(e) = std::fs::write(&out_path, content) {
                     return raise_exception(
                         _py,
-                        "OSError",
+                        BuiltinExc::OSError,
                         &format!("cannot write '{out_path}': {e}"),
                     );
                 }
@@ -648,12 +654,14 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
+            None => {
+                return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
+            }
         };
         let dest = path_from_bits_local(_py, path_bits).unwrap_or_else(|| ".".to_string());
         let member_name = match string_obj_to_owned(obj_from_bits(member_bits)) {
             Some(n) => n,
-            None => return raise_exception(_py, "TypeError", "member must be a str"),
+            None => return raise_exception(_py, BuiltinExc::TypeError, "member must be a str"),
         };
 
         let archive_data: Option<(Vec<TarInfo>, Vec<u8>)> = tar_state(_py)
@@ -664,7 +672,7 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
             .map(|a| (a.members.clone(), a.data.clone()));
         let (members, data) = match archive_data {
             Some(v) => v,
-            None => return raise_exception(_py, "ValueError", "invalid tarfile handle"),
+            None => return raise_exception(_py, BuiltinExc::ValueError, "invalid tarfile handle"),
         };
 
         let info = match members.iter().find(|m| m.name == member_name) {
@@ -672,7 +680,7 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
             None => {
                 return raise_exception(
                     _py,
-                    "KeyError",
+                    BuiltinExc::KeyError,
                     &format!("member '{member_name}' not found"),
                 );
             }
@@ -681,7 +689,7 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
         if info.name.contains("..") || info.name.starts_with('/') {
             return raise_exception(
                 _py,
-                "tarfile.ExtractError",
+                ModuleExc::TarfileExtractError,
                 "refusing to extract member with unsafe path",
             );
         }
@@ -691,7 +699,7 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
             if let Err(e) = std::fs::create_dir_all(&out_path) {
                 return raise_exception(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &format!("cannot create directory '{out_path}': {e}"),
                 );
             }
@@ -703,12 +711,16 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
             if end > data.len() {
                 return raise_exception(
                     _py,
-                    "tarfile.ReadError",
+                    ModuleExc::TarfileReadError,
                     &format!("member '{member_name}' data out of bounds"),
                 );
             }
             if let Err(e) = std::fs::write(&out_path, &data[info.data_offset..end]) {
-                return raise_exception(_py, "OSError", &format!("cannot write '{out_path}': {e}"));
+                return raise_exception(
+                    _py,
+                    BuiltinExc::OSError,
+                    &format!("cannot write '{out_path}': {e}"),
+                );
             }
         }
         return_none()
@@ -719,11 +731,13 @@ pub extern "C" fn molt_tarfile_extractfile(handle_bits: u64, member_bits: u64) -
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
+            None => {
+                return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
+            }
         };
         let member_name = match string_obj_to_owned(obj_from_bits(member_bits)) {
             Some(n) => n,
-            None => return raise_exception(_py, "TypeError", "member must be a str"),
+            None => return raise_exception(_py, BuiltinExc::TypeError, "member must be a str"),
         };
 
         let result: Option<Result<Vec<u8>, String>> = {
@@ -750,14 +764,14 @@ pub extern "C" fn molt_tarfile_extractfile(handle_bits: u64, member_bits: u64) -
         match result {
             None => raise_exception(
                 _py,
-                "KeyError",
+                BuiltinExc::KeyError,
                 &format!("member '{member_name}' not found"),
             ),
-            Some(Err(msg)) => raise_exception(_py, "tarfile.ReadError", &msg),
+            Some(Err(msg)) => raise_exception(_py, ModuleExc::TarfileReadError, &msg),
             Some(Ok(data)) => {
                 let ptr = alloc_bytes(_py, &data);
                 if ptr.is_null() {
-                    raise_exception(_py, "MemoryError", "out of memory")
+                    raise_exception(_py, BuiltinExc::MemoryError, "out of memory")
                 } else {
                     MoltObject::from_ptr(ptr).bits()
                 }
@@ -770,18 +784,24 @@ pub extern "C" fn molt_tarfile_add(handle_bits: u64, name_bits: u64, arcname_bit
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
+            None => {
+                return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
+            }
         };
         let fs_name = match path_from_bits_local(_py, name_bits) {
             Some(n) => n,
-            None => return raise_exception(_py, "TypeError", "name must be a str"),
+            None => return raise_exception(_py, BuiltinExc::TypeError, "name must be a str"),
         };
         let arc_name = path_from_bits_local(_py, arcname_bits).unwrap_or_else(|| fs_name.clone());
 
         let file_data = match std::fs::read(&fs_name) {
             Ok(d) => d,
             Err(e) => {
-                return raise_exception(_py, "OSError", &format!("cannot read '{fs_name}': {e}"));
+                return raise_exception(
+                    _py,
+                    BuiltinExc::OSError,
+                    &format!("cannot read '{fs_name}': {e}"),
+                );
             }
         };
 
@@ -837,7 +857,9 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
+            None => {
+                return raise_exception(_py, BuiltinExc::TypeError, "tarfile handle must be int");
+            }
         };
 
         let archive = tar_state(_py).archives.lock().unwrap().remove(&id);
@@ -852,7 +874,7 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
                             Err(e) => {
                                 return raise_exception(
                                     _py,
-                                    "OSError",
+                                    BuiltinExc::OSError,
                                     &format!("gzip compression failed: {e}"),
                                 );
                             }
@@ -862,7 +884,7 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
                             Err(e) => {
                                 return raise_exception(
                                     _py,
-                                    "OSError",
+                                    BuiltinExc::OSError,
                                     &format!("bzip2 compression failed: {e}"),
                                 );
                             }
@@ -873,7 +895,7 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
                     {
                         return raise_exception(
                             _py,
-                            "OSError",
+                            BuiltinExc::OSError,
                             &format!("cannot write '{0}': {e}", archive.name),
                         );
                     }
@@ -893,7 +915,7 @@ pub extern "C" fn molt_tarfile_is_tarfile(name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let path = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(p) => p,
-            None => return raise_exception(_py, "TypeError", "path must be a str"),
+            None => return raise_exception(_py, BuiltinExc::TypeError, "path must be a str"),
         };
         let is_tar = std::fs::read(&path)
             .map(|data| {

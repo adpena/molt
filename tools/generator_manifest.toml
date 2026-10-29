@@ -84,6 +84,18 @@ sync_test = "tests/cli/test_cli_version.py"
 closed_domains = []
 discovery_only = false
 
+[[generator]]
+tool = "tools/gen_finding_ids.py"
+outputs = ["tests/findings/finding_ids.py"]
+source = "docs/agent/V1_HANDOFF_FINDINGS.md + tools/finding_status.py + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_finding_ids.py --check"
+toolchains = []
+idempotent = true
+sync_test = "tests/tools/test_finding_tests.py"
+closed_domains = []
+discovery_only = false
+
 # ===========================================================================
 # Generators (one row per tools/gen_*.py)
 # ===========================================================================
@@ -194,6 +206,23 @@ toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_heap_kinds.py"
 closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_exception_kinds.py"
+outputs = [
+  "runtime/molt-obj-model/src/exception_kinds_generated.rs",
+  "src/molt/frontend/exception_kinds_generated.py",
+]
+source = "runtime/exception_kinds.toml + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_exception_kinds.py --check"
+toolchains = ["rustfmt"]
+idempotent = true
+sync_test = "tests/test_gen_exception_kinds.py"
+# Runtime raises take these typed kinds; a hand-written dispatch over them must
+# be exhaustive or fail loud.
+closed_domains = ["BuiltinExc", "ModuleExc"]
 discovery_only = false
 
 [[generator]]
@@ -664,6 +693,22 @@ enum_file = "runtime/molt-ir/src/tir/blocks.rs"
 enum_name = "Terminator"
 owned_by = "tools/gen_op_kinds.py"
 source_table = "runtime/molt-ir/src/tir/op_kinds.toml"
+audited_defaults = []
+
+[[closed_domain]]
+name = "BuiltinExc"
+enum_file = "runtime/molt-obj-model/src/exception_kinds_generated.rs"
+enum_name = "BuiltinExc"
+owned_by = "tools/gen_exception_kinds.py"
+source_table = "runtime/exception_kinds.toml"
+audited_defaults = []
+
+[[closed_domain]]
+name = "ModuleExc"
+enum_file = "runtime/molt-obj-model/src/exception_kinds_generated.rs"
+enum_name = "ModuleExc"
+owned_by = "tools/gen_exception_kinds.py"
+source_table = "runtime/exception_kinds.toml"
 audited_defaults = []
 
 # ===========================================================================

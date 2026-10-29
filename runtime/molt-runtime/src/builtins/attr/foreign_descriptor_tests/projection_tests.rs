@@ -1,6 +1,7 @@
 //! Real-runtime witnesses for native descriptor operand publication. Assertions
 //! read runtime storage directly, before any later C-to-runtime observation.
 use super::*;
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::{self, PyBaseExceptionObject};
 use molt_cpython_abi::api::{mapping, object, sequences, strings, typeobj};
 use std::ffi::{CStr, c_int};
@@ -43,7 +44,7 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let receiver = crate::builtins::exceptions::alloc_exception(
             &py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             "native member return",
         );
         assert!(!receiver.is_null());
@@ -141,10 +142,10 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
             assert_eq!(exception_pending(&py), !typed);
             if !typed {
                 let error = crate::exception_last_bits_noinc(&py).unwrap();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     &py,
                     error,
-                    "AttributeError",
+                    crate::BuiltinExc::AttributeError,
                 ));
                 crate::clear_exception(&py);
             }
@@ -167,7 +168,7 @@ fn explicit_bound_member_wrappers_share_the_descriptor_return_boundary() {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let receiver = crate::builtins::exceptions::alloc_exception(
             &py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             "bound native member return",
         );
         assert!(!receiver.is_null());
@@ -280,11 +281,14 @@ fn getter_and_setter_partial_mutations_commit_without_replacing_callback_errors(
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let receiver =
-            crate::builtins::exceptions::alloc_exception(&py, "AttributeError", "receiver");
+        let receiver = crate::builtins::exceptions::alloc_exception(
+            &py,
+            BuiltinExc::AttributeError,
+            "receiver",
+        );
         let original = crate::builtins::exceptions::alloc_exception(
             &py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "original callback error",
         );
         assert!(!receiver.is_null() && !original.is_null());
@@ -368,10 +372,16 @@ fn synchronization_failure_rejects_result_and_preserves_an_original_callback_err
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let receiver =
-            crate::builtins::exceptions::alloc_exception(&py, "AttributeError", "invalid mutation");
-        let original =
-            crate::builtins::exceptions::alloc_exception(&py, "ValueError", "callback precedence");
+        let receiver = crate::builtins::exceptions::alloc_exception(
+            &py,
+            BuiltinExc::AttributeError,
+            "invalid mutation",
+        );
+        let original = crate::builtins::exceptions::alloc_exception(
+            &py,
+            BuiltinExc::ValueError,
+            "callback precedence",
+        );
         assert!(!receiver.is_null() && !original.is_null());
         let receiver_bits = MoltObject::from_ptr(receiver).bits();
         let original_bits = MoltObject::from_ptr(original).bits();
@@ -427,10 +437,10 @@ fn synchronization_failure_rejects_result_and_preserves_an_original_callback_err
             if fail {
                 assert_eq!(error, original_bits);
             } else {
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     &py,
                     error,
-                    "SystemError"
+                    crate::BuiltinExc::SystemError
                 ));
             }
             crate::clear_exception(&py);
@@ -453,7 +463,8 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
-        let receiver = crate::builtins::exceptions::alloc_exception(&py, "AttributeError", "old");
+        let receiver =
+            crate::builtins::exceptions::alloc_exception(&py, BuiltinExc::AttributeError, "old");
         assert!(!receiver.is_null());
         let receiver_bits = MoltObject::from_ptr(receiver).bits();
         let receiver_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(receiver_bits);
@@ -698,7 +709,11 @@ fn native_call_returns_publish_direct_and_hidden_operands_with_original_errors()
         for mode in 0..6 {
             for (fail, invalid) in [(false, false), (true, false), (false, true), (true, true)] {
                 let targets = ["hidden receiver", "positional", "keyword"].map(|message| {
-                    crate::builtins::exceptions::alloc_exception(&py, "AttributeError", message)
+                    crate::builtins::exceptions::alloc_exception(
+                        &py,
+                        BuiltinExc::AttributeError,
+                        message,
+                    )
                 });
                 assert!(targets.iter().all(|target| !target.is_null()));
                 let target_bits = targets.map(|target| MoltObject::from_ptr(target).bits());
@@ -707,7 +722,7 @@ fn native_call_returns_publish_direct_and_hidden_operands_with_original_errors()
                 assert!(views.iter().all(|view| !view.is_null()));
                 let original = crate::builtins::exceptions::alloc_exception(
                     &py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "exact native callback error",
                 );
                 assert!(!original.is_null());

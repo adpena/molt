@@ -3,6 +3,7 @@
 //! the reserve. Only the canonical terminal transition may refill the reserve.
 
 use super::*;
+use crate::BuiltinExc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8};
 
@@ -55,7 +56,7 @@ fn reserve(py: &PyToken<'_>) -> &'static MemoryErrorReserve {
 pub(crate) fn initialize(py: &PyToken<'_>) {
     let reserve = reserve(py);
     assert_eq!(reserve.phase.load(AtomicOrdering::Acquire), COLD);
-    let class = exception_type_bits_from_name(py, "MemoryError");
+    let class = exception_class_bits(py, BuiltinExc::MemoryError);
     assert_ne!(class, 0, "MemoryError class bootstrap failed");
     let args = alloc_tuple(py, &[]);
     assert!(

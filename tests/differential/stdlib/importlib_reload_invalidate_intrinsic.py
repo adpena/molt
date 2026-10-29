@@ -1,4 +1,5 @@
 # MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
+# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-530 expect_molt_returncode=1 expect_molt_stdout_sha256=4206382aed585ffc84f30e01626ff262494191c8430349966323b72af8fc8a9f
 """Purpose: differential coverage for importlib reload/invalidate intrinsic paths."""
 
 import importlib

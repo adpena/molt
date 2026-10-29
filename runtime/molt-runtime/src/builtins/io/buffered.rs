@@ -2,6 +2,7 @@
 //! Exact native raw streams retain their direct backend path. Python values
 //! live only in the existing traced handle edges and scoped runtime owners.
 use super::*;
+use crate::BuiltinExc;
 use crate::object::BufferedOperation;
 use molt_runtime_core::OwnedRuntimeValue;
 use num_traits::ToPrimitive;
@@ -231,7 +232,7 @@ impl Operation {
                 drop(owner);
                 return Err(raise_exception(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     if unsafe { is_reader(py, pointer) } {
                         "reentrant call inside buffered reader"
                     } else {
@@ -329,7 +330,7 @@ pub(super) unsafe fn checked_raw<'a>(
     let buffered_read =
         unsafe { is_reader(py, pointer) && unread_bytes(&*file_handle_ptr(pointer)) != 0 };
     if is_closed && !buffered_read {
-        return Err(raise_exception(py, "ValueError", message));
+        return Err(raise_exception(py, BuiltinExc::ValueError, message));
     }
     // A descriptor getter may detach the wrapper while observing raw.closed.
     unsafe { file_handle_require_attached(py, &*file_handle_ptr(pointer)) }?;
@@ -414,7 +415,7 @@ pub(super) unsafe fn initialize(
             return MoltObject::none().bits();
         }
         if supported.bits() != MoltObject::from_bool(true).bits() {
-            return raise_exception(py, "UnsupportedOperation", capability_error);
+            return raise_exception(py, BuiltinExc::UnsupportedOperation, capability_error);
         }
     } else {
         let raw_pointer = obj_from_bits(raw).as_ptr().unwrap();
@@ -423,14 +424,14 @@ pub(super) unsafe fn initialize(
             return error;
         }
         if file_handle_is_closed(raw_handle) {
-            return raise_exception(py, "ValueError", "I/O operation on closed file.");
+            return raise_exception(py, BuiltinExc::ValueError, "I/O operation on closed file.");
         }
         if !(if readable {
             raw_handle.readable
         } else {
             raw_handle.writable
         }) {
-            return raise_exception(py, "UnsupportedOperation", capability_error);
+            return raise_exception(py, BuiltinExc::UnsupportedOperation, capability_error);
         }
     }
     inc_ref_bits(py, raw);
@@ -440,7 +441,11 @@ pub(super) unsafe fn initialize(
         (*file_handle_ptr(pointer)).buffer_size = size;
     }
     if size <= 0 {
-        return raise_exception(py, "ValueError", "buffer size must be strictly positive");
+        return raise_exception(
+            py,
+            BuiltinExc::ValueError,
+            "buffer size must be strictly positive",
+        );
     }
     // One existing Vec owns buffered bytes in both raw dispatches. Callback
     // views borrow only while the local pending-buffer owner is alive.
@@ -454,7 +459,7 @@ pub(super) unsafe fn initialize(
     if (readable || callback) && buffer.try_reserve_exact(size as usize).is_err() {
         return raise_exception(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             if readable {
                 "cannot allocate buffered reader storage"
             } else {
@@ -565,7 +570,7 @@ pub(super) fn off_t(py: &PyToken<'_>, value: u64) -> Option<i64> {
         None => {
             raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot fit 'int' into an offset-sized integer",
             );
             None
@@ -573,15 +578,14 @@ pub(super) fn off_t(py: &PyToken<'_>, value: u64) -> Option<i64> {
     }
 }
 
-pub(super) fn pending_matches(py: &PyToken<'_>, name: &str) -> bool {
-    crate::builtins::exceptions::exception_last_bits_noinc(py).is_some_and(|bits| {
-        crate::builtins::exceptions::exception_matches_builtin_name(py, bits, name)
-    })
+pub(super) fn pending_matches(py: &PyToken<'_>, kind: crate::BuiltinExc) -> bool {
+    crate::builtins::exceptions::exception_last_bits_noinc(py)
+        .is_some_and(|bits| crate::builtins::exceptions::exception_matches_kind(py, bits, kind))
 }
 
 /// Read the existing typed OSError errno field, never a user __getattribute__.
 pub(super) fn trap_eintr(py: &PyToken<'_>) -> bool {
-    if !pending_matches(py, "OSError") {
+    if !pending_matches(py, BuiltinExc::OSError) {
         return false;
     }
     let Some(bits) = crate::builtins::exceptions::exception_last_bits_noinc(py) else {
@@ -715,7 +719,7 @@ pub(super) unsafe fn query(py: &PyToken<'_>, bits: u64, pointer: *mut u8, name: 
             return error;
         }
         if file_handle_is_closed(handle) {
-            return raise_exception(py, "ValueError", "I/O operation on closed file");
+            return raise_exception(py, BuiltinExc::ValueError, "I/O operation on closed file");
         }
         return MoltObject::from_bool(if name == b"readable" {
             handle.readable

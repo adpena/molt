@@ -716,17 +716,33 @@ failure protocol.
 
 ### Deployment semantic compatibility
 
-Linked and split Molt deployments use execution manifest version 3. The version
+Linked and split Molt deployments use execution manifest version 4. The version
 is declared once in the existing WASM ABI manifest and projected into the
 Python producer, shared Rust facts and Node/browser ABI assets. Host entry
 loaders reject old or absent versions before fetching/reading a module or
-instantiating it. This closes the unchanged-signature resolver status migration:
+instantiating it. Version 3 closed the unchanged-signature resolver status migration:
 a version 2 receiver cannot interpret version 3 positive resolver failures as its
 old negative-errno protocol. Module size/SHA integrity alone does not prove that
 semantic compatibility. Existing runtime provider/source identities still own
 cache and explicit prebuilt-runtime admission; no second digest or custom
 section is introduced. Callable table version 1, browser asset schema 2 and snapshot
 metadata template version 2 are distinct contracts and keep their current versions.
+
+Version 4 requires `launch.environment`, produced from the existing resolved
+runtime policy's `to_env_vars()` projection for both deployment modes. The
+manifest declaration generates the required grant, tier and policy-digest names
+for every receiver. Hosts validate the envelope and string transport before
+module reads; they do not parse capability profiles or resource policy again.
+Node, browser, the Rust deployment host (including manifest-bound WASI commands)
+and the generated Cloudflare host all consume that projection.
+
+The overlay follows native launch semantics: emitted keys replace ambient
+values, including empty or `full` grants; omitted optional resource, audit and
+I/O keys retain ambient values, and unrelated environment survives. The host
+sets the actual execution target last. The digest identifies resolved build
+policy, not the entire effective ambient environment. Raw generic WASI commands
+keep their separate invocation contract. Old deployments must be rebuilt;
+absence of a launch projection never selects an ambient-policy fallback.
 
 Browser embed URLs must identify the modules named by the current manifest,
 and their fetched bytes undergo the same shared descriptor/size/SHA admission
@@ -756,7 +772,7 @@ still fails before shutdown, rather than triggering a second report. This uses
 the existing export and deployment version, without a new status schema.
 
 The Rust host's explicit `--wasi-command-manifest PATH` selector admits SDK
-services for a WASI command through that same current version 3 reader, module
+services for a WASI command through that same current version 4 reader, module
 size and SHA authority. It requires one `linked` module, no runtime provider or
 other module role, and `entry.module=linked`, `entry.function=_start`. This is an
 explicit execution input binding, not a new manifest mode: a positional manifest

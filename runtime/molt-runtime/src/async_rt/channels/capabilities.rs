@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use std::collections::HashSet;
 
 use crate::audit::{AuditArgs, audit_capability_decision};
@@ -149,7 +150,7 @@ pub(crate) fn require_named_operation<T: crate::builtins::exceptions::ExceptionS
     let Some(operation) = OperationId::from_name(name) else {
         return Err(crate::raise_exception::<T>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("unknown host operation '{name}'"),
         ));
     };
@@ -187,7 +188,7 @@ pub(crate) fn require_operation_with_capabilities<
     if !operation_supported_here(_py, operation) {
         return Err(crate::raise_exception::<T>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!(
                 "operation '{}' is unavailable for target={target}, platform={platform}, architecture={architecture}",
                 operation.as_str()
@@ -207,7 +208,7 @@ pub(crate) fn require_operation_with_capabilities<
         .join(", ");
     Err(crate::raise_exception::<T>(
         _py,
-        "PermissionError",
+        BuiltinExc::PermissionError,
         &format!(
             "missing [{missing}] capabilities for '{}'",
             operation.as_str()
@@ -225,7 +226,7 @@ pub(crate) fn raise_capability_denied<T: crate::builtins::exceptions::ExceptionS
     let hint = capability_fix_hint(cap);
     crate::raise_exception::<T>(
         _py,
-        "PermissionError",
+        BuiltinExc::PermissionError,
         &format!("missing '{cap}' capability. {hint}"),
     )
 }

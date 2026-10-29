@@ -2,6 +2,7 @@
 //! Ordinary Python attributes live in the handle's instance dictionary; native
 //! getsets remain data descriptors even when that dictionary contains their name.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::types::{
     NativeDescriptorFlavor, NativeDescriptorSpec, alloc_native_descriptor,
 };
@@ -323,7 +324,11 @@ pub(super) unsafe fn io_member_value(
             return file_handle_raw_bits(py, object);
         }
         if (*handle_ptr).attachment == crate::object::FileAttachment::Uninitialized {
-            raise_exception::<u64>(py, "ValueError", "I/O operation on uninitialized object");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::ValueError,
+                "I/O operation on uninitialized object",
+            );
             return None;
         }
         if matches!(
@@ -335,7 +340,7 @@ pub(super) unsafe fn io_member_value(
                 if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         file_handle_detached_message(handle),
                     );
                 }
@@ -376,7 +381,7 @@ pub(super) unsafe fn io_member_value(
                 if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         file_handle_detached_message(handle),
                     );
                 }
@@ -386,7 +391,7 @@ pub(super) unsafe fn io_member_value(
                 if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         file_handle_detached_message(handle),
                     );
                 }
@@ -400,7 +405,7 @@ pub(super) unsafe fn io_member_value(
                 if (handle.attachment == crate::object::FileAttachment::Detached) && !handle.text {
                     return raise_exception::<_>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         file_handle_detached_message(handle),
                     );
                 }
@@ -474,7 +479,7 @@ pub(super) unsafe fn io_member_value(
                 if handle.attachment == crate::object::FileAttachment::Detached {
                     return raise_exception::<_>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         file_handle_detached_message(handle),
                     );
                 }
@@ -527,29 +532,53 @@ pub extern "C" fn molt_io_member_get(descriptor: u64, instance: u64) -> u64 {
                 .as_ptr()
                 .filter(|&ptr| object_type_id(ptr) == crate::TYPE_ID_NATIVE_DESCRIPTOR)
             else {
-                return raise_exception::<_>(py, "TypeError", "invalid IO member descriptor");
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "invalid IO member descriptor",
+                );
             };
             let Some(object) = obj_from_bits(instance).as_ptr() else {
-                return raise_exception::<_>(py, "TypeError", "invalid IO member receiver");
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "invalid IO member receiver",
+                );
             };
             let Some(operation) =
                 native_descriptor_operation(descriptor).and_then(IoOperation::from_tag)
             else {
-                return raise_exception::<_>(py, "TypeError", "invalid IO member descriptor");
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "invalid IO member descriptor",
+                );
             };
             let owner = native_descriptor_owner_bits(descriptor);
             let Some(getter) = obj_from_bits(native_descriptor_getter_bits(descriptor))
                 .as_ptr()
                 .filter(|&ptr| object_type_id(ptr) == TYPE_ID_FUNCTION)
             else {
-                return raise_exception::<_>(py, "TypeError", "invalid IO member descriptor");
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "invalid IO member descriptor",
+                );
             };
             if function_fn_ptr(getter) != fn_key!(molt_io_member_get) {
-                return raise_exception::<_>(py, "TypeError", "invalid IO member descriptor");
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "invalid IO member descriptor",
+                );
             }
             let actual = type_of_bits(py, instance);
             if !crate::object::class_layout::is_real_subtype(py, actual, owner) {
-                return raise_exception::<_>(py, "TypeError", "invalid IO member receiver");
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "invalid IO member receiver",
+                );
             }
             if let Some(value) = io_member_value(py, object, owner, operation) {
                 return value;

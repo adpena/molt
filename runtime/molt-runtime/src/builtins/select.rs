@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -163,7 +164,7 @@ fn select_construct_private_object(
     if class_bits == missing {
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "select backend class is unavailable",
         ));
     }
@@ -171,7 +172,7 @@ fn select_construct_private_object(
         dec_ref_bits(_py, class_bits);
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "select backend class is not callable",
         ));
     }
@@ -188,7 +189,7 @@ fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64>
         if fd < 0 {
             return Err(raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "invalid file descriptor",
             ));
         }
@@ -208,7 +209,7 @@ fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64>
             fileno_attr_bits
         };
         let out = to_i64(obj_from_bits(raw_bits)).ok_or_else(|| {
-            raise_exception::<u64>(_py, "ValueError", "invalid file object fileno")
+            raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid file object fileno")
         })?;
         if !obj_from_bits(raw_bits).is_none() {
             dec_ref_bits(_py, raw_bits);
@@ -216,7 +217,7 @@ fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64>
         if out < 0 {
             return Err(raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "invalid file descriptor",
             ));
         }
@@ -224,13 +225,14 @@ fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64>
     }
 
     if let Some(handle_bits) = get_attr_optional(_py, obj_bits, b"_handle")? {
-        let out = to_i64(obj_from_bits(handle_bits))
-            .ok_or_else(|| raise_exception::<u64>(_py, "ValueError", "invalid socket handle"))?;
+        let out = to_i64(obj_from_bits(handle_bits)).ok_or_else(|| {
+            raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid socket handle")
+        })?;
         dec_ref_bits(_py, handle_bits);
         if out < 0 {
             return Err(raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "invalid socket handle",
             ));
         }
@@ -239,7 +241,7 @@ fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64>
 
     Err(raise_exception::<u64>(
         _py,
-        "ValueError",
+        BuiltinExc::ValueError,
         "fileobj must be a socket or file descriptor",
     ))
 }
@@ -248,14 +250,14 @@ fn parse_selector_events(_py: &crate::PyToken<'_>, events_bits: u64) -> Result<u
     let Some(raw) = to_i64(obj_from_bits(events_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "events must be an integer",
         ));
     };
     if raw <= 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "events must be non-zero",
         ));
     }
@@ -263,7 +265,7 @@ fn parse_selector_events(_py: &crate::PyToken<'_>, events_bits: u64) -> Result<u
     if (events & !SELECTOR_EVENT_MASK) != 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "unsupported selector events",
         ));
     }
@@ -277,14 +279,14 @@ fn parse_selector_timeout(_py: &crate::PyToken<'_>, timeout_bits: u64) -> Result
     let Some(value) = to_f64(obj_from_bits(timeout_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "timeout must be float or None",
         ));
     };
     if value < 0.0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "timeout must be non-negative",
         ));
     }
@@ -299,7 +301,7 @@ fn selector_state_mut_ptr(
     if ptr.is_null() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid selector handle",
         ));
     }
@@ -307,7 +309,7 @@ fn selector_state_mut_ptr(
     if selector.closed {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "I/O operation on closed selector",
         ));
     }
@@ -322,7 +324,7 @@ fn selector_state<'a>(
     if ptr.is_null() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid selector handle",
         ));
     }
@@ -330,7 +332,7 @@ fn selector_state<'a>(
     if selector.closed {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "I/O operation on closed selector",
         ));
     }
@@ -347,14 +349,14 @@ fn selector_parse_fd(_py: &crate::PyToken<'_>, fd_bits: u64) -> Result<i64, u64>
     let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "fd must be an integer",
         ));
     };
     if fd < 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "invalid file descriptor",
         ));
     }
@@ -469,7 +471,7 @@ fn poll_masks_batch(
                 _ => {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "invalid file descriptor",
                     ));
                 }
@@ -499,7 +501,7 @@ fn poll_masks_batch(
                 _ => {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "invalid file descriptor",
                     ));
                 }
@@ -572,7 +574,7 @@ fn poll_masks_batch(
     let _ = (watches, timeout_ms);
     Err(raise_exception::<u64>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "select/poll is unavailable on Windows in this runtime",
     ))
 }
@@ -775,10 +777,14 @@ pub extern "C" fn molt_select_epoll(sizehint_bits: u64, flags_bits: u64) -> u64 
             return err;
         }
         if to_i64(obj_from_bits(sizehint_bits)).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "sizehint must be an integer");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "sizehint must be an integer",
+            );
         }
         if to_i64(obj_from_bits(flags_bits)).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "flags must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "flags must be an integer");
         }
         match select_construct_private_object(_py, b"_EpollObject") {
             Ok(bits) => bits,
@@ -838,7 +844,11 @@ pub extern "C" fn molt_select_default_selector_kind() -> u64 {
 pub extern "C" fn molt_select_backend_available(kind_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "selector kind must be an integer");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "selector kind must be an integer",
+            );
         };
         let available = match kind {
             SELECT_KIND_POLL => cfg!(not(target_os = "windows")),
@@ -864,13 +874,21 @@ pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
             return err;
         }
         let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "selector kind must be an integer");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "selector kind must be an integer",
+            );
         };
         if !matches!(
             kind,
             SELECT_KIND_POLL | SELECT_KIND_EPOLL | SELECT_KIND_KQUEUE | SELECT_KIND_DEVPOLL
         ) {
-            return raise_exception::<u64>(_py, "ValueError", "unsupported selector kind");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "unsupported selector kind",
+            );
         }
         let fileno = SELECTOR_FILENO_NEXT.fetch_add(1, AtomicOrdering::Relaxed);
         let selector = Box::new(SelectorRegistry {
@@ -949,7 +967,7 @@ pub extern "C" fn molt_select_selector_register(
         if let Some(existing_fd) = selector.obj_to_fd.get(&fileobj_bits).copied()
             && selector.entries.contains_key(&existing_fd)
         {
-            return raise_exception::<u64>(_py, "KeyError", "fd is already registered");
+            return raise_exception::<u64>(_py, BuiltinExc::KeyError, "fd is already registered");
         }
         let fd = match object_to_handle(_py, fileobj_bits) {
             Ok(fd) => fd,
@@ -957,7 +975,7 @@ pub extern "C" fn molt_select_selector_register(
         };
         match selector.entries.entry(fd) {
             HashMapEntry::Occupied(_) => {
-                raise_exception::<u64>(_py, "KeyError", "fd is already registered")
+                raise_exception::<u64>(_py, BuiltinExc::KeyError, "fd is already registered")
             }
             HashMapEntry::Vacant(entry) => {
                 inc_ref_bits(_py, fileobj_bits);
@@ -999,7 +1017,7 @@ pub extern "C" fn molt_select_selector_register_fd(
         };
         match selector.entries.entry(fd) {
             HashMapEntry::Occupied(_) => {
-                raise_exception::<u64>(_py, "KeyError", "fd is already registered")
+                raise_exception::<u64>(_py, BuiltinExc::KeyError, "fd is already registered")
             }
             HashMapEntry::Vacant(entry) => {
                 entry.insert(SelectorRegistryEntry {
@@ -1025,7 +1043,7 @@ pub extern "C" fn molt_select_selector_unregister(handle_bits: u64, fd_bits: u64
             Err(err) => return err,
         };
         let Some(entry) = selector.entries.remove(&fd) else {
-            return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
+            return raise_exception::<u64>(_py, BuiltinExc::KeyError, "fd is not registered");
         };
         if !obj_from_bits(entry.obj_bits).is_none() {
             selector.obj_to_fd.remove(&entry.obj_bits);
@@ -1048,7 +1066,7 @@ pub extern "C" fn molt_select_selector_unregister_obj(handle_bits: u64, fileobj_
             Err(err) => return err,
         };
         let Some(entry) = selector.entries.remove(&fd) else {
-            return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
+            return raise_exception::<u64>(_py, BuiltinExc::KeyError, "fd is not registered");
         };
         if !obj_from_bits(entry.obj_bits).is_none() {
             selector.obj_to_fd.remove(&entry.obj_bits);
@@ -1082,7 +1100,7 @@ pub extern "C" fn molt_select_selector_modify(
             Err(err) => return err,
         };
         let Some(entry) = selector.entries.get_mut(&fd) else {
-            return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
+            return raise_exception::<u64>(_py, BuiltinExc::KeyError, "fd is not registered");
         };
         entry.events = events;
         MoltObject::none().bits()
@@ -1115,7 +1133,7 @@ pub extern "C" fn molt_select_selector_modify_obj(
             Err(err) => return err,
         };
         let Some(entry) = selector.entries.get_mut(&fd) else {
-            return raise_exception::<u64>(_py, "KeyError", "fd is not registered");
+            return raise_exception::<u64>(_py, BuiltinExc::KeyError, "fd is not registered");
         };
         entry.events = events;
         MoltObject::none().bits()
@@ -1251,7 +1269,7 @@ pub extern "C" fn molt_select_selector_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = unsafe { selector_ptr_from_handle(handle_bits) };
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "TypeError", "invalid selector handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid selector handle");
         }
         let selector = unsafe { &mut *(ptr as *mut SelectorRegistry) };
         if selector.closed {
@@ -1364,13 +1382,21 @@ pub extern "C" fn molt_select_select(
                 release_bits(_py, &r_objects);
                 release_bits(_py, &w_objects);
                 release_bits(_py, &x_objects);
-                return raise_exception::<u64>(_py, "TypeError", "timeout must be float or None");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "timeout must be float or None",
+                );
             };
             if value < 0.0 {
                 release_bits(_py, &r_objects);
                 release_bits(_py, &w_objects);
                 release_bits(_py, &x_objects);
-                return raise_exception::<u64>(_py, "ValueError", "timeout must be non-negative");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "timeout must be non-negative",
+                );
             }
             Some(value)
         };

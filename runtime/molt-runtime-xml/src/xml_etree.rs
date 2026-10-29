@@ -369,12 +369,12 @@ pub extern "C" fn molt_xml_fromstring(xml_bits: u64) -> u64 {
         let xml = match string_obj_to_owned(obj_from_bits(xml_bits)) {
             Some(s) => s,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "argument must be str");
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be str");
             }
         };
         match parse_xml_string(&xml) {
             Ok(handle) => int_bits_from_i64(_py, handle),
-            Err(msg) => raise_exception::<u64>(_py, "ParseError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, ModuleExc::ElementTreeParseError, &msg),
         }
     })
 }

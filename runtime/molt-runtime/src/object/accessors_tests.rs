@@ -775,10 +775,10 @@ fn assert_and_clear_attribute_error(_py: &PyToken<'_>) {
     assert!(exception_pending(_py));
     assert_eq!(crate::builtins::exceptions::molt_exception_pending(), 1);
     let error = crate::builtins::exceptions::molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         _py,
         error,
-        "AttributeError"
+        crate::BuiltinExc::AttributeError
     ));
     crate::clear_exception(_py);
     dec_ref_bits(_py, error);
@@ -895,10 +895,10 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
 fn assert_and_clear_system_error(_py: &PyToken<'_>) {
     assert!(exception_pending(_py));
     let error = crate::builtins::exceptions::molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         _py,
         error,
-        "SystemError"
+        crate::BuiltinExc::SystemError
     ));
     crate::clear_exception(_py);
     dec_ref_bits(_py, error);

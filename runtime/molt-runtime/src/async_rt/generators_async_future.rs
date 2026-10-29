@@ -4,6 +4,7 @@
 //! I/O futures, threads, processes, and async generators.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
@@ -21,7 +22,7 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
                     type_name(_py, obj)
                 );
             }
-            raise_exception::<()>(_py, "TypeError", "object is not awaitable");
+            raise_exception::<()>(_py, BuiltinExc::TypeError, "object is not awaitable");
             return 0;
         };
         unsafe {
@@ -46,7 +47,7 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
                         crate::object::total_size_from_header(&*header, ptr)
                     );
                 }
-                raise_exception::<()>(_py, "TypeError", "object is not awaitable");
+                raise_exception::<()>(_py, BuiltinExc::TypeError, "object is not awaitable");
                 return 0;
             }
             poll_fn_addr
@@ -115,7 +116,7 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
                 type_name(_py, obj)
             );
         }
-        raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
+        raise_exception::<i64>(_py, BuiltinExc::TypeError, "object is not awaitable");
         return 0;
     };
     unsafe {
@@ -139,7 +140,7 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
                     crate::object::total_size_from_header(&*header, ptr)
                 );
             }
-            raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
+            raise_exception::<i64>(_py, BuiltinExc::TypeError, "object is not awaitable");
             return 0;
         }
         if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0
@@ -148,14 +149,14 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
             if crate::async_rt::generators::is_native_coroutine_bits(future_bits) {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "cannot reuse already awaited coroutine",
                 );
             }
             if crate::async_rt::generators::is_asyncgen_awaitable_bits(future_bits) {
                 let message =
                     crate::async_rt::generators::asyncgen_awaitable_reuse_message(_py, ptr);
-                return raise_exception::<i64>(_py, "RuntimeError", message);
+                return raise_exception::<i64>(_py, BuiltinExc::RuntimeError, message);
             }
             if let Some(result_bits) = task_result_get(_py, ptr) {
                 return result_bits as i64;
@@ -524,7 +525,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
 pub unsafe extern "C" fn molt_future_cancel(future_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
         cancel_future_task(_py, task_ptr, None);
         MoltObject::none().bits()
@@ -537,7 +538,7 @@ pub unsafe extern "C" fn molt_future_cancel(future_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_future_cancel_msg(future_bits: u64, msg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
         cancel_future_task(_py, task_ptr, Some(msg_bits));
         MoltObject::none().bits()
@@ -550,7 +551,7 @@ pub unsafe extern "C" fn molt_future_cancel_msg(future_bits: u64, msg_bits: u64)
 pub unsafe extern "C" fn molt_future_cancel_clear(future_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
         task_cancel_message_clear(_py, task_ptr);
         let _ = task_take_cancel_pending(task_ptr);
@@ -564,7 +565,7 @@ pub unsafe extern "C" fn molt_future_cancel_clear(future_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_asyncio_task_cancel_apply(future_bits: u64, msg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
         if obj_from_bits(msg_bits).is_none() {
             cancel_future_task(_py, task_ptr, None);
@@ -588,7 +589,7 @@ pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
                 dec_ref_bits(_py, task_tuple_bits);
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "task collection must be awaitables",
                 );
             };
@@ -598,7 +599,11 @@ pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
                 let Some(task) = crate::object::seq_access::pin_item(_py, task_tuple_ptr, idx)
                 else {
                     dec_ref_bits(_py, task_tuple_bits);
-                    return raise_exception::<u64>(_py, "RuntimeError", "invalid task state");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "invalid task state",
+                    );
                 };
                 let task_bits = task.bits();
                 let Some(done) = asyncio_method_truthy(_py, task_bits, b"done") else {
@@ -715,7 +720,7 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
                 if async_trace_enabled() || promise_trace_enabled() {
                     eprintln!("molt async trace: promise_set_result_fail reason=resolve");
                 }
-                return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
             };
             let _header = header_from_obj_ptr(task_ptr);
             if crate::object::object_poll_fn(task_ptr) != promise_poll_fn_addr() {
@@ -725,7 +730,7 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
                         crate::object::object_poll_fn(task_ptr)
                     );
                 }
-                return raise_exception::<_>(_py, "TypeError", "object is not a promise");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not a promise");
             }
             if crate::object::object_state(task_ptr) != 0 {
                 if async_trace_enabled() || promise_trace_enabled() {
@@ -813,7 +818,7 @@ pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
                         Ok(None) => {
                             raise_exception::<()>(
                                 _py,
-                                "SystemError",
+                                BuiltinExc::SystemError,
                                 "float conversion returned no float storage",
                             );
                             return MoltObject::none().bits() as i64;
@@ -925,10 +930,10 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
             }
             if exception_pending(_py) {
                 let exception = molt_exception_last_pending();
-                if crate::builtins::exceptions::exception_matches_builtin_name(
+                if crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     exception,
-                    "StopAsyncIteration",
+                    crate::BuiltinExc::StopAsyncIteration,
                 ) {
                     molt_exception_clear();
                     dec_ref_bits(_py, result as u64);
@@ -1196,7 +1201,8 @@ mod sleep_payload_tests {
             let delay = delay_instance(py, class);
             let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
             let before = owners(delay);
-            let raised = raise_exception::<u64>(py, "ValueError", "delay conversion failed");
+            let raised =
+                raise_exception::<u64>(py, BuiltinExc::ValueError, "delay conversion failed");
             dec_ref_bits(py, raised);
             let original = crate::builtins::exceptions::molt_exception_last_pending();
             crate::molt_exception_clear();

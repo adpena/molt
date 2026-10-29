@@ -2,6 +2,7 @@
 
 use super::ops::{eq_bool_from_bits, is_truthy, type_name};
 use super::ops_bytes::bytes_hex_from_bits;
+use crate::BuiltinExc;
 use crate::builtins::compatibility_error::CompatibilityError;
 use crate::object::memoryview::{
     memoryview_adjust_format, memoryview_checked_nbytes, memoryview_prepare_iter,
@@ -17,7 +18,7 @@ fn raise_memoryview_buffer_error(py: &PyToken<'_>, object: MoltObject) -> u64 {
     let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]);
     raise_exception(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!(
             "memoryview: a bytes-like object is required, not '{}'",
             name
@@ -84,7 +85,7 @@ fn memoryview_new_with_flags(_py: &PyToken<'_>, bits: u64, buffer_flags: i32) ->
                     Err(molt_cpython_abi::api::buffer::InvalidBufferDescriptor) => {
                         return raise_exception(
                             _py,
-                            "BufferError",
+                            BuiltinExc::BufferError,
                             "invalid or indirect memoryview buffer descriptor",
                         );
                     }
@@ -142,7 +143,7 @@ pub extern "C" fn molt_memoryview_from_flags(obj_bits: u64, flags_bits: u64) -> 
         let Some(buffer_flags) = flags.to_i32() else {
             return raise_exception::<_>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "Python int too large to convert to C int",
             );
         };
@@ -155,7 +156,11 @@ pub extern "C" fn molt_memoryview_from_flags(obj_bits: u64, flags_bits: u64) -> 
                 if type_id == TYPE_ID_BYTES
                     && super::buffer_exports::is_exact_builtin_storage(_py, obj_bits)
                 {
-                    return raise_exception::<_>(_py, "BufferError", "Object is not writable.");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::BufferError,
+                        "Object is not writable.",
+                    );
                 }
             }
         }
@@ -177,7 +182,7 @@ pub extern "C" fn molt_memoryview_cast(
             None => {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "cast() argument 'view' must be a memoryview",
                 );
             }
@@ -186,7 +191,7 @@ pub extern "C" fn molt_memoryview_cast(
             if object_type_id(view_ptr) != TYPE_ID_MEMORYVIEW {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "cast() argument 'view' must be a memoryview",
                 );
             }
@@ -202,7 +207,7 @@ pub extern "C" fn molt_memoryview_cast(
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "cast() argument 'format' must be str, not {}",
                             type_name(_py, format_obj)
@@ -215,7 +220,7 @@ pub extern "C" fn molt_memoryview_cast(
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "memoryview: destination format must be a native single character format prefixed with an optional '@'",
                     );
                 }
@@ -223,7 +228,7 @@ pub extern "C" fn molt_memoryview_cast(
             if !memoryview_is_c_contiguous_view(view_ptr) {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "memoryview: casts are restricted to C-contiguous views",
                 );
             }
@@ -234,7 +239,7 @@ pub extern "C" fn molt_memoryview_cast(
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "BufferError",
+                        BuiltinExc::BufferError,
                         "invalid memoryview cast storage",
                     );
                 }
@@ -259,7 +264,7 @@ pub extern "C" fn molt_memoryview_cast(
                 if list.is_none() && tuple.is_none() {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "shape must be a list or a tuple",
                     );
                 }
@@ -273,7 +278,7 @@ pub extern "C" fn molt_memoryview_cast(
                 if ndim > crate::object::memoryview::MOLT_BUFFER_MAX_NDIM {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "memoryview: number of dimensions must not exceed 64",
                     );
                 }
@@ -298,20 +303,20 @@ pub extern "C" fn molt_memoryview_cast(
                         {
                             return raise_exception::<_>(
                                 _py,
-                                "OverflowError",
+                                BuiltinExc::OverflowError,
                                 "Python int too large to convert to C ssize_t",
                             );
                         }
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "memoryview.cast(): elements of shape must be integers",
                         );
                     };
                     if val <= 0 {
                         return raise_exception::<_>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "memoryview.cast(): elements of shape must be integers > 0",
                         );
                     }
@@ -320,7 +325,7 @@ pub extern "C" fn molt_memoryview_cast(
                     let Some(next_extent) = memoryview_checked_nbytes(&[val], byte_extent) else {
                         return raise_exception::<_>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "memoryview.cast(): product(shape) > SSIZE_MAX",
                         );
                     };
@@ -333,7 +338,7 @@ pub extern "C" fn molt_memoryview_cast(
                 if itemsize == 0 || nbytes % itemsize != 0 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "memoryview: length is not a multiple of itemsize",
                     );
                 }
@@ -343,14 +348,14 @@ pub extern "C" fn molt_memoryview_cast(
             let Some(byte_len) = memoryview_checked_nbytes(&shape, fmt.itemsize) else {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "memoryview.cast(): product(shape) > SSIZE_MAX",
                 );
             };
             if byte_len != nbytes {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "memoryview: product(shape) * itemsize != buffer size",
                 );
             }
@@ -361,7 +366,7 @@ pub extern "C" fn molt_memoryview_cast(
                 let Some(next_stride) = stride.checked_mul(shape[idx].max(1)) else {
                     return raise_exception::<_>(
                         _py,
-                        "BufferError",
+                        BuiltinExc::BufferError,
                         "invalid memoryview cast strides",
                     );
                 };
@@ -369,7 +374,11 @@ pub extern "C" fn molt_memoryview_cast(
             }
             let data = memoryview_data(view_ptr);
             if data.is_null() {
-                return raise_exception::<_>(_py, "BufferError", "invalid memoryview cast storage");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview cast storage",
+                );
             }
             let storage = TypedStridedStorage::new(
                 data,
@@ -387,7 +396,7 @@ pub extern "C" fn molt_memoryview_cast(
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "BufferError",
+                        BuiltinExc::BufferError,
                         "invalid memoryview cast storage",
                     );
                 }
@@ -410,7 +419,7 @@ pub(crate) extern "C" fn memoryview_tobytes_method(args: u64, kwargs: u64) -> u6
         let Some(&receiver) = call.positional.first() else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "unbound method memoryview.tobytes() needs an argument",
             );
         };
@@ -420,7 +429,7 @@ pub(crate) extern "C" fn memoryview_tobytes_method(args: u64, kwargs: u64) -> u6
         {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor 'tobytes' for 'memoryview' objects doesn't apply to a '{}' object",
                     type_name(py, obj_from_bits(receiver)),
@@ -448,7 +457,7 @@ pub(crate) extern "C" fn memoryview_tobytes_method(args: u64, kwargs: u64) -> u6
                 {
                     return raise_exception::<_>(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "tobytes() argument 'order' must be str or None, not {}",
                             type_name(py, obj_from_bits(bits)),
@@ -461,7 +470,11 @@ pub(crate) extern "C" fn memoryview_tobytes_method(args: u64, kwargs: u64) -> u6
                 let value =
                     string_obj_to_owned(obj_from_bits(bits)).expect("admitted Unicode order");
                 if value.as_bytes().contains(&0) {
-                    return raise_exception::<_>(py, "ValueError", "embedded null character");
+                    return raise_exception::<_>(
+                        py,
+                        BuiltinExc::ValueError,
+                        "embedded null character",
+                    );
                 }
                 Some(value)
             }
@@ -475,7 +488,7 @@ fn memoryview_tobytes_ordered(py: &PyToken<'_>, bits: u64, order: Option<&str>) 
         .as_ptr()
         .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_MEMORYVIEW })
     else {
-        return raise_exception::<_>(py, "TypeError", "tobytes expects a memoryview");
+        return raise_exception::<_>(py, BuiltinExc::TypeError, "tobytes expects a memoryview");
     };
     unsafe {
         if memoryview_released(ptr) {
@@ -486,7 +499,13 @@ fn memoryview_tobytes_ordered(py: &PyToken<'_>, bits: u64, order: Option<&str>) 
             None | Some("C") => MemoryViewOrder::C,
             Some("F") => MemoryViewOrder::Fortran,
             Some("A") => MemoryViewOrder::Any,
-            _ => return raise_exception::<_>(py, "ValueError", "order must be 'C', 'F' or 'A'"),
+            _ => {
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::ValueError,
+                    "order must be 'C', 'F' or 'A'",
+                );
+            }
         };
         let Some(out) = memoryview_collect_bytes_in_order(ptr, order) else {
             return MoltObject::none().bits();
@@ -557,11 +576,21 @@ pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return raise_exception::<_>(_py, "TypeError", "tolist expects a memoryview"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "tolist expects a memoryview",
+                );
+            }
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
-                return raise_exception::<_>(_py, "TypeError", "tolist expects a memoryview");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "tolist expects a memoryview",
+                );
             }
             if memoryview_released(ptr) {
                 return raise_released_memoryview(_py);
@@ -596,11 +625,21 @@ pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return raise_exception::<_>(_py, "TypeError", "count expects a memoryview"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "count expects a memoryview",
+                );
+            }
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
-                return raise_exception::<_>(_py, "TypeError", "count expects a memoryview");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "count expects a memoryview",
+                );
             }
             let Some(format) = memoryview_prepare_iter(_py, ptr) else {
                 return MoltObject::none().bits();
@@ -647,18 +686,32 @@ pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return raise_exception::<_>(_py, "TypeError", "index expects a memoryview"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "index expects a memoryview",
+                );
+            }
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
-                return raise_exception::<_>(_py, "TypeError", "index expects a memoryview");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "index expects a memoryview",
+                );
             }
             if memoryview_released(ptr) {
                 return raise_released_memoryview(_py);
             }
             let ndim = memoryview_ndim(ptr);
             if ndim == 0 {
-                return raise_exception::<_>(_py, "TypeError", "invalid lookup on 0-dim memory");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid lookup on 0-dim memory",
+                );
             }
             if ndim > 1 {
                 return CompatibilityError::MemoryviewLookup { rank: ndim }.raise(_py);
@@ -696,7 +749,11 @@ pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
                     return MoltObject::from_int(idx as i64).bits();
                 }
             }
-            raise_exception::<_>(_py, "ValueError", "memoryview.index(x): x not found")
+            raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "memoryview.index(x): x not found",
+            )
         }
     })
 }
@@ -707,11 +764,21 @@ pub extern "C" fn molt_memoryview_hex(bits: u64, sep_bits: u64, bytes_per_sep_bi
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return raise_exception::<_>(_py, "TypeError", "hex expects a memoryview"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "hex expects a memoryview",
+                );
+            }
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
-                return raise_exception::<_>(_py, "TypeError", "hex expects a memoryview");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "hex expects a memoryview",
+                );
             }
             if memoryview_released(ptr) {
                 return raise_released_memoryview(_py);
@@ -733,7 +800,7 @@ pub(crate) extern "C" fn memoryview_enter_method(bits: u64) -> u64 {
             .as_ptr()
             .filter(|&pointer| unsafe { object_type_id(pointer) == TYPE_ID_MEMORYVIEW })
         else {
-            return raise_exception(py, "TypeError", "__enter__ expects a memoryview");
+            return raise_exception(py, BuiltinExc::TypeError, "__enter__ expects a memoryview");
         };
         if unsafe { memoryview_released(pointer) } {
             return raise_released_memoryview(py);
@@ -755,7 +822,7 @@ pub(crate) extern "C" fn memoryview_exit_method(args: u64, kwargs: u64) -> u64 {
         let Some(&receiver) = call.positional.first() else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "unbound method memoryview.__exit__() needs an argument",
             );
         };
@@ -765,7 +832,7 @@ pub(crate) extern "C" fn memoryview_exit_method(args: u64, kwargs: u64) -> u64 {
         {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '__exit__' for 'memoryview' objects doesn't apply to a '{}' object",
                     type_name(py, obj_from_bits(receiver))
@@ -773,7 +840,11 @@ pub(crate) extern "C" fn memoryview_exit_method(args: u64, kwargs: u64) -> u64 {
             );
         }
         if !call.keyword_view().is_empty() {
-            return raise_exception(py, "TypeError", "__exit__() takes no keyword arguments");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "__exit__() takes no keyword arguments",
+            );
         }
         molt_memoryview_release(receiver)
     })
@@ -785,18 +856,28 @@ pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return raise_exception::<_>(_py, "TypeError", "release expects a memoryview"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "release expects a memoryview",
+                );
+            }
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
-                return raise_exception::<_>(_py, "TypeError", "release expects a memoryview");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "release expects a memoryview",
+                );
             }
             let view = &*memoryview_ptr(ptr);
             let exports = view.exports.count();
             if exports != 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "BufferError",
+                    BuiltinExc::BufferError,
                     &format!(
                         "memoryview has {exports} exported buffer{}",
                         if exports == 1 { "" } else { "s" }
@@ -823,12 +904,20 @@ pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "toreadonly expects a memoryview");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "toreadonly expects a memoryview",
+                );
             }
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
-                return raise_exception::<_>(_py, "TypeError", "toreadonly expects a memoryview");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "toreadonly expects a memoryview",
+                );
             }
             if !super::memoryview::require_exportable(_py, ptr) {
                 return MoltObject::none().bits();

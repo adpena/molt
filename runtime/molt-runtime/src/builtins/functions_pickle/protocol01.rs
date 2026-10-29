@@ -1,6 +1,7 @@
 // Text pickle protocol 0/1 encoder, decoder, and stack VM authority.
 
 use super::*;
+use crate::BuiltinExc;
 
 #[derive(Clone, Debug)]
 enum PickleStackItem {
@@ -326,7 +327,7 @@ fn pickle_apply_reduce(
             let Some(text) = string_obj_to_owned(obj_from_bits(args[0])) else {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "pickle.loads: _codecs.encode text must be str",
                 ));
             };
@@ -334,7 +335,7 @@ fn pickle_apply_reduce(
                 let Some(name) = string_obj_to_owned(obj_from_bits(args[1])) else {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "pickle.loads: _codecs.encode encoding must be str",
                     ));
                 };
@@ -368,12 +369,12 @@ fn pickle_apply_reduce(
 pub extern "C" fn molt_pickle_dumps_protocol01(obj_bits: u64, protocol_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(protocol) = to_i64(obj_from_bits(protocol_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pickle protocol must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle protocol must be int");
         };
         if protocol != 0 && protocol != 1 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "only pickle protocols 0 and 1 are supported",
             );
         }
@@ -395,7 +396,7 @@ pub extern "C" fn molt_pickle_dumps_protocol01(obj_bits: u64, protocol_bits: u64
 pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pickle data must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle data must be str");
         };
         let bytes = text.as_bytes();
         let mut idx: usize = 0;

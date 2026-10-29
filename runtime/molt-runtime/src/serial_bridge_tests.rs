@@ -1,4 +1,5 @@
 use super::bridge_intern_static_name;
+use crate::BuiltinExc;
 use crate::{clear_exception, exception_pending, runtime_state};
 use std::sync::atomic::Ordering;
 
@@ -9,26 +10,24 @@ fn converter_replacement_retires_raised_owner_and_keeps_handled_context() {
         use crate::builtins::exceptions::{
             ExceptionFieldSlot, ExceptionStackScope, ExceptionValue, alloc_exception,
             exception_context_active_bits, exception_context_set, exception_field,
-            exception_matches_builtin_name, molt_exception_last_pending,
+            exception_matches_kind, molt_exception_last_pending,
         };
-        let outer = alloc_exception(py, "LookupError", "outer handler");
+        let outer = alloc_exception(py, BuiltinExc::LookupError, "outer handler");
         assert!(!outer.is_null());
         let outer = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(outer).bits());
         let handler = ExceptionStackScope::push(py);
         exception_context_set(py, outer.bits());
-        let old = alloc_exception(py, "ValueError", "exporter refused");
+        let old = alloc_exception(py, BuiltinExc::ValueError, "exporter refused");
         assert!(!old.is_null());
         let old = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(old).bits());
         let refs = unsafe {
             (*crate::header_from_obj_ptr(crate::ptr_from_bits(old.bits()))).ref_count_snapshot()
         };
         crate::builtins::exceptions::molt_raise(old.bits());
-        let kind = b"TypeError";
         let message = b"converter rejected input";
         let returned = unsafe {
             (super::RUNTIME_VTABLE.replace_exception)(
-                kind.as_ptr(),
-                kind.len(),
+                crate::ExcKind::from(BuiltinExc::TypeError).code(),
                 message.as_ptr(),
                 message.len(),
             )
@@ -36,10 +35,10 @@ fn converter_replacement_retires_raised_owner_and_keeps_handled_context() {
         assert_eq!(returned, crate::MoltObject::none().bits());
         assert!(exception_pending(py));
         let selected = ExceptionValue::adopt(py, molt_exception_last_pending());
-        assert!(exception_matches_builtin_name(
+        assert!(exception_matches_kind(
             py,
             selected.bits(),
-            "TypeError"
+            crate::BuiltinExc::TypeError
         ));
         assert_ne!(selected.bits(), old.bits());
         assert_eq!(
@@ -67,13 +66,11 @@ fn binascii_exception_declarations_survive_runtime_rebootstrap() {
             crate::with_gil_entry_nopanic!(py, {
                 use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending};
                 let state = runtime_state(py);
-                assert!(
-                    !state
-                        .exception_type_cache
-                        .lock()
-                        .unwrap()
-                        .contains_key("binascii.Error")
-                );
+                let slot = |kind: BuiltinExc| {
+                    state.exception_kind_slots[crate::ExcKind::from(kind).code() as usize]
+                        .load(std::sync::atomic::Ordering::Acquire)
+                };
+                assert_eq!(slot(BuiltinExc::BinasciiError), 0);
                 let error = ExceptionValue::adopt(
                     py,
                     molt_runtime_serial::binascii::molt_binascii_error_type(),
@@ -125,12 +122,12 @@ fn ascii_decode_error_retains_real_codec_context_and_outer_handler() {
         use crate::builtins::exceptions::{
             ExceptionFieldSlot, ExceptionStackScope, ExceptionValue, alloc_exception,
             exception_context_active_bits, exception_context_set, exception_field,
-            exception_matches_builtin_name, exception_suppress_bits, molt_exception_last_pending,
+            exception_matches_kind, exception_suppress_bits, molt_exception_last_pending,
         };
         let text = crate::alloc_string(py, "hé🙂".as_bytes());
         assert!(!text.is_null());
         let text = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(text).bits());
-        let outer = alloc_exception(py, "LookupError", "outer handler");
+        let outer = alloc_exception(py, BuiltinExc::LookupError, "outer handler");
         assert!(!outer.is_null());
         let outer = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(outer).bits());
         let handler = ExceptionStackScope::push(py);
@@ -139,16 +136,16 @@ fn ascii_decode_error_retains_real_codec_context_and_outer_handler() {
         assert_eq!(returned, crate::MoltObject::none().bits());
         assert!(exception_pending(py));
         let translated = ExceptionValue::adopt(py, molt_exception_last_pending());
-        assert!(exception_matches_builtin_name(
+        assert!(exception_matches_kind(
             py,
             translated.bits(),
-            "ValueError"
+            crate::BuiltinExc::ValueError
         ));
         let context = exception_field(py, translated.bits(), ExceptionFieldSlot::Context).unwrap();
-        assert!(exception_matches_builtin_name(
+        assert!(exception_matches_kind(
             py,
             context.bits(),
-            "UnicodeEncodeError"
+            crate::BuiltinExc::UnicodeEncodeError
         ));
         assert_eq!(
             exception_field(py, context.bits(), ExceptionFieldSlot::Context)
@@ -200,8 +197,8 @@ fn ascii_decode_error_retains_real_codec_context_and_outer_handler() {
 fn csv_domain_errors_use_supplied_class_and_borrow_constructor_arguments() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        use crate::builtins::exceptions::{ExceptionValue, exception_type_bits_from_name};
-        let class = exception_type_bits_from_name(py, "RuntimeError");
+        use crate::builtins::exceptions::{ExceptionValue, exception_class_bits};
+        let class = exception_class_bits(py, BuiltinExc::RuntimeError);
         let message_ptr = crate::alloc_string(py, b"csv owned message");
         assert!(!message_ptr.is_null());
         let message = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(message_ptr).bits());

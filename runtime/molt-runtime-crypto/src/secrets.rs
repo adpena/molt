@@ -48,7 +48,8 @@ fn fill_random(_py: &PyToken, buf: &mut [u8]) -> Result<(), u64> {
     if !require_random_entropy(_py) {
         return Err(MoltObject::none().bits());
     }
-    fill_os_random(buf).map_err(|_| raise_exception::<u64>(_py, "OSError", "getrandom failed"))
+    fill_os_random(buf)
+        .map_err(|_| raise_exception::<u64>(_py, BuiltinExc::OSError, "getrandom failed"))
 }
 
 fn resolve_nbytes(_py: &PyToken, nbytes_bits: u64, default: usize) -> Result<usize, u64> {
@@ -59,14 +60,14 @@ fn resolve_nbytes(_py: &PyToken, nbytes_bits: u64, default: usize) -> Result<usi
     let Some(v) = to_i64(obj) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "nbytes must be an integer",
         ));
     };
     if v < 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "nbytes must be non-negative",
         ));
     }
@@ -89,7 +90,7 @@ pub extern "C" fn molt_secrets_token_bytes(nbytes_bits: u64) -> u64 {
         }
         let ptr = alloc_bytes(_py, &buf);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -108,7 +109,7 @@ pub extern "C" fn molt_secrets_token_hex(nbytes_bits: u64) -> u64 {
         let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
         let ptr = alloc_string(_py, hex.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -127,7 +128,7 @@ pub extern "C" fn molt_secrets_token_urlsafe(nbytes_bits: u64) -> u64 {
         let encoded = base64url_encode(&buf);
         let ptr = alloc_string(_py, encoded.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -136,12 +137,12 @@ pub extern "C" fn molt_secrets_token_urlsafe(nbytes_bits: u64) -> u64 {
 pub extern "C" fn molt_secrets_randbits(k_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(k) = to_i64(obj_from_bits(k_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "k must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "k must be an integer");
         };
         if k < 0 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "number of bits must be non-negative",
             );
         }
@@ -167,7 +168,7 @@ pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let seq_obj = obj_from_bits(seq_bits);
         let Some(seq_ptr) = seq_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "sequence must not be None");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "sequence must not be None");
         };
         let len = unsafe {
             let type_id = object_type_id(seq_ptr);
@@ -176,7 +177,7 @@ pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
             } else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "secrets.choice requires a sequence",
                 );
             }
@@ -184,7 +185,7 @@ pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
         if len == 0 {
             return raise_exception::<u64>(
                 _py,
-                "IndexError",
+                BuiltinExc::IndexError,
                 "cannot choose from an empty sequence",
             );
         }
@@ -194,7 +195,11 @@ pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
             Err(exc) => return exc,
         };
         let Some(elem_bits) = (unsafe { seq_read_item_owned(seq_ptr, idx) }) else {
-            return raise_exception::<u64>(_py, "IndexError", "sequence changed during choice");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::IndexError,
+                "sequence changed during choice",
+            );
         };
         elem_bits
     })
@@ -205,7 +210,7 @@ fn random_index_below(_py: &PyToken, upper: usize) -> Result<usize, u64> {
     if upper == 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "upper must be > 0",
         ));
     }
@@ -217,7 +222,7 @@ fn random_index_below(_py: &PyToken, upper: usize) -> Result<usize, u64> {
     let threshold = u64::MAX - (u64::MAX % upper as u64);
     loop {
         fill_os_random(&mut buf)
-            .map_err(|_| raise_exception::<u64>(_py, "OSError", "getrandom failed"))?;
+            .map_err(|_| raise_exception::<u64>(_py, BuiltinExc::OSError, "getrandom failed"))?;
         let v = u64::from_le_bytes(buf);
         if v < threshold || threshold == 0 {
             return Ok((v % upper as u64) as usize);
@@ -228,10 +233,10 @@ fn random_index_below(_py: &PyToken, upper: usize) -> Result<usize, u64> {
 pub extern "C" fn molt_secrets_below(upper_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(upper_i64) = to_i64(obj_from_bits(upper_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "upper must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "upper must be an integer");
         };
         if upper_i64 <= 0 {
-            return raise_exception::<u64>(_py, "ValueError", "upper must be positive");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "upper must be positive");
         }
         let upper = upper_i64 as usize;
         match random_index_below(_py, upper) {

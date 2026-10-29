@@ -5,17 +5,18 @@
 //! tier (HF-487). The `ast` module stays behind stdlib_ast.
 
 use super::*;
+use crate::BuiltinExc;
 
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 use std::collections::HashSet;
 
-fn compile_error_type(error: &ParseErrorType) -> &'static str {
+fn compile_error_type(error: &ParseErrorType) -> crate::BuiltinExc {
     if error.is_tab_error() {
-        "TabError"
+        crate::BuiltinExc::TabError
     } else if error.is_indentation_error() {
-        "IndentationError"
+        crate::BuiltinExc::IndentationError
     } else {
-        "SyntaxError"
+        crate::BuiltinExc::SyntaxError
     }
 }
 
@@ -182,7 +183,7 @@ enum CodeopCompileStatus {
     },
     Incomplete,
     Error {
-        error_type: &'static str,
+        error_type: crate::BuiltinExc,
         message: String,
     },
 }
@@ -200,7 +201,7 @@ fn codeop_compile_status(
         "single" => ParseMode::Interactive,
         _ => {
             return CodeopCompileStatus::Error {
-                error_type: "ValueError",
+                error_type: crate::BuiltinExc::ValueError,
                 message: "compile() mode must be 'exec', 'eval' or 'single'".to_string(),
             };
         }
@@ -210,7 +211,7 @@ fn codeop_compile_status(
             Ok(()) => {
                 if codeop_source_has_missing_indented_suite(source) {
                     return CodeopCompileStatus::Error {
-                        error_type: "SyntaxError",
+                        error_type: crate::BuiltinExc::SyntaxError,
                         message: "expected an indented block".to_string(),
                     };
                 }
@@ -223,7 +224,7 @@ fn codeop_compile_status(
                 }
             }
             Err(message) => CodeopCompileStatus::Error {
-                error_type: "SyntaxError",
+                error_type: crate::BuiltinExc::SyntaxError,
                 message,
             },
         },
@@ -789,14 +790,14 @@ fn compile_validate_source(
     source: &str,
     filename: &str,
     mode: &str,
-) -> Result<(), (&'static str, String)> {
+) -> Result<(), (crate::BuiltinExc, String)> {
     let parse_mode = match mode {
         "exec" => ParseMode::Module,
         "eval" => ParseMode::Expression,
         "single" => ParseMode::Interactive,
         _ => {
             return Err((
-                "ValueError",
+                crate::BuiltinExc::ValueError,
                 "compile() mode must be 'exec', 'eval' or 'single'".to_string(),
             ));
         }
@@ -804,7 +805,7 @@ fn compile_validate_source(
     match parse_python(source, parse_mode, filename) {
         Ok(parsed) => match compile_validate_nonlocal_semantics(&parsed) {
             Ok(()) => Ok(()),
-            Err(message) => Err(("SyntaxError", message)),
+            Err(message) => Err((crate::BuiltinExc::SyntaxError, message)),
         },
         Err(err) => Err((compile_error_type(&err.error), err.error.to_string())),
     }
@@ -823,36 +824,48 @@ pub extern "C" fn molt_compile_builtin(
         let source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(val) => val,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 1 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 1 must be a string",
+                );
             }
         };
         let filename = match string_obj_to_owned(obj_from_bits(filename_bits)) {
             Some(val) => val,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 2 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 2 must be a string",
+                );
             }
         };
         let mode = match string_obj_to_owned(obj_from_bits(mode_bits)) {
             Some(val) => val,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 3 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 3 must be a string",
+                );
             }
         };
         if mode != "exec" && mode != "eval" && mode != "single" {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "compile() mode must be 'exec', 'eval' or 'single'",
             );
         }
         if to_i64(obj_from_bits(flags_bits)).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "compile() arg 4 must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "compile() arg 4 must be int");
         }
         if to_i64(obj_from_bits(dont_inherit_bits)).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "compile() arg 5 must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "compile() arg 5 must be int");
         }
         if to_i64(obj_from_bits(optimize_bits)).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "compile() arg 6 must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "compile() arg 6 must be int");
         }
         if let Err((error_type, message)) = compile_validate_source(&source, &filename, &mode) {
             return raise_exception::<_>(_py, error_type, &message);
@@ -873,23 +886,35 @@ pub extern "C" fn molt_codeop_compile(
         let source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(value) => value,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 1 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 1 must be a string",
+                );
             }
         };
         let filename = match string_obj_to_owned(obj_from_bits(filename_bits)) {
             Some(value) => value,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 2 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 2 must be a string",
+                );
             }
         };
         let mode = match string_obj_to_owned(obj_from_bits(mode_bits)) {
             Some(value) => value,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 3 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 3 must be a string",
+                );
             }
         };
         let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "compile() arg 4 must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "compile() arg 4 must be int");
         };
         let incomplete_input = is_truthy(_py, obj_from_bits(incomplete_input_bits));
         match codeop_compile_status(&source, &filename, &mode, flags, incomplete_input) {
@@ -907,7 +932,7 @@ pub extern "C" fn molt_codeop_compile(
                 MoltObject::from_ptr(result_ptr).bits()
             }
             CodeopCompileStatus::Incomplete => {
-                raise_exception::<_>(_py, "SyntaxError", "incomplete input")
+                raise_exception::<_>(_py, BuiltinExc::SyntaxError, "incomplete input")
             }
             CodeopCompileStatus::Error {
                 error_type,
@@ -928,23 +953,35 @@ pub extern "C" fn molt_codeop_compile_command(
         let mut source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(value) => value,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 1 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 1 must be a string",
+                );
             }
         };
         let filename = match string_obj_to_owned(obj_from_bits(filename_bits)) {
             Some(value) => value,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 2 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 2 must be a string",
+                );
             }
         };
         let mode = match string_obj_to_owned(obj_from_bits(mode_bits)) {
             Some(value) => value,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "compile() arg 3 must be a string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "compile() arg 3 must be a string",
+                );
             }
         };
         let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "compile() arg 4 must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "compile() arg 4 must be int");
         };
 
         let mut only_blank_or_comment = true;
@@ -959,7 +996,11 @@ pub extern "C" fn molt_codeop_compile_command(
             source = "pass".to_string();
         }
         if codeop_source_has_missing_indented_suite(&source) {
-            return raise_exception::<_>(_py, "SyntaxError", "expected an indented block");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::SyntaxError,
+                "expected an indented block",
+            );
         }
 
         match codeop_compile_status(&source, &filename, &mode, flags, true) {
@@ -981,7 +1022,7 @@ pub extern "C" fn molt_codeop_compile_command(
                 error_type,
                 message,
             } => {
-                if error_type != "SyntaxError" {
+                if error_type != crate::BuiltinExc::SyntaxError {
                     return raise_exception::<_>(_py, error_type, &message);
                 }
             }
@@ -998,7 +1039,7 @@ pub extern "C" fn molt_codeop_compile_command(
                 return MoltObject::from_ptr(result_ptr).bits();
             }
             CodeopCompileStatus::Error {
-                error_type: "SyntaxError",
+                error_type: crate::BuiltinExc::SyntaxError,
                 ..
             } => {}
             CodeopCompileStatus::Error {
@@ -1022,7 +1063,7 @@ pub extern "C" fn molt_codeop_compile_command(
                 MoltObject::from_ptr(result_ptr).bits()
             }
             CodeopCompileStatus::Incomplete => {
-                raise_exception::<_>(_py, "SyntaxError", "incomplete input")
+                raise_exception::<_>(_py, BuiltinExc::SyntaxError, "incomplete input")
             }
             CodeopCompileStatus::Error {
                 error_type,

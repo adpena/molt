@@ -1051,6 +1051,15 @@ tests/differential/stdlib/enum_alias_fidelity.py
 tests/differential/stdlib/enum_basic.py
 tests/differential/stdlib/errno_basic.py
 tests/differential/stdlib/errno_native_publication.py
+tests/differential/stdlib/exception_identity_binascii_error.py
+tests/differential/stdlib/exception_identity_builtins_namespace.py
+tests/differential/stdlib/exception_identity_copy_error.py
+tests/differential/stdlib/exception_identity_decimal_signals.py
+tests/differential/stdlib/exception_identity_module_raises.py
+tests/differential/stdlib/exception_identity_ssl_error_base.py
+tests/differential/stdlib/exception_identity_subprocess_called_process_error.py
+tests/differential/stdlib/exception_identity_tarfile_read_error.py
+tests/differential/stdlib/exception_identity_zoneinfo_not_found.py
 tests/differential/stdlib/filecmp_basic.py
 tests/differential/stdlib/filecmp_dircmp_basic.py
 tests/differential/stdlib/fileinput_basic.py
@@ -1186,6 +1195,7 @@ tests/differential/stdlib/importlib_extension_exec_python_shim_intrinsic.py
 tests/differential/stdlib/importlib_extension_exec_star_import_shim_intrinsic.py
 tests/differential/stdlib/importlib_extension_exec_tagged_init_shim_intrinsic.py
 tests/differential/stdlib/importlib_extension_exec_zip_shim_intrinsic.py
+tests/differential/stdlib/importlib_filefinder_custom_loader_details.py
 tests/differential/stdlib/importlib_find_spec_bytecode_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_cache_key_sensitivity_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_empty_meta_path_warning.py
@@ -1205,6 +1215,7 @@ tests/differential/stdlib/importlib_import_module_helper_dotted.py
 tests/differential/stdlib/importlib_import_module_helper_dynamic.py
 tests/differential/stdlib/importlib_import_module_helper_submodule.py
 tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py
+tests/differential/stdlib/importlib_import_name_key_identity.py
 tests/differential/stdlib/importlib_invalidate_caches.py
 tests/differential/stdlib/importlib_load_module_transaction.py
 tests/differential/stdlib/importlib_loader_exec_metadata_pkg/__init__.py
@@ -2057,6 +2068,7 @@ tests/differential/stdlib/zipapp_basic.py
 tests/differential/stdlib/zipfile_roundtrip_basic.py
 tests/differential/stdlib/zipimport_api_surface_basic.py
 tests/differential/stdlib/zipimport_basic.py
+tests/differential/stdlib/zipimport_invalid_utf8_entry_name.py
 tests/differential/stdlib/zipimport_prefix_error_edges.py
 tests/differential/stdlib/zlib_basic.py
 tests/differential/stdlib/zlib_decompressobj_unused_data.py

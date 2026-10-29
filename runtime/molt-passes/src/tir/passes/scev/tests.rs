@@ -262,3 +262,119 @@ fn non_unit_step_constant_trip_count() {
     // ceil((10-0)/2) = 5.
     assert_eq!(scev.trip_count(header), TripCount::Constant(5));
 }
+
+/// Query the tail before memoizing its operands: a recursive SCEV walk
+/// exhausts the default test-thread stack even though the answer is one integer.
+#[test]
+fn hundred_thousand_arithmetic_operands_fit_two_mib_stack() {
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            use super::builder::ScevBuilder;
+            use super::index::build_def_index;
+            use crate::tir::analysis::{Analysis, LoopForest};
+            let (mut func, _, _, _) = range_loop(10, true);
+            let one = func.fresh_value();
+            let mut tail = func.fresh_value();
+            let mut ops = vec![const_int(one, 1), const_int(tail, 0)];
+            for _ in 0..100_000 {
+                let next = func.fresh_value();
+                ops.push(op(OpCode::Add, vec![tail, one], vec![next]));
+                tail = next;
+            }
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .extend(ops);
+            let loops = LoopForest::compute(&func);
+            let headers = loops.headers.iter().copied().collect();
+            let defs = build_def_index(&func, &headers);
+            let mut builder = ScevBuilder::new(&func, &loops, &defs);
+            assert_eq!(builder.scev(tail), ScevExpr::Constant(100_000));
+            assert_eq!(builder.scev(tail), ScevExpr::Constant(100_000));
+        })
+        .unwrap()
+        .join()
+        .expect("SCEV fits the default thread stack");
+}
+
+#[test]
+fn nested_header_starts_keep_direct_query_and_memo_order() {
+    use super::builder::ScevBuilder;
+    use super::index::build_def_index;
+    use crate::tir::analysis::{Analysis, LoopForest};
+    let (mut func, _, outer_iv, preheader) = range_loop(10, true);
+    let inner = func.fresh_block();
+    let body = func.fresh_block();
+    let latch = func.fresh_block();
+    let inner_iv = func.fresh_value();
+    let cond = func.fresh_value();
+    let next = func.fresh_value();
+    let step = func.blocks[&func.entry_block].ops[2].results[0];
+    let stop = func.blocks[&func.entry_block].ops[1].results[0];
+    let pre = func.blocks.get_mut(&preheader).unwrap();
+    let latch_ops = std::mem::take(&mut pre.ops);
+    let latch_term = std::mem::replace(
+        &mut pre.terminator,
+        Terminator::Branch {
+            target: inner,
+            args: vec![outer_iv],
+        },
+    );
+    func.blocks.insert(
+        latch,
+        TirBlock {
+            id: latch,
+            args: vec![],
+            ops: latch_ops,
+            terminator: latch_term,
+        },
+    );
+    func.blocks.insert(
+        inner,
+        TirBlock {
+            id: inner,
+            args: vec![TirValue {
+                id: inner_iv,
+                ty: TirType::I64,
+            }],
+            ops: vec![op(OpCode::Lt, vec![inner_iv, stop], vec![cond])],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: latch,
+                else_args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        body,
+        TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![op_nsw(OpCode::Add, vec![inner_iv, step], vec![next])],
+            terminator: Terminator::Branch {
+                target: inner,
+                args: vec![next],
+            },
+        },
+    );
+    let loops = LoopForest::compute(&func);
+    let defs = build_def_index(&func, &loops.headers.iter().copied().collect());
+    let mut outer_first = ScevBuilder::new(&func, &loops, &defs);
+    let outer = outer_first.scev(outer_iv);
+    assert!(matches!(outer, ScevExpr::AddRec { .. }));
+    let ScevExpr::AddRec { start, .. } = outer_first.scev(inner_iv) else {
+        panic!("inner recurrence");
+    };
+    assert_eq!(*start, ScevExpr::Invariant(outer_iv));
+    // Invariant header queries bypass the value memo. A fresh query of the
+    // inner IV recognizes the outer recurrence while assembling its start.
+    let mut inner_first = ScevBuilder::new(&func, &loops, &defs);
+    let ScevExpr::AddRec { start, .. } = inner_first.scev(inner_iv) else {
+        panic!("inner recurrence");
+    };
+    assert_eq!(*start, outer);
+}

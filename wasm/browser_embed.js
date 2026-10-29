@@ -27,6 +27,7 @@ const UTF8_ENCODER = new TextEncoder();
 
 const {
   requireMoltDeploymentManifest,
+  deploymentLaunchEnvironment,
   manifestModuleUrl,
   verifyManifestModuleBytes,
   callIsolateImportExport,
@@ -240,7 +241,9 @@ const writeBytesToMemory = (memory, ptr, bytes) => {
 const writeU32ToMemory = (memory, ptr, value) => {
   if (!memory) return false;
   const addr = typeof ptr === 'bigint' ? Number(ptr) : Number(ptr >>> 0);
-  if (!Number.isFinite(addr) || addr === 0) return false;
+  // Required preview1 outputs may start at offset zero. Optional Molt outputs
+  // are guarded by their callers before reaching this scalar writer.
+  if (!Number.isFinite(addr)) return false;
   new DataView(memory.buffer).setUint32(addr, Number(value) >>> 0, true);
   return true;
 };
@@ -710,7 +713,7 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, options = {})
   );
 };
 
-const buildMinimalWasi = (state, logFn) => {
+const buildMinimalWasi = (state, logFn, environmentBytes, environmentSize) => {
   const unsupported = () => globalThis.MoltWasiErrno.ENOSYS;
   const wasi = {
     args_get: () => 0,
@@ -719,10 +722,21 @@ const buildMinimalWasi = (state, logFn) => {
       writeU32ToMemory(state.memory, argvBufSizePtr, 0);
       return 0;
     },
-    environ_get: () => 0,
+    environ_get: (environPtr, bufPtr) => {
+      const view = new DataView(state.memory.buffer);
+      let entryPtr = Number(environPtr);
+      let dataPtr = Number(bufPtr);
+      for (const bytes of environmentBytes) {
+        view.setUint32(entryPtr, dataPtr, true);
+        new Uint8Array(state.memory.buffer, dataPtr, bytes.length).set(bytes);
+        entryPtr += 4;
+        dataPtr += bytes.length;
+      }
+      return 0;
+    },
     environ_sizes_get: (countPtr, sizePtr) => {
-      writeU32ToMemory(state.memory, countPtr, 0);
-      writeU32ToMemory(state.memory, sizePtr, 0);
+      writeU32ToMemory(state.memory, countPtr, environmentBytes.length);
+      writeU32ToMemory(state.memory, sizePtr, environmentSize);
       return 0;
     },
     fd_write: (fd, iovs, iovsLen, nwritten) => {
@@ -1020,6 +1034,13 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   const manifestUrl = options.manifestUrl || resolveUrl('manifest.json', baseForManifest);
   const manifest = requireMoltDeploymentManifest(Object.hasOwn(options, 'manifest') ? options.manifest : await fetchJson(manifestUrl));
   if (manifest.mode !== 'split-runtime') throw new Error('Molt browser embed requires a split-runtime deployment manifest');
+  const guestEnvironment = deploymentLaunchEnvironment(manifest, options.env || {});
+  guestEnvironment.MOLT_EXECUTION_TARGET = 'browser';
+  // Encode once per load; both WASI owners copy these bytes into their own memory.
+  const environmentBytes = Object.entries(guestEnvironment).map(
+    ([name, value]) => UTF8_ENCODER.encode(`${name}=${value}\0`),
+  );
+  const environmentSize = environmentBytes.reduce((sum, bytes) => sum + bytes.length, 0);
   const appUrl = options.appUrl || options.wasmUrl || manifestModuleUrl(manifestUrl, manifest?.modules?.app, 'app');
   const runtimeUrl = options.runtimeUrl || manifestModuleUrl(manifestUrl, manifest?.modules?.runtime, 'runtime');
   const browserAbi = browserAbiFromManifest(manifest);
@@ -1080,8 +1101,8 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     appCallableTable,
     runtimeCallableTable,
   });
-  const runtimeWasi = buildMinimalWasi(state, options.log || null);
-  const appWasi = buildMinimalWasi(appHostState, options.log || null);
+  const runtimeWasi = buildMinimalWasi(state, options.log || null, environmentBytes, environmentSize);
+  const appWasi = buildMinimalWasi(appHostState, options.log || null, environmentBytes, environmentSize);
   let runtimeInstance = null;
   let lifetime = null;
   const dispose = createRuntimeDisposer(() => lifetime, [disposeHost]);

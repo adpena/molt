@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_http_parse_header_pairs(data_bits: u64) -> u64 {
@@ -60,7 +61,11 @@ pub extern "C" fn molt_http_message_set_raw(
         let Some(()) = http_message_with_mut(handle, |message| {
             http_message_push_header(_py, message, name, value);
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "http message handle is invalid",
+            );
         };
         MoltObject::none().bits()
     })
@@ -96,7 +101,11 @@ pub extern "C" fn molt_http_message_get(
                 Ok(Some(MoltObject::from_ptr(ptr).bits()))
             }
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "http message handle is invalid",
+            );
         };
         match out {
             Ok(Some(bits)) => bits,
@@ -128,7 +137,11 @@ pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) ->
                 .unwrap_or_default();
             http_message_values_to_list_from_indices(_py, message, indices)
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "http message handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,
@@ -156,7 +169,11 @@ pub extern "C" fn molt_http_message_items(handle_bits: u64) -> u64 {
             message.items_list_cache = Some(out_bits);
             Ok(out_bits)
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "http message handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,
@@ -178,7 +195,11 @@ pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -
         let needle = http_message_header_key(name.as_str());
         let Some(found) = http_message_with(handle, |message| message.index.contains_key(&needle))
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "http message handle is invalid",
+            );
         };
         MoltObject::from_bool(found).bits()
     })
@@ -192,7 +213,11 @@ pub extern "C" fn molt_http_message_len(handle_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         let Some(len_value) = http_message_with(handle, |message| message.headers.len()) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "http message handle is invalid",
+            );
         };
         let len_i64 = i64::try_from(len_value).unwrap_or(i64::MAX);
         MoltObject::from_int(len_i64).bits()
@@ -240,16 +265,16 @@ pub(super) fn http_client_connection_new_impl(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(host) = string_obj_to_owned(obj_from_bits(host_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "host must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "host must be str");
         };
         if let Err(bits) = http_client_validate_path(_py, &host) {
             return bits;
         }
         let Some(port_value) = to_i64(obj_from_bits(port_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "port must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "port must be int");
         };
         if !(0..=u16::MAX as i64).contains(&port_value) {
-            return raise_exception::<_>(_py, "ValueError", "port out of range");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "port out of range");
         }
         let timeout = if obj_from_bits(timeout_bits).is_none() {
             None
@@ -257,7 +282,11 @@ pub(super) fn http_client_connection_new_impl(
             let Some(value) = to_f64(obj_from_bits(timeout_bits))
                 .or_else(|| to_i64(obj_from_bits(timeout_bits)).map(|v| v as f64))
             else {
-                return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "timeout must be float or None",
+                );
             };
             Some(value)
         };
@@ -281,10 +310,10 @@ pub extern "C" fn molt_http_client_connection_putrequest(
             Err(e) => return e,
         };
         let Some(method) = string_obj_to_owned(obj_from_bits(method_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "method must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "method must be str");
         };
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
         let url = if url.is_empty() { "/".to_string() } else { url };
         let mut line = match http_client_request_line_bytes(_py, &method, &url) {
@@ -303,7 +332,11 @@ pub extern "C" fn molt_http_client_connection_putrequest(
             conn.url = Some(url);
             conn.wire.clear();
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "connection handle is invalid",
+            );
         };
         line.into_bits()
     })
@@ -313,7 +346,7 @@ pub extern "C" fn molt_http_client_connection_putrequest(
 pub extern "C" fn molt_http_client_validate_header_name(header_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(bytes) = (unsafe { bytes_like_slice(header_bits) }) else {
-            return raise_exception::<_>(_py, "TypeError", "header must be bytes-like");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "header must be bytes-like");
         };
         match http_client_validate_header_name(_py, bytes) {
             Ok(()) => MoltObject::none().bits(),
@@ -326,7 +359,11 @@ pub extern "C" fn molt_http_client_validate_header_name(header_bits: u64) -> u64
 pub extern "C" fn molt_http_client_validate_header_value(value_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(bytes) = (unsafe { bytes_like_slice(value_bits) }) else {
-            return raise_exception::<_>(_py, "TypeError", "header value must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "header value must be bytes-like",
+            );
         };
         match http_client_validate_header_value(_py, bytes) {
             Ok(()) => MoltObject::none().bits(),
@@ -353,10 +390,14 @@ pub extern "C" fn molt_http_client_connection_send(handle_bits: u64, data_bits: 
             conn.wire.extend_from_slice(&data);
             true
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "connection handle is invalid",
+            );
         };
         if !started {
-            return raise_exception::<_>(_py, "OSError", "request not started");
+            return raise_exception::<_>(_py, BuiltinExc::OSError, "request not started");
         }
         MoltObject::none().bits()
     })
@@ -386,9 +427,13 @@ pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u
         });
         let (host, port, timeout, url, wire, use_tls) = match state {
             Some(Ok(value)) => value,
-            Some(Err(msg)) => return raise_exception::<_>(_py, "OSError", msg),
+            Some(Err(msg)) => return raise_exception::<_>(_py, BuiltinExc::OSError, msg),
             None => {
-                return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "connection handle is invalid",
+                );
             }
         };
         let response_handle =
@@ -411,7 +456,11 @@ pub extern "C" fn molt_http_client_connection_close(handle_bits: u64) -> u64 {
         let Some(()) =
             http_client_connection_with_mut(handle, http_client_connection_reset_pending)
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "connection handle is invalid",
+            );
         };
         MoltObject::none().bits()
     })
@@ -452,7 +501,11 @@ pub extern "C" fn molt_http_client_response_getstatus(handle_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         let Some(code) = urllib_response_with(handle, |resp| resp.code) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         let status = if code < 0 { 0 } else { code };
         MoltObject::from_int(status).bits()
@@ -474,7 +527,11 @@ pub extern "C" fn molt_http_client_response_getreason(handle_bits: u64) -> u64 {
                 Ok(MoltObject::from_ptr(ptr).bits())
             }
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,
@@ -495,7 +552,7 @@ pub extern "C" fn molt_http_client_response_getheader(
             Err(bits) => return bits,
         };
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "header name must be str");
         };
         let Some(out) = urllib_response_with(handle, |resp| {
             let Some(joined) = urllib_response_joined_header(resp, name.as_str()) else {
@@ -508,7 +565,11 @@ pub extern "C" fn molt_http_client_response_getheader(
                 Ok(Some(MoltObject::from_ptr(ptr).bits()))
             }
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(Some(bits)) => bits,
@@ -531,7 +592,11 @@ pub extern "C" fn molt_http_client_response_getheaders(handle_bits: u64) -> u64 
         let Some(out) =
             urllib_response_with_mut(handle, |resp| urllib_response_headers_list_bits(_py, resp))
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,

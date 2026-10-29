@@ -1,4 +1,5 @@
 use super::{file_remaining_bytes_hint, io_clear_runtime_state, molt_sys_stdout};
+use crate::BuiltinExc;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::{clear_exception, dec_ref_bits, obj_from_bits, runtime_state};
@@ -380,7 +381,8 @@ fn iobase_finalization_uses_published_base_and_preserves_pending_error() {
         assert!(!crate::exception_pending(py));
         dec_ref_bits(py, method);
         dec_ref_bits(py, name);
-        let pending = crate::alloc_exception(py, "ValueError", "incoming IO finalization");
+        let pending =
+            crate::alloc_exception(py, BuiltinExc::ValueError, "incoming IO finalization");
         assert!(!pending.is_null());
         crate::record_exception(py, pending);
         dec_ref_bits(py, stream);

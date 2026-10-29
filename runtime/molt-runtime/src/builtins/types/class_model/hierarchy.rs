@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::TYPE_ID_OBJECT;
 use crate::object::seq_access::snapshot;
 use crate::runtime_flags::{self, RuntimeFlag};
@@ -35,7 +36,7 @@ pub(crate) fn prepare_class_base_layout(
 )> {
     for &base in bases {
         let Some(base_ptr) = obj_from_bits(base).as_ptr() else {
-            raise_exception::<()>(_py, "TypeError", "base must be a type object");
+            raise_exception::<()>(_py, BuiltinExc::TypeError, "base must be a type object");
             return None;
         };
         unsafe {
@@ -46,7 +47,11 @@ pub(crate) fn prepare_class_base_layout(
                 let native = match crate::object::class_layout::real_class_view(base) {
                     Ok(Some(native)) => native,
                     Ok(None) => {
-                        raise_exception::<()>(_py, "TypeError", "base must be a type object");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            "base must be a type object",
+                        );
                         return None;
                     }
                     Err(()) => {
@@ -63,7 +68,7 @@ pub(crate) fn prepare_class_base_layout(
                         molt_cpython_abi::api::typeobj::type_name_with_precision(native, 100);
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("type '{name}' is not an acceptable base type"),
                     );
                 } else {
@@ -71,7 +76,7 @@ pub(crate) fn prepare_class_base_layout(
                     // managed field layout. Keep the existing capability boundary.
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "native C class storage cannot be inherited by a managed class",
                     );
                 }
@@ -81,13 +86,17 @@ pub(crate) fn prepare_class_base_layout(
                 let name = class_name_for_error(base);
                 raise_exception::<()>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("type '{name}' is not an acceptable base type"),
                 );
                 return None;
             }
             if Some(base_ptr) == class_ptr {
-                raise_exception::<()>(_py, "TypeError", "class cannot inherit from itself");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "class cannot inherit from itself",
+                );
                 return None;
             }
         }
@@ -127,7 +136,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
         if crate::object::class_definition_is_finished(class_ptr)
             || crate::object::layout::class_slot_declaration_bits(class_ptr) != 0
         {
-            raise_exception::<()>(_py, "TypeError", BASES_REASSIGNMENT_ERROR);
+            raise_exception::<()>(_py, BuiltinExc::TypeError, BASES_REASSIGNMENT_ERROR);
             return Err(());
         }
     }
@@ -152,7 +161,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
         let Some(base_ptr) = base_obj.as_ptr() else {
             raise_exception::<()>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "base must be a type object or tuple of types",
             );
             return Err(());
@@ -182,7 +191,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
                 _ => {
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "base must be a type object or tuple of types",
                     );
                     return Err(());
@@ -204,7 +213,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
         if !seen.insert(*base) {
             let name = class_name_for_error(*base);
             let msg = format!("duplicate base class {name}");
-            raise_exception::<()>(_py, "TypeError", &msg);
+            raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
         }
     }
@@ -221,7 +230,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
     } {
         raise_exception::<()>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "inherited native payload shape conflicts with class layout",
         );
         return Err(());
@@ -231,7 +240,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
     } {
         raise_exception::<()>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "inherited native instance kind conflicts with class layout",
         );
         return Err(());
@@ -244,7 +253,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
     } {
         raise_exception::<()>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "inherited exception payload conflicts with class layout",
         );
         return Err(());
@@ -257,7 +266,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
     } {
         raise_exception::<()>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "class bases changed during hierarchy admission",
         );
         return Err(());
@@ -268,7 +277,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
         None => {
             raise_exception::<()>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "Cannot create a consistent method resolution order (MRO) for bases",
             );
             return Err(());
@@ -476,7 +485,7 @@ unsafe fn class_set_name_error_note(
         if let Err(message) =
             exception_replace_field_bits(_py, note_error, ExceptionFieldSlot::Context, original)
         {
-            let _ = raise_exception::<u64>(_py, "RuntimeError", message);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::RuntimeError, message);
         }
     } else {
         crate::molt_exception_set_last(original);
@@ -509,25 +518,33 @@ pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
 pub extern "C" fn molt_class_set_definition(class_bits: u64, definition_slot: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "SystemError", "class definition expects a class");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::SystemError,
+                "class definition expects a class",
+            );
         };
         let Some(definition) =
             crate::object::layout::ClassDefinition::from_program_slot(definition_slot)
         else {
-            return raise_exception::<_>(_py, "SystemError", "class definition slot out of range");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::SystemError,
+                "class definition slot out of range",
+            );
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "class definition expects a class",
                 );
             }
             if !crate::object::layout::class_set_definition(class_ptr, definition) {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "class already carries a class statement identity",
                 );
             }

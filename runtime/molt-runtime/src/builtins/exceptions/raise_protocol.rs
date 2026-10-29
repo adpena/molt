@@ -2,6 +2,7 @@
 //! Transport and deferred publication retain the admitted instance identity.
 
 use super::*;
+use crate::BuiltinExc;
 
 /// Borrow a class or instance and return one owned exception instance. Ordinary
 /// raises and runtime class ingress share this authority; throw's separate
@@ -14,7 +15,7 @@ pub(super) fn normalize_raise_operand(py: &PyToken<'_>, bits: u64, cause: bool) 
     if !exception_is_class(py, bits) {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             if cause {
                 "exception causes must derive from BaseException"
             } else {
@@ -34,7 +35,7 @@ pub(super) fn normalize_raise_operand(py: &PyToken<'_>, bits: u64, cause: bool) 
         }
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "calling {class} should have returned an instance of BaseException, not {actual}"
             ),
@@ -69,7 +70,7 @@ pub extern "C" fn molt_exception_prepare_raise(exc_bits: u64, cause_bits: u64) -
                 cause.bits(),
             ) {
                 if !exception_pending(py) {
-                    return raise_exception::<u64>(py, "TypeError", message);
+                    return raise_exception::<u64>(py, BuiltinExc::TypeError, message);
                 }
                 return MoltObject::none().bits();
             }
@@ -86,8 +87,8 @@ mod tests {
     fn source_raise_admission_normalizes_classes_and_preserves_instance_identity() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let class = exception_type_bits_from_name(py, "ValueError");
-            let cause_class = exception_type_bits_from_name(py, "KeyError");
+            let class = exception_class_bits(py, BuiltinExc::ValueError);
+            let cause_class = exception_class_bits(py, BuiltinExc::KeyError);
             let instance =
                 ExceptionValue::adopt(py, molt_exception_prepare_raise(class, cause_class));
             assert!(!exception_pending(py));
@@ -121,11 +122,15 @@ mod tests {
     fn source_raise_admission_rejects_invalid_causes_before_publication() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let class = exception_type_bits_from_name(py, "ValueError");
+            let class = exception_class_bits(py, BuiltinExc::ValueError);
             let result = molt_exception_prepare_raise(class, MoltObject::from_int(1).bits());
             assert!(obj_from_bits(result).is_none());
             let error = exception_last_bits_noinc(py).unwrap();
-            assert!(exception_matches_builtin_name(py, error, "TypeError"));
+            assert!(exception_matches_kind(
+                py,
+                error,
+                crate::BuiltinExc::TypeError
+            ));
             assert_eq!(
                 format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                 "exception causes must derive from BaseException"

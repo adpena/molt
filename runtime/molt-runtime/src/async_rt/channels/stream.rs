@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 #[cfg(test)]
 use crossbeam_channel::TrySendError;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
@@ -229,7 +230,7 @@ unsafe fn stream_reader_pull(
             unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
         }
         Ok(SendData::Owned(vec)) => vec,
-        Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+        Err(msg) => return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg)),
     };
     if data.is_empty() {
         return Ok(ReaderPull::Data);
@@ -583,7 +584,7 @@ pub unsafe extern "C" fn molt_stream_send(
             stream_release_queued_bytes(stream, len);
             return raise_exception::<i64>(
                 _py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "stream send buffer allocation failed",
             );
         }
@@ -605,7 +606,7 @@ pub unsafe extern "C" fn molt_stream_send_obj(stream_bits: u64, data_bits: u64) 
     crate::with_gil_entry_nopanic!(_py, {
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),

@@ -1,5 +1,6 @@
 //! Real runtime/C memoryview semantics; the ABI crate has no shadow object owner.
 #![allow(unused_unsafe)]
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::*;
 use std::ffi::{c_char, c_void};
 use std::ptr;
@@ -579,7 +580,8 @@ extern "C" fn release_native_slice_parent(_self: u64) -> u64 {
         assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 0);
         assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 0);
         if SLICE_CALLBACK_FAILURE.load(Ordering::SeqCst) != 0 {
-            let result = crate::raise_exception(py, "LookupError", "native slice callback");
+            let result =
+                crate::raise_exception(py, BuiltinExc::LookupError, "native slice callback");
             SLICE_CALLBACK_ERROR_BITS.store(
                 crate::exception_last_bits_noinc(py).unwrap_or(0),
                 Ordering::SeqCst,
@@ -859,10 +861,10 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
                     crate::builtins::exceptions::molt_exception_last_pending(),
                 );
                 let error = error_owner.bits();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     &py,
                     error,
-                    "LookupError"
+                    crate::BuiltinExc::LookupError
                 ));
                 assert_eq!(
                     crate::builtins::exceptions::format_exception_message(
@@ -950,10 +952,10 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
                     crate::builtins::exceptions::molt_exception_last_pending(),
                 );
                 let error = error_owner.bits();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     &py,
                     error,
-                    "LookupError"
+                    crate::BuiltinExc::LookupError
                 ));
                 assert_eq!(
                     crate::builtins::exceptions::format_exception_message(

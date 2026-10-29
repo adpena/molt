@@ -151,15 +151,22 @@ _SESSION_ENVIRONMENT: dict[str, str] = {}
 
 
 def _run_context_env_keys() -> tuple[str, ...]:
-    """The ambient run context: hosted custody, request knobs, roots, session."""
+    """The ambient run context: hosted custody, request knobs, roots, session.
+
+    An operator's explicit external artifact roots are run context too: with
+    them, `prefer_external_artifacts` in pyproject.toml moves default roots off
+    the checkout family's custody root.
+    """
     from molt.dx import (
         DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        EXTERNAL_ARTIFACT_ROOTS_ENV,
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
         MOLT_ROOT_ENV_KEYS,
     )
 
     return (
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        EXTERNAL_ARTIFACT_ROOTS_ENV,
         *MOLT_ROOT_ENV_KEYS,
         *DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
         "MOLT_SESSION_ID",
@@ -168,7 +175,9 @@ def _run_context_env_keys() -> tuple[str, ...]:
 
 
 @pytest.fixture
-def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
+def developer_host_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """Resolve paths as a developer host with no ambient run context does.
 
     A hosted job exports the custody root for the whole job, a workflow may
@@ -180,9 +189,17 @@ def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
     `uv run` calls keep their environment and write nothing into the checkout.
     A child that runs repository tooling on the real checkout needs the
     context back: see `checkout_run_context`.
+
+    Without ``MOLT_CACHE`` a developer host's Molt cache falls back to the
+    user cache base (``molt.default_paths``), so the test gets its own base
+    (``XDG_CACHE_HOME``, or ``LOCALAPPDATA`` on Windows) instead of writing
+    into the developer's real home cache (HF-562). ``HOME`` stays, because
+    Cargo, rustup and uv find their installations through it.
     """
     for key in _run_context_env_keys():
         monkeypatch.delenv(key, raising=False)
+    cache_base = "LOCALAPPDATA" if os.name == "nt" else "XDG_CACHE_HOME"
+    monkeypatch.setenv(cache_base, str(tmp_path_factory.mktemp("user-cache")))
 
 
 @pytest.fixture
@@ -696,6 +713,35 @@ def pytest_configure(config: pytest.Config) -> None:
     _keep_hypothesis_storage_in_scratch()
     _SESSION_ENVIRONMENT.clear()
     _SESSION_ENVIRONMENT.update(os.environ)
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Turn each `@finding` mark into its strict expected failure.
+
+    A finding test lives under tests/findings/ so the coverage projection
+    (tools/finding_coverage.py) sees every one, names exactly one open finding,
+    and takes its expected failure only from that finding.
+    """
+    from tests import findings
+
+    problems: list[str] = []
+    for item in items:
+        marks = tuple(item.iter_markers(name=findings.MARK_NAME))
+        if not marks:
+            continue
+        problem = findings.finding_test_problem(
+            item.path,
+            marks,
+            explicit_xfail=any(True for _ in item.iter_markers(name="xfail")),
+        )
+        if problem is not None:
+            problems.append(f"{item.nodeid}: {problem}")
+            continue
+        item.add_marker(findings.strict_expectation(marks[0].args[0]))
+    if problems:
+        raise pytest.UsageError("invalid finding tests:\n  " + "\n  ".join(problems))
 
 
 def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]

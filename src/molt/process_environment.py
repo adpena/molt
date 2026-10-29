@@ -37,10 +37,14 @@ class ProcessEnvironment(Mapping[str, str]):
     index stores each folded name once, with its original spelling and value.
     Construction is one pass; lookup folds one name and probes one dictionary.
     Only child-block export sorts the names, as Windows' environment block does.
+    The hash agrees with equality and needs no encoding, so a value that is not
+    valid UTF-8 (a POSIX surrogate escape, or a lone UTF-16 surrogate on
+    Windows) keys a cache like any other value.
     """
 
     rule: NameRule
     _values: Mapping[str, tuple[str, str]]
+    _hash: int | None
 
     def __new__(
         cls, values: Mapping[str, str], *, rule: NameRule | None = None
@@ -57,6 +61,7 @@ class ProcessEnvironment(Mapping[str, str]):
         builder = ProcessEnvironmentBuilder(values, rule=rule)
         object.__setattr__(self, "rule", builder.rule)
         object.__setattr__(self, "_values", MappingProxyType(builder._values))
+        object.__setattr__(self, "_hash", None)
 
     def __getitem__(self, name: str) -> str:
         return self._values[self.rule.key(name)][1]
@@ -74,6 +79,16 @@ class ProcessEnvironment(Mapping[str, str]):
             key in other._values and value == other._values[key][1]
             for key, (_name, value) in self._values.items()
         )
+
+    def __hash__(self) -> int:
+        cached = self._hash
+        if cached is None:
+            entries = frozenset(
+                (key, value) for key, (_name, value) in self._values.items()
+            )
+            cached = hash((self.rule, entries))
+            object.__setattr__(self, "_hash", cached)
+        return cached
 
     def updated(self, values: Mapping[str, str]) -> ProcessEnvironment:
         builder = ProcessEnvironmentBuilder(self)

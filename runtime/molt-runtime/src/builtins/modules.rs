@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(test)]
@@ -303,7 +304,11 @@ unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> R
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
             _ => {
-                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "sys module has no dictionary storage",
+                );
                 return Err(());
             }
         };
@@ -403,7 +408,11 @@ unsafe fn sys_populate_stdio(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), 
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
             _ => {
-                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "sys module has no dictionary storage",
+                );
                 return Err(());
             }
         };
@@ -544,7 +553,11 @@ pub(crate) unsafe fn sys_populate_version_metadata(
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
             _ => {
-                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "sys module has no dictionary storage",
+                );
                 return Err(());
             }
         };
@@ -582,7 +595,11 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
         let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
             _ => {
-                raise_exception::<()>(_py, "SystemError", "sys module has no dictionary storage");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "sys module has no dictionary storage",
+                );
                 return Err(());
             }
         };
@@ -693,8 +710,11 @@ fn lookup_namespace_item(
     }
     dec_ref_bits(_py, value);
     let exception = molt_exception_last_pending();
-    let absent =
-        crate::builtins::exceptions::exception_matches_builtin_name(_py, exception, "KeyError");
+    let absent = crate::builtins::exceptions::exception_matches_kind(
+        _py,
+        exception,
+        crate::BuiltinExc::KeyError,
+    );
     dec_ref_bits(_py, exception);
     if !absent {
         return Err(());
@@ -720,19 +740,19 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             trace_bad_module_name_arg(_py, "module_new_ptr", name_bits);
-            return raise_exception::<_>(_py, "TypeError", "module name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "module name must be str");
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
                 trace_bad_module_name_arg(_py, "module_new_type", name_bits);
-                return raise_exception::<_>(_py, "TypeError", "module name must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "module name must be str");
             }
         }
         let _name = match string_obj_to_owned(name_obj) {
             Some(val) => val,
             None => {
                 trace_bad_module_name_arg(_py, "module_new_utf8", name_bits);
-                return raise_exception::<_>(_py, "TypeError", "module name must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "module name must be str");
             }
         };
         if let Some(bits) = execution::module_new_target(_py, &_name) {
@@ -782,12 +802,12 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             trace_bad_module_name_arg(_py, "module_cache_get_ptr", name_bits);
-            return raise_exception::<_>(_py, "TypeError", "module name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "module name must be str");
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
                 trace_bad_module_name_arg(_py, "module_cache_get_type", name_bits);
-                return raise_exception::<_>(_py, "TypeError", "module name must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "module name must be str");
             }
         }
         let name_bytes =
@@ -800,7 +820,11 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
                 Some(val) => val,
                 None => {
                     trace_bad_module_name_arg(_py, "module_cache_get_utf8", name_bits);
-                    return raise_exception::<_>(_py, "TypeError", "module name must be str");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "module name must be str",
+                    );
                 }
             };
             name_owned.as_str()
@@ -875,7 +899,7 @@ pub(crate) fn module_import_attempt(name_bits: u64) -> Result<ModuleImportOutcom
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return Err(raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module name must be str",
             ));
         };
@@ -903,7 +927,7 @@ pub(crate) fn catalog_import_attempt(name_bits: u64) -> Result<ModuleImportOutco
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return Err(raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module name must be str",
             ));
         };
@@ -1067,10 +1091,18 @@ fn copyreg_add_extension_code_int(_py: &PyToken<'_>, code_bits: u64) -> Result<u
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
-        return Err(raise_exception::<_>(_py, "ValueError", "code out of range"));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "code out of range",
+        ));
     };
     if !(1..=0x7fff_ffff).contains(&code) {
-        return Err(raise_exception::<_>(_py, "ValueError", "code out of range"));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "code out of range",
+        ));
     }
     if let Some(owner) = &mut owner {
         owner.release();
@@ -1083,14 +1115,14 @@ fn copyreg_add_constructor(_py: &PyToken<'_>, func_bits: u64) -> Result<(), u64>
     if !callable_ok {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "constructors must be callable",
         ));
     }
     let Some(set_ptr) = copyreg_constructor_registry_ptr(_py) else {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "copyreg constructor registry unavailable",
         ));
     };
@@ -1129,7 +1161,7 @@ fn copyreg_attr_required(_py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> Resul
         None => {
             let name_text = std::str::from_utf8(name).unwrap_or("attribute");
             let msg = format!("copyreg: missing required attribute {name_text}");
-            Err(raise_exception::<_>(_py, "AttributeError", &msg))
+            Err(raise_exception::<_>(_py, BuiltinExc::AttributeError, &msg))
         }
     }
 }
@@ -1229,10 +1261,18 @@ pub extern "C" fn molt_copyreg_pickle(
     crate::with_gil_entry_nopanic!(_py, {
         let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(reducer_bits)));
         if !callable_ok {
-            return raise_exception::<_>(_py, "TypeError", "reduction functions must be callable");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "reduction functions must be callable",
+            );
         }
         let Some(dispatch_ptr) = copyreg_dispatch_ptr(_py) else {
-            return raise_exception::<_>(_py, "RuntimeError", "copyreg dispatch table unavailable");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "copyreg dispatch table unavailable",
+            );
         };
         let completed = unsafe { dict_set_in_place(_py, dispatch_ptr, cls_bits, reducer_bits) };
         if !completed {
@@ -1431,11 +1471,11 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception::<_>(_py, "TypeError", "proto must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "proto must be int");
         };
         drop(proto_owner);
         if proto >= 2 {
-            return raise_exception::<_>(_py, "AssertionError", "");
+            return raise_exception::<_>(_py, BuiltinExc::AssertionError, "");
         }
 
         let builtins = builtin_classes(_py);
@@ -1466,7 +1506,11 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
-                    return raise_exception::<_>(_py, "TypeError", "__flags__ must be int");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "__flags__ must be int",
+                    );
                 };
                 drop(flags_owner);
                 if (flags & 0x200) == 0 {
@@ -1510,7 +1554,7 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
             if base_bits == cls_bits {
                 let class_name = copyreg_class_name(_py, cls_bits);
                 let msg = format!("cannot pickle '{class_name}' object");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let out_bits = unsafe { call_callable1(_py, base_bits, self_bits) };
             if exception_pending(_py) {
@@ -1560,7 +1604,7 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
                         dec_ref_bits(_py, getstate_bits);
                         dec_ref_bits(_py, args_bits);
                         let msg = "a class that defines __slots__ without defining __getstate__ cannot be pickled";
-                        return raise_exception::<_>(_py, "TypeError", msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, msg);
                     }
                 } else {
                     if let Some(type_bits) = type_getstate {
@@ -1590,7 +1634,7 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
                     "cannot pickle '{class_name}' object: a class that defines __slots__ without defining __getstate__ cannot be pickled with protocol {proto}"
                 );
                 dec_ref_bits(_py, args_bits);
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let state_dict_bits = match copyreg_attr_optional(_py, self_bits, b"__dict__") {
                 Ok(bits) => bits,
@@ -1675,14 +1719,14 @@ pub extern "C" fn molt_copyreg_add_extension(
         let Some(extension_ptr) = copyreg_extension_registry_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "copyreg extension registry unavailable",
             );
         };
         let Some(inverted_ptr) = copyreg_inverted_registry_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "copyreg extension registry unavailable",
             );
         };
@@ -1738,7 +1782,7 @@ pub extern "C" fn molt_copyreg_add_extension(
                 }
                 return crate::builtins::exceptions::raise_exception_bytes::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &[
                         b"key ".as_slice(),
                         &key_text,
@@ -1780,7 +1824,7 @@ pub extern "C" fn molt_copyreg_add_extension(
                 }
                 return crate::builtins::exceptions::raise_exception_bytes::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &[
                         b"code ".as_slice(),
                         &code_text,
@@ -1816,21 +1860,21 @@ pub extern "C" fn molt_copyreg_remove_extension(
         let Some(extension_ptr) = copyreg_extension_registry_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "copyreg extension registry unavailable",
             );
         };
         let Some(inverted_ptr) = copyreg_inverted_registry_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "copyreg extension registry unavailable",
             );
         };
         let Some(cache_ptr) = copyreg_extension_cache_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "copyreg extension cache unavailable",
             );
         };
@@ -1861,7 +1905,7 @@ pub extern "C" fn molt_copyreg_remove_extension(
                 }
                 return crate::builtins::exceptions::raise_exception_bytes::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &[
                         b"key ".as_slice(),
                         &key_text,
@@ -1904,7 +1948,7 @@ pub extern "C" fn molt_copyreg_clear_extension_cache() -> u64 {
         let Some(cache_ptr) = copyreg_extension_cache_ptr(_py) else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "copyreg extension cache unavailable",
             );
         };
@@ -2007,10 +2051,16 @@ pub(crate) fn module_cache_publish(
     crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+            None => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "module name must be str");
+            }
         };
         if !module_publication_admits(module_bits) {
-            return raise_exception::<_>(_py, "TypeError", "import returned non-module payload");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "import returned non-module payload",
+            );
         }
         if publication == ModuleCachePublication::CompilerNamespace
             && crate::builtins::module_table::executing_private_body(_py, &name)
@@ -2036,7 +2086,7 @@ pub(crate) fn module_cache_publish(
         {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "canonical sys initializer must publish a module",
             );
         }
@@ -2215,7 +2265,7 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
 pub(crate) fn module_cache_remove(name_bits: u64, expected: Option<u64>) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "module name must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "module name must be str");
         };
         if expected.is_none() && crate::builtins::module_table::executing_private_body(py, &name) {
             return MoltObject::none().bits();
@@ -2314,7 +2364,7 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 "module attribute access expects module, got non-pointer (bits=0x{:x}) for attr '{}'",
                 module_bits, attr_name
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
@@ -2334,13 +2384,15 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                     "module attribute access expects module, got type_id={} (bits=0x{:x}) for attr '{}'",
                     type_id, module_bits, attr_name
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let dict_bits = module_dict_bits(module_ptr);
             let dict_obj = obj_from_bits(dict_bits);
             let _dict_ptr = match dict_obj.as_ptr() {
                 Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
+                _ => {
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "module dict missing");
+                }
             };
             let found =
                 match crate::builtins::attributes::attr_lookup_ptr(_py, module_ptr, attr_bits) {
@@ -2632,7 +2684,11 @@ pub(crate) fn publish_import_child(
         }
         let message =
             format!("Cannot set an attribute on '{parent_name}' for child module '{child_name}'");
-        if crate::builtins::warnings_ext::emit_runtime_warning(py, &message, "ImportWarning") {
+        if crate::builtins::warnings_ext::emit_runtime_warning(
+            py,
+            &message,
+            crate::BuiltinExc::ImportWarning,
+        ) {
             Ok(())
         } else {
             Err(MoltObject::none().bits())
@@ -2663,7 +2719,7 @@ pub(crate) fn prepare_from_import_child(
         }
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "from-import expects module",
         ));
     };
@@ -2674,7 +2730,7 @@ pub(crate) fn prepare_from_import_child(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "from-import expects module",
             ));
         }
@@ -2795,7 +2851,11 @@ pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64
             return MoltObject::none().bits();
         }
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "namespace name must be a string");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "namespace name must be a string",
+            );
         };
         let deleted = if let Some(ptr) = obj_from_bits(namespace_bits).as_ptr()
             && unsafe { crate::object_is_exact_builtin_dict(_py, ptr) }
@@ -2822,7 +2882,11 @@ pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64
             return MoltObject::none().bits();
         }
         clear_exception(_py);
-        raise_exception::<u64>(_py, "NameError", &format!("name '{name}' is not defined"))
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::NameError,
+            &format!("name '{name}' is not defined"),
+        )
     })
 }
 
@@ -2950,7 +3014,7 @@ fn lookup_global_namespace(
 dynamic code execution is outside the verified subset. \
 Use static modules or pre-generated code paths instead."
         );
-        return raise_exception::<_>(py, "RuntimeError", &message);
+        return raise_exception::<_>(py, BuiltinExc::RuntimeError, &message);
     }
     if trace_name_error() {
         eprintln!(
@@ -2975,7 +3039,7 @@ Use static modules or pre-generated code paths instead."
         Some(similar) => format!("name '{name}' is not defined. Did you mean: '{similar}'?"),
         None => format!("name '{name}' is not defined"),
     };
-    raise_exception::<_>(py, "NameError", &message)
+    raise_exception::<_>(py, BuiltinExc::NameError, &message)
 }
 
 /// LOAD_GLOBAL uses the executing frame, including FunctionType aliases whose
@@ -3016,7 +3080,11 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception::<_>(_py, "SystemError", "active globals is not a dictionary");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::SystemError,
+                "active globals is not a dictionary",
+            );
         }
         let module = obj_from_bits(module_bits);
         let Some(module_ptr) = module.as_ptr() else {
@@ -3036,7 +3104,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
             }
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "module get_global expects module, got non-pointer (bits=0x{:x}) for name '{}'",
                     module_bits,
@@ -3060,7 +3128,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 }
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!(
                         "module get_global expects module, got type_id={} (bits=0x{:x}) for name '{}'",
                         object_type_id(module_ptr),
@@ -3074,7 +3142,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 .as_ptr()
                 .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
             {
-                return raise_exception::<_>(_py, "TypeError", "module dict missing");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "module dict missing");
             }
             let builtins =
                 match crate::builtins::frames::frame_effective_builtins_bits(_py, globals) {
@@ -3109,7 +3177,7 @@ fn module_del_global_impl(
                 Ok(None) => {
                     return raise_exception::<_>(
                         _py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "active globals is not a dictionary",
                     );
                 }
@@ -3139,7 +3207,7 @@ fn module_del_global_impl(
             );
         }
         let msg = format!("name '{name}' is not defined");
-        raise_exception::<_>(_py, "NameError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::NameError, &msg)
     }
 }
 
@@ -3181,12 +3249,20 @@ pub(crate) fn module_set_attr(
 ) -> Result<(), ()> {
     let module_obj = obj_from_bits(module_bits);
     let Some(module_ptr) = module_obj.as_ptr() else {
-        raise_exception::<()>(_py, "TypeError", "module attribute set expects module");
+        raise_exception::<()>(
+            _py,
+            BuiltinExc::TypeError,
+            "module attribute set expects module",
+        );
         return Err(());
     };
     unsafe {
         if object_type_id(module_ptr) != TYPE_ID_MODULE {
-            raise_exception::<()>(_py, "TypeError", "module attribute set expects module");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::TypeError,
+                "module attribute set expects module",
+            );
             return Err(());
         }
         let dict_bits = module_dict_bits(module_ptr);
@@ -3194,7 +3270,7 @@ pub(crate) fn module_set_attr(
         let dict_ptr = match dict_obj.as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
             _ => {
-                raise_exception::<()>(_py, "TypeError", "module dict missing");
+                raise_exception::<()>(_py, BuiltinExc::TypeError, "module dict missing");
                 return Err(());
             }
         };
@@ -3237,7 +3313,7 @@ pub(crate) fn module_set_attr(
                 if !callable_ok {
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "__annotate__ must be callable or None",
                     );
                     return Err(());

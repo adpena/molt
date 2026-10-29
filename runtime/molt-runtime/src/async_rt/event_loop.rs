@@ -28,6 +28,7 @@
 //! All callbacks are u64 NaN-boxed Molt callable bits. The event loop invokes them
 //! via `call_callable0` / `call_callable1` without leaving the Rust runtime.
 
+use crate::BuiltinExc;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -463,10 +464,10 @@ pub(super) fn loop_task_sleep_scheduled(
 pub extern "C" fn molt_event_loop_spawn(loop_handle: u64, task_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if with_loop(_py, loop_handle, |state| !state.is_closed()) != Some(true) {
-            return raise_exception::<u64>(_py, "RuntimeError", "Event loop is closed");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "Event loop is closed");
         }
         let Some(task_ptr) = crate::resolve_task_ptr(task_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "object is not awaitable");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
         unsafe {
             let flags = (*crate::header_from_obj_ptr(task_ptr)).load_synchronized_flags();
@@ -479,13 +480,13 @@ pub extern "C" fn molt_event_loop_spawn(loop_handle: u64, task_bits: u64) -> u64
             {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "Task runner was already started",
                 );
             }
         }
         if let Err(message) = super::cancellation::bind_task_loop(_py, task_ptr, loop_handle) {
-            return raise_exception::<u64>(_py, "RuntimeError", message);
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, message);
         }
         unsafe { super::scheduler::molt_spawn(task_bits) }
     })
@@ -519,10 +520,10 @@ pub extern "C" fn molt_event_loop_call_soon(loop_handle: u64, callback_bits: u64
             state.ready.push_back(ReadyWork::Handle(callback_bits));
             Ok(state.claim_parked_for_ready())
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         let Ok(parked) = published else {
-            return raise_exception::<u64>(_py, "RuntimeError", "Event loop is closed");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "Event loop is closed");
         };
         signal_claimed(parked);
         MoltObject::none().bits()
@@ -538,8 +539,10 @@ fn timer_registration_result(py: &crate::PyToken<'_>, timer: TimerRegistrationRe
             signal_claimed(parked);
             MoltObject::from_int(id as i64).bits()
         }
-        Some(Err(())) => raise_exception::<u64>(py, "OverflowError", "timer deadline out of range"),
-        None => raise_exception::<u64>(py, "RuntimeError", "event loop is closed"),
+        Some(Err(())) => {
+            raise_exception::<u64>(py, BuiltinExc::OverflowError, "timer deadline out of range")
+        }
+        None => raise_exception::<u64>(py, BuiltinExc::RuntimeError, "event loop is closed"),
     }
 }
 
@@ -571,7 +574,7 @@ pub extern "C" fn molt_event_loop_call_later(
                 callback_bits,
             )))
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         timer_registration_result(_py, timer)
     })
@@ -605,7 +608,7 @@ pub extern "C" fn molt_event_loop_call_at(
                 callback_bits,
             )))
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         timer_registration_result(_py, timer)
     })
@@ -627,7 +630,7 @@ pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: 
                 .remove(&ordered)
                 .map(|work| work.into_owned_bits())
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         if let Some(bits) = callback {
             dec_ref_bits(_py, bits);
@@ -646,7 +649,7 @@ pub extern "C" fn molt_event_loop_add_reader(
     crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid file descriptor");
         }
         let Some(previous) = with_loop(_py, loop_handle, |state| {
             if state.is_closed() {
@@ -658,7 +661,7 @@ pub extern "C" fn molt_event_loop_add_reader(
                 .insert(fd, IoCallbackEntry { callback_bits })
                 .map(|old| old.callback_bits)
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         if let Some(previous) = previous {
             cancel_io_handle(_py, previous);
@@ -675,7 +678,7 @@ pub extern "C" fn molt_event_loop_remove_reader(loop_handle: u64, fd_bits: u64) 
         let Some(removed) = with_loop(_py, loop_handle, |state| {
             state.readers.remove(&fd).map(|entry| entry.callback_bits)
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         if let Some(bits) = removed {
             cancel_io_handle(_py, bits);
@@ -694,7 +697,7 @@ pub extern "C" fn molt_event_loop_add_writer(
     crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid file descriptor");
         }
         let Some(previous) = with_loop(_py, loop_handle, |state| {
             if state.is_closed() {
@@ -706,7 +709,7 @@ pub extern "C" fn molt_event_loop_add_writer(
                 .insert(fd, IoCallbackEntry { callback_bits })
                 .map(|old| old.callback_bits)
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         if let Some(previous) = previous {
             cancel_io_handle(_py, previous);
@@ -723,7 +726,7 @@ pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) 
         let Some(removed) = with_loop(_py, loop_handle, |state| {
             state.writers.remove(&fd).map(|entry| entry.callback_bits)
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         if let Some(bits) = removed {
             cancel_io_handle(_py, bits);
@@ -739,7 +742,7 @@ pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) 
 pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(closed) = with_loop(_py, loop_handle, |state| state.is_closed()) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         if closed {
             return MoltObject::from_int(0).bits();
@@ -827,12 +830,20 @@ pub extern "C" fn molt_event_loop_wait(loop_handle: u64) -> u64 {
             }
             let Some(step) = with_loop(_py, loop_handle, |state| state.begin_park(Instant::now()))
             else {
-                return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "event loop not found",
+                );
             };
             let (parker, timeout) = match step {
                 ParkStep::Proceed => return MoltObject::none().bits(),
                 ParkStep::Closed => {
-                    return raise_exception::<u64>(_py, "RuntimeError", "Event loop is closed");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "Event loop is closed",
+                    );
                 }
                 ParkStep::Block { parker, timeout } => (parker, timeout),
             };
@@ -870,7 +881,7 @@ pub extern "C" fn molt_event_loop_start(loop_handle: u64) -> u64 {
             // A stop wake left by an earlier run does not end this run's waits.
             state.wake_requested = false;
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         MoltObject::none().bits()
     })
@@ -886,7 +897,7 @@ pub extern "C" fn molt_event_loop_stop(loop_handle: u64) -> u64 {
                 state.state.store(STATE_IDLE, Ordering::Relaxed);
             }
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         MoltObject::none().bits()
     })
@@ -976,7 +987,7 @@ pub extern "C" fn molt_event_loop_set_debug(loop_handle: u64, enabled_bits: u64)
         let Some(()) = with_loop(_py, loop_handle, |state| {
             state.debug = enabled;
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         MoltObject::none().bits()
     })
@@ -1006,7 +1017,7 @@ pub extern "C" fn molt_event_loop_set_exception_handler(
             state.exception_handler_bits = handler_bits;
             old
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         dec_ref_bits(_py, old);
         MoltObject::none().bits()
@@ -1037,7 +1048,7 @@ pub extern "C" fn molt_event_loop_set_task_factory(loop_handle: u64, factory_bit
             state.task_factory_bits = factory_bits;
             old
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "event loop not found");
         };
         dec_ref_bits(_py, old);
         MoltObject::none().bits()

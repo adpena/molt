@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::object::ops_bytes::bytes_ascii_space;
 use crate::object::ops_string::wtf8_step;
@@ -1745,7 +1746,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             else {
                 crate::raise_exception::<()>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "string literal byte length is too large",
                 );
                 return 1;
@@ -1762,7 +1763,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 }
                 crate::raise_exception::<()>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "string literal output pointer is null",
                 );
                 return 2;
@@ -1774,7 +1775,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                     }
                     crate::raise_exception::<()>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "string literal input pointer is null",
                     );
                     return 1;
@@ -1814,7 +1815,11 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 if trace_string_from_bytes() {
                     eprintln!("[molt string_from_bytes] invalid wtf8");
                 }
-                crate::raise_exception::<()>(_py, "ValueError", "invalid WTF-8 string literal");
+                crate::raise_exception::<()>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid WTF-8 string literal",
+                );
                 return 1;
             }
             let obj_ptr = alloc_string(_py, slice);
@@ -1860,7 +1865,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             else {
                 crate::raise_exception::<()>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "bytes literal byte length is too large",
                 );
                 return 1;
@@ -1868,7 +1873,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             if out.is_null() {
                 crate::raise_exception::<()>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "bytes literal output pointer is null",
                 );
                 return 2;
@@ -1877,7 +1882,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                 if len != 0 {
                     crate::raise_exception::<()>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "bytes literal input pointer is null",
                     );
                     return 1;

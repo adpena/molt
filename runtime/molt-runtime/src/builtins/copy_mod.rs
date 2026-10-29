@@ -1,3 +1,4 @@
+use crate::ModuleExc;
 use std::collections::HashMap;
 
 use crate::state::runtime_state::{RuntimeState, runtime_state};
@@ -530,7 +531,7 @@ pub extern "C" fn molt_copy_error(msg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(msg_bits);
         let msg = string_obj_to_owned(obj).unwrap_or_else(|| "copy.Error".to_string());
-        raise_exception::<u64>(_py, "copy.Error", &msg)
+        raise_exception::<u64>(_py, ModuleExc::CopyError, &msg)
     })
 }
 

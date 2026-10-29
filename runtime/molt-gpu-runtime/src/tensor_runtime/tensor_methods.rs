@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
@@ -16,12 +17,16 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
         if weight_shape.len() != 2 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("linear weight must be 2D, got {:?}", weight_shape),
             );
         }
         if x_shape.is_empty() {
-            return raise_exception::<_>(_py, "ValueError", "linear input must be at least 1D");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "linear input must be at least 1D",
+            );
         }
         let in_features = *x_shape.last().unwrap_or(&0);
         let out_features = weight_shape[0];
@@ -29,7 +34,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
         if in_features != weight_in {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "Linear shape mismatch: {:?} with weight {:?}",
                     x_shape, weight_shape
@@ -124,12 +129,16 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
         if weight_shape.len() != 2 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("linear weight must be 2D, got {:?}", weight_shape),
             );
         }
         if x_shape.is_empty() {
-            return raise_exception::<_>(_py, "ValueError", "linear input must be at least 1D");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "linear input must be at least 1D",
+            );
         }
         let split_sizes = match parse_shape(_py, split_sizes_bits, "split_sizes") {
             Ok(value) => value,
@@ -141,7 +150,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
         if in_features != weight_in {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "Linear shape mismatch: {:?} with weight {:?}",
                     x_shape, weight_shape
@@ -151,7 +160,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
         if split_sizes.iter().copied().sum::<usize>() != out_features {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "split sizes {:?} do not match projected dimension {}",
                     split_sizes, out_features
@@ -195,7 +204,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
             }
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "linear split helper did not return a tuple",
             );
         };
@@ -205,7 +214,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
             }
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "linear split helper did not return a tuple",
             );
         };
@@ -215,7 +224,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
             }
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "intrinsic returned wrong split count",
             );
         }
@@ -288,12 +297,16 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
         if weight_shape.len() != 2 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("linear weight must be 2D, got {:?}", weight_shape),
             );
         }
         if x_shape.is_empty() {
-            return raise_exception::<_>(_py, "ValueError", "linear input must be at least 1D");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "linear input must be at least 1D",
+            );
         }
         let in_features = *x_shape.last().unwrap_or(&0);
         let out_features = weight_shape[0];
@@ -301,7 +314,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
         if in_features != weight_in {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "Linear shape mismatch: {:?} with weight {:?}",
                     x_shape, weight_shape
@@ -311,7 +324,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
         if out_features % 2 != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "interleaved gate weight output dimension must be even, got {}",
                     out_features
@@ -524,7 +537,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
         for (idx, dim) in dims.iter().copied().enumerate() {
             if dim == -1 {
                 if neg_idx.is_some() {
-                    return raise_exception::<_>(_py, "ValueError", "Only one dimension can be -1");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "Only one dimension can be -1",
+                    );
                 }
                 neg_idx = Some(idx);
             } else {
@@ -535,7 +552,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
             if known == 0 {
                 return raise_exception::<_>(
                     _py,
-                    "ZeroDivisionError",
+                    BuiltinExc::ZeroDivisionError,
                     "integer division or modulo by zero",
                 );
             }
@@ -546,7 +563,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
             let value = usize::try_from(dim).map_err(|_| {
                 raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!(
                         "Cannot reshape tensor of size {} into shape {:?}",
                         total_size, dims
@@ -561,7 +578,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
         if product(final_shape.as_slice()) != total_size {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "Cannot reshape tensor of size {} into shape {:?}",
                     total_size, final_shape
@@ -622,7 +639,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         if x_shape.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "take_rows requires a tensor with at least 1 dimension",
             );
         }
@@ -650,7 +667,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         let Some(rows_list_ptr) = obj_from_bits(rows_list_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "indices tensor did not materialize to a list",
             );
         };
@@ -669,7 +686,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             );
         }
         if x.buffer.data_view.len < expected_bytes {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
         let allow_negative = is_truthy(_py, obj_from_bits(allow_negative_bits));
         let Some(rows) = (unsafe {
@@ -705,7 +722,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
                 if (idx as f64) != value {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("take_rows indices must be integers, got {:?}", value),
                     );
                 }
@@ -713,7 +730,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             } else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "take_rows indices must be integers",
                 );
             };
@@ -724,7 +741,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             if resolved < 0 || resolved >= x_shape[0] as i64 {
                 return raise_exception::<_>(
                     _py,
-                    "IndexError",
+                    BuiltinExc::IndexError,
                     &format!(
                         "Index {} out of range for axis 0 with size {}",
                         idx, x_shape[0]
@@ -794,34 +811,38 @@ pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: 
         if a_shape.is_empty() || b_shape.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "concat_first_dim requires tensors with at least 1 dimension",
             );
         }
         if a_shape.len() != b_shape.len() {
-            return raise_exception::<_>(_py, "ValueError", "concat_first_dim rank mismatch");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "concat_first_dim rank mismatch",
+            );
         }
         if a_shape[1..] != b_shape[1..] {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "concat_first_dim trailing shape mismatch",
             );
         }
         if a.buffer.format != b.buffer.format {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "concat_first_dim requires matching buffer formats",
             );
         }
         let a_required = a.buffer.size * a.buffer.format.itemsize();
         let b_required = b.buffer.size * b.buffer.format.itemsize();
         if a.buffer.data_view.len < a_required {
-            return raise_exception::<_>(_py, "ValueError", "a buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "a buffer is too small");
         }
         if b.buffer.data_view.len < b_required {
-            return raise_exception::<_>(_py, "ValueError", "b buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "b buffer is too small");
         }
         let mut out = vec![0u8; a_required + b_required];
         let a_src = unsafe { std::slice::from_raw_parts(a.buffer.data_view.ptr, a_required) };
@@ -888,20 +909,24 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
         if base_shape.is_empty() || updates_shape.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "scatter_rows requires tensors with at least 1 dimension",
             );
         }
         if base_shape.len() != updates_shape.len() {
-            return raise_exception::<_>(_py, "ValueError", "scatter_rows rank mismatch");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "scatter_rows rank mismatch");
         }
         if base_shape[1..] != updates_shape[1..] {
-            return raise_exception::<_>(_py, "ValueError", "scatter_rows trailing shape mismatch");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "scatter_rows trailing shape mismatch",
+            );
         }
         if base.buffer.format != updates.buffer.format {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "scatter_rows requires matching buffer formats",
             );
         }
@@ -922,7 +947,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
         if row_count != updates_shape[0] {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "scatter_rows update row count mismatch",
             );
         }
@@ -936,7 +961,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
         let Some(rows_list_ptr) = obj_from_bits(rows_list_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "indices tensor did not materialize to a list",
             );
         };
@@ -963,10 +988,14 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             );
         }
         if base.buffer.data_view.len < base_required {
-            return raise_exception::<_>(_py, "ValueError", "base buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "base buffer is too small");
         }
         if updates.buffer.data_view.len < updates_required {
-            return raise_exception::<_>(_py, "ValueError", "updates buffer is too small");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "updates buffer is too small",
+            );
         }
         let allow_negative = is_truthy(_py, obj_from_bits(allow_negative_bits));
         let Some(rows) = (unsafe {
@@ -1005,7 +1034,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
                 if (idx as f64) != value {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("scatter_rows indices must be integers, got {:?}", value),
                     );
                 }
@@ -1013,7 +1042,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             } else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "scatter_rows indices must be integers",
                 );
             };
@@ -1024,7 +1053,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             if resolved < 0 || resolved >= base_shape[0] as i64 {
                 return raise_exception::<_>(
                     _py,
-                    "IndexError",
+                    BuiltinExc::IndexError,
                     &format!(
                         "Index {} out of range for axis 0 with size {}",
                         idx, base_shape[0]
@@ -1098,7 +1127,11 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
         let mut dims = Vec::with_capacity(dims_i64.len());
         for dim in dims_i64 {
             let value = usize::try_from(dim).map_err(|_| {
-                raise_exception::<u64>(_py, "ValueError", "shape dimensions must be non-negative")
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "shape dimensions must be non-negative",
+                )
             });
             match value {
                 Ok(value) => dims.push(value),

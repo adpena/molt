@@ -41,7 +41,7 @@ fn next_logger_handle() -> i64 {
 fn return_str(_py: &PyToken, s: &str) -> u64 {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -50,7 +50,7 @@ fn handle_from_bits(_py: &PyToken, handle_bits: u64, kind: &str) -> Option<i64> 
     let obj = obj_from_bits(handle_bits);
     let Some(id) = to_i64(obj) else {
         let msg = format!("{kind} handle must be an int");
-        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         return None;
     };
     Some(id)
@@ -149,7 +149,7 @@ pub extern "C" fn molt_logging_handler_set_level(handler_bits: u64, level_bits: 
         if let Some(handler) = registry.get_mut(&h_id) {
             handler.level = level;
         } else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Handler handle");
         }
         MoltObject::none().bits()
     })
@@ -163,7 +163,7 @@ pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
         };
         let registry = logging_state().handler_registry.lock().unwrap();
         if !registry.contains_key(&h_id) {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Handler handle");
         }
         MoltObject::none().bits()
     })
@@ -308,7 +308,7 @@ fn logging_state() -> &'static LoggingRuntimeState {
 pub extern "C" fn molt_logging_logger_new(name_bits: u64, level_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         if string_obj_to_owned(obj_from_bits(name_bits)).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "Logger name must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "Logger name must be str");
         }
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let logger = LoggerState::new(level);
@@ -333,7 +333,7 @@ pub extern "C" fn molt_logging_logger_set_level(handle_bits: u64, level_bits: u6
         if let Some(logger) = registry.get_mut(&id) {
             logger.level = level;
         } else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Logger handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Logger handle");
         }
         MoltObject::none().bits()
     })
@@ -354,7 +354,7 @@ pub extern "C" fn molt_logging_logger_add_handler(logger_bits: u64, handler_bits
                 logger.handlers.push(handler_id);
             }
         } else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Logger handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Logger handle");
         }
         MoltObject::none().bits()
     })
@@ -373,7 +373,7 @@ pub extern "C" fn molt_logging_logger_remove_handler(logger_bits: u64, handler_b
         if let Some(logger) = registry.get_mut(&logger_id) {
             logger.handlers.retain(|&h| h != handler_id);
         } else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Logger handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Logger handle");
         }
         MoltObject::none().bits()
     })
@@ -442,7 +442,7 @@ pub extern "C" fn molt_logging_shutdown() -> u64 {
 pub extern "C" fn molt_logging_get_level_name(level_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(level) = to_i64(obj_from_bits(level_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "level must be an int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "level must be an int");
         };
         let name = logging_state().level_names.lock().unwrap().get_name(level);
         return_str(_py, &name)
@@ -453,10 +453,10 @@ pub extern "C" fn molt_logging_get_level_name(level_bits: u64) -> u64 {
 pub extern "C" fn molt_logging_add_level_name(level_bits: u64, name_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(level) = to_i64(obj_from_bits(level_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "level must be an int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "level must be an int");
         };
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "level name must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "level name must be str");
         };
         logging_state().level_names.lock().unwrap().add(level, name);
         MoltObject::none().bits()
@@ -467,7 +467,7 @@ pub extern "C" fn molt_logging_add_level_name(level_bits: u64, name_bits: u64) -
 pub extern "C" fn molt_logging_level_to_int(name_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "level name must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "level name must be str");
         };
         let level_names = logging_state().level_names.lock().unwrap();
         if let Some(level) = level_names.get_level(&name) {
@@ -476,7 +476,7 @@ pub extern "C" fn molt_logging_level_to_int(name_bits: u64) -> u64 {
             // CPython returns the string itself when unknown; in the intrinsic
             // layer we raise ValueError for type safety.
             let msg = format!("Unknown level: '{name}'");
-            raise_exception::<u64>(_py, "ValueError", &msg)
+            raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)
         }
     })
 }

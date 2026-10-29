@@ -21,62 +21,62 @@ import pytest
 
 
 class TestGenerateWorkerInjectionPrevention:
-    """Ensure capabilities are safely encoded via json.dumps, not string
-    interpolation, so that JS injection via crafted capability names is
-    impossible."""
+    """Admitted manifest strings remain JSON data in generated JavaScript."""
+
+    @staticmethod
+    def _render(tmp_path, payload):
+        from tools.generate_worker import generate_worker
+
+        output = tmp_path / "worker.js"
+        module = tmp_path / "worker_linked.wasm"
+        module.write_bytes(EMPTY_WASM_MODULE)
+        manifest = write_wasm_execution_manifest(tmp_path, linked=module)
+        deployment = json.loads(manifest.read_text(encoding="utf-8"))
+        deployment["fixture_metadata"] = payload
+        deployment["launch"]["environment"]["FIXTURE_VALUE"] = (
+            payload if isinstance(payload, str) else json.dumps(payload)
+        )
+        manifest.write_text(json.dumps(deployment), encoding="utf-8")
+        generate_worker(output)
+        return output.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _assert_transported(content, payload):
+        prefix = "const deploymentManifest = globalThis.MoltWasmLoaderBridge.requireMoltDeploymentManifest(JSON.parse("
+        line = next(line for line in content.splitlines() if line.startswith(prefix))
+        assert line.endswith("));")
+        # Independently decode the outer JS string literal and the inner JSON
+        # document; hostile text must be data at both serialization boundaries.
+        deployment = json.loads(json.loads(line[len(prefix) : -3]))
+        assert deployment["fixture_metadata"] == payload
+        expected_env = payload if isinstance(payload, str) else json.dumps(payload)
+        assert deployment["launch"]["environment"]["FIXTURE_VALUE"] == expected_env
+        assert deployment["launch"]["environment"]["MOLT_CAPABILITIES"] == ""
+        assert deployment["launch"]["environment"]["MOLT_CAPABILITY_TIER"] == "none"
 
     def test_single_quotes_escaped(self, tmp_path):
-        from tools.generate_worker import generate_worker
-
-        output = tmp_path / "worker.js"
-        module = tmp_path / "worker_linked.wasm"
-        module.write_bytes(EMPTY_WASM_MODULE)
-        write_wasm_execution_manifest(tmp_path, linked=module)
-        generate_worker(output, ["fs.read'; alert(1); //"])
-        content = output.read_text(encoding="utf-8")
-        # json.dumps produces double-quoted strings; a raw single-quote
-        # splice would leave the payload unescaped.
-        assert "alert(1)" in content  # the string is present ...
-        # ... but it must be inside a JSON array (double-quoted), not bare JS.
-        assert json.dumps(["fs.read'; alert(1); //"]) in content
+        payload = "fs.read'; alert(1); //"
+        content = self._render(tmp_path, payload)
+        assert "alert(1)" in content
+        self._assert_transported(content, payload)
 
     def test_backticks_escaped(self, tmp_path):
-        from tools.generate_worker import generate_worker
-
-        output = tmp_path / "worker.js"
-        module = tmp_path / "worker_linked.wasm"
-        module.write_bytes(EMPTY_WASM_MODULE)
-        write_wasm_execution_manifest(tmp_path, linked=module)
-        generate_worker(output, ["fs.read`${evil}`"])
-        content = output.read_text(encoding="utf-8")
-        assert json.dumps(["fs.read`${evil}`"]) in content
+        payload = "fs.read`${evil}`"
+        self._assert_transported(self._render(tmp_path, payload), payload)
 
     def test_angle_brackets_escaped(self, tmp_path):
-        from tools.generate_worker import generate_worker
-
-        output = tmp_path / "worker.js"
-        module = tmp_path / "worker_linked.wasm"
-        module.write_bytes(EMPTY_WASM_MODULE)
-        write_wasm_execution_manifest(tmp_path, linked=module)
-        generate_worker(output, ["<script>alert(1)</script>"])
-        content = output.read_text(encoding="utf-8")
-        assert json.dumps(["<script>alert(1)</script>"]) in content
+        payload = "<script>alert(1)</script>"
+        self._assert_transported(self._render(tmp_path, payload), payload)
 
     def test_output_uses_json_dumps_encoding(self, tmp_path):
-        """The substitution must use json.dumps (double-quoted JSON array),
-        not a Python repr or manual quoting."""
-        from tools.generate_worker import generate_worker
-
-        caps = ["fs.read", "net"]
-        output = tmp_path / "worker.js"
-        module = tmp_path / "worker_linked.wasm"
-        module.write_bytes(EMPTY_WASM_MODULE)
-        write_wasm_execution_manifest(tmp_path, linked=module)
-        generate_worker(output, caps)
-        content = output.read_text(encoding="utf-8")
-        assert json.dumps(caps) in content
-        # Must not contain Python-style single-quoted list repr.
+        payload = ["fs.read", "net"]
+        content = self._render(tmp_path, payload)
+        self._assert_transported(content, payload)
         assert "['fs.read'" not in content
+
+    def test_manifest_template_tokens_remain_literal_data(self, tmp_path):
+        payload = "{{TMP_QUOTA_MB}} {{WASM_FILENAME}} {{DEBUG_STDERR}}"
+        self._assert_transported(self._render(tmp_path, payload), payload)
 
 
 # ---------------------------------------------------------------------------

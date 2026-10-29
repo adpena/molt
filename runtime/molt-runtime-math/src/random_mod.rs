@@ -363,7 +363,7 @@ fn next_random_handle() -> i64 {
 fn rng_handle_from_bits(_py: &PyToken, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
     let Some(id) = to_i64(obj) else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "Random handle must be an int");
         return None;
     };
     Some(id)
@@ -382,7 +382,11 @@ fn f64_from_bits(_py: &PyToken, bits: u64, param_name: &str) -> Option<f64> {
         let big = unsafe { bigint_ref(ptr) };
         return Some(big.to_f64().unwrap_or(f64::INFINITY));
     }
-    let _ = raise_exception::<u64>(_py, "TypeError", &format!("{param_name} must be a number"));
+    let _ = raise_exception::<u64>(
+        _py,
+        BuiltinExc::TypeError,
+        &format!("{param_name} must be a number"),
+    );
     None
 }
 
@@ -406,7 +410,7 @@ fn seed_from_os(_py: &PyToken) -> Option<Vec<u32>> {
     let mut buf = [0u8; 32];
     fill_os_random(&mut buf)
         .map_err(|_| {
-            let _ = raise_exception::<u64>(_py, "OSError", "getrandom failed");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::OSError, "getrandom failed");
         })
         .ok()?;
     let big = BigInt::from_bytes_be(Sign::Plus, &buf);
@@ -455,7 +459,11 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
             if maybe_ptr_from_bits(hash_bits).is_some() {
                 dec_ref_bits(_py, hash_bits);
             }
-            let _ = raise_exception::<u64>(_py, "TypeError", "hash() should return an integer");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "hash() should return an integer",
+            );
             return None;
         };
         if maybe_ptr_from_bits(hash_bits).is_some() {
@@ -468,7 +476,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
     let Some(seed_ptr) = seed_obj.as_ptr() else {
         let _ = raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "The only supported seed types are: None, int, float, str, bytes, bytearray.",
         );
         return None;
@@ -481,7 +489,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
                 let Some(slice) = bytes_like_slice(seed_ptr) else {
                     let _ = raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "The only supported seed types are: None, int, float, str, bytes, bytearray.",
                     );
                     return None;
@@ -491,7 +499,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
             _ => {
                 let _ = raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "The only supported seed types are: None, int, float, str, bytes, bytearray.",
                 );
                 return None;
@@ -526,7 +534,11 @@ fn seed_bytes_to_bigint(seed_bytes: &[u8]) -> BigInt {
 fn alloc_tuple_bits(_py: &PyToken, elems: &[u64]) -> Result<u64, u64> {
     let ptr = alloc_tuple(_py, elems);
     if ptr.is_null() {
-        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+        return Err(raise_exception::<u64>(
+            _py,
+            BuiltinExc::MemoryError,
+            "out of memory",
+        ));
     }
     Ok(MoltObject::from_ptr(ptr).bits())
 }
@@ -534,7 +546,11 @@ fn alloc_tuple_bits(_py: &PyToken, elems: &[u64]) -> Result<u64, u64> {
 fn alloc_list_bits(_py: &PyToken, elems: &[u64]) -> Result<u64, u64> {
     let ptr = alloc_list(_py, elems);
     if ptr.is_null() {
-        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+        return Err(raise_exception::<u64>(
+            _py,
+            BuiltinExc::MemoryError,
+            "out of memory",
+        ));
     }
     Ok(MoltObject::from_ptr(ptr).bits())
 }
@@ -606,7 +622,7 @@ pub extern "C" fn molt_random_random(handle_bits: u64) -> u64 {
         };
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         MoltObject::from_float(rng.random()).bits()
     })
@@ -621,17 +637,21 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
         };
         let k_obj = obj_from_bits(k_bits);
         let Some(k_i64) = to_i64(k_obj) else {
-            return raise_exception::<u64>(_py, "TypeError", "k must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "k must be an integer");
         };
         if k_i64 < 0 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "number of bits must be non-negative",
             );
         }
         if k_i64 > 65_536 {
-            return raise_exception::<u64>(_py, "ValueError", "number of bits must be <= 65536");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "number of bits must be <= 65536",
+            );
         }
         let k = k_i64 as u32;
         if k == 0 {
@@ -640,7 +660,11 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
         let big = {
             let mut reg = random_registry().lock().unwrap();
             let Some(rng) = reg.get_mut(&id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid Random handle",
+                );
             };
             rng.randbits_biguint(k)
         };
@@ -669,17 +693,21 @@ pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
         } else if let Some(ptr) = bigint_ptr_from_bits(n_bits) {
             unsafe { bigint_ref(ptr) }.clone()
         } else {
-            return raise_exception::<u64>(_py, "TypeError", "n must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "n must be an integer");
         };
 
         if n_big <= BigInt::zero() {
-            return raise_exception::<u64>(_py, "ValueError", "n must be positive");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "n must be positive");
         }
 
         let result = {
             let mut reg = random_registry().lock().unwrap();
             let Some(rng) = reg.get_mut(&id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid Random handle",
+                );
             };
             rng.randbelow(&n_big)
         };
@@ -705,7 +733,11 @@ pub extern "C" fn molt_random_getstate(handle_bits: u64) -> u64 {
         let (mt_words, index, gauss_next) = {
             let reg = random_registry().lock().unwrap();
             let Some(rng) = reg.get(&id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid Random handle",
+                );
             };
             (rng.mt, rng.index, rng.gauss_next)
         };
@@ -752,29 +784,41 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
 
         let state_obj = obj_from_bits(state_bits);
         let Some(state_ptr) = state_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "state must be a tuple");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "state must be a tuple");
         };
         let state_type = unsafe { object_type_id(state_ptr) };
         if state_type != TYPE_ID_TUPLE && state_type != TYPE_ID_LIST {
-            return raise_exception::<u64>(_py, "TypeError", "state must be a tuple");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "state must be a tuple");
         }
 
         let Some(outer_elems) = (unsafe { seq_snapshot(state_ptr) }) else {
             return MoltObject::none().bits();
         };
         if outer_elems.len() < 3 {
-            return raise_exception::<u64>(_py, "ValueError", "state tuple must have 3 elements");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "state tuple must have 3 elements",
+            );
         }
 
         // element 1: internalstate tuple (625 elements)
         let inner_bits = outer_elems[1];
         let inner_obj = obj_from_bits(inner_bits);
         let Some(inner_ptr) = inner_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "internalstate must be a tuple");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "internalstate must be a tuple",
+            );
         };
         let inner_type = unsafe { object_type_id(inner_ptr) };
         if inner_type != TYPE_ID_TUPLE && inner_type != TYPE_ID_LIST {
-            return raise_exception::<u64>(_py, "TypeError", "internalstate must be a tuple");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "internalstate must be a tuple",
+            );
         }
         let Some(inner_elems) = (unsafe { seq_snapshot(inner_ptr) }) else {
             return MoltObject::none().bits();
@@ -782,7 +826,7 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
         if inner_elems.len() != MT_N + 1 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "internalstate must have 625 elements",
             );
         }
@@ -791,13 +835,17 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
         for (i, &bits) in inner_elems[..MT_N].iter().enumerate() {
             let obj = obj_from_bits(bits);
             let Some(v) = to_i64(obj) else {
-                return raise_exception::<u64>(_py, "TypeError", "MT state elements must be ints");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "MT state elements must be ints",
+                );
             };
             mt[i] = v as u32;
         }
         let index_obj = obj_from_bits(inner_elems[MT_N]);
         let Some(index_i64) = to_i64(index_obj) else {
-            return raise_exception::<u64>(_py, "TypeError", "MT index must be an int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "MT index must be an int");
         };
         let index = (index_i64 as usize).min(MT_N);
 
@@ -815,7 +863,11 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
         {
             let mut reg = random_registry().lock().unwrap();
             let Some(rng) = reg.get_mut(&id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid Random handle",
+                );
             };
             rng.mt = mt;
             rng.index = index;
@@ -837,11 +889,11 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
 
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "shuffle requires a list");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "shuffle requires a list");
         };
         let list_type = unsafe { object_type_id(list_ptr) };
         if list_type != TYPE_ID_LIST {
-            return raise_exception::<u64>(_py, "TypeError", "shuffle requires a list");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "shuffle requires a list");
         }
 
         let n = unsafe { list_len(list_ptr) };
@@ -854,7 +906,7 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
         // the GIL serializes us, we can just lock once and work.
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         // Fisher-Yates: generate each index under the RNG lock, then mutate
@@ -902,7 +954,7 @@ pub extern "C" fn molt_random_gauss(handle_bits: u64, mu_bits: u64, sigma_bits: 
         };
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         MoltObject::from_float(rng.gauss(mu, sigma)).bits()
     })
@@ -923,7 +975,7 @@ pub extern "C" fn molt_random_uniform(handle_bits: u64, a_bits: u64, b_bits: u64
         };
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         MoltObject::from_float(a + (b - a) * rng.random()).bits()
     })
@@ -967,7 +1019,7 @@ pub extern "C" fn molt_random_triangular(
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         let u = rng.random();
         let result = if u > c {
@@ -990,11 +1042,15 @@ pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> 
             return MoltObject::none().bits();
         };
         if lambd == 0.0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "lambd must not be zero");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ZeroDivisionError,
+                "lambd must not be zero",
+            );
         }
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         // CPython: -log(random()) / lambd, guarding against log(0)
         let u = loop {
@@ -1026,7 +1082,7 @@ pub extern "C" fn molt_random_normalvariate(
         };
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         MoltObject::from_float(rng.normalvariate(mu, sigma)).bits()
     })
@@ -1051,7 +1107,7 @@ pub extern "C" fn molt_random_lognormvariate(
         };
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         let nv = rng.normalvariate(mu, sigma);
         MoltObject::from_float(rng_exp(nv)).bits()
@@ -1078,7 +1134,7 @@ pub extern "C" fn molt_random_vonmisesvariate(
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         use core::f64::consts::{PI, TAU};
@@ -1124,7 +1180,7 @@ pub extern "C" fn molt_random_paretovariate(handle_bits: u64, alpha_bits: u64) -
         };
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         let u = loop {
             let v = rng.random();
@@ -1155,7 +1211,7 @@ pub extern "C" fn molt_random_weibullvariate(
         };
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
         let u = loop {
             let v = rng.random();
@@ -1189,14 +1245,14 @@ pub extern "C" fn molt_random_gammavariate(
         if alpha <= 0.0 || beta <= 0.0 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "gammavariate: alpha and beta must be > 0.0",
             );
         }
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         // CPython uses two algorithms:
@@ -1263,14 +1319,14 @@ pub extern "C" fn molt_random_betavariate(
         if alpha <= 0.0 || beta <= 0.0 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "betavariate: alpha and beta must be > 0.0",
             );
         }
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         let y = if alpha < 1.0 {
@@ -1311,11 +1367,19 @@ pub extern "C" fn molt_random_choices(
 
         let pop_obj = obj_from_bits(population_bits);
         let Some(pop_ptr) = pop_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "population must be a sequence");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "population must be a sequence",
+            );
         };
         let pop_type = unsafe { object_type_id(pop_ptr) };
         if pop_type != TYPE_ID_LIST && pop_type != TYPE_ID_TUPLE {
-            return raise_exception::<u64>(_py, "TypeError", "population must be a list or tuple");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "population must be a list or tuple",
+            );
         }
         let Some(pop_elems) = (unsafe { seq_snapshot(pop_ptr) }) else {
             return MoltObject::none().bits();
@@ -1325,17 +1389,17 @@ pub extern "C" fn molt_random_choices(
         if pop_len == 0 {
             return raise_exception::<u64>(
                 _py,
-                "IndexError",
+                BuiltinExc::IndexError,
                 "cannot choose from an empty sequence",
             );
         }
 
         let k_obj = obj_from_bits(k_bits);
         let Some(k_i64) = to_i64(k_obj) else {
-            return raise_exception::<u64>(_py, "TypeError", "k must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "k must be an integer");
         };
         if k_i64 < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "k must be non-negative");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "k must be non-negative");
         }
         let k = k_i64 as usize;
 
@@ -1345,13 +1409,17 @@ pub extern "C" fn molt_random_choices(
             None
         } else {
             let Some(cw_ptr) = cum_weights_obj.as_ptr() else {
-                return raise_exception::<u64>(_py, "TypeError", "cum_weights must be a sequence");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cum_weights must be a sequence",
+                );
             };
             let cw_type = unsafe { object_type_id(cw_ptr) };
             if cw_type != TYPE_ID_LIST && cw_type != TYPE_ID_TUPLE {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "cum_weights must be a list or tuple",
                 );
             }
@@ -1361,7 +1429,7 @@ pub extern "C" fn molt_random_choices(
             if cw_elems.len() != pop_len {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "cum_weights must have the same length as population",
                 );
             }
@@ -1377,7 +1445,7 @@ pub extern "C" fn molt_random_choices(
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         let mut result_bits: Vec<u64> = Vec::with_capacity(k);
@@ -1427,11 +1495,19 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
 
         let pop_obj = obj_from_bits(population_bits);
         let Some(pop_ptr) = pop_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "population must be a sequence");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "population must be a sequence",
+            );
         };
         let pop_type = unsafe { object_type_id(pop_ptr) };
         if pop_type != TYPE_ID_LIST && pop_type != TYPE_ID_TUPLE {
-            return raise_exception::<u64>(_py, "TypeError", "population must be a list or tuple");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "population must be a list or tuple",
+            );
         }
         let Some(pop_elems) = (unsafe { seq_snapshot(pop_ptr) }) else {
             return MoltObject::none().bits();
@@ -1440,19 +1516,27 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
 
         let k_obj = obj_from_bits(k_bits);
         let Some(k_i64) = to_i64(k_obj) else {
-            return raise_exception::<u64>(_py, "TypeError", "k must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "k must be an integer");
         };
         if k_i64 < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "sample k must be non-negative");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "sample k must be non-negative",
+            );
         }
         let k = k_i64 as usize;
         if k > n {
-            return raise_exception::<u64>(_py, "ValueError", "sample k larger than population");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "sample k larger than population",
+            );
         }
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         // For small k relative to n, use a set-based approach.
@@ -1515,17 +1599,21 @@ fn rng_lgamma(x: f64) -> f64 {
 pub extern "C" fn molt_random_binomialvariate(handle_bits: u64, n_bits: u64, p_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "Random handle must be an int",
+            );
         };
         let Some(n) = to_i64(obj_from_bits(n_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "n must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "n must be an integer");
         };
         let Some(p) = f64_from_bits(_py, p_bits, "p") else {
-            return raise_exception::<u64>(_py, "TypeError", "p must be a number");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "p must be a number");
         };
 
         if n < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "n must be non-negative");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "n must be non-negative");
         }
         if p <= 0.0 || p >= 1.0 {
             if p == 0.0 {
@@ -1536,14 +1624,14 @@ pub extern "C" fn molt_random_binomialvariate(handle_bits: u64, n_bits: u64, p_b
             }
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "p must be in the range 0.0 <= p <= 1.0",
             );
         }
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         let result = binomialvariate_impl(rng, n, p);
@@ -1631,10 +1719,14 @@ pub extern "C" fn molt_random_randrange(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "Random handle must be an int",
+            );
         };
         let Some(istart) = to_i64(obj_from_bits(start_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "integer argument expected");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
         // stop = None is encoded as MoltObject::none()
         let stop_obj = obj_from_bits(stop_bits);
@@ -1644,24 +1736,28 @@ pub extern "C" fn molt_random_randrange(
             to_i64(stop_obj)
         };
         let Some(istep) = to_i64(obj_from_bits(step_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "integer argument expected");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         if istop_opt.is_none() {
             if istep != 1 {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "Missing a non-None stop argument",
                 );
             }
             if istart <= 0 {
-                return raise_exception::<u64>(_py, "ValueError", "empty range for randrange()");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "empty range for randrange()",
+                );
             }
             let n_big = BigInt::from(istart);
             let result = rng.randbelow(&n_big);
@@ -1672,7 +1768,11 @@ pub extern "C" fn molt_random_randrange(
         let width = istop - istart;
         if istep == 1 {
             if width <= 0 {
-                return raise_exception::<u64>(_py, "ValueError", "empty range for randrange()");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "empty range for randrange()",
+                );
             }
             let n_big = BigInt::from(width);
             let r = rng.randbelow(&n_big);
@@ -1681,7 +1781,11 @@ pub extern "C" fn molt_random_randrange(
         }
 
         if istep == 0 {
-            return raise_exception::<u64>(_py, "ValueError", "zero step for randrange()");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "zero step for randrange()",
+            );
         }
 
         let n = if istep > 0 {
@@ -1690,7 +1794,11 @@ pub extern "C" fn molt_random_randrange(
             (width + istep + 1) / istep
         };
         if n <= 0 {
-            return raise_exception::<u64>(_py, "ValueError", "empty range for randrange()");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "empty range for randrange()",
+            );
         }
 
         let n_big = BigInt::from(n);
@@ -1705,19 +1813,27 @@ pub extern "C" fn molt_random_randrange(
 pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "Random handle must be an int");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "Random handle must be an int",
+            );
         };
         let Some(n) = to_i64(obj_from_bits(n_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "n must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "n must be an integer");
         };
         if n < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "negative argument not allowed");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative argument not allowed",
+            );
         }
         let n = n as usize;
 
         let mut reg = random_registry().lock().unwrap();
         let Some(rng) = reg.get_mut(&id) else {
-            return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid Random handle");
         };
 
         let total_bits = (n * 8) as u32;
@@ -1730,7 +1846,7 @@ pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
 
         let ptr = alloc_bytes(_py, &result);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::attr::{
     DescriptorMutation, DescriptorMutationOutcome, class_inferred_field_offset, descriptor_call1,
     descriptor_call2, descriptor_mutate,
@@ -15,7 +16,7 @@ unsafe fn readonly_descriptor_metadata(
     {
         Some(raise_exception::<u64>(
             py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             "readonly attribute",
         ))
     } else {
@@ -531,7 +532,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
     unsafe {
         crate::with_gil_entry_nopanic!(py, {
             if obj_ptr.is_null() {
-                return raise_exception::<u64>(py, "AttributeError", "object has no attribute");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::AttributeError,
+                    "object has no attribute",
+                );
             }
             mutate_attr_bytes(
                 py,
@@ -623,13 +628,17 @@ unsafe fn set_attr_ptr_with_name(
                 let class_label = class_name_for_error(class_bits);
                 let msg =
                     format!("cannot set '{attr_name}' attribute of immutable type '{class_label}'");
-                raise_exception::<()>(_py, "TypeError", &msg);
+                raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
                 return Err(());
             }
             if crate::object::class_definition_is_finished(obj_ptr)
                 && matches!(attr_name, "__molt_layout_size__" | "__molt_field_offsets__")
             {
-                raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "class layout metadata is immutable",
+                );
                 return Err(());
             }
             // A class object is an instance of its metaclass. Its metaclass
@@ -705,7 +714,7 @@ unsafe fn set_attr_ptr_with_name(
                 if builtin_classes(_py).is_builtin_callable_class(object_class_bits(obj_ptr)) {
                     raise_exception::<()>(
                         _py,
-                        "AttributeError",
+                        BuiltinExc::AttributeError,
                         &format!(
                             "'{}' object has no attribute '__code__'",
                             type_name(_py, MoltObject::from_ptr(obj_ptr)),
@@ -717,7 +726,7 @@ unsafe fn set_attr_ptr_with_name(
                 let Some(val_ptr) = val_obj.as_ptr() else {
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "function __code__ must be a code object",
                     );
                     return Err(());
@@ -725,7 +734,7 @@ unsafe fn set_attr_ptr_with_name(
                 if object_type_id(val_ptr) != TYPE_ID_CODE {
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "function __code__ must be a code object",
                     );
                     return Err(());
@@ -734,7 +743,7 @@ unsafe fn set_attr_ptr_with_name(
                 else {
                     raise_exception::<()>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "function __code__ must have a published callable identity",
                     );
                     return Err(());
@@ -742,7 +751,7 @@ unsafe fn set_attr_ptr_with_name(
                 if !code_identity.call_abi.is_reconstructible() {
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "cannot assign opaque runtime-context code to a Python function",
                     );
                     return Err(());
@@ -751,7 +760,7 @@ unsafe fn set_attr_ptr_with_name(
                 if !function_abi.is_reconstructible() {
                     raise_exception::<()>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "cannot replace code on an opaque runtime-context function",
                     );
                     return Err(());
@@ -759,7 +768,7 @@ unsafe fn set_attr_ptr_with_name(
                 if function_abi != code_identity.call_abi {
                     raise_exception::<()>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "function and code object use different callable context ABIs",
                     );
                     return Err(());
@@ -772,7 +781,7 @@ unsafe fn set_attr_ptr_with_name(
                     else {
                         raise_exception::<()>(
                             _py,
-                            "SystemError",
+                            BuiltinExc::SystemError,
                             "function closure is not a tuple",
                         );
                         return Err(());
@@ -780,7 +789,7 @@ unsafe fn set_attr_ptr_with_name(
                     if closure.first_non_cell.is_some() {
                         raise_exception::<()>(
                             _py,
-                            "SystemError",
+                            BuiltinExc::SystemError,
                             "function closure contains a non-cell value",
                         );
                         return Err(());
@@ -791,7 +800,7 @@ unsafe fn set_attr_ptr_with_name(
                 let Some(freevars_ptr) = obj_from_bits(freevars_bits).as_ptr() else {
                     raise_exception::<()>(
                         _py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "code freevars metadata is not a tuple",
                     );
                     return Err(());
@@ -799,7 +808,7 @@ unsafe fn set_attr_ptr_with_name(
                 if object_type_id(freevars_ptr) != TYPE_ID_TUPLE {
                     raise_exception::<()>(
                         _py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "code freevars metadata is not a tuple",
                     );
                     return Err(());
@@ -811,7 +820,7 @@ unsafe fn set_attr_ptr_with_name(
                     let msg = format!(
                         "{name}() requires a code object with {closure_len} free vars, not {freevars_len}"
                     );
-                    raise_exception::<()>(_py, "ValueError", &msg);
+                    raise_exception::<()>(_py, BuiltinExc::ValueError, &msg);
                     return Err(());
                 }
                 if !crate::builtins::functions::function_replace_code_bits(_py, obj_ptr, val_bits) {
@@ -820,7 +829,7 @@ unsafe fn set_attr_ptr_with_name(
                 return Ok(());
             }
             if attr_name == "__closure__" {
-                raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+                raise_exception::<()>(_py, BuiltinExc::AttributeError, "readonly attribute");
                 return Err(());
             }
             if attr_name == "__annotate__" && pep649_enabled(_py) {
@@ -830,7 +839,7 @@ unsafe fn set_attr_ptr_with_name(
                     if !callable_ok {
                         raise_exception::<()>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "__annotate__ must be callable or None",
                         );
                         return Err(());
@@ -852,7 +861,7 @@ unsafe fn set_attr_ptr_with_name(
                     let Some(val_ptr) = val_obj.as_ptr() else {
                         raise_exception::<()>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "__annotations__ must be set to a dict object",
                         );
                         return Err(());
@@ -860,7 +869,7 @@ unsafe fn set_attr_ptr_with_name(
                     if object_type_id(val_ptr) != TYPE_ID_DICT {
                         raise_exception::<()>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "__annotations__ must be set to a dict object",
                         );
                         return Err(());
@@ -954,7 +963,7 @@ unsafe fn module_delattr_namespace(
 ) -> Result<(), ()> {
     unsafe {
         if attr_name == "__dict__" {
-            raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(_py, BuiltinExc::AttributeError, "readonly attribute");
             return Err(());
         }
         let dict_bits = module_dict_bits(obj_ptr);
@@ -988,7 +997,7 @@ unsafe fn module_delattr_namespace(
                     return Ok(());
                 }
                 // CPython's module `__annotations__` setter names only the key.
-                raise_exception::<()>(_py, "AttributeError", "__annotations__");
+                raise_exception::<()>(_py, BuiltinExc::AttributeError, "__annotations__");
                 return Err(());
             }
             let annotate_bits = intern_static_name(
@@ -1002,7 +1011,11 @@ unsafe fn module_delattr_namespace(
             if crate::object::ops_compare::string_storage_equal(attr_bits, annotate_bits)
                 && pep649_enabled(_py)
             {
-                raise_exception::<()>(_py, "TypeError", "cannot delete __annotate__ attribute");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cannot delete __annotate__ attribute",
+                );
                 return Err(());
             }
             if dict_del_in_place(_py, dict_ptr, attr_bits)? {
@@ -1089,13 +1102,17 @@ unsafe fn del_attr_ptr_with_access(
                 let class_label = class_name_for_error(class_bits);
                 let msg =
                     format!("cannot set '{attr_name}' attribute of immutable type '{class_label}'");
-                raise_exception::<()>(_py, "TypeError", &msg);
+                raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
                 return Err(());
             }
             if crate::object::class_definition_is_finished(obj_ptr)
                 && matches!(attr_name, "__molt_layout_size__" | "__molt_field_offsets__")
             {
-                raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "class layout metadata is immutable",
+                );
                 return Err(());
             }
             let (attr_bits, _canonical_name) =
@@ -1168,7 +1185,11 @@ unsafe fn del_attr_ptr_with_access(
                 return Err(());
             }
             if attr_name == "__annotate__" && pep649_enabled(_py) {
-                raise_exception::<()>(_py, "TypeError", "cannot delete __annotate__ attribute");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cannot delete __annotate__ attribute",
+                );
                 return Err(());
             }
             if attr_name == "__annotations__" {
@@ -1317,7 +1338,7 @@ pub(crate) unsafe fn object_setattr_raw(
         }
         if object_type_id(obj_ptr) == TYPE_ID_MODULE {
             if attr_name == "__dict__" {
-                raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+                raise_exception::<()>(_py, BuiltinExc::AttributeError, "readonly attribute");
                 return Err(());
             }
             return crate::builtins::modules::module_set_attr(
@@ -1355,7 +1376,11 @@ unsafe fn dataclass_setattr_inner(
     unsafe {
         let desc_ptr = dataclass_desc_ptr(obj_ptr);
         if enforce_frozen && !desc_ptr.is_null() && (*desc_ptr).frozen {
-            raise_exception::<()>(_py, "TypeError", "cannot assign to frozen dataclass field");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::TypeError,
+                "cannot assign to frozen dataclass field",
+            );
             return Err(());
         }
         if !desc_ptr.is_null() {
@@ -1473,7 +1498,7 @@ pub(crate) unsafe fn object_delattr_raw(
             return Ok(());
         }
         if object_type_id(obj_ptr) == TYPE_ID_MODULE && attr_name == "__dict__" {
-            raise_exception::<()>(_py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(_py, BuiltinExc::AttributeError, "readonly attribute");
             return Err(());
         }
         if class_bits != 0
@@ -1541,7 +1566,11 @@ unsafe fn dataclass_delattr_inner(
                 return Ok(());
             }
             if enforce_frozen && (*desc_ptr).frozen {
-                raise_exception::<()>(_py, "TypeError", "cannot delete frozen dataclass field");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cannot delete frozen dataclass field",
+                );
                 return Err(());
             }
             if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
@@ -1626,7 +1655,11 @@ pub unsafe extern "C" fn molt_del_attr_generic(
     unsafe {
         crate::with_gil_entry_nopanic!(py, {
             if obj_ptr.is_null() {
-                return raise_exception::<u64>(py, "AttributeError", "object has no attribute");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::AttributeError,
+                    "object has no attribute",
+                );
             }
             mutate_attr_bytes(
                 py,
@@ -1706,7 +1739,11 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                 return MoltObject::none().bits();
             }
             let Some(length) = usize_from_bits(attr_name_len_bits) else {
-                return raise_exception::<u64>(py, "OverflowError", "attribute name is too large");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::OverflowError,
+                    "attribute name is too large",
+                );
             };
             let bytes = std::slice::from_raw_parts(attr_name_ptr, length);
             let Some(name) = attr_name_bits_from_bytes(py, bytes) else {
@@ -1763,7 +1800,11 @@ unsafe fn mutate_attr_bytes(
 ) -> u64 {
     unsafe {
         let Some(length) = usize_from_bits(name_len) else {
-            return raise_exception::<u64>(py, "OverflowError", "attribute name is too large");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::OverflowError,
+                "attribute name is too large",
+            );
         };
         let bytes = std::slice::from_raw_parts(name_ptr, length);
         let Some(name) = attr_name_bits_from_bytes(py, bytes) else {
@@ -1948,7 +1989,7 @@ fn explicit_mutation_admitted(
         let operation = if delete { "__delattr__" } else { "__setattr__" };
         raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "can't apply this {operation} to {} object",
                 class_name_for_error(class),
@@ -2014,7 +2055,7 @@ pub(crate) fn explicit_type_mutate_attr_name(object: u64, name: u64, value: Opti
         };
         raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "descriptor '{operation}' requires a 'type' object but received a '{}'",
                 type_name(py, obj_from_bits(object)),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[cfg(molt_has_net_io)]
 /// # Safety
@@ -85,7 +86,11 @@ pub unsafe extern "C" fn molt_socket_recv(sock_bits: u64, size_bits: u64, flags_
                         }
                         if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
                             if wait_err.kind() == ErrorKind::TimedOut {
-                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                                return raise_exception::<u64>(
+                                    _py,
+                                    BuiltinExc::TimeoutError,
+                                    "timed out",
+                                );
                             }
                             if wait_err.kind() == ErrorKind::WouldBlock {
                                 continue;
@@ -166,7 +171,11 @@ pub unsafe extern "C" fn molt_socket_recv_into(
                         }
                         if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
                             if wait_err.kind() == ErrorKind::TimedOut {
-                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                                return raise_exception::<u64>(
+                                    _py,
+                                    BuiltinExc::TimeoutError,
+                                    "timed out",
+                                );
                             }
                             if wait_err.kind() == ErrorKind::WouldBlock {
                                 continue;
@@ -200,7 +209,7 @@ pub unsafe extern "C" fn molt_socket_send(sock_bits: u64, data_bits: u64, flags_
         let nonblocking = matches!(socket_timeout(socket_ptr), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -254,7 +263,11 @@ pub unsafe extern "C" fn molt_socket_send(sock_bits: u64, data_bits: u64, flags_
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                         if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::TimeoutError,
+                                "timed out",
+                            );
                         }
                         if wait_err.kind() == ErrorKind::WouldBlock {
                             continue;
@@ -291,7 +304,7 @@ pub unsafe extern "C" fn molt_socket_sendall(
         let nonblocking = matches!(socket_timeout(socket_ptr), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -340,7 +353,11 @@ pub unsafe extern "C" fn molt_socket_sendall(
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                         if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::TimeoutError,
+                                "timed out",
+                            );
                         }
                         if wait_err.kind() == ErrorKind::WouldBlock {
                             continue;
@@ -378,7 +395,7 @@ pub unsafe extern "C" fn molt_socket_sendto(
             };
             let sockaddr = match sockaddr_from_bits(_py, addr_bits, family) {
                 Ok(addr) => addr,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as i32;
             #[cfg(unix)]
@@ -389,7 +406,7 @@ pub unsafe extern "C" fn molt_socket_sendto(
                 matches!(socket_timeout(socket_ptr), Some(val) if val == Duration::ZERO);
             let send_data = match send_data_from_bits(data_bits) {
                 Ok(data) => data,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
                 SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -432,7 +449,11 @@ pub unsafe extern "C" fn molt_socket_sendto(
                         }
                         if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                             if wait_err.kind() == ErrorKind::TimedOut {
-                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                                return raise_exception::<u64>(
+                                    _py,
+                                    BuiltinExc::TimeoutError,
+                                    "timed out",
+                                );
                             }
                             if wait_err.kind() == ErrorKind::WouldBlock {
                                 continue;
@@ -519,7 +540,11 @@ pub unsafe extern "C" fn molt_socket_recvfrom(
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
                         if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::TimeoutError,
+                                "timed out",
+                            );
                         }
                         if wait_err.kind() == ErrorKind::WouldBlock {
                             continue;
@@ -610,7 +635,11 @@ pub unsafe extern "C" fn molt_socket_recvfrom_into(
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
                         if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::TimeoutError,
+                                "timed out",
+                            );
                         }
                         if wait_err.kind() == ErrorKind::WouldBlock {
                             continue;
@@ -649,7 +678,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
             #[cfg(unix)]
             let mut ancillary_control = match encode_sendmsg_ancillary_buffer(&ancillary_items) {
                 Ok(val) => val,
-                Err(msg) => return raise_exception::<u64>(_py, "RuntimeError", &msg),
+                Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg),
             };
             let mut payload_chunks = match collect_sendmsg_payload(_py, buffers_bits) {
                 Ok(val) => val,
@@ -672,7 +701,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
                 };
                 match sockaddr_from_bits(_py, address_bits, family) {
                     Ok(addr) => Some(addr),
-                    Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+                    Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg),
                 }
             };
             #[cfg(not(unix))]
@@ -828,7 +857,11 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
                         }
                         if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                             if wait_err.kind() == ErrorKind::TimedOut {
-                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                                return raise_exception::<u64>(
+                                    _py,
+                                    BuiltinExc::TimeoutError,
+                                    "timed out",
+                                );
                             }
                             if wait_err.kind() == ErrorKind::WouldBlock {
                                 continue;
@@ -861,11 +894,19 @@ pub unsafe extern "C" fn molt_socket_recvmsg(
         }
         let bufsize = to_i64(obj_from_bits(bufsize_bits)).unwrap_or(0);
         if bufsize < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "negative buffersize in recvmsg");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative buffersize in recvmsg",
+            );
         }
         let ancbufsize = to_i64(obj_from_bits(ancbufsize_bits)).unwrap_or(0);
         if ancbufsize < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "negative ancbufsize in recvmsg");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative ancbufsize in recvmsg",
+            );
         }
         let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as i32;
         #[cfg(unix)]
@@ -1011,7 +1052,11 @@ pub unsafe extern "C" fn molt_socket_recvmsg(
                         }
                         if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
                             if wait_err.kind() == ErrorKind::TimedOut {
-                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                                return raise_exception::<u64>(
+                                    _py,
+                                    BuiltinExc::TimeoutError,
+                                    "timed out",
+                                );
                             }
                             if wait_err.kind() == ErrorKind::WouldBlock {
                                 continue;
@@ -1044,7 +1089,11 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
         }
         let ancbufsize = to_i64(obj_from_bits(ancbufsize_bits)).unwrap_or(0);
         if ancbufsize < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "negative ancbufsize in recvmsg");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative ancbufsize in recvmsg",
+            );
         }
         let targets = match collect_recvmsg_into_targets(_py, buffers_bits) {
             Ok(val) => val,
@@ -1200,7 +1249,11 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
                         }
                         if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
                             if wait_err.kind() == ErrorKind::TimedOut {
-                                return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                                return raise_exception::<u64>(
+                                    _py,
+                                    BuiltinExc::TimeoutError,
+                                    "timed out",
+                                );
                             }
                             if wait_err.kind() == ErrorKind::WouldBlock {
                                 continue;

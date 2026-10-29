@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 pub(super) unsafe fn memory_backend_ptr_from_bits(
     _py: &PyToken<'_>,
@@ -8,21 +9,21 @@ pub(super) unsafe fn memory_backend_ptr_from_bits(
         if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "memory backend missing",
             ));
         }
         let Some(ptr) = obj_from_bits(mem_bits).as_ptr() else {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "memory backend missing",
             ));
         };
         if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "memory backend is not bytearray",
             ));
         }
@@ -38,21 +39,21 @@ pub(super) unsafe fn memory_backend_vec_ref_from_bits(
         if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "memory backend missing",
             ));
         }
         let Some(ptr) = obj_from_bits(mem_bits).as_ptr() else {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "memory backend missing",
             ));
         };
         if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "memory backend is not bytearray",
             ));
         }
@@ -134,7 +135,7 @@ pub(super) unsafe fn backend_read_bytes(
             }
             MoltFileBackend::Text(_) => Err(BackendReadError::Pending(raise_exception::<_>(
                 _py,
-                "UnsupportedOperation",
+                BuiltinExc::UnsupportedOperation,
                 "binary read on text backend",
             ))),
         }
@@ -202,7 +203,7 @@ pub(super) unsafe fn backend_write_bytes(
                 let end = mem.pos.checked_add(bytes.len()).ok_or_else(|| {
                     raise_exception::<u64>(
                         _py,
-                        "OverflowError",
+                        BuiltinExc::OverflowError,
                         "write position exceeds the active address space",
                     )
                 })?;
@@ -218,7 +219,7 @@ pub(super) unsafe fn backend_write_bytes(
             .map_err(BackendWriteError::Pending),
             MoltFileBackend::Text(_) => Err(BackendWriteError::Pending(raise_exception::<_>(
                 _py,
-                "UnsupportedOperation",
+                BuiltinExc::UnsupportedOperation,
                 "binary write on text backend",
             ))),
         }
@@ -232,7 +233,11 @@ pub(super) unsafe fn backend_flush(
     match backend {
         MoltFileBackend::File(file) => match file.flush() {
             Ok(()) => Ok(()),
-            Err(_) => Err(raise_exception::<_>(_py, "OSError", "flush failed")),
+            Err(_) => Err(raise_exception::<_>(
+                _py,
+                BuiltinExc::OSError,
+                "flush failed",
+            )),
         },
         MoltFileBackend::Memory(_) | MoltFileBackend::Text(_) => Ok(()),
     }
@@ -303,14 +308,14 @@ pub(super) unsafe fn backend_seek(
                 }
                 .max(0);
                 let pos = isize::try_from(pos).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "new position too large")
+                    raise_exception::<u64>(_py, BuiltinExc::OverflowError, "new position too large")
                 })?;
                 mem.pos = pos as usize;
                 Ok(mem.pos as u64)
             }
             MoltFileBackend::Text(_) => Err(raise_exception::<_>(
                 _py,
-                "UnsupportedOperation",
+                BuiltinExc::UnsupportedOperation,
                 "seek on text backend",
             )),
         }
@@ -332,7 +337,7 @@ pub(super) unsafe fn backend_tell(
         MoltFileBackend::Memory(mem) => Ok(mem.pos as u64),
         MoltFileBackend::Text(_) => Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "tell on text backend",
         )),
     }
@@ -348,7 +353,11 @@ pub(super) unsafe fn backend_truncate(
         match backend {
             MoltFileBackend::File(file) => match file.set_len(size) {
                 Ok(()) => Ok(()),
-                Err(_) => Err(raise_exception::<_>(_py, "OSError", "truncate failed")),
+                Err(_) => Err(raise_exception::<_>(
+                    _py,
+                    BuiltinExc::OSError,
+                    "truncate failed",
+                )),
             },
             MoltFileBackend::Memory(mem) => {
                 let ptr = memory_backend_ptr_from_bits(_py, memory_backend_bits(handle))?;
@@ -356,7 +365,7 @@ pub(super) unsafe fn backend_truncate(
                 let size_usize = usize::try_from(size).map_err(|_| {
                     raise_exception::<u64>(
                         _py,
-                        "OverflowError",
+                        BuiltinExc::OverflowError,
                         "truncate size exceeds the active address space",
                     )
                 })?;
@@ -371,7 +380,7 @@ pub(super) unsafe fn backend_truncate(
             }
             MoltFileBackend::Text(_) => Err(raise_exception::<_>(
                 _py,
-                "UnsupportedOperation",
+                BuiltinExc::UnsupportedOperation,
                 "truncate on text backend",
             )),
         }
@@ -464,7 +473,11 @@ pub(super) unsafe fn flush_write_buffer(
             match backend_write_bytes(_py, memory_backend_bits(handle), backend, &bytes[written..])
             {
                 Ok(0) => {
-                    result = Err(raise_exception::<u64>(_py, "OSError", "write failed"));
+                    result = Err(raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OSError,
+                        "write failed",
+                    ));
                     break;
                 }
                 Ok(count) => written += count,
@@ -509,7 +522,13 @@ pub(super) unsafe fn buffered_read_bytes(
                 }
                 match file.read_to_end(&mut out) {
                     Ok(_) => return Ok((out, true)),
-                    Err(_) => return Err(raise_exception::<_>(_py, "OSError", "read failed")),
+                    Err(_) => {
+                        return Err(raise_exception::<_>(
+                            _py,
+                            BuiltinExc::OSError,
+                            "read failed",
+                        ));
+                    }
                 }
             }
         }

@@ -2,6 +2,7 @@
 //! constructor result exported as a C view.
 
 use super::native_test_fixture::NativeType;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::{
     ExceptionFieldSlot, ExceptionValue, exception_replace_field_bits,
 };
@@ -115,7 +116,7 @@ fn native_and_managed_chain_renderers_share_cause_suppression_and_cycle_policy()
             py,
             MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "managed-cause",
             ))
             .bits(),
@@ -250,7 +251,7 @@ fn native_classinfo_preserves_hooks_tuple_order_and_throw_failure_identity() {
                     .unwrap(),
             );
             let actual = crate::builtins::exceptions::exception_class(py, input.bits()).unwrap();
-            let lookup = crate::exception_type_bits_from_name(py, "LookupError");
+            let lookup = crate::exception_class_bits(py, BuiltinExc::LookupError);
             assert_eq!(
                 crate::isinstance_runtime(py, input.bits(), lookup),
                 Some(true)

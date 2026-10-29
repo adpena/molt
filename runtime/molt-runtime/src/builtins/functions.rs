@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 const THIS_ENCODED: &str = concat!(
     "NoErapgvbaf sbe perngvat naq znavchyngvat P-glcr pbqrf.",
     " Gur P zbqhyr cebivqrf sbezhynf sbe qrpbqvat, rapbqvat,",
@@ -153,7 +154,11 @@ pub(super) fn iterable_to_string_vec(
         };
         let item_bits = item_owner.bits();
         let Some(item) = string_obj_to_owned(obj_from_bits(item_bits)) else {
-            return Err(raise_exception::<_>(_py, "TypeError", "expected str item"));
+            return Err(raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "expected str item",
+            ));
         };
         out.push(item);
     }
@@ -284,12 +289,12 @@ fn shlex_join_impl(parts: &[String]) -> String {
 fn raise_os_error_from_io(_py: &crate::PyToken<'_>, err: std::io::Error) -> u64 {
     let msg = err.to_string();
     match err.kind() {
-        ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-        ErrorKind::PermissionDenied => raise_exception::<_>(_py, "PermissionError", &msg),
-        ErrorKind::AlreadyExists => raise_exception::<_>(_py, "FileExistsError", &msg),
-        ErrorKind::NotADirectory => raise_exception::<_>(_py, "NotADirectoryError", &msg),
-        ErrorKind::IsADirectory => raise_exception::<_>(_py, "IsADirectoryError", &msg),
-        _ => raise_exception::<_>(_py, "OSError", &msg),
+        ErrorKind::NotFound => raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &msg),
+        ErrorKind::PermissionDenied => raise_exception::<_>(_py, BuiltinExc::PermissionError, &msg),
+        ErrorKind::AlreadyExists => raise_exception::<_>(_py, BuiltinExc::FileExistsError, &msg),
+        ErrorKind::NotADirectory => raise_exception::<_>(_py, BuiltinExc::NotADirectoryError, &msg),
+        ErrorKind::IsADirectory => raise_exception::<_>(_py, BuiltinExc::IsADirectoryError, &msg),
+        _ => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
     }
 }
 
@@ -520,7 +525,11 @@ fn compileall_compile_dir_impl(dir: &str, maxlevels: i64) -> bool {
 pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.quote argument must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "shlex.quote argument must be str",
+            );
         };
         let out = shlex_quote_impl(&text);
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -543,19 +552,31 @@ pub extern "C" fn molt_shlex_split_ex(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.split argument must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "shlex.split argument must be str",
+            );
         };
         let Some(whitespace) = string_obj_to_owned(obj_from_bits(whitespace_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.split whitespace must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "shlex.split whitespace must be str",
+            );
         };
         let Some(commenters) = string_obj_to_owned(obj_from_bits(commenters_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.split commenters must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "shlex.split commenters must be str",
+            );
         };
         let Some(punctuation_chars) = string_obj_to_owned(obj_from_bits(punctuation_chars_bits))
         else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "shlex.split punctuation_chars must be str",
             );
         };
@@ -572,7 +593,7 @@ pub extern "C" fn molt_shlex_split_ex(
             &punctuation_chars,
         ) {
             Ok(parts) => parts,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         };
         alloc_string_list(_py, &parts)
     })
@@ -686,7 +707,7 @@ fn bisect_normalize_bounds(
     if lo < 0 {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "lo must be non-negative",
         ));
     }
@@ -698,7 +719,7 @@ fn bisect_normalize_bounds(
     let Some(seq_len) = to_i64(obj_from_bits(seq_len_bits)) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "object has no usable length for bisect",
         ));
     };
@@ -946,10 +967,14 @@ pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) ->
         let allowed = crate::has_capability(_py, "fs.read");
         audit_capability_decision("pkgutil.iter.modules", "fs.read", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "prefix must be str");
         };
         let paths = if obj_from_bits(path_bits).is_none() {
             Vec::new()
@@ -970,10 +995,14 @@ pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -
         let allowed = crate::has_capability(_py, "fs.read");
         audit_capability_decision("pkgutil.walk.packages", "fs.read", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "prefix must be str");
         };
         let paths = if obj_from_bits(path_bits).is_none() {
             Vec::new()
@@ -997,10 +1026,10 @@ pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
             return error;
         }
         let Some(src) = string_obj_to_owned(obj_from_bits(src_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "src must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "src must be str");
         };
         let Some(dst) = string_obj_to_owned(obj_from_bits(dst_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "dst must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "dst must be str");
         };
         if let Err(err) = fs::copy(&src, &dst) {
             return raise_os_error_from_io(_py, err);
@@ -1036,7 +1065,7 @@ pub extern "C" fn molt_shutil_which(files_bits: u64, directories_bits: u64, mode
                 .ok_or_else(|| {
                     raise_exception::<u64>(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "which search inputs must be lists or tuples",
                     )
                 })?;
@@ -1192,13 +1221,17 @@ pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u6
             return error;
         }
         let Some(file) = string_obj_to_owned(obj_from_bits(file_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "file must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "file must be str");
         };
         let cfile = if obj_from_bits(cfile_bits).is_none() {
             format!("{file}c")
         } else {
             let Some(cfile) = string_obj_to_owned(obj_from_bits(cfile_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "cfile must be str or None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cfile must be str or None",
+                );
             };
             cfile
         };
@@ -1235,10 +1268,14 @@ pub extern "C" fn molt_compileall_compile_file(fullname_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let Some(fullname) = string_obj_to_owned(obj_from_bits(fullname_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fullname must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "fullname must be str");
         };
         MoltObject::from_bool(compileall_compile_file_impl(&fullname)).bits()
     })
@@ -1255,13 +1292,17 @@ pub extern "C" fn molt_compileall_compile_dir(dir_bits: u64, maxlevels_bits: u64
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let Some(dir) = string_obj_to_owned(obj_from_bits(dir_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "dir must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "dir must be str");
         };
         let Some(maxlevels) = to_i64(obj_from_bits(maxlevels_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maxlevels must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxlevels must be int");
         };
         MoltObject::from_bool(compileall_compile_dir_impl(&dir, maxlevels)).bits()
     })
@@ -1282,7 +1323,11 @@ pub extern "C" fn molt_compileall_compile_path(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let paths = match iterable_to_string_vec(_py, paths_bits) {
             Ok(paths) => paths,
@@ -1290,7 +1335,7 @@ pub extern "C" fn molt_compileall_compile_path(
         };
         let skip_curdir = is_truthy(_py, obj_from_bits(skip_curdir_bits));
         let Some(maxlevels) = to_i64(obj_from_bits(maxlevels_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maxlevels must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxlevels must be int");
         };
 
         let mut success = true;

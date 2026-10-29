@@ -1,6 +1,7 @@
 // Binary pickle object serialization (dump) VM.
 
 use super::*;
+use crate::BuiltinExc;
 
 fn pickle_lookup_extension_code(
     _py: &crate::PyToken<'_>,
@@ -491,14 +492,14 @@ fn pickle_dump_items_from_iterator(
             let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
                 return Err(raise_exception(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dict items iterator must return 2-tuples",
                 ));
             };
             if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
                 return Err(raise_exception(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dict items iterator must return 2-tuples",
                 ));
             }
@@ -514,7 +515,7 @@ fn pickle_dump_items_from_iterator(
             if fields.len() != 2 {
                 return Err(raise_exception(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dict items iterator must return 2-tuples",
                 ));
             }
@@ -1176,7 +1177,7 @@ pub(crate) fn pickle_dump_obj_binary(
         }
         let type_name = type_name(_py, obj_from_bits(obj_bits));
         let message = format!("cannot pickle '{type_name}' object");
-        Err(raise_exception::<u64>(_py, "TypeError", &message))
+        Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &message))
     })();
     state.depth = state.depth.saturating_sub(1);
     result

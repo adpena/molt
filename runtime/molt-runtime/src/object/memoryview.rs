@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::{
@@ -24,7 +25,7 @@ pub(crate) unsafe fn require_exportable(py: &PyToken<'_>, view: *mut u8) -> bool
         if (*crate::memoryview_ptr(view)).kind.restricted() {
             let _ = raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot create new references to a restricted memoryview",
             );
             return false;
@@ -47,10 +48,14 @@ pub(crate) unsafe fn memoryview_slice(
             return MoltObject::none().bits();
         }
         if memoryview_shape(view).is_some_and(|shape| shape.is_empty()) {
-            return raise_exception(py, "TypeError", "invalid indexing of 0-dim memory");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "invalid indexing of 0-dim memory",
+            );
         }
         let Ok(source) = TypedStridedStorage::from_memoryview_ptr(view) else {
-            return raise_exception(py, "BufferError", "invalid memoryview storage");
+            return raise_exception(py, BuiltinExc::BufferError, "invalid memoryview storage");
         };
         let mut pinned = match super::builders::PinnedMemoryViewStorage::new(py, source) {
             Ok(pinned) => pinned,
@@ -114,7 +119,11 @@ pub(crate) unsafe fn memoryview_assign_slice(
                 .and_then(|shape| shape.first())
                 .copied()
             else {
-                return raise_exception(py, "BufferError", "invalid memoryview slice storage");
+                return raise_exception(
+                    py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview slice storage",
+                );
             };
             let (start, stop, step) = match crate::object::ops_sys::normalize_slice_indices(
                 py,
@@ -133,7 +142,11 @@ pub(crate) unsafe fn memoryview_assign_slice(
                 return raise_released_memoryview(py);
             }
             let Ok(mut destination) = TypedStridedStorage::from_memoryview_ptr(view) else {
-                return raise_exception(py, "BufferError", "invalid memoryview slice storage");
+                return raise_exception(
+                    py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview slice storage",
+                );
             };
             destination.slice_first_axis(py, start, stop, step)?;
             let src = source.view();
@@ -145,17 +158,25 @@ pub(crate) unsafe fn memoryview_assign_slice(
             {
                 return raise_exception(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "memoryview assignment: lvalue and rvalue have different structures",
                 );
             }
             if src.len != destination.len as u64 || (src.len != 0 && src.data.is_null()) {
-                return raise_exception(py, "BufferError", "invalid memoryview source storage");
+                return raise_exception(
+                    py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview source storage",
+                );
             }
             let Some(bounds) =
                 memoryview_strided_bounds(&src.shape[..1], &src.strides[..1], destination.itemsize)
             else {
-                return raise_exception(py, "BufferError", "invalid memoryview source strides");
+                return raise_exception(
+                    py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview source strides",
+                );
             };
             let src = BorrowedMemoryView {
                 data: src.data,
@@ -186,7 +207,7 @@ pub(crate) unsafe fn memoryview_assign_slice(
                 if bytes.try_reserve_exact(src.len).is_err() {
                     return raise_exception(
                         py,
-                        "MemoryError",
+                        BuiltinExc::MemoryError,
                         "memoryview assignment allocation failed",
                     );
                 }
@@ -246,7 +267,11 @@ pub(crate) unsafe fn memoryview_prepare_iter(py: &PyToken<'_>, view: *mut u8) ->
     }
     let rank = unsafe { crate::memoryview_ndim(view) };
     if rank == 0 {
-        return raise_exception(py, "TypeError", "invalid indexing of 0-dim memory");
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            "invalid indexing of 0-dim memory",
+        );
     }
     if rank != 1 {
         return CompatibilityError::MemoryviewSubView {
@@ -337,7 +362,7 @@ pub(crate) enum TypedStridedStorageError {
 }
 
 pub(crate) fn raise_released_memoryview<T: crate::ExceptionSentinel>(_py: &PyToken<'_>) -> T {
-    raise_exception(_py, "ValueError", RELEASED_MEMORYVIEW_ERROR)
+    raise_exception(_py, BuiltinExc::ValueError, RELEASED_MEMORYVIEW_ERROR)
 }
 
 fn default_buffer_format() -> [u8; MOLT_BUFFER_FORMAT_CAP] {
@@ -400,7 +425,11 @@ impl TypedStridedStorage {
         step: isize,
     ) -> Option<()> {
         if self.shape.is_empty() || self.shape.len() != self.strides.len() || step == 0 {
-            return raise_exception(py, "BufferError", "invalid memoryview slice storage");
+            return raise_exception(
+                py,
+                BuiltinExc::BufferError,
+                "invalid memoryview slice storage",
+            );
         }
         let new_len = crate::range_len_i64(start as i64, stop as i64, step as i64).max(0);
         let base_stride = self.strides[0];
@@ -412,18 +441,32 @@ impl TypedStridedStorage {
                 .ok()
                 .and_then(|start| memoryview_linear_offset(start, base_stride))
             else {
-                return raise_exception(py, "BufferError", "invalid memoryview slice offset");
+                return raise_exception(
+                    py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview slice offset",
+                );
             };
             delta
         };
         let Some(offset) = self.offset.checked_add(delta) else {
-            return raise_exception(py, "BufferError", "invalid memoryview slice offset");
+            return raise_exception(
+                py,
+                BuiltinExc::BufferError,
+                "invalid memoryview slice offset",
+            );
         };
         let stride = match base_stride.checked_mul(step) {
             Some(stride) => stride,
             // A singleton/empty first axis cannot use its stride in addressing.
             None if new_len <= 1 || empty => base_stride.wrapping_mul(step),
-            None => return raise_exception(py, "BufferError", "invalid memoryview slice stride"),
+            None => {
+                return raise_exception(
+                    py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview slice stride",
+                );
+            }
         };
         let old_len = self.shape[0];
         self.shape[0] = new_len as isize;
@@ -436,7 +479,11 @@ impl TypedStridedStorage {
         let Some((len, bounds)) = geometry else {
             self.shape[0] = old_len;
             self.strides[0] = base_stride;
-            return raise_exception(py, "BufferError", "invalid memoryview slice storage");
+            return raise_exception(
+                py,
+                BuiltinExc::BufferError,
+                "invalid memoryview slice storage",
+            );
         };
         if !empty {
             self.data = unsafe { self.data.offset(delta) };
@@ -932,7 +979,7 @@ pub(crate) unsafe fn collect_bytes_from_descriptor(
 ) -> Option<Vec<u8>> {
     let rank = view.ndim as usize;
     if rank > MOLT_BUFFER_MAX_NDIM || view.itemsize == 0 || view.itemsize > isize::MAX as u64 {
-        raise_exception::<()>(py, "BufferError", "invalid bytes buffer geometry");
+        raise_exception::<()>(py, BuiltinExc::BufferError, "invalid bytes buffer geometry");
         return None;
     }
     let shape = &view.shape[..rank];
@@ -942,15 +989,19 @@ pub(crate) unsafe fn collect_bytes_from_descriptor(
         .and_then(|value| usize::try_from(value).ok())
         .filter(|&value| value <= isize::MAX as usize && value as u64 == view.len)
     else {
-        raise_exception::<()>(py, "BufferError", "invalid bytes buffer length");
+        raise_exception::<()>(py, BuiltinExc::BufferError, "invalid bytes buffer length");
         return None;
     };
     let Some(bounds) = memoryview_strided_bounds(shape, strides, itemsize) else {
-        raise_exception::<()>(py, "BufferError", "invalid bytes buffer strides");
+        raise_exception::<()>(py, BuiltinExc::BufferError, "invalid bytes buffer strides");
         return None;
     };
     if view.data.is_null() && len != 0 {
-        raise_exception::<()>(py, "BufferError", "bytes buffer has no data pointer");
+        raise_exception::<()>(
+            py,
+            BuiltinExc::BufferError,
+            "bytes buffer has no data pointer",
+        );
         return None;
     }
     let storage = BorrowedMemoryView {
@@ -964,7 +1015,7 @@ pub(crate) unsafe fn collect_bytes_from_descriptor(
     };
     let mut bytes = Vec::new();
     if bytes.try_reserve_exact(len).is_err() {
-        raise_exception::<()>(py, "MemoryError", "bytes allocation failed");
+        raise_exception::<()>(py, BuiltinExc::MemoryError, "bytes allocation failed");
         return None;
     }
     unsafe {
@@ -1116,7 +1167,7 @@ fn memoryview_integer_fits(value: &BigInt, bytes: usize, signed: bool) -> bool {
 fn memoryview_scalar_value_error<T>(py: &PyToken<'_>, fmt: MemoryViewFormat) -> Option<T> {
     raise_exception(
         py,
-        "ValueError",
+        BuiltinExc::ValueError,
         &format!(
             "memoryview: invalid value for format '{}'",
             fmt.code as char
@@ -1136,14 +1187,14 @@ fn memoryview_convert_scalar(
             let Some(ptr) = obj_from_bits(val_bits).as_ptr() else {
                 return raise_exception(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("memoryview: invalid type for format '{}'", fmt.code as char),
                 );
             };
             if object_type_id(ptr) != TYPE_ID_BYTES {
                 return raise_exception(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("memoryview: invalid type for format '{}'", fmt.code as char),
                 );
             }
@@ -1170,7 +1221,7 @@ fn memoryview_convert_scalar(
             let mut value = if fmt.code == b'P' {
                 match crate::builtins::numbers::index_bigint_integral_bits(val_bits) {
                     Some(value) => value,
-                    None => return raise_exception(py, "TypeError", &err_msg),
+                    None => return raise_exception(py, BuiltinExc::TypeError, &err_msg),
                 }
             } else {
                 index_bigint_from_obj(py, val_bits, &err_msg)?
@@ -1181,14 +1232,24 @@ fn memoryview_convert_scalar(
                 }
                 b'q' | b'Q' => 8,
                 b'n' | b'N' | b'P' => std::mem::size_of::<usize>(),
-                _ => return raise_exception(py, "BufferError", "invalid memoryview scalar format"),
+                _ => {
+                    return raise_exception(
+                        py,
+                        BuiltinExc::BufferError,
+                        "invalid memoryview scalar format",
+                    );
+                }
             };
             let signed = fmt.kind == MemoryViewFormatKind::Signed
                 || (fmt.code == b'P' && value < BigInt::from(0u8));
             if !memoryview_integer_fits(&value, native_bytes, signed) {
                 // C conversion itself failed; this must precede release. The
                 // smaller b/B/h/H/i/I destination range is checked later.
-                return raise_exception(py, "OverflowError", "integer does not fit native format");
+                return raise_exception(
+                    py,
+                    BuiltinExc::OverflowError,
+                    "integer does not fit native format",
+                );
             }
             if fmt.code == b'P' && signed {
                 value += BigInt::from(1u8) << (native_bytes * 8);
@@ -1207,7 +1268,11 @@ fn memoryview_encode_scalar(
     value: MemoryViewScalar,
 ) -> Option<()> {
     if !matches!(fmt.itemsize, 1 | 2 | 4 | 8) || fmt.itemsize > data.len() {
-        return raise_exception(py, "BufferError", "invalid memoryview scalar format");
+        return raise_exception(
+            py,
+            BuiltinExc::BufferError,
+            "invalid memoryview scalar format",
+        );
     }
     match value {
         MemoryViewScalar::Byte(value) => data[0] = value,
@@ -1221,7 +1286,13 @@ fn memoryview_encode_scalar(
             }
             4 => data[..4].copy_from_slice(&(value as f32).to_ne_bytes()),
             8 => data[..8].copy_from_slice(&value.to_ne_bytes()),
-            _ => return raise_exception(py, "BufferError", "invalid memoryview scalar format"),
+            _ => {
+                return raise_exception(
+                    py,
+                    BuiltinExc::BufferError,
+                    "invalid memoryview scalar format",
+                );
+            }
         },
         MemoryViewScalar::Integer(value) => {
             let signed = fmt.kind == MemoryViewFormatKind::Signed;
@@ -1279,11 +1350,13 @@ unsafe fn memoryview_write_scalar_at(
 /// CPython pack_single translates numeric protocol type/value/range failures, but
 /// preserves other callback exceptions. This is distinct from scalar coercion.
 fn memoryview_pack_error(_py: &PyToken<'_>, fmt: MemoryViewFormat) -> Option<()> {
-    use crate::builtins::exceptions::{
-        exception_matches_builtin_name, molt_exception_last_pending,
-    };
+    use crate::builtins::exceptions::{exception_matches_kind, molt_exception_last_pending};
     if !crate::exception_pending(_py) {
-        return raise_exception(_py, "BufferError", "invalid memoryview scalar format");
+        return raise_exception(
+            _py,
+            BuiltinExc::BufferError,
+            "invalid memoryview scalar format",
+        );
     }
     if !matches!(
         fmt.kind,
@@ -1294,12 +1367,12 @@ fn memoryview_pack_error(_py: &PyToken<'_>, fmt: MemoryViewFormat) -> Option<()>
         return None;
     }
     let error = molt_exception_last_pending();
-    let translation = if exception_matches_builtin_name(_py, error, "TypeError") {
-        Some(("TypeError", "type"))
-    } else if exception_matches_builtin_name(_py, error, "OverflowError")
-        || exception_matches_builtin_name(_py, error, "ValueError")
+    let translation = if exception_matches_kind(_py, error, crate::BuiltinExc::TypeError) {
+        Some((BuiltinExc::TypeError, "type"))
+    } else if exception_matches_kind(_py, error, crate::BuiltinExc::OverflowError)
+        || exception_matches_kind(_py, error, crate::BuiltinExc::ValueError)
     {
-        Some(("ValueError", "value"))
+        Some((BuiltinExc::ValueError, "value"))
     } else {
         None
     };
@@ -1328,7 +1401,9 @@ unsafe fn memoryview_scalar_pointer(
     let storage = match unsafe { memoryview_borrowed_storage(view) } {
         Ok(storage) => storage,
         Err(BytesLikeSliceError::ReleasedMemoryView) => return raise_released_memoryview(_py),
-        Err(_) => return raise_exception(_py, "BufferError", "invalid memoryview storage"),
+        Err(_) => {
+            return raise_exception(_py, BuiltinExc::BufferError, "invalid memoryview storage");
+        }
     };
     let end = (offset as i128) + (fmt.itemsize as i128);
     if fmt.itemsize != storage.itemsize
@@ -1336,7 +1411,11 @@ unsafe fn memoryview_scalar_pointer(
         || end > storage.max_end_offset as i128
         || storage.len == 0
     {
-        return raise_exception(_py, "IndexError", "memoryview index out of bounds");
+        return raise_exception(
+            _py,
+            BuiltinExc::IndexError,
+            "memoryview index out of bounds",
+        );
     }
     Some(unsafe { storage.data.offset(offset) })
 }
@@ -1519,7 +1598,11 @@ pub(crate) unsafe fn from_native_descriptor(
         || descriptor.readonly > 1
         || (descriptor.len != 0 && descriptor.data.is_null())
     {
-        return raise_exception(py, "BufferError", "invalid memoryview buffer descriptor");
+        return raise_exception(
+            py,
+            BuiltinExc::BufferError,
+            "invalid memoryview buffer descriptor",
+        );
     }
     let bytes = if format.is_null() {
         b"B".as_slice()
@@ -1548,7 +1631,11 @@ pub(crate) unsafe fn from_native_descriptor(
                 Some(offset) => offset,
                 None => {
                     crate::dec_ref_bits(py, format_bits);
-                    return raise_exception(py, "BufferError", "memoryview span overflow");
+                    return raise_exception(
+                        py,
+                        BuiltinExc::BufferError,
+                        "memoryview span overflow",
+                    );
                 }
             };
             if let Some(lease) = &lease {
@@ -1584,7 +1671,11 @@ pub(crate) unsafe fn from_native_descriptor(
         if crate::exception_pending(py) {
             return MoltObject::none().bits();
         }
-        return raise_exception(py, "BufferError", "invalid memoryview buffer geometry");
+        return raise_exception(
+            py,
+            BuiltinExc::BufferError,
+            "invalid memoryview buffer geometry",
+        );
     }
     MoltObject::from_ptr(output).bits()
 }
@@ -1700,10 +1791,10 @@ mod split_buffer_contract_tests {
                 );
                 assert!(exception_pending(py));
                 let error = crate::builtins::exceptions::molt_exception_last_pending();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "ValueError"
+                    crate::BuiltinExc::ValueError
                 ));
                 assert_eq!(
                     crate::builtins::exceptions::format_exception_message(
@@ -1745,10 +1836,10 @@ mod split_buffer_contract_tests {
             assert!(!unsafe { memoryview_released(view) });
             assert!(exception_pending(py));
             let error = crate::builtins::exceptions::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             assert_eq!(
                 crate::builtins::exceptions::format_exception_message(
@@ -1764,10 +1855,10 @@ mod split_buffer_contract_tests {
             crate::object::ops::molt_store_index(view_bits, MoltObject::from_int(0).bits(), value);
             assert_eq!(SCALAR_CONVERSION_CALLS.load(Ordering::SeqCst), 0);
             let error = crate::builtins::exceptions::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "ValueError"
+                crate::BuiltinExc::ValueError
             ));
             clear_exception(py);
             dec_ref_bits(py, error);
@@ -1811,10 +1902,10 @@ mod split_buffer_contract_tests {
             crate::object::ops::molt_store_index(view_bits, key, value_bits);
             assert_eq!(SCALAR_CONVERSION_CALLS.load(Ordering::SeqCst), 1);
             let error = crate::builtins::exceptions::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "ValueError"
+                crate::BuiltinExc::ValueError
             ));
             assert_eq!(
                 crate::builtins::exceptions::format_exception_message(
@@ -1880,10 +1971,26 @@ mod split_buffer_contract_tests {
             for format in ["B", "f", "d", "?"] {
                 let fmt = memoryview_format_from_str(format).unwrap();
                 for (input, output, detail) in [
-                    ("TypeError", "TypeError", Some("type")),
-                    ("OverflowError", "ValueError", Some("value")),
-                    ("ValueError", "ValueError", Some("value")),
-                    ("LookupError", "LookupError", None),
+                    (
+                        crate::BuiltinExc::TypeError,
+                        crate::BuiltinExc::TypeError,
+                        Some("type"),
+                    ),
+                    (
+                        crate::BuiltinExc::OverflowError,
+                        crate::BuiltinExc::ValueError,
+                        Some("value"),
+                    ),
+                    (
+                        crate::BuiltinExc::ValueError,
+                        crate::BuiltinExc::ValueError,
+                        Some("value"),
+                    ),
+                    (
+                        crate::BuiltinExc::LookupError,
+                        crate::BuiltinExc::LookupError,
+                        None,
+                    ),
                 ] {
                     let (output, detail) = if format == "?" {
                         (input, None)
@@ -1893,7 +2000,7 @@ mod split_buffer_contract_tests {
                     let _ = raise_exception::<u64>(py, input, "scalar callback");
                     assert!(memoryview_pack_error(py, fmt).is_none());
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py, error, output
                     ));
                     let message = crate::builtins::exceptions::format_exception_message(
@@ -1952,10 +2059,10 @@ mod split_buffer_contract_tests {
                     };
                     assert!(exception_pending(py), "{format}: consumer {operation}");
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "NotImplementedError"
+                        crate::BuiltinExc::NotImplementedError
                     ));
                     let message = crate::builtins::exceptions::format_exception_message(
                         py,

@@ -4,6 +4,7 @@
 //! core protocol live here.  The Python `weakref` module builds containers and
 //! proxy/finalize policy on top; it does not manufacture the heap kind.
 
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 use crate::builtins::attributes::attr_lookup_ptr;
@@ -43,7 +44,7 @@ fn weakref_receiver(_py: &crate::PyToken<'_>, self_bits: u64, method: &str) -> O
     let message = format!(
         "descriptor '{method}' requires a 'weakref.ReferenceType' object but received a '{self_type}'"
     );
-    raise_exception::<()>(_py, "TypeError", &message);
+    raise_exception::<()>(_py, BuiltinExc::TypeError, &message);
     None
 }
 
@@ -75,7 +76,7 @@ pub(crate) extern "C" fn weakref_new_method(args: u64, kwargs: u64) -> u64 {
         if values.is_empty() || values.len() > 2 {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "__new__ expected at {} {} argument{}, got {}",
                     if values.is_empty() { "least" } else { "most" },
@@ -123,7 +124,7 @@ pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_b
             dec_ref_bits(_py, instance_bits);
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "ReferenceType allocation did not produce the WEAKREF heap kind",
             );
         }
@@ -133,7 +134,11 @@ pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_b
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception::<_>(_py, "SystemError", "weakref registration was not unique");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::SystemError,
+                "weakref registration was not unique",
+            );
         }
         instance_bits
     })

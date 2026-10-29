@@ -3528,8 +3528,9 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
     assert "PowerTwoMod" in strength_production
     assert "Phase 3" not in strength_production
 
-    scev_body = _rust_fn_body(scev, "fn scev_of_op(")
-    assert "opcode_scev_expr_rule_table(opcode)" in scev_body
+    # HF-555 made the operand walk iterative; the rule lookup lives in its loop.
+    scev_body = _rust_fn_body(scev, "fn scev(&mut self, v: ValueId)")
+    assert "opcode_scev_expr_rule_table(*opcode)" in scev_body
     assert "OpCode::Add if" not in scev_body
     assert "OpCode::Sub if" not in scev_body
     assert "OpCode::Mul if" not in scev_body

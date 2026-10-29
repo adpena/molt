@@ -4663,7 +4663,8 @@ mod tests {
 
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(py, {
-            let owner = crate::alloc_exception(py, "RuntimeError", "physical GC edge");
+            let owner =
+                crate::alloc_exception(py, crate::BuiltinExc::RuntimeError, "physical GC edge");
             assert!(!owner.is_null());
             let bits = MoltObject::from_ptr(owner).bits();
             crate::builtins::exceptions::exception_replace_field_bits(
@@ -5124,7 +5125,7 @@ mod tests {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
-            let ptr = crate::alloc_exception(_py, "RuntimeError", "cycle");
+            let ptr = crate::alloc_exception(_py, crate::BuiltinExc::RuntimeError, "cycle");
             assert!(!ptr.is_null());
             let bits = MoltObject::from_ptr(ptr).bits();
             crate::builtins::exceptions::exception_replace_field_bits(
@@ -5161,7 +5162,11 @@ mod tests {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(_py, {
-            let ptr = crate::alloc_exception(_py, "RuntimeError", "externally rooted cycle");
+            let ptr = crate::alloc_exception(
+                _py,
+                crate::BuiltinExc::RuntimeError,
+                "externally rooted cycle",
+            );
             assert!(!ptr.is_null());
             let bits = MoltObject::from_ptr(ptr).bits();
             crate::builtins::exceptions::exception_replace_field_bits(
@@ -5459,7 +5464,11 @@ mod tests {
     fn collector_pin_keeps_exception_view_live_through_physical_projection_detach() {
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
-            let ptr = crate::alloc_exception(_py, "RuntimeError", "collector pin projection");
+            let ptr = crate::alloc_exception(
+                _py,
+                crate::BuiltinExc::RuntimeError,
+                "collector pin projection",
+            );
             let bits = MoltObject::from_ptr(ptr).bits();
             crate::builtins::exceptions::exception_replace_field_bits(
                 _py,

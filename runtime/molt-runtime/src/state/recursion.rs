@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
@@ -77,7 +78,7 @@ impl RecursionGuard {
         if recursion_guard_enter() {
             Some(Self(PhantomData))
         } else {
-            crate::raise_exception::<u64>(py, "RecursionError", message);
+            crate::raise_exception::<u64>(py, BuiltinExc::RecursionError, message);
             None
         }
     }

@@ -400,7 +400,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-stdlib-text/src/codec_aliases_generated.rs` | 4 | scattered-assumption | `3.4` |
 | `runtime/molt-stdlib-text/src/token_metadata_generated.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs` | 1 | scattered-assumption | `3.0` |
-| `runtime/molt-wasm-host/src/main_tests.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-wasm-host/tests/host_diagnostics.rs` | 1 | scattered-assumption | `3.0` |
 | `config/ci_resource_policy.toml` | 1 | scattered-assumption | `3.0` |
 | `config/codec_aliases.toml` | 3 | scattered-assumption | `3.4` |
@@ -475,7 +474,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
 | `tools/proof_command_argv.py` | 2 | operational-tooling | `3.12` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
-| `tools/proof_plan.toml` | 80 | authority-routed | `3.12` |
+| `tools/proof_plan.toml` | 85 | authority-routed | `3.12` |
 | `tools/public_contract_gate.py` | 2 | authority-routed | `3.12` |
 | `tools/pyperformance_adapter.py` | 1 | scattered-assumption | `3.12` |
 | `tools/quint_trace_to_tests.py` | 8 | operational-tooling | `3.12` |

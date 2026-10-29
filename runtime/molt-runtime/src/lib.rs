@@ -463,6 +463,8 @@ pub use molt_gpu_runtime::{
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
+/// The typed exception identity; runtime raises name a kind, never a spelling.
+pub(crate) use molt_obj_model::{BuiltinExc, ExcKind, ModuleExc};
 
 pub use crate::async_rt::cancellation::*;
 pub use crate::async_rt::channels::*;
@@ -571,12 +573,12 @@ pub(crate) use crate::builtins::exceptions::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
     GENERATOR_RAISE, TASK_RAISE_ACTIVE, alloc_exception, alloc_exception_from_class_bits,
     clear_exception, clear_exception_type_cache, clear_thread_exception_for_teardown,
-    exception_cause_bits, exception_clear_reason_set, exception_context_bits, exception_dict_bits,
-    exception_handler_active, exception_last_bits_noinc, exception_matches_type,
-    exception_materialized_args_bits, exception_notes_bits, exception_pending,
-    exception_stack_baseline_get, exception_stack_baseline_set, exception_stack_pop,
-    exception_stack_pop_restore_last, exception_stack_push, exception_suppress_bits,
-    exception_trace_bits, exception_type_bits_from_name, exceptions_clear_runtime_state,
+    exception_cause_bits, exception_class_bits, exception_clear_reason_set, exception_context_bits,
+    exception_dict_bits, exception_handler_active, exception_last_bits_noinc,
+    exception_matches_type, exception_materialized_args_bits, exception_notes_bits,
+    exception_pending, exception_stack_baseline_get, exception_stack_baseline_set,
+    exception_stack_pop, exception_stack_pop_restore_last, exception_stack_push,
+    exception_suppress_bits, exception_trace_bits, exceptions_clear_runtime_state,
     format_exception_message, format_exception_with_traceback, generator_raise_active,
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
@@ -883,7 +885,6 @@ pub use molt_runtime_stringprep::stringprep::*;
 #[cfg(feature = "stdlib_xml")]
 pub use molt_runtime_xml::xml_etree::*;
 #[cfg(feature = "stdlib_xml")]
-pub use molt_runtime_xml::xml_sax::*;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo::zoneinfo::*;
 #[cfg(feature = "stdlib_graphlib")]

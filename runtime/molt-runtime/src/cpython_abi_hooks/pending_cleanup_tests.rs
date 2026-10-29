@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::{RaisedSnapshot, alloc_exception, resolve_raised, take_raised};
 use crate::object::builders::{alloc_code_obj, alloc_tuple};
 use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
@@ -23,7 +24,7 @@ impl Drop for DenyRuntimeAllocations {
     }
 }
 
-fn exception_bits(py: &crate::PyToken<'_>, kind: &str) -> u64 {
+fn exception_bits(py: &crate::PyToken<'_>, kind: crate::BuiltinExc) -> u64 {
     let exception = alloc_exception(py, kind, "pending cleanup");
     assert!(!exception.is_null());
     MoltObject::from_ptr(exception).bits()
@@ -76,8 +77,8 @@ fn pending_reporting_consumes_runtime_error_and_observes_c_precedence() {
     assert!(register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         install_unraisable_capture(py);
-        let runtime = exception_bits(py, "ValueError");
-        let c_error = exception_bits(py, "LookupError");
+        let runtime = exception_bits(py, crate::BuiltinExc::ValueError);
+        let c_error = exception_bits(py, crate::BuiltinExc::LookupError);
         unsafe {
             crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
             assert!(errors::take_current_error().is_none());
@@ -139,9 +140,9 @@ fn pending_native_clear_reports_inner_runtime_error_and_preserves_both_outer_cha
     assert!(register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         install_unraisable_capture(py);
-        let runtime = exception_bits(py, "ValueError");
-        let c_error = exception_bits(py, "LookupError");
-        let inner = exception_bits(py, "TypeError");
+        let runtime = exception_bits(py, crate::BuiltinExc::ValueError);
+        let c_error = exception_bits(py, crate::BuiltinExc::LookupError);
+        let inner = exception_bits(py, crate::BuiltinExc::TypeError);
         let mut kind: PyTypeObject = unsafe { std::mem::zeroed() };
         kind.tp_name = c"ClearCallback".as_ptr();
         kind.tp_clear = Some(clear_raises_runtime_error);
@@ -189,10 +190,10 @@ fn assert_emergency_pending(py: &crate::PyToken<'_>) {
     let Some(RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits)) = raised else {
         panic!("allocation failure must own a real raised exception");
     };
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         py,
         bits,
-        "MemoryError"
+        crate::BuiltinExc::MemoryError
     ));
     resolve_raised(py, &mut raised);
 }
@@ -227,7 +228,7 @@ fn pending_cleanup_preserves_lazy_runtime_traceback_without_projection() {
             0,
             0,
         );
-        let exception = exception_bits(py, "ValueError");
+        let exception = exception_bits(py, crate::BuiltinExc::ValueError);
         let exception_ptr = crate::obj_from_bits(exception).as_ptr().unwrap();
         crate::record_exception(py, exception_ptr);
         crate::builtins::frames::frame_stack_pop(py);
@@ -349,7 +350,7 @@ fn cold_exception_class_projection_failure_preserves_numeric_error_and_outputs()
         let namespace = crate::alloc_dict_with_pairs(py, &[]);
         assert!(!namespace.is_null());
         let namespace = ExceptionValue::adopt(py, MoltObject::from_ptr(namespace).bits());
-        let base = crate::builtins::exceptions::exception_type_bits_from_name(py, "LookupError");
+        let base = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::LookupError);
         let class = ExceptionValue::adopt(
             py,
             crate::builtins::types::molt_type_new(
@@ -552,10 +553,10 @@ fn cold_exception_class_projection_failure_preserves_numeric_error_and_outputs()
 fn pending_cleanup_restores_both_channels_through_nested_callbacks() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let original = exception_bits(py, "ValueError");
-        let runtime = exception_bits(py, "LookupError");
-        let cleanup = exception_bits(py, "TypeError");
-        let handled = exception_bits(py, "RuntimeError");
+        let original = exception_bits(py, crate::BuiltinExc::ValueError);
+        let runtime = exception_bits(py, crate::BuiltinExc::LookupError);
+        let cleanup = exception_bits(py, crate::BuiltinExc::TypeError);
+        let handled = exception_bits(py, crate::BuiltinExc::RuntimeError);
         unsafe {
             let original_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(original);
             let cleanup_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(cleanup);
@@ -633,9 +634,9 @@ fn explicit_cleanup_preserves_both_errors_through_sequence_retirement_and_item_t
     crate::with_gil_entry_nopanic!(py, {
         use super::native_test_fixture::NativeType;
         use crate::object::seq_access::{pin_item, pin_tuple, snapshot};
-        let runtime = exception_bits(py, "LookupError");
-        let original = exception_bits(py, "ValueError");
-        let cleanup = exception_bits(py, "TypeError");
+        let runtime = exception_bits(py, crate::BuiltinExc::LookupError);
+        let original = exception_bits(py, crate::BuiltinExc::ValueError);
+        let cleanup = exception_bits(py, crate::BuiltinExc::TypeError);
         unsafe {
             let original_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(original);
             let cleanup_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(cleanup);
@@ -710,9 +711,9 @@ fn explicit_cleanup_preserves_both_errors_through_sequence_retirement_and_item_t
 fn pending_cleanup_restores_both_channels_before_resuming_unwind() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let original = exception_bits(py, "ValueError");
-        let runtime = exception_bits(py, "LookupError");
-        let cleanup = exception_bits(py, "TypeError");
+        let original = exception_bits(py, crate::BuiltinExc::ValueError);
+        let runtime = exception_bits(py, crate::BuiltinExc::LookupError);
+        let cleanup = exception_bits(py, crate::BuiltinExc::TypeError);
         unsafe {
             let original_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(original);
             let cleanup_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(cleanup);
@@ -752,7 +753,7 @@ fn pending_cleanup_restores_both_channels_before_resuming_unwind() {
 fn pending_cleanup_and_native_snapshot_preserve_emergency_memory_error() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let original = exception_bits(py, "ValueError");
+        let original = exception_bits(py, crate::BuiltinExc::ValueError);
         let original_view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(original) };
         assert!(!original_view.is_null());
         // This restoration test deliberately holds both domains. A real new
@@ -773,7 +774,7 @@ fn pending_cleanup_and_native_snapshot_preserve_emergency_memory_error() {
         assert!(pending.has_error());
         assert!(
             matches!(pending.runtime_error, Some(RaisedSnapshot::Thread(bits))
-            if crate::builtins::exceptions::exception_matches_builtin_name(py, bits, "MemoryError"))
+            if crate::builtins::exceptions::exception_matches_kind(py, bits, crate::BuiltinExc::MemoryError))
         );
         assert_eq!(pending.c_error.as_ref().unwrap().value, original_view);
         assert!(!crate::exception_pending(py));
@@ -891,8 +892,8 @@ fn pending_callback_completion_preserves_emergency_and_publishes_other_operands(
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let targets = [
-            exception_bits(py, "AttributeError"),
-            exception_bits(py, "AttributeError"),
+            exception_bits(py, crate::BuiltinExc::AttributeError),
+            exception_bits(py, crate::BuiltinExc::AttributeError),
         ];
         let views = targets.map(|bits| unsafe { GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits) });
         assert!(views.iter().all(|view| !view.is_null()));
@@ -991,9 +992,9 @@ fn core_protected_value_preserves_both_errors_during_native_retirement() {
     assert!(register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         use super::native_test_fixture::NativeType;
-        let runtime = exception_bits(py, "LookupError");
-        let original = exception_bits(py, "ValueError");
-        let cleanup = exception_bits(py, "TypeError");
+        let runtime = exception_bits(py, crate::BuiltinExc::LookupError);
+        let original = exception_bits(py, crate::BuiltinExc::ValueError);
+        let cleanup = exception_bits(py, crate::BuiltinExc::TypeError);
         unsafe {
             let original_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(original);
             let cleanup_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(cleanup);
@@ -1167,7 +1168,7 @@ fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary(
             abi_types,
             api::{buffer, memory, object},
         };
-        let failure = exception_bits(py, "LookupError");
+        let failure = exception_bits(py, crate::BuiltinExc::LookupError);
         let _failure =
             crate::PtrDropGuard::preserving(crate::obj_from_bits(failure).as_ptr().unwrap());
         let failure_view = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(failure) };
@@ -1412,7 +1413,8 @@ fn cold_type_publication_preserves_prior_on_success_and_selects_real_failure() {
     crate::with_gil_entry_nopanic!(py, {
         for emergency in [false, true] {
             for fail in [false, true] {
-                let prior = ExceptionValue::adopt(py, exception_bits(py, "LookupError"));
+                let prior =
+                    ExceptionValue::adopt(py, exception_bits(py, crate::BuiltinExc::LookupError));
                 let name = ExceptionValue::adopt(
                     py,
                     crate::attr_name_bits_from_bytes(py, b"ColdPendingPublication").unwrap(),
@@ -1682,7 +1684,8 @@ fn semantic_raise_replaces_either_prior_channel_before_native_retirement() {
                 // Exercise direct recording, a cold explicit raise, and the
                 // existing-trace transport branch through their real callers.
                 for publication in 0..3 {
-                    let selected = ExceptionValue::adopt(py, exception_bits(py, "TypeError"));
+                    let selected =
+                        ExceptionValue::adopt(py, exception_bits(py, crate::BuiltinExc::TypeError));
                     let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(selected.bits());
                     assert!(!view.is_null());
                     if publication == 2 {
@@ -2638,7 +2641,7 @@ fn writable_buffer_preparation_case(deny_lease: bool) {
             py,
             molt_bytesio_new(crate::builtin_classes(py).bytes_io, initial.bits()),
         );
-        let failure = ExceptionValue::adopt(py, exception_bits(py, "MemoryError"));
+        let failure = ExceptionValue::adopt(py, exception_bits(py, crate::BuiltinExc::MemoryError));
         assert!(!crate::exception_pending(py));
         PREPARATION_BUFFER.with(|probe| {
             probe.set(PreparationBufferProbe {
@@ -2840,7 +2843,7 @@ fn writable_buffer_lease_preparation_failure_precedes_exporter_dispatch() {
 #[cfg(feature = "stdlib_serial")]
 fn buffer_consumers_preserve_cold_semantic_class_preparation_failure() {
     use crate::builtins::exceptions::{
-        ExceptionValue, exception_matches_builtin_name, molt_exception_last_pending,
+        ExceptionValue, exception_matches_kind, molt_exception_last_pending,
     };
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
@@ -2902,7 +2905,7 @@ fn buffer_consumers_preserve_cold_semantic_class_preparation_failure() {
             );
             let selected = ExceptionValue::adopt(py, molt_exception_last_pending());
             assert!(
-                exception_matches_builtin_name(py, selected.bits(), "MemoryError"),
+                exception_matches_kind(py, selected.bits(), crate::BuiltinExc::MemoryError),
                 "preparation failure must not become converter TypeError: consumer {consumer}"
             );
             // Preserve the exact selected owner through the real C error channel.
@@ -2973,7 +2976,7 @@ extern "C" fn preparation_buffer_forbidden_fallback(_: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         crate::raise_exception(
             py,
-            "AssertionError",
+            BuiltinExc::AssertionError,
             "preparation failure entered fallback protocol",
         )
     })

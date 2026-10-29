@@ -7,6 +7,7 @@
 use super::throw_protocol::{
     call_throw_method, normalize_throw_argument, parse_throw_call, raise_throw_argument,
 };
+use crate::BuiltinExc;
 use crate::async_rt::generators::{
     is_asyncgen_awaitable_bits, is_direct_await_future_bits, is_iterable_coroutine_bits,
     is_native_coroutine_bits, is_native_poll_future_bits,
@@ -252,7 +253,7 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
                 "object {} can't be used in 'await' expression",
                 type_name(py, obj_from_bits(bits))
             );
-            return raise_exception::<_>(py, "TypeError", &message);
+            return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
         };
         let iterator = unsafe { call_callable0(py, method) };
         dec_ref_bits(py, method);
@@ -262,7 +263,11 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
         }
         if is_native_coroutine_bits(iterator) || is_iterable_coroutine_bits(iterator) {
             dec_ref_bits(py, iterator);
-            return raise_exception::<_>(py, "TypeError", "__await__() returned a coroutine");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "__await__() returned a coroutine",
+            );
         }
         if is_coroutine_wrapper_bits(iterator) || is_direct_await_future_bits(iterator) {
             return iterator;
@@ -280,7 +285,7 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
                 type_name(py, obj_from_bits(iterator))
             );
             dec_ref_bits(py, iterator);
-            return raise_exception::<_>(py, "TypeError", &message);
+            return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
         }
         let adapter = iterator_poll_adapter(py, iterator);
         dec_ref_bits(py, iterator);
@@ -297,7 +302,7 @@ pub extern "C" fn molt_awaitable_await(bits: u64) -> u64 {
                 inc_ref_bits(py, bits);
                 return bits;
             }
-            return raise_exception::<_>(py, "TypeError", "object is not awaitable");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "object is not awaitable");
         }
         let wrapper = crate::molt_future_new(
             crate::async_rt::poll::coroutine_wrapper_poll_fn_addr(),
@@ -317,7 +322,7 @@ pub extern "C" fn molt_awaitable_await(bits: u64) -> u64 {
                 dec_ref_bits(py, wrapper);
                 return raise_exception::<_>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "coroutine wrapper class initialization failed",
                 );
             }
@@ -336,7 +341,11 @@ fn coroutine_receiver(py: &PyToken<'_>, bits: u64) -> Option<u64> {
             return Some(inner);
         }
     }
-    raise_exception::<Option<u64>>(py, "TypeError", "expected coroutine or coroutine wrapper")
+    raise_exception::<Option<u64>>(
+        py,
+        BuiltinExc::TypeError,
+        "expected coroutine or coroutine wrapper",
+    )
 }
 
 pub(crate) fn coroutine_is_done(ptr: *mut u8) -> bool {
@@ -393,7 +402,11 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
         if let Some(exception) = normalized {
             dec_ref_bits(py, exception);
         }
-        return raise_exception::<_>(py, "RuntimeError", "cannot reuse already awaited coroutine");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::RuntimeError,
+            "cannot reuse already awaited coroutine",
+        );
     }
     if unsafe {
         ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_CORO_RUNNING) != 0
@@ -401,7 +414,7 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
         if let Some(exception) = normalized {
             dec_ref_bits(py, exception);
         }
-        return raise_exception::<_>(py, "ValueError", "coroutine already executing");
+        return raise_exception::<_>(py, BuiltinExc::ValueError, "coroutine already executing");
     }
     let started = unsafe {
         ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_CORO_STARTED) != 0
@@ -434,7 +447,7 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
         {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "can't send non-None value to a just-started coroutine",
             );
         }
@@ -499,7 +512,7 @@ fn asyncgen_awaitable_receiver(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
         "expected an async generator awaitable, got {}",
         type_name(py, obj_from_bits(bits))
     );
-    raise_exception::<()>(py, "TypeError", &message);
+    raise_exception::<()>(py, BuiltinExc::TypeError, &message);
     None
 }
 
@@ -512,7 +525,7 @@ fn asyncgen_awaitable_resume(py: &PyToken<'_>, receiver: u64, request: ResumeReq
     };
     if coroutine_is_done(ptr) {
         let message = crate::async_rt::generators::asyncgen_awaitable_reuse_message(py, ptr);
-        return raise_exception::<_>(py, "RuntimeError", message);
+        return raise_exception::<_>(py, BuiltinExc::RuntimeError, message);
     }
     let request = if crate::object::object_state(ptr) == 0 {
         match request {
@@ -590,7 +603,7 @@ pub extern "C" fn molt_asyncgen_awaitable_close(receiver: u64) -> u64 {
             crate::task_mark_done(py, ptr);
             return MoltObject::none().bits();
         }
-        let exit_ptr = crate::alloc_exception(py, "GeneratorExit", "");
+        let exit_ptr = crate::alloc_exception(py, BuiltinExc::GeneratorExit, "");
         if exit_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -599,14 +612,20 @@ pub extern "C" fn molt_asyncgen_awaitable_close(receiver: u64) -> u64 {
         dec_ref_bits(py, exit);
         if !exception_pending(py) {
             dec_ref_bits(py, result);
-            return raise_exception::<_>(py, "RuntimeError", "coroutine ignored GeneratorExit");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::RuntimeError,
+                "coroutine ignored GeneratorExit",
+            );
         }
         let exception = crate::molt_exception_last();
-        let finished = ["StopIteration", "StopAsyncIteration", "GeneratorExit"]
-            .into_iter()
-            .any(|name| {
-                crate::builtins::exceptions::exception_matches_builtin_name(py, exception, name)
-            });
+        let finished = [
+            crate::BuiltinExc::StopIteration,
+            crate::BuiltinExc::StopAsyncIteration,
+            crate::BuiltinExc::GeneratorExit,
+        ]
+        .into_iter()
+        .any(|name| crate::builtins::exceptions::exception_matches_kind(py, exception, name));
         dec_ref_bits(py, exception);
         if finished {
             crate::clear_exception(py);
@@ -653,7 +672,7 @@ pub extern "C" fn molt_coroutine_close_method(receiver: u64) -> u64 {
             }
             return MoltObject::none().bits();
         }
-        let exit_ptr = crate::alloc_exception(py, "GeneratorExit", "");
+        let exit_ptr = crate::alloc_exception(py, BuiltinExc::GeneratorExit, "");
         if exit_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -662,19 +681,23 @@ pub extern "C" fn molt_coroutine_close_method(receiver: u64) -> u64 {
         dec_ref_bits(py, exit);
         if !exception_pending(py) {
             dec_ref_bits(py, result);
-            return raise_exception::<_>(py, "RuntimeError", "coroutine ignored GeneratorExit");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::RuntimeError,
+                "coroutine ignored GeneratorExit",
+            );
         }
         let exception = crate::molt_exception_last_pending();
-        let stopped = crate::builtins::exceptions::exception_matches_builtin_name(
+        let stopped = crate::builtins::exceptions::exception_matches_kind(
             py,
             exception,
-            "StopIteration",
+            crate::BuiltinExc::StopIteration,
         );
         let expected = stopped
-            || crate::builtins::exceptions::exception_matches_builtin_name(
+            || crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "GeneratorExit",
+                crate::BuiltinExc::GeneratorExit,
             );
         let returned = if stopped && crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
             crate::builtins::exceptions::exception_typed_field_get(
@@ -701,7 +724,7 @@ pub extern "C" fn molt_coroutine_close_method(receiver: u64) -> u64 {
 pub extern "C" fn molt_coroutine_wrapper_iter(receiver: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         if !is_coroutine_wrapper_bits(receiver) {
-            return raise_exception::<_>(py, "TypeError", "expected coroutine wrapper");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "expected coroutine wrapper");
         }
         inc_ref_bits(py, receiver);
         receiver
@@ -725,7 +748,7 @@ pub unsafe extern "C" fn molt_coroutine_wrapper_poll(raw: u64) -> i64 {
         if coroutine_is_done(ptr_from_bits(inner)) {
             return raise_exception::<i64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "cannot reuse already awaited coroutine",
             );
         }
@@ -800,7 +823,7 @@ impl CoroutinePollGuard {
         } {
             return Err(raise_exception::<i64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "coroutine already executing",
             ));
         }
@@ -819,7 +842,7 @@ impl CoroutinePollGuard {
         } {
             return Err(raise_exception::<i64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "coroutine already executing",
             ));
         }
@@ -922,8 +945,11 @@ fn iterator_resume(
     dec_ref_bits(py, result);
     let exception = crate::molt_exception_last_pending();
     // SEND consumes delegate exhaustion, including a failing close method.
-    let exhausted =
-        crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "StopIteration");
+    let exhausted = crate::builtins::exceptions::exception_matches_kind(
+        py,
+        exception,
+        crate::BuiltinExc::StopIteration,
+    );
     if exhausted {
         let value = maybe_ptr_from_bits(exception)
             .and_then(|ptr| {
@@ -957,7 +983,7 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
         Err(()) => return MoltObject::none().bits(),
     };
     if !marker_present {
-        return raise_exception::<_>(py, "RuntimeError", "Task got bad yield");
+        return raise_exception::<_>(py, BuiltinExc::RuntimeError, "Task got bad yield");
     }
     let Some(name) = crate::attr_name_bits_from_bytes(py, b"_asyncio_future_blocking") else {
         return MoltObject::none().bits();
@@ -976,7 +1002,11 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
     }
     if !blocking {
         dec_ref_bits(py, name);
-        return raise_exception::<_>(py, "RuntimeError", "yield was used instead of yield from");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::RuntimeError,
+            "yield was used instead of yield from",
+        );
     }
     crate::molt_set_attr_name(value, name, MoltObject::from_bool(false).bits());
     dec_ref_bits(py, name);
@@ -998,7 +1028,7 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
         Ok(crate::builtins::modules::ModuleImportOutcome::Missing { .. }) => {
             return raise_exception::<_>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "Future scheduling requires compiled asyncio.futures",
             );
         }
@@ -1098,7 +1128,11 @@ pub unsafe extern "C" fn molt_await_iterator_poll(raw: u64) -> i64 {
                     clear_iterator(py, ptr);
                 }
                 if !exception_pending(py) {
-                    raise_exception::<()>(py, "TypeError", "await iterator lost __next__");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::TypeError,
+                        "await iterator lost __next__",
+                    );
                 }
                 MoltObject::none().bits() as i64
             }
@@ -1324,10 +1358,10 @@ mod tests {
                     .is_err()
             );
             let exception = crate::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "RuntimeError",
+                crate::BuiltinExc::RuntimeError,
             ));
             crate::molt_exception_clear();
             for value in [exception, iterator, dictionary_bits] {
@@ -1374,10 +1408,10 @@ mod tests {
                     assert!(!exception_pending(py));
                 } else {
                     let error = crate::molt_exception_last();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "TypeError"
+                        crate::BuiltinExc::TypeError
                     ));
                     crate::clear_exception(py);
                     dec_ref_bits(py, error);
@@ -1520,7 +1554,7 @@ mod tests {
                     );
                     let exception = MoltObject::from_ptr(crate::alloc_exception(
                         py,
-                        "LookupError",
+                        BuiltinExc::LookupError,
                         "manual resume failure",
                     ))
                     .bits();
@@ -1560,9 +1594,12 @@ mod tests {
     fn injected_await_exception_does_not_poll_or_complete_the_retained_child() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let exception =
-                MoltObject::from_ptr(crate::alloc_exception(py, "ValueError", "await injection"))
-                    .bits();
+            let exception = MoltObject::from_ptr(crate::alloc_exception(
+                py,
+                BuiltinExc::ValueError,
+                "await injection",
+            ))
+            .bits();
             for request in [
                 ResumeRequest::Throw(exception),
                 ResumeRequest::Inject(exception),
@@ -1627,10 +1664,10 @@ mod tests {
             dec_ref_bits(py, ignored);
             assert!(exception_pending(py));
             let stop = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 stop,
-                "StopIteration"
+                crate::BuiltinExc::StopIteration
             ));
             let value = crate::builtins::exceptions::exception_typed_field_get(
                 py,
@@ -1646,10 +1683,10 @@ mod tests {
             let ignored = molt_coroutine_send_method(coroutine, MoltObject::none().bits());
             dec_ref_bits(py, ignored);
             let reused = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 reused,
-                "RuntimeError"
+                crate::BuiltinExc::RuntimeError
             ));
             crate::clear_exception(py);
             dec_ref_bits(py, reused);
@@ -1659,12 +1696,12 @@ mod tests {
         });
     }
 
-    fn take_pending_exception(py: &PyToken<'_>, name: &str) -> (u64, String) {
+    fn take_pending_exception(py: &PyToken<'_>, name: crate::BuiltinExc) -> (u64, String) {
         assert!(exception_pending(py));
         let exception = crate::molt_exception_last();
         assert!(
-            crate::builtins::exceptions::exception_matches_builtin_name(py, exception, name),
-            "expected {name}"
+            crate::builtins::exceptions::exception_matches_kind(py, exception, name),
+            "expected {name:?}"
         );
         let message =
             crate::builtins::exceptions::format_exception_message(py, ptr_from_bits(exception));
@@ -1684,7 +1721,8 @@ mod tests {
             );
             let asyncgen = crate::molt_asyncgen_new(generator);
             let thrown =
-                MoltObject::from_ptr(crate::alloc_exception(py, "ValueError", "athrow")).bits();
+                MoltObject::from_ptr(crate::alloc_exception(py, BuiltinExc::ValueError, "athrow"))
+                    .bits();
             let anext = crate::molt_asyncgen_anext(asyncgen);
             let asend = crate::molt_asyncgen_asend(asyncgen, MoltObject::none().bits());
             let athrow = crate::molt_asyncgen_athrow(asyncgen, thrown);
@@ -1717,7 +1755,7 @@ mod tests {
             // The first step completes with the generator's value.
             let ignored = molt_asyncgen_awaitable_next(anext);
             dec_ref_bits(py, ignored);
-            let (stop, _) = take_pending_exception(py, "StopIteration");
+            let (stop, _) = take_pending_exception(py, crate::BuiltinExc::StopIteration);
             let value = crate::builtins::exceptions::exception_typed_field_get(
                 py,
                 ptr_from_bits(stop),
@@ -1737,7 +1775,7 @@ mod tests {
                     molt_asyncgen_awaitable_send(anext, MoltObject::none().bits())
                 };
                 dec_ref_bits(py, reuse);
-                let (reused, message) = take_pending_exception(py, "RuntimeError");
+                let (reused, message) = take_pending_exception(py, crate::BuiltinExc::RuntimeError);
                 assert_eq!(message, "cannot reuse already awaited __anext__()/asend()");
                 dec_ref_bits(py, reused);
             }
@@ -1747,7 +1785,7 @@ mod tests {
             // A non-None first send to athrow is refused and leaves it unstarted.
             let refused = molt_asyncgen_awaitable_send(athrow, MoltObject::from_int(5).bits());
             dec_ref_bits(py, refused);
-            let (error, message) = take_pending_exception(py, "RuntimeError");
+            let (error, message) = take_pending_exception(py, crate::BuiltinExc::RuntimeError);
             assert_eq!(
                 message,
                 "can't send non-None value to a just-started coroutine"
@@ -1757,7 +1795,7 @@ mod tests {
             // Other receivers are refused.
             let refused = molt_asyncgen_awaitable_self(generator);
             dec_ref_bits(py, refused);
-            let (error, _) = take_pending_exception(py, "TypeError");
+            let (error, _) = take_pending_exception(py, crate::BuiltinExc::TypeError);
             dec_ref_bits(py, error);
             for value in [aclose, athrow, asend, anext, thrown, asyncgen, generator] {
                 dec_ref_bits(py, value);

@@ -17,6 +17,7 @@ use crate::bridge::{
     dec_ref_bits, exception_pending, inc_ref_bits, is_callable_bits, raise_exception_u64,
     string_obj_to_owned, to_i64,
 };
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
 use std::collections::HashSet;
 
@@ -162,7 +163,7 @@ pub(super) fn normalize_bind_add_prefix(py: &PyToken, add_bits: u64) -> Result<S
             1 => Ok("+".to_string()),
             _ => Err(raise_exception_u64(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bind add must be one of: None, '', False, True, or '+'",
             )),
         };
@@ -173,14 +174,14 @@ pub(super) fn normalize_bind_add_prefix(py: &PyToken, add_bits: u64) -> Result<S
             "+" => Ok("+".to_string()),
             _ => Err(raise_exception_u64(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bind add must be one of: None, '', False, True, or '+'",
             )),
         };
     }
     Err(raise_exception_u64(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "bind add must be one of: None, '', False, True, or '+'",
     ))
 }

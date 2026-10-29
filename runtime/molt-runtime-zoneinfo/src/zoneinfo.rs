@@ -411,7 +411,13 @@ pub extern "C" fn molt_zoneinfo_new(key_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(k) => k,
-            None => return raise_exception::<u64>(_py, "TypeError", "timezone key must be a str"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "timezone key must be a str",
+                );
+            }
         };
         match load_zone(&key) {
             Ok(zone) => {
@@ -419,7 +425,7 @@ pub extern "C" fn molt_zoneinfo_new(key_bits: u64) -> u64 {
                 ZONE_MAP.with(|m| m.borrow_mut().insert(id, zone));
                 int_bits_from_i64(_py, id)
             }
-            Err(msg) => raise_exception::<u64>(_py, "zoneinfo.ZoneInfoNotFoundError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, ModuleExc::ZoneInfoNotFoundError, &msg),
         }
     })
 }
@@ -429,15 +435,21 @@ pub extern "C" fn molt_zoneinfo_key(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "zoneinfo handle must be int",
+                );
+            }
         };
         let key = ZONE_MAP.with(|m| m.borrow().get(&id).map(|z| z.key.clone()));
         match key {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid zoneinfo handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid zoneinfo handle"),
             Some(k) => {
                 let ptr = alloc_string(_py, k.as_bytes());
                 if ptr.is_null() {
-                    raise_exception::<u64>(_py, "MemoryError", "out of memory")
+                    raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory")
                 } else {
                     MoltObject::from_ptr(ptr).bits()
                 }
@@ -451,14 +463,20 @@ pub extern "C" fn molt_zoneinfo_utcoffset(handle_bits: u64, dt_components_bits: 
     with_core_gil!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "zoneinfo handle must be int",
+                );
+            }
         };
         let comps = match extract_dt_components(_py, dt_components_bits) {
             Some(c) => c,
             None => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dt_components must be a tuple of ints",
                 );
             }
@@ -471,7 +489,7 @@ pub extern "C" fn molt_zoneinfo_utcoffset(handle_bits: u64, dt_components_bits: 
                 .map(|z| z.local_mapping_at(local_unix_ts, fold).0)
         });
         match utoff {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid zoneinfo handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid zoneinfo handle"),
             Some(secs) => int_bits_from_i64(_py, secs as i64),
         }
     })
@@ -482,14 +500,20 @@ pub extern "C" fn molt_zoneinfo_tzname(handle_bits: u64, dt_components_bits: u64
     with_core_gil!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "zoneinfo handle must be int",
+                );
+            }
         };
         let comps = match extract_dt_components(_py, dt_components_bits) {
             Some(c) => c,
             None => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dt_components must be a tuple of ints",
                 );
             }
@@ -512,11 +536,11 @@ pub extern "C" fn molt_zoneinfo_tzname(handle_bits: u64, dt_components_bits: u64
             }
         });
         match name_opt {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid zoneinfo handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid zoneinfo handle"),
             Some(name) => {
                 let ptr = alloc_string(_py, name.as_bytes());
                 if ptr.is_null() {
-                    raise_exception::<u64>(_py, "MemoryError", "out of memory")
+                    raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory")
                 } else {
                     MoltObject::from_ptr(ptr).bits()
                 }
@@ -530,14 +554,20 @@ pub extern "C" fn molt_zoneinfo_dst(handle_bits: u64, dt_components_bits: u64) -
     with_core_gil!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "zoneinfo handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "zoneinfo handle must be int",
+                );
+            }
         };
         let comps = match extract_dt_components(_py, dt_components_bits) {
             Some(c) => c,
             None => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dt_components must be a tuple of ints",
                 );
             }
@@ -553,7 +583,7 @@ pub extern "C" fn molt_zoneinfo_dst(handle_bits: u64, dt_components_bits: u64) -
             if is_dst { Some(3600) } else { Some(0) }
         });
         match dst_secs {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid zoneinfo handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid zoneinfo handle"),
             Some(secs) => int_bits_from_i64(_py, secs),
         }
     })
@@ -567,13 +597,13 @@ pub extern "C" fn molt_zoneinfo_available_timezones() -> u64 {
         for name in &names {
             let ptr = alloc_string(_py, name.as_bytes());
             if ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             str_bits.push(MoltObject::from_ptr(ptr).bits());
         }
         let set_ptr = alloc_set_with_entries(_py, &str_bits);
         if set_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(set_ptr).bits()
     })

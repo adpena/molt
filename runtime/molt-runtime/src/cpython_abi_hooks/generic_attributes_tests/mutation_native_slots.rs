@@ -1,6 +1,7 @@
 //! Exercise real native consumers after normal type namespace mutation.
 use super::super::native_test_fixture::NativeType;
 use super::*;
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::refcount::OwnedPyObject;
 use molt_cpython_abi::api::{abstract_number, buffer, memory, numbers, typeobj};
@@ -953,7 +954,7 @@ extern "C" fn optional_item(_: u64, index: u64) -> u64 {
         if obj_from_bits(index).as_int() == Some(0) {
             MoltObject::from_int(31).bits()
         } else {
-            crate::raise_exception::<_>(py, "IndexError", "end of optional sequence")
+            crate::raise_exception::<_>(py, BuiltinExc::IndexError, "end of optional sequence")
         }
     })
 }
@@ -963,7 +964,7 @@ extern "C" fn optional_descriptor(receiver: u64, _: u64, _: u64) -> u64 {
 }
 extern "C" fn optional_lookup_failure(_: u64, _: u64, _: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        crate::raise_exception::<_>(py, "RuntimeError", "optional lookup sentinel")
+        crate::raise_exception::<_>(py, BuiltinExc::RuntimeError, "optional lookup sentinel")
     })
 }
 extern "C" fn optional_capture(_: u64) -> u64 {

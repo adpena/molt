@@ -3,6 +3,7 @@
 //! edge remains physical exception metadata and has no Python member descriptor.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::types::{
     NativeDescriptorFlavor, NativeDescriptorSpec, alloc_native_descriptor,
 };
@@ -14,7 +15,7 @@ fn finish_field_mutation(py: &PyToken<'_>, result: Result<(), &'static str>) -> 
     match result {
         Ok(()) => MoltObject::none().bits(),
         Err(_) if exception_pending(py) => MoltObject::none().bits(),
-        Err(message) => raise_exception::<u64>(py, "TypeError", message),
+        Err(message) => raise_exception::<u64>(py, BuiltinExc::TypeError, message),
     }
 }
 
@@ -96,7 +97,7 @@ unsafe fn native_field_call(
             }
             DecodedHandleResult::Missing => raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "native exception field has no descriptor operation",
             ),
         }
@@ -110,7 +111,7 @@ pub extern "C" fn molt_exception_member_get(descriptor: u64, instance: u64) -> u
             let Some((object, field)) = callback_field(descriptor, instance) else {
                 return raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "invalid exception member receiver",
                 );
             };
@@ -142,10 +143,12 @@ pub extern "C" fn molt_exception_member_get(descriptor: u64, instance: u64) -> u
                 Field::Typed(field) => {
                     return match exception_typed_field_get(py, object, field) {
                         Some(Ok(bits)) => bits,
-                        Some(Err(message)) => raise_exception::<u64>(py, "AttributeError", message),
+                        Some(Err(message)) => {
+                            raise_exception::<u64>(py, BuiltinExc::AttributeError, message)
+                        }
                         None => raise_exception::<u64>(
                             py,
-                            "SystemError",
+                            BuiltinExc::SystemError,
                             "exception field is absent from its layout",
                         ),
                     };
@@ -168,7 +171,11 @@ unsafe fn mutate_field(
 ) -> u64 {
     unsafe {
         let Some((object, field)) = callback_field(descriptor, instance) else {
-            return raise_exception::<u64>(py, "TypeError", "invalid exception member receiver");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "invalid exception member receiver",
+            );
         };
         if object_type_id(object) == crate::TYPE_ID_FOREIGN {
             return native_field_call(py, descriptor, instance, Some(value));
@@ -181,10 +188,12 @@ unsafe fn mutate_field(
             return match result {
                 Some(Ok(())) => MoltObject::none().bits(),
                 Some(Err(_)) if exception_pending(py) => MoltObject::none().bits(),
-                Some(Err(message)) => raise_exception::<u64>(py, "AttributeError", message),
+                Some(Err(message)) => {
+                    raise_exception::<u64>(py, BuiltinExc::AttributeError, message)
+                }
                 None => raise_exception::<u64>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "exception field is absent from its layout",
                 ),
             };
@@ -199,7 +208,7 @@ unsafe fn mutate_field(
                 Field::SuppressContext => "can't delete numeric/char attribute",
                 Field::Typed(_) => unreachable!(),
             };
-            return raise_exception::<u64>(py, "TypeError", message);
+            return raise_exception::<u64>(py, BuiltinExc::TypeError, message);
         };
         let slot = match field {
             Field::Dictionary => {
@@ -222,7 +231,7 @@ unsafe fn mutate_field(
                 let Some(suppress) = obj_from_bits(value).as_bool() else {
                     return raise_exception::<u64>(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "attribute value type must be bool",
                     );
                 };
@@ -257,7 +266,7 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
             return false;
         };
         let root = crate::object::class_exception_layout_root(class);
-        if owner != exception_type_bits_from_name(py, root.owner_name()) {
+        if owner != exception_class_bits(py, root.owner_kind()) {
             return true;
         }
         let declarations: Vec<_> = root.attribute_declarations().collect();
@@ -390,7 +399,7 @@ mod tests {
             // Runtime fields may own real native exceptions, and native
             // fields may own runtime views. Both projection directions retain
             // the same identity without interpreting foreign payload words.
-            let managed = alloc_exception(&py, "ValueError", "mixed chain");
+            let managed = alloc_exception(&py, BuiltinExc::ValueError, "mixed chain");
             assert!(!managed.is_null());
             let managed_bits = MoltObject::from_ptr(managed).bits();
             let context_name = attr_name_bits_from_bytes(&py, b"__context__").unwrap();
@@ -458,7 +467,7 @@ mod tests {
             assert_eq!(observed, tuple_bits);
             dec_ref_bits(&py, observed);
 
-            let typed_owner = exception_type_bits_from_name(&py, "AttributeError");
+            let typed_owner = exception_class_bits(&py, BuiltinExc::AttributeError);
             let typed_name = attr_name_bits_from_bytes(&py, b"obj").unwrap();
             let typed_descriptor = crate::builtins::attr::class_namespace_lookup_raw(
                 &py,

@@ -1,6 +1,7 @@
 // Collection-style builtins that consume iterables and materialize aggregate results.
 // Kept out of ops_builtins.rs so call dispatch and object protocol slots do not share a compilation unit with reduction/sort algorithms.
 
+use crate::BuiltinExc;
 use crate::object::iterable::OwnedIterator;
 use crate::object::ops::{as_float_extended, float_result_bits};
 use crate::object::ops_compare::{CompareBoolOutcome, CompareOp, rich_compare_op_bool};
@@ -122,7 +123,11 @@ impl CompensatedSum {
 }
 
 fn raise_int_to_float_overflow(_py: &PyToken<'_>) -> bool {
-    raise_exception::<()>(_py, "OverflowError", "int too large to convert to float");
+    raise_exception::<()>(
+        _py,
+        BuiltinExc::OverflowError,
+        "int too large to convert to float",
+    );
     false
 }
 
@@ -594,13 +599,13 @@ fn molt_minmax_builtin(
         });
     let Some((args_len, first_arg)) = args else {
         let msg = format!("{name} expected at least 1 argument, got 0");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     let has_default = default_bits != missing;
     if args_len > 1 && has_default {
         let msg =
             format!("Cannot specify a default for {name}() with multiple positional arguments");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let iterable = if args_len > 1 { args_bits } else { first_arg };
     let Some(mut iter) = OwnedIterator::new(_py, iterable) else {
@@ -666,7 +671,7 @@ fn molt_minmax_builtin(
         }
         None => {
             let msg = format!("{name}() iterable argument is empty");
-            raise_exception::<u64>(_py, "ValueError", &msg)
+            raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)
         }
     };
     drop(iter);
@@ -714,7 +719,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
         };
         if let Some(message) = sum_rejected_start(_py, start_bits) {
             // The raise precedes the iterator's release, as in CPython.
-            let raised = raise_exception::<u64>(_py, "TypeError", message);
+            let raised = raise_exception::<u64>(_py, BuiltinExc::TypeError, message);
             drop(source);
             return raised;
         }

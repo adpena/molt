@@ -132,9 +132,12 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
             let error_name = MoltObject::from_ptr(alloc_string(py, b"error")).bits();
             let payload = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             let args = MoltObject::from_ptr(alloc_tuple(py, &[payload, iterator])).bits();
-            for exception_name in ["StopIteration", "RuntimeError"] {
+            for exception_name in [
+                crate::BuiltinExc::StopIteration,
+                crate::BuiltinExc::RuntimeError,
+            ] {
                 let error = crate::builtins::exceptions::molt_exception_new_from_class(
-                    exception_type_bits_from_name(py, exception_name),
+                    exception_class_bits(py, exception_name),
                     args,
                 );
                 crate::molt_set_attr_name(iterator, error_name, error);
@@ -155,7 +158,7 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
                         }
                         _ => unreachable!(),
                     };
-                    if exception_name == "RuntimeError" || mode == "next" {
+                    if exception_name == crate::BuiltinExc::RuntimeError || mode == "next" {
                         assert!(exception_pending(py));
                         let caught = molt_exception_last_pending();
                         assert_eq!(caught, error, "{mode} replaced the original exception");

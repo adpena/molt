@@ -6,6 +6,7 @@ use super::buffered::{
     trap_eintr,
 };
 use super::*;
+use crate::BuiltinExc;
 use crate::object::BufferedOperation;
 use crate::object::buffer_exports::ScopedBuffer;
 use molt_runtime_core::OwnedRuntimeValue;
@@ -83,7 +84,7 @@ fn blocking(py: &PyToken<'_>, errno: i32, written: usize) -> u64 {
         return MoltObject::none().bits();
     }
     let _args = owned(py, MoltObject::from_ptr(args).bits());
-    let class = crate::builtins::exceptions::exception_type_bits_from_name(py, "BlockingIOError");
+    let class = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::BlockingIOError);
     let exception = crate::builtins::exceptions::molt_exception_new_from_class(class, _args.bits());
     let _exception = owned(py, exception);
     if exception_pending(py) {
@@ -144,12 +145,16 @@ unsafe fn raw_write<T: ?Sized>(
             if file_handle_is_closed(handle) {
                 return Err(raise_exception(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "I/O operation on closed file",
                 ));
             }
             if !handle.writable {
-                return Err(raise_exception(py, "UnsupportedOperation", "not writable"));
+                return Err(raise_exception(
+                    py,
+                    BuiltinExc::UnsupportedOperation,
+                    "not writable",
+                ));
             }
             let state = file_handle_physical_state(py, handle)?.clone();
             let mem = memory_backend_bits(handle);
@@ -157,7 +162,7 @@ unsafe fn raw_write<T: ?Sized>(
             let Some(backend) = backend.as_mut() else {
                 return Err(raise_exception(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "I/O operation on closed file",
                 ));
             };
@@ -223,7 +228,7 @@ unsafe fn raw_write<T: ?Sized>(
     if count < 0 || count as usize > len {
         return Err(raise_exception(
             py,
-            "OSError",
+            BuiltinExc::OSError,
             &format!(
                 "raw write() returned invalid length {count} (should have been between 0 and {len})"
             ),
@@ -247,7 +252,7 @@ unsafe fn append(py: &PyToken<'_>, pointer: *mut u8, input: &[u8]) -> Result<(),
     if handle.write_buf.try_reserve(input.len()).is_err() {
         return Err(raise_exception(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "cannot allocate buffered writer storage",
         ));
     }
@@ -351,7 +356,7 @@ pub(super) unsafe fn write(
         _ => unsafe { molt_capi_errno() },
     };
     match drained {
-        Err(error) if !pending_matches(py, "BlockingIOError") => return error,
+        Err(error) if !pending_matches(py, BuiltinExc::BlockingIOError) => return error,
         Err(_) | Ok(Some(_)) => {
             clear_exception(py);
             if let Err(error) = unsafe { compact(py, pointer) } {
@@ -441,7 +446,7 @@ pub(super) unsafe fn tell(py: &PyToken<'_>, bits: u64, pointer: *mut u8) -> u64 
     if position < 0 {
         return raise_exception(
             py,
-            "OSError",
+            BuiltinExc::OSError,
             &format!("Raw stream returned invalid position {position}"),
         );
     }
@@ -459,7 +464,7 @@ pub(super) unsafe fn tell(py: &PyToken<'_>, bits: u64, pointer: *mut u8) -> u64 
         Some(position) => int_bits_from_i64(py, position),
         None => raise_exception(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "buffered position exceeds file offset range",
         ),
     }
@@ -485,7 +490,7 @@ pub(super) unsafe fn seek(
     if !supported {
         return raise_exception(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("whence value {whence} unsupported"),
         );
     }
@@ -501,7 +506,7 @@ pub(super) unsafe fn seek(
     if seekable != MoltObject::from_bool(true).bits() {
         return raise_exception(
             py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "File or stream is not seekable.",
         );
     }
@@ -552,7 +557,7 @@ pub(super) unsafe fn seek(
     if position < 0 {
         return raise_exception(
             py,
-            "OSError",
+            BuiltinExc::OSError,
             &format!("Raw stream returned invalid position {position}"),
         );
     }

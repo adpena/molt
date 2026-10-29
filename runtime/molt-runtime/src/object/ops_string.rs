@@ -3,6 +3,7 @@
 //! Each `pub extern "C" fn molt_string_*` / `molt_str_*` is a separate
 //! linker symbol so that `wasm-ld --gc-sections` can drop unused entries.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_obj_model::unicode::CaseOperation;
@@ -31,7 +32,7 @@ pub(crate) fn require_strict_utf8(py: &PyToken<'_>, bits: u64) -> bool {
         .as_ptr()
         .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
     else {
-        raise_exception::<()>(py, "TypeError", "expected str for UTF-8 export");
+        raise_exception::<()>(py, BuiltinExc::TypeError, "expected str for UTF-8 export");
         return false;
     };
     let value = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
@@ -62,7 +63,11 @@ pub(crate) fn require_strict_utf8(py: &PyToken<'_>, bits: u64) -> bool {
             return false;
         }
     }
-    raise_exception::<()>(py, "SystemError", "invalid internal Python string storage");
+    raise_exception::<()>(
+        py,
+        BuiltinExc::SystemError,
+        "invalid internal Python string storage",
+    );
     false
 }
 
@@ -83,7 +88,7 @@ pub(super) fn validate_string_receiver(
     }
     raise_exception::<()>(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!(
             "descriptor '{method}' for 'str' objects doesn't apply to a '{}' object",
             class_name_for_error(type_of_bits(py, hay_bits))
@@ -448,12 +453,12 @@ pub extern "C" fn molt_string_find_slice(
                     Some(ptr) => ptr,
                     None => {
                         let msg = str_sub_arg_type_msg(_py, "find", needle);
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 };
                 if object_type_id(needle_ptr) != TYPE_ID_STRING {
                     let msg = str_sub_arg_type_msg(_py, "find", needle);
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 let hay_len = string_len(hay_ptr);
                 let needle_len = string_len(needle_ptr);
@@ -543,12 +548,12 @@ pub extern "C" fn molt_string_rfind_slice(
                     Some(ptr) => ptr,
                     None => {
                         let msg = str_sub_arg_type_msg(_py, "rfind", needle);
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 };
                 if object_type_id(needle_ptr) != TYPE_ID_STRING {
                     let msg = str_sub_arg_type_msg(_py, "rfind", needle);
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 let hay_len = string_len(hay_ptr);
                 let needle_len = string_len(needle_ptr);
@@ -633,7 +638,7 @@ pub extern "C" fn molt_string_index_slice(
             .is_some_and(|p| unsafe { object_type_id(p) == TYPE_ID_STRING });
         if !needle_is_str {
             let msg = str_sub_arg_type_msg(_py, "index", needle);
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let out_bits = molt_string_find_slice(
             hay_bits,
@@ -645,7 +650,7 @@ pub extern "C" fn molt_string_index_slice(
         );
         match to_i64(obj_from_bits(out_bits)) {
             Some(idx) if idx >= 0 => out_bits,
-            Some(_) => raise_exception::<_>(_py, "ValueError", "substring not found"),
+            Some(_) => raise_exception::<_>(_py, BuiltinExc::ValueError, "substring not found"),
             None => out_bits,
         }
     })
@@ -670,7 +675,7 @@ pub extern "C" fn molt_string_rindex_slice(
             .is_some_and(|p| unsafe { object_type_id(p) == TYPE_ID_STRING });
         if !needle_is_str {
             let msg = str_sub_arg_type_msg(_py, "rindex", needle);
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let out_bits = molt_string_rfind_slice(
             hay_bits,
@@ -682,7 +687,7 @@ pub extern "C" fn molt_string_rindex_slice(
         );
         match to_i64(obj_from_bits(out_bits)) {
             Some(idx) if idx >= 0 => out_bits,
-            Some(_) => raise_exception::<_>(_py, "ValueError", "substring not found"),
+            Some(_) => raise_exception::<_>(_py, BuiltinExc::ValueError, "substring not found"),
             None => out_bits,
         }
     })
@@ -850,7 +855,7 @@ pub extern "C" fn molt_string_startswith_slice(
                                     "tuple for startswith must only contain str, not {}",
                                     type_name(_py, elem)
                                 );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
+                                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                             }
                         };
                         if object_type_id(elem_ptr) != TYPE_ID_STRING {
@@ -858,7 +863,7 @@ pub extern "C" fn molt_string_startswith_slice(
                                 "tuple for startswith must only contain str, not {}",
                                 type_name(_py, elem)
                             );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
+                            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                         }
                         let needle_bytes = std::slice::from_raw_parts(
                             string_bytes(elem_ptr),
@@ -875,7 +880,7 @@ pub extern "C" fn molt_string_startswith_slice(
                 "startswith first arg must be str or a tuple of str, not {}",
                 type_name(_py, needle)
             );
-            raise_exception::<_>(_py, "TypeError", &msg)
+            raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
         }
     })
 }
@@ -955,7 +960,7 @@ pub extern "C" fn molt_string_endswith_slice(
                                     "tuple for endswith must only contain str, not {}",
                                     type_name(_py, elem)
                                 );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
+                                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                             }
                         };
                         if object_type_id(elem_ptr) != TYPE_ID_STRING {
@@ -963,7 +968,7 @@ pub extern "C" fn molt_string_endswith_slice(
                                 "tuple for endswith must only contain str, not {}",
                                 type_name(_py, elem)
                             );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
+                            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                         }
                         let needle_bytes = std::slice::from_raw_parts(
                             string_bytes(elem_ptr),
@@ -980,7 +985,7 @@ pub extern "C" fn molt_string_endswith_slice(
                 "endswith first arg must be str or a tuple of str, not {}",
                 type_name(_py, needle)
             );
-            raise_exception::<_>(_py, "TypeError", &msg)
+            raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
         }
     })
 }
@@ -1027,7 +1032,7 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &str_count_arg_type_msg(_py, needle),
                     );
                 }
@@ -1035,7 +1040,7 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             if object_type_id(needle_ptr) != TYPE_ID_STRING {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &str_count_arg_type_msg(_py, needle),
                 );
             }
@@ -1095,12 +1100,12 @@ pub extern "C" fn molt_string_count_slice(
                 Some(ptr) => ptr,
                 None => {
                     let msg = format!("must be str, not {}", type_name(_py, needle));
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             };
             if object_type_id(needle_ptr) != TYPE_ID_STRING {
                 let msg = format!("must be str, not {}", type_name(_py, needle));
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
@@ -1159,7 +1164,11 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
         };
         unsafe {
             if object_type_id(sep_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "join expects a str separator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "join expects a str separator",
+                );
             }
             let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
             let mut total_len = 0usize;
@@ -1195,7 +1204,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 let Some(pin) = crate::object::seq_access::pin_item(_py, items_ptr, idx) else {
                     return raise_exception(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "sequence changed size during iteration",
                     );
                 };
@@ -1208,7 +1217,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "sequence item {idx}: expected str instance, {} found",
                             type_name(_py, elem_obj),
@@ -1221,7 +1230,11 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                     .and_then(|n| n.checked_add(if idx == 0 { 0 } else { sep_bytes.len() }))
                     .filter(|&n| n <= isize::MAX as usize)
                 else {
-                    return raise_exception(_py, "OverflowError", "join() result is too long");
+                    return raise_exception(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "join() result is too long",
+                    );
                 };
                 total_len = length;
                 let data = string_bytes(elem_ptr);
@@ -1341,7 +1354,7 @@ pub extern "C" fn molt_string_replace(
                             "replace() argument 1 must be str, not {}",
                             type_name(_py, needle)
                         );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 };
                 if object_type_id(needle_ptr) != TYPE_ID_STRING {
@@ -1349,7 +1362,7 @@ pub extern "C" fn molt_string_replace(
                         "replace() argument 1 must be str, not {}",
                         type_name(_py, needle)
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 let repl_ptr = match replacement.as_ptr() {
                     Some(ptr) => ptr,
@@ -1358,7 +1371,7 @@ pub extern "C" fn molt_string_replace(
                             "replace() argument 2 must be str, not {}",
                             type_name(_py, replacement)
                         );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 };
                 if object_type_id(repl_ptr) != TYPE_ID_STRING {
@@ -1366,7 +1379,7 @@ pub extern "C" fn molt_string_replace(
                         "replace() argument 2 must be str, not {}",
                         type_name(_py, replacement)
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 let hay_bytes =
                     std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));

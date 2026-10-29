@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 pub(super) fn importlib_resources_module_name_from_bits(
     _py: &PyToken<'_>,
@@ -22,7 +23,7 @@ pub(super) fn importlib_resources_module_name_from_bits(
         let Some(fallback) = string_obj_to_owned(obj_from_bits(fallback_bits)) else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "fallback must be str or None",
             ));
         };
@@ -64,7 +65,11 @@ pub(super) fn importlib_resources_module_name_from_bits(
         }
     }
 
-    Err(raise_exception::<_>(_py, "ModuleNotFoundError", "unknown"))
+    Err(raise_exception::<_>(
+        _py,
+        BuiltinExc::ModuleNotFoundError,
+        "unknown",
+    ))
 }
 pub(super) fn importlib_resources_loader_reader_from_bits(
     _py: &PyToken<'_>,
@@ -247,7 +252,11 @@ pub(super) fn importlib_resources_reader_resource_path_impl(
         if exception_pending(_py) {
             if clear_pending_if_kind(
                 _py,
-                &["FileNotFoundError", "OSError", "NotImplementedError"],
+                &[
+                    crate::BuiltinExc::FileNotFoundError,
+                    crate::BuiltinExc::OSError,
+                    crate::BuiltinExc::NotImplementedError,
+                ],
             ) {
                 return Ok(None);
             }
@@ -264,7 +273,7 @@ pub(super) fn importlib_resources_reader_resource_path_impl(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid loader resource path payload",
                 ));
             }
@@ -455,7 +464,7 @@ pub(super) fn importlib_resources_reader_is_resource_impl(
         }
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid loader resource is_resource payload",
         ));
     }
@@ -487,12 +496,16 @@ pub(super) fn importlib_resources_reader_open_resource_bytes_impl(
         dec_ref_bits(_py, name_bits);
         dec_ref_bits(_py, call_bits);
         if exception_pending(_py) {
-            if clear_pending_if_kind(_py, &["NotImplementedError"]) {
+            if clear_pending_if_kind(_py, &[crate::BuiltinExc::NotImplementedError]) {
                 let parts = importlib_resources_name_parts(name);
                 let Some(target_bits) =
                     importlib_traversable_bits_for_parts(_py, reader_bits, &parts)?
                 else {
-                    return Err(raise_exception::<_>(_py, "FileNotFoundError", name));
+                    return Err(raise_exception::<_>(
+                        _py,
+                        BuiltinExc::FileNotFoundError,
+                        name,
+                    ));
                 };
                 let out = importlib_traversable_open_bytes(_py, target_bits);
                 if !obj_from_bits(target_bits).is_none() {
@@ -519,7 +532,7 @@ pub(super) fn importlib_resources_reader_open_resource_bytes_impl(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid loader open_resource payload",
                 ));
             }
@@ -557,7 +570,7 @@ pub(super) fn importlib_resources_reader_open_resource_bytes_impl(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid loader open_resource payload",
             ));
         };
@@ -579,9 +592,17 @@ pub(super) fn importlib_resources_reader_open_resource_bytes_impl(
         importlib_reader_root_payload_for_parts(_py, reader_bits, &parts)?
     {
         if !payload.is_file {
-            return Err(raise_exception::<_>(_py, "FileNotFoundError", name));
+            return Err(raise_exception::<_>(
+                _py,
+                BuiltinExc::FileNotFoundError,
+                name,
+            ));
         }
         return importlib_read_file_bytes(_py, &joined);
     }
-    Err(raise_exception::<_>(_py, "FileNotFoundError", name))
+    Err(raise_exception::<_>(
+        _py,
+        BuiltinExc::FileNotFoundError,
+        name,
+    ))
 }

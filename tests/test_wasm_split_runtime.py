@@ -185,13 +185,11 @@ def test_split_worker_popen_kwargs_apply_child_rlimit(
 
 def test_generate_split_worker_js_lifecycle_contract() -> None:
     from molt.cli.wasm import _generate_split_worker_js
-    from molt.capability_manifest import CapabilityManifest
 
     worker_js = _generate_split_worker_js(
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=4096,
@@ -1353,6 +1351,8 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
             "demos.tinygrad.wasm_driver",
             "--target",
             "wasm",
+            "--capabilities",
+            "env.read",
             "--linked",
             "--no-cache",
             "--out-dir",
@@ -1396,8 +1396,6 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
         calls_path.write_text(json.dumps({"calls": calls}), encoding="utf-8")
         run_env = os.environ.copy()
         run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-        # The driver reads its trace switches from os.environ.
-        run_env["MOLT_CAPABILITIES"] = "env.read"
         return _run_wasm_test_process(
             ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
             role="guest-host",

@@ -7,7 +7,9 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Literal
 
-WASM_EXECUTION_MANIFEST_VERSION: int = 3
+WASM_EXECUTION_MANIFEST_VERSION: int = 4
+
+WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: tuple[str, ...] = ("MOLT_CAPABILITIES", "MOLT_CAPABILITY_TIER", "MOLT_CAPABILITY_POLICY_DIGEST")
 
 WasmSyntheticErrnoName = Literal[
     "EACCES",

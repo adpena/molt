@@ -19,7 +19,7 @@ pub(in crate::builtins::io) fn warn_default_text_encoding(
         || crate::builtins::warnings_ext::emit_runtime_warning(
             py,
             "'encoding' argument not specified",
-            "EncodingWarning",
+            crate::BuiltinExc::EncodingWarning,
         )
 }
 

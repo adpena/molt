@@ -47,17 +47,16 @@ def test_bench_harness_run_cmd_uses_memory_guard(
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
-    # Remove every explicit artifact-root candidate so the assertions stay
-    # deterministic on any host: with none, artifacts live under the checkout's
-    # custody root (the checkout itself for a plain clone, `<root>` for a
-    # `<root>/molt-src` family, the ephemeral root under hosted CI).
+    # Select the fixture's exact root independently of host environment,
+    # candidate drives and durable checkout-family bindings.
     for key in (
         *molt_dx.CANONICAL_RUN_ENV_KEYS,
         *molt_dx.DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
         molt_dx.EXTERNAL_ARTIFACT_ROOTS_ENV,
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
+    artifact_root = (tmp_path / "artifacts").resolve()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
 
     outcome = bench_harness.run_cmd(
         ["python3", "--version"],
@@ -81,7 +80,6 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     assert call["encoding"] == "utf-8"
     assert call["errors"] == "surrogateescape"
     assert call["timeout"] == 9.0
-    artifact_root = molt_dx.checkout_custody(bench_harness.REPO_ROOT).custody_root
     assert call["env"]["MOLT_EXT_ROOT"] == str(artifact_root)
     assert call["env"]["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
@@ -101,6 +99,14 @@ def test_bench_harness_supports_explicit_molt_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured: dict[str, object] = {}
+    script = tmp_path / "driver.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.setattr(bench_harness, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        bench_harness.bench_suites,
+        "molt_args_for_benchmark",
+        lambda script: ["--capabilities", "fs.read"],
+    )
 
     def fake_run_suite(
         suite_name,
@@ -114,14 +120,21 @@ def test_bench_harness_supports_explicit_molt_profile(
         *,
         workloads,
     ):
-        assert workloads == {}
+        assert list(workloads) == [script]
+        assert workloads[script].record["molt_args"] == [
+            "run",
+            "--profile",
+            "release",
+            "--capabilities",
+            "fs.read",
+        ]
         captured["molt_cmd"] = molt_cmd
         return [], bench_harness.SuiteSummary(suite=suite_name)
 
     monkeypatch.setattr(
         bench_harness,
         "collect_bench_scripts",
-        lambda filter_pat=None, applications=False: [],
+        lambda filter_pat=None, applications=False: [script],
     )
     monkeypatch.setattr(bench_harness, "run_suite", fake_run_suite)
     monkeypatch.setattr(bench_harness, "detect_regressions", lambda *args, **kwargs: [])
@@ -401,7 +414,15 @@ def test_harness_sealed_invocations_use_payload_cwd_and_import_roots(
         return bench_harness.RunOutcome(True, 0.1, 1.0, "ok", 0, "sealed:7\n", "")
 
     monkeypatch.setattr(bench_harness, "run_cmd", run)
-    with sealed_workload(tmp_path, molt_args=["run", "--profile", "dev"]) as workload:
+    monkeypatch.setattr(
+        bench_harness.bench_suites,
+        "molt_args_for_benchmark",
+        lambda script: ["--capabilities", "fs.read"],
+    )
+    with sealed_workload(
+        tmp_path,
+        molt_args=["run", "--profile", "dev", "--capabilities", "fs.read"],
+    ) as workload:
         result = bench_harness.run_single_test(
             workload.script,
             "bench",
@@ -426,6 +447,8 @@ def test_harness_sealed_invocations_use_payload_cwd_and_import_roots(
             "run",
             "--profile",
             "dev",
+            "--capabilities",
+            "fs.read",
             str(workload.execution_script),
             "--",
             "data/input.txt",

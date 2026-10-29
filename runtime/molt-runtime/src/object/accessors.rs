@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 #[cfg(test)]
 use crate::object_payload_size;
 use crate::runtime_flags::{self, RuntimeFlag};
@@ -50,7 +51,11 @@ unsafe fn object_field_slot_ptr(
                 || fields.is_null()
                 || index >= (*fields).len()
             {
-                raise_exception::<()>(_py, "TypeError", "dataclass field index out of range");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "dataclass field index out of range",
+                );
                 return None;
             }
             return Some((*fields).as_mut_ptr().add(index));
@@ -63,7 +68,11 @@ unsafe fn object_field_slot_ptr(
                         .saturating_sub(std::mem::size_of::<u64>())
                 })
         {
-            raise_exception::<()>(_py, "RuntimeError", "object field offset out of range");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "object field offset out of range",
+            );
             return None;
         }
         Some(
@@ -303,7 +312,11 @@ pub(crate) unsafe fn attribute_dictionary_lookup(
             .as_ptr()
             .filter(|pointer| object_type_id(*pointer) == TYPE_ID_DICT)
         else {
-            raise_exception::<u64>(py, "SystemError", "bad argument to internal function");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "bad argument to internal function",
+            );
             return Err(());
         };
         inc_ref_bits(py, dictionary);
@@ -385,7 +398,11 @@ unsafe fn object_field_load_ptr_raw(py: &PyToken<'_>, object: *mut u8, offset: u
             dec_ref_bits(py, field.name);
             return value;
         }
-        raise_exception::<u64>(py, "AttributeError", "object field is uninitialized")
+        raise_exception::<u64>(
+            py,
+            BuiltinExc::AttributeError,
+            "object field is uninitialized",
+        )
     }
 }
 
@@ -679,7 +696,11 @@ pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset_bits: u64) 
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "object field access on non-object",
+                );
             };
             let Some(offset) = usize_from_bits(offset_bits) else {
                 return MoltObject::none().bits();
@@ -700,7 +721,11 @@ pub unsafe extern "C" fn molt_object_field_set(
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "object field access on non-object",
+                );
             };
             let Some(offset) = usize_from_bits(offset_bits) else {
                 return MoltObject::none().bits();
@@ -724,7 +749,11 @@ pub unsafe extern "C" fn molt_object_field_init(
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "object field access on non-object",
+                );
             };
             let Some(offset) = usize_from_bits(offset_bits) else {
                 return MoltObject::none().bits();
@@ -744,7 +773,7 @@ pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -
         let Some(offset) = usize_from_bits(offset) else {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "object field offset exceeds the active address space",
             );
         };

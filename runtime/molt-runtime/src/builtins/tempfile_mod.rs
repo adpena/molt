@@ -1,5 +1,6 @@
 //! Secure temporary creation in explicit directories. Python owns default selection/cache.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::builtins::io::{
     PathFlavor, path_abspath_path, path_abspath_text, path_from_bits_with_flavor, path_result_bits,
@@ -23,7 +24,7 @@ fn creation_paths(
         }) {
             return Err(raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label} must be str or bytes"),
             ));
         }
@@ -34,7 +35,7 @@ fn creation_paths(
     if suffix_kind != kind || prefix_kind != kind {
         return Err(raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "Can't mix bytes and non-bytes in path components.",
         ));
     }
@@ -52,14 +53,14 @@ pub extern "C" fn molt_tempfile_gettempdir(candidates_bits: u64) -> u64 {
         let Some(pointer) = obj_from_bits(candidates_bits).as_ptr() else {
             return raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "temporary directory candidates must be a list",
             );
         };
         if unsafe { object_type_id(pointer) } != TYPE_ID_LIST {
             return raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "temporary directory candidates must be a list",
             );
         }
@@ -81,7 +82,7 @@ pub extern "C" fn molt_tempfile_gettempdir(candidates_bits: u64) -> u64 {
                 let Some(text) = path.to_str() else {
                     return raise_exception::<u64>(
                         py,
-                        "UnicodeError",
+                        BuiltinExc::UnicodeError,
                         "temporary directory candidate is not Unicode",
                     );
                 };

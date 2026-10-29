@@ -16,11 +16,12 @@ pub mod timsort;
 pub mod unicode;
 
 pub use exception_layout::{
-    BuiltinExceptionSpec, ExceptionAttributeDeclaration, ExceptionAttributeField,
-    ExceptionBaseSpec, ExceptionDescriptorKind, ExceptionFieldPolicy, ExceptionFieldStorage,
-    ExceptionLayoutKind, ExceptionLayoutRoot, ExceptionMissingRead, ExceptionStrSlot,
-    ExceptionTypedField, MAX_EXCEPTION_TYPED_FIELDS, MAX_EXCEPTION_TYPED_TAIL_WORDS,
-    builtin_exception_spec, builtin_exception_specs,
+    BuiltinExc, BuiltinExceptionSpec, ExcKind, ExceptionAttributeDeclaration,
+    ExceptionAttributeField, ExceptionBaseSpec, ExceptionDescriptorKind, ExceptionFieldPolicy,
+    ExceptionFieldStorage, ExceptionLayoutKind, ExceptionLayoutRoot, ExceptionMissingRead,
+    ExceptionStrSlot, ExceptionTypedField, MAX_EXCEPTION_TYPED_FIELDS,
+    MAX_EXCEPTION_TYPED_TAIL_WORDS, MODULE_EXCEPTION_SPECS, ModuleExc, ModuleExcOwner,
+    ModuleExceptionSpec, builtin_exception_spec, builtin_exception_specs,
 };
 
 use std::backtrace::Backtrace;

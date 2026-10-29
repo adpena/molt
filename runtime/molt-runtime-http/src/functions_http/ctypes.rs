@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 pub(super) fn ctypes_attr_present(
     _py: &molt_runtime_core::CoreGilToken,
@@ -82,7 +83,7 @@ pub(super) fn ctypes_wrap_integer(
     if bits <= 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "ctypes integer width must be positive",
         ));
     }
@@ -113,7 +114,7 @@ pub(super) fn ctypes_coerce_char(
         if !(0..=255).contains(&num) {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "one character bytes, bytearray, or an integer in range(256) expected",
             ));
         }
@@ -121,7 +122,7 @@ pub(super) fn ctypes_coerce_char(
         if ptr.is_null() {
             return Err(raise_exception::<u64>(
                 _py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "allocation failed",
             ));
         }
@@ -130,14 +131,14 @@ pub(super) fn ctypes_coerce_char(
     let Some(slice) = bytes_like_slice(value_bits) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "one character bytes, bytearray, or an integer in range(256) expected",
         ));
     };
     if slice.len() != 1 {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "one character bytes, bytearray, or an integer in range(256) expected",
         ));
     }
@@ -145,7 +146,7 @@ pub(super) fn ctypes_coerce_char(
     if out.is_null() {
         return Err(raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "allocation failed",
         ));
     }
@@ -203,7 +204,7 @@ pub(super) fn ctypes_sizeof_bits(
     let Some(size_bits) = attr_optional(_py, obj_or_type_bits, b"_size")? else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "unsupported type for ctypes.sizeof",
         ));
     };
@@ -212,9 +213,11 @@ pub(super) fn ctypes_sizeof_bits(
         // inline window (e.g. sizeof(c_char * (2**50))); `from_int` would
         // silently truncate it mod 2**47.
         Some(value) => int_bits_from_bigint(_py, BigInt::from(value)),
-        None => {
-            raise_exception::<u64>(_py, "TypeError", "ctypes size value must be int-compatible")
-        }
+        None => raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "ctypes size value must be int-compatible",
+        ),
     };
     dec_ref_bits(_py, size_bits);
     Ok(out)
@@ -245,7 +248,7 @@ pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "capability 'ffi.unsafe' required",
             );
         }
@@ -259,7 +262,7 @@ pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> 
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "capability 'ffi.unsafe' required",
             );
         }
@@ -282,7 +285,7 @@ pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "capability 'ffi.unsafe' required",
             );
         }
@@ -301,7 +304,7 @@ pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
                 "char" => {
                     let ptr = alloc_bytes(_py, &[0]);
                     if ptr.is_null() {
-                        raise_exception::<u64>(_py, "MemoryError", "allocation failed")
+                        raise_exception::<u64>(_py, BuiltinExc::MemoryError, "allocation failed")
                     } else {
                         MoltObject::from_ptr(ptr).bits()
                     }
@@ -337,7 +340,7 @@ pub extern "C" fn molt_ctypes_sizeof(obj_or_type_bits: u64) -> u64 {
         if !crate::bridge::has_capability(_py, "ffi.unsafe") {
             return raise_exception::<_>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "capability 'ffi.unsafe' required",
             );
         }

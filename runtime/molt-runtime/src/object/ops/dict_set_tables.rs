@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[cfg(test)]
 #[path = "dict_binding_tests.rs"]
@@ -312,7 +313,11 @@ pub(crate) extern "C" fn dict_fromkeys_method(
         };
         let builtins = builtin_classes(_py);
         if !issubclass_bits(class_bits, builtins.dict) {
-            return raise_exception::<_>(_py, "TypeError", "dict.fromkeys expects dict type");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "dict.fromkeys expects dict type",
+            );
         }
         let dict_bits = if class_bits == builtins.dict {
             molt_dict_new(0)
@@ -453,7 +458,11 @@ unsafe fn dict_layout_frozen(dict: *mut u8) -> bool {
 pub(crate) unsafe fn dict_require_writable(py: &PyToken<'_>, dict: *mut u8) -> bool {
     unsafe {
         if dict_layout_frozen(dict) {
-            raise_exception::<()>(py, "TypeError", "class layout metadata is immutable");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "class layout metadata is immutable",
+            );
             false
         } else {
             true
@@ -931,7 +940,7 @@ fn admit_stored_hash(py: &PyToken<'_>, hash: u64) -> Option<StoredHash> {
         Some(hash) => Some(hash),
         None => {
             if !exception_pending(py) {
-                raise_exception::<()>(py, "SystemError", "invalid stored hash sentinel");
+                raise_exception::<()>(py, BuiltinExc::SystemError, "invalid stored hash sentinel");
             }
             None
         }
@@ -1619,7 +1628,7 @@ unsafe fn dict_probe_with_hash(
                     else {
                         raise_exception::<()>(
                             _py,
-                            "SystemError",
+                            BuiltinExc::SystemError,
                             "dictionary table references an invalid entry",
                         );
                         return Err(());
@@ -1669,7 +1678,11 @@ unsafe fn dict_probe_with_hash(
                 }
                 slot = (slot + 1) & mask;
             }
-            raise_exception::<()>(_py, "SystemError", "dictionary table has no empty slot");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::SystemError,
+                "dictionary table has no empty slot",
+            );
             return Err(());
         }
     }
@@ -1720,7 +1733,7 @@ unsafe fn set_probe_with_hash(
                     else {
                         raise_exception::<()>(
                             py,
-                            "SystemError",
+                            BuiltinExc::SystemError,
                             "set table references an invalid entry",
                         );
                         return Err(());
@@ -1765,7 +1778,7 @@ unsafe fn set_probe_with_hash(
                 }
                 slot = (slot + 1) & mask;
             }
-            raise_exception::<()>(py, "SystemError", "set table has no empty slot");
+            raise_exception::<()>(py, BuiltinExc::SystemError, "set table has no empty slot");
             return Err(());
         }
     }
@@ -2124,18 +2137,30 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
             return Err(());
         }
         if entries.len() > DICT_STRING_BINDING_LIMIT {
-            raise_exception::<()>(_py, "SystemError", "string binding exceeds its bound");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::SystemError,
+                "string binding exceeds its bound",
+            );
             return Err(());
         }
         let mut hashes = [None; DICT_STRING_BINDING_LIMIT];
         for (index, &(key_bits, _)) in entries.iter().enumerate() {
             let Some(key) = exact_string_bytes(_py, key_bits) else {
-                raise_exception::<()>(_py, "SystemError", "string binding keys must be str");
+                raise_exception::<()>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "string binding keys must be str",
+                );
                 return Err(());
             };
             for &(earlier, _) in &entries[..index] {
                 if exact_string_bytes(_py, earlier) == Some(key) {
-                    raise_exception::<()>(_py, "SystemError", "string binding repeats a key");
+                    raise_exception::<()>(
+                        _py,
+                        BuiltinExc::SystemError,
+                        "string binding repeats a key",
+                    );
                     return Err(());
                 }
             }

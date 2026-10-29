@@ -36,6 +36,7 @@ from molt.toolchain_identity import (
     capture_stable_regular_file,
     verify_stable_regular_file_identity,
 )
+from tests.findings import finding_problem
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +62,7 @@ _METADATA_KEYS = frozenset(
         "expect_fail_reason",
         "expect_molt_returncode",
         "expect_molt_stdout_sha256",
+        "finding",
         "host_toolchains",
         "max_py",
         "min_py",
@@ -76,6 +78,9 @@ _LIST_KEYS = frozenset({"architectures", "backends", "host_toolchains", "platfor
 _PYTHON_MINOR_RE = re.compile(r"3\.(?:0|[1-9][0-9]*)\Z", re.ASCII)
 _TOOLCHAIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z", re.ASCII)
 _REASON_RE = re.compile(r"[a-z][a-z0-9_]*\Z", re.ASCII)
+# The expected-failure reason of a program whose failure an open findings-ledger
+# row owns; `finding=` names the row as its typed identity.
+OPEN_FINDING_REASON = "open_finding"
 _RETURNCODE_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z", re.ASCII)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _RAW_METADATA_CANDIDATE_RE = re.compile(
@@ -127,6 +132,9 @@ class TestMetadata:
     # failure. Exact twins (native, jit) need the pin.
     expected_molt_returncode: int | None = None
     expected_molt_stdout_sha256: str | None = None
+    # The open ledger row (tests/findings/finding_ids.py) that owns this
+    # expected failure; set exactly when the reason is OPEN_FINDING_REASON.
+    finding: str | None = None
     min_python: tuple[int, int] | None = None
     max_python: tuple[int, int] | None = None
     platforms: frozenset[str] = frozenset()
@@ -151,6 +159,8 @@ class TestMetadata:
         if self.expected_molt_returncode is not None:
             record["expect_molt_returncode"] = self.expected_molt_returncode
             record["expect_molt_stdout_sha256"] = self.expected_molt_stdout_sha256
+        if self.finding is not None:
+            record["finding"] = self.finding
         if self.min_python is not None:
             record["min_py"] = f"{self.min_python[0]}.{self.min_python[1]}"
         if self.max_python is not None:
@@ -390,6 +400,21 @@ def parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
         raise ValueError(
             "MOLT_META expect_molt_stdout_sha256 must be 64 lowercase hex digits"
         )
+    finding_values = raw.get("finding", ())
+    if bool(finding_values) != (reason == OPEN_FINDING_REASON):
+        raise ValueError(
+            f"MOLT_META finding names the open ledger row of an "
+            f"expect_fail_reason={OPEN_FINDING_REASON} expected failure; declare "
+            "the two together"
+        )
+    if finding_values:
+        if problem := finding_problem(finding_values[0]):
+            raise ValueError(f"MOLT_META finding: {problem}")
+        if not returncode_values:
+            raise ValueError(
+                "MOLT_META finding pins how Molt fails today; declare "
+                "expect_molt_returncode and expect_molt_stdout_sha256 with it"
+            )
 
     min_python = parse_version(raw["min_py"][0]) if "min_py" in raw else None
     max_python = parse_version(raw["max_py"][0]) if "max_py" in raw else None
@@ -433,6 +458,7 @@ def parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
             int(returncode_values[0]) if returncode_values else None
         ),
         expected_molt_stdout_sha256=stdout_values[0] if stdout_values else None,
+        finding=finding_values[0] if finding_values else None,
         min_python=min_python,
         max_python=max_python,
         platforms=frozenset(platforms),

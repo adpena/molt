@@ -39,7 +39,7 @@ fn single_char_or_raise_ord(_py: &CoreGilToken, value: &str, context: &str) -> R
         (Some(ch), None) => Ok(ch),
         _ => Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "{context}: ord() expected a character, but string of length {} found",
                 char_len(value),
@@ -58,7 +58,7 @@ fn single_char_or_raise_unicodedata(
         (Some(ch), None) => Ok(ch),
         _ => Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{function_name}() argument must be a unicode character, not str"),
         )),
     }
@@ -201,10 +201,18 @@ fn in_table_a1(cp: u32) -> bool {
 pub extern "C" fn molt_stringprep_in_table(table_bits: u64, char_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(table_name) = string_obj_to_owned(obj_from_bits(table_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "stringprep: expected str table name");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "stringprep: expected str table name",
+            );
         };
         let Some(ch_str) = string_obj_to_owned(obj_from_bits(char_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "stringprep: expected str char");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "stringprep: expected str char",
+            );
         };
         macro_rules! cp_ord {
             ($context:expr) => {
@@ -252,7 +260,7 @@ pub extern "C" fn molt_stringprep_in_table(table_bits: u64, char_bits: u64) -> u
             _ => {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("Unknown stringprep table: {table_name}"),
                 );
             }
@@ -264,7 +272,7 @@ pub extern "C" fn molt_stringprep_in_table(table_bits: u64, char_bits: u64) -> u
 fn alloc_mapping(_py: &CoreGilToken, mapped: &str, context: &str) -> u64 {
     let ptr = alloc_string(_py, mapped.as_bytes());
     if ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", &format!("{context}: OOM"));
+        return raise_exception::<_>(_py, BuiltinExc::MemoryError, &format!("{context}: OOM"));
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -276,7 +284,11 @@ fn map_stringprep_table(
     context: &str,
 ) -> u64 {
     let Some(ch_str) = string_obj_to_owned(obj_from_bits(char_bits)) else {
-        return raise_exception::<_>(_py, "TypeError", &format!("{context}: expected str"));
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            &format!("{context}: expected str"),
+        );
     };
     let ch = match single_char_or_raise_ord(_py, &ch_str, context) {
         Ok(ch) => ch,

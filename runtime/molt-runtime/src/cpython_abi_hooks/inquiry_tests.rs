@@ -1,5 +1,6 @@
 //! Real managed C inquiries share Python's special-method and error protocols.
 use super::*;
+use crate::BuiltinExc;
 
 #[test]
 fn runtime_root_type_allocation_slots_remain_executable() {
@@ -490,7 +491,7 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
-        crate::raise_exception::<()>(&py, "LookupError", "original inquiry failure");
+        crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "original inquiry failure");
         let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
         crate::molt_exception_clear();
         let failure_view = mapping_view(failure);
@@ -726,7 +727,11 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
                 crate::object::seq_access::item(log_ptr, 1),
                 Some(MoltObject::from_int(98).bits())
             );
-            crate::raise_exception::<()>(&py, "LookupError", "memoryview equality identity");
+            crate::raise_exception::<()>(
+                &py,
+                BuiltinExc::LookupError,
+                "memoryview equality identity",
+            );
             let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
             crate::molt_exception_clear();
             set_value(&py, class, b"inquiry_result", failure);
@@ -1030,7 +1035,7 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
                 let hashable_view = mapping_view(hashable);
                 assert_eq!(probe(container_view.as_ptr(), hashable_view.as_ptr(), 0), 1);
                 assert_eq!(probe(container_view.as_ptr(), hashable_view.as_ptr(), 3), 1);
-                crate::raise_exception::<()>(&py, "LookupError", "set hash identity");
+                crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "set hash identity");
                 let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
                 crate::molt_exception_clear();
                 set_value(&py, custom, b"inquiry_result", failure);
@@ -1111,7 +1116,7 @@ fn c_set_membership_reenters_after_mutating_equality_type_error_only_for_python(
         );
         let needle = mapping_owned(&py, &mut owners, construct(&py, needle_class, singleton));
         let needle_view = mapping_view(needle);
-        crate::raise_exception::<()>(&py, "TypeError", "set equality identity");
+        crate::raise_exception::<()>(&py, BuiltinExc::TypeError, "set equality identity");
         let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
         crate::molt_exception_clear();
         let original = mapping_view(failure);
@@ -1262,7 +1267,7 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
                 &mut owners,
                 inquiry_class(&py, crate::builtin_classes(&py).object, b"__index__"),
             );
-            crate::raise_exception::<()>(&py, "LookupError", "first bound identity");
+            crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "first bound identity");
             let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
             crate::molt_exception_clear();
             set_value(&py, start_class, b"inquiry_result", failure);
@@ -1404,7 +1409,7 @@ fn c_set_discard_hashes_once_and_preserves_first_hash_failure() {
             &mut owners,
             inquiry_class(&py, classes.object, b"__hash__"),
         );
-        crate::raise_exception::<()>(&py, "LookupError", "discard hash identity");
+        crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "discard hash identity");
         let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
         crate::molt_exception_clear();
         set_value(&py, class, b"inquiry_result", failure);
@@ -1480,7 +1485,7 @@ extern "C" fn inquiry_first_item(receiver: u64) -> u64 {
 }
 
 extern "C" fn inquiry_failure(_receiver: u64) -> u64 {
-    with_gil(|py| crate::raise_exception(&py, "RuntimeError", "inquiry failed"))
+    with_gil(|py| crate::raise_exception(&py, BuiltinExc::RuntimeError, "inquiry failed"))
 }
 
 static MAPPING_METHOD_CALLS: std::sync::atomic::AtomicUsize =
@@ -2454,7 +2459,7 @@ fn c_dict_argument_errors_preserve_identity_and_optional_results() {
         assert!(!molt_cpython_abi::abi_types::is_immortal_refcnt(
             (*value.as_ptr()).ob_refcnt
         ));
-        crate::raise_exception::<()>(&py, "RuntimeError", "dict caller sentinel");
+        crate::raise_exception::<()>(&py, BuiltinExc::RuntimeError, "dict caller sentinel");
         let original_bits = mapping_owned(&py, &mut owners, crate::molt_exception_last());
         crate::clear_exception(&py);
         let original = mapping_view(original_bits);
@@ -2608,7 +2613,7 @@ extern "C" fn known_hash_callback(_receiver: u64) -> u64 {
     with_gil(|py| {
         KNOWN_HASH_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if KNOWN_HASH_POISON.load(std::sync::atomic::Ordering::Relaxed) {
-            crate::raise_exception(&py, "RuntimeError", "known hash was recomputed")
+            crate::raise_exception(&py, BuiltinExc::RuntimeError, "known hash was recomputed")
         } else {
             MoltObject::from_int(KNOWN_HASH).bits()
         }
@@ -2734,7 +2739,11 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
         );
         let value_view = mapping_view(value);
         let replacement_view = mapping_view(replacement);
-        crate::raise_exception::<()>(&py, "RuntimeError", "exact known-hash equality error");
+        crate::raise_exception::<()>(
+            &py,
+            BuiltinExc::RuntimeError,
+            "exact known-hash equality error",
+        );
         let error = mapping_owned(&py, &mut owners, crate::molt_exception_last());
         crate::clear_exception(&py);
         let error_view = mapping_view(error);

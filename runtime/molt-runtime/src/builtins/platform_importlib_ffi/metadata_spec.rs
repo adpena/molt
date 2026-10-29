@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_dist_paths(
@@ -14,7 +15,11 @@ pub extern "C" fn molt_importlib_metadata_dist_paths(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
@@ -47,7 +52,11 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
@@ -83,7 +92,11 @@ pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
@@ -261,7 +274,11 @@ pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
@@ -289,7 +306,11 @@ pub extern "C" fn molt_importlib_metadata_distributions_payload(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
@@ -337,7 +358,11 @@ pub extern "C" fn molt_importlib_metadata_record_payload(path_bits: u64) -> u64 
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
@@ -426,7 +451,11 @@ pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
@@ -537,7 +566,7 @@ pub(in super::super) fn importlib_init_module_attrs_impl(
                     Ok(())
                 }
             })();
-            if outcome.is_err() && clear_pending_if_kind(py, &["AttributeError"]) {
+            if outcome.is_err() && clear_pending_if_kind(py, &[crate::BuiltinExc::AttributeError]) {
                 Ok(())
             } else {
                 outcome
@@ -730,7 +759,7 @@ pub(in super::super) fn importlib_module_from_spec_impl(_py: &PyToken<'_>, spec_
             if present {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     "loaders that define exec_module() must also define create_module()",
                 ));
             }
@@ -870,7 +899,7 @@ pub extern "C" fn molt_importlib_spec_from_loader(
                     Err(error) => {
                         // Only the invocation (including its descriptor read)
                         // catches ImportError. Constructor truth remains outside.
-                        if !clear_pending_if_kind(_py, &["ImportError"]) {
+                        if !clear_pending_if_kind(_py, &[crate::BuiltinExc::ImportError]) {
                             return error;
                         }
                     }
@@ -984,7 +1013,7 @@ fn importlib_spec_from_file_location_impl(
             match called {
                 Ok(bits) => location = ExceptionValue::adopt(_py, bits),
                 Err(error) => {
-                    if !clear_pending_if_kind(_py, &["ImportError"]) {
+                    if !clear_pending_if_kind(_py, &[crate::BuiltinExc::ImportError]) {
                         return error;
                     }
                 }
@@ -1121,7 +1150,7 @@ fn importlib_spec_from_file_location_impl(
                         }
                     }
                     Err(error) => {
-                        if !clear_pending_if_kind(_py, &["ImportError"]) {
+                        if !clear_pending_if_kind(_py, &[crate::BuiltinExc::ImportError]) {
                             return Err(error);
                         }
                     }
@@ -1184,14 +1213,14 @@ pub(super) fn importlib_module_dict_ptr_for_state(
     let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "module state expects module object",
         ));
     };
     if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "module state expects module object",
         ));
     }
@@ -1199,14 +1228,14 @@ pub(super) fn importlib_module_dict_ptr_for_state(
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "module dict missing",
         ));
     };
     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "module dict missing",
         ));
     }

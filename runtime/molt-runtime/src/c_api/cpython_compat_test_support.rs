@@ -5,6 +5,7 @@
 
 use super::cpython_compat::c_dict_pointer;
 use super::*;
+use crate::BuiltinExc;
 
 /// `PyObject_GetIter(obj)` — call `__iter__` on `obj`.
 /// Returns a new iterator handle (caller owns the reference) or NULL (0) on error.
@@ -155,8 +156,11 @@ pub extern "C" fn PyNone_Check(obj: u64) -> i32 {
 pub extern "C" fn PyList_New(size: isize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if size < 0 {
-            let _ =
-                raise_exception::<u64>(_py, "SystemError", "negative size passed to PyList_New");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::SystemError,
+                "negative size passed to PyList_New",
+            );
             return 0;
         }
         let n = size as usize;
@@ -174,12 +178,12 @@ pub extern "C" fn PyList_New(size: isize) -> u64 {
 pub extern "C" fn PyList_Size(list: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
             return -1;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_LIST {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
                 return -1;
             }
             list_len(ptr) as isize
@@ -192,19 +196,23 @@ pub extern "C" fn PyList_Size(list: u64) -> isize {
 pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
             return 0;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_LIST {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
                 return 0;
             }
             let len = crate::object::seq_access::len(ptr);
             let actual_idx = if index < 0 {
                 let adjusted = (len as isize) + index;
                 if adjusted < 0 {
-                    let _ = raise_exception::<u64>(_py, "IndexError", "list index out of range");
+                    let _ = raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::IndexError,
+                        "list index out of range",
+                    );
                     return 0;
                 }
                 adjusted as usize
@@ -212,7 +220,8 @@ pub extern "C" fn PyList_GetItem(list: u64, index: isize) -> u64 {
                 index as usize
             };
             if actual_idx >= len {
-                let _ = raise_exception::<u64>(_py, "IndexError", "list index out of range");
+                let _ =
+                    raise_exception::<u64>(_py, BuiltinExc::IndexError, "list index out of range");
                 return 0;
             }
             // Borrowed reference — do not inc_ref.
@@ -228,13 +237,13 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
             // Steal the reference even on failure (CPython semantics).
             dec_ref_bits(_py, item);
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
             return -1;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_LIST {
                 dec_ref_bits(_py, item);
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
                 return -1;
             }
             let len = list_len(ptr);
@@ -244,7 +253,7 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
                     dec_ref_bits(_py, item);
                     let _ = raise_exception::<u64>(
                         _py,
-                        "IndexError",
+                        BuiltinExc::IndexError,
                         "list assignment index out of range",
                     );
                     return -1;
@@ -255,8 +264,11 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
             };
             if actual_idx >= len {
                 dec_ref_bits(_py, item);
-                let _ =
-                    raise_exception::<u64>(_py, "IndexError", "list assignment index out of range");
+                let _ = raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "list assignment index out of range",
+                );
                 return -1;
             }
             let changed = crate::object::list_mutation::replace_indices(
@@ -279,12 +291,12 @@ pub extern "C" fn PyList_SetItem(list: u64, index: isize, item: u64) -> i32 {
 pub extern "C" fn PyList_Append(list: u64, item: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
             return -1;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_LIST {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
                 return -1;
             }
             if crate::object::list_mutation::extend_from_slice(
@@ -338,7 +350,11 @@ pub unsafe extern "C" fn PyDict_SetItemString(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if key.is_null() {
-            let _ = raise_exception::<u64>(_py, "TypeError", "key string pointer cannot be null");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "key string pointer cannot be null",
+            );
             return -1;
         }
         let key_cstr = unsafe { std::ffi::CStr::from_ptr(key) };
@@ -385,8 +401,11 @@ pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
 pub extern "C" fn PyTuple_New(size: isize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if size < 0 {
-            let _ =
-                raise_exception::<u64>(_py, "SystemError", "negative size passed to PyTuple_New");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::SystemError,
+                "negative size passed to PyTuple_New",
+            );
             return 0;
         }
         let n = size as usize;
@@ -402,12 +421,12 @@ pub extern "C" fn PyTuple_New(size: isize) -> u64 {
 pub extern "C" fn PyTuple_Size(tuple: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected tuple object");
             return -1;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_TUPLE {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected tuple object");
                 return -1;
             }
             tuple_len(ptr) as isize
@@ -420,17 +439,18 @@ pub extern "C" fn PyTuple_Size(tuple: u64) -> isize {
 pub extern "C" fn PyTuple_GetItem(tuple: u64, index: isize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected tuple object");
             return 0;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_TUPLE {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected tuple object");
                 return 0;
             }
             let len = crate::object::seq_access::len(ptr);
             if index < 0 || (index as usize) >= len {
-                let _ = raise_exception::<u64>(_py, "IndexError", "tuple index out of range");
+                let _ =
+                    raise_exception::<u64>(_py, BuiltinExc::IndexError, "tuple index out of range");
                 return 0;
             }
             // Borrowed reference — do not inc_ref.
@@ -446,18 +466,19 @@ pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(tuple).as_ptr() else {
             dec_ref_bits(_py, item);
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected tuple object");
             return -1;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_TUPLE {
                 dec_ref_bits(_py, item);
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected tuple object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected tuple object");
                 return -1;
             }
             if index < 0 || (index as usize) >= crate::object::seq_access::len(ptr) {
                 dec_ref_bits(_py, item);
-                let _ = raise_exception::<u64>(_py, "IndexError", "tuple index out of range");
+                let _ =
+                    raise_exception::<u64>(_py, BuiltinExc::IndexError, "tuple index out of range");
                 return -1;
             }
             let Some(old) =
@@ -466,7 +487,7 @@ pub extern "C" fn PyTuple_SetItem(tuple: u64, index: isize, item: u64) -> i32 {
                 dec_ref_bits(_py, item);
                 let _ = raise_exception::<u64>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "PyTuple_SetItem requires a uniquely owned tuple",
                 );
                 return -1;
@@ -560,7 +581,11 @@ pub extern "C" fn PyMapping_Length(o: u64) -> isize {
 pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if key.is_null() {
-            let _ = raise_exception::<u64>(_py, "TypeError", "key string pointer cannot be null");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "key string pointer cannot be null",
+            );
             return 0;
         }
         let key_cstr = unsafe { std::ffi::CStr::from_ptr(key) };
@@ -667,7 +692,7 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> 
         if len < 0 {
             let _ = raise_exception::<u64>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "negative size passed to PyBytes_FromStringAndSize",
             );
             return 0;
@@ -677,7 +702,7 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> 
         } else if v.is_null() {
             let _ = raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bytes source pointer cannot be null when len > 0",
             );
             return 0;
@@ -698,12 +723,12 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> 
 pub extern "C" fn PyBytes_AsString(o: u64) -> *const u8 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected bytes object");
             return std::ptr::null();
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_BYTES {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected bytes object");
                 return std::ptr::null();
             }
             bytes_data(ptr)
@@ -715,12 +740,12 @@ pub extern "C" fn PyBytes_AsString(o: u64) -> *const u8 {
 pub extern "C" fn PyBytes_Size(o: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected bytes object");
             return -1;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_BYTES {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected bytes object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected bytes object");
                 return -1;
             }
             bytes_len(ptr) as isize
@@ -733,8 +758,11 @@ pub extern "C" fn PyBytes_Size(o: u64) -> isize {
 pub unsafe extern "C" fn PyUnicode_FromString(v: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if v.is_null() {
-            let _ =
-                raise_exception::<u64>(_py, "TypeError", "string source pointer cannot be null");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "string source pointer cannot be null",
+            );
             return 0;
         }
         let cstr = unsafe { std::ffi::CStr::from_ptr(v) };
@@ -753,12 +781,12 @@ pub unsafe extern "C" fn PyUnicode_FromString(v: *const std::ffi::c_char) -> u64
 pub extern "C" fn PyUnicode_AsUTF8(o: u64) -> *const std::ffi::c_char {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str object");
             return std::ptr::null();
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str object");
                 return std::ptr::null();
             }
             string_bytes(ptr) as *const std::ffi::c_char
@@ -775,12 +803,12 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
 ) -> *const std::ffi::c_char {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str object");
             return std::ptr::null();
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str object");
                 return std::ptr::null();
             }
             if !size.is_null() {
@@ -967,7 +995,7 @@ pub extern "C" fn PyObject_RichCompareBool(a: u64, b: u64, op: i32) -> i32 {
             _ => {
                 let _ = raise_exception::<u64>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "Bad internal call: invalid comparison op",
                 );
                 return -1;
@@ -1002,7 +1030,7 @@ pub extern "C" fn PyObject_RichCompare(a: u64, b: u64, op: i32) -> u64 {
             _ => {
                 let _ = raise_exception::<u64>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "Bad internal call: invalid comparison op",
                 );
                 return 0;
@@ -1085,12 +1113,12 @@ pub extern "C" fn PyFrozenSet_Check(obj: u64) -> i32 {
 pub extern "C" fn PyUnicode_GetLength(obj: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(obj).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str object");
             return -1;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected str object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str object");
                 return -1;
             }
             string_len(ptr) as isize
@@ -1140,7 +1168,7 @@ pub extern "C" fn PyUnicode_CompareWithASCIIString(
         let Ok(out_len) = usize::try_from(out_len) else {
             let _ = raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "unicode length exceeds the active address space",
             );
             return -1;
@@ -1231,12 +1259,12 @@ pub extern "C" fn PyList_Insert(list: u64, index: isize, item: u64) -> i32 {
 pub extern "C" fn PyList_AsTuple(list: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(list).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
             return 0;
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_LIST {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected list object");
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected list object");
                 return 0;
             }
             let Some(elems) = crate::object::seq_access::snapshot(
@@ -1338,7 +1366,8 @@ pub extern "C" fn PyLong_AsLong(obj: u64) -> i64 {
         match to_i64(obj_from_bits(obj)) {
             Some(v) => v,
             None => {
-                let _ = raise_exception::<u64>(_py, "TypeError", "an integer is required");
+                let _ =
+                    raise_exception::<u64>(_py, BuiltinExc::TypeError, "an integer is required");
                 -1
             }
         }
@@ -1356,7 +1385,11 @@ pub extern "C" fn PyFloat_AsDouble(obj: u64) -> f64 {
         match to_f64(obj_from_bits(obj)) {
             Some(v) => v,
             None => {
-                let _ = raise_exception::<u64>(_py, "TypeError", "must be real number, not str");
+                let _ = raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "must be real number, not str",
+                );
                 -1.0
             }
         }

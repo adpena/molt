@@ -12,6 +12,7 @@ use super::super::state::{
 };
 use super::super::trace_commands::{call_tk_command_from_strings, release_result_bits};
 use crate::bridge::{dec_ref_bits, inc_ref_bits, raise_exception_u64, string_obj_to_owned};
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 
 #[unsafe(no_mangle)]
@@ -38,7 +39,11 @@ pub extern "C" fn molt_tk_bind_callback_register(
             Err(bits) => return bits,
         };
         if !callback_is_callable(callback_bits) {
-            return raise_exception_u64(_py, "TypeError", "bind callback must be callable");
+            return raise_exception_u64(
+                _py,
+                BuiltinExc::TypeError,
+                "bind callback must be callable",
+            );
         }
         let add_prefix = match normalize_bind_add_prefix(_py, add_bits) {
             Ok(value) => value,
@@ -174,7 +179,11 @@ pub extern "C" fn molt_tk_widget_bind_callback_register(
             Err(bits) => return bits,
         };
         if !callback_is_callable(callback_bits) {
-            return raise_exception_u64(_py, "TypeError", "tag_bind callback must be callable");
+            return raise_exception_u64(
+                _py,
+                BuiltinExc::TypeError,
+                "tag_bind callback must be callable",
+            );
         }
         let add_prefix = match normalize_bind_add_prefix(_py, add_bits) {
             Ok(value) => value,
@@ -332,7 +341,11 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_register(
             Err(bits) => return bits,
         };
         if !callback_is_callable(callback_bits) {
-            return raise_exception_u64(_py, "TypeError", "tag_bind callback must be callable");
+            return raise_exception_u64(
+                _py,
+                BuiltinExc::TypeError,
+                "tag_bind callback must be callable",
+            );
         }
         let add_prefix = match normalize_bind_add_prefix(_py, add_bits) {
             Ok(value) => value,
@@ -493,7 +506,11 @@ pub extern "C" fn molt_tk_treeview_tag_bind_callback_register(
                 Err(bits) => return bits,
             };
         if !callback_is_callable(callback_bits) {
-            return raise_exception_u64(_py, "TypeError", "tag_bind callback must be callable");
+            return raise_exception_u64(
+                _py,
+                BuiltinExc::TypeError,
+                "tag_bind callback must be callable",
+            );
         }
 
         let command_name = {
@@ -694,11 +711,15 @@ pub extern "C" fn molt_tk_bind_script_remove_command(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(script) = (unsafe { string_obj_to_owned(obj_from_bits(script_bits)) }) else {
-            return raise_exception_u64(_py, "TypeError", "bind script must be str");
+            return raise_exception_u64(_py, BuiltinExc::TypeError, "bind script must be str");
         };
         let Some(command_name) = (unsafe { string_obj_to_owned(obj_from_bits(command_name_bits)) })
         else {
-            return raise_exception_u64(_py, "TypeError", "bind command name must be str");
+            return raise_exception_u64(
+                _py,
+                BuiltinExc::TypeError,
+                "bind command name must be str",
+            );
         };
         let replacement = remove_bind_script_command_invocations(&script, &command_name);
         match alloc_string_bits(_py, &replacement) {

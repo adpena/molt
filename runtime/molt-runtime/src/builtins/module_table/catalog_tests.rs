@@ -198,10 +198,10 @@ fn selected_body_availability_uses_source_provider_role_including_alias_metadata
                             py,
                             crate::molt_exception_last_pending(),
                         );
-                        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        assert!(crate::builtins::exceptions::exception_matches_kind(
                             py,
                             error.bits(),
-                            "ModuleNotFoundError",
+                            crate::BuiltinExc::ModuleNotFoundError,
                         ));
                         crate::clear_exception(py);
                         let key = crate::attr_name_bits_from_bytes(py, b"name").unwrap();

@@ -1,5 +1,6 @@
 //! Real runtime slices through both the C and Python construction paths.
 #![allow(non_snake_case)]
+use crate::BuiltinExc;
 use crate::MoltObject;
 use molt_cpython_abi::abi_types::PyObject;
 use molt_cpython_abi::abi_types::{Py_None, PySliceObject};
@@ -164,8 +165,11 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
         );
         let _mapping_class_owner = ExceptionValue::adopt(&py, mapping_class);
         let _mapping_owner = ExceptionValue::adopt(&py, mapping);
-        let error =
-            crate::builtins::exceptions::alloc_exception(&py, "ValueError", "slice index sentinel");
+        let error = crate::builtins::exceptions::alloc_exception(
+            &py,
+            BuiltinExc::ValueError,
+            "slice index sentinel",
+        );
         assert!(!error.is_null());
         let error = MoltObject::from_ptr(error).bits();
         let _error_owner = ExceptionValue::adopt(&py, error);

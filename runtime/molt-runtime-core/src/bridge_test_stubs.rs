@@ -366,6 +366,7 @@ aborting_bridge_stub!(molt_bridge_alloc_string);
 aborting_bridge_stub!(molt_bridge_alloc_tuple);
 aborting_bridge_stub!(molt_bridge_bytes_data);
 aborting_bridge_stub!(molt_bridge_bytes_len);
+aborting_bridge_stub!(molt_bridge_exception_class);
 aborting_bridge_stub!(molt_bridge_exception_pending);
 aborting_bridge_stub!(molt_bridge_free_string);
 aborting_bridge_stub!(molt_bridge_index_i64_from_obj);

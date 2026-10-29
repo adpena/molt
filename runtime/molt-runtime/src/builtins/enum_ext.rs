@@ -33,7 +33,11 @@ fn flag_bits_from_obj(obj_bits: u64) -> Option<i64> {
 pub extern "C" fn molt_enum_flag_or(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "Flag operands must be integers",
+            );
         };
         MoltObject::from_int(a | b).bits()
     })
@@ -44,7 +48,11 @@ pub extern "C" fn molt_enum_flag_or(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_enum_flag_and(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "Flag operands must be integers",
+            );
         };
         MoltObject::from_int(a & b).bits()
     })
@@ -55,7 +63,11 @@ pub extern "C" fn molt_enum_flag_and(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_enum_flag_xor(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "Flag operands must be integers",
+            );
         };
         MoltObject::from_int(a ^ b).bits()
     })
@@ -69,7 +81,11 @@ pub extern "C" fn molt_enum_flag_xor(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_enum_flag_invert(a_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(a) = flag_bits_from_obj(a_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "Flag operand must be an integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "Flag operand must be an integer",
+            );
         };
         MoltObject::from_int(!a).bits()
     })
@@ -81,7 +97,11 @@ pub extern "C" fn molt_enum_flag_invert(a_bits: u64) -> u64 {
 pub extern "C" fn molt_enum_flag_contains(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "Flag operands must be integers");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "Flag operands must be integers",
+            );
         };
         MoltObject::from_bool((a & b) == b).bits()
     })
@@ -98,7 +118,11 @@ pub extern "C" fn molt_enum_flag_contains(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_enum_flag_decompose(value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(val) = flag_bits_from_obj(value_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "Flag value must be an integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "Flag value must be an integer",
+            );
         };
         let bits_u = val as u64;
         let mut single_bits: Vec<u64> = Vec::new();
@@ -140,10 +164,18 @@ pub extern "C" fn molt_enum_flag_decompose(value_bits: u64) -> u64 {
 pub extern "C" fn molt_enum_auto_value(count_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(count) = to_i64(obj_from_bits(count_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "auto() count must be an integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "auto() count must be an integer",
+            );
         };
         if count < 0 {
-            return raise_exception::<_>(_py, "ValueError", "auto() count must be non-negative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "auto() count must be non-negative",
+            );
         }
         MoltObject::from_int(count + 1).bits()
     })
@@ -252,7 +284,7 @@ pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
         {
             let tn = type_name(_py, obj);
             let msg = format!("StrEnum name must be str, not {tn}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         crate::object::ops_string::molt_string_lower(name_bits)
     })
@@ -279,7 +311,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         // Validate name
         let name_obj = obj_from_bits(name_bits);
         if name_obj.is_none() {
-            return raise_exception::<_>(_py, "TypeError", "enum name must be a string");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "enum name must be a string");
         }
 
         // Create the type/class object
@@ -299,11 +331,15 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         // Build __members__ dict from member tuples
         let members_obj = obj_from_bits(members_bits);
         let Some(members_ptr) = members_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "members must be a list");
         };
         let type_id = unsafe { object_type_id(members_ptr) };
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list or tuple");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "members must be a list or tuple",
+            );
         }
         let Some(elems) = (unsafe {
             crate::object::seq_access::snapshot(
@@ -322,7 +358,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
             let Some(eptr) = elem_obj.as_ptr() else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "each member must be a (name, value) tuple",
                 );
             };
@@ -330,7 +366,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
             if etype != TYPE_ID_TUPLE && etype != TYPE_ID_LIST {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "each member must be a (name, value) tuple",
                 );
             }
@@ -346,7 +382,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
             let Some((name_bits, value_bits)) = pair else {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "each member must have at least 2 elements",
                 );
             };

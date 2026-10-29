@@ -4,6 +4,7 @@
 //! and drop hooks. Shared IO wait/error helpers stay in generators_async_io.rs.
 
 use super::*;
+use crate::BuiltinExc;
 const ASYNCIO_SOCKET_READER_READ_SLOT_READER: usize = 0;
 const ASYNCIO_SOCKET_READER_READ_SLOT_N: usize = 1;
 const ASYNCIO_SOCKET_READER_READ_SLOT_FD: usize = 2;
@@ -96,7 +97,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> 
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid socket_reader_read payload",
                 );
             }
@@ -162,7 +163,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64)
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid socket_reader_readline payload",
                 );
             }
@@ -229,7 +230,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_recv payload",
                 );
             }
@@ -313,7 +314,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 
             if payload_bytes < 5 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_recv_into payload",
                 );
             }
@@ -372,7 +373,7 @@ pub extern "C" fn molt_asyncio_sock_sendall_new(
             if !obj_from_bits(data_len_bits).is_none() {
                 dec_ref_bits(_py, data_len_bits);
             }
-            return raise_exception::<u64>(_py, "TypeError", "invalid sendall payload");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid sendall payload");
         }
         let obj_bits = molt_future_new(
             asyncio_sock_sendall_poll_fn_addr(),
@@ -425,7 +426,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
             if payload_bytes < 6 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_sendall payload",
                 );
             }
@@ -571,7 +572,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_recvfrom payload",
                 );
             }
@@ -655,7 +656,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> 
             if payload_bytes < 5 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_recvfrom_into payload",
                 );
             }
@@ -747,7 +748,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
             if payload_bytes < 5 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_sendto payload",
                 );
             }
@@ -842,7 +843,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_connect payload",
                 );
             }
@@ -994,7 +995,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio sock_accept payload",
                 );
             }

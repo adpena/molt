@@ -2,6 +2,7 @@ use super::heap_lifecycle::DetachedEdgeSink;
 use super::weak_container::{
     WeakEntryId, weakcontainer_target_dead, weakcontainer_target_dead_detach,
 };
+use crate::BuiltinExc;
 use crate::state::runtime_state::{WeakRefEntry, WeakRefRegistry};
 use crate::{
     MoltObject, PtrSlot, PyToken, molt_is_callable, raise_exception, runtime_state, type_name,
@@ -84,7 +85,7 @@ impl<'a, 'py> WeakBorrow<'a, 'py> {
                 drop(registry);
                 return Err(raise_exception(
                     py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "weak borrow count exhausted",
                 ));
             };
@@ -96,7 +97,7 @@ impl<'a, 'py> WeakBorrow<'a, 'py> {
                 drop(registry);
                 return Err(raise_exception(
                     py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "weak borrow generation exhausted",
                 ));
             };
@@ -104,7 +105,7 @@ impl<'a, 'py> WeakBorrow<'a, 'py> {
                 drop(registry);
                 return Err(raise_exception(
                     py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "weak borrow registration failed",
                 ));
             }
@@ -694,7 +695,7 @@ pub(crate) fn weakref_peek_owned(_py: &PyToken<'_>, weak_bits: u64) -> Option<u6
 
 fn weakref_get_owned_or_none(_py: &PyToken<'_>, weak_bits: u64) -> u64 {
     if obj_from_bits(weak_bits).as_ptr().is_none() {
-        return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "weakref must be an object");
     }
     weakref_peek_owned(_py, weak_bits).unwrap_or_else(|| MoltObject::none().bits())
 }
@@ -714,7 +715,11 @@ fn weakref_snapshot_for_target(_py: &PyToken<'_>, target_ptr: *mut u8) -> Result
             .map_or(0, Vec::len);
         let mut out: Vec<u64> = Vec::new();
         out.try_reserve_exact(capacity).map_err(|_| {
-            raise_exception::<u64>(_py, "MemoryError", "weakref snapshot allocation failed")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::MemoryError,
+                "weakref snapshot allocation failed",
+            )
         })?;
         let registry = runtime_state(_py).weakrefs.lock().unwrap();
         let Some(ref_slots) = registry.by_target.get(&target_slot) else {
@@ -859,10 +864,14 @@ pub extern "C" fn molt_weakref_register(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "weakref must be an object");
         };
         if !object_is_weakref_slot(weak_ptr) {
-            return raise_exception::<_>(_py, "TypeError", "weakref must be a ReferenceType");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "weakref must be a ReferenceType",
+            );
         }
         let weak_slot = PtrSlot(weak_ptr);
         if runtime_state(_py)
@@ -877,7 +886,7 @@ pub extern "C" fn molt_weakref_register(
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             let type_label = type_name(_py, obj_from_bits(target_bits)).into_owned();
             let msg = format!("cannot create weak reference to '{type_label}' object");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let supports_weakrefs = object_supports_weakrefs(_py, target_bits);
         if exception_pending(_py) {
@@ -886,7 +895,7 @@ pub extern "C" fn molt_weakref_register(
         if !supports_weakrefs {
             let type_label = type_name(_py, obj_from_bits(target_bits)).into_owned();
             let msg = format!("cannot create weak reference to '{type_label}' object");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         if unsafe { (*header_from_obj_ptr(target_ptr)).load_synchronized_flags() }
             & super::HEADER_FLAG_DEALLOCATING
@@ -894,14 +903,14 @@ pub extern "C" fn molt_weakref_register(
         {
             return raise_exception::<_>(
                 _py,
-                "ReferenceError",
+                BuiltinExc::ReferenceError,
                 "cannot create weak reference to deallocating object",
             );
         }
         if target_is_retiring_runtime_class(target_ptr) {
             return raise_exception::<_>(
                 _py,
-                "ReferenceError",
+                BuiltinExc::ReferenceError,
                 "cannot create weak reference to retiring runtime type",
             );
         }
@@ -915,13 +924,17 @@ pub extern "C" fn molt_weakref_register(
             if !callable_ok {
                 let callback_type = type_name(_py, obj_from_bits(callback_bits));
                 let message = format!("callback must be callable or None, not '{callback_type}'");
-                return raise_exception::<_>(_py, "TypeError", &message);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
             }
         }
         let target_slot = PtrSlot(target_ptr);
         let mut prepared_target_list = Vec::new();
         if prepared_target_list.try_reserve_exact(1).is_err() {
-            return raise_exception::<_>(_py, "MemoryError", "weakref registration failed");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::MemoryError,
+                "weakref registration failed",
+            );
         }
         prepared_target_list.push(weak_slot);
         if !obj_from_bits(callback_bits).is_none() {
@@ -967,9 +980,11 @@ pub extern "C" fn molt_weakref_register(
                     WeakRefRegisterFailure::AlreadyRegistered => {
                         MoltObject::from_bool(false).bits()
                     }
-                    WeakRefRegisterFailure::OutOfMemory => {
-                        raise_exception::<_>(_py, "MemoryError", "weakref registration failed")
-                    }
+                    WeakRefRegisterFailure::OutOfMemory => raise_exception::<_>(
+                        _py,
+                        BuiltinExc::MemoryError,
+                        "weakref registration failed",
+                    ),
                 };
             }
         }
@@ -992,29 +1007,29 @@ pub extern "C" fn molt_weakref_register(
 /// referent death.
 pub(crate) fn weakref_cached_hash_or_compute(_py: &PyToken<'_>, weak_bits: u64) -> i64 {
     let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
-        raise_exception::<()>(_py, "TypeError", "weakref must be an object");
+        raise_exception::<()>(_py, BuiltinExc::TypeError, "weakref must be an object");
         return -1;
     };
     if !object_is_weakref_slot(weak_ptr) {
-        raise_exception::<()>(_py, "TypeError", "weakref must be an object");
+        raise_exception::<()>(_py, BuiltinExc::TypeError, "weakref must be an object");
         return -1;
     }
     let weak_slot = PtrSlot(weak_ptr);
     let target_bits = {
         let registry = runtime_state(_py).weakrefs.lock().unwrap();
         let Some(entry) = registry.by_ref.get(&weak_slot) else {
-            raise_exception::<()>(_py, "TypeError", "weak object has gone away");
+            raise_exception::<()>(_py, BuiltinExc::TypeError, "weak object has gone away");
             return -1;
         };
         if entry.cached_hash != WEAKREF_HASH_UNSET {
             return entry.cached_hash;
         }
         if entry.target.0.is_null() {
-            raise_exception::<()>(_py, "TypeError", "weak object has gone away");
+            raise_exception::<()>(_py, BuiltinExc::TypeError, "weak object has gone away");
             return -1;
         }
         let Some(bits) = try_retain_registered_ptr(&registry, entry.target.0) else {
-            raise_exception::<()>(_py, "TypeError", "weak object has gone away");
+            raise_exception::<()>(_py, BuiltinExc::TypeError, "weak object has gone away");
             return -1;
         };
         bits
@@ -1112,7 +1127,7 @@ pub extern "C" fn molt_weakref_callback(weak_bits: u64) -> u64 {
 
 pub(crate) fn weakref_callback_owned(_py: &PyToken<'_>, weak_bits: u64) -> u64 {
     let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "weakref must be an object");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "weakref must be an object");
     };
     let weak_slot = PtrSlot(weak_ptr);
     let registry = runtime_state(_py).weakrefs.lock().unwrap();
@@ -1294,9 +1309,9 @@ mod tests {
             .is_some_and(|ptr| {
                 let class = unsafe { crate::object_class_bits(ptr) };
                 class
-                    == crate::builtins::exceptions::exception_type_bits_from_name(
+                    == crate::builtins::exceptions::exception_class_bits(
                         py,
-                        "ReferenceError",
+                        crate::BuiltinExc::ReferenceError,
                     )
                     && crate::builtins::exceptions::format_exception_message(py, ptr)
                         .contains("cannot create weak reference to retiring runtime type")
@@ -1831,7 +1846,10 @@ mod tests {
                     .expect("exact builtin wrapper weakref rejection");
                 assert_eq!(
                     unsafe { crate::object_class_bits(exception) },
-                    crate::builtins::exceptions::exception_type_bits_from_name(py, "TypeError")
+                    crate::builtins::exceptions::exception_class_bits(
+                        py,
+                        crate::BuiltinExc::TypeError
+                    )
                 );
                 crate::clear_exception(py);
                 crate::dec_ref_bits(py, bits);

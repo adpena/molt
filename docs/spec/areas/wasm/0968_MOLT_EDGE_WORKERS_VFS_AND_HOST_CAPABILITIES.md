@@ -267,12 +267,12 @@ The only admitted version-2 artifact kind is `metadata-template`. It MUST set
 complete adjacent execution manifest exists; producers MUST NOT substitute an
 unknown or partial digest.
 
-When a verified version-3 execution manifest is present, identity uses one fixed
+When a verified version-4 execution manifest is present, identity uses one fixed
 encoding. Its version follows the execution manifest, independently of the
 version-2 metadata-template header:
 
-- linked: `molt.snapshot.execution.v3|linked|linked=sha256:<digest>`
-- split runtime: `molt.snapshot.execution.v3|split-runtime|app=sha256:<digest>|runtime=sha256:<digest>`
+- linked: `molt.snapshot.execution.v4|linked|linked=sha256:<digest>`
+- split runtime: `molt.snapshot.execution.v4|split-runtime|app=sha256:<digest>|runtime=sha256:<digest>`
 
 Roles and order are part of the encoding. A split-runtime identity binds both
 the application and runtime module bytes.

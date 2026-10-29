@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::builtins::exceptions::{
     ExceptionFieldSlot, ExceptionValue, exception_class, exception_is_instance,
@@ -138,21 +139,21 @@ fn contextlib_check_methods(
     let Some(candidate_ptr) = candidate.as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             "object has no attribute '__mro__'",
         ));
     };
     if unsafe { object_type_id(candidate_ptr) } != TYPE_ID_TYPE {
         return Err(raise_exception::<u64>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             "object has no attribute '__mro__'",
         ));
     }
     let Some(mro) = (unsafe { class_mro_pinned(_py, candidate_ptr) }) else {
         return Err(raise_exception::<u64>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             "object has no attribute '__mro__'",
         ));
     };
@@ -207,7 +208,7 @@ fn exitstack_from_bits_mut<'a>(
     if !ptr_live(ptr) {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid ExitStack handle",
         ));
     }
@@ -231,7 +232,11 @@ fn exit_exception_triple<'a, 'py>(
     value: ExceptionValue<'a, 'py>,
 ) -> Option<[ExceptionValue<'a, 'py>; 3]> {
     if !exception_is_instance(py, value.bits()) {
-        return raise_exception(py, "TypeError", "value must be an exception instance");
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            "value must be an exception instance",
+        );
     }
     let class = exception_class(py, value.bits())?;
     let traceback = exception_traceback(py, value.bits())?;
@@ -260,7 +265,7 @@ fn normalize_exit_exception(
     if !exception_is_instance(_py, value.bits()) {
         raise_exception::<()>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "calling exception class did not return an exception instance",
         );
         return Err(take_pending_exception(_py));
@@ -270,7 +275,7 @@ fn normalize_exit_exception(
             exception_replace_field_bits(_py, value.bits(), ExceptionFieldSlot::Traceback, tb_bits)
     {
         if !exception_pending(_py) {
-            raise_exception::<()>(_py, "TypeError", message);
+            raise_exception::<()>(_py, BuiltinExc::TypeError, message);
         }
         return Err(take_pending_exception(_py));
     }
@@ -435,7 +440,7 @@ unsafe fn payload_i64(payload_ptr: *mut u64, idx: usize) -> i64 {
 fn push_exit_callback(_py: &PyToken<'_>, handle: &mut ExitStackHandle, callback_bits: u64) -> u64 {
     let callable_bits = molt_is_callable(callback_bits);
     if !is_truthy(_py, obj_from_bits(callable_bits)) {
-        return raise_exception::<u64>(_py, "TypeError", "callback must be callable");
+        return raise_exception::<u64>(_py, BuiltinExc::TypeError, "callback must be callable");
     }
     inc_ref_bits(_py, callback_bits);
     handle
@@ -453,7 +458,7 @@ fn push_async_callback(
 ) -> u64 {
     let callable_bits = molt_is_callable(callback_bits);
     if !is_truthy(_py, obj_from_bits(callable_bits)) {
-        return raise_exception::<u64>(_py, "TypeError", "callback must be callable");
+        return raise_exception::<u64>(_py, BuiltinExc::TypeError, "callback must be callable");
     }
     inc_ref_bits(_py, callback_bits);
     inc_ref_bits(_py, args_bits);
@@ -475,7 +480,7 @@ fn push_sync_callback(
 ) -> u64 {
     let callable_bits = molt_is_callable(callback_bits);
     if !is_truthy(_py, obj_from_bits(callable_bits)) {
-        return raise_exception::<u64>(_py, "TypeError", "callback must be callable");
+        return raise_exception::<u64>(_py, BuiltinExc::TypeError, "callback must be callable");
     }
     inc_ref_bits(_py, callback_bits);
     inc_ref_bits(_py, args_bits);
@@ -499,20 +504,20 @@ enum GeneratorProtocol {
 }
 
 impl GeneratorProtocol {
-    const fn stop_name(self) -> &'static str {
+    const fn stop_kind(self) -> crate::BuiltinExc {
         match self {
-            Self::Sync => "StopIteration",
-            Self::Async => "StopAsyncIteration",
+            Self::Sync => crate::BuiltinExc::StopIteration,
+            Self::Async => crate::BuiltinExc::StopAsyncIteration,
         }
     }
 
     /// Whether the body turns `value` into a `RuntimeError` when it escapes
     /// the frame (PEP 479).
     fn converts_to_runtime_error(self, py: &PyToken<'_>, value: u64) -> bool {
-        use crate::builtins::exceptions::exception_matches_builtin_name;
-        exception_matches_builtin_name(py, value, "StopIteration")
+        use crate::builtins::exceptions::exception_matches_kind;
+        exception_matches_kind(py, value, crate::BuiltinExc::StopIteration)
             || (matches!(self, Self::Async)
-                && exception_matches_builtin_name(py, value, "StopAsyncIteration"))
+                && exception_matches_kind(py, value, crate::BuiltinExc::StopAsyncIteration))
     }
 }
 
@@ -530,14 +535,14 @@ fn generator_exit_after_throw(
     value: u64,
     traceback: u64,
 ) -> u64 {
-    use crate::builtins::exceptions::exception_matches_builtin_name;
-    if exception_matches_builtin_name(py, raised, protocol.stop_name()) {
+    use crate::builtins::exceptions::exception_matches_kind;
+    if exception_matches_kind(py, raised, protocol.stop_kind()) {
         let suppress = raised != value;
         dec_ref_bits(py, raised);
         return MoltObject::from_bool(suppress).bits();
     }
     let unhandled = raised == value
-        || (exception_matches_builtin_name(py, raised, "RuntimeError")
+        || (exception_matches_kind(py, raised, crate::BuiltinExc::RuntimeError)
             && protocol.converts_to_runtime_error(py, value)
             && obj_from_bits(raised)
                 .as_ptr()
@@ -551,7 +556,7 @@ fn generator_exit_after_throw(
     if let Err(message) =
         exception_replace_field_bits(py, value, ExceptionFieldSlot::Traceback, traceback)
     {
-        return raise_exception::<u64>(py, "TypeError", message);
+        return raise_exception::<u64>(py, BuiltinExc::TypeError, message);
     }
     MoltObject::from_bool(false).bits()
 }
@@ -561,7 +566,7 @@ fn generator_exit_after_throw(
 /// while the `RuntimeError` is the handled exception, so an exception it
 /// raises replaces the `RuntimeError` and chains to it.
 fn generator_did_not_stop(py: &PyToken<'_>, gen_bits: u64, message: &str) -> u64 {
-    raise_exception::<()>(py, "RuntimeError", message);
+    raise_exception::<()>(py, BuiltinExc::RuntimeError, message);
     let stop_error = ExceptionValue::adopt(py, take_pending_exception(py));
     exception_stack_push();
     crate::builtins::exceptions::exception_context_set(py, stop_error.bits());
@@ -582,14 +587,14 @@ fn generator_did_not_yield(py: &PyToken<'_>, stop: u64) -> u64 {
     let stop = ExceptionValue::adopt(py, stop);
     exception_stack_push();
     crate::builtins::exceptions::exception_context_set(py, stop.bits());
-    raise_exception::<()>(py, "RuntimeError", "generator didn't yield");
+    raise_exception::<()>(py, BuiltinExc::RuntimeError, "generator didn't yield");
     let error = take_pending_exception(py);
     exception_stack_pop(py);
     if let Err(message) =
         crate::builtins::exceptions::exception_replace_suppress_context(py, error, true)
     {
         dec_ref_bits(py, error);
-        return raise_exception::<u64>(py, "TypeError", message);
+        return raise_exception::<u64>(py, BuiltinExc::TypeError, message);
     }
     rethrow_with_owned_exception(py, error)
 }
@@ -602,10 +607,10 @@ fn asyncgen_exit_handle_exception(
     tb_bits: u64,
 ) -> i64 {
     if mode == ASYNCGEN_EXIT_MODE_ANEXT {
-        if crate::builtins::exceptions::exception_matches_builtin_name(
+        if crate::builtins::exceptions::exception_matches_kind(
             _py,
             raised_bits,
-            "StopAsyncIteration",
+            crate::BuiltinExc::StopAsyncIteration,
         ) {
             dec_ref_bits(_py, raised_bits);
             return MoltObject::from_bool(false).bits() as i64;
@@ -925,10 +930,10 @@ pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
         };
         let old_cwd = match std::env::current_dir() {
             Ok(value) => value,
-            Err(err) => return raise_exception::<u64>(_py, "OSError", &err.to_string()),
+            Err(err) => return raise_exception::<u64>(_py, BuiltinExc::OSError, &err.to_string()),
         };
         if let Err(err) = std::env::set_current_dir(&path) {
-            return raise_exception::<u64>(_py, "OSError", &err.to_string());
+            return raise_exception::<u64>(_py, BuiltinExc::OSError, &err.to_string());
         }
         let old_text = old_cwd.to_string_lossy().into_owned();
         match alloc_str_bits(_py, &old_text) {
@@ -953,7 +958,7 @@ pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
             Err(error) => return error,
         };
         if let Err(err) = std::env::set_current_dir(&path) {
-            return raise_exception::<u64>(_py, "OSError", &err.to_string());
+            return raise_exception::<u64>(_py, BuiltinExc::OSError, &err.to_string());
         }
         MoltObject::none().bits()
     })
@@ -967,10 +972,10 @@ pub extern "C" fn molt_contextlib_generator_enter(gen_bits: u64) -> u64 {
             return out;
         }
         let exc_bits = take_pending_exception(_py);
-        if crate::builtins::exceptions::exception_matches_builtin_name(
+        if crate::builtins::exceptions::exception_matches_kind(
             _py,
             exc_bits,
-            "StopIteration",
+            crate::BuiltinExc::StopIteration,
         ) {
             return generator_did_not_yield(_py, exc_bits);
         }
@@ -995,10 +1000,10 @@ pub extern "C" fn molt_contextlib_generator_exit(
                 return generator_did_not_stop(_py, gen_bits, "generator didn't stop");
             }
             let raised = take_pending_exception(_py);
-            if crate::builtins::exceptions::exception_matches_builtin_name(
+            if crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 raised,
-                "StopIteration",
+                crate::BuiltinExc::StopIteration,
             ) {
                 dec_ref_bits(_py, raised);
                 return MoltObject::from_bool(false).bits();
@@ -1119,7 +1124,7 @@ pub extern "C" fn molt_contextlib_redirect_enter(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(stream_name) = string_obj_to_owned(obj_from_bits(stream_name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "stream name must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "stream name must be str");
         };
         let Some(name_bits) = attr_name_bits_from_bytes(_py, stream_name.as_bytes()) else {
             return MoltObject::none().bits();
@@ -1150,7 +1155,7 @@ pub extern "C" fn molt_contextlib_redirect_exit(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(stream_name) = string_obj_to_owned(obj_from_bits(stream_name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "stream name must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "stream name must be str");
         };
         let Some(name_bits) = attr_name_bits_from_bytes(_py, stream_name.as_bytes()) else {
             return MoltObject::none().bits();
@@ -1252,10 +1257,10 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_exit(
         let mut attr_missing = false;
         if exception_pending(_py) {
             let raised_bits = take_pending_exception(_py);
-            if crate::builtins::exceptions::exception_matches_builtin_name(
+            if crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 raised_bits,
-                "AttributeError",
+                crate::BuiltinExc::AttributeError,
             ) {
                 dec_ref_bits(_py, raised_bits);
                 attr_missing = true;
@@ -1294,15 +1299,15 @@ pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_b
         let entered_bits = call_method0(_py, cm_bits, b"__enter__");
         if exception_pending(_py) {
             let raised_bits = take_pending_exception(_py);
-            if crate::builtins::exceptions::exception_matches_builtin_name(
+            if crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 raised_bits,
-                "AttributeError",
+                crate::BuiltinExc::AttributeError,
             ) {
                 dec_ref_bits(_py, raised_bits);
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "object does not support the context manager protocol",
                 );
             }
@@ -1323,15 +1328,15 @@ pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_b
             if !obj_from_bits(entered_bits).is_none() {
                 dec_ref_bits(_py, entered_bits);
             }
-            if crate::builtins::exceptions::exception_matches_builtin_name(
+            if crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 raised_bits,
-                "AttributeError",
+                crate::BuiltinExc::AttributeError,
             ) {
                 dec_ref_bits(_py, raised_bits);
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "object does not support the context manager protocol",
                 );
             }
@@ -1428,7 +1433,7 @@ pub extern "C" fn molt_contextlib_exitstack_exit(
                     callback.release_refs(_py);
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "async callback cannot run in ExitStack",
                     );
                 }
@@ -1563,7 +1568,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
             if payload_bytes < 2 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid contextlib async payload",
                 );
             }
@@ -1574,10 +1579,10 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
                 let await_bits = call_method0(_py, agen_bits, b"__anext__");
                 if exception_pending(_py) {
                     let raised_bits = take_pending_exception(_py);
-                    if crate::builtins::exceptions::exception_matches_builtin_name(
+                    if crate::builtins::exceptions::exception_matches_kind(
                         _py,
                         raised_bits,
-                        "StopAsyncIteration",
+                        crate::BuiltinExc::StopAsyncIteration,
                     ) {
                         return generator_did_not_yield(_py, raised_bits) as i64;
                     }
@@ -1595,7 +1600,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
             if obj_from_bits(await_bits).is_none() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid contextlib async state",
                 );
             }
@@ -1606,10 +1611,10 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
             payload_clear(_py, payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT);
             if exception_pending(_py) {
                 let raised_bits = take_pending_exception(_py);
-                if crate::builtins::exceptions::exception_matches_builtin_name(
+                if crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     raised_bits,
-                    "StopAsyncIteration",
+                    crate::BuiltinExc::StopAsyncIteration,
                 ) {
                     return generator_did_not_yield(_py, raised_bits) as i64;
                 }
@@ -1635,7 +1640,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
             if payload_bytes < 7 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid contextlib async payload",
                 );
             }
@@ -1713,7 +1718,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
             if obj_from_bits(await_bits).is_none() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid contextlib async state",
                 );
             }
@@ -1741,7 +1746,11 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                 dec_ref_bits(_py, res as u64);
             }
             if mode == ASYNCGEN_EXIT_MODE_ANEXT {
-                return raise_exception::<i64>(_py, "RuntimeError", "generator didn't stop");
+                return raise_exception::<i64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "generator didn't stop",
+                );
             }
             if mode == ASYNCGEN_EXIT_MODE_THROW {
                 let agen_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AGEN);
@@ -1752,11 +1761,15 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                 }
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "generator didn't stop after athrow()",
                 );
             }
-            raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async state")
+            raise_exception::<i64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "invalid contextlib async state",
+            )
         })
     }
 }
@@ -1776,7 +1789,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid contextlib async payload",
                 );
             }
@@ -1787,15 +1800,15 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
                 let await_bits = call_method0(_py, cm_bits, b"__aenter__");
                 if exception_pending(_py) {
                     let raised_bits = take_pending_exception(_py);
-                    if crate::builtins::exceptions::exception_matches_builtin_name(
+                    if crate::builtins::exceptions::exception_matches_kind(
                         _py,
                         raised_bits,
-                        "AttributeError",
+                        crate::BuiltinExc::AttributeError,
                     ) {
                         dec_ref_bits(_py, raised_bits);
                         return raise_exception::<i64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "object does not support the asynchronous context manager protocol",
                         );
                     }
@@ -1819,7 +1832,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
             if obj_from_bits(await_bits).is_none() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid contextlib async state",
                 );
             }
@@ -1841,15 +1854,15 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
             dec_ref_bits(_py, exit_name_bits);
             if exception_pending(_py) {
                 let raised_bits = take_pending_exception(_py);
-                if crate::builtins::exceptions::exception_matches_builtin_name(
+                if crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     raised_bits,
-                    "AttributeError",
+                    crate::BuiltinExc::AttributeError,
                 ) {
                     dec_ref_bits(_py, raised_bits);
                     return raise_exception::<i64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "object does not support the asynchronous context manager protocol",
                     );
                 }
@@ -1894,7 +1907,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
             if payload_bytes < 9 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid contextlib async payload",
                 );
             }
@@ -1988,7 +2001,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
                         callback.release_refs(_py);
                         return raise_exception::<i64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "synchronous callback cannot run in AsyncExitStack",
                         );
                     }

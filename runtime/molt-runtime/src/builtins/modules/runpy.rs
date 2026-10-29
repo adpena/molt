@@ -6,6 +6,7 @@
 //! `modules::execution`.
 
 use super::*;
+use crate::BuiltinExc;
 
 fn runpy_normalize_candidate(path: PathBuf) -> String {
     std::fs::canonicalize(&path)
@@ -145,7 +146,7 @@ fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, 
             dec_ref_bits(_py, util_bits);
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "importlib.util.find_spec is unavailable",
             ));
         }
@@ -205,24 +206,25 @@ fn runpy_resolve_module(_py: &PyToken<'_>, mod_name: &str) -> Result<RunpyModule
     if mod_name.starts_with('.') {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "Relative module names not supported",
         ));
     }
     if mod_name.is_empty() || !mod_name.split('.').all(is_module_name_component) {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!("No module named {mod_name}"),
         ));
     }
     let Some(mut spec_bits) = runpy_find_spec(_py, mod_name)? else {
         if let Some(catalog) = runpy_catalog_target(mod_name) {
-            return catalog.map_err(|message| raise_exception::<_>(_py, "ImportError", &message));
+            return catalog
+                .map_err(|message| raise_exception::<_>(_py, BuiltinExc::ImportError, &message));
         }
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!("No module named {mod_name}"),
         ));
     };
@@ -251,7 +253,7 @@ fn runpy_resolve_module(_py: &PyToken<'_>, mod_name: &str) -> Result<RunpyModule
             }
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "No module named {import_name:?}; {mod_name:?} is a package and cannot be directly executed"
                 ),
@@ -376,19 +378,27 @@ pub extern "C" fn molt_runpy_run_module(
     crate::with_gil_entry_nopanic!(_py, {
         let mod_name = match string_obj_to_owned(obj_from_bits(mod_name_bits)) {
             Some(value) => value,
-            None => return raise_exception::<_>(_py, "TypeError", "mod_name must be str"),
+            None => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "mod_name must be str");
+            }
         };
         let requested_run_name = if obj_from_bits(run_name_bits).is_none() {
             None
         } else {
             match string_obj_to_owned(obj_from_bits(run_name_bits)) {
                 Some(value) => Some(value),
-                None => return raise_exception::<_>(_py, "TypeError", "run_name must be str"),
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "run_name must be str",
+                    );
+                }
             }
         };
         let initial = match init_globals_bits(init_globals_bits_value) {
             Ok(value) => value,
-            Err(message) => return raise_exception::<_>(_py, "TypeError", message),
+            Err(message) => return raise_exception::<_>(_py, BuiltinExc::TypeError, message),
         };
         let alter_sys = is_truthy(_py, obj_from_bits(alter_sys_bits));
         let target = match runpy_resolve_module(_py, &mod_name) {
@@ -432,23 +442,33 @@ pub extern "C" fn molt_runpy_run_path(
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("runpy.run_path", "fs.read", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
             Some(value) => value,
-            None => return raise_exception::<_>(_py, "TypeError", "path must be str"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "path must be str"),
         };
         let run_name = if obj_from_bits(run_name_bits).is_none() {
             "<run_path>".to_string()
         } else {
             match string_obj_to_owned(obj_from_bits(run_name_bits)) {
                 Some(value) => value,
-                None => return raise_exception::<_>(_py, "TypeError", "run_name must be str"),
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "run_name must be str",
+                    );
+                }
             }
         };
         let initial = match init_globals_bits(init_globals_bits_value) {
             Ok(value) => value,
-            Err(message) => return raise_exception::<_>(_py, "TypeError", message),
+            Err(message) => return raise_exception::<_>(_py, BuiltinExc::TypeError, message),
         };
         let sys_path = match unsafe { execution_sys_path_entries(_py) } {
             Ok(entries) => entries,
@@ -459,21 +479,21 @@ pub extern "C" fn molt_runpy_run_path(
             Err(RunpyPathResolutionError::MissingPath(missing)) => {
                 return raise_exception::<_>(
                     _py,
-                    "FileNotFoundError",
+                    BuiltinExc::FileNotFoundError,
                     &format!("No such file or directory: {missing:?}"),
                 );
             }
             Err(RunpyPathResolutionError::DirectoryWithoutMain(directory)) => {
                 return raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     &format!("can't find '__main__' module in {directory:?}"),
                 );
             }
             Err(RunpyPathResolutionError::OutsideCompiledClosure(source)) => {
                 return raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     &format!(
                         "run_path target {source:?} is not part of this binary's compiled module closure"
                     ),

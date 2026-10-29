@@ -1,4 +1,5 @@
 // Regex group-value and replacement-expansion entry points (re module support).
+use molt_runtime_core::BuiltinExc;
 //
 // `molt_re_group_values` turns captured spans into group strings and
 // `molt_re_expand_replacement` expands a replacement template against them.
@@ -177,7 +178,11 @@ pub(super) unsafe fn string_storage<'a>(
         .as_ptr()
         .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
     {
-        return Err(raise_exception::<u64>(py, "TypeError", type_error));
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::TypeError,
+            type_error,
+        ));
     }
     // A genuine provider failure retains its pending exception.
     unsafe { rt_string_as_bytes(bits) }.ok_or(MoltObject::none().bits())
@@ -209,7 +214,7 @@ fn string_name(_py: &CoreGilToken, bits: u64) -> Option<String> {
 pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementError) -> u64 {
     let message = match error {
         ReplacementError::Index(message) => {
-            return raise_exception::<u64>(py, "IndexError", &message);
+            return raise_exception::<u64>(py, BuiltinExc::IndexError, &message);
         }
         ReplacementError::InvalidGroupName { name, position } => {
             let mut encoded_name = Vec::with_capacity(name.len().saturating_mul(3));
@@ -229,10 +234,18 @@ pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementErro
             }
             let repr = unsafe { OwnedRuntimeValue::from_owned_bits(py, repr_bits) };
             let Some(repr_bytes) = repr.string_bytes(py) else {
-                return raise_exception::<u64>(py, "SystemError", "repr returned a non-string");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "repr returned a non-string",
+                );
             };
             let Ok(repr_text) = std::str::from_utf8(repr_bytes) else {
-                return raise_exception::<u64>(py, "SystemError", "repr returned invalid UTF-8");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "repr returned invalid UTF-8",
+                );
             };
             format!("bad character in group name {repr_text} at position {position}")
         }
@@ -288,7 +301,7 @@ pub(super) fn re_group_spans_from_sequence(
     let Some(groups_ptr) = groups_obj.as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "groups must be a sequence",
         ));
     };
@@ -296,7 +309,7 @@ pub(super) fn re_group_spans_from_sequence(
     if groups_ty != TYPE_ID_LIST && groups_ty != TYPE_ID_TUPLE {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "groups must be a sequence",
         ));
     }
@@ -311,7 +324,7 @@ pub(super) fn re_group_spans_from_sequence(
         let Some(elem_ptr) = elem_obj.as_ptr() else {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "group span must be tuple[int, int] or None",
             ));
         };
@@ -319,7 +332,7 @@ pub(super) fn re_group_spans_from_sequence(
         if elem_ty != TYPE_ID_LIST && elem_ty != TYPE_ID_TUPLE {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "group span must be tuple[int, int] or None",
             ));
         }
@@ -327,21 +340,21 @@ pub(super) fn re_group_spans_from_sequence(
         if span.len() < 2 {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "group span must contain start/end",
             ));
         }
         let Some(start) = to_i64(obj_from_bits(span[0])) else {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "group span start must be int",
             ));
         };
         let Some(end) = to_i64(obj_from_bits(span[1])) else {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "group span end must be int",
             ));
         };
@@ -362,7 +375,7 @@ pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 
         for span in spans {
             let value_bits = if let Some((start, end)) = span {
                 if start < 0 || end < start {
-                    return raise_exception::<_>(_py, "IndexError", "invalid group span");
+                    return raise_exception::<_>(_py, BuiltinExc::IndexError, "invalid group span");
                 }
                 let bits = subject_slice_to_object(text_bits, start as usize, end as usize);
                 if obj_from_bits(bits).is_none() {
@@ -402,12 +415,20 @@ pub extern "C" fn molt_re_expand_replacement(
     molt_runtime_core::with_core_gil!(_py, {
         let repl_obj = obj_from_bits(repl_bits);
         let Some(repl_ptr) = repl_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "replacement must be str or bytes");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "replacement must be str or bytes",
+            );
         };
         let is_bytes = unsafe { object_type_id(repl_ptr) } == TYPE_ID_BYTES;
         let repl_units: Vec<u32> = if is_bytes {
             let Some(bytes) = (unsafe { bytes_obj_to_borrowed(repl_obj) }) else {
-                return raise_exception::<_>(_py, "TypeError", "replacement must be bytes");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "replacement must be bytes",
+                );
             };
             bytes.iter().map(|byte| u32::from(*byte)).collect()
         } else {
@@ -418,11 +439,19 @@ pub extern "C" fn molt_re_expand_replacement(
         };
         let values_obj = obj_from_bits(group_values_bits);
         let Some(values_ptr) = values_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "group_values must be a sequence");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "group_values must be a sequence",
+            );
         };
         let values_ty = unsafe { object_type_id(values_ptr) };
         if values_ty != TYPE_ID_LIST && values_ty != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "group_values must be a sequence");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "group_values must be a sequence",
+            );
         }
         let mut group_values = Vec::new();
         for &value_bits in unsafe { seq_snapshot(values_ptr) }.iter() {
@@ -433,7 +462,7 @@ pub extern "C" fn molt_re_expand_replacement(
                 let Some(bytes) = (unsafe { bytes_obj_to_borrowed(value) }) else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "group_values must match replacement type",
                     );
                 };
@@ -478,7 +507,7 @@ pub extern "C" fn molt_re_expand_replacement(
             if expanded.iter().any(|unit| *unit > 255) {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "byte replacement produced a non-byte value",
                 );
             }

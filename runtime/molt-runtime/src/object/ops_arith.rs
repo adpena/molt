@@ -2,6 +2,7 @@
 // Split from ops.rs for compilation-unit size reduction.
 #![allow(clippy::items_after_test_module)]
 
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -30,10 +31,10 @@ use percent_format::string_percent_format_impl;
 pub(crate) fn raise_numeric_error(py: &PyToken<'_>, context: NumericErrorContext) -> u64 {
     let target = super::ops_sys::runtime_target_python_info(runtime_state(py));
     match context.message(target.major, target.minor) {
-        Some(message) => raise_exception::<_>(py, context.error_class(), message),
+        Some(message) => raise_exception::<_>(py, context.error_kind(), message),
         None => raise_exception::<_>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "unsupported numeric exception target version",
         ),
     }
@@ -53,7 +54,7 @@ fn complex_binary_payload(
         (Err(()), _) | (_, Err(())) => {
             return Some(raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "int too large to convert to float",
             ));
         }
@@ -336,7 +337,7 @@ fn sequence_concat(py: &PyToken<'_>, left: u64, right: u64, inplace: bool) -> u6
         let name = type_name(py, obj_from_bits(left));
         raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("'{name}' object can't be concatenated"),
         )
     }
@@ -663,7 +664,7 @@ pub(crate) fn sequence_repeat_count(py: &PyToken<'_>, bits: u64) -> Option<i64> 
             Ok(value) => Some(value as i64),
             Err(_) => raise_exception(
                 py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "cannot fit 'int' into an index-sized integer",
             ),
         };
@@ -674,7 +675,7 @@ pub(crate) fn sequence_repeat_count(py: &PyToken<'_>, bits: u64) -> Option<i64> 
     value.to_isize().map(|value| value as i64).or_else(|| {
         raise_exception(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "cannot fit 'int' into an index-sized integer",
         )
     })
@@ -732,7 +733,7 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
             None => {
                 return raise_exception(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "cannot fit 'int' into an index-sized integer",
                 );
             }
@@ -974,7 +975,7 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
             Err(_) => {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "cannot fit 'int' into an index-sized integer",
                 );
             }
@@ -994,7 +995,7 @@ unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64)
             Err(_) => {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "cannot fit 'int' into an index-sized integer",
                 );
             }
@@ -1011,7 +1012,7 @@ unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64)
             None => {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "cannot fit 'int' into an index-sized integer",
                 );
             }
@@ -1295,7 +1296,7 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 Err(RatioFloatError::Overflow) => {
                     return raise_exception::<_>(
                         _py,
-                        "OverflowError",
+                        BuiltinExc::OverflowError,
                         "integer division result too large for a float",
                     );
                 }
@@ -1563,7 +1564,7 @@ fn complex_power_payload(
         Ok(value) => Ok(value),
         Err(()) => Err(raise_exception(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "int too large to convert to float",
         )),
     };
@@ -1578,7 +1579,11 @@ fn complex_power_payload(
         Err(error) => return Some(error),
     };
     if !obj_from_bits(modulus).is_none() {
-        return Some(raise_exception(py, "ValueError", "complex modulo"));
+        return Some(raise_exception(
+            py,
+            BuiltinExc::ValueError,
+            "complex modulo",
+        ));
     }
     Some(match complex_pow(base, exponent) {
         Ok(out) => complex_bits(py, out.re, out.im),
@@ -1885,7 +1890,7 @@ pub(crate) fn number_power(a: u64, b: u64, modulus: u64, inplace: bool) -> u64 {
                         type_name(py, obj_from_bits(b)),
                         type_name(py, obj_from_bits(modulus))
                     );
-                    raise_exception(py, "TypeError", &message)
+                    raise_exception(py, BuiltinExc::TypeError, &message)
                 }
             })
         }
@@ -1927,7 +1932,11 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 let Some(res) =
                     integer_pow_nonnegative(&BigInt::from(li), &BigUint::from(ri as u64))
                 else {
-                    return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "exponent too large",
+                    );
                 };
                 if let Some(i) = bigint_to_inline(&res) {
                     return MoltObject::from_int(i).bits();
@@ -1941,7 +1950,7 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
             let out = lf.powf(rf);
             if out.is_infinite() && lf.is_finite() && rf.is_finite() {
-                return raise_exception::<_>(_py, "OverflowError", "math range error");
+                return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
             }
             return float_result_bits(_py, out);
         }
@@ -1951,7 +1960,11 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         ) {
             if !r_big.is_negative() {
                 let Some(res) = integer_pow_nonnegative(&l_big, r_big.magnitude()) else {
-                    return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "exponent too large",
+                    );
                 };
                 return int_bits_from_bigint(_py, res);
             }
@@ -1961,7 +1974,7 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             ) else {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "int too large to convert to float",
                 );
             };
@@ -1986,7 +1999,7 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
             let out = lf.powf(rf);
             if out.is_infinite() && lf.is_finite() && rf.is_finite() {
-                return raise_exception::<_>(_py, "OverflowError", "math range error");
+                return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
             }
             return float_result_bits(_py, out);
         }
@@ -2032,7 +2045,7 @@ fn modular_power_impl(_py: &PyToken<'_>, a: u64, b: u64, m: u64) -> u64 {
             let Some(inv) = mod_inverse_i128(_py, base_mod, mod_abs) else {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "base is not invertible for the given modulus",
                 );
             };
@@ -2057,20 +2070,20 @@ fn modular_power_impl(_py: &PyToken<'_>, a: u64, b: u64, m: u64) -> u64 {
             let Some(inv) = mod_inverse_bigint(base_mod, &mod_abs) else {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "base is not invertible for the given modulus",
                 );
             };
             let inv_mod = inv.mod_floor(&modulus);
             let neg_exp = -exp;
             if neg_exp.to_u64().is_none() {
-                return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                return raise_exception::<_>(_py, BuiltinExc::OverflowError, "exponent too large");
             }
             let exp_u64 = neg_exp.to_u64().unwrap();
             mod_pow_bigint(&inv_mod, exp_u64, &modulus)
         } else {
             if exp.to_u64().is_none() {
-                return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                return raise_exception::<_>(_py, BuiltinExc::OverflowError, "exponent too large");
             }
             let exp_u64 = exp.to_u64().unwrap();
             mod_pow_bigint(&base, exp_u64, &modulus)
@@ -2082,7 +2095,7 @@ fn modular_power_impl(_py: &PyToken<'_>, a: u64, b: u64, m: u64) -> u64 {
     }
     raise_exception::<_>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "pow() 3rd argument not allowed unless all arguments are integers",
     )
 }
@@ -2117,14 +2130,14 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
             if f.is_nan() {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "cannot convert float NaN to integer",
                 );
             }
             if f.is_infinite() {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "cannot convert float infinity to integer",
                 );
             }
@@ -2148,7 +2161,7 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
                 }
             }
         }
-        raise_exception::<_>(_py, "TypeError", "trunc() expects a real number")
+        raise_exception::<_>(_py, BuiltinExc::TypeError, "trunc() expects a real number")
     })
 }
 
@@ -2168,7 +2181,7 @@ pub(super) fn binary_type_error(
         type_name(_py, lhs),
         type_name(_py, rhs)
     );
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 fn is_union_operand(_py: &PyToken<'_>, obj: MoltObject) -> bool {
@@ -2630,7 +2643,7 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
             }
         }
         let msg = format!("bad operand type for unary ~: '{}'", type_name(_py, obj));
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -2678,7 +2691,7 @@ pub extern "C" fn molt_neg(val: u64) -> u64 {
         }
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("bad operand type for unary -: '{type_name}'");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -2704,7 +2717,7 @@ pub extern "C" fn molt_pos(val: u64) -> u64 {
         }
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("bad operand type for unary +: '{type_name}'");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -2814,7 +2827,7 @@ fn shift_count_from_integer(_py: &PyToken<'_>, count: StrictInteger) -> Option<S
     match count {
         StrictInteger::Inline(value) => {
             if value < 0 {
-                raise_exception::<u64>(_py, "ValueError", "negative shift count");
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "negative shift count");
                 return None;
             }
             Some(match usize::try_from(value) {
@@ -2824,7 +2837,7 @@ fn shift_count_from_integer(_py: &PyToken<'_>, count: StrictInteger) -> Option<S
         }
         StrictInteger::Big(value) => {
             if value.is_negative() {
-                raise_exception::<u64>(_py, "ValueError", "negative shift count");
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "negative shift count");
                 return None;
             }
             Some(match value.to_usize() {
@@ -2895,18 +2908,26 @@ fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         let shift_u = match shift {
             ShiftCount::FitsUsize(value) => value,
             ShiftCount::TooLarge => {
-                return raise_exception::<_>(_py, "OverflowError", "too many digits in integer");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "too many digits in integer",
+                );
             }
         };
         let value_bits = value.magnitude_bits();
         let shift_bits = match u64::try_from(shift_u) {
             Ok(value) => value,
             Err(_) => {
-                return raise_exception::<_>(_py, "OverflowError", "too many digits in integer");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "too many digits in integer",
+                );
             }
         };
         if let Err(msg) = crate::resource::check_lshift_size(value_bits, shift_bits) {
-            return raise_exception::<_>(_py, "MemoryError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, &msg);
         }
         let value = match value {
             StrictInteger::Inline(value) => {

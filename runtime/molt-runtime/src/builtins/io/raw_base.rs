@@ -3,6 +3,7 @@
 //! backend is required, and no Rust storage borrow spans a Python callback.
 use super::buffered::{call, owned, trap_eintr};
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::compatibility_error::CompatibilityError;
 use crate::object::buffer_exports::{bytearray_require_unexported, bytearray_resize};
 use molt_runtime_core::OwnedRuntimeValue;
@@ -34,7 +35,7 @@ pub(super) fn count(py: &PyToken<'_>, result: u64) -> Option<i64> {
         None => {
             raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "cannot fit '{}' into an index-sized integer",
                     crate::type_name(py, obj_from_bits(result))
@@ -76,13 +77,13 @@ pub(crate) extern "C" fn raw_io_base_read(self_bits: u64, size_bits: u64) -> u64
             return if checked_count {
                 raise_exception(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("readinto returned {count} outside buffer size {size}"),
                 )
             } else {
                 raise_exception(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "Negative size passed to PyBytes_FromStringAndSize",
                 )
             };
@@ -99,7 +100,7 @@ pub(crate) extern "C" fn raw_io_base_read(self_bits: u64, size_bits: u64) -> u64
         if count > available || (checked_count && count > size as usize) {
             return raise_exception(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("readinto returned {count} outside buffer size {size}"),
             );
         }
@@ -134,7 +135,7 @@ fn append(py: &PyToken<'_>, output: &mut Vec<u8>, value: &[u8]) -> Result<(), u6
     {
         return Err(raise_exception(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "raw readall result is too large",
         ));
     }
@@ -176,7 +177,7 @@ pub(crate) extern "C" fn raw_io_base_readall(self_bits: u64) -> u64 {
                 .as_ptr()
                 .filter(|&pointer| unsafe { object_type_id(pointer) == TYPE_ID_BYTES })
             else {
-                return raise_exception(py, "TypeError", "read() should return bytes");
+                return raise_exception(py, BuiltinExc::TypeError, "read() should return bytes");
             };
             let value =
                 unsafe { std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)) };
@@ -189,7 +190,11 @@ pub(crate) extern "C" fn raw_io_base_readall(self_bits: u64) -> u64 {
                 }
             } else {
                 if chunks.0.try_reserve(1).is_err() {
-                    return raise_exception(py, "MemoryError", "cannot retain raw readall chunks");
+                    return raise_exception(
+                        py,
+                        BuiltinExc::MemoryError,
+                        "cannot retain raw readall chunks",
+                    );
                 }
                 chunks.0.push(result);
             }
@@ -226,7 +231,7 @@ pub(crate) extern "C" fn raw_io_base_readinto(args: u64, kwargs: u64) -> u64 {
         if !call.keyword_view().is_empty() {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "_RawIOBase.readinto() takes no keyword arguments",
             );
         }

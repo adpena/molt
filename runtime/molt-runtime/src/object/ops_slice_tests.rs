@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::{
     accessors, builders, class_finish_definition, field_storage, gc, layout, ops_builtins,
     seq_access,
@@ -787,8 +788,8 @@ extern "C" fn slot_state_getattribute(_object: u64, name: u64) -> u64 {
         );
         let count = SLOT_STATE_READS.fetch_add(1, Ordering::SeqCst) + 1;
         match SLOT_STATE_READ_MODE.load(Ordering::SeqCst) {
-            1 => raise_exception::<u64>(py, "AttributeError", "slot absent"),
-            2 => raise_exception::<u64>(py, "RuntimeError", "slot getter failed"),
+            1 => raise_exception::<u64>(py, BuiltinExc::AttributeError, "slot absent"),
+            2 => raise_exception::<u64>(py, BuiltinExc::RuntimeError, "slot getter failed"),
             _ => MoltObject::from_int(count as i64).bits(),
         }
     })

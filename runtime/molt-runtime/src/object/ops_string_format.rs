@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::ops_format::{
     FormatOutput, FormatParseError, FormatWriter, parse_format_integer,
 };
@@ -235,7 +236,7 @@ fn format_string_impl(
     recursion_depth: usize,
 ) -> Option<FormatOutput> {
     if recursion_depth == 0 {
-        return raise_exception(py, "ValueError", "Max string recursion exceeded");
+        return raise_exception(py, BuiltinExc::ValueError, "Max string recursion exceeded");
     }
     let mut out = FormatWriter::new(py);
     let mut offset = 0;
@@ -243,7 +244,7 @@ fn format_string_impl(
         let markup = match next_format_markup(text, &mut offset) {
             Ok(Some(markup)) => markup,
             Ok(None) => return Some(out.finish()),
-            Err(message) => return raise_exception(py, "ValueError", message),
+            Err(message) => return raise_exception(py, BuiltinExc::ValueError, message),
         };
         if let Err(error) = out.append_literal(
             markup.literal,
@@ -279,13 +280,13 @@ fn resolve_format_field(
     let data = unicode_data(py);
     let (first, mut offset) = match split_format_field_name(data, field_name) {
         Ok(first) => first,
-        Err(message) => return raise_exception(py, "ValueError", message),
+        Err(message) => return raise_exception(py, BuiltinExc::ValueError, message),
     };
     let positional = if first.text.is_empty() {
         if state.used_manual {
             return raise_exception(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot switch from manual field specification to automatic field numbering",
             );
         }
@@ -297,7 +298,7 @@ fn resolve_format_field(
         if state.used_auto {
             return raise_exception(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot switch from automatic field numbering to manual field specification",
             );
         }
@@ -308,12 +309,16 @@ fn resolve_format_field(
     };
     let mut current_bits = if let Some(index) = positional {
         if !state.allow_positional {
-            return raise_exception(py, "ValueError", "Format string contains positional fields");
+            return raise_exception(
+                py,
+                BuiltinExc::ValueError,
+                "Format string contains positional fields",
+            );
         }
         let Some(&bits) = args.get(index) else {
             let message =
                 format!("Replacement index {index} out of range for positional args tuple");
-            return raise_exception(py, "IndexError", &message);
+            return raise_exception(py, BuiltinExc::IndexError, &message);
         };
         inc_ref_bits(py, bits);
         bits
@@ -358,7 +363,7 @@ fn resolve_format_field(
         let lookup = match next_format_lookup(data, field_name, &mut offset) {
             Ok(Some(lookup)) => lookup,
             Ok(None) => break,
-            Err(message) => return raise_exception(py, "ValueError", message),
+            Err(message) => return raise_exception(py, BuiltinExc::ValueError, message),
         };
         let key_bits = if let Some(index) = lookup.name.index {
             int_bits_from_i64(py, index as i64)
@@ -432,7 +437,7 @@ fn format_field(
                 } else {
                     format!("Unknown conversion specifier \\x{code:x}")
                 };
-                return raise_exception(py, "ValueError", &message);
+                return raise_exception(py, BuiltinExc::ValueError, &message);
             }
         };
         value_owner = PtrDropGuard::new(
@@ -516,13 +521,17 @@ pub extern "C" fn molt_string_format_method(
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
         else {
-            return raise_exception(py, "TypeError", "format requires a string");
+            return raise_exception(py, BuiltinExc::TypeError, "format requires a string");
         };
         let Some(args_ptr) = obj_from_bits(args_bits)
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_TUPLE })
         else {
-            return raise_exception(py, "TypeError", "format arguments must be a tuple");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "format arguments must be a tuple",
+            );
         };
         // Immutable receiver and tuple storage remain pinned across every
         // lookup/conversion/format callback; no infallible snapshot copies.
@@ -564,7 +573,7 @@ pub extern "C" fn molt_string_format_map(self_bits: u64, mapping_bits: u64) -> u
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
         else {
-            return raise_exception(py, "TypeError", "format_map requires a string");
+            return raise_exception(py, BuiltinExc::TypeError, "format_map requires a string");
         };
         inc_ref_bits(py, self_bits);
         let _self_owner = PtrDropGuard::new(self_ptr);
@@ -604,7 +613,7 @@ pub extern "C" fn molt_string_format(val_bits: u64, spec_bits: u64) -> u64 {
                 "__format__() argument must be str, not {}",
                 type_name(_py, spec_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &message);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
         };
         unsafe {
             let spec_bytes =

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::call::bind::inline_cache::{
     CALL_BIND_IC_KIND_DIRECT_FUNC, CallBindIcEntry, try_call_bind_ic_fast,
 };
@@ -23,7 +24,7 @@ fn callargs_pending_error_stops_mutation_and_consuming_dispatch() {
                     (*crate::header_from_obj_ptr(item)).ref_count_snapshot(),
                     baseline + 1
                 );
-                crate::raise_exception::<()>(_py, "ValueError", "argument failure");
+                crate::raise_exception::<()>(_py, BuiltinExc::ValueError, "argument failure");
                 let original = crate::exception_last_bits_noinc(_py).unwrap();
                 assert_eq!(crate::call::bind::arguments::molt_callargs_new(0, 0), 0);
                 crate::call::bind::arguments::molt_callargs_push_pos(builder, item_bits);
@@ -528,7 +529,7 @@ fn borrowing_callees_leave_the_last_release_to_the_call_instruction() {
 fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
     extern "C" fn raising_hash(_self_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(_py, {
-            crate::raise_exception::<u64>(_py, "ValueError", "keyword name hash")
+            crate::raise_exception::<u64>(_py, BuiltinExc::ValueError, "keyword name hash")
         })
     }
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
@@ -583,10 +584,10 @@ fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
             assert!(obj_from_bits(error).is_none());
             let pending = crate::builtins::exceptions::molt_exception_last_pending();
             assert!(
-                crate::builtins::exceptions::exception_matches_builtin_name(
+                crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     pending,
-                    "ValueError"
+                    crate::BuiltinExc::ValueError
                 ),
                 "the callback's exception reaches the caller, not a MemoryError"
             );

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_find_in_path_package_context(
@@ -89,7 +90,7 @@ pub(in super::super) fn importlib_find_spec_impl(
     if obj_from_bits(observed.bits()).is_none() {
         return Err(raise_exception::<_>(
             py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "sys.meta_path is None, Python is likely shutting down",
         ));
     }
@@ -136,7 +137,7 @@ pub(in super::super) fn importlib_find_spec_impl(
         drop(warnings);
         let text = ExceptionValue::adopt(py, alloc_str_bits(py, "sys.meta_path is empty")?);
         let category =
-            crate::builtins::exceptions::exception_type_bits_from_name(py, "ImportWarning");
+            crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::ImportWarning);
         if category == 0 {
             return Err(MoltObject::none().bits());
         }

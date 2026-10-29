@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
 
 use crate::{
@@ -39,7 +40,7 @@ fn chan_try_send_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i64 {
         }
         Err(TrySendError::Disconnected(_)) => {
             dec_ref_bits(_py, bits);
-            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+            raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "channel disconnected")
         }
     }
 }
@@ -49,7 +50,7 @@ fn chan_try_recv_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
         Ok(val) => val,
         Err(TryRecvError::Empty) => pending_bits_i64(),
         Err(TryRecvError::Disconnected) => {
-            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+            raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "channel disconnected")
         }
     }
 }
@@ -66,13 +67,13 @@ fn chan_send_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i
                 Ok(_) => ok_bits,
                 Err(_) => {
                     dec_ref_bits(_py, bits);
-                    raise_exception::<i64>(_py, "RuntimeError", "channel send failed")
+                    raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "channel send failed")
                 }
             }
         }
         Err(TrySendError::Disconnected(_)) => {
             dec_ref_bits(_py, bits);
-            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+            raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "channel disconnected")
         }
     }
 }
@@ -86,11 +87,13 @@ fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
             let _release = GilReleaseGuard::suspend();
             match chan.receiver.recv() {
                 Ok(val) => val,
-                Err(_) => raise_exception::<i64>(_py, "RuntimeError", "channel recv failed"),
+                Err(_) => {
+                    raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "channel recv failed")
+                }
             }
         }
         Err(TryRecvError::Disconnected) => {
-            raise_exception::<i64>(_py, "RuntimeError", "channel disconnected")
+            raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "channel disconnected")
         }
     }
 }

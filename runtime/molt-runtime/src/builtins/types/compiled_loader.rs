@@ -5,6 +5,7 @@
 //! authority shared by that metadata, importlib and the machinery facade.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::NativeCallableKind;
 
 fn loader_class_module(py: &PyToken<'_>, dict_ptr: *mut u8, module: &[u8]) -> bool {
@@ -155,8 +156,11 @@ fn compiled_loader_singleton(py: &PyToken<'_>) -> u64 {
                 dec_ref_bits(py, bits);
             }
             if !exception_pending(py) {
-                let _ =
-                    raise_exception::<u64>(py, "MemoryError", "compiled loader allocation failed");
+                let _ = raise_exception::<u64>(
+                    py,
+                    BuiltinExc::MemoryError,
+                    "compiled loader allocation failed",
+                );
             }
             return 0;
         }
@@ -178,7 +182,7 @@ pub extern "C" fn molt_importlib_compiled_loader_find_spec(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(fullname_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "module name must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "module name must be str");
         };
         let Some(metadata) = crate::builtins::module_table::module_registry()
             .and_then(|registry| registry.compiled_spec(&name))
@@ -338,7 +342,7 @@ pub extern "C" fn molt_importlib_compiled_loader_exec_module(
         }
         let Some(name_text) = string_obj_to_owned(obj_from_bits(name)) else {
             dec_ref_bits(py, name);
-            return raise_exception::<_>(py, "TypeError", "module name must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "module name must be str");
         };
         let outcome = crate::builtins::modules::execute_compiled_module(
             py,
@@ -373,7 +377,7 @@ pub extern "C" fn molt_importlib_compiled_loader_load_module(
         if obj_from_bits(spec).is_none() {
             return raise_exception::<_>(
                 py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 "module has no compiler-emitted body in this binary",
             );
         }

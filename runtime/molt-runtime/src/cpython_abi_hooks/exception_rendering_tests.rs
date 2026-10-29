@@ -1,6 +1,7 @@
 //! Real foreign exception slots with callback rebinding and physical presence.
 
 use super::native_test_fixture::NativeType;
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::refcount::OwnedPyObject;
 use molt_cpython_abi::api::{errors, numbers, object, refcount, sequences, strings, typeobj};
@@ -310,7 +311,8 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
             let value_owner = if managed {
                 // The public C constructor owns native storage. Construct the
                 // other representation through the runtime's allocator.
-                let value = crate::builtins::exceptions::alloc_exception(&py, "IndexError", "");
+                let value =
+                    crate::builtins::exceptions::alloc_exception(&py, BuiltinExc::IndexError, "");
                 assert!(!value.is_null());
                 OwnedPyObject::from_owned(
                     GLOBAL_BRIDGE.owned_handle_to_pyobj(crate::MoltObject::from_ptr(value).bits()),
@@ -2432,7 +2434,7 @@ extern "C" fn percent_managed_native_result(_self: u64) -> u64 {
                 if class.is_null() {
                     return crate::raise_exception::<_>(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "native numeric fixture has no result",
                     );
                 }
@@ -2499,7 +2501,7 @@ fn percent_warning_policy(py: &crate::PyToken<'_>, action: &[u8]) {
     let action = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, action).unwrap());
     let result = crate::molt_warnings_simplefilter(
         action.bits(),
-        crate::builtins::exceptions::exception_type_bits_from_name(py, "DeprecationWarning"),
+        crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::DeprecationWarning),
         crate::MoltObject::from_int(0).bits(),
         crate::MoltObject::from_bool(false).bits(),
     );
@@ -3690,8 +3692,11 @@ fn native_exception_field_publication_restores_error_before_displaced_retirement
     assert!(super::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         use crate::builtins::exceptions::{ExceptionFieldSlot, ExceptionStorage, ExceptionValue};
-        let failure_ptr =
-            crate::builtins::exceptions::alloc_exception(py, "LookupError", "field publication");
+        let failure_ptr = crate::builtins::exceptions::alloc_exception(
+            py,
+            BuiltinExc::LookupError,
+            "field publication",
+        );
         assert!(!failure_ptr.is_null());
         let failure_bits = crate::MoltObject::from_ptr(failure_ptr).bits();
         let _failure = ExceptionValue::adopt(py, failure_bits);
@@ -3760,7 +3765,7 @@ fn managed_exception_observers_and_replacement_admit_runtime_pending_error() {
                 for set_object in [false, true] {
                     let prior_ptr = crate::builtins::exceptions::alloc_exception(
                         py,
-                        "LookupError",
+                        BuiltinExc::LookupError,
                         "incoming raised state",
                     );
                     assert!(!prior_ptr.is_null());
@@ -3768,7 +3773,7 @@ fn managed_exception_observers_and_replacement_admit_runtime_pending_error() {
                     let prior_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(prior.bits());
                     assert!(!prior_view.is_null());
                     let next_bits = crate::builtins::exceptions::molt_exception_new_builtin_one(
-                        5,
+                        u64::from(crate::ExcKind::from(crate::BuiltinExc::ValueError).code()),
                         MoltObject::from_int(42).bits(),
                     );
                     let next = ExceptionValue::adopt(py, next_bits);
@@ -3780,7 +3785,7 @@ fn managed_exception_observers_and_replacement_admit_runtime_pending_error() {
                     ));
                     let context_ptr = crate::builtins::exceptions::alloc_exception(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "retained field",
                     );
                     assert!(!context_ptr.is_null());
@@ -3895,7 +3900,7 @@ fn dictionary_typed_lookup_distinguishes_prior_errors_from_native_hash_failures(
         unsafe {
             let prior_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "prior dictionary error",
             );
             assert!(!prior_ptr.is_null());
@@ -4324,7 +4329,7 @@ fn normalization_failure_note_uses_base_descriptor_and_preserves_original_failur
                     let failure = if managed_failure {
                         let pointer = crate::builtins::exceptions::alloc_exception(
                             py,
-                            "LookupError",
+                            BuiltinExc::LookupError,
                             "construction failed",
                         );
                         assert!(!pointer.is_null());
@@ -4470,7 +4475,7 @@ fn failed_cold_publication_retires_consumed_roots_after_selecting_the_failure() 
             for nested in [false, true] {
                 let prior_ptr = crate::builtins::exceptions::alloc_exception(
                     py,
-                    "LookupError",
+                    BuiltinExc::LookupError,
                     "prior publication error",
                 );
                 assert!(!prior_ptr.is_null());
@@ -4934,7 +4939,11 @@ mod decimal_output_limits {
     extern "C" fn managed_scalar_conversion_override(_value: u64) -> u64 {
         MANAGED_SCALAR_CONVERSIONS.fetch_add(1, Ordering::SeqCst);
         crate::with_gil_entry_nopanic!(py, {
-            crate::raise_exception::<u64>(py, "AssertionError", "repr called a conversion override")
+            crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::AssertionError,
+                "repr called a conversion override",
+            )
         })
     }
 
@@ -5214,7 +5223,7 @@ mod decimal_output_limits {
                 let rendered = crate::molt_csv_writer_writerow(
                     writer.0,
                     row.bits(),
-                    crate::builtins::exceptions::exception_type_bits_from_name(py, "Exception"),
+                    crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::Exception),
                 );
                 assert_eq!(rendered, crate::MoltObject::none().bits());
                 limit_failure(ptr::null_mut(), "failed bridge output publication");
@@ -5291,7 +5300,7 @@ fn native_comparison_truth_status_preserves_prior_and_distinguishes_same_instanc
         unsafe {
             let prior_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 "admitted comparison error",
             );
             assert!(!prior_ptr.is_null());
@@ -5464,7 +5473,7 @@ fn managed_comparison_result_truth_failure_keeps_the_same_exception_instance() {
             );
             let failure_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 "managed comparison truth failure",
             );
             assert!(!failure_ptr.is_null());

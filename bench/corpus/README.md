@@ -59,6 +59,10 @@ Individual, WASM and legacy benchmark runners also expose `--applications`.
 These diagnostics use complete package/resource trees, datasets, project
 configuration, provenance and output fixtures under one sealed project. The
 same admitted paths, import roots, arguments and cwd drive CPython and Molt.
+Each executable recipe declares `run_args` and `molt_args` explicitly (including
+empty lists). Compiler arguments belong to that recipe and are recorded in the
+workload identity. The data-reading applications request `--capabilities fs.read`;
+the runtime still denies undeclared filesystem access.
 Unqualified comparator or transformed-source protocols refuse explicitly.
 This does not expand the canonical release gate or qualify an execution target.
 

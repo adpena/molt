@@ -93,10 +93,14 @@ def test_generated_consumers_are_semantically_identical_and_idempotent():
     expected = policy.render(policy.load_policy())
     assert policy.render(policy.load_policy()) == expected
     for path in policy.OUTPUTS:
-        assert path.read_text(encoding="utf-8") == policy.render(
-            policy.load_policy(),
-            integer_helper="molt-backend-luau" not in path.parts,
+        text = path.read_text(encoding="utf-8")
+        assert text == policy.render(
+            policy.load_policy(), **policy.render_options(path)
         ), path
+        # The runtime raises a typed kind; transpiler backends spell the class.
+        typed = "molt-runtime-core" in path.parts
+        assert ("crate::BuiltinExc::ZeroDivisionError" in text) == typed, path
+        assert ('=> "ZeroDivisionError"' in text) == (not typed), path
     assert "_ => None" in expected
     assert "checked_div" in expected and "checked_rem" in expected
 
@@ -486,7 +490,7 @@ def test_pending_observations_do_not_admit_or_change_guest_outputs(tmp_path):
     path.write_text(source, encoding="utf-8")
     admitted = policy.load_policy(path)
     for output in policy.OUTPUTS:
-        kwargs = {"integer_helper": "molt-backend-luau" not in output.parts}
+        kwargs = policy.render_options(output)
         assert policy.render(pending, **kwargs) == policy.render(admitted, **kwargs)
         assert policy.render(pending, **kwargs) == output.read_text(encoding="utf-8")
 

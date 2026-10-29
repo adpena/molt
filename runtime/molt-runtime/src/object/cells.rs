@@ -4,6 +4,7 @@
 //! an empty cell; cells are not sequences and never share list storage.
 
 use super::{MoltHeader, alloc_object, object_type_id};
+use crate::BuiltinExc;
 use crate::{
     PyToken, TYPE_ID_CELL, TYPE_ID_TUPLE, dec_ref_bits, inc_ref_bits, obj_from_bits,
     raise_exception,
@@ -126,7 +127,7 @@ pub extern "C" fn molt_cell_new(value_bits: u64) -> u64 {
 pub extern "C" fn molt_cell_get(cell_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = cell_ptr_from_bits(cell_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected cell");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
         let value_bits = unsafe { cell_value_bits(ptr) };
         inc_ref_bits(_py, value_bits);
@@ -138,7 +139,7 @@ pub extern "C" fn molt_cell_get(cell_bits: u64) -> u64 {
 pub extern "C" fn molt_cell_set(cell_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = cell_ptr_from_bits(cell_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected cell");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
         unsafe { cell_replace_value(_py, ptr, value_bits) };
         MoltObject::none().bits()

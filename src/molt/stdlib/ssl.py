@@ -64,7 +64,11 @@ HAS_SNI = bool(_MOLT_SSL_HAS_SNI())
 OPENSSL_VERSION = str(_MOLT_SSL_OPENSSL_VERSION())
 
 
-class SSLError(Exception):
+class SSLError(OSError):
+    pass
+
+
+class SSLZeroReturnError(SSLError):
     pass
 
 
@@ -72,7 +76,19 @@ class SSLWantReadError(SSLError):
     pass
 
 
-class SSLCertVerificationError(SSLError):
+class SSLWantWriteError(SSLError):
+    pass
+
+
+class SSLSyscallError(SSLError):
+    pass
+
+
+class SSLEOFError(SSLError):
+    pass
+
+
+class SSLCertVerificationError(SSLError, ValueError):
     pass
 
 

@@ -4,6 +4,7 @@
 //! physical kind and extent; immutable payload length derives the field base.
 //! No per-object offset or tuple-only dictionary representation is retained.
 
+use crate::BuiltinExc;
 use crate::*;
 use std::mem::size_of;
 
@@ -120,7 +121,7 @@ impl NativePayload {
             {
                 raise_exception::<()>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "native constructor requires its sealed payload layout",
                 );
                 return None;
@@ -310,7 +311,11 @@ pub(crate) unsafe fn prepare_publication(py: &PyToken<'_>, object: *mut u8, clas
             )
         {
             dec_ref_bits(py, MoltObject::from_ptr(object).bits());
-            raise_exception::<()>(py, "SystemError", "native class edge initialization failed");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "native class edge initialization failed",
+            );
             return std::ptr::null_mut();
         }
         if subtype {

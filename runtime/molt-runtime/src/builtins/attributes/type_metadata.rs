@@ -1,5 +1,6 @@
 //! Runtime-owned object/type data descriptors, installed in every builtin cohort.
 //! Managed receivers never cross the C ABI. Foreign receivers delegate storage.
+use crate::BuiltinExc;
 use crate::object::foreign::NativeObjectOwner;
 use molt_cpython_abi::abi_types::PyObject;
 use molt_cpython_abi::api::refcount::ProtectedPyObject;
@@ -39,7 +40,7 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> Resu
             .as_ptr()
             .filter(|ptr| object_type_id(*ptr) == TYPE_ID_TYPE)
         else {
-            raise_exception::<()>(py, "TypeError", "type metadata requires a type");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "type metadata requires a type");
             return Err(());
         };
         let value = match field {
@@ -55,7 +56,7 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> Resu
             Field::Module => match crate::object::class_storage::class_module_bits(py, class)? {
                 Some(value) => value,
                 None => {
-                    raise_exception::<()>(py, "AttributeError", field.name());
+                    raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
                     return Err(());
                 }
             },
@@ -102,7 +103,7 @@ pub(crate) unsafe fn write(
         let Some(ptr) = obj_from_bits(receiver).as_ptr() else {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "__class__ assignment only supported for mutable types or ModuleType subclasses",
             );
             return Err(());
@@ -138,13 +139,17 @@ pub(crate) unsafe fn write(
         }
         if field == Field::Class {
             let Some(value) = value else {
-                raise_exception::<()>(py, "TypeError", "can't delete __class__ attribute");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "can't delete __class__ attribute",
+                );
                 return Err(());
             };
             return crate::builtins::types::object_set_class(py, ptr, value);
         }
         if object_type_id(ptr) != TYPE_ID_TYPE {
-            raise_exception::<()>(py, "TypeError", "type metadata requires a type");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "type metadata requires a type");
             return Err(());
         }
         write_type_metadata(py, ptr, field, value)
@@ -220,7 +225,7 @@ unsafe fn read_namespace_metadata(
         let bits = MoltObject::from_ptr(class).bits();
         if bits == builtin_classes(py).type_obj {
             return if field == Field::AbstractMethods {
-                raise_exception::<()>(py, "AttributeError", field.name());
+                raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
                 Err(())
             } else {
                 Ok(MoltObject::none().bits())
@@ -259,7 +264,7 @@ unsafe fn read_namespace_metadata(
                 Ok(value)
             }
             None if field == Field::AbstractMethods => {
-                raise_exception::<()>(py, "AttributeError", field.name());
+                raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
                 Err(())
             }
             None => Ok(MoltObject::none().bits()),
@@ -280,7 +285,7 @@ unsafe fn write_namespace_metadata(
         if matches!(field, Field::Doc | Field::Module) && value.is_none() {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "cannot delete '{}' attribute of immutable type '{}'",
                     field.name(),
@@ -322,7 +327,7 @@ unsafe fn write_namespace_metadata(
             None => crate::object::ops::dict_del_deferred(py, dictionary, name)?,
         };
         let Some(retired) = retired else {
-            raise_exception::<()>(py, "AttributeError", field.name());
+            raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
             return Err(());
         };
         class_bump_layout_version(class);
@@ -417,7 +422,7 @@ pub(crate) unsafe fn read_type_annotations(
     unsafe {
         let class_bits = MoltObject::from_ptr(class).bits();
         if !crate::object::class_storage::class_is_heap_type(class) {
-            return raise_exception::<_>(py, "AttributeError", field.name());
+            return raise_exception::<_>(py, BuiltinExc::AttributeError, field.name());
         }
         let deferred = pep649_enabled(py);
         let public_key = field.name().as_bytes();
@@ -436,7 +441,7 @@ pub(crate) unsafe fn read_type_annotations(
         }
         if field == Field::Annotate {
             if !deferred {
-                return raise_exception::<_>(py, "AttributeError", field.name());
+                return raise_exception::<_>(py, BuiltinExc::AttributeError, field.name());
             }
             let none = MoltObject::none().bits();
             return update_annotations_namespace(py, class, &[(cache_key, Some(none))])
@@ -485,7 +490,7 @@ pub(crate) unsafe fn read_type_annotations(
                 "__annotate__ returned non-dict of type '{}'",
                 type_name(py, obj_from_bits(result))
             );
-            raise_exception::<()>(py, "TypeError", &message);
+            raise_exception::<()>(py, BuiltinExc::TypeError, &message);
             dec_ref_bits(py, result);
             return None;
         }
@@ -508,13 +513,21 @@ unsafe fn write_type_annotations(
         let mut updates: Vec<(&[u8], Option<u64>)> = Vec::with_capacity(4);
         if field == Field::Annotate && deferred {
             let Some(value) = value else {
-                raise_exception::<()>(py, "TypeError", "cannot delete __annotate__ attribute");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "cannot delete __annotate__ attribute",
+                );
                 return Err(());
             };
             if !obj_from_bits(value).is_none() {
                 let callable = crate::builtins::callable::is_callable_impl(py, value);
                 if !callable {
-                    raise_exception::<()>(py, "TypeError", "__annotate__ must be callable or None");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::TypeError,
+                        "__annotate__ must be callable or None",
+                    );
                     return Err(());
                 }
             }
@@ -530,7 +543,7 @@ unsafe fn write_type_annotations(
                 field.name().as_bytes()
             };
             if value.is_none() && annotation_entry(py, class, key).is_none() {
-                raise_exception::<()>(py, "AttributeError", field.name());
+                raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
                 return Err(());
             }
             updates.push((key, value));
@@ -569,7 +582,7 @@ pub(crate) unsafe fn write_type_metadata(
                 | Field::Module
                 | Field::AbstractMethods
         ) {
-            raise_exception::<()>(py, "AttributeError", "type metadata is read-only");
+            raise_exception::<()>(py, BuiltinExc::AttributeError, "type metadata is read-only");
             return Err(());
         }
         let attr_name = field.name();
@@ -578,7 +591,7 @@ pub(crate) unsafe fn write_type_metadata(
         if field != Field::AbstractMethods && crate::object::class_is_immutable(py, class) {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "cannot set '{attr_name}' attribute of immutable type '{}'",
                     class_name_for_error(class_bits)
@@ -595,7 +608,7 @@ pub(crate) unsafe fn write_type_metadata(
         let Some(value) = value else {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("cannot delete {attr_name} attribute"),
             );
             return Err(());
@@ -605,7 +618,11 @@ pub(crate) unsafe fn write_type_metadata(
                 .as_ptr()
                 .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_TUPLE)
             {
-                raise_exception::<()>(py, "TypeError", "__bases__ must be a tuple of classes");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "__bases__ must be a tuple of classes",
+                );
                 return Err(());
             }
             return crate::builtins::types::class_set_base(py, class_bits, value);
@@ -616,7 +633,7 @@ pub(crate) unsafe fn write_type_metadata(
         {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "can only assign string to {}.{attr_name}, not '{}'",
                     class_name_for_error(class_bits),

@@ -1,6 +1,7 @@
 use super::common::{
     builtin_func_bits, builtin_func_bits_with_defaults_tuple, builtin_variadic_func_bits,
 };
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::*;
@@ -289,7 +290,7 @@ macro_rules! dict_view_length_descriptor {
                 else {
                     return raise_exception::<_>(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "descriptor '__len__' requires a '{}' object but received a '{}'",
                             stringify!($owner),

@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 #[cfg(test)]
 use crate::missing_bits;
@@ -24,9 +25,9 @@ use crate::{
     TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR,
     TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_exception, alloc_object,
     alloc_object_with_aux, alloc_tuple, asyncgen_poll_fn_addr, call_callable1, call_poll_fn,
-    clear_exception, current_task_ptr, dec_ref_bits, exception_clear_reason_set, exception_pending,
-    exception_type_bits_from_name, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
-    maybe_ptr_from_bits, molt_exception_clear, molt_exception_last_pending,
+    clear_exception, current_task_ptr, dec_ref_bits, exception_class_bits,
+    exception_clear_reason_set, exception_pending, generator_raise_active, header_from_obj_ptr,
+    inc_ref_bits, maybe_ptr_from_bits, molt_exception_clear, molt_exception_last_pending,
     molt_exception_set_last, molt_raise, obj_from_bits, object_mark_has_ptrs, object_type_id,
     pending_bits_i64, ptr_from_bits, raise_exception, register_task_execution, resolve_task_ptr,
     runtime_state, set_generator_raise, to_i64, token_id_from_bits, type_name,
@@ -323,7 +324,7 @@ pub(crate) unsafe fn raise_stop_iteration_from_value(py: &PyToken<'_>, value: u6
     }
     let args = MoltObject::from_ptr(args).bits();
     let exception = crate::builtins::exceptions::molt_exception_new_from_class(
-        exception_type_bits_from_name(py, "StopIteration"),
+        exception_class_bits(py, BuiltinExc::StopIteration),
         args,
     );
     dec_ref_bits(py, args);
@@ -362,7 +363,7 @@ fn task_new_with_context(
     let Some(closure_size) = crate::provenance::abi::address(closure_size) else {
         return raise_exception::<_>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "task closure size exceeds the active address space",
         );
     };
@@ -378,14 +379,22 @@ fn task_new_with_context(
         TASK_KIND_COROUTINE => (TYPE_ID_OBJECT, true),
         TASK_KIND_GENERATOR => (TYPE_ID_GENERATOR, false),
         _ => {
-            return raise_exception::<_>(_py, "TypeError", "unknown task kind");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "unknown task kind");
         }
     };
     if type_id == TYPE_ID_GENERATOR && closure_size < GEN_CONTROL_SIZE {
-        return raise_exception::<_>(_py, "TypeError", "generator task closure too small");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "generator task closure too small",
+        );
     }
     let Some(total_size) = std::mem::size_of::<MoltHeader>().checked_add(closure_size) else {
-        return raise_exception::<_>(_py, "MemoryError", "task allocation size overflow");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::MemoryError,
+            "task allocation size overflow",
+        );
     };
     let ptr = if type_id == TYPE_ID_OBJECT {
         alloc_object_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Sidecar)
@@ -419,7 +428,11 @@ fn task_new_with_context(
         {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             if !crate::exception_pending(_py) {
-                return raise_exception::<_>(_py, "MemoryError", "task context allocation failed");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::MemoryError,
+                    "task context allocation failed",
+                );
             }
             return MoltObject::none().bits();
         }
@@ -550,18 +563,24 @@ pub unsafe extern "C" fn molt_task_register_execution(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(task_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
-            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cancel token id must be int",
+                );
+            }
         };
         let context = if obj_from_bits(context_bits).is_none() {
             super::cancellation::TaskContextBinding::Inherited
         } else if crate::builtins::contextvars::is_context(context_bits) {
             super::cancellation::TaskContextBinding::Owned(context_bits)
         } else {
-            return raise_exception::<_>(_py, "TypeError", "context must be a Context");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "context must be a Context");
         };
         register_task_execution(_py, task_ptr, id, context);
         MoltObject::none().bits()
@@ -582,7 +601,7 @@ fn generator_receiver(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
     match maybe_ptr_from_bits(bits) {
         Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_GENERATOR => Some(ptr),
         _ => {
-            raise_exception::<()>(py, "TypeError", "expected generator");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "expected generator");
             None
         }
     }
@@ -661,7 +680,7 @@ unsafe fn generator_raise_from_pending(
 }
 
 fn refuse_entry(py: &PyToken<'_>) -> GeneratorResult {
-    raise_exception::<()>(py, "ValueError", "generator already executing");
+    raise_exception::<()>(py, BuiltinExc::ValueError, "generator already executing");
     Err(())
 }
 
@@ -675,7 +694,7 @@ pub(crate) unsafe fn generator_send_step(
         if !obj_from_bits(send_bits).is_none() && generator_state(ptr) == FrameState::Created {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "can't send non-None value to a just-started generator",
             );
             return Err(());
@@ -808,7 +827,11 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
         unsafe {
             match generator_state(ptr) {
                 FrameState::Executing => {
-                    return raise_exception::<_>(py, "ValueError", "generator already executing");
+                    return raise_exception::<_>(
+                        py,
+                        BuiltinExc::ValueError,
+                        "generator already executing",
+                    );
                 }
                 FrameState::Created => {
                     generator_complete(py, ptr, false);
@@ -819,7 +842,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
                 }
                 FrameState::Suspended => {}
             }
-            let exit = alloc_exception(py, "GeneratorExit", "");
+            let exit = alloc_exception(py, BuiltinExc::GeneratorExit, "");
             if exit.is_null() {
                 return MoltObject::none().bits();
             }
@@ -832,10 +855,10 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             match step {
                 Err(()) => {
                     let exception = molt_exception_last_pending();
-                    if crate::builtins::exceptions::exception_matches_builtin_name(
+                    if crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
-                        "GeneratorExit",
+                        crate::BuiltinExc::GeneratorExit,
                     ) {
                         clear_exception(py);
                         generator_complete(py, ptr, true);
@@ -845,7 +868,11 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
                 }
                 Ok(GeneratorStep::Yielded(value)) => {
                     dec_ref_bits(py, value);
-                    raise_exception::<_>(py, "RuntimeError", "generator ignored GeneratorExit")
+                    raise_exception::<_>(
+                        py,
+                        BuiltinExc::RuntimeError,
+                        "generator ignored GeneratorExit",
+                    )
                 }
                 Ok(GeneratorStep::Returned(value)) => {
                     if crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
@@ -1252,7 +1279,7 @@ pub(crate) unsafe fn asyncgen_awaitable_prime_send(
         }
         raise_exception::<()>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "can't send non-None value to a just-started coroutine",
         );
         false
@@ -1306,7 +1333,7 @@ unsafe fn asyncgen_future_new(
             dec_ref_bits(_py, obj_bits);
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "async generator awaitable class initialization failed",
             );
         }
@@ -1324,11 +1351,11 @@ unsafe fn asyncgen_future_new(
 pub extern "C" fn molt_asyncgen_new(gen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected generator");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected generator");
         };
         unsafe {
             if object_type_id(gen_ptr) != TYPE_ID_GENERATOR {
-                return raise_exception::<_>(_py, "TypeError", "expected generator");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected generator");
             }
             let total = std::mem::size_of::<MoltHeader>() + ASYNCGEN_CONTROL_SIZE;
             let ptr = alloc_object(_py, total, TYPE_ID_ASYNC_GENERATOR);
@@ -1390,7 +1417,7 @@ fn validate_asyncgen_hook(py: &PyToken<'_>, slot: AsyncGenHook, bits: u64) -> Re
             let label = type_name(py, object);
             return Err(raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("callable {name} expected, got {label}"),
             ));
         }
@@ -1507,7 +1534,7 @@ pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
         let Some(asyncgen_ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "object is not a Python async generator",
             );
         };
@@ -1515,7 +1542,7 @@ pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
             if object_type_id(asyncgen_ptr) != TYPE_ID_ASYNC_GENERATOR {
                 let name = type_name(_py, obj_from_bits(asyncgen_bits));
                 let msg = format!("{name} is not a Python async generator");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let activation = maybe_ptr_from_bits(asyncgen_gen_bits(asyncgen_ptr))
                 .filter(|gen_ptr| object_type_id(*gen_ptr) == TYPE_ID_GENERATOR);
@@ -1533,13 +1560,17 @@ pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
 pub extern "C" fn molt_gen_locals(gen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not a Python generator");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "object is not a Python generator",
+            );
         };
         unsafe {
             if object_type_id(gen_ptr) != TYPE_ID_GENERATOR {
                 let name = type_name(_py, obj_from_bits(gen_bits));
                 let msg = format!("{name} is not a Python generator");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             crate::builtins::frames::activation_locals_bits(_py, gen_ptr)
                 .unwrap_or_else(|| MoltObject::none().bits())
@@ -1551,11 +1582,15 @@ pub extern "C" fn molt_gen_locals(gen_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncgen_aiter(asyncgen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected async generator");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected async generator");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_ASYNC_GENERATOR {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             }
         }
         inc_ref_bits(_py, asyncgen_bits);
@@ -1568,10 +1603,18 @@ pub extern "C" fn molt_asyncgen_anext(asyncgen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             };
             if object_type_id(ptr) != TYPE_ID_ASYNC_GENERATOR {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             }
             if let Some(raised) = asyncgen_call_firstiter_if_needed(_py, asyncgen_bits, ptr) {
                 return raised;
@@ -1591,10 +1634,18 @@ pub extern "C" fn molt_asyncgen_asend(asyncgen_bits: u64, val_bits: u64) -> u64 
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             };
             if object_type_id(ptr) != TYPE_ID_ASYNC_GENERATOR {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             }
             if let Some(raised) = asyncgen_call_firstiter_if_needed(_py, asyncgen_bits, ptr) {
                 return raised;
@@ -1609,10 +1660,18 @@ pub extern "C" fn molt_asyncgen_athrow(asyncgen_bits: u64, exc_bits: u64) -> u64
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             };
             if object_type_id(ptr) != TYPE_ID_ASYNC_GENERATOR {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             }
             if let Some(raised) = asyncgen_call_firstiter_if_needed(_py, asyncgen_bits, ptr) {
                 return raised;
@@ -1626,17 +1685,21 @@ pub extern "C" fn molt_asyncgen_athrow(asyncgen_bits: u64, exc_bits: u64) -> u64
 pub extern "C" fn molt_asyncgen_aclose(asyncgen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected async generator");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected async generator");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_ASYNC_GENERATOR {
-                return raise_exception::<_>(_py, "TypeError", "expected async generator");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             }
             if let Some(raised) = asyncgen_call_firstiter_if_needed(_py, asyncgen_bits, ptr) {
                 return raised;
             }
         }
-        let exc_ptr = alloc_exception(_py, "GeneratorExit", "");
+        let exc_ptr = alloc_exception(_py, BuiltinExc::GeneratorExit, "");
         if exc_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -1714,17 +1777,25 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                 op_word
             };
             let Some(asyncgen_ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
-                return raise_exception::<i64>(_py, "TypeError", "expected async generator");
+                return raise_exception::<i64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             };
             if object_type_id(asyncgen_ptr) != TYPE_ID_ASYNC_GENERATOR {
-                return raise_exception::<i64>(_py, "TypeError", "expected async generator");
+                return raise_exception::<i64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected async generator",
+                );
             }
             let gen_bits = asyncgen_gen_bits(asyncgen_ptr);
             let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
-                return raise_exception::<i64>(_py, "TypeError", "expected generator");
+                return raise_exception::<i64>(_py, BuiltinExc::TypeError, "expected generator");
             };
             if object_type_id(gen_ptr) != TYPE_ID_GENERATOR {
-                return raise_exception::<i64>(_py, "TypeError", "expected generator");
+                return raise_exception::<i64>(_py, BuiltinExc::TypeError, "expected generator");
             }
             let task_ptr = current_task_ptr();
             let task_bits = if task_ptr.is_null() {
@@ -1742,10 +1813,18 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
             let running_bits = asyncgen_running_bits(asyncgen_ptr);
             let running_obj = obj_from_bits(running_bits);
             if !running_obj.is_none() && running_bits != running_marker_bits {
-                return raise_exception::<i64>(_py, "RuntimeError", asyncgen_running_message(op));
+                return raise_exception::<i64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    asyncgen_running_message(op),
+                );
             }
             if generator_running(gen_ptr) {
-                return raise_exception::<i64>(_py, "RuntimeError", asyncgen_running_message(op));
+                return raise_exception::<i64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    asyncgen_running_message(op),
+                );
             }
             let pending_bits = asyncgen_pending_bits(asyncgen_ptr);
             if !thrown
@@ -1782,7 +1861,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                                 dec_ref_bits(_py, throw_bits);
                                 return raised as i64;
                             }
-                            return raise_exception::<i64>(_py, "StopAsyncIteration", "");
+                            return raise_exception::<i64>(_py, BuiltinExc::StopAsyncIteration, "");
                         }
                         if generator_pending_throw(gen_ptr) {
                             generator_resume_step(_py, gen_ptr)
@@ -1798,12 +1877,12 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                                 return generator_step_pair(_py, generator_resume_step(_py, gen_ptr))
                                     as i64;
                             }
-                            return raise_exception::<i64>(_py, "StopAsyncIteration", "");
+                            return raise_exception::<i64>(_py, BuiltinExc::StopAsyncIteration, "");
                         }
                         if !generator_started(gen_ptr) && !obj_from_bits(arg_bits).is_none() {
                             return raise_exception::<i64>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "can't send non-None value to a just-started async generator",
                             );
                         }
@@ -1816,7 +1895,11 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     ASYNCGEN_OP_ATHROW => {
                         if generator_closed(gen_ptr) {
                             if generator_pending_throw(gen_ptr) {
-                                return raise_exception::<i64>(_py, "StopAsyncIteration", "");
+                                return raise_exception::<i64>(
+                                    _py,
+                                    BuiltinExc::StopAsyncIteration,
+                                    "",
+                                );
                             }
                             return MoltObject::none().bits() as i64;
                         }
@@ -1844,7 +1927,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     _ => {
                         return raise_exception::<i64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "invalid async generator op",
                         );
                     }
@@ -1861,14 +1944,14 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     let exc_bits = molt_exception_last_pending();
                     if op == ASYNCGEN_OP_ACLOSE {
                         let terminal = obj_from_bits(exc_bits).as_ptr().is_some_and(|exc_ptr| {
-                            crate::builtins::exceptions::exception_matches_builtin_name(
+                            crate::builtins::exceptions::exception_matches_kind(
                                 _py,
                                 MoltObject::from_ptr(exc_ptr).bits(),
-                                "GeneratorExit",
-                            ) || crate::builtins::exceptions::exception_matches_builtin_name(
+                                crate::BuiltinExc::GeneratorExit,
+                            ) || crate::builtins::exceptions::exception_matches_kind(
                                 _py,
                                 MoltObject::from_ptr(exc_ptr).bits(),
-                                "StopAsyncIteration",
+                                crate::BuiltinExc::StopAsyncIteration,
                             )
                         });
                         if terminal {
@@ -1912,7 +1995,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     }
                     raise_exception::<i64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "async generator ignored GeneratorExit",
                     )
                 }
@@ -1923,7 +2006,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     }
                     // A generator that returns ends asend and athrow alike
                     // with StopAsyncIteration (CPython's async_gen_unwrap_value).
-                    raise_exception::<i64>(_py, "StopAsyncIteration", "")
+                    raise_exception::<i64>(_py, BuiltinExc::StopAsyncIteration, "")
                 }
                 GeneratorStep::Pending => unreachable!("handled above"),
             }
@@ -1978,7 +2061,11 @@ mod asyncgen_lifetime_tests {
                 Some("sys.set_asyncgen_hook_firstiter") => {
                     HOOK_AUDIT_EVENTS.lock().unwrap().push("firstiter");
                     if mode != 0 {
-                        return raise_exception::<u64>(py, "RuntimeError", "firstiter veto");
+                        return raise_exception::<u64>(
+                            py,
+                            BuiltinExc::RuntimeError,
+                            "firstiter veto",
+                        );
                     }
                 }
                 Some("sys.set_asyncgen_hook_finalizer") => {
@@ -1989,7 +2076,11 @@ mod asyncgen_lifetime_tests {
                         rollback
                     };
                     if mode == 2 && rollback {
-                        return raise_exception::<u64>(py, "LookupError", "rollback veto");
+                        return raise_exception::<u64>(
+                            py,
+                            BuiltinExc::LookupError,
+                            "rollback veto",
+                        );
                     }
                 }
                 _ => {}
@@ -2064,15 +2155,15 @@ mod asyncgen_lifetime_tests {
                         } else {
                             replacement
                         },
-                        "RuntimeError",
+                        crate::BuiltinExc::RuntimeError,
                     ),
                     (
                         2,
                         replacement,
                         if minor >= 13 {
-                            "LookupError"
+                            crate::BuiltinExc::LookupError
                         } else {
-                            "RuntimeError"
+                            crate::BuiltinExc::RuntimeError
                         },
                     ),
                 ] {
@@ -2083,7 +2174,7 @@ mod asyncgen_lifetime_tests {
                     molt_asyncgen_hooks_set(replacement, replacement, omitted);
                     assert!(exception_pending(py));
                     let exception = crate::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
                         expected_error
@@ -2555,7 +2646,7 @@ mod frame_state_tests {
 
     extern "C" fn raising_poll(_raw: u64) -> i64 {
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception::<i64>(py, "ValueError", "body raised")
+            raise_exception::<i64>(py, BuiltinExc::ValueError, "body raised")
         })
     }
 
@@ -2618,7 +2709,8 @@ mod frame_state_tests {
             dec_ref_bits(py, created);
             // throw() into a created generator raises at its first line.
             let (thrown, ptr) = generator(count_poll);
-            let exception = MoltObject::from_ptr(alloc_exception(py, "KeyError", "k")).bits();
+            let exception =
+                MoltObject::from_ptr(alloc_exception(py, BuiltinExc::KeyError, "k")).bits();
             assert!(unsafe { generator_throw_step(py, ptr, exception) }.is_err());
             assert_eq!(unsafe { generator_state(ptr) }, FrameState::Completed);
             clear_exception(py);
