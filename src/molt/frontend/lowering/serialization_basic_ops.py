@@ -12,7 +12,6 @@ from molt.frontend.lowering.op_kinds_generated import (
 
 from molt.opcode_literal_payloads import integer_literal_bytes, integer_literal_payload
 
-from typing import Any
 
 from molt.frontend._types import (
     _INLINE_INT_MAX,
