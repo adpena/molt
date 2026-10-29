@@ -195,6 +195,7 @@ OpenFindingId = Literal[
     "HF-578",
     "HF-579",
     "HF-582",
+    "HF-583",
     "V1-01",
     "V1-02",
     "V1-03",
