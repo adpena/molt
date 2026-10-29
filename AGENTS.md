@@ -50,9 +50,9 @@ over stale prose or precedent.
   Borrow/adapt when the evidence fits; retain provenance, attribution and license obligations.
   Reuse matching research; keep inquiry decision-focused. Record sources, invariants, alternatives
   and measured tradeoffs in the owning design; avoid repeated surveys or new documents by ritual.
-- Identity is typed, never spelled: one source generates closed types (op kinds, exceptions, keys)
-  that rustc and `ty` enforce; retire scrapers they replace. Lifecycles are typed state machines
-  with exhaustive, atomic transitions; rewrites check preconditions, proven against `formal/lean`.
+- Identity is typed, never spelled; lifecycles are typed state machines; rewrites prove themselves
+  against the formal model. One source generates closed types that rustc and `ty` enforce. Detail:
+  `docs/design/foundation/typed_identity_state_machines.md`.
 - Every registered entity needs a proven producer; retire its consumers with its last producer.
   `tools/op_kinds/census.py` proves op kinds. Test filters need a producer in the selected crate/features.
 
