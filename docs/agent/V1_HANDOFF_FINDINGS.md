@@ -50,9 +50,11 @@ section whose title starts with "Fixed" is closed, and every other finding row
 is open. An exact "(was X)" renames finding X; any other parenthetical names a
 part and closes nothing. A fixed row records its fix or verification evidence in
 its last cell. `tools/release_exit_gate.py` reads this file at the release source
-commit. It refuses PASS to a version that claims the v1 public stable contract
-(major 1 or later) while any row is open; a v0.x bundle records and reports the
-open rows. The H0 phase exit lists each open row as an open obligation.
+commit. It refuses PASS to every release while any row is open. The first
+public release is numbered v0.0.1 and is held to this full V1.0 contract (owner
+decision, 2026-10-29); the version number never relaxes the gate, and every
+release carries a green H0 phase exit, which lists each open row as an open
+obligation.
 
 This closure standard applies retrospectively to every earlier finding,
 including the historical fixed rows below. A landed repair does not establish
