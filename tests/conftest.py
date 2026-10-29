@@ -30,6 +30,18 @@ _CHECKOUT_TARGET_SNAPSHOT_ATTR = "_molt_checkout_target_snapshot"
 CHECKOUT_TARGET = ROOT / "target"
 
 
+@pytest.fixture
+def short_cargo_cache() -> Iterator[Path]:
+    """Owned temporary cache whose native startup socket fits on macOS."""
+    import tempfile
+    from molt.dx import artifact_root
+
+    parent = artifact_root(ROOT) / "tmp"
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cenv-", dir=parent) as raw:
+        yield Path(raw) / "cache"
+
+
 @pytest.fixture(autouse=True)
 def _storage_write_authority(
     tmp_path_factory: pytest.TempPathFactory,

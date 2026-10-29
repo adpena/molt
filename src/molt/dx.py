@@ -13,7 +13,7 @@ import tempfile
 import tomllib
 import uuid
 import contextlib
-from collections.abc import Collection, MutableMapping
+from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -77,6 +77,7 @@ GITHUB_ACTIONS_CUSTODY_ENV_KEYS = (
 ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
 # Left in an external artifact root that accepted a child directory.
 _ARTIFACT_ROOT_MARKER = ".molt-artifact-root"
+_SCCACHE_TEMP_BINDING_SCHEMA = "molt.sccache-temp.v1"
 # Run scratch storage: `disk` (the default, `<artifact root>/tmp`), `memory`
 # (Linux `/dev/shm`), or the absolute path of a memory-backed directory the
 # operator mounted (a macOS RAM disk). Molt never creates or mounts one.
@@ -1558,6 +1559,112 @@ class StorageWriteClaim:
     kind: custody_layout.StorageClass
     path: Path
     exact: bool = False
+
+
+def sccache_server_temp_path(
+    repo: Path,
+    cache: Path,
+    environment: Mapping[str, str],
+    *,
+    maximum_path_bytes: int | None,
+    create: bool = False,
+    server_is_live: Callable[[], bool] | None = None,
+) -> Path:
+    """Stable server temp, with short-path capacity selected before launch.
+
+    A server outlives its client's run scratch. Its provider owns temporary
+    payload cleanup; Molt never sweeps a directory the server may still use.
+    A deep explicit cache binds its artifact placement once, independently of
+    later clients' run contexts. Existing unassigned cache/server state must
+    be reconciled explicitly; it is never adopted at a client boundary.
+    """
+    if not cache.is_absolute() or not cache.name:
+        raise ValueError(f"sccache cache must name an absolute directory: {cache}")
+    beside = cache.with_name(f"{cache.name}-tmp")
+    if maximum_path_bytes is None or len(os.fsencode(beside)) <= maximum_path_bytes:
+        return _storage_projection("sccache", beside)
+    from molt.exact_json import read_exact, write_exact
+    from molt.file_publication import resolve_owned_path
+
+    digest = hashlib.sha256(os.fsencode(cache)).hexdigest()[:16]
+    binding = cache.with_name(cache.name + ".molt-server-temp.json")
+    _storage_projection("coordination", binding)
+
+    def selection() -> tuple[Path, Path, bool]:
+        if not os.path.lexists(binding):
+            root = artifact_root(repo, environment)
+            temporary, bound = root / "sct" / digest, False
+        else:
+            record = read_exact(
+                binding, max_bytes=65536, label="sccache temp placement"
+            )
+            if (
+                not isinstance(record, dict)
+                or set(record) != {"schema", "cache", "artifact_root", "temporary"}
+                or record.get("schema") != _SCCACHE_TEMP_BINDING_SCHEMA
+                or record.get("cache") != str(cache)
+                or not isinstance(record.get("artifact_root"), str)
+                or not isinstance(record.get("temporary"), str)
+            ):
+                raise DxConfigError(f"invalid sccache temp placement: {binding}")
+            recorded_root = Path(record["artifact_root"])
+            if not recorded_root.is_absolute():
+                raise DxConfigError(f"invalid sccache temp placement: {binding}")
+            root = resolve_owned_path(recorded_root)
+            temporary, bound = root / "sct" / digest, True
+            if not root.is_absolute() or record["temporary"] != str(temporary):
+                raise DxConfigError(f"invalid sccache temp placement: {binding}")
+            if not root.is_dir():
+                raise DxConfigError(
+                    f"sccache's assigned artifact root is unavailable: {root}"
+                )
+        if len(os.fsencode(temporary)) > maximum_path_bytes:
+            raise ValueError(
+                f"sccache startup under {temporary} exceeds its socket path limit; "
+                "select a shorter DX artifact root or SCCACHE_DIR before starting the server"
+            )
+        return root, _storage_projection("sccache", temporary), bound
+
+    if not create:
+        return selection()[1]
+    from molt.file_locks import (
+        _acquire_file_lock,
+        _file_lock_owned_operation,
+        _release_file_lock,
+    )
+
+    lock = _storage_projection("coordination", binding.with_suffix(".lock"))
+    binding.parent.mkdir(parents=True, exist_ok=True)
+    handle = _acquire_file_lock(
+        lock, timeout_s=30, timeout_message=f"sccache temp placement is busy: {binding}"
+    )
+    try:
+        with _file_lock_owned_operation(handle, expected_lock_path=lock):
+            root, temporary, bound = selection()
+            if not bound:
+                if (
+                    cache.exists()
+                    or temporary.exists()
+                    or server_is_live is None
+                    or server_is_live()
+                ):
+                    raise DxConfigError(
+                        f"unassigned legacy sccache cache/server needs explicit reconciliation: {cache}; "
+                        "preserve its data and close its provider before assigning server temp"
+                    )
+                temporary.mkdir(parents=True, exist_ok=False)
+                write_exact(
+                    binding,
+                    {
+                        "schema": _SCCACHE_TEMP_BINDING_SCHEMA,
+                        "cache": str(cache),
+                        "artifact_root": str(root),
+                        "temporary": str(temporary),
+                    },
+                )
+            return temporary
+    finally:
+        _release_file_lock(handle)
 
 
 class StorageWriteError(RuntimeError):

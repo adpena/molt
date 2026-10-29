@@ -607,6 +607,11 @@ receipt/hash validation, with external locks covering publication and readers.
 Controller source/environments, the landing sandbox, lane payloads and gate
 receipts now project onto the artifact root. Gate subprocesses receive the
 canonical run context, including provider caches and scratch temp roots.
+The shared sccache server keeps stable provider temp beside its cache. When
+that path exceeds the startup socket limit, DX records an artifact-root
+assignment for a new cache under a cache-adjacent lock; every later client
+uses the same assignment. Existing unassigned cache/temp payload or a live
+server blocks that assignment for explicit operator reconciliation.
 Coordination records and recovery indices stay in the checkout. Evidence never
 expires into deletion: compaction verifies an archive, publishes its external
 manifest and source index, then removes only represented raw payloads.

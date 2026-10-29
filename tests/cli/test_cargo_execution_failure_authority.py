@@ -267,6 +267,7 @@ def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
     capsys: pytest.CaptureFixture[str],
     caller: str,
     outcome: str,
+    short_cargo_cache: Path,
 ) -> None:
     ambient = tmp_path / "ambient"
     ambient.mkdir()
@@ -279,7 +280,7 @@ def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
     monkeypatch.setenv("AMBIENT_ONLY", "must not be inherited")
     environment = _cargo_env(
         tmp_path / "cargo-target",
-        SCCACHE_DIR=str(tmp_path / "selected-cache"),
+        SCCACHE_DIR=str(short_cargo_cache),
         SCCACHE_SERVER_PORT="48888",
         TMPDIR=str(tmp_path / "selected-tmp"),
         CARGO_INCREMENTAL="0" if caller == "resolved_plan" else "1",
@@ -374,13 +375,13 @@ def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
 
 
 def test_retry_stats_preserves_wrapped_attempt_context_and_direct_retry_policy(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, short_cargo_cache
 ):
     environment = _cargo_env(
         tmp_path / "cargo-target",
         RUSTC_WRAPPER="sccache",
         CARGO_INCREMENTAL="1",
-        SCCACHE_DIR=str(tmp_path / "selected-cache"),
+        SCCACHE_DIR=str(short_cargo_cache),
     )
     monkeypatch.setenv("SCCACHE_DIR", str(tmp_path / "ambient-cache"))
     builds = []

@@ -405,7 +405,9 @@ def sccache_auto_selection_allowed(environ: Mapping[str, str]) -> bool:
     return False
 
 
-def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
+def sccache_server_temp_dir(
+    environ: Mapping[str, str], *, create: bool = False
+) -> Path | None:
     """Return the temporary directory of the sccache server for ``SCCACHE_DIR``.
 
     The pinned sccache (0.18.0) has no temporary-directory setting. Its server
@@ -424,8 +426,9 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
 
     A client that starts the server waits for it on a Unix socket inside this
     directory, so the socket path must fit ``sun_path``. When the directory
-    beside a deep cache would not, the server uses a durable directory named
-    by the cache path under the user's cache home instead.
+    beside a deep cache would not, DX assigns a short stable directory on the
+    selected artifact volume, addressed by the cache path. An artifact path
+    that cannot fit is refused before launching the server.
     """
 
     raw = environ.get("SCCACHE_DIR", "").strip()
@@ -434,26 +437,51 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
     cache = Path(os.path.abspath(Path(raw).expanduser()))
     if not cache.name:
         raise ValueError(f"SCCACHE_DIR must name a directory below a root: {raw!r}")
-    beside = cache.with_name(f"{cache.name}-tmp")
-    if not _SCCACHE_SERVER_SOCKETS or _startup_socket_fits(beside):
-        return beside
-    home = Path(environ.get("HOME") or os.path.expanduser("~"))
-    digest = hashlib.sha256(os.fsencode(cache)).hexdigest()[:16]
-    short = home / ".cache" / "molt" / "sccache-tmp" / digest
-    if not _startup_socket_fits(short):
-        raise ValueError(
-            "sccache cannot start a server for SCCACHE_DIR "
-            f"{cache}: its startup socket under {short} exceeds the "
-            f"{_UNIX_SOCKET_PATH_LIMIT}-byte socket path limit"
-        )
-    return short
+    from molt.dx import sccache_server_temp_path
 
-
-def _startup_socket_fits(temporary: Path) -> bool:
-    return (
-        len(os.fsencode(temporary)) + _SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES
-        <= _UNIX_SOCKET_PATH_LIMIT
+    return sccache_server_temp_path(
+        compiler_source_root(),
+        cache,
+        environ,
+        maximum_path_bytes=(
+            _UNIX_SOCKET_PATH_LIMIT - _SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES
+            if _SCCACHE_SERVER_SOCKETS
+            else None
+        ),
+        create=create,
+        server_is_live=lambda: _sccache_server_is_live(environ),
     )
+
+
+def _sccache_server_is_live(environ: Mapping[str, str]) -> bool:
+    """A live or uncertain selected endpoint blocks initial temp assignment."""
+    import errno
+    import socket
+
+    endpoint = next(
+        (
+            (key, environ[key])
+            for key in SCCACHE_SERVER_ENDPOINT_ENV_NAMES
+            if environ.get(key)
+        ),
+        None,
+    ) or sccache_server_endpoint(environ)
+    if endpoint is None:
+        raise ValueError("sccache temp assignment has no selected server endpoint")
+    key, value = endpoint
+    address = ("127.0.0.1", int(value)) if key == "SCCACHE_SERVER_PORT" else value
+    family = socket.AF_INET if key == "SCCACHE_SERVER_PORT" else socket.AF_UNIX
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.2)
+        try:
+            probe.connect(address)
+        except OSError as error:
+            if error.errno in {errno.ENOENT, errno.ECONNREFUSED}:
+                return False
+            raise ValueError(
+                f"cannot establish sccache server liveness: {error}"
+            ) from error
+    return True
 
 
 def sccache_server_endpoint(environ: Mapping[str, str]) -> tuple[str, str] | None:
@@ -500,7 +528,7 @@ def sccache_client_environment(
     """
 
     child = ProcessEnvironmentBuilder(environ)
-    temporary = sccache_server_temp_dir(child)
+    temporary = sccache_server_temp_dir(child, create=True)
     if temporary is None:
         return ProcessEnvironment(child), ()
     temporary.mkdir(parents=True, exist_ok=True)

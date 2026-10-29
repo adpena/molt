@@ -15,7 +15,7 @@ STATE_DIRNAME = "memory_guard"
 # Markers of unresolved custody. Every reader of this directory costs
 # O(live custody), so a marker leaves it once its custody is resolved.
 ACTIVE_DIRNAME = "active"
-# Bounded history of resolved markers, beside the active directory.
+# Durable history of resolved markers, beside the active directory.
 RETIRED_DIRNAME = "retired"
 # One bounded current-test record per serial session or xdist worker.
 PYTEST_CURRENT_TEST_FILE_MAX_BYTES = 16 * 1024
@@ -57,7 +57,7 @@ def active_guard_marker_dir(
 
 
 def retired_guard_marker_dir(active_dir: Path) -> Path:
-    """Return the bounded history directory beside one active-marker directory."""
+    """Return durable history beside one active-marker directory."""
 
     return active_dir.parent / RETIRED_DIRNAME
 
