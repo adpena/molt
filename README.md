@@ -10,16 +10,16 @@ incomplete implementation does not narrow that contract. Language,
 stdlib, third-party package support, and native/WASM parity remain incomplete;
 see [current status](docs/spec/STATUS.md) before choosing a workload.
 
-The release priority is a stable `v1.0` contract, with a scoped, evidence-backed
-`v0.0.1` as the initial milestone. Neither implies full
+The first public release is numbered `v0.0.1` and must meet the full v1.0
+quality standard; the version number does not lower the bar. It does not imply
 Python or ecosystem compatibility beyond its verified subset. See the
 [release milestone](ROADMAP.md#first-release-milestone).
 Release readiness also requires the declared workload and resource budgets in
 the [performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
 Every release, including `v0.0.1`, requires the complete same-source E1-E4
 exit bundle: the native/WASM NumPy/SciPy witness, native/LLVM performance,
-verified-subset compatibility and structural gates. Stable `v1.0` additionally
-requires an authenticated H0 phase exit. See the [release contract](packaging/PACKAGING.md).
+verified-subset compatibility and structural gates, with no open finding and an
+authenticated H0 phase exit. See the [release contract](packaging/PACKAGING.md).
 These gates do not imply that the remaining release matrix has passed.
 The [Pact acceptance lanes](docs/agent/PROOF_QUEUE.md#named-pact-witness-lanes)
 bind native/WASM execution and oracle parity to portable, source-pinned receipts;
