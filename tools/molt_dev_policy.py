@@ -29,7 +29,11 @@ from tools.driver_errors import EXIT_USAGE, CandidateFailure, DriverError  # noq
 
 if TYPE_CHECKING:
     from tools.molt_dev import Git
-    from tools.test_dependency_graph import DependencyGraph, GraphSelection
+    from tools.test_dependency_graph import (
+        DependencyGraph,
+        GraphSelection,
+        LandingEnvelope,
+    )
     from tools.proof_plan import (
         LocalGateDeclaration,
         LocalPytestSelection,
@@ -435,23 +439,7 @@ class GateConfig:
         def access(identifier: str) -> CargoTargetAccess:
             return self.prerequisites[identifier].cargo_target_access
 
-        selection = self.graph_selection(touched)
-        # Files the graph runs whole, with the tools their cell declares.
-        graph_whole = {
-            target: envelope.toolchains
-            for envelope in (selection.run.values() if selection else ())
-            for target in envelope.targets
-            if "::" not in target
-        }
-        if touched:
-            for index, command in enumerate(self.always):
-                add(
-                    command,
-                    tools(f"local.always.{index}"),
-                    concurrent=True,
-                    cargo_target_access=access(f"local.always.{index}"),
-                )
-        for rule in self.rules:
+        def matches(rule: GateRule) -> bool:
             by_path = any(_is_ignored(path, tuple(rule.globs)) for path in touched)
             by_plan = plan_touched and (
                 isinstance(plan_changes, _EveryPlanEntity)
@@ -463,8 +451,44 @@ class GateConfig:
                     )
                 )
             )
-            if not (by_path or by_plan):
-                continue
+            return by_path or by_plan
+
+        rules = [rule for rule in self.rules if matches(rule)]
+        # What matched rules already run of each file: () is the whole file.
+        rule_scopes: dict[str, set[tuple[str, ...]]] = {}
+        for rule in rules:
+            for target in rule.pytest:
+                if "::" not in target:
+                    rule_scopes.setdefault(target, set()).add(())
+            for cohort in rule.pytest_select:
+                for target in cohort.targets:
+                    if "::" not in target:
+                        rule_scopes.setdefault(target, set()).add(cohort.select)
+        # The graph adds each selected file in its cell's envelope unless a
+        # rule already runs the same or a wider scope of it.
+        graph_runs: list[tuple[str, LandingEnvelope]] = []
+        selection = self.graph_selection(touched)
+        for envelope in selection.run.values() if selection else ():
+            for target in envelope.targets:
+                scopes = rule_scopes.get(target.partition("::")[0], set())
+                if () in scopes or envelope.select in scopes:
+                    continue
+                graph_runs.append((target, envelope))
+        # Files the graph runs unfiltered, with the tools their cell declares.
+        graph_whole = {
+            target: envelope.toolchains
+            for target, envelope in graph_runs
+            if "::" not in target and not envelope.select
+        }
+        if touched:
+            for index, command in enumerate(self.always):
+                add(
+                    command,
+                    tools(f"local.always.{index}"),
+                    concurrent=True,
+                    cargo_target_access=access(f"local.always.{index}"),
+                )
+        for rule in rules:
             matched_rules.append(rule)
             owner = f"local.{rule.name}"
             for index, command in enumerate(rule.gates):
@@ -484,12 +508,12 @@ class GateConfig:
                         access(f"{owner}.pytest")
                     )
             for index, cohort in enumerate(rule.pytest_select):
-                if all(
+                if cohort.select and all(
                     target in graph_whole
                     and set(cohort.toolchains) <= set(graph_whole[target])
                     for target in cohort.targets
                 ):
-                    # The graph runs these files whole under the same tools.
+                    # The graph runs these files unfiltered under these tools.
                     continue
                 command = local_pytest_argv(
                     cohort.targets,
@@ -512,21 +536,44 @@ class GateConfig:
                 if target not in seen_pytest:
                     seen_pytest.add(target)
                     pytest_targets.append(target)
-        # Every test that reads a touched path runs in its own cell's envelope.
-        # A rule that already requests the file keeps its own prerequisites.
-        for envelope in selection.run.values() if selection else ():
+        # Every other test that reads a touched path runs in its cell's
+        # envelope: unfiltered targets join the merged session, and each cell
+        # selector runs as its own cohort.
+        filtered: dict[
+            tuple[tuple[str, ...], tuple[str, ...], CargoTargetAccess], list[str]
+        ] = {}
+        for target, envelope in graph_runs:
             access = CargoTargetAccess.resolve(envelope.toolchains)
-            for target in envelope.targets:
-                if target in seen_pytest:
-                    continue
-                if pytest_index is None:
-                    pytest_index = len(selected)
-                seen_pytest.add(target)
-                pytest_targets.append(target)
-                pytest_tools.setdefault(target, {}).update(
-                    dict.fromkeys(envelope.toolchains)
-                )
-                pytest_access.setdefault(target, []).append(access)
+            if envelope.select:
+                key = (envelope.select, envelope.toolchains, access)
+                filtered.setdefault(key, []).append(target)
+                continue
+            if target in seen_pytest:
+                continue
+            if pytest_index is None:
+                pytest_index = len(selected)
+            seen_pytest.add(target)
+            pytest_targets.append(target)
+            pytest_tools.setdefault(target, {}).update(
+                dict.fromkeys(envelope.toolchains)
+            )
+            pytest_access.setdefault(target, []).append(access)
+        for (select, cohort_tools, cohort_access), targets in filtered.items():
+            command = local_pytest_argv(
+                targets, select, memory_units=self.pytest_memory_units
+            )
+            pytest_commands.add(command_key(command))
+            add(
+                command,
+                cohort_tools,
+                cargo_target_access=cohort_access,
+                pytest=True,
+                collection_command=(
+                    local_pytest_collection_argv(command)
+                    if any("::" in target for target in targets)
+                    else None
+                ),
+            )
         # Extras are raw policy commands, not bound argv or unowned shell text.
         for command in extra or ():
             owners = [
