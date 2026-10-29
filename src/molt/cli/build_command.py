@@ -198,10 +198,13 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         runtime_paths._cargo_target_root(compiler_root),
         memory_guard_paths.memory_guard_state_root(compiler_root, os.environ),
         temporary_artifacts.scratch_root(compiler_root, os.environ),
-        # The runtime WASM generation store: immutable generations named by
-        # the identity the recorded runtime inputs select, plus its retention
-        # ledger and lock, which every use rewrites. Without an artifact root
-        # it lies inside the Cargo target already excluded above.
+        # The generation stores of Rust products and runtime WASM pairs hold
+        # immutable generations named by the identity the recorded inputs
+        # select, plus a retention ledger and lock that any checkout's build
+        # rewrites. Without an artifact root they lie inside the Cargo targets
+        # excluded above.
+        dx.product_store_dir(project_root, os.environ),
+        dx.product_store_dir(compiler_root, os.environ),
         _wasm_runtime_root(project_root),
         _wasm_runtime_root(compiler_root),
     ]

@@ -2276,3 +2276,36 @@ def test_conflicting_product_families_refuse_the_record() -> None:
         {"consumer": "/web/c.wasm", "products": {"wasm": "/web/c.wasm"}}
     )
     assert ledger.refusals == ["build published conflicting products"]
+
+
+def test_paths_inside_an_output_stage_directory_are_publication_custody(
+    tmp_path: Path,
+) -> None:
+    """The WASM deployment stages its whole generation in one directory beside
+    the manifest and removes it after publishing. Its contents and listing are
+    the publication's custody; a removed directory staged for a file that is
+    no product stays an input boundary."""
+    from molt.artifact_publication import staged_output_path
+
+    out = tmp_path / "web"
+    out.mkdir()
+    manifest = out / "manifest.json"
+    manifest.write_text("{}\n", encoding="utf-8")
+    generation = staged_output_path(manifest, purpose="wasm-generation")
+    inner = generation / staged_output_path(out / "output_linked.wasm").name
+    nested = generation / "split" / "plan.json"
+    foreign = staged_output_path(out / "notes.txt", purpose="wasm-generation")
+    foreign_inner = foreign / "plan.json"
+    ledger = _future_ledger()
+    ledger.observed = {
+        ("directory", os.fspath(generation)),
+        ("file", os.fspath(inner)),
+        ("file", os.fspath(nested)),
+        ("file", os.fspath(foreign_inner)),
+    }
+    build_record.resolve_observed(ledger, (), published_outputs=(manifest,))
+    for custody in (generation, inner, nested):
+        assert os.fspath(custody) not in ledger.probes
+        assert os.fspath(custody) not in ledger.directories
+    assert os.fspath(foreign_inner) in ledger.probes, "a foreign stage is no product"
+    assert ledger.directories.keys() == {os.fspath(out)}

@@ -830,6 +830,82 @@ def record_path(state_root: Path, key: str) -> Path:
     return state_root / "build_records" / key[:2] / f"{key}.json"
 
 
+def _publication_custody(
+    observed: set[tuple[str, str]], outputs: tuple[Path, ...]
+) -> set[str]:
+    """The observed paths the outputs' publications own: never inputs.
+
+    An output's family (the output, its receipt, lock, journals and stages)
+    is custody. A publication can also stage a stage, as the WASM backend
+    output's copy does, or stage a whole directory, as the WASM deployment
+    generation does beside its manifest. A path that is an owned stage of a
+    custody path, or lies inside an owned stage directory, joins the custody
+    until nothing changes. Only reserved staging names whose key names a
+    custody path in the same directory qualify, by the staging-name
+    authority; nothing is opened.
+    """
+    from molt.artifact_publication import is_publication_family_member
+    from molt.file_publication import (
+        is_staged_file_path,
+        staged_file_destination_key,
+        staging_destination_key,
+    )
+    from molt.path_custody import resolved_host_path_key
+
+    def owner_key(path: Path) -> tuple[str, str]:
+        return resolved_host_path_key(path.parent), staging_destination_key(path)
+
+    paths = {os.path.realpath(name) for _kind, name in observed}
+    custody = {
+        path
+        for path in paths
+        if any(is_publication_family_member(Path(path), output) for output in outputs)
+    }
+    owners = {owner_key(path) for path in (*outputs, *map(Path, custody))}
+    # Stages live beside what they stage, so only paths under an output's
+    # directory can be custody; the walk stops at that directory.
+    roots = {resolved_host_path_key(output.parent) for output in outputs}
+
+    def staged_nodes(path: str) -> list[Path]:
+        key = resolved_host_path_key(path)
+        if not any(key.startswith(root.rstrip(os.sep) + os.sep) for root in roots):
+            return []
+        nodes: list[Path] = []
+        for node in (Path(path), *Path(path).parents):
+            if resolved_host_path_key(node) in roots:
+                return nodes
+            nodes.append(node)
+        return []
+
+    pending = [
+        (path, nodes)
+        for path in sorted(paths - custody)
+        if (nodes := staged_nodes(path))
+    ]
+    changed = True
+    while changed:
+        changed = False
+        remaining = []
+        for path, nodes in pending:
+            candidate = Path(path)
+            if any(
+                is_staged_file_path(node)
+                and (
+                    resolved_host_path_key(node.parent),
+                    staged_file_destination_key(node),
+                )
+                in owners
+                for node in nodes
+            ):
+                custody.add(path)
+                owners.add(owner_key(candidate))
+                changed = True
+            else:
+                remaining.append((path, nodes))
+        pending = remaining
+    return custody
+
+
 def resolve_observed(
     ledger: InputLedger,
     excluded_roots: tuple[Path, ...],
@@ -848,39 +924,11 @@ def resolve_observed(
     directory-creation ownership. Explicit input reports are never excluded,
     even for a published output.
     """
-    from molt.artifact_publication import is_publication_family_member
-    from molt.file_publication import is_owned_staged_file_path
     from molt.path_custody import resolved_host_path_key
 
     outputs = tuple(Path(os.path.realpath(path)) for path in published_outputs)
     output_parents = {resolved_host_path_key(output.parent) for output in outputs}
-    # A publication can stage a stage: a copy staged for an output's private
-    # stage (the WASM backend output) names that stage, not the output. Its
-    # observed stages join the family transitively, by the naming authority.
-    family = {
-        resolved
-        for kind, name in ledger.observed
-        if kind == "file"
-        and any(
-            is_publication_family_member(
-                Path(resolved := os.path.realpath(name)), output
-            )
-            for output in outputs
-        )
-    }
-    nested = True
-    while nested:
-        nested = False
-        for kind, name in ledger.observed:
-            resolved = os.path.realpath(name)
-            if kind != "file" or resolved in family:
-                continue
-            if any(
-                is_owned_staged_file_path(Path(resolved), Path(member))
-                for member in family
-            ):
-                family.add(resolved)
-                nested = True
+    custody = _publication_custody(ledger.observed, outputs)
     roots = tuple(
         {
             resolved_host_path_key(os.path.realpath(root)).rstrip(os.sep) + os.sep
@@ -925,9 +973,7 @@ def resolve_observed(
     for kind, name in sorted(ledger.observed):
         resolved = os.path.realpath(name)
         real = resolved_host_path_key(resolved)
-        if (kind == "file" and resolved in family) or (
-            kind == "directory" and real in output_parents
-        ):
+        if resolved in custody or (kind == "directory" and real in output_parents):
             continue
         if (real + os.sep).startswith(roots):
             continue

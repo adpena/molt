@@ -917,3 +917,38 @@ def test_only_the_default_wasm_target_is_a_verified_cutoff_cell(
     assert build_command._early_cutoff_request(request) is None
     default = _wasm_request(project, tmp_path / "web")
     assert build_command._early_cutoff_request(default) is not None
+
+
+def test_another_checkouts_store_renewal_leaves_the_record_current(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every checkout of one artifact root shares the product store, and any
+    of them rewrites its retention ledger when it renews an entry. A build
+    reads that ledger while admitting its compiler and runtime, but the
+    ledger selects nothing the output depends on."""
+    from molt import dx
+
+    artifact_root = tmp_path / "ext"
+    monkeypatch.setenv("MOLT_EXT_ROOT", os.fspath(artifact_root))
+    monkeypatch.setenv(
+        "CARGO_TARGET_DIR", os.fspath(artifact_root / "target" / "checkouts" / "lane")
+    )
+    ledger = dx.product_store_dir(project, os.environ) / "v1" / "host-tool"
+    ledger.mkdir(parents=True)
+    ledger = ledger / ".product-store.json"
+    ledger.write_text('{"last_used": {}}\n', encoding="utf-8")
+    calls: list[str] = []
+    emit = _fake_build(calls)
+
+    def build_reading_the_store(request: BuildRequest) -> int:
+        ledger.read_text(encoding="utf-8")
+        return emit(request)
+
+    build = build_command._with_early_cutoff(build_reading_the_store)
+    output = tmp_path / "app"
+    _run(build, project, output)
+    _run(build, project, output)
+    assert len(calls) == 1
+    ledger.write_text('{"last_used": {"rival": 1}}\n', encoding="utf-8")
+    _run(build, project, output)
+    assert len(calls) == 1, "a rival checkout's renewal is no input of this build"
