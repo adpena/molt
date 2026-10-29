@@ -22,6 +22,7 @@ const FAMILY_DISPATCH_TABLE: &[(LlvmPreservedOpFamily, &[OpKind])] = &[
 
 pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreservedOpFamily> {
     match kind {
+        molt_ir::runtime_call_op_kinds!() => None,
         super::direct_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Direct),
         super::container_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Container),
         super::callable_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Callable),
@@ -176,7 +177,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::DictKeys
         | OpKind::DictPop
         | OpKind::DictPopitem
-        | OpKind::DictSet
         | OpKind::DictSetdefault
         | OpKind::DictSetdefaultEmptyList
         | OpKind::DictStrIntInc
@@ -225,7 +225,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::GetAttrGenericPtr
         | OpKind::GetAttrName
         | OpKind::GetItem
-        | OpKind::GetIter
         | OpKind::Getframe
         | OpKind::Goto
         | OpKind::GpuBarrier
@@ -576,7 +575,6 @@ mod tests {
             OpKind::TupleNew,
             OpKind::SetNew,
             OpKind::FrozensetNew,
-            OpKind::Iter,
             OpKind::UnpackSequence,
         ] {
             assert_eq!(

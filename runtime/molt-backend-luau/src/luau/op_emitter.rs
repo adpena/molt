@@ -1,7 +1,70 @@
 use super::*;
 
 impl LuauBackend {
+    pub(super) fn emit_contract_runtime_call(
+        &mut self,
+        op: &OpIR,
+        call: molt_ir::runtime_calls::RuntimeCall,
+    ) {
+        use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization, RuntimeCallTarget};
+        let mut numeric_type = "";
+        match call {
+            RuntimeCall::Iter => {
+                assert_eq!(
+                    call.realization(RuntimeCallTarget::Luau),
+                    RuntimeCallRealization::LuauIterCarriers
+                );
+                let source = op
+                    .args
+                    .as_deref()
+                    .and_then(|args| args.first())
+                    .expect("iter source");
+                match self.scalar_plan.name_scalar_kind(source) {
+                    Some(ScalarKind::Float) => numeric_type = ", \"float\"",
+                    Some(ScalarKind::Int) => numeric_type = ", \"int\"",
+                    Some(_) => {}
+                    None if self.scalar_plan.name_container_kind(source).is_some() => {}
+                    None => {
+                        self.emit_unsupported_op_with_reason(op, "iter specialization requires a proven deterministic carrier and numeric source type");
+                        return;
+                    }
+                }
+            }
+            RuntimeCall::DictSet => {
+                assert_eq!(
+                    call.realization(RuntimeCallTarget::Luau),
+                    RuntimeCallRealization::LuauDictStorage
+                );
+                // molt_dict_require checks exact deterministic storage before touching it.
+            }
+        }
+        let function = call.function();
+        let args = op.args.as_deref().unwrap_or(&[]);
+        assert_eq!(
+            args.len(),
+            function.boxed_abi().arity,
+            "{} contract arity",
+            op.kind
+        );
+        let args = args
+            .iter()
+            .map(|arg| sanitize_ident(arg))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let expression = format!("{}({args}{numeric_type})", function.symbol());
+        if let Some(out) = op.out.as_deref().filter(|out| *out != "none") {
+            let out = sanitize_ident(out);
+            self.emit_line(&format!("local {out} = {expression}"));
+        } else {
+            self.emit_line(&expression);
+        }
+    }
+
     pub(super) fn emit_op(&mut self, op: &OpIR) {
+        if let Some(call) = molt_ir::runtime_calls::RuntimeCall::from_op(op.kind) {
+            self.emit_contract_runtime_call(op, call);
+            return;
+        }
         if self.emit_list_op(op) {
             return;
         }
@@ -55,6 +118,7 @@ impl LuauBackend {
         }
 
         match op.kind {
+            molt_ir::runtime_call_op_kinds!() => unreachable!("contract calls dispatched above"),
             molt_ir::OpKind::Phi | molt_ir::OpKind::Nop => {}
             molt_ir::OpKind::MAnd
             | molt_ir::OpKind::Abs
@@ -229,7 +293,6 @@ impl LuauBackend {
             | molt_ir::OpKind::DictNew
             | molt_ir::OpKind::DictPop
             | molt_ir::OpKind::DictPopitem
-            | molt_ir::OpKind::DictSet
             | molt_ir::OpKind::DictSetdefault
             | molt_ir::OpKind::DictSetdefaultEmptyList
             | molt_ir::OpKind::DictStrIntInc
@@ -311,7 +374,6 @@ impl LuauBackend {
             | molt_ir::OpKind::GetAttrNameDefault
             | molt_ir::OpKind::GetAttrSpecialObj
             | molt_ir::OpKind::GetItem
-            | molt_ir::OpKind::GetIter
             | molt_ir::OpKind::Getframe
             | molt_ir::OpKind::Goto
             | molt_ir::OpKind::GpuBarrier
@@ -374,7 +436,6 @@ impl LuauBackend {
             | molt_ir::OpKind::IsPending
             | molt_ir::OpKind::Isinstance
             | molt_ir::OpKind::Issubclass
-            | molt_ir::OpKind::Iter
             | molt_ir::OpKind::IterNext
             | molt_ir::OpKind::IterNextUnboxed
             | molt_ir::OpKind::Jump

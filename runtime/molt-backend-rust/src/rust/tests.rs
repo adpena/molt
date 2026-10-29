@@ -2348,3 +2348,50 @@ mod preview_source {
         assert!(backend.unsupported_ops[0].contains("unsupported Rust backend op `br_if`"));
     }
 }
+
+#[test]
+fn generated_runtime_call_agreement_preserves_rust_target_refusals() {
+    use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization, RuntimeCallTarget};
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        assert_eq!(
+            call.realization(RuntimeCallTarget::Rust),
+            RuntimeCallRealization::Unsupported
+        );
+        let abi = call.function().boxed_abi();
+        let args = (0..abi.arity)
+            .map(|i| format!("arg{i}"))
+            .collect::<Vec<_>>();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "contract_refusal".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                params: args.clone(),
+                ops: vec![
+                    OpIR {
+                        args: Some(args),
+                        out: Some("result".into()),
+                        ..OpIR::new(kind)
+                    },
+                    OpIR {
+                        args: Some(vec!["result".into()]),
+                        ..OpIR::new(molt_ir::OpKind::Ret)
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let mut backend = RustBackend::new();
+        let error = backend
+            .compile_checked(&ir)
+            .expect_err("no Python runtime protocol");
+        assert!(error.contains("before source generation"), "{error}");
+        assert!(
+            backend.output.is_empty(),
+            "refused calls publish no partial source"
+        );
+    }
+}

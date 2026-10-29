@@ -8,7 +8,6 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::DictNew,
     OpKind::DictFromObj,
     OpKind::DictGet,
-    OpKind::DictSet,
     OpKind::DictUpdateMissing,
     OpKind::DictStrIntInc,
     OpKind::StringSplitWsDictInc,
@@ -79,9 +78,6 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
         OpKind::DictKeys => "molt_dict_keys",
         OpKind::DictValues => "molt_dict_values",
         OpKind::DictItems => "molt_dict_items",
-        // PyDict_SetItem semantics, as on LLVM and WASM: a dict subclass's
-        // `__setitem__` never runs.
-        OpKind::DictSet => "molt_dict_set",
         OpKind::DictUpdateMissing => "molt_dict_update_missing",
         _ => unreachable!("handler invoked with non-matching op.kind"),
     };

@@ -5,6 +5,8 @@
 
 use super::import_tokens::WasmRuntimeImport;
 
+use molt_ir::runtime_calls::RuntimeCall;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LirRuntimeCall {
     ProfileEnabled,
@@ -683,6 +685,26 @@ pub(crate) fn op_loop_runtime_call(
     kind: molt_ir::OpKind,
     marked: bool,
 ) -> Option<OpLoopRuntimeCallSpec> {
+    if let Some(call) = RuntimeCall::from_op(kind) {
+        return Some(match call {
+            RuntimeCall::DictSet => OpLoopRuntimeCallSpec {
+                import: WasmRuntimeImport::DictSet,
+                args: &[
+                    OpLoopRuntimeArgSpec::Local(0),
+                    OpLoopRuntimeArgSpec::Local(1),
+                    OpLoopRuntimeArgSpec::Local(2),
+                ],
+                required_imports: &[WasmRuntimeImport::DictSet],
+                discard_result: false,
+            },
+            RuntimeCall::Iter => OpLoopRuntimeCallSpec {
+                import: WasmRuntimeImport::Iter,
+                args: &[OpLoopRuntimeArgSpec::Local(0)],
+                required_imports: &[WasmRuntimeImport::Iter],
+                discard_result: false,
+            },
+        });
+    }
     if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {
         return Some(match abi.symbol {
             "molt_bytearray_count" => OpLoopRuntimeCallSpec {
@@ -1335,12 +1357,6 @@ pub(crate) fn op_loop_runtime_call(
             required_imports: &[WasmRuntimeImport::IsCallable],
             discard_result: false,
         }),
-        molt_ir::OpKind::Iter => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::Iter,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::Iter],
-            discard_result: false,
-        }),
         molt_ir::OpKind::Aiter => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Aiter,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
@@ -1778,16 +1794,6 @@ pub(crate) fn op_loop_runtime_call(
                 OpLoopRuntimeArgSpec::Local(2),
             ],
             required_imports: &[WasmRuntimeImport::DictStrIntInc],
-            discard_result: false,
-        }),
-        molt_ir::OpKind::DictSet => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::DictSet,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-            ],
-            required_imports: &[WasmRuntimeImport::DictSet],
             discard_result: false,
         }),
         molt_ir::OpKind::DictSetdefault => Some(OpLoopRuntimeCallSpec {

@@ -101,7 +101,9 @@ FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
 )
 
 # Bridge until HF-485 moves these op-to-runtime facts into the generated
-# runtime-call contract and retires these source regexes.
+# runtime-call contract and retires these source regexes. Stage 1 covers iter
+# and dict_set; neither has a regex here. Retire the remaining assertions with
+# their own complete call families, not with an unrelated two-op migration.
 NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     SemanticAssertion(
         scope="native",
