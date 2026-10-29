@@ -7,7 +7,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 69
-- `operational-tooling` files: 62
+- `operational-tooling` files: 65
 - `scattered-assumption` files: 352
 
 ## Files
@@ -66,9 +66,11 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/_functools.py` | 1 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/_markupbase.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/_opcode_metadata.py` | 2 | operational-tooling | `3.14` |
+| `src/molt/stdlib/_osx_support.py` | 4 | operational-tooling | `3.12` |
 | `src/molt/stdlib/_sqlite3.py` | 5 | scattered-assumption | `version_info` |
 | `src/molt/stdlib/_statistics.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/_strptime.py` | 1 | scattered-assumption | `3.12` |
+| `src/molt/stdlib/_sysconfig.py` | 5 | operational-tooling | `3.13` |
 | `src/molt/stdlib/_thread.py` | 1 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/argparse.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/asyncio/__init__.py` | 1 | scattered-assumption | `version_info` |
@@ -137,6 +139,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/string/templatelib.py` | 1 | scattered-assumption | `3.14` |
 | `src/molt/stdlib/stringprep.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/stdlib/sys.py` | 7 | operational-tooling | `version_info` |
+| `src/molt/stdlib/sysconfig/__init__.py` | 41 | operational-tooling | `3.14` |
 | `src/molt/stdlib/textwrap.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/threading.py` | 3 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/tkinter/__init__.py` | 1 | operational-tooling | `sys.version_info` |
