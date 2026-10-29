@@ -58,6 +58,7 @@ the source of truth.
 - Luau backend optimization and generated support: [spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md), [spec/areas/compiler/luau_support_matrix.generated.md](spec/areas/compiler/luau_support_matrix.generated.md)
 - Stdlib intrinsic audit and platform availability: [spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md), [spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md)
 - Stdlib intrinsic loading/default metadata contract: [spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md](spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md)
+- `sysconfig` build values read from the running binary (HF-273): [design/sysconfig_build_values.md](design/sysconfig_build_values.md)
 
 ## Compiler Foundation Routing
 
@@ -91,6 +92,8 @@ the source of truth.
   [design/foundation/44b_frontend_hot_pass_profile.md](design/foundation/44b_frontend_hot_pass_profile.md)
 - Import bedrock PR2 one-store cutover map:
   [design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md](design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md)
+- Function-level imports in a closed-world build (HF-557):
+  [design/foundation/function_level_imports.md](design/foundation/function_level_imports.md)
 
 ## Workspace Guides
 

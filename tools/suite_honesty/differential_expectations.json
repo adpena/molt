@@ -1377,6 +1377,36 @@
           "evidence": "2026-10-29 lane/hf556-env-bytes, lane/hf557-function-imports and lane/hf273-sysconfig (macOS arm64, CPython 3.12.15 sources, run 20261029_121607): the binary runs and fails the same way after HF-557's fix and the sysconfig lowering."
         }
       }
+    },
+    "test.test_importlib": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-566",
+          "root_cause": "The binary runs: test.support reads float.__getformat__('double') at import (Lib/test/support/__init__.py:479), and Molt's float type lacks the method.",
+          "evidence": "2026-10-29 lane/hf273-sysconfig (macOS arm64, CPython 3.12.15 sources, run 20261029_121607): after the sysconfig lowering, test.support passes check_sanitizer() and stops here."
+        }
+      }
+    },
+    "test.test_pkgutil": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-566",
+          "root_cause": "The binary runs: test.support reads float.__getformat__('double') at import (Lib/test/support/__init__.py:479), and Molt's float type lacks the method.",
+          "evidence": "2026-10-29 lane/hf273-sysconfig (macOS arm64, CPython 3.12.15 sources, run 20261029_121607): after the sysconfig lowering, test.support passes check_sanitizer() and stops here."
+        }
+      }
+    },
+    "test.test_zipimport": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-566",
+          "root_cause": "The binary runs: test.support reads float.__getformat__('double') at import (Lib/test/support/__init__.py:479), and Molt's float type lacks the method.",
+          "evidence": "2026-10-29 lane/hf273-sysconfig (macOS arm64, CPython 3.12.15 sources, run 20261029_121607): after the sysconfig lowering, test.support passes check_sanitizer() and stops here."
+        }
+      }
     }
   }
 }
