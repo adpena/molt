@@ -436,3 +436,67 @@ def test_an_explicit_regrtest_selection_is_never_inverted_by_the_skip_list(
         whole_suite, tmp_path / "regrtest.py", ["test_ftplib"], ["py"]
     )
     assert command[command.index("-x") + 1] == "test_ftplib"
+
+
+_DAG_LEDGER = """# Ledger
+
+## Release dependency and landing order
+
+### Family dependency order (2026-10-29)
+
+| Family | Shared cause or missing authority | Open rows |
+| --- | --- | --- |
+| A. Typed ABI | Hand tables | HF-1, HF-2 |
+| B. Binding flow | Worst-case rebinding | {b_rows} |
+
+## Open: correctness and release blockers
+
+| ID | Defect | Evidence | Next |
+|----|--------|----------|------|
+| HF-1 | d | e | n |
+| HF-2 | d | e | n |
+| HF-3 | d | e | n |
+
+## Fixed after the handoff
+
+| ID | Defect | Fix |
+|----|--------|-----|
+| HF-4 | d | fixed by x |
+"""
+_PRIOR_ART = "# Prior art\n\n## A. Typed ABI\n\ntext\n\n## B. Binding flow\n\ntext\n"
+
+
+def test_every_open_finding_sits_in_one_dependency_family_with_prior_art() -> None:
+    from tools import finding_coverage, finding_status
+
+    complete = finding_status.project(_DAG_LEDGER.format(b_rows="HF-3"))
+    assert [family.title for family in complete.dependency_families] == [
+        "A. Typed ABI",
+        "B. Binding flow",
+    ]
+    assert finding_coverage.dependency_order_problems(complete, _PRIOR_ART) == []
+
+    # A new open row outside the DAG, a closed row listed, and a row placed twice.
+    for b_rows, expected in (
+        ("", "open finding HF-3 is in no dependency family"),
+        ("HF-3, HF-4", "lists HF-4, which is not an open finding"),
+        ("HF-3, HF-1", "open finding HF-1 sits in families A, B"),
+    ):
+        status = finding_status.project(_DAG_LEDGER.format(b_rows=b_rows))
+        problems = finding_coverage.dependency_order_problems(status, _PRIOR_ART)
+        assert any(expected in problem for problem in problems), problems
+
+    # A family without its prior-art section, and a ledger without the table.
+    problems = finding_coverage.dependency_order_problems(
+        complete, "# Prior art\n\n## A. Typed ABI\n"
+    )
+    assert problems == [
+        "dependency family B. Binding flow has no section in "
+        "docs/design/findings_prior_art.md"
+    ]
+    bare = finding_status.project(
+        _DAG_LEDGER.split("## Open:")[1].join(["## Open:", ""])
+    )
+    assert finding_coverage.dependency_order_problems(bare, _PRIOR_ART) == [
+        "the ledger has no family dependency order table"
+    ]
