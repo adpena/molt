@@ -229,8 +229,9 @@ def test_regrtest_expectations_name_a_finding_for_one_pinned_source() -> None:
         "tests": {},
         "regrtest": {
             "test.test_importlib.test_api::ImportModuleTests::test_module_import": _dimension(
-                finding=OPEN_ID
+                finding=OPEN_ID, failure="molt rc=1"
             ),
+            "test.test_importlib.test_util": _dimension(finding=OPEN_ID),
             "test.test_importlib.test_lazy": _dimension(tracking="#3"),
             "test_importlib.test_api.Class.method": _dimension(finding=OPEN_ID),
             "test.test_zipimport": {
@@ -248,6 +249,10 @@ def test_regrtest_expectations_name_a_finding_for_one_pinned_source() -> None:
     problems = check_suite_honesty.validate_manifest(manifest, frozenset())
 
     assert not [p for p in problems if "test_module_import" in p]
+    # An owned regrtest failure names the exact reason the run reports.
+    assert any(
+        "test.test_importlib.test_util" in p and "`failure`" in p for p in problems
+    )
     assert any("test_lazy" in p and "never free-text" in p for p in problems)
     assert any(
         "test_importlib.test_api.Class.method" in p
@@ -340,10 +345,17 @@ def _outcome(status: str, reason: str = "") -> ItemOutcome:
 
 
 def test_regrtest_runs_are_strict_in_both_directions() -> None:
-    entry = {"status": "fail", "finding": OPEN_ID, "root_cause": "r", "evidence": "e"}
+    entry = {
+        "status": "fail",
+        "finding": OPEN_ID,
+        "root_cause": "r",
+        "evidence": "e",
+        "failure": "molt rc=1",
+    }
     manifest = {
         "regrtest": {
             "test.test_owned": {"dimensions": {"native@3.12": entry}},
+            "test.test_moved": {"dimensions": {"native@3.12": entry}},
             "test.test_fixed": {"dimensions": {"native@3.12": entry}},
             "test.test_skipped": {"dimensions": {"native@3.12": entry}},
             "test.test_absent": {"dimensions": {"native@3.12": entry}},
@@ -354,6 +366,8 @@ def test_regrtest_runs_are_strict_in_both_directions() -> None:
     }
     outcomes = {
         "test_owned": _outcome("failed", "molt rc=1"),
+        # An owned test that now fails another way is a new defect.
+        "test_moved": _outcome("failed", "molt rc=143"),
         "test_fixed": _outcome("passed"),
         "test_skipped": _outcome("skipped", "resource denied"),
         "test_new": _outcome("failed", "MOLT_COMPAT_ERROR: x"),
@@ -370,6 +384,7 @@ def test_regrtest_runs_are_strict_in_both_directions() -> None:
     assert report.expected == {"test.test_owned": OPEN_ID}
     assert set(report.unexpected_failures) == {
         "test.test_new",
+        "test.test_moved",
         "test.test_cases",
         "test.test_other_dimension",
     }
@@ -384,10 +399,16 @@ def test_regrtest_runs_are_strict_in_both_directions() -> None:
 
 
 def test_regrtest_run_with_only_owned_failures_passes() -> None:
-    entry = {"status": "fail", "finding": OPEN_ID, "root_cause": "r", "evidence": "e"}
+    entry = {
+        "status": "fail",
+        "finding": OPEN_ID,
+        "root_cause": "r",
+        "evidence": "e",
+        "failure": "molt rc=1",
+    }
     manifest = {"regrtest": {"test.test_owned": {"dimensions": {"native@3.12": entry}}}}
     report = regrtest_expectations.classify(
-        {"test_owned": _outcome("failed"), "test_ok": _outcome("passed")},
+        {"test_owned": _outcome("failed", "molt rc=1"), "test_ok": _outcome("passed")},
         manifest,
         dimension="native@3.12",
         selected=["test_owned", "test_ok"],
