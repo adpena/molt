@@ -2017,6 +2017,7 @@ tests/differential/stdlib/warnings_location.py
 tests/differential/stdlib/warnings_location_source_line.py
 tests/differential/stdlib/warnings_location_support/__init__.py
 tests/differential/stdlib/warnings_native_display.py
+tests/differential/stdlib/warnings_provider_direction.py
 tests/differential/stdlib/warnings_resetwarnings.py
 tests/differential/stdlib/warnings_showwarning.py
 tests/differential/stdlib/warnings_simplefilter.py
