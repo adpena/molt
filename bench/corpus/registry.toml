@@ -2,10 +2,10 @@
 # bench/corpus/registry.toml — molt canonical-benchmark registry (doc 69 §5 task R)
 # =============================================================================
 #
-# Intended corpus identities, not executable or qualified workload coverage.
-# No scoreboard/adapter currently reads this catalog. Runnable selections and
-# recipes remain in tools/bench_suites.py and bench/friends/manifest.toml until
-# the complete executable-portfolio migration in doc 69 is implemented.
+# Intended corpus identities plus explicit application execution recipes read by
+# tools/benchmark_applications.py and the benchmark runners. Registration alone
+# does not qualify execution or performance. Other runnable selections remain in
+# tools/bench_suites.py and bench/friends/manifest.toml pending doc 69's migration.
 # One [[benchmark]]
 # entry per CANONICAL benchmark, DEDUPED across every external suite per doc
 # 69A §A.10 (the cross-suite dedup map). A kernel that recurs in CLBG +
@@ -1720,6 +1720,7 @@ data_path = "data/tpch.json"
 data_format = "python-literals"
 oracle = "tests/benchmarks/apps/oracles/sqlglot_pipeline.json"
 run_args = ["data/tpch.json", "1"]
+molt_args = ["--capabilities", "fs.read"]
 
 [[benchmark]]
 id = "sympy"
@@ -1765,6 +1766,7 @@ data_path = "data/html5-spec.html"
 data_format = "bytes"
 oracle = "tests/benchmarks/apps/oracles/html5_document.json"
 run_args = ["data/html5-spec.html", "1"]
+molt_args = ["--capabilities", "fs.read"]
 
 [[benchmark]]
 id = "decimal"

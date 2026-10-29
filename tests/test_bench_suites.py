@@ -152,6 +152,7 @@ data_path = "data/input.txt"
 data_format = "bytes"
 oracle = "tests/benchmarks/apps/oracles/example.txt"
 run_args = ["data/input.txt", "1"]
+molt_args = ["--capabilities", "fs.read"]
 """
 
 
@@ -160,6 +161,7 @@ def test_application_catalog_resolves_pins_and_owns_snapshot() -> None:
     (app,) = benchmark_applications._decode_catalog(raw)
     raw["artifact"]["example"]["sha256"] = "b" * 64
     raw["benchmark"][0]["execution"]["run_args"].append("changed")
+    raw["benchmark"][0]["execution"]["molt_args"].append("changed")
     assert app.name == "example-app"
     assert app.packages == (app.data_archive,)
     assert app.data_archive.name == "example"
@@ -167,6 +169,27 @@ def test_application_catalog_resolves_pins_and_owns_snapshot() -> None:
     assert app.data_archive.size == 123
     assert app.data_archive.sha256 == "a" * 64
     assert app.run_args == ("data/input.txt", "1")
+    assert app.molt_args == ("--capabilities", "fs.read")
+
+
+def test_application_recipe_allows_explicit_empty_compiler_args() -> None:
+    raw = tomllib.loads(_APPLICATION_CATALOG)
+    raw["benchmark"][0]["execution"]["molt_args"] = []
+    (app,) = benchmark_applications._decode_catalog(raw)
+    assert app.molt_args == ()
+
+
+@pytest.mark.parametrize("name", ["sqlglot_pipeline", "html5_document"])
+def test_application_compiler_permissions_reach_existing_runners(name) -> None:
+    script = f"tests/benchmarks/apps/{name}.py"
+    expected = ["--capabilities", "fs.read"]
+    for runner in (bench_suites, bench, bench_individual, bench_wasm, profile_tool):
+        for path in (script, ROOT / script):
+            args = runner.molt_args_for_benchmark(path)
+            assert args == expected
+            args.append("--mutated")
+    assert bench_suites.molt_args_for_benchmark(Path("/elsewhere") / script) == []
+    assert bench_suites.molt_args_for_benchmark(f"{name}.py") == []
 
 
 @pytest.mark.parametrize(
@@ -181,6 +204,9 @@ def test_application_catalog_resolves_pins_and_owns_snapshot() -> None:
         ("run_args", "input.txt", "list of strings"),
         ("run_args", [False], "list of strings"),
         ("run_args", ["bad\x00arg"], "NUL"),
+        ("molt_args", "--capabilities fs.read", "list of strings"),
+        ("molt_args", [False], "list of strings"),
+        ("molt_args", ["bad\x00arg"], "NUL"),
         ("data_format", [], "expected bytes or python-literals"),
         ("driver", "../example.py", "portable relative"),
         ("driver", 1, "portable relative"),
@@ -204,12 +230,12 @@ def test_application_recipe_requires_table(value) -> None:
         benchmark_applications._decode_catalog(raw)
 
 
-@pytest.mark.parametrize("remove", [False, True])
-def test_application_recipe_rejects_unknown_or_missing_fields(remove) -> None:
+@pytest.mark.parametrize("field", ["run_args", "molt_args", "runner"])
+def test_application_recipe_rejects_unknown_or_missing_fields(field) -> None:
     raw = tomllib.loads(_APPLICATION_CATALOG)
     recipe = raw["benchmark"][0]["execution"]
-    if remove:
-        del recipe["run_args"]
+    if field != "runner":
+        del recipe[field]
     else:
         recipe["runner"] = "another-runner"
     with pytest.raises(ValueError, match="missing fields.*unknown fields"):
@@ -336,6 +362,7 @@ def test_application_oracle_records_exact_reference_bytes(
         data_format="bytes",
         oracle="oracles/oracle-fixture.txt",
         run_args=(),
+        molt_args=(),
     )
     monkeypatch.setattr(benchmark_applications, "ROOT", tmp_path)
     monkeypatch.setattr(benchmark_applications, "applications", lambda: (app,))
