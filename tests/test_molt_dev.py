@@ -10038,6 +10038,34 @@ class TestStorageAuthority:
                 [source], kind="lane-evidence", now=time.time(), apply=True
             )
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX directory seals")
+    def test_archival_unseals_only_owned_directories_and_keeps_recovery_indices(
+        self, tmp_path
+    ):
+        source = tmp_path / "source"
+        sealed = source / "sealed"
+        sealed.mkdir(parents=True)
+        external = tmp_path / "external"
+        external.write_bytes(b"shared sealed input")
+        external.chmod(0o444)
+        os.link(external, sealed / "hardlink")
+        (sealed / "symlink").symlink_to(external)
+        sealed.chmod(0o555)
+        archive = compact_evidence(source, tmp_path / "archives", kind="diagnostics")
+        assert not sealed.exists()
+        assert external.read_bytes() == b"shared sealed input"
+        assert external.stat().st_mode & 0o777 == 0o444
+        with tarfile.open(archive) as stream:
+            assert (
+                stream.extractfile("sealed/hardlink").read() == b"shared sealed input"
+            )
+            assert stream.getmember("sealed/symlink").linkname == str(external)
+        index = source / "storage-index.json"
+        original = index.read_bytes()
+        with pytest.raises(ValueError, match="recovery index"):
+            compact_evidence(index, tmp_path / "archives", kind="diagnostics")
+        assert index.read_bytes() == original
+
     @pytest.mark.parametrize("kind", ["scratch-evidence", "sccache-server-evidence"])
     def test_failure_evidence_cannot_enter_regenerable_retirement(self, tmp_path, kind):
         payload = tmp_path / "provider-failure"

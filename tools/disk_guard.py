@@ -146,6 +146,8 @@ from molt.checkout_state import (  # noqa: E402
     checkout_state_last_use,
     checkout_state_lock_paths,
     is_session_target,
+    is_evidence_index,
+    evidence_index_path,
     legacy_target_kind_of,
     newest_activity_mtime as _newest_activity_mtime,
     superseded_layout_paths,
@@ -2021,13 +2023,11 @@ def _collect_evidence(
                 for receipt in _iter_dir(container)
                 if not receipt.is_symlink()
                 and (receipt.suffix == ".json" or receipt.suffix == ".d")
-                and not receipt.name.endswith(".storage-index.json")
+                and not is_evidence_index(receipt)
                 and not (
                     receipt.suffix == ".d" and receipt.with_suffix(".json").exists()
                 )
-                and not (
-                    receipt.is_dir() and (receipt / "storage-index.json").is_file()
-                )
+                and not (receipt.is_dir() and evidence_index_path(receipt).is_file())
             )
     for key in walks.order("integration-receipts", receipts):
         root, common, receipt = receipts[key]
@@ -2113,6 +2113,7 @@ def _collect_evidence(
                     if (
                         record.is_symlink()
                         or not record.is_file()
+                        or is_evidence_index(record)
                         or not (
                             record.name.endswith(".json")
                             or record.name.endswith(".json.tmp")
@@ -2138,8 +2139,7 @@ def _collect_evidence(
                         try:
                             archive = compact_evidence(
                                 record,
-                                storage_path(root, "integration-receipts", env)
-                                / "incidents",
+                                storage_path(root, "diagnostics", env) / "incidents",
                                 kind="diagnostics",
                             )
                             result.retirements[str(record)] = str(archive)

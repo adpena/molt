@@ -155,3 +155,23 @@ Legacy failures lacking that receipt remain untouched for explicit reconciliatio
 An unavailable archive leaves raw bytes intact. Successful scratch remains
 regenerable. Sccache server leftovers have a separate durable evidence class:
 native per-probe cleanup does not grant Molt permission to delete crash signal.
+
+Recovery-index names are reserved durable control coordinates. Collectors skip
+them, and the compactor refuses to treat an index itself as raw payload.
+After verification and publication, represented source subtrees use the
+canonical sealed-tree deletion boundary; directory seals may be opened within
+exclusive custody, while external link targets and file modes stay unchanged.
+An unavailable archive defers the soft raw-evidence budget and preserves its
+signal without invalidating a command whose process closure is established.
+
+## Open shared-provider boundary
+
+The universal all-state claim is not yet closed over shared native-provider
+homes. [Cargo home](https://doc.rust-lang.org/cargo/guide/cargo-home.html)
+contains dependency caches, configuration, credentials and installed commands;
+Molt's `rust_toolchain.cargo_home_path` uses it as a compiler-input authority.
+[npm's cache](https://docs.npmjs.com/cli/v11/using-npm/config/#cache) also has a
+shared user-home default. They are not currently typed Molt storage classes.
+The integrator must decide whether these remain external owner-managed tool
+inputs or whether HF-582 expands to migrate those input authorities. They must
+not be silently redirected, adopted or pruned as output directories.

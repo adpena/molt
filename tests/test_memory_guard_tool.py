@@ -9245,11 +9245,31 @@ def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     assert old.read_bytes() == original and fresh.is_file()
     result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert not old.exists() and fresh.is_file()
-    assert Path(result.retirements[str(old)]).read_bytes() == original
-    retirement = next(tmp_path.glob("retired/*/*.retirement.json"))
-    metadata = json.loads(retirement.read_bytes())
-    assert metadata["original_path"] == str(old)
-    assert metadata["retired_at"] == now
+    import tarfile
+    import hashlib
+
+    archive = Path(result.retirements[str(old)])
+    index = json.loads(archive.with_suffix(".index.json").read_text(encoding="utf-8"))
+    assert index["source"] == str(old) and index["class"] == "diagnostics"
+    assert index["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    with tarfile.open(archive, "r:gz") as stream:
+        assert stream.extractfile(old.name).read() == original
+    recovery = json.loads(
+        old.with_name(old.name + ".storage-index.json").read_text(encoding="utf-8")
+    )
+    assert recovery["source"] == str(old) and recovery["archive"] == str(archive)
+    assert recovery["archive_sha256"] == index["archive_sha256"]
+    recovery_path = old.with_name(old.name + ".storage-index.json")
+    recovery_bytes = recovery_path.read_bytes()
+    another = directory / "another.json"
+    another.write_bytes(b"another diagnostic")
+    for path in (recovery_path, another):
+        os.utime(path, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    later = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert not another.exists()  # The collector really ran again.
+    assert recovery_path.read_bytes() == recovery_bytes
+    assert str(recovery_path) not in later.retirements
+    assert later.errors == []
 
 
 def test_a_named_record_that_cannot_retire_is_reported(tmp_path, monkeypatch):
@@ -9267,7 +9287,9 @@ def test_a_named_record_that_cannot_retire_is_reported(tmp_path, monkeypatch):
     def refuse(*_args, **_kwargs):
         raise PermissionError("retirement denied")
 
-    monkeypatch.setattr(disk_guard, "soft_retire", refuse)
+    from molt import checkout_state
+
+    monkeypatch.setattr(checkout_state, "compact_evidence", refuse)
     result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert result.errors == [f"{record}: retirement denied"]
     assert record.read_text(encoding="utf-8") == "crashed write"
