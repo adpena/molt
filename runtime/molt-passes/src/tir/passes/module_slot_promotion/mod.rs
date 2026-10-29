@@ -53,7 +53,7 @@
 //!   loop (LCSSA would be needed; refused instead).
 //! * **State machines**: functions containing generator/async ops are skipped.
 
-use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with, compute_idoms_with};
+use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with, compute_dominator_tree_with};
 use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::op_kinds_generated::{ModuleSlotAccessRole, opcode_module_slot_access_role_table};
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
@@ -184,8 +184,8 @@ fn promote_function(
     }
 
     let pred_map = build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly);
-    let idoms = compute_idoms_with(func, &pred_map, CfgEdgePolicy::TerminatorOnly);
-    let loops = discover_loops(func, &pred_map, &idoms, dbg);
+    let tree = compute_dominator_tree_with(func, &pred_map, CfgEdgePolicy::TerminatorOnly);
+    let loops = discover_loops(func, &pred_map, &tree, dbg);
     if loops.is_empty() {
         return false;
     }

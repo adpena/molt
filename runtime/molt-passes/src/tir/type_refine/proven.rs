@@ -51,8 +51,8 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     // Run the guard propagation to add TypeGuard-proven values.
     let mut env = extract_type_map_with_exact(func, &exact);
     let pred_map = dominators::build_pred_map(func);
-    let idoms = dominators::compute_idoms(func, &pred_map);
-    let (_refinements, guard_proven) = propagate_guard_types(func, &mut env, &idoms, &exact);
+    let tree = dominators::compute_dominator_tree(func, &pred_map);
+    let (_refinements, guard_proven) = propagate_guard_types(func, &mut env, &tree, &exact);
     for (vid, ty) in guard_proven {
         proven.insert(vid, ty);
     }

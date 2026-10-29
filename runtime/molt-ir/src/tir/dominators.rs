@@ -1,11 +1,11 @@
 //! Shared dominator tree utilities for TIR passes.
 //!
-//! Provides the Cooper-Harvey-Kennedy algorithm for computing immediate
-//! dominators, a `dominates` query, and the dominance frontiers and
-//! dominator-tree preorder that SSA construction reads (memory SSA,
-//! generator frame promotion). Factored out of `refcount_elim.rs`
-//! so that multiple passes (refcount elimination, guard-to-type propagation)
-//! can reuse the same dominator computation.
+//! Provides the block dominator tree ([`DominatorTree`]: Semi-NCA, numbered
+//! once for O(1) `dominates` queries), and the dominance frontiers and
+//! dominator-tree preorder that SSA construction reads
+//! (memory SSA, generator frame promotion). Every pass and backend shares this
+//! one dominator computation; every walk here uses an explicit stack, so guest
+//! function size never sets native stack depth.
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,9 +20,13 @@ use super::ops::{AttrValue, OpCode};
 mod indexed;
 mod points;
 mod simple_points;
+mod tree;
+/// The one iterative depth-first postorder engine; callers supply the edges.
+pub use super::traversal::reverse_postorder_by;
 pub use indexed::IndexedDominance;
 pub use points::{ProgramPointDominance, ProgramPointGraph};
 pub use simple_points::{SimpleExecutionDominance, SimpleProgramPoint};
+pub use tree::DominatorTree;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -300,136 +304,57 @@ pub fn executable_reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
 // Dominator tree
 // ---------------------------------------------------------------------------
 
-/// Compute immediate dominators using the Cooper-Harvey-Kennedy algorithm over
-/// the *full* CFG (terminator + exception edges). Returns a map from
-/// BlockId -> Option<BlockId> (idom). The entry block has no dominator (None).
+/// The dominator tree of the *full* CFG (terminator + exception edges). The
+/// entry block has no dominator.
 ///
 /// `pred_map` MUST have been built under the same edge policy (here,
 /// [`CfgEdgePolicy::Full`] via [`build_pred_map`]). For ordinary block flow,
-/// use [`compute_idoms_with`] with [`CfgEdgePolicy::TerminatorOnly`].
-pub fn compute_idoms(
+/// use [`compute_dominator_tree_with`] with [`CfgEdgePolicy::TerminatorOnly`].
+pub fn compute_dominator_tree(
     func: &TirFunction,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
-) -> HashMap<BlockId, Option<BlockId>> {
-    compute_idoms_with(func, pred_map, CfgEdgePolicy::Full)
+) -> DominatorTree {
+    compute_dominator_tree_with(func, pred_map, CfgEdgePolicy::Full)
 }
 
-/// Compute immediate dominators under an explicit edge policy. The `pred_map`
-/// must have been built with the *same* policy or the dominator tree is
-/// undefined.
-pub fn compute_idoms_with(
+/// The dominator tree under an explicit edge policy, numbered once for O(1)
+/// queries. The `pred_map` must have been built with the *same* policy or the
+/// dominator tree is undefined.
+pub fn compute_dominator_tree_with(
     func: &TirFunction,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
     policy: CfgEdgePolicy,
-) -> HashMap<BlockId, Option<BlockId>> {
+) -> DominatorTree {
     let rpo_order = reverse_postorder_with(func, policy);
-    if rpo_order.is_empty() {
-        return HashMap::new();
-    }
-
-    // Map BlockId -> RPO index for fast lookup.
-    let rpo_index: HashMap<BlockId, usize> = rpo_order
+    let positions: HashMap<BlockId, usize> = rpo_order
         .iter()
         .enumerate()
         .map(|(i, &bid)| (bid, i))
         .collect();
-
     let predecessors: Vec<Vec<usize>> = rpo_order
         .iter()
         .map(|bid| {
             pred_map[bid]
                 .iter()
-                .filter_map(|pred| rpo_index.get(pred).copied())
+                .filter_map(|pred| positions.get(pred).copied())
                 .collect()
         })
         .collect();
-    let doms = idoms_in_rpo(&predecessors);
-    rpo_order
-        .iter()
-        .enumerate()
-        .map(|(i, &bid)| {
-            (
-                bid,
-                (i != 0).then(|| doms[i].map(|d| rpo_order[d])).flatten(),
-            )
-        })
-        .collect()
+    DominatorTree::from_reverse_postorder(rpo_order, positions, &predecessors)
 }
 
-/// Cooper-Harvey-Kennedy over reachable nodes indexed in reverse postorder.
-/// Block and operation-position projections share this solver.
-fn idoms_in_rpo(predecessors: &[Vec<usize>]) -> Vec<Option<usize>> {
-    if predecessors.is_empty() {
-        return Vec::new();
-    }
-    // Intersect two dominator paths.
-    let intersect = |mut a: usize, mut b: usize, doms: &[Option<usize>]| -> usize {
-        while a != b {
-            while a > b {
-                a = doms[a].unwrap();
-            }
-            while b > a {
-                b = doms[b].unwrap();
-            }
-        }
-        a
-    };
-
-    let n = predecessors.len();
-    let mut doms: Vec<Option<usize>> = vec![None; n];
-    doms[0] = Some(0); // Entry dominates itself.
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for i in 1..n {
-            let preds = &predecessors[i];
-
-            // Find first processed predecessor.
-            let mut new_idom: Option<usize> = None;
-            for &rpo_i in preds {
-                if doms[rpo_i].is_some() {
-                    new_idom = Some(rpo_i);
-                    break;
-                }
-            }
-            let Some(mut new_idom_val) = new_idom else {
-                continue;
-            };
-
-            // Intersect with remaining processed predecessors.
-            for &rpo_i in preds {
-                if doms[rpo_i].is_some() && rpo_i != new_idom_val {
-                    new_idom_val = intersect(rpo_i, new_idom_val, &doms);
-                }
-            }
-
-            if doms[i] != Some(new_idom_val) {
-                doms[i] = Some(new_idom_val);
-                changed = true;
-            }
-        }
-    }
-
-    doms
-}
-
-/// Build the dominator-tree children map from an idom map: for each block, the
-/// set of blocks it *immediately* dominates, in ascending `BlockId` order for
-/// deterministic traversal. Every block in `idoms` appears as a key (with a
-/// possibly-empty child list). The root maps any self-idom edge away.
-pub fn build_dom_children(
-    idoms: &HashMap<BlockId, Option<BlockId>>,
-) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for &bid in idoms.keys() {
+/// Build the dominator-tree children map: for each block, the set of blocks it
+/// *immediately* dominates, in ascending `BlockId` order for deterministic
+/// traversal. Every block in the tree appears as a key (with a possibly-empty
+/// child list).
+pub fn build_dom_children(tree: &DominatorTree) -> HashMap<BlockId, Vec<BlockId>> {
+    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::with_capacity(tree.len());
+    for &bid in tree.blocks() {
         children.entry(bid).or_default();
     }
-    for (&child, parent) in idoms {
-        if let Some(parent) = parent
-            && *parent != child
-        {
-            children.entry(*parent).or_default().push(child);
+    for (child, parent) in tree.iter() {
+        if let Some(parent) = parent {
+            children.entry(parent).or_default().push(child);
         }
     }
     for kids in children.values_mut() {
@@ -439,38 +364,44 @@ pub fn build_dom_children(
 }
 
 /// Dominance frontiers by the Cooper-Harvey-Kennedy algorithm, from the
-/// immediate-dominator tree and the predecessor map of one edge policy. Only
-/// `reachable` blocks, and their reachable predecessors, take part.
+/// dominator tree and the predecessor map of one edge policy. Only the tree's
+/// (reachable) blocks, and their reachable predecessors, take part.
+///
+/// A walk from a join's predecessor climbs the tree to the join's immediate
+/// dominator. Where an earlier walk for the same join already recorded it, that
+/// walk climbed the same chain from there, so this one stops: the total work
+/// is the size of the frontiers plus the edges, not edges times tree depth.
 pub fn compute_dominance_frontiers(
-    idoms: &HashMap<BlockId, Option<BlockId>>,
+    tree: &DominatorTree,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
-    reachable: &HashSet<BlockId>,
 ) -> HashMap<BlockId, HashSet<BlockId>> {
     let mut df: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
     for (&b, preds) in pred_map {
-        if !reachable.contains(&b) {
+        if !tree.contains(b) {
             continue;
         }
         // Only join points (≥2 reachable preds) contribute to frontiers.
         let live_preds: Vec<BlockId> = preds
             .iter()
             .copied()
-            .filter(|p| reachable.contains(p))
+            .filter(|&p| tree.contains(p))
             .collect();
         if live_preds.len() < 2 {
             continue;
         }
-        let idom_b = idoms.get(&b).and_then(|d| *d);
+        let idom_b = tree.idom(b);
         for p in live_preds {
             let mut runner = p;
             // Walk up from `p` until we reach `b`'s idom, adding `b` to each
             // visited node's frontier.
             while Some(runner) != idom_b {
-                df.entry(runner).or_default().insert(b);
-                match idoms.get(&runner).and_then(|d| *d) {
-                    Some(idom) if idom != runner => runner = idom,
+                if !df.entry(runner).or_default().insert(b) {
+                    break;
+                }
+                match tree.idom(runner) {
+                    Some(idom) => runner = idom,
                     // Reached the dominator-tree root; stop.
-                    _ => break,
+                    None => break,
                 }
             }
         }
@@ -524,33 +455,6 @@ pub fn dom_tree_preorder(
     order
 }
 
-/// Returns `true` if `dominator` dominates `target` according to the idom tree.
-pub fn dominates(
-    dominator: BlockId,
-    target: BlockId,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
-) -> bool {
-    if dominator == target {
-        return idoms.contains_key(&target);
-    }
-    let mut current = target;
-    loop {
-        match idoms.get(&current) {
-            Some(Some(idom)) => {
-                if *idom == dominator {
-                    return true;
-                }
-                if *idom == current {
-                    // Reached the root without finding dominator.
-                    return false;
-                }
-                current = *idom;
-            }
-            _ => return false,
-        }
-    }
-}
-
 /// Compute the set of blocks that make up the natural loop with the given
 /// `header_bid`, using dominator-based natural-loop construction.
 ///
@@ -569,7 +473,7 @@ pub fn dominates(
 pub fn collect_loop_blocks(
     func: &TirFunction,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
+    tree: &DominatorTree,
     header_bid: BlockId,
 ) -> HashSet<BlockId> {
     let mut loop_blocks = HashSet::new();
@@ -583,7 +487,7 @@ pub fn collect_loop_blocks(
 
     let mut worklist: Vec<BlockId> = Vec::new();
     for &p in header_preds {
-        if dominates(header_bid, p, idoms) && loop_blocks.insert(p) {
+        if tree.dominates(header_bid, p) && loop_blocks.insert(p) {
             worklist.push(p);
         }
     }
@@ -608,7 +512,7 @@ pub fn collect_loop_blocks(
     // Every consumer (optimization, drop placement and WASM layout) needs the
     // same header-dominated body under the supplied CFG policy. An absent or
     // unreachable header therefore has no body either.
-    loop_blocks.retain(|bid| func.blocks.contains_key(bid) && dominates(header_bid, *bid, idoms));
+    loop_blocks.retain(|bid| func.blocks.contains_key(bid) && tree.dominates(header_bid, *bid));
     loop_blocks
 }
 
@@ -649,13 +553,13 @@ mod tests {
         }
         for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::TerminatorOnly] {
             let preds = build_pred_map_with(&func, policy);
-            let idoms = compute_idoms_with(&func, &preds, policy);
+            let tree = compute_dominator_tree_with(&func, &preds, policy);
             assert_eq!(
-                collect_loop_blocks(&func, &preds, &idoms, header),
+                collect_loop_blocks(&func, &preds, &tree, header),
                 HashSet::from([header, latch]),
             );
             for non_executable in [dead_feeder, BlockId(99)] {
-                assert!(collect_loop_blocks(&func, &preds, &idoms, non_executable).is_empty());
+                assert!(collect_loop_blocks(&func, &preds, &tree, non_executable).is_empty());
             }
         }
     }
@@ -671,11 +575,11 @@ mod tests {
         func.blocks.clear();
         for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::TerminatorOnly] {
             let preds = build_pred_map_with(&func, policy);
-            let idoms = compute_idoms_with(&func, &preds, policy);
+            let tree = compute_dominator_tree_with(&func, &preds, policy);
             assert!(preds.is_empty());
             assert!(reachable_blocks_with(&func, policy).is_empty());
-            assert!(idoms.is_empty());
-            assert!(!dominates(func.entry_block, func.entry_block, &idoms));
+            assert!(tree.is_empty());
+            assert!(!tree.dominates(func.entry_block, func.entry_block));
         }
         assert!(
             crate::tir::verify::verify_function(&func)
@@ -700,7 +604,7 @@ mod tests {
         };
         for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::TerminatorOnly] {
             let preds = build_pred_map_with(&func, policy);
-            let idoms = compute_idoms_with(&func, &preds, policy);
+            let tree = compute_dominator_tree_with(&func, &preds, policy);
             assert_eq!(
                 reachable_blocks_with(&func, policy),
                 HashSet::from([func.entry_block])
@@ -709,8 +613,11 @@ mod tests {
                 preds.keys().copied().collect::<HashSet<_>>(),
                 HashSet::from([func.entry_block])
             );
-            assert_eq!(idoms, HashMap::from([(func.entry_block, None)]));
-            assert!(!dominates(missing, missing, &idoms));
+            assert_eq!(
+                tree.iter().collect::<HashMap<_, _>>(),
+                HashMap::from([(func.entry_block, None)])
+            );
+            assert!(!tree.dominates(missing, missing));
         }
         assert!(
             crate::tir::verify::verify_function(&func)
@@ -736,8 +643,8 @@ mod tests {
             entry.terminator = Terminator::Return { values: vec![] };
         }
         let pred_map = build_pred_map(&func);
-        let idoms = compute_idoms(&func, &pred_map);
-        assert!(dominates(func.entry_block, func.entry_block, &idoms));
+        let tree = compute_dominator_tree(&func, &pred_map);
+        assert!(tree.dominates(func.entry_block, func.entry_block));
     }
 
     #[test]
@@ -784,12 +691,12 @@ mod tests {
         );
 
         let pred_map = build_pred_map(&func);
-        let idoms = compute_idoms(&func, &pred_map);
+        let tree = compute_dominator_tree(&func, &pred_map);
 
-        assert!(dominates(func.entry_block, bb1, &idoms));
-        assert!(dominates(func.entry_block, bb2, &idoms));
-        assert!(dominates(bb1, bb2, &idoms));
-        assert!(!dominates(bb2, bb1, &idoms));
+        assert!(tree.dominates(func.entry_block, bb1));
+        assert!(tree.dominates(func.entry_block, bb2));
+        assert!(tree.dominates(bb1, bb2));
+        assert!(!tree.dominates(bb2, bb1));
     }
 
     #[test]
@@ -863,15 +770,15 @@ mod tests {
         );
 
         let pred_map = build_pred_map(&func);
-        let idoms = compute_idoms(&func, &pred_map);
+        let tree = compute_dominator_tree(&func, &pred_map);
 
         // bb0 dominates everything
-        assert!(dominates(func.entry_block, bb1, &idoms));
-        assert!(dominates(func.entry_block, bb2, &idoms));
-        assert!(dominates(func.entry_block, bb3, &idoms));
+        assert!(tree.dominates(func.entry_block, bb1));
+        assert!(tree.dominates(func.entry_block, bb2));
+        assert!(tree.dominates(func.entry_block, bb3));
         // bb1 does NOT dominate bb3 (bb2 also reaches bb3)
-        assert!(!dominates(bb1, bb3, &idoms));
-        assert!(!dominates(bb2, bb3, &idoms));
+        assert!(!tree.dominates(bb1, bb3));
+        assert!(!tree.dominates(bb2, bb3));
     }
 
     #[test]
@@ -932,21 +839,22 @@ mod tests {
         func.label_id_map.insert(handler.0, 100);
 
         let pred_map = build_pred_map(&func);
-        let idoms = compute_idoms(&func, &pred_map);
+        let tree = compute_dominator_tree(&func, &pred_map);
 
-        assert!(dominates(func.entry_block, handler, &idoms));
+        assert!(tree.dominates(func.entry_block, handler));
 
         // Under the strict terminator-only policy (the verifier view), the
         // handler is reached ONLY via the exception edge, so it is not in the
         // dominator preorder at all — the two policies diverge exactly here.
         let term_pred = build_pred_map_with(&func, CfgEdgePolicy::TerminatorOnly);
-        let term_idoms = compute_idoms_with(&func, &term_pred, CfgEdgePolicy::TerminatorOnly);
+        let term_tree =
+            compute_dominator_tree_with(&func, &term_pred, CfgEdgePolicy::TerminatorOnly);
         assert!(
-            !term_idoms.contains_key(&handler),
+            !term_tree.contains(handler),
             "terminator-only dominators must exclude the exception-only handler"
         );
         // The normal block reachable via the terminator IS present under both.
-        assert!(term_idoms.contains_key(&normal));
+        assert!(term_tree.contains(normal));
 
         // Reachability views diverge the same way.
         let full_reach = executable_reachable_blocks(&func);
