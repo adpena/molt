@@ -153,10 +153,12 @@ def _rust_val_slice(vals: list[str]) -> str:
 
 def _cache_input_files() -> tuple[Path, ...]:
     generator_pkg = Path(__file__).resolve().parent / "wasm_abi_gen"
+    op_kinds_pkg = Path(__file__).resolve().parent / "op_kinds"
     files = {
         Path(__file__).resolve(),
         BUILTIN_CALLABLES.resolve(),
         *(path.resolve() for path in generator_pkg.glob("*.py")),
+        *(path.resolve() for path in op_kinds_pkg.glob("*.py")),
         *(path.resolve() for path in generator_input_files()),
     }
     return tuple(sorted(files, key=lambda path: _cache_relative_path(path)))
@@ -821,6 +823,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
     ]
     lines: list[str] = [_header("//")]
     lines.append("use super::import_tokens::WasmRuntimeImport;\n\n")
+    lines.append("use molt_ir::runtime_calls::RuntimeCall;\n\n")
     lines.extend(
         [
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
@@ -931,6 +934,21 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             ") -> Option<OpLoopRuntimeCallSpec> {\n",
         ]
     )
+    contract = [entry for entry in op_loop_entries if entry.get("runtime_contract")]
+    lines.append(
+        "    if let Some(call) = RuntimeCall::from_op(kind) {\n        return Some(match call {\n"
+    )
+    for entry in contract:
+        token = _rust_runtime_import(import_variants, entry["import_name"])
+        args = ", ".join(_render_op_loop_arg(arg) for arg in entry["args"])
+        lines.extend(
+            [
+                f"RuntimeCall::{_wire_kind_variant(entry['kind'])} => OpLoopRuntimeCallSpec {{\n",
+                f"import: {token}, args: &[{args}], required_imports: &[{token}], discard_result: false,\n",
+                "},\n",
+            ]
+        )
+    lines.append("        });\n    }\n")
     shared = runtime_boxed_op_specs(data)
     if shared:
         lines.extend(
@@ -962,7 +980,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
         )
     lines.append("    match kind {\n")
     for entry in op_loop_entries:
-        if entry.get("shared_boxed_call", False):
+        if entry.get("shared_boxed_call", False) or entry.get("runtime_contract"):
             continue
         variants = [(None, entry["import_name"], entry["required_imports"])]
         if marked_import_name := entry.get("marked_import_name"):
@@ -1307,9 +1325,28 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
         "    pub arity: usize,\n",
         "    pub result: RuntimeBoxedReturn,\n",
         "}\n\n",
-        "pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[\n",
     ]
     specs = runtime_boxed_call_specs(data)
+    lines.extend(
+        [
+            "/// Closed identities from the runtime-function ABI authority.\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]\n",
+            "#[repr(u16)]\npub enum RuntimeFn {\n",
+        ]
+    )
+    for index, spec in enumerate(specs):
+        lines.append(
+            f"    {_wire_kind_variant(spec['runtime_name'].removeprefix('molt_'))} = {index},\n"
+        )
+    lines.extend(
+        [
+            "}\nimpl RuntimeFn {\n",
+            "    pub const fn boxed_abi(self) -> &'static RuntimeBoxedAbi { &RUNTIME_BOXED_ABIS[self as usize] }\n",
+            "    pub const fn symbol(self) -> &'static str { self.boxed_abi().symbol }\n",
+            "}\n\n",
+            "pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[\n",
+        ]
+    )
     for spec in specs:
         result = (
             "Void"

@@ -2108,3 +2108,59 @@ fn shared_boxed_text_calls_use_owned_abi_and_exact_arity() {
         assert_lowering_error_contains(&error, "mismatched arity");
     }
 }
+
+#[test]
+fn generated_runtime_call_agreement_imports_declared_llvm_function() {
+    use molt_ir::runtime_calls::RuntimeCall;
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        let abi = call.function().boxed_abi();
+        for bound in [false, true] {
+            for opcode in if call == RuntimeCall::Iter {
+                vec![OpCode::Copy, OpCode::GetIter]
+            } else {
+                vec![OpCode::Copy]
+            } {
+                let ctx = Context::create();
+                let mut backend = make_backend(&ctx);
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+                    .insert(abi.symbol.into());
+                // A wrong s_value cannot override the generated op meaning.
+                let mut func = runtime_call_shape_function(
+                    opcode,
+                    kind,
+                    "molt_store_index",
+                    abi.arity,
+                    bound,
+                    false,
+                );
+                if opcode == OpCode::GetIter && !bound {
+                    // Typed SSA always defines its iterator; an unused result is
+                    // discarded by custody, rather than deleting the definition.
+                    let result = func.fresh_value();
+                    func.blocks
+                        .get_mut(&func.entry_block)
+                        .unwrap()
+                        .ops
+                        .last_mut()
+                        .unwrap()
+                        .results
+                        .push(result);
+                }
+                let ir = try_lower_tir_to_llvm(&func, &backend)
+                    .unwrap()
+                    .print_to_string()
+                    .to_string();
+                backend.module.verify().expect("contract LLVM module");
+                assert!(
+                    ir.contains(&format!("call i64 @{}(", abi.symbol)),
+                    "{call:?}: {ir}"
+                );
+                assert!(!ir.contains("call i64 @molt_store_index("), "{ir}");
+                assert!(!ir.contains("call i64 @molt_iter("), "{ir}");
+            }
+        }
+    }
+}

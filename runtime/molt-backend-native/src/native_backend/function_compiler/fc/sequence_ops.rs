@@ -11,7 +11,6 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::UnpackSequence,
     OpKind::TupleCount,
     OpKind::TupleIndex,
-    OpKind::Iter,
     OpKind::Enumerate,
     OpKind::IterNextUnboxed,
     OpKind::IterNext,
@@ -361,33 +360,6 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*tuple, *val]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        OpKind::Iter => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let obj = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Iter source not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_iter_checked",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*obj]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);

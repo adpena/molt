@@ -63,7 +63,9 @@ from tools.op_kinds import render_python as _render_python  # noqa: E402
 from tools.op_kinds import render_rust as _render_rust  # noqa: E402
 from tools.op_kinds import schema as _schema  # noqa: E402
 from tools.op_kinds import validate as _validate  # noqa: E402
-from tools.generator_io import generator_main  # noqa: E402
+from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
+from tools.op_kinds.runtime_calls import render_runtime_calls  # noqa: E402
+from tools.wasm_abi_gen.manifest import load_manifest  # noqa: E402
 from tools.op_kinds.paths import (  # noqa: E402
     OUT_PY,
     OUT_RS,
@@ -91,7 +93,11 @@ def load_table(table_path: Path | None = None) -> dict:
 
 def render_rs(data: dict) -> str:
     _sync_facade_hooks()
-    return _render_rust.render_rs(data)
+    contract = render_runtime_calls(data, load_manifest())
+    return rustfmt_source(
+        _render_rust.render_rs(data) + "\npub mod runtime_calls {\n" + contract + "}\n",
+        label="op_kinds_generated.rs",
+    )
 
 
 def render_py(data: dict) -> str:

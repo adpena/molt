@@ -21,6 +21,7 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     SubscriptStore,
     SliceOps,
     BoxedRuntimeCalls,
+    ContractRuntimeCalls,
     TextTransform,
     RuntimeOps,
     TypeConversions,
@@ -53,6 +54,7 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
     kind: OpKind,
 ) -> NativeOpFamily {
     match kind {
+        molt_ir::runtime_call_op_kinds!() => NativeOpFamily::ContractRuntimeCalls,
         OpKind::DropInserted | OpKind::ExceptionRegionDropsInserted | OpKind::Nop => {
             NativeOpFamily::NoCodegen
         }
@@ -180,7 +182,6 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::FormatString
         | OpKind::Free
         | OpKind::GetItem
-        | OpKind::GetIter
         | OpKind::Goto
         | OpKind::GuardBool
         | OpKind::GuardFloat

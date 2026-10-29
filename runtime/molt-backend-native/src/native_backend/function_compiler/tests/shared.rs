@@ -337,3 +337,111 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
         }
     }
 }
+
+#[test]
+fn generated_runtime_call_agreement_imports_declared_native_function() {
+    use molt_ir::runtime_calls::RuntimeCall;
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        let abi = call.function().boxed_abi();
+        let params = (0..abi.arity)
+            .map(|i| format!("arg{i}"))
+            .collect::<Vec<_>>();
+        for bound in [false, true] {
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: format!("contract_{}_{}", kind, bound),
+                    params: params.clone(),
+                    ops: vec![
+                        OpIR {
+                            args: Some(params.clone()),
+                            out: (bound || kind == molt_ir::OpKind::GetIter)
+                                .then(|| "result".into()),
+                            ..OpIR::new(kind)
+                        },
+                        if bound {
+                            OpIR {
+                                args: Some(vec!["result".into()]),
+                                ..OpIR::new(OpKind::Ret)
+                            }
+                        } else {
+                            OpIR::new(OpKind::RetVoid)
+                        },
+                    ],
+                    return_abi: if bound {
+                        molt_ir::FunctionReturnAbi::Value
+                    } else {
+                        molt_ir::FunctionReturnAbi::Void
+                    },
+                    ..FunctionIR::default()
+                }],
+                profile: None,
+            };
+            let object = SimpleBackend::new().compile(ir);
+            let symbols = native_object_symbols(&object.bytes).undefined;
+            assert!(symbols.contains(abi.symbol), "{call:?}: {symbols:?}");
+            assert!(
+                !symbols.contains("molt_store_index"),
+                "dict storage must bypass the subclass protocol"
+            );
+            assert!(
+                !symbols.contains("molt_iter"),
+                "iteration must retain the checked error protocol"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn generated_runtime_call_agreement_jit_admits_declared_import_before_relocation() {
+    use molt_ir::runtime_calls::RuntimeCall;
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        let abi = call.function().boxed_abi();
+        let args = (0..abi.arity)
+            .map(|i| format!("arg{i}"))
+            .collect::<Vec<_>>();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("contract_jit_{kind}"),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                params: args.clone(),
+                ops: vec![
+                    OpIR {
+                        args: Some(args),
+                        out: Some("result".into()),
+                        ..OpIR::new(kind)
+                    },
+                    OpIR {
+                        args: Some(vec!["result".into()]),
+                        ..OpIR::new(OpKind::Ret)
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        // Deliberately absent provider: this exercises admission before any relocation,
+        // without a stub address or execution of unlinked code.
+        let result = SimpleBackend::new_jit(std::sync::Arc::new(|_| None)).compile_jit(ir);
+        let Err(crate::native_backend::simple_backend::JitCompileError::UnresolvedImports(symbols)) =
+            result
+        else {
+            panic!("JIT must report unresolved imports before relocation");
+        };
+        assert!(
+            symbols.iter().any(|symbol| symbol == abi.symbol),
+            "{call:?}: {symbols:?}"
+        );
+        assert!(
+            !symbols
+                .iter()
+                .any(|symbol| symbol == "molt_store_index" || symbol == "molt_iter")
+        );
+    }
+}
