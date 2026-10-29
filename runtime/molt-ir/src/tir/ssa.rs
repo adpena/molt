@@ -135,9 +135,10 @@ struct SsaContext<'a> {
     /// validity consumes this executable graph directly so exception/resume
     /// routes cannot be mistaken for an ordinary not-done edge.
     aug_successors: Vec<Vec<usize>>,
-    /// Augmented immediate dominators computed from `aug_predecessors`.
-    /// Indexed by block id; entry block's idom is `None`.
-    aug_dominators: Vec<Option<usize>>,
+    /// The augmented dominator tree over `aug_successors`, numbered once:
+    /// immediate dominators by block id (`None` at the entry) and O(1)
+    /// dominance queries.
+    aug_dominance: crate::tir::dominators::IndexedDominance,
 }
 
 impl<'a> SsaContext<'a> {
@@ -160,7 +161,7 @@ impl<'a> SsaContext<'a> {
             source_sites: Self::build_source_sites(ops),
             aug_predecessors: vec![Vec::new(); n],
             aug_successors: vec![Vec::new(); n],
-            aug_dominators: vec![None; n],
+            aug_dominance: crate::tir::dominators::IndexedDominance::compute(&[], 0),
         }
     }
 
@@ -289,7 +290,7 @@ impl<'a> SsaContext<'a> {
         // walk visits them in dominance order alongside the success path.
         let mut dom_children: Vec<Vec<usize>> = vec![Vec::new(); n];
         for bid in 0..n {
-            if let Some(idom) = self.aug_dominators[bid] {
+            if let Some(idom) = self.aug_dominance.immediate_dominator(bid) {
                 dom_children[idom].push(bid);
             }
         }

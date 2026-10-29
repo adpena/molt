@@ -148,6 +148,9 @@ pub fn run_drop_phase(
 }
 
 #[cfg(test)]
+mod huge_function_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 

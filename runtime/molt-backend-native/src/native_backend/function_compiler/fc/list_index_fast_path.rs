@@ -14,7 +14,7 @@ pub(in crate::native_backend::function_compiler) struct ListIndexFastPathState {
     cleanup_generation: std::rc::Rc<std::cell::Cell<u64>>,
     // Immutable derivation of the function's canonical CFG, built only if a
     // loop survives effect filtering and shared by every hoist scan.
-    loop_execution_dominators: Option<Vec<Option<usize>>>,
+    loop_execution_dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -458,26 +458,16 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     }
     // A lexical prefix is not a dominance proof. Reuse the canonical execution
     // graph, including exception/resume edges, before installing preheader data.
-    let dominators = fast_paths
-        .loop_execution_dominators
-        .get_or_insert_with(|| crate::tir::cfg::CFG::build(ops).execution_op_dominators(ops));
-    let dominates = |definition: usize, mut use_index: usize| {
-        loop {
-            if definition == use_index {
-                return true;
-            }
-            let Some(parent) = dominators[use_index] else {
-                return false;
-            };
-            use_index = parent;
-        }
-    };
-    if (body_start != 0 && dominators[body_start].is_none())
+    let dominance = fast_paths
+        .loop_execution_dominance
+        .get_or_insert_with(|| crate::tir::cfg::CFG::build(ops).execution_points(ops));
+    if !dominance.operation_is_reachable(body_start)
         || ((body_start + 1)..=loop_end).any(|index| {
             // An end marker after an unconditional continue is lexical only.
-            // The canonical graph leaves unreachable nodes without an idom;
-            // real exception/resume entries remain reachable and must pass.
-            dominators[index].is_some() && !dominates(body_start, index)
+            // Unreachable operations are not uses; real exception/resume
+            // entries remain reachable and must pass. Each test is O(1).
+            dominance.operation_is_reachable(index)
+                && !dominance.operation_dominates(body_start, index)
         })
     {
         return (BTreeSet::new(), BTreeSet::new());
@@ -487,7 +477,7 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     for (index, op) in ops.iter().enumerate().take(start_idx) {
         crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
             lexical_definitions.insert(name.to_string());
-            if dominates(index, body_start) {
+            if dominance.operation_dominates(index, body_start) {
                 dominating_definitions.insert(name.to_string());
             }
         });

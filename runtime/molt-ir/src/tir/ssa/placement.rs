@@ -740,17 +740,7 @@ impl<'a> SsaContext<'a> {
         if definition.block == usage.block {
             return definition.op < usage.op;
         }
-        let mut cursor = usage.block;
-        while let Some(idom) = self.aug_dominators[cursor] {
-            if idom == definition.block {
-                return true;
-            }
-            if idom == cursor {
-                break;
-            }
-            cursor = idom;
-        }
-        false
+        self.aug_dominance.dominates(definition.block, usage.block)
     }
 
     // -- Phase 1: gather variable defs and uses per block --------------------
@@ -822,14 +812,13 @@ impl<'a> SsaContext<'a> {
         let n = self.cfg.blocks.len();
         // Start from regular predecessors.
         let mut aug_preds: Vec<Vec<usize>> = self.cfg.predecessors.clone();
-        // Fold exception edges in.
+        // Fold exception edges in. The sort and dedup below remove repeats;
+        // a membership scan per edge is quadratic at a shared handler.
         for &(from_bid, handler_bid) in &self.cfg.exception_edges {
             if from_bid >= n || handler_bid >= n {
                 continue;
             }
-            if !aug_preds[handler_bid].contains(&from_bid) {
-                aug_preds[handler_bid].push(from_bid);
-            }
+            aug_preds[handler_bid].push(from_bid);
         }
         // Fold state-machine resume (dispatch) edges in: a suspend op `ret`s, so
         // its resume continuation has no *regular* predecessor — exactly like an
@@ -842,9 +831,7 @@ impl<'a> SsaContext<'a> {
             if switch_bid >= n || resume_bid >= n {
                 continue;
             }
-            if !aug_preds[resume_bid].contains(&switch_bid) {
-                aug_preds[resume_bid].push(switch_bid);
-            }
+            aug_preds[resume_bid].push(switch_bid);
         }
         // Sort for determinism.
         for preds in &mut aug_preds {
@@ -864,7 +851,8 @@ impl<'a> SsaContext<'a> {
             succs.dedup();
         }
 
-        self.aug_dominators = compute_dominators_from(n, &aug_succs, &aug_preds, self.cfg.entry);
+        self.aug_dominance =
+            crate::tir::dominators::IndexedDominance::compute(&aug_succs, self.cfg.entry);
         self.aug_predecessors = aug_preds;
         self.aug_successors = aug_succs;
     }
@@ -883,16 +871,24 @@ impl<'a> SsaContext<'a> {
                     // runner dominates pred (or runner==pred), and b has pred as
                     // a predecessor. runner strictly dominates b only if
                     // runner == idom chain ancestor strictly.
-                    if Some(runner) == self.aug_dominators[b] {
+                    if Some(runner) == self.aug_dominance.immediate_dominator(b) {
                         // runner strictly dominates b — stop.
                         break;
                     }
                     // runner == b is also possible in loop headers.
-                    if runner == b && self.aug_dominators[b].is_none() && b == self.cfg.entry {
+                    if runner == b
+                        && self.aug_dominance.immediate_dominator(b).is_none()
+                        && b == self.cfg.entry
+                    {
                         break;
                     }
-                    self.dom_frontier[runner].insert(b);
-                    match self.aug_dominators[runner] {
+                    // An earlier walk for `b` that recorded it here climbed
+                    // the same chain onward; repeating it is quadratic at a
+                    // wide join below a deep dominator chain.
+                    if !self.dom_frontier[runner].insert(b) {
+                        break;
+                    }
+                    match self.aug_dominance.immediate_dominator(runner) {
                         Some(idom) if idom != runner => runner = idom,
                         _ => break,
                     }
@@ -913,35 +909,6 @@ impl<'a> SsaContext<'a> {
             }
         }
         sites
-    }
-
-    /// Index the existing augmented dominator tree once. Unreachable blocks
-    /// have no interval; none of the disconnected local-rename protocol changes.
-    fn augmented_dominator_intervals(&self) -> Vec<Option<(usize, usize)>> {
-        let n = self.cfg.blocks.len();
-        let mut children = vec![Vec::new(); n];
-        for (bid, idom) in self.aug_dominators.iter().enumerate() {
-            if let Some(parent) = idom {
-                children[*parent].push(bid);
-            }
-        }
-        let mut intervals = vec![None; n];
-        let mut stack = vec![(self.cfg.entry, false)];
-        let mut next = 0;
-        while let Some((bid, exiting)) = stack.pop() {
-            if exiting {
-                let (start, _) = intervals[bid].expect("entered dominator node");
-                intervals[bid] = Some((start, next));
-                continue;
-            }
-            intervals[bid] = Some((next, next));
-            next += 1;
-            stack.push((bid, true));
-            for &child in children[bid].iter().rev() {
-                stack.push((child, false));
-            }
-        }
-        intervals
     }
 
     pub(super) fn insert_block_arguments(
@@ -1060,7 +1027,6 @@ impl<'a> SsaContext<'a> {
             .iter()
             .map(|sites| (sites.len() == 1).then(|| sites[0]))
             .collect();
-        let intervals = self.augmented_dominator_intervals();
         for bid in targets {
             let mut retained: Vec<_> = live_in[bid]
                 .iter()
@@ -1068,13 +1034,9 @@ impl<'a> SsaContext<'a> {
                     let Some(source) = sole_source[id as usize] else {
                         return true;
                     };
-                    let (Some((start, end)), Some((target, _))) =
-                        (intervals[source], intervals[bid])
-                    else {
-                        return true;
-                    };
-                    // Strict ancestry excludes loop/self-entry old values.
-                    !(source != bid && start <= target && target < end)
+                    // Strict ancestry excludes loop/self-entry old values. An
+                    // unreachable source or target dominates nothing.
+                    source == bid || !self.aug_dominance.dominates(source, bid)
                 })
                 .map(|id| (names.name(id).to_owned(), id))
                 .collect();
@@ -1135,77 +1097,4 @@ impl<'a> SsaContext<'a> {
         );
         (names, live_in)
     }
-}
-
-fn compute_dominators_from(
-    n: usize,
-    successors: &[Vec<usize>],
-    predecessors: &[Vec<usize>],
-    entry: usize,
-) -> Vec<Option<usize>> {
-    if n == 0 {
-        return vec![];
-    }
-
-    // RPO over forward (successor) edges from entry.
-    let rpo = crate::tir::traversal::indexed_reverse_postorder(successors, entry);
-    let mut rpo_number: Vec<usize> = vec![usize::MAX; n];
-    for (rpo_idx, &bid) in rpo.iter().enumerate() {
-        rpo_number[bid] = rpo_idx;
-    }
-
-    let mut idom: Vec<Option<usize>> = vec![None; n];
-    idom[entry] = Some(entry);
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &b in &rpo {
-            if b == entry {
-                continue;
-            }
-            let mut new_idom: Option<usize> = None;
-            for &p in &predecessors[b] {
-                if idom[p].is_some() {
-                    new_idom = Some(match new_idom {
-                        None => p,
-                        Some(cur) => intersect_dom_idx(&idom, &rpo_number, cur, p),
-                    });
-                }
-            }
-            if new_idom != idom[b] {
-                idom[b] = new_idom;
-                changed = true;
-            }
-        }
-    }
-
-    idom[entry] = None;
-    idom
-}
-
-fn intersect_dom_idx(
-    idom: &[Option<usize>],
-    rpo_number: &[usize],
-    mut a: usize,
-    mut b: usize,
-) -> usize {
-    while a != b {
-        while rpo_number[a] > rpo_number[b] {
-            match idom[a] {
-                Some(d) if d != a => a = d,
-                _ => break,
-            }
-        }
-        while rpo_number[b] > rpo_number[a] {
-            match idom[b] {
-                Some(d) if d != b => b = d,
-                _ => break,
-            }
-        }
-        if rpo_number[a] == rpo_number[b] && a != b {
-            break;
-        }
-    }
-    a
 }
