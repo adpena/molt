@@ -34,9 +34,9 @@ CHECKOUT_TARGET = ROOT / "target"
 def short_cargo_cache() -> Iterator[Path]:
     """Owned temporary cache whose native startup socket fits on macOS."""
     import tempfile
-    from molt.dx import artifact_root
+    from molt.dx import storage_path
 
-    parent = artifact_root(ROOT) / "tmp"
+    parent = storage_path(ROOT, "run-control", os.environ)
     parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cenv-", dir=parent) as raw:
         yield Path(raw) / "cache"
