@@ -114,7 +114,7 @@ consumer migrations. A source checkpoint is not a completed finding.
 | Module ownership and callback-safe IO (HF-276, V1-18) | The joined module source uses one interpreter-owned module dictionary, scoped initializer/private execution, ordered public finder transactions and role-bound compiled providers. Source and generated-consumer reconciliation, actual native/WASM public-import execution, and provenance-bound startup, import-cost and memory qualification remain required before closure. Earlier donor source/static or mixed-image results do not qualify these joined bytes. Luau import capability remains an explicit gap. Codec/IO remains with V1-18. |
 | Codec state, errors and registry (V1-18) | Current native state/error/map controls pass, but public, scalar and IO consumers still disagree about registry authority. Reconcile the existing registry/TextIO design and complete that one migration before landing this family. Retain the measured kernel/cache costs and existing semantic evidence; do not start another registry or claim whole-codec conformance from the current slice. |
 | Installed product and accepted measurements (V1-01/V1-02/V1-06/V1-07/V1-24/V1-28) | Reuse the existing installed candidate/consumer machinery for compile, edit/rebuild and standalone native/WASM execution without Cargo provisioning or host-Python fallback. The release caller currently supplies empty full-matrix performance shards/toolchain identities; the receiver reports authenticated compiler/runtime used-byte admission unavailable. Complete one genuine producer-to-receiver measurement path with omission/substitution negatives before the full campaign. Local diagnostic measurements remain useful but do not close acceptance. LLVM is in the declared production feature set; installed execution still needs qualification. |
-| Representative application measurements (V1-07) | The sealed application migration is integrated at `c2f0b1147` through the canonical corpus catalog and benchmark/scoreboard consumers; representative target execution and release measurement admission remain open. Workload v2 binds package/source/data identity, exact argv, import roots and semantic oracle; one typed guard observation owns child completion, direct-child timing, RSS and binary capture decoded losslessly. Refuse incomplete samples, retain failure output and close preparation/output owners before publication. Native sealed package/data/argv execution matches CPython. LLVM now reaches the canonical managed SDK after removal of the benchmark-only Homebrew selector, compiles, then fails the public `pathlib` → `itertools` → `typing` import at `_MOLT_KWD_MARK`; retain this actual consumer counterexample under V1-02/V1-18. The minimal package/data/argv witness passes native and LLVM. Its Node/WASM build completes, but the guest returns 1 with empty semantic output and only a host WASI warning; the cause remains unqualified. The larger WASM build also exceeds a bounded four-minute diagnostic run. Preserve those failures under V1-02/V1-07/V1-18; do not report an application timing or full target qualification. The full HTML workload still reaches unsupported dynamic `exec` in its pinned dependency; do not patch that package or widen the execution policy to make a benchmark pass. These protocol controls and local diagnostics do not close authenticated measured-metric admission or the required performance matrix. |
+| Representative application measurements (V1-07) | The sealed application migration is integrated at `c2f0b1147` through the canonical corpus catalog and benchmark/scoreboard consumers; representative target execution and release measurement admission remain open. Workload v2 binds package/source/data identity, exact argv, import roots and semantic oracle; one typed guard observation owns child completion, direct-child timing, RSS and binary capture decoded losslessly. Refuse incomplete samples, retain failure output and close preparation/output owners before publication. Native sealed package/data/argv execution matches CPython. LLVM now reaches the canonical managed SDK after removal of the benchmark-only Homebrew selector, compiles, then fails the public `pathlib` → `itertools` → `typing` import at `_MOLT_KWD_MARK`; retain this actual consumer counterexample under V1-02/V1-18. The minimal package/data/argv witness passes native and LLVM. A current replay of the exact minimal source/data/argv seal builds for Node/WASM and exposes the actual failure: the workload opens its dataset without declaring `fs.read`. The corrected shared observer preserves the guest PermissionError and original-byte identity through cleanup, separately from host warnings. The initial undeclared denial is expected security behavior; do not weaken runtime defaults. The typed catalog and build-request consumers now carry explicit compiler arguments. Deployment manifest v4 transports the existing resolved policy to Node, both browser hosts, Rust and both Cloudflare generators; actual host controls pass. At `c7eca8a848`, the actual compiled minimal package/data/argv witness with `fs.read` passes both Node/WASM observations against CPython for stdout, stderr and exit status, with closed guards. This qualifies that local execution cell; its 339.009-second development build is diagnostic, not accepted product compilation latency or application performance. The historical bundle/raw capture was reclaimed, so current evidence does not relabel that historical run. The larger WASM build also exceeds a bounded four-minute diagnostic run. Preserve those failures under V1-02/V1-07/V1-18; do not report an application timing or full target qualification. The full HTML workload still reaches unsupported dynamic `exec` in its pinned dependency; do not patch that package or widen the execution policy to make a benchmark pass. These protocol controls and local diagnostics do not close authenticated measured-metric admission or the required performance matrix. |
 | Scientific witness and remaining matrix (HF-04 and E1/E3) | Reproduce NumPy/SciPy extension seals through the current source-extension producer. Preserved schema-4 native seals are historical; schema-7 admission additionally binds consumed Python providers and Meson dependency facts. Historical digests cannot supply current registry entries. Reuse compatible products for native/WASM witness execution and the remaining declared platform/version/profile consumers. |
 
 Asyncio remains a P0 product outcome: integrated park/wake code does not qualify
@@ -473,6 +473,45 @@ external checkout target before addressing build control. The test retains its
 independent literal target layout; production selection is unchanged. The first
 integration's Clippy command is cancelled after that assertion fails and grants
 no passing Clippy evidence.
+
+The shared run observer now derives failure tails from semantic guest stderr,
+preserving host diagnostics separately. Known original-byte failure captures
+retain immutable byte-length/SHA-256 evidence through bounded publication and
+cleanup; normalized or unavailable captures remain unknown. Each stream decodes
+once and successful samples add no hashing. Methodology v17 separates this
+classification and explicit application-invocation contract from older reports.
+Executable application recipes require immutable compiler arguments; both dataset
+readers declare only `fs.read`. The typed build adapter and legacy harness consume
+and seal those same arguments. Capture, recipe, admission and execution controls
+pass; runtime permission defaults are unchanged.
+
+An actual replay of the exact minimal source/package/data/argv seal exposed the
+complete public WASM policy transport defect: even with the compiler receiving
+`--capabilities fs.read`, Node initialized WASI only from its ambient environment.
+Deployment manifest v4 now transports the existing resolved policy's environment
+projection. Linked and split producers, snapshot admission, Node, both browser
+hosts, Rust including manifest-bound WASI commands and precompiled loading, and
+both Cloudflare generators use that contract. Generated required names come from
+the ABI manifest; hosts validate transport without resolving policy again. Emitted
+entries overwrite ambient values as on native launches; omitted optional entries
+remain ambient, and the actual host assigns its execution target last. Raw generic
+WASI commands preserve their separate environment behavior. Retired v3 deployments
+fail before module reads. Cloudflare embeds the full manifest without rescanning
+inserted strings as template tokens, preserving Unicode and own `__proto__` keys.
+Browser embed encodes the environment once for both memory owners and accepts
+valid preview1 scalar outputs at offset zero.
+
+Actual host controls pass for policy denial/grants, ambient overlay, required-field
+refusal and generated Worker environment delivery; 47 Rust host controls pass.
+The actual compiled-Molt witness at `c7eca8a848` now imports the sealed package,
+opens its dataset with only the declared `fs.read` grant and emits `sealed:7`.
+Both Node/WASM observations match CPython's stdout, stderr and exit status; all
+36 guarded commands pass with child0/guard0 and closed descendants. This qualifies
+that local execution cell. Its 339.009-second development build remains far too
+slow and is diagnostic, not accepted product compilation latency or application
+performance. Earlier negative and interrupted attempts remain private evidence;
+the historical bundle/raw capture was reclaimed, so later evidence cannot relabel
+that historical run. Full target execution and release admission remain open.
 
 Next attribute ordinary first-compile and edit costs through the existing phase
 and guarded-command telemetry before changing backend preparation, process

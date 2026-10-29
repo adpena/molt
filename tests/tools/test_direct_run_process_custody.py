@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,7 +33,7 @@ def _completed(**overrides):
     return guard.GuardedCompletedProcess(
         [sys.executable, "-c", "pass"],
         fields.pop("returncode", 0),
-        "child output",
+        fields.pop("stdout", "child output"),
         fields.pop("stderr", "child warning"),
         **fields,
     )
@@ -127,6 +128,66 @@ def test_observer_preserves_child_failure_before_missing_measurements():
     assert outcome.exit_code == 7
     assert outcome.elapsed_s is None and outcome.peak_rss_mib is None
     assert outcome.stdout == "child output" and outcome.stderr == "failed\n"
+    assert outcome.stdout_identity is None and outcome.stderr_identity is None
+
+
+@pytest.mark.parametrize(
+    "captured", [None, "", "normalized text", b"", b"guest \xff\r\n"]
+)
+def test_failed_capture_identity_requires_original_bytes(captured):
+    from tools import bench
+
+    completed = _completed(returncode=7, child_returncode=7, stdout=b"partial\r\n")
+    outcome = safe_run.observed_run_outcome(completed, captured_stderr=captured)
+    failure = bench.classify_molt_process_failure(
+        phase="run",
+        returncode=outcome.exit_code,
+        elapsed_s=outcome.elapsed_s,
+        stdout=outcome.stdout,
+        stderr=outcome.stderr,
+        stdout_identity=outcome.stdout_identity,
+        stderr_identity=outcome.stderr_identity,
+    )
+    payload = bench.molt_failure_payload(failure)
+    assert payload["stdout_identity"] == {
+        "byte_length": 9,
+        "sha256": hashlib.sha256(b"partial\r\n").hexdigest(),
+    }
+    expected = (
+        {"byte_length": len(captured), "sha256": hashlib.sha256(captured).hexdigest()}
+        if isinstance(captured, bytes)
+        else None
+    )
+    assert payload["stderr_identity"] == expected
+
+
+def test_guard_failure_keeps_empty_guest_capture_and_separate_host_diagnostic():
+    from tools import bench, memory_guard
+
+    failure = memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody", details=("independent closure refusal",)
+    )
+    completed = _completed(returncode=125, infrastructure_failure=failure)
+    outcome = safe_run.observed_run_outcome(
+        completed, captured_stderr=b"", host_stderr=b"independent host warning"
+    )
+    payload = bench.molt_failure_payload(
+        bench.classify_molt_process_failure(
+            phase="run",
+            returncode=outcome.exit_code,
+            elapsed_s=outcome.elapsed_s,
+            stderr=outcome.stderr,
+            stderr_identity=outcome.stderr_identity,
+            child_returncode=completed.child_returncode,
+            infrastructure_failure=completed.infrastructure_failure,
+        )
+    )
+    assert outcome.status == payload["status"] == "infrastructure_error"
+    assert outcome.stderr == "" and outcome.stderr_tail is None
+    assert outcome.host_stderr == "independent host warning"
+    assert payload["message"] is None and payload["stderr_tail"] is None
+    assert payload["infrastructure_failure"] == failure.json_payload()
+    assert payload["child_returncode"] == 0
 
 
 def test_safe_run_preserves_guard_infrastructure_outcome(monkeypatch, capsys):
@@ -151,16 +212,25 @@ def test_safe_run_preserves_guard_infrastructure_outcome(monkeypatch, capsys):
     assert receipt["timing_scope"] == "child-launch-to-exit"
 
 
+@pytest.mark.parametrize(
+    "guest_stderr",
+    [b"", b"guest \xff without newline", b"discarded\n" * 600 + b"guest tail\r\n"],
+)
 def test_safe_run_separates_exact_guest_capture_and_host_diagnostics(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, guest_stderr
 ):
     capture = tmp_path / "guest-stderr"
     capture.write_bytes(b"old sample")
 
     def invoke(*a, **kw):
         assert capture.read_bytes() == b""
-        capture.write_bytes(b"guest \xff without newline")
-        return _completed(stderr="host warning", child_stderr="host warning")
+        capture.write_bytes(guest_stderr)
+        return _completed(
+            returncode=7,
+            child_returncode=7,
+            stderr="host warning",
+            child_stderr="host warning",
+        )
 
     monkeypatch.setattr(
         safe_run.harness_memory_guard, "guarded_completed_process", invoke
@@ -174,11 +244,11 @@ def test_safe_run_separates_exact_guest_capture_and_host_diagnostics(
         capture_output=True,
         guest_stderr_path=capture,
     )
-    assert outcome.ok
-    assert (
-        outcome.stderr.encode("utf-8", "surrogateescape")
-        == b"guest \xff without newline"
-    )
+    assert not outcome.ok and outcome.status == "nonzero"
+    assert outcome.exit_code == 7
+    assert outcome.stderr.encode("utf-8", "surrogateescape") == guest_stderr
+    expected_tail = guest_stderr.decode("utf-8", "surrogateescape")[-4096:]
+    assert outcome.stderr_tail == (expected_tail or None)
     assert outcome.host_stderr == "host warning"
 
 

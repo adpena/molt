@@ -7,7 +7,12 @@
     "value_type_format": 1,
     "version": 1
   },
-  "execution_manifest_version": 3,
+  "execution_manifest_required_environment": [
+    "MOLT_CAPABILITIES",
+    "MOLT_CAPABILITY_TIER",
+    "MOLT_CAPABILITY_POLICY_DIGEST"
+  ],
+  "execution_manifest_version": 4,
   "external_native_link_imports": {
     "primitive_classes": {
       "MoltManaged_Type": "molt_cpython_abi_link_import",

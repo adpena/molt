@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import hashlib
@@ -43,6 +45,7 @@ def _write_manifest(root: Path, *, mode: str) -> tuple[str, ...]:
         json.dumps(
             {
                 "version": WASM_EXECUTION_MANIFEST_VERSION,
+                "launch": wasm_execution_launch(),
                 "mode": mode,
                 "modules": modules,
             }
@@ -87,10 +90,10 @@ def test_metadata_template_never_claims_restorable_state(tmp_path: Path) -> None
 def test_execution_identity_uses_shared_linked_golden_encoding(tmp_path: Path) -> None:
     (linked_digest,) = _write_manifest(tmp_path, mode="linked")
     assert _snapshot_execution_identity(tmp_path / "output.wasm") == (
-        f"molt.snapshot.execution.v3|linked|linked={linked_digest}"
+        f"molt.snapshot.execution.v4|linked|linked={linked_digest}"
     )
     assert _generate(tmp_path)["execution_identity"] == (
-        f"molt.snapshot.execution.v3|linked|linked={linked_digest}"
+        f"molt.snapshot.execution.v4|linked|linked={linked_digest}"
     )
 
 
@@ -98,7 +101,7 @@ def test_execution_identity_binds_both_split_runtime_modules(tmp_path: Path) -> 
     app_digest, runtime_digest = _write_manifest(tmp_path, mode="split-runtime")
     first = _snapshot_execution_identity(tmp_path / "output.wasm")
     assert first == (
-        "molt.snapshot.execution.v3|split-runtime|"
+        "molt.snapshot.execution.v4|split-runtime|"
         f"app={app_digest}|runtime={runtime_digest}"
     )
 
@@ -110,7 +113,7 @@ def test_execution_identity_binds_both_split_runtime_modules(tmp_path: Path) -> 
     second = _snapshot_execution_identity(tmp_path / "output.wasm")
     assert second != first
     assert second.startswith(
-        f"molt.snapshot.execution.v3|split-runtime|app={app_digest}|runtime=sha256:"
+        f"molt.snapshot.execution.v4|split-runtime|app={app_digest}|runtime=sha256:"
     )
 
 
@@ -143,7 +146,7 @@ def test_existing_execution_manifest_fails_closed(
 
 @pytest.mark.parametrize(
     "version",
-    ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0, 3.5],
+    ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0, 4.5],
 )
 def test_snapshot_rejects_incompatible_execution_version_before_module_read(
     tmp_path: Path, version: object
@@ -157,7 +160,7 @@ def test_snapshot_rejects_incompatible_execution_version_before_module_read(
         manifest["version"] = version
     path.write_text(json.dumps(manifest), encoding="utf-8")
     (tmp_path / "program.wasm").unlink()
-    with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
+    with pytest.raises(ValueError, match="Molt deployment manifest version must be 4"):
         _snapshot_execution_identity(tmp_path / "output.wasm")
 
 

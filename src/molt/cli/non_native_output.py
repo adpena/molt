@@ -9,6 +9,7 @@ from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 from molt.wasm_artifact import (
     require_current_wasm_execution_manifest,
     verify_wasm_execution_manifest_module,
+    wasm_execution_manifest_launch,
 )
 
 import contextlib
@@ -454,10 +455,10 @@ def _replace_directory_tree_from_source(
 
 
 def _snapshot_manifest_asset_digest(
-    *, manifest_path: Path, modules: object, role: str
+    *, manifest_path: Path, manifest: Mapping[str, object], role: str
 ) -> str:
     observed = verify_wasm_execution_manifest_module(
-        {"version": WASM_EXECUTION_MANIFEST_VERSION, "modules": modules},
+        manifest,
         manifest_path,
         role,
     )
@@ -474,23 +475,22 @@ def _snapshot_execution_identity(output_wasm: Path) -> str | None:
         raise ValueError(f"failed to read snapshot execution manifest: {exc}") from exc
     require_current_wasm_execution_manifest(manifest)
     mode = manifest.get("mode")
-    modules = manifest.get("modules")
     if mode == "linked":
         linked = _snapshot_manifest_asset_digest(
             manifest_path=manifest_path,
-            modules=modules,
+            manifest=manifest,
             role="linked",
         )
         return f"molt.snapshot.execution.v{WASM_EXECUTION_MANIFEST_VERSION}|linked|linked={linked}"
     if mode == "split-runtime":
         app = _snapshot_manifest_asset_digest(
             manifest_path=manifest_path,
-            modules=modules,
+            manifest=manifest,
             role="app",
         )
         runtime = _snapshot_manifest_asset_digest(
             manifest_path=manifest_path,
-            modules=modules,
+            manifest=manifest,
             role="runtime",
         )
         return f"molt.snapshot.execution.v{WASM_EXECUTION_MANIFEST_VERSION}|split-runtime|app={app}|runtime={runtime}"
@@ -1639,6 +1639,9 @@ def _prepare_non_native_build_result_in_generation(
                 {
                     "version": WASM_EXECUTION_MANIFEST_VERSION,
                     "mode": "linked",
+                    "launch": wasm_execution_manifest_launch(
+                        resolved_capability_policy
+                    ),
                     **(
                         {"optimizer": optimizer_attestation}
                         if optimizer_attestation is not None
@@ -1851,8 +1854,7 @@ def _prepare_non_native_build_result_in_generation(
                 "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
-                "capability_policy": resolved_capability_policy.canonical_payload(),
-                "capability_policy_digest": resolved_capability_policy.digest(),
+                "launch": wasm_execution_manifest_launch(resolved_capability_policy),
             }
             if bundle_manifest is not None:
                 bundle_size = bundle_tar.stat().st_size
@@ -1871,7 +1873,6 @@ def _prepare_non_native_build_result_in_generation(
                 worker_js,
                 _generate_split_worker_js(
                     deployment_manifest=manifest_data,
-                    resolved_capability_policy=resolved_capability_policy,
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
                     shared_table_base=effective_wasm_table_base,

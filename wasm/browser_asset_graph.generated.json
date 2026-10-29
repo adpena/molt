@@ -72,7 +72,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "847097953e7f53fc9814c4b71ff1e04249f7bc7927c15dd6dbff0f2166d195ca",
+      "sha256": "18b7beb6865a55dd131611b6ccd47bbe29b5b13967bbd1a30930acd19922edeb",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -199,7 +199,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "7362ac5dbefaa3995ce92bc5bd7083f611c13c475428892930b51acfd8518d4d",
+      "sha256": "7a42f659ef660ce73b9b68a98bb6eebe84f70fe2e9b875f2ceedc6ad20180e09",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -227,7 +227,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "b9260f78f768d0b94322ca8d85a7e5c68389113cc7c2e9a4e25495fc26e7783f",
+      "sha256": "aaa37da2e474cf6f9b3eff42cf28bfb3a628b122b02dfeca65ac459e8e7cde73",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -255,7 +255,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "082ddecb607855550b0d6b0f1169ebb91ded0fbd90f1b6998aba571eff934098",
+      "sha256": "ab0b2602ea8f48e00b7bb836d604b1c44b3eb038598bdd950dcec37839b2222d",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -297,7 +297,7 @@
         {
           "column": 5,
           "kind": "require",
-          "line": 39,
+          "line": 40,
           "request": "./loader_bridge.js",
           "target": "loader_bridge.js"
         },
@@ -311,14 +311,14 @@
         {
           "column": 20,
           "kind": "require",
-          "line": 488,
+          "line": 489,
           "request": "./socket_abi_generated.js",
           "target": "socket_abi_generated.js"
         },
         {
           "column": 98,
           "kind": "require",
-          "line": 486,
+          "line": 487,
           "request": "./synthetic_errno_generated.js",
           "target": "synthetic_errno_generated.js"
         },
@@ -381,14 +381,14 @@
         {
           "column": 32,
           "kind": "require",
-          "line": 487,
+          "line": 488,
           "request": "node:util",
           "target": "node:util"
         },
         {
           "column": 15,
           "kind": "require",
-          "line": 51,
+          "line": 52,
           "request": "node:wasi",
           "target": "node:wasi"
         },
@@ -409,21 +409,21 @@
         {
           "column": 37,
           "kind": "require",
-          "line": 45,
+          "line": 46,
           "request": "undici",
           "target": "undici"
         },
         {
           "column": 17,
           "kind": "require",
-          "line": 54,
+          "line": 55,
           "request": "wasi",
           "target": "wasi"
         },
         {
           "column": 5,
           "kind": "require",
-          "line": 71,
+          "line": 72,
           "request": "worker_threads",
           "target": "worker_threads"
         }
@@ -437,7 +437,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "a52e7387520a6cc12f20335f43fc4cf4dcbd69564b133d53a884032eb9217cd8",
+      "sha256": "79c97f7247e0a5764b65f2129768e27923c4bc3e5e732972e6d391e88cf52bab",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -500,7 +500,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "3be9d8aa0d896dc3f029e6964aded4fbf8eb9f7e799cb429820213d317b90f57",
+      "sha256": "d3813a3fb1eee4be1a88f8536d0b00f348d38c08ec17cc169f76311080ded239",
       "source_type": "data"
     }
   },

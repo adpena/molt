@@ -8,6 +8,30 @@ struct RuntimeManifest {
     mode: String,
     modules: RuntimeManifestModules,
     entry: Option<RuntimeManifestEntry>,
+    launch: RuntimeManifestLaunch,
+}
+
+/// A producer-owned transport projection, not a second capability-policy parser.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeManifestLaunch {
+    environment: std::collections::BTreeMap<String, String>,
+}
+
+impl RuntimeManifestLaunch {
+    fn validate(&self) -> Result<()> {
+        for name in molt_wasm_facts::WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT {
+            if !self.environment.contains_key(*name) {
+                bail!("runtime manifest launch.environment is missing {name}");
+            }
+        }
+        for (name, value) in &self.environment {
+            if name.is_empty() || name.contains(['=', '\0']) || value.contains('\0') {
+                bail!("runtime manifest launch.environment contains an invalid environment entry");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +59,7 @@ struct RuntimeManifestModule {
 #[derive(Debug)]
 pub(super) struct ResolvedExecutionModules {
     pub(super) manifest_path: PathBuf,
+    pub(super) launch_environment: Vec<(String, String)>,
     pub(super) main: ModuleSource,
     pub(super) runtime: Option<ModuleSource>,
     pub(super) linked: bool,
@@ -145,6 +170,7 @@ pub(super) enum ResolvedExecution {
 pub(super) struct ResolvedWasiCommandManifest {
     manifest_path: PathBuf,
     module: ModuleSource,
+    launch_environment: Vec<(String, String)>,
 }
 
 impl ResolvedWasiCommandManifest {
@@ -154,6 +180,10 @@ impl ResolvedWasiCommandManifest {
 
     pub(super) fn module(&self) -> &ModuleSource {
         &self.module
+    }
+
+    pub(super) fn launch_environment(&self) -> &[(String, String)] {
+        &self.launch_environment
     }
 }
 
@@ -234,8 +264,12 @@ fn read_execution_manifest(arg: Option<String>) -> Result<(PathBuf, RuntimeManif
             "Molt deployment manifest version must be {expected}; rebuild this deployment with the current Molt compiler"
         );
     }
+    if !value.get("launch").is_some_and(JsonValue::is_object) {
+        bail!("runtime manifest launch must be an object");
+    }
     let manifest: RuntimeManifest =
         serde_json::from_value(value).context("failed to decode runtime manifest fields")?;
+    manifest.launch.validate()?;
     Ok((manifest_path, manifest))
 }
 
@@ -260,6 +294,7 @@ pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedE
     };
     Ok(ResolvedExecutionModules {
         manifest_path,
+        launch_environment: manifest.launch.environment.into_iter().collect(),
         main,
         runtime,
         linked,
@@ -311,6 +346,7 @@ pub(super) fn resolve_execution(request: ExecutionRequest) -> Result<ResolvedExe
                 ResolvedWasiCommandManifest {
                     manifest_path,
                     module,
+                    launch_environment: manifest.launch.environment.into_iter().collect(),
                 },
             ))
         }
