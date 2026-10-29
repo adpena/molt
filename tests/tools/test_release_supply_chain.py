@@ -939,6 +939,8 @@ def test_release_plan_requires_exact_project_tag_and_source(
     assert plan["release_exit_archive"] == release_model.release_exit_archive_filename(
         "a" * 40
     )
+    # The first release carries the H0 phase exit like every release.
+    assert plan["phase_exit_manifest"] == release_model.phase_exit_filename("a" * 40)
     assert "matrix" not in plan  # Source resolution alone never admits release builds.
 
     monkeypatch.setattr(
@@ -950,22 +952,7 @@ def test_release_plan_requires_exact_project_tag_and_source(
         release_authority.resolve_source("0.0.001", "a" * 40)
 
 
-def _stable_git(*args: str) -> str:
-    if args == ("rev-parse", "HEAD"):
-        return "a" * 40
-    if args == ("tag", "--points-at", "HEAD", "--list", "v1.0.0"):
-        return "v1.0.0"
-    if args == clean_checkout_status_arguments() or args == (
-        "merge-base",
-        "--is-ancestor",
-        "a" * 40,
-        "origin/main",
-    ):
-        return ""
-    raise AssertionError(args)
-
-
-def test_stable_release_requires_green_h0_phase_exit(
+def test_every_release_requires_green_h0_phase_exit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from tools import phase_exit_manifest as pem
@@ -1013,8 +1000,9 @@ def test_stable_release_requires_green_h0_phase_exit(
             bundle, version="1.0.0", source_sha="a" * 40, phase_manifest=phase
         )
 
-    # Pre-1.0 releases are not stable contracts and need no phase exit.
-    release_evidence.verify_evidence(bundle, version="0.0.001", source_sha="a" * 40)
+    # The first release (v0.0.1) is held to the same v1.0 quality contract.
+    with pytest.raises(ValueError, match="requires a green H0 phase-exit manifest"):
+        release_evidence.verify_evidence(bundle, version="0.0.1", source_sha="a" * 40)
 
 
 def test_release_input_selection_requires_exact_cardinality(tmp_path: Path) -> None:
@@ -1654,12 +1642,34 @@ def release_evidence_inputs(
         source_date_epoch=1_700_000_000,
         output=archive,
     )
+    # Every release, v0.0.1 included, carries a green H0 phase exit. The owning
+    # phase-exit and acceptance suites prove those producers; here they pass.
+    from tools import phase_exit_manifest as pem
+
+    monkeypatch.setattr(
+        pem,
+        "verify_phase_manifest",
+        lambda *_a, **_k: pem.PhaseReport("H0", "a" * 40, True, ()),
+    )
+    monkeypatch.setattr(
+        release_evidence, "verify_full_release_acceptance", lambda *_a, **_k: None
+    )
+    phase_root = tmp_path / "phase"
+    phase_root.mkdir()
+    attestation = phase_root / release_model.phase_exit_attestation_filename("a" * 40)
+    attestation.write_text("{}", encoding="utf-8")
+    phase_manifest = phase_root / release_model.phase_exit_filename("a" * 40)
+    phase_manifest.write_text(
+        json.dumps({"signed_attestation": {"path": attestation.name}}),
+        encoding="utf-8",
+    )
     return dict(
         version="0.0.001",
         source_sha="a" * 40,
         source_date_epoch=1_700_000_000,
         release_exit_archive=archive,
         release_exit_sha256=release_model.sha256_file(archive),
+        phase_exit_manifest=phase_manifest,
     )
 
 
@@ -2160,10 +2170,11 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     assert len(artifacts) == 25
     assert len({artifact["filename"] for artifact in artifacts}) == 25
     assert all((publish / artifact["filename"]).is_file() for artifact in artifacts)
-    assert len((publish / "SHA256SUMS").read_text(encoding="utf-8").splitlines()) == 26
+    # 24 artifacts, the evidence archive, and the H0 manifest and attestation.
+    assert len((publish / "SHA256SUMS").read_text(encoding="utf-8").splitlines()) == 28
     sbom = json.loads((publish / "release.spdx.json").read_text(encoding="utf-8"))
     assert sbom["spdxVersion"] == "SPDX-2.3"
-    assert len(sbom["files"]) == 26
+    assert len(sbom["files"]) == 28
     expected_targets = {
         "linux-x86-64": "linux-x86_64",
         "linux-aarch64": "linux-aarch64",
@@ -2262,7 +2273,8 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     assert (
         manifest["evidence_archive"]["sha256"] == release_inputs["release_exit_sha256"]
     )
-    assert manifest["phase_exit"] is None
+    # The first release carries its H0 phase exit like every release.
+    assert set(manifest["phase_exit"]) == {"manifest", "attestation"}
     assert manifest["attestation"]["signature"] == "Sigstore keyless OIDC certificate"
     assert (
         update_manifests._load_manifest(publish / "release_manifest.json") == manifest
@@ -2668,15 +2680,19 @@ def test_index_rejects_plan_archive_drift_without_publishing(tmp_path, release_i
     assert not list(tmp_path.glob(".release-index-*"))
 
 
-def test_index_keeps_stable_h0_gate_before_artifact_publication(
+def test_index_keeps_h0_gate_before_artifact_publication(
     tmp_path, monkeypatch, release_inputs
 ):
-    monkeypatch.setattr(release_authority, "_project_version", lambda: "1.0.0")
-    monkeypatch.setattr(release_authority, "_git", _stable_git)
-    with pytest.raises(ValueError, match="requires a green H0 phase-exit"):
-        release_authority.assemble_index(
-            **{**release_inputs, "version": "1.0.0"}, output=tmp_path / "publish"
-        )
+    # The first release (v0.0.1) is held to the same H0 gate as v1.0.
+    from tools import phase_exit_manifest as pem
+
+    monkeypatch.setattr(
+        pem,
+        "verify_phase_manifest",
+        lambda *_a, **_k: pem.PhaseReport("H0", "a" * 40, False, ("not green",)),
+    )
+    with pytest.raises(ValueError, match="H0 phase exit is not green"):
+        release_authority.assemble_index(**release_inputs, output=tmp_path / "publish")
     assert not (tmp_path / "publish").exists()
 
 
@@ -3268,7 +3284,9 @@ def test_index_rehashes_all_staged_destinations_before_publication(
         nonlocal count
         real_copy(source, destination, expected)
         count += 1
-        if count == 3:
+        # Copies 1-3 stage the evidence archive and the H0 manifest and
+        # attestation; corrupt the archive after a later asset is verified.
+        if count == 5:
             (
                 destination.parent / release_inputs["release_exit_archive"].name
             ).write_bytes(b"changed after verification")

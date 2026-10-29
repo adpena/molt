@@ -301,8 +301,7 @@ jobs:
           name: release-exit-${{ needs.plan.outputs.source_sha }}
           path: dist/staged-evidence
 
-      - name: Extract same-source evidence for stable phase projection
-        if: ${{ needs.plan.outputs.phase_exit_manifest != '' }}
+      - name: Extract same-source evidence for the H0 phase projection
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
           SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
@@ -314,7 +313,6 @@ jobs:
           --output dist/release-exit
 
       - name: Prepare canonical H0 signing subject after its semantic predicates pass
-        if: ${{ needs.plan.outputs.phase_exit_manifest != '' }}
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
         run: >-
@@ -323,15 +321,13 @@ jobs:
           --release-exit-manifest dist/release-exit/release-exit.json
           --output dist/phase/subject.json
 
-      - name: Sign the stable H0 subject
+      - name: Sign the H0 subject
         id: phase
-        if: ${{ needs.plan.outputs.phase_exit_manifest != '' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/phase/subject.json
 
-      - name: Seal the stable phase manifest without reprojecting its signed subject
-        if: ${{ needs.plan.outputs.phase_exit_manifest != '' }}
+      - name: Seal the H0 phase manifest without reprojecting its signed subject
         env:
           PHASE_MANIFEST: ${{ needs.plan.outputs.phase_exit_manifest }}
           PHASE_ATTESTATION: ${{ needs.plan.outputs.phase_exit_attestation }}
@@ -368,8 +364,6 @@ jobs:
         run: |
           wheel="$(uv run --no-sync python -m tools.release.release_authority select-one \
             --root dist/wheel --pattern '*.whl')"
-          phase_args=()
-          if [ -n "$PHASE_MANIFEST" ]; then phase_args=(--phase-exit-manifest "dist/phase/$PHASE_MANIFEST"); fi
           uv run --no-sync python -m tools.release.release_authority index \
             --candidate-root dist/candidates \
             --wheel "$wheel" \
@@ -378,7 +372,7 @@ jobs:
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --release-exit-archive "dist/staged-evidence/$EVIDENCE_ARCHIVE" \
             --release-exit-sha256 "$EVIDENCE_SHA256" \
-            "${phase_args[@]}" \
+            --phase-exit-manifest "dist/phase/$PHASE_MANIFEST" \
             --output dist/publish
 
       - name: Sign SLSA provenance with GitHub Sigstore identity

@@ -722,7 +722,6 @@ def test_assemble_writes_one_portable_source_addressed_bundle(
         "ledger_blob": "c" * 40,
         "open": [],
         "version": "1.0.0",
-        "v1_contract": True,
     }
     assert report.open_findings == ()
     assert report.version == "1.0.0"
@@ -1440,11 +1439,10 @@ def test_open_finding_at_the_source_refuses_pass_and_names_every_id(
         "ledger_blob": _git(ledger_repo, "rev-parse", f"{opened}:{LEDGER}"),
         "open": ["HF-7", "V1-3"],
         "version": "1.0.0",
-        "v1_contract": True,
     }
     gate._print_report(report)
     printed = capsys.readouterr().out
-    assert "version 1.0.0 claims the v1 public stable contract" in printed
+    assert "version 1.0.0 is held to the v1.0 quality contract" in printed
     assert "open findings (2, hold this release): HF-7, V1-3" in printed
 
     payload["status"] = gate.STATUS_PASS
@@ -1531,19 +1529,20 @@ def test_invalid_source_ledger_is_refused(
 
 
 @pytest.mark.parametrize(
-    ("pyproject", "version", "status"),
-    [(PYPROJECT_V1, "1.0.0", "FAIL"), (PYPROJECT_V0, "0.9.0", "PASS")],
-    ids=["v1-claims-contract", "v0-pre-release"],
+    ("pyproject", "version"),
+    [(PYPROJECT_V1, "1.0.0"), (PYPROJECT_V0, "0.9.0")],
+    ids=["v1", "v0-first-release"],
 )
-def test_open_finding_holds_only_a_version_that_claims_the_v1_contract(
+def test_an_open_finding_holds_every_release_whatever_its_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     ledger_repo: Path,
     capsys: pytest.CaptureFixture[str],
     pyproject: str,
     version: str,
-    status: str,
 ) -> None:
+    # The first public release is numbered v0.0.1 and held to the v1.0 quality
+    # contract: the version number never relaxes the gate.
     gate = _load_gate(monkeypatch)
     source = _commit_ledger(ledger_repo, ONE_OPEN_LEDGER, pyproject)
     _ledger_from(monkeypatch, gate, ledger_repo, source)
@@ -1551,26 +1550,21 @@ def test_open_finding_holds_only_a_version_that_claims_the_v1_contract(
     manifest_path, report = _assemble(tmp_path, gate)
 
     assert report.problems == ()
-    assert report.status == status
-    assert report.passed is (status == "PASS")
-    # Both versions record and report the open row.
+    assert report.status == "FAIL"
+    assert report.passed is False
     assert report.open_findings == ("HF-7",)
     assert report.version == version
     findings = _read(manifest_path)["findings"]
     assert (findings["open"], findings["version"]) == (["HF-7"], version)
-    assert findings["v1_contract"] is (version == "1.0.0")
+    assert "v1_contract" not in findings
     gate._print_report(report)
     printed = capsys.readouterr().out
-    if version == "1.0.0":
-        assert "open findings (1, hold this release): HF-7" in printed
-    else:
-        assert "version 0.9.0 does not claim the v1 public stable contract" in printed
-        assert "open findings (1, do not hold this release): HF-7" in printed
+    assert f"version {version} is held to the v1.0 quality contract" in printed
+    assert "open findings (1, hold this release): HF-7" in printed
 
-    # A recorded version cannot move the release across the contract line.
+    # A recorded version still has to be the project version at the source.
     payload = _read(manifest_path)
     payload["findings"]["version"] = "0.9.0" if version == "1.0.0" else "1.0.0"
-    payload["findings"]["v1_contract"] = version != "1.0.0"
     _write(manifest_path, payload)
     forged = gate.verify_release_bundle(manifest_path, repo_root=REPO_ROOT, now=NOW)
     assert forged.passed is False

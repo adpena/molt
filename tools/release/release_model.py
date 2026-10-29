@@ -45,11 +45,6 @@ def release_exit_archive_filename(source_sha: str) -> str:
     return f"molt-release-exit-{source_sha}.zip"
 
 
-def stable_release(version: str) -> bool:
-    """A stable release (major >= 1) claims the v1 public stable contract."""
-    return int(normalized_version(version).split(".")[0]) >= 1
-
-
 def project_version(pyproject_text: str) -> str:
     """Return the release version that `pyproject.toml` text declares."""
     try:
@@ -283,25 +278,22 @@ def validate_release_manifest(value: object) -> dict[str, Any]:
     ):
         raise ValueError("release manifest evidence archive is invalid")
     phase = value["phase_exit"]
-    if stable_release(version):
-        if not isinstance(phase, dict) or set(phase) != {"manifest", "attestation"}:
-            raise ValueError("release manifest H0 phase evidence is invalid")
-        for key, kind, filename in (
-            ("manifest", PHASE_EXIT_KIND, phase_exit_filename(source_sha)),
-            (
-                "attestation",
-                PHASE_ATTESTATION_KIND,
-                phase_exit_attestation_filename(source_sha),
-            ),
+    if not isinstance(phase, dict) or set(phase) != {"manifest", "attestation"}:
+        raise ValueError("release manifest H0 phase evidence is invalid")
+    for key, kind, filename in (
+        ("manifest", PHASE_EXIT_KIND, phase_exit_filename(source_sha)),
+        (
+            "attestation",
+            PHASE_ATTESTATION_KIND,
+            phase_exit_attestation_filename(source_sha),
+        ),
+    ):
+        record = validate_file_record(phase[key])
+        if set(record) != FILE_FIELDS or (record["kind"], record["filename"]) != (
+            kind,
+            filename,
         ):
-            record = validate_file_record(phase[key])
-            if set(record) != FILE_FIELDS or (record["kind"], record["filename"]) != (
-                kind,
-                filename,
-            ):
-                raise ValueError("release manifest H0 phase evidence is invalid")
-    elif phase is not None:
-        raise ValueError("pre-stable release manifest must not claim an H0 phase exit")
+            raise ValueError("release manifest H0 phase evidence is invalid")
     artifacts = value["artifacts"]
     expected = {("molt-wheel", "any", "any")} | {
         (name, target.platform, target.arch)
@@ -328,9 +320,11 @@ def validate_release_manifest(value: object) -> dict[str, Any]:
 
 def release_subjects(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     """One checksum/SBOM/publication subject projection, including semantic proof."""
-    subjects = [*manifest["artifacts"], manifest["evidence_archive"]]
-    if manifest["phase_exit"] is not None:
-        subjects.extend(manifest["phase_exit"].values())
+    subjects = [
+        *manifest["artifacts"],
+        manifest["evidence_archive"],
+        *manifest["phase_exit"].values(),
+    ]
     return sorted(subjects, key=lambda record: record["filename"])
 
 
