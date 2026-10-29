@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from molt.cli.module_source import PythonSourceSnapshot
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
+    from molt.process_environment import ProcessEnvironment
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
@@ -352,7 +353,11 @@ class _FrontendSemanticSourceSnapshot:
 @dataclass
 class _SourceTreeFingerprintTransaction:
     fingerprints: dict[tuple[str, ...], str] = field(default_factory=dict)
-    compiler_plans: dict[tuple[str, ...], object] = field(default_factory=dict)
+    # Keyed by root, product, profile, features, CPU policy and the caller's
+    # complete environment (compiler_identity.backend_build_admission).
+    compiler_plans: dict[tuple[str, str, str, str, str, ProcessEnvironment], object] = (
+        field(default_factory=dict)
+    )
     installed_sources: set[tuple[str, str]] = field(default_factory=set)
     cargo_documents: dict[str, object] = field(default_factory=dict)
     frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(
