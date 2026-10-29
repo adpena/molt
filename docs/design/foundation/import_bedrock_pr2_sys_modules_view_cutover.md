@@ -261,9 +261,17 @@ rebinding, noncallable values and callback errors. Acquisition reuses the existi
 support loader. The compiler carries `_warnings` as a runtime-import support root
 (`_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES`), and the `_warnings` body bootstraps its
 own imports as the `importlib` bodies do, so the warning loads with an empty
-`sys.meta_path`. Nothing loads `_warnings` at startup. Molt's `_warnings` facade
-still imports `warnings`, the reverse of CPython, so the first empty-path warning
-also loads `warnings`; that provider direction is a separate open finding.
+`sys.meta_path`. Nothing loads `_warnings` at startup. `_warnings` is the
+provider and `warnings` its consumer, as in CPython 3.12: `Python/_warnings.c`
+defines `filters`, `_defaultaction`, `_onceregistry`, `_filters_mutated`, `warn`
+and `warn_explicit` and never imports `warnings`, and
+[`Lib/warnings.py`](https://github.com/python/cpython/blob/v3.12.15/Lib/warnings.py#L566)
+imports them from `_warnings`. Molt's `_warnings` binds the runtime engine's
+objects (`builtins/warnings_ext.rs`) and defines `warn` and `warn_explicit` over
+the engine and its location authority, so an empty-path warning does not load
+`warnings`. Until `warnings` is loaded, the engine applies its own filters and
+writes to the `sys.stderr` object, as CPython's `get_warnings_attr(..., 0)` and
+`show_warning` do.
 
 Completed cache hits add no finder, bootstrap, lock-map or filesystem work. A cold
 finder traversal owns its three arguments, iterator and current observations;
