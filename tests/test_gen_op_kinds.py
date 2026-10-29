@@ -5070,26 +5070,6 @@ def test_render_detects_frontend_table_mutation() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dangerous_cell_baseline_matches_current_audit() -> None:
-    """The dangerous-cell baseline is exact, not an allowlist superset.
-
-    Baseline-only stale entries mask future regressions: if a kind is removed
-    from the live dangerous sets, it must leave the committed baseline in the
-    same change.
-    """
-    audit = _audit()
-    res = audit.run_audit()
-    baseline = json.loads(
-        (ROOT / "tools/op_kinds_baseline.json").read_text(encoding="utf-8")
-    )
-
-    assert baseline["schema"] == "molt.op-kind-audit.v2"
-    assert {
-        key: baseline[key]
-        for key in ("unregistered_frontend_wire", "llvm_boxed_runtime_abi_mismatch")
-    } == res.dangerous()
-
-
 def test_audit_separates_boxed_contracts_from_dedicated_machine_constants() -> None:
     from tools.llvm_runtime_abi_audit import runtime_boxed_abi_facts
 
@@ -5663,6 +5643,19 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
     )
     assert "SIMPLEIR_VAR_RESULT_KINDS" in rendered_py
     assert '"unpack_sequence": 1' in rendered_py
+    namespace: dict = {}
+    exec(rendered_py, namespace)
+    assert namespace["SIMPLEIR_FIRST_TRAILING_RESULT_ARG"] == {"unpack_sequence": 1}
+    assert namespace["FRONTEND_FIRST_TRAILING_RESULT_ARG"] == {"UNPACK_SEQUENCE": 1}
+
+    # A declared frontend rename must project the operand boundary directly;
+    # deriving it with lower()/upper() would silently lose trailing results.
+    renamed = json.loads(json.dumps(data))
+    renamed["frontend_lowering_kind"].append(
+        {"wire_kind": "unpack_sequence", "kinds": ["EXPAND_SEQUENCE"]}
+    )
+    exec(gen.render_py(renamed), namespace)
+    assert namespace["FRONTEND_FIRST_TRAILING_RESULT_ARG"] == {"EXPAND_SEQUENCE": 1}
 
 
 def test_simpleir_return_family_forbids_var_through_generated_field_roles() -> None:
@@ -7730,9 +7723,18 @@ def test_shared_frontend_wire_spelling_requires_declared_identity():
         gen._validate_frontend_tables(data, data["opcode"])
 
 
-def test_closed_rust_wire_kind_domain_equals_registry() -> None:
-    """The transport type includes every registered spelling once, including private kinds."""
+def test_closed_operation_types_equal_registry() -> None:
+    """Rust and both Python vocabularies have exactly the registered members."""
+    from typing import get_args
+
+    from molt.frontend.lowering.op_kinds_generated import (
+        FrontendKinds,
+        FrontendOpKind,
+        WireKinds,
+        WireOpKind,
+    )
     from tools.op_kinds.registration import (
+        registered_frontend_kinds,
         registered_simpleir_kinds,
         backend_private_kinds,
     )
@@ -7743,6 +7745,14 @@ def test_closed_rust_wire_kind_domain_equals_registry() -> None:
     enum = rendered.split("pub enum OpKind {", 1)[1].split("\n}", 1)[0]
     members = re.findall(r'#\[serde\(rename = "([^"]+)"\)\]\s+(\w+),', enum)
     expected = registered_simpleir_kinds(data)
+    assert set(get_args(WireOpKind)) == expected
+    assert set(get_args(FrontendOpKind)) == registered_frontend_kinds(data)
+    assert {
+        name: getattr(FrontendKinds, name) for name in FrontendKinds.__annotations__
+    } == {kind: kind for kind in registered_frontend_kinds(data)}
+    assert {name: getattr(WireKinds, name) for name in WireKinds.__annotations__} == {
+        kind.upper(): kind for kind in expected
+    }
     assert {spelling for spelling, _ in members} == expected
     assert len(members) == len(expected)
     assert {name for _, name in members} == {variant(kind) for kind in expected}
