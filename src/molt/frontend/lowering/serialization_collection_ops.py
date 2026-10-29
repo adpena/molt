@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
+    WireKinds,
+)
+
 from typing import Any
 
 from molt.frontend._types import (
@@ -9,17 +16,22 @@ from molt.frontend._types import (
     MoltValue,
     loaded_method_self_name,
 )
-from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
+from molt.frontend.lowering.serialization_context import (
+    SerializationContext,
+    SimpleIROp,
 )
-from molt.frontend.lowering.serialization_context import SerializationContext
 from molt.frontend._mixin_base import GeneratorMixinBase
+
+
+_SERIALIZE_COLLECTION_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"DICT_UPDATE", "DICT_UNPACK"}
+)
 
 
 class SerializationCollectionOpsMixin(GeneratorMixinBase):
     def _serialize_collection_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
-        if op.kind == "LEN":
-            len_entry: dict[str, object] = {
+        if op.kind == FrontendKinds.LEN:
+            len_entry: SimpleIROp = {
                 "kind": "len",
                 "args": [
                     arg.name if hasattr(arg, "name") else str(arg) for arg in op.args
@@ -38,7 +50,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
             }:
                 len_entry["container_type"] = len_arg.type_hint
             ctx.json_ops.append(len_entry)
-        elif op.kind == "ID":
+        elif op.kind == FrontendKinds.ID:
             ctx.json_ops.append(
                 {
                     "kind": "id",
@@ -49,7 +61,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ORD":
+        elif op.kind == FrontendKinds.ORD:
             ctx.json_ops.append(
                 {
                     "kind": "ord",
@@ -60,7 +72,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ORD_AT":
+        elif op.kind == FrontendKinds.ORD_AT:
             ctx.json_ops.append(
                 {
                     "kind": "ord_at",
@@ -71,7 +83,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CHR":
+        elif op.kind == FrontendKinds.CHR:
             ctx.json_ops.append(
                 {
                     "kind": "chr",
@@ -82,8 +94,8 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CALLARGS_NEW":
-            callargs_op: dict[str, Any] = {
+        elif op.kind == FrontendKinds.CALLARGS_NEW:
+            callargs_op: SimpleIROp = {
                 "kind": "callargs_new",
                 "out": op.result.name,
             }
@@ -97,14 +109,14 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
             elif form != "stack":
                 raise AssertionError(f"unknown call form {form!r}")
             ctx.json_ops.append(callargs_op)
-        elif op.kind == "CALLARGS_PUSH_METHOD_RECEIVER":
+        elif op.kind == FrontendKinds.CALLARGS_PUSH_METHOD_RECEIVER:
             ctx.json_ops.append(
                 {
                     "kind": "callargs_push_method_receiver",
                     "args": [op.args[0].name, loaded_method_self_name(op)],
                 }
             )
-        elif op.kind == "CALLARGS_PUSH_POS":
+        elif op.kind == FrontendKinds.CALLARGS_PUSH_POS:
             ctx.json_ops.append(
                 {
                     "kind": "callargs_push_pos",
@@ -112,7 +124,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CALLARGS_PUSH_KW":
+        elif op.kind == FrontendKinds.CALLARGS_PUSH_KW:
             ctx.json_ops.append(
                 {
                     "kind": "callargs_push_kw",
@@ -120,7 +132,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CALLARGS_EXPAND_STAR":
+        elif op.kind == FrontendKinds.CALLARGS_EXPAND_STAR:
             ctx.json_ops.append(
                 {
                     "kind": "callargs_expand_star",
@@ -128,7 +140,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CALLARGS_EXPAND_KWSTAR":
+        elif op.kind == FrontendKinds.CALLARGS_EXPAND_KWSTAR:
             ctx.json_ops.append(
                 {
                     "kind": "callargs_expand_kwstar",
@@ -136,15 +148,15 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_NEW":
-            _list_op: dict[str, Any] = {
+        elif op.kind == FrontendKinds.LIST_NEW:
+            _list_op: SimpleIROp = {
                 "kind": "list_new",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
                 "type_hint": "list",
             }
             ctx.json_ops.append(_list_op)
-        elif op.kind == "LIST_INT_NEW":
+        elif op.kind == FrontendKinds.LIST_INT_NEW:
             # Specialized flat i64 list: args are [count, fill_value]
             ctx.json_ops.append(
                 {
@@ -154,7 +166,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                 }
             )
             ctx.json_list_int_containers.add(op.result.name)
-        elif op.kind == "LIST_FILL_NEW":
+        elif op.kind == FrontendKinds.LIST_FILL_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "list_fill_new",
@@ -162,7 +174,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "RANGE_NEW":
+        elif op.kind == FrontendKinds.RANGE_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "range_new",
@@ -170,7 +182,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_FROM_RANGE":
+        elif op.kind == FrontendKinds.LIST_FROM_RANGE:
             ctx.json_ops.append(
                 {
                     "kind": "list_from_range",
@@ -178,15 +190,15 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "TUPLE_NEW":
-            _tuple_op: dict[str, Any] = {
+        elif op.kind == FrontendKinds.TUPLE_NEW:
+            _tuple_op: SimpleIROp = {
                 "kind": "tuple_new",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
                 "type_hint": "tuple",
             }
             ctx.json_ops.append(_tuple_op)
-        elif op.kind == "LIST_APPEND":
+        elif op.kind == FrontendKinds.LIST_APPEND:
             ctx.json_ops.append(
                 {
                     "kind": "list_append",
@@ -195,7 +207,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "type_hint": "list",
                 }
             )
-        elif op.kind == "LIST_POP":
+        elif op.kind == FrontendKinds.LIST_POP:
             ctx.json_ops.append(
                 {
                     "kind": "list_pop",
@@ -203,7 +215,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_EXTEND":
+        elif op.kind == FrontendKinds.LIST_EXTEND:
             ctx.json_ops.append(
                 {
                     "kind": "list_extend",
@@ -211,7 +223,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_INSERT":
+        elif op.kind == FrontendKinds.LIST_INSERT:
             ctx.json_ops.append(
                 {
                     "kind": "list_insert",
@@ -219,7 +231,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_REMOVE":
+        elif op.kind == FrontendKinds.LIST_REMOVE:
             ctx.json_ops.append(
                 {
                     "kind": "list_remove",
@@ -227,7 +239,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_CLEAR":
+        elif op.kind == FrontendKinds.LIST_CLEAR:
             ctx.json_ops.append(
                 {
                     "kind": "list_clear",
@@ -235,7 +247,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_COPY":
+        elif op.kind == FrontendKinds.LIST_COPY:
             ctx.json_ops.append(
                 {
                     "kind": "list_copy",
@@ -249,7 +261,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                 and op.args[0].name in ctx.json_list_int_containers
             ):
                 ctx.json_list_int_containers.add(op.result.name)
-        elif op.kind == "LIST_REVERSE":
+        elif op.kind == FrontendKinds.LIST_REVERSE:
             ctx.json_ops.append(
                 {
                     "kind": "list_reverse",
@@ -257,7 +269,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_COUNT":
+        elif op.kind == FrontendKinds.LIST_COUNT:
             ctx.json_ops.append(
                 {
                     "kind": "list_count",
@@ -265,7 +277,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_INDEX":
+        elif op.kind == FrontendKinds.LIST_INDEX:
             ctx.json_ops.append(
                 {
                     "kind": "list_index",
@@ -273,7 +285,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LIST_INDEX_RANGE":
+        elif op.kind == FrontendKinds.LIST_INDEX_RANGE:
             ctx.json_ops.append(
                 {
                     "kind": "list_index_range",
@@ -281,7 +293,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "TUPLE_FROM_LIST":
+        elif op.kind == FrontendKinds.TUPLE_FROM_LIST:
             ctx.json_ops.append(
                 {
                     "kind": "tuple_from_list",
@@ -289,7 +301,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_FROM_OBJ":
+        elif op.kind == FrontendKinds.BYTES_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_from_obj",
@@ -297,7 +309,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_FROM_STR":
+        elif op.kind == FrontendKinds.BYTES_FROM_STR:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_from_str",
@@ -305,7 +317,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_FROM_OBJ":
+        elif op.kind == FrontendKinds.BYTEARRAY_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_from_obj",
@@ -313,7 +325,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_FROM_STR":
+        elif op.kind == FrontendKinds.BYTEARRAY_FROM_STR:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_from_str",
@@ -321,7 +333,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_FILL_RANGE":
+        elif op.kind == FrontendKinds.BYTEARRAY_FILL_RANGE:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_fill_range",
@@ -329,7 +341,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "FLOAT_FROM_OBJ":
+        elif op.kind == FrontendKinds.FLOAT_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "float_from_obj",
@@ -337,7 +349,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "INT_FROM_OBJ":
+        elif op.kind == FrontendKinds.INT_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "int_from_obj",
@@ -345,7 +357,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "INT_FROM_STR_OF_OBJ":
+        elif op.kind == FrontendKinds.INT_FROM_STR_OF_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "int_from_str_of_obj",
@@ -353,7 +365,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "COMPLEX_FROM_OBJ":
+        elif op.kind == FrontendKinds.COMPLEX_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "complex_from_obj",
@@ -361,7 +373,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_NEW":
+        elif op.kind == FrontendKinds.DICT_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "dict_new",
@@ -370,7 +382,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "type_hint": "dict",
                 }
             )
-        elif op.kind == "DICT_FROM_OBJ":
+        elif op.kind == FrontendKinds.DICT_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "dict_from_obj",
@@ -378,7 +390,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_NEW":
+        elif op.kind == FrontendKinds.SET_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "set_new",
@@ -387,7 +399,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "type_hint": "set",
                 }
             )
-        elif op.kind == "FROZENSET_NEW":
+        elif op.kind == FrontendKinds.FROZENSET_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "frozenset_new",
@@ -396,7 +408,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "type_hint": "frozenset",
                 }
             )
-        elif op.kind == "DICT_GET":
+        elif op.kind == FrontendKinds.DICT_GET:
             ctx.json_ops.append(
                 {
                     "kind": "dict_get",
@@ -404,7 +416,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_STR_INT_INC":
+        elif op.kind == FrontendKinds.DICT_STR_INT_INC:
             ctx.json_ops.append(
                 {
                     "kind": "dict_str_int_inc",
@@ -412,7 +424,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_SPLIT_WS_DICT_INC":
+        elif op.kind == FrontendKinds.STRING_SPLIT_WS_DICT_INC:
             ctx.json_ops.append(
                 {
                     "kind": "string_split_ws_dict_inc",
@@ -420,7 +432,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_SPLIT_SEP_DICT_INC":
+        elif op.kind == FrontendKinds.STRING_SPLIT_SEP_DICT_INC:
             ctx.json_ops.append(
                 {
                     "kind": "string_split_sep_dict_inc",
@@ -428,7 +440,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_POP":
+        elif op.kind == FrontendKinds.DICT_POP:
             ctx.json_ops.append(
                 {
                     "kind": "dict_pop",
@@ -436,8 +448,8 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_SET":
-            ds_entry: dict[str, Any] = {
+        elif op.kind == FrontendKinds.DICT_SET:
+            ds_entry: SimpleIROp = {
                 "kind": "dict_set",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -454,7 +466,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     if len(op.args) >= 3 and isinstance(op.args[2], MoltValue)
                     else None
                 )
-                if value_hint == "int":
+                if value_hint == WireKinds.INT:
                     if op.result.name != "none":
                         ctx.json_list_int_containers.add(op.result.name)
                 else:
@@ -468,7 +480,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
             ):
                 ds_entry["container_type"] = "list"
             ctx.json_ops.append(ds_entry)
-        elif op.kind == "DICT_SETDEFAULT":
+        elif op.kind == FrontendKinds.DICT_SETDEFAULT:
             ctx.json_ops.append(
                 {
                     "kind": "dict_setdefault",
@@ -476,7 +488,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_SETDEFAULT_EMPTY_LIST":
+        elif op.kind == FrontendKinds.DICT_SETDEFAULT_EMPTY_LIST:
             ctx.json_ops.append(
                 {
                     "kind": "dict_setdefault_empty_list",
@@ -484,17 +496,17 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind in {"DICT_UPDATE", "DICT_UNPACK"}:
+        elif op.kind in _SERIALIZE_COLLECTION_OP_KINDS_1:
             ctx.json_ops.append(
                 {
                     "kind": "dict_unpack"
-                    if op.kind == "DICT_UNPACK"
+                    if op.kind == FrontendKinds.DICT_UNPACK
                     else "dict_update",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_CLEAR":
+        elif op.kind == FrontendKinds.DICT_CLEAR:
             ctx.json_ops.append(
                 {
                     "kind": "dict_clear",
@@ -502,7 +514,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_COPY":
+        elif op.kind == FrontendKinds.DICT_COPY:
             ctx.json_ops.append(
                 {
                     "kind": "dict_copy",
@@ -510,7 +522,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_POPITEM":
+        elif op.kind == FrontendKinds.DICT_POPITEM:
             ctx.json_ops.append(
                 {
                     "kind": "dict_popitem",
@@ -518,7 +530,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_ADD":
+        elif op.kind == FrontendKinds.SET_ADD:
             ctx.json_ops.append(
                 {
                     "kind": "set_add",
@@ -526,7 +538,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_ADD_PROBE":
+        elif op.kind == FrontendKinds.SET_ADD_PROBE:
             ctx.json_ops.append(
                 {
                     "kind": "set_add_probe",
@@ -534,7 +546,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "FROZENSET_ADD":
+        elif op.kind == FrontendKinds.FROZENSET_ADD:
             ctx.json_ops.append(
                 {
                     "kind": "frozenset_add",
@@ -542,7 +554,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_DISCARD":
+        elif op.kind == FrontendKinds.SET_DISCARD:
             ctx.json_ops.append(
                 {
                     "kind": "set_discard",
@@ -550,7 +562,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_REMOVE":
+        elif op.kind == FrontendKinds.SET_REMOVE:
             ctx.json_ops.append(
                 {
                     "kind": "set_remove",
@@ -558,7 +570,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_POP":
+        elif op.kind == FrontendKinds.SET_POP:
             ctx.json_ops.append(
                 {
                     "kind": "set_pop",
@@ -566,7 +578,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_UPDATE":
+        elif op.kind == FrontendKinds.SET_UPDATE:
             ctx.json_ops.append(
                 {
                     "kind": "set_update",
@@ -574,7 +586,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_INTERSECTION_UPDATE":
+        elif op.kind == FrontendKinds.SET_INTERSECTION_UPDATE:
             ctx.json_ops.append(
                 {
                     "kind": "set_intersection_update",
@@ -582,7 +594,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_DIFFERENCE_UPDATE":
+        elif op.kind == FrontendKinds.SET_DIFFERENCE_UPDATE:
             ctx.json_ops.append(
                 {
                     "kind": "set_difference_update",
@@ -590,7 +602,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SET_SYMDIFF_UPDATE":
+        elif op.kind == FrontendKinds.SET_SYMDIFF_UPDATE:
             ctx.json_ops.append(
                 {
                     "kind": "set_symdiff_update",
@@ -598,7 +610,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_KEYS":
+        elif op.kind == FrontendKinds.DICT_KEYS:
             ctx.json_ops.append(
                 {
                     "kind": "dict_keys",
@@ -606,7 +618,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_VALUES":
+        elif op.kind == FrontendKinds.DICT_VALUES:
             ctx.json_ops.append(
                 {
                     "kind": "dict_values",
@@ -614,7 +626,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_ITEMS":
+        elif op.kind == FrontendKinds.DICT_ITEMS:
             ctx.json_ops.append(
                 {
                     "kind": "dict_items",
@@ -622,7 +634,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "TUPLE_COUNT":
+        elif op.kind == FrontendKinds.TUPLE_COUNT:
             ctx.json_ops.append(
                 {
                     "kind": "tuple_count",
@@ -630,7 +642,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "TUPLE_INDEX":
+        elif op.kind == FrontendKinds.TUPLE_INDEX:
             ctx.json_ops.append(
                 {
                     "kind": "tuple_index",
@@ -638,7 +650,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ITER_NEW":
+        elif op.kind == FrontendKinds.ITER_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "iter",
@@ -647,7 +659,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "type_hint": "iter",
                 }
             )
-        elif op.kind == "AITER":
+        elif op.kind == FrontendKinds.AITER:
             ctx.json_ops.append(
                 {
                     "kind": "aiter",
@@ -655,7 +667,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ITER_NEXT":
+        elif op.kind == FrontendKinds.ITER_NEXT:
             ctx.json_ops.append(
                 {
                     "kind": "iter_next",
@@ -663,7 +675,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ANEXT":
+        elif op.kind == FrontendKinds.ANEXT:
             ctx.json_ops.append(
                 {
                     "kind": "anext",
@@ -671,8 +683,8 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "INDEX":
-            index_entry: dict[str, Any] = {
+        elif op.kind == FrontendKinds.INDEX:
+            index_entry: SimpleIROp = {
                 "kind": "index",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -704,7 +716,7 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
             ):
                 index_entry["container_type"] = "tuple"
             ctx.json_ops.append(index_entry)
-        elif op.kind == "UNPACK_SEQUENCE":
+        elif op.kind == FrontendKinds.UNPACK_SEQUENCE:
             first_result_arg = SIMPLEIR_FIRST_TRAILING_RESULT_ARG["unpack_sequence"]
             if first_result_arg != 1:
                 raise AssertionError(

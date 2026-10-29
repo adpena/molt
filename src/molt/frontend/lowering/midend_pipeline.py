@@ -5,6 +5,11 @@ Loop motion and exception-region custody belong to shared CFG/SSA TIR passes.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+)
+
 import os
 import sys
 import time
@@ -22,6 +27,11 @@ from molt.frontend._types import (
 
 from molt.frontend.lowering.midend_dataflow import (
     current_unique_result_definitions,
+)
+
+
+_CANONICALIZE_CONTROL_AWARE_OPS_IMPL_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"LOOP_END", "LOOP_BREAK_IF_FALSE", "LOOP_BREAK_IF_TRUE"}
 )
 
 
@@ -536,8 +546,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 loop_rewrite_attempts = sum(
                     1
                     for op in step_ops
-                    if op.kind
-                    in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE", "LOOP_END"}
+                    if op.kind in _CANONICALIZE_CONTROL_AWARE_OPS_IMPL_KINDS_1
                 )
                 total_loop_rewrite_attempts += loop_rewrite_attempts
                 if threaded_cfg.blocks and enable_deep_edge_thread:
@@ -1023,11 +1032,11 @@ class MidendPipelineMixin(GeneratorMixinBase):
         # Keep coalescing conservative: moving checks across value-producing ops can
         # expose uninitialized/missing operands when an exception is already pending.
         # `LINE` is metadata-only and safe to commute with `CHECK_EXCEPTION`.
-        safe_after_check = {"LINE"}
+        safe_after_check: set[FrontendOpKind] = {"LINE"}
         out: list[MoltOp] = []
         pending_check: MoltOp | None = None
         for op in ops:
-            if op.kind == "CHECK_EXCEPTION":
+            if op.kind == FrontendKinds.CHECK_EXCEPTION:
                 pending_check = op
                 continue
             if pending_check is not None and op.kind not in safe_after_check:

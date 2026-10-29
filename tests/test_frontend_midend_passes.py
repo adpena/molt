@@ -29,7 +29,7 @@ from molt.frontend.cfg_analysis import (
     build_cfg,
 )
 from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
+    FRONTEND_FIRST_TRAILING_RESULT_ARG,
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL,
     SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
@@ -6572,7 +6572,7 @@ def _stateful_polls(source: str) -> dict[str, list[MoltOp]]:
 
 
 def _op_reads_and_writes(op: MoltOp) -> tuple[list[str], list[str]]:
-    first_output = SIMPLEIR_FIRST_TRAILING_RESULT_ARG.get(op.kind.lower(), len(op.args))
+    first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(op.kind, len(op.args))
     reads = [
         arg.name
         for arg in op.args[:first_output]
