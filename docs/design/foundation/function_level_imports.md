@@ -112,4 +112,7 @@ frontend and backend compilation. HF-126 measured eager admission of
   stub (HF-273). `test_importlib` reaches `test.support` from its package
   `__init__`, a transitive import from an external root, so the regrtest shim
   now admits the `test` package with `MOLT_EXTERNAL_STATIC_PACKAGES=test`; it
-  then reaches the same `sysconfig` stub.
+  then reaches the same `sysconfig` stub. Since the `sysconfig` lowering
+  ([sysconfig_build_values.md](../sysconfig_build_values.md)), all three pass
+  `check_sanitizer()` and stop at `float.__getformat__`, which Molt's `float`
+  lacks.
