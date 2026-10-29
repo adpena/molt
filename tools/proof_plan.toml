@@ -5391,11 +5391,31 @@ globs = [
   "tests/test_structural_audit.py",
 ]
 gates = []
-pytest = [
-  "tests/test_structural_audit.py",
-  "tests/test_rust_source_scan.py",
-  "tests/tools/test_gen_luau_support_matrix.py",
+pytest = ["tests/test_structural_audit.py"]
+
+# The structural audit parsers and the shared Rust lexer also feed the lexer
+# tests and the Luau support-matrix generator; a test edit selects only itself.
+[[rule]]
+name = "rust-source-scan-consumers"
+toolchains = ["python"]
+description = "Structural audit parsers and the shared Rust lexer select every parser consumer."
+globs = [
+  "tools/structural_audit.py",
+  "tools/structural_audit_rust.py",
+  "tools/structural_audit_rust_admission.py",
+  "tools/structural_audit_rust_domains.py",
+  "src/molt/rust_source_scan.py",
 ]
+gates = []
+pytest = ["tests/test_rust_source_scan.py", "tests/tools/test_gen_luau_support_matrix.py"]
+
+[[rule]]
+name = "rust-source-scan"
+toolchains = ["python"]
+description = "Shared Rust lexical scanner: comment, string and token ranges."
+globs = ["tests/test_rust_source_scan.py"]
+gates = []
+pytest = ["tests/test_rust_source_scan.py"]
 
 [[rule]]
 name = "structural-audit-records"
