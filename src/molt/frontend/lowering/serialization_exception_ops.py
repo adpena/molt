@@ -10,7 +10,6 @@ from molt.frontend.lowering.op_kinds_generated import (
 
 
 import os
-from typing import Any
 
 from molt.frontend._types import (
     MoltOp,
