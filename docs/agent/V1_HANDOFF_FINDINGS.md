@@ -754,7 +754,7 @@ when it drifts; the rows stay the authority for each defect.
 | O. Versioned target facts | Facts read from the build host instead of the declared version and target | V1-16, V1-22, V1-23, V1-35, HF-65, HF-122, HF-568, HF-554, HF-567 |
 | P. Mid-end fact soundness and pass firing | Unchecked rewrites, inert passes and a stdlib skip with no stated exit | HF-201, HF-204, HF-214, HF-555, HF-572, HF-573 |
 | Q. User compile and edit latency | No early cutoff on unchanged inputs | HF-250, HF-252, HF-254, HF-266, HF-285, HF-357, HF-516, HF-173, HF-517, HF-26, HF-371, HF-172, HF-263, HF-458, HF-225 |
-| R. Development custody apparatus | Custody records that guess ownership | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370 |
+| R. Development custody apparatus | Custody records that guess ownership | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370, HF-582 |
 | S. Molt self-build and CI throughput | Cost of building and checking Molt itself | HF-10, HF-22, HF-27, HF-190, HF-35, HF-334, HF-373, HF-291, HF-53, HF-93, HF-68, HF-170, HF-96 |
 | T. Installed delivery and witnesses | The installed product and its end-to-end witnesses | V1-02, V1-06, V1-24, V1-28, HF-62, HF-64, HF-454, HF-576, HF-386, HF-04, HF-380, HF-510, HF-575 |
 
