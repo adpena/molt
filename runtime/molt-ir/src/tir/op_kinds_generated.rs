@@ -7,8 +7,8 @@
 // (alias_analysis.rs), the per-OpCode effect oracle (effects.rs), and the
 // operand-ownership tables (design 27 §2.1/§2.3, read by the ownership module's
 // `op_transferred_operands`). A drift between this file and op_kinds.toml is
-// caught by tests/test_gen_op_kinds.py; a new op kind that the frontend can emit
-// but that is absent here is caught by tools/audit_op_kinds.py --check.
+// caught by tests/test_gen_op_kinds.py. Closed operation types checked by rustc
+// and ty reject unregistered kind identities; the census proves producers exist.
 
 use crate::tir::ops::OpCode;
 use crate::tir::types::TirType;

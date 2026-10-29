@@ -10,6 +10,8 @@ remain on sibling mixins and resolve through the MRO via ``self.<method>``.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+
 import ast
 from typing import (
     Any,
@@ -833,7 +835,7 @@ class ComprehensionMixin(GeneratorMixinBase):
         node: ast.ListComp | ast.SetComp | ast.DictComp,
         *,
         result_type_hint: str,
-        result_op: str,
+        result_op: FrontendOpKind,
         emit_result_values: Callable[[MoltValue, list[MoltValue]], None],
     ) -> MoltValue:
         """PEP 709: all materialized shapes execute in the enclosing frame.

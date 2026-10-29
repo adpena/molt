@@ -850,17 +850,20 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert cranelift.count('"molt_object_publish_initialized"') >= 2
     assert 'get_function("molt_object_publish_initialized")' in llvm
     assert "WasmRuntimeImport::ObjectPublishInitialized" in wasm
-    assert '"alloc" | "alloc_class" => {}' in wasm
-    assert '"stack_alloc" => panic!(' in wasm
+    assert "molt_ir::OpKind::Alloc | molt_ir::OpKind::AllocClass => {}" in wasm
+    assert "molt_ir::OpKind::StackAlloc => panic!(" in wasm
     assert "crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED" in wasm
     assert 'runtime_name = "molt_object_publish_initialized"' in wasm_manifest
     # Rust and Luau allocate their own fully initialized value/table
     # representations; they never observe the native unpublished pointer ABI.
-    assert '"build_list" | "list_new" | "alloc" => self.emit_op_build_list(op)' in rust
-    assert '"alloc" =>' in luau
+    assert (
+        "molt_ir::OpKind::BuildList | molt_ir::OpKind::ListNew | molt_ir::OpKind::Alloc => {\n"
+        "                self.emit_op_build_list(op)"
+    ) in rust
+    assert "molt_ir::OpKind::Alloc =>" in luau
     # Suspended-task allocation is rejected before Luau emission; it is not
     # another spelling for a fully initialized ordinary table.
-    assert '"alloc_task"' not in luau
+    assert "molt_ir::OpKind::AllocTask" not in luau
 
 
 @pytest.mark.parametrize("policy", [None, '"managed"', "1"])

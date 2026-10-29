@@ -8,12 +8,13 @@ import pytest
 from molt.frontend import MoltOp, SimpleTIRGenerator
 from molt.frontend._types import MoltValue
 from molt.frontend.lowering.op_kinds_generated import (
+    FRONTEND_WIRE_KIND,
     FRONTEND_REGISTERED_KINDS,
     SIMPLEIR_BACKEND_PRIVATE_KINDS,
     SIMPLEIR_REGISTERED_KINDS,
+    frontend_wire_kind,
     validate_serialized_kind,
 )
-from tools.audit_op_kinds import extract_frontend_kinds
 from tools.op_kinds.census import FrontendCensus, frontend_census
 from tools.op_kinds.errors import OpKindTableError
 from tools.op_kinds.registration import validate_registration
@@ -34,18 +35,6 @@ def test_every_frontend_kind_expression_resolves(census: FrontendCensus) -> None
     )
 
 
-def test_every_frontend_produced_kind_is_registered(census: FrontendCensus) -> None:
-    unregistered = [
-        f"{site}: {kind}"
-        for kind, sites in sorted(census.produced.items())
-        if kind not in FRONTEND_REGISTERED_KINDS
-        for site in sites
-    ]
-    assert not unregistered, "unregistered frontend op kinds:\n" + "\n".join(
-        unregistered
-    )
-
-
 def test_every_spelled_frontend_kind_is_produced(census: FrontendCensus) -> None:
     # A literal that spells a registered kind nothing builds is a consumer left
     # behind when its producer was removed (HF-197): a dead serializer arm, a
@@ -58,6 +47,63 @@ def test_every_spelled_frontend_kind_is_produced(census: FrontendCensus) -> None
         for site in sites
     ]
     assert not stale, "frontend kinds spelled but never produced:\n" + "\n".join(stale)
+
+
+def test_direct_wire_mapping_matches_registry() -> None:
+    from tools.op_kinds import load_table
+    from tools.op_kinds.registration import (
+        backend_private_kinds,
+        frontend_kinds_for_wire_kind,
+        registered_simpleir_kinds,
+    )
+
+    data = load_table()
+    expected = {
+        frontend: wire
+        for wire in registered_simpleir_kinds(data) - backend_private_kinds(data).keys()
+        for frontend in frontend_kinds_for_wire_kind(data, wire)
+    }
+    for row in data["kind"]:
+        if row.get("group") == "gpu":
+            expected.update(
+                {wire: wire for wire in (row["canonical"], *row.get("aliases", []))}
+            )
+    assert FRONTEND_WIRE_KIND == expected
+    assert {kind: frontend_wire_kind(kind) for kind in FRONTEND_WIRE_KIND} == expected
+
+
+@pytest.mark.parametrize("kind", ["ADD", "INPLACE_ADD", "DIV", "FLOORDIV", "MUL"])
+def test_serializer_uses_registry_wire_names_in_json_and_messagepack(kind) -> None:
+    import json
+    import msgpack
+
+    ops = SimpleTIRGenerator().map_ops_to_json(
+        [
+            MoltOp(
+                kind=kind,
+                args=[MoltValue("left"), MoltValue("right")],
+                result=MoltValue("out"),
+            )
+        ],
+        run_midend=False,
+    )
+    assert ops[0]["kind"] == FRONTEND_WIRE_KIND[kind]
+    assert {op["kind"] for op in ops} <= SIMPLEIR_REGISTERED_KINDS
+    assert json.loads(json.dumps(ops)) == ops
+    assert msgpack.unpackb(msgpack.packb(ops), raw=False) == ops
+
+
+def test_census_counts_named_kind_consumers(tmp_path: Path) -> None:
+    census = _census_of(
+        tmp_path,
+        """
+        def visit(op):
+            if op.kind == FrontendKinds.CONST:
+                return op
+        """,
+    )
+    assert "CONST" in census.mentioned
+    assert not census.produced
 
 
 def test_raise_has_one_producer_that_always_leaves(census: FrontendCensus) -> None:
@@ -210,13 +256,6 @@ def test_census_records_every_identifier_literal_as_a_mention(
         "MUL",
     }
     assert not census.produced
-
-
-def test_every_resolved_serialized_kind_is_registered() -> None:
-    emitted = extract_frontend_kinds(ROOT)
-    assert not emitted.unresolved, emitted.unresolved
-    assert emitted.all
-    assert not (emitted.all - SIMPLEIR_REGISTERED_KINDS)
 
 
 @pytest.mark.parametrize("run_midend", [False, True])

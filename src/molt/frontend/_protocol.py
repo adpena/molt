@@ -49,6 +49,7 @@ from molt.frontend._types import (
     ControlMaps,
     DeclaredClass,
     ExactClassFact,
+    FrontendOpKind,
     FunctionDefinitionValues,
     LoopBoundFact,
     LoopScope,
@@ -63,10 +64,12 @@ from molt.frontend._types import (
     MoltValue,
     SCCPResult,
     ScratchCell,
+    SimpleIROp,
     SyncContextExit,
     TryScope,
     TypeHint,
     TypeParameterBinding,
+    WireOpKind,
     _ClassNsScope,
     _TrackedOpsList,
 )
@@ -309,7 +312,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.Attribute
     ) -> tuple[MoltValue, str | None, ClassId | None]: ...
 
-    def _augassign_op_kind(self, op: ast.operator) -> str: ...
+    def _augassign_op_kind(self, op: ast.operator) -> FrontendOpKind: ...
 
     def _base_class_reference(self, node: ast.expr) -> ClassRef | None: ...
 
@@ -373,7 +376,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> frozenset[str]: ...
 
     def _call_argument_custody(
-        self, op: MoltOp, kind: str, target: str | None, operand_count: int
+        self, op: MoltOp, kind: WireOpKind, target: str | None, operand_count: int
     ) -> list[str] | None: ...
 
     def _call_has_bound_builtin_name(self, node: ast.expr) -> bool: ...
@@ -674,7 +677,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _collect_target_names(self, target: ast.AST) -> list[str]: ...
 
-    def _compare_int_truth(self, op_kind: str, lhs: int, rhs: int) -> bool | None: ...
+    def _compare_int_truth(
+        self, op_kind: FrontendOpKind, lhs: int, rhs: int
+    ) -> bool | None: ...
 
     def _compile_class_async_method(
         self,
@@ -1119,7 +1124,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_frame_home_prologue(self, parameters: Sequence[str]) -> None: ...
 
     def _emit_frame_home_store(
-        self, name: str, value: MoltValue, *, kind: str = ..., slot: int | None = ...
+        self,
+        name: str,
+        value: MoltValue,
+        *,
+        kind: FrontendOpKind = ...,
+        slot: int | None = ...,
     ) -> MoltValue: ...
 
     def _emit_frame_home_take(self, name: str) -> MoltValue: ...
@@ -1204,7 +1214,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         obj: MoltValue,
         attr: str,
-        kind: str,
+        kind: FrontendOpKind,
         *,
         method_load: bool,
         type_hint: TypeHint = ...,
@@ -1466,7 +1476,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         node: ast.ListComp | ast.SetComp | ast.DictComp,
         *,
         result_type_hint: str,
-        result_op: str,
+        result_op: FrontendOpKind,
         emit_result_values: Callable[[MoltValue, list[MoltValue]], None],
     ) -> MoltValue: ...
 
@@ -1573,7 +1583,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_return_label(self) -> None: ...
 
-    def _emit_return_terminator(self, kind: str, args: list[MoltValue]) -> None: ...
+    def _emit_return_terminator(
+        self, kind: FrontendOpKind, args: list[MoltValue]
+    ) -> None: ...
 
     def _emit_return_value(self, value: MoltValue) -> None: ...
 
@@ -1838,7 +1850,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _frame_home_restore_kind(
         self, name: str, bindings: Mapping[str, ComprehensionBinding]
-    ) -> str: ...
+    ) -> FrontendOpKind: ...
 
     def _frame_home_slot(self, name: str) -> int: ...
 
@@ -1881,8 +1893,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     @staticmethod
     def _fuse_string_split_field_consumers_json(
-        json_ops: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]: ...
+        json_ops: list[SimpleIROp],
+    ) -> list[SimpleIROp]: ...
 
     def _genexpr_symbol(self) -> str: ...
 
@@ -1990,7 +2002,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _invalidate_loop_guards_for_class(self, class_id: ClassId) -> None: ...
 
-    def _is_canonicalization_barrier_op(self, op_kind: str) -> bool: ...
+    def _is_canonicalization_barrier_op(self, op_kind: FrontendOpKind) -> bool: ...
 
     @staticmethod
     def _is_class_body_managed_name(name: str) -> bool: ...
@@ -2255,8 +2267,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> _TrackedOpsList: ...
 
     def _normalize_compare_for_induction(
-        self, compare_op: str, lhs_is_iv: bool
-    ) -> str | None: ...
+        self, compare_op: FrontendOpKind, lhs_is_iv: bool
+    ) -> FrontendOpKind | None: ...
 
     @staticmethod
     def _normalize_func_kind(kind: object) -> FunctionKind | None: ...
@@ -2289,7 +2301,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, op: MoltOp | str, *, const_by_name: dict[str, Any] | None = ...
     ) -> bool: ...
 
-    def _op_may_raise_for_sccp(self, op_kind: str) -> bool: ...
+    def _op_may_raise_for_sccp(self, op_kind: FrontendOpKind) -> bool: ...
 
     def _op_primitive_facts(
         self, op: MoltOp, const_by_name: dict[str, Any] | None = ...
@@ -2486,7 +2498,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     @staticmethod
-    def _require_async_poll_target(kind: str, target: Any) -> str: ...
+    def _require_async_poll_target(kind: FrontendOpKind, target: Any) -> str: ...
 
     def _require_coroutine_body(self, node: ast.AST, construct: str) -> None: ...
 
@@ -2618,8 +2630,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     @staticmethod
     def _scalarize_string_split_fields_json(
-        json_ops: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]: ...
+        json_ops: list[SimpleIROp],
+    ) -> list[SimpleIROp]: ...
 
     def _sccp_in_const_int_values(
         self, sccp: SCCPResult
@@ -2952,7 +2964,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         function_name: str | None = ...,
         run_midend: bool = ...,
         module_init_symbol: str | None = ...,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[SimpleIROp]: ...
 
     @classmethod
     def module_init_symbol(cls, name: str) -> str: ...

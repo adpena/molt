@@ -31,6 +31,7 @@ from molt.frontend._types import (
     CodeSlotDeclaration,
     ComprehensionBinding,
     ExactClassFact,
+    FrontendOpKind,
     FuncInfo,
     MoltOp,
     MoltValue,
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 
 class _GeneratorProtocolAttrs(Protocol):
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
+    _VECTOR_REDUCTION_OPS: dict[str, FrontendOpKind]
     _active_midend_function_name: Any
     _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonNodeKey]] | None
     _class_body_depth: int

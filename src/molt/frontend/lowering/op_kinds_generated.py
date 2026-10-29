@@ -25,10 +25,2677 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
+
+FrontendOpKind = Literal[
+    'ABS',
+    'ADD',
+    'AITER',
+    'ALL',
+    'ALLOC',
+    'ALLOC_CLASS',
+    'ALLOC_CLASS_STATIC',
+    'ALLOC_CLASS_TRUSTED',
+    'ALLOC_INSTANCE',
+    'ALLOC_TASK',
+    'AND',
+    'ANEXT',
+    'ANY',
+    'ASCII_FROM_OBJ',
+    'ASYNCGEN_NEW',
+    'ASYNC_FOR_END',
+    'ASYNC_FOR_START',
+    'ASYNC_WORK_POLL',
+    'BAND',
+    'BINDING_ALIAS',
+    'BINOP_ADD',
+    'BINOP_FLOOR_DIV',
+    'BINOP_MOD',
+    'BINOP_MUL',
+    'BINOP_POW',
+    'BINOP_SUB',
+    'BIT_AND',
+    'BIT_NOT',
+    'BIT_OR',
+    'BIT_XOR',
+    'BOOL',
+    'BOR',
+    'BORROW',
+    'BOUND_METHOD_NEW',
+    'BOX',
+    'BOX_FROM_RAW_INT',
+    'BRANCH_FALSE',
+    'BRANCH_TRUE',
+    'BR_IF',
+    'BUILD_DICT',
+    'BUILD_LIST',
+    'BUILD_SET',
+    'BUILD_SLICE',
+    'BUILD_TUPLE',
+    'BUILTIN_ABS',
+    'BUILTIN_ALL',
+    'BUILTIN_ANY',
+    'BUILTIN_BOOL',
+    'BUILTIN_FLOAT',
+    'BUILTIN_FUNC',
+    'BUILTIN_INT',
+    'BUILTIN_LEN',
+    'BUILTIN_PRINT',
+    'BUILTIN_RANGE',
+    'BUILTIN_REVERSED',
+    'BUILTIN_SORTED',
+    'BUILTIN_STR',
+    'BUILTIN_SUM',
+    'BUILTIN_TYPE',
+    'BXOR',
+    'BYTEARRAY_COUNT',
+    'BYTEARRAY_COUNT_SLICE',
+    'BYTEARRAY_ENDSWITH',
+    'BYTEARRAY_ENDSWITH_SLICE',
+    'BYTEARRAY_FILL_RANGE',
+    'BYTEARRAY_FIND',
+    'BYTEARRAY_FIND_SLICE',
+    'BYTEARRAY_FROM_OBJ',
+    'BYTEARRAY_FROM_STR',
+    'BYTEARRAY_REPLACE',
+    'BYTEARRAY_SPLIT',
+    'BYTEARRAY_SPLIT_MAX',
+    'BYTEARRAY_STARTSWITH',
+    'BYTEARRAY_STARTSWITH_SLICE',
+    'BYTES_COUNT',
+    'BYTES_COUNT_SLICE',
+    'BYTES_ENDSWITH',
+    'BYTES_ENDSWITH_SLICE',
+    'BYTES_FIND',
+    'BYTES_FIND_SLICE',
+    'BYTES_FROM_OBJ',
+    'BYTES_FROM_STR',
+    'BYTES_REPLACE',
+    'BYTES_SPLIT',
+    'BYTES_SPLIT_MAX',
+    'BYTES_STARTSWITH',
+    'BYTES_STARTSWITH_SLICE',
+    'CALL',
+    'CALLARGS_EXPAND_KWSTAR',
+    'CALLARGS_EXPAND_STAR',
+    'CALLARGS_NEW',
+    'CALLARGS_PUSH_KW',
+    'CALLARGS_PUSH_METHOD_RECEIVER',
+    'CALLARGS_PUSH_POS',
+    'CALL_ASYNC',
+    'CALL_BIND',
+    'CALL_BUILTIN',
+    'CALL_FUNC',
+    'CALL_FUNCTION',
+    'CALL_GUARDED',
+    'CALL_INDIRECT',
+    'CALL_INTERNAL',
+    'CALL_LOADED_METHOD',
+    'CALL_METHOD',
+    'CAST',
+    'CAST_BOOL',
+    'CAST_FLOAT',
+    'CAST_INT',
+    'CAST_STR',
+    'CHECKED_ADD',
+    'CHECKED_MUL',
+    'CHECK_EXCEPTION',
+    'CHR',
+    'CLASSMETHOD_NEW',
+    'CLASS_DEF',
+    'CLASS_LAYOUT_FIELD_COUNT',
+    'CLASS_LAYOUT_SLOT_COUNT',
+    'CLASS_SET_DEFINITION',
+    'CMP_EQ',
+    'CMP_GE',
+    'CMP_GT',
+    'CMP_LE',
+    'CMP_LT',
+    'CMP_NE',
+    'CODE_NEW',
+    'CODE_SLOTS_INIT',
+    'CODE_SLOT_SET',
+    'COMPLEX_FROM_OBJ',
+    'CONST',
+    'CONST_BIGINT',
+    'CONST_BOOL',
+    'CONST_BYTES',
+    'CONST_ELLIPSIS',
+    'CONST_FLOAT',
+    'CONST_INT',
+    'CONST_NONE',
+    'CONST_NOT_IMPLEMENTED',
+    'CONST_STR',
+    'CONTAINS',
+    'CONTEXT_ENTER',
+    'CONTEXT_EXIT',
+    'COPY',
+    'COPY_VAR',
+    'DATACLASS_GET',
+    'DATACLASS_NEW',
+    'DATACLASS_NEW_VALUES',
+    'DATACLASS_SET',
+    'DATACLASS_SET_CLASS',
+    'DEC_REF',
+    'DELATTR',
+    'DELATTR_GENERIC_OBJ',
+    'DELATTR_GENERIC_PTR',
+    'DELATTR_NAME',
+    'DELETE_VAR',
+    'DEL_ATTR',
+    'DEL_ATTR_NAME',
+    'DEL_BOUNDARY',
+    'DEL_INDEX',
+    'DICT_CLEAR',
+    'DICT_COPY',
+    'DICT_FROM_OBJ',
+    'DICT_GET',
+    'DICT_ITEMS',
+    'DICT_KEYS',
+    'DICT_NEW',
+    'DICT_POP',
+    'DICT_POPITEM',
+    'DICT_SET',
+    'DICT_SETDEFAULT',
+    'DICT_SETDEFAULT_EMPTY_LIST',
+    'DICT_STR_INT_INC',
+    'DICT_UNPACK',
+    'DICT_UPDATE',
+    'DICT_UPDATE_KWSTAR',
+    'DICT_UPDATE_MISSING',
+    'DICT_VALUES',
+    'DIV',
+    'DROP_INSERTED',
+    'ELSE',
+    'END_IF',
+    'ENUMERATE',
+    'EQ',
+    'EXCEPTIONGROUP_COMBINE',
+    'EXCEPTIONGROUP_MATCH',
+    'EXCEPTION_ACTIVE',
+    'EXCEPTION_CLASS',
+    'EXCEPTION_CLEAR',
+    'EXCEPTION_CONTEXT_SET',
+    'EXCEPTION_CURRENT',
+    'EXCEPTION_FINALLY_PENDING_OBSERVER',
+    'EXCEPTION_LAST',
+    'EXCEPTION_LAST_PENDING',
+    'EXCEPTION_MATCH_BUILTIN',
+    'EXCEPTION_NEW',
+    'EXCEPTION_NEW_BUILTIN',
+    'EXCEPTION_NEW_BUILTIN_EMPTY',
+    'EXCEPTION_NEW_BUILTIN_ONE',
+    'EXCEPTION_NEW_FROM_CLASS',
+    'EXCEPTION_PENDING',
+    'EXCEPTION_POP',
+    'EXCEPTION_PUSH',
+    'EXCEPTION_REGION_DROPS_INSERTED',
+    'EXCEPTION_SET_LAST',
+    'EXCEPTION_STACK_CLEAR',
+    'EXCEPTION_STACK_DEPTH',
+    'EXCEPTION_STACK_ENTER',
+    'EXCEPTION_STACK_EXIT',
+    'EXCEPTION_STACK_SET_DEPTH',
+    'EXCEPT_END',
+    'EXCEPT_START',
+    'FINALLY_END',
+    'FINALLY_START',
+    'FLOAT',
+    'FLOAT_FROM_OBJ',
+    'FLOORDIV',
+    'FLOOR_DIV',
+    'FORMAT_STRING',
+    'FOR_ITER',
+    'FOR_ITER_END',
+    'FOR_ITER_START',
+    'FOR_RANGE',
+    'FRAME_CONTEXT_SET',
+    'FRAME_HOME_CELL',
+    'FRAME_HOME_CLEAR',
+    'FRAME_HOME_LOAD',
+    'FRAME_HOME_PRIVATE_CELL',
+    'FRAME_HOME_STORE',
+    'FRAME_HOME_TAKE',
+    'FRAME_LOCALS',
+    'FRAME_LOCALS_SET',
+    'FREE',
+    'FROZENSET_ADD',
+    'FROZENSET_NEW',
+    'FUNCTION_CLOSURE_BITS',
+    'FUNCTION_DEFAULTS_VERSION',
+    'FUNC_NEW',
+    'FUNC_NEW_CLOSURE',
+    'GE',
+    'GEN_CLOSE',
+    'GEN_SEND',
+    'GEN_THROW',
+    'GETATTR',
+    'GETATTR_GENERIC_OBJ',
+    'GETATTR_GENERIC_PTR',
+    'GETATTR_NAME_DEFAULT',
+    'GETATTR_SPECIAL_OBJ',
+    'GETFRAME',
+    'GET_ATTR',
+    'GET_ATTR_GENERIC_OBJ',
+    'GET_ATTR_GENERIC_PTR',
+    'GET_ATTR_NAME',
+    'GET_ATTR_NAME_DEFAULT',
+    'GET_ATTR_SPECIAL_OBJ',
+    'GET_ITEM',
+    'GET_ITER',
+    'GOTO',
+    'GPU_BARRIER',
+    'GPU_BLOCK_DIM',
+    'GPU_BLOCK_ID',
+    'GPU_GRID_DIM',
+    'GPU_THREAD_ID',
+    'GT',
+    'GUARDED_FIELD_GET',
+    'GUARDED_FIELD_SET',
+    'GUARDED_GETATTR',
+    'GUARDED_LOAD',
+    'GUARDED_SETATTR',
+    'GUARD_BOOL',
+    'GUARD_FLOAT',
+    'GUARD_INT',
+    'GUARD_LAYOUT',
+    'GUARD_NONE',
+    'GUARD_STR',
+    'GUARD_TAG',
+    'GUARD_TYPE',
+    'HASATTR_NAME',
+    'HAS_ATTR_NAME',
+    'ID',
+    'IDENTITY_ALIAS',
+    'IF',
+    'IF_NOT',
+    'IMPORT',
+    'IMPORT_FROM',
+    'IMPORT_NAME',
+    'IN',
+    'INC_REF',
+    'INDEX',
+    'INDEX_SET',
+    'INIT_INSTANCE',
+    'INPLACE_ADD',
+    'INPLACE_BIT_AND',
+    'INPLACE_BIT_OR',
+    'INPLACE_BIT_XOR',
+    'INPLACE_DIV',
+    'INPLACE_FLOORDIV',
+    'INPLACE_LSHIFT',
+    'INPLACE_MATMUL',
+    'INPLACE_MOD',
+    'INPLACE_MUL',
+    'INPLACE_POW',
+    'INPLACE_RSHIFT',
+    'INPLACE_SUB',
+    'INSTANCE_GET_FIELD',
+    'INSTANCE_HAS_FIELD',
+    'INSTANCE_SET_FIELD',
+    'INT',
+    'INT_FROM_OBJ',
+    'INT_FROM_STR_OF_OBJ',
+    'INVERT',
+    'INVOKE_FFI',
+    'IS',
+    'ISINSTANCE',
+    'ISSUBCLASS',
+    'IS_BOUND_METHOD',
+    'IS_CALLABLE',
+    'IS_GENERATOR',
+    'IS_NATIVE_AWAITABLE',
+    'IS_NOT',
+    'IS_PENDING',
+    'ITER_NEW',
+    'ITER_NEXT',
+    'ITER_NEXT_UNBOXED',
+    'JUMP',
+    'LABEL',
+    'LE',
+    'LEN',
+    'LINE',
+    'LIST_APPEND',
+    'LIST_CLEAR',
+    'LIST_COPY',
+    'LIST_COUNT',
+    'LIST_EXTEND',
+    'LIST_FILL_NEW',
+    'LIST_FROM_RANGE',
+    'LIST_INDEX',
+    'LIST_INDEX_RANGE',
+    'LIST_INSERT',
+    'LIST_INT_NEW',
+    'LIST_NEW',
+    'LIST_POP',
+    'LIST_REMOVE',
+    'LIST_REVERSE',
+    'LOAD',
+    'LOAD_ATTR',
+    'LOAD_CLOSURE',
+    'LOAD_CONST',
+    'LOAD_METHOD',
+    'LOAD_SUPER_METHOD',
+    'LOAD_VAR',
+    'LOOP_BREAK',
+    'LOOP_BREAK_IF_EXCEPTION',
+    'LOOP_BREAK_IF_FALSE',
+    'LOOP_BREAK_IF_TRUE',
+    'LOOP_CONTINUE',
+    'LOOP_END',
+    'LOOP_INDEX_END',
+    'LOOP_INDEX_NEXT',
+    'LOOP_INDEX_START',
+    'LOOP_START',
+    'LSHIFT',
+    'LT',
+    'MATMUL',
+    'MISSING',
+    'MOD',
+    'MODULE_CACHE_DEL',
+    'MODULE_CACHE_GET',
+    'MODULE_CACHE_SET',
+    'MODULE_DEL_GLOBAL',
+    'MODULE_DEL_GLOBAL_IF_PRESENT',
+    'MODULE_GET_ATTR',
+    'MODULE_GET_GLOBAL',
+    'MODULE_GET_NAME',
+    'MODULE_IMPORT',
+    'MODULE_IMPORT_FROM',
+    'MODULE_IMPORT_STAR',
+    'MODULE_LOAD_CACHED',
+    'MODULE_NEW',
+    'MODULE_SET_ATTR',
+    'MODULE_SLOT',
+    'MODULO',
+    'MOD_',
+    'MUL',
+    'NE',
+    'NEG',
+    'NOP',
+    'NOT',
+    'NOT_IN',
+    'OBJECT_NEW',
+    'OBJECT_NEW_BOUND',
+    'OPERATOR_INDEX',
+    'OR',
+    'ORD',
+    'ORD_AT',
+    'PHI',
+    'POS',
+    'POW',
+    'POW_MOD',
+    'PRINT',
+    'PRINT_NEWLINE',
+    'PROPERTY_NEW',
+    'RAISE',
+    'RAISE_CAUSE',
+    'RAISE_FROM',
+    'RANGE',
+    'RANGE_NEW',
+    'RELEASE',
+    'REPR_FROM_OBJ',
+    'RERAISE',
+    'REVERSED',
+    'ROUND',
+    'RSHIFT',
+    'SETATTR',
+    'SETATTR_GENERIC_OBJ',
+    'SETATTR_GENERIC_PTR',
+    'SETATTR_NAME',
+    'SET_ADD',
+    'SET_ADD_PROBE',
+    'SET_ATTR',
+    'SET_ATTR_GENERIC_OBJ',
+    'SET_ATTR_GENERIC_PTR',
+    'SET_ATTR_NAME',
+    'SET_CLEAR',
+    'SET_DIFFERENCE_UPDATE',
+    'SET_DISCARD',
+    'SET_INDEX',
+    'SET_INTERSECTION_UPDATE',
+    'SET_ITEM',
+    'SET_NEW',
+    'SET_POP',
+    'SET_REMOVE',
+    'SET_SYMDIFF_UPDATE',
+    'SET_UPDATE',
+    'SHL',
+    'SHR',
+    'SLICE',
+    'SLICE_NEW',
+    'SORTED',
+    'STACK_ALLOC',
+    'STATEFUL_LOCALS_REGISTER',
+    'STATE_BLOCK_END',
+    'STATE_BLOCK_START',
+    'STATE_LABEL',
+    'STATE_SET',
+    'STATE_SWITCH',
+    'STATE_TRANSITION',
+    'STATE_YIELD',
+    'STATICMETHOD_NEW',
+    'STORE',
+    'STORE_ATTR',
+    'STORE_CLOSURE',
+    'STORE_FAST',
+    'STORE_INDEX',
+    'STORE_SUBSCRIPT',
+    'STORE_VAR',
+    'STR',
+    'STRING_CAPITALIZE',
+    'STRING_COUNT',
+    'STRING_COUNT_SLICE',
+    'STRING_ENDSWITH',
+    'STRING_ENDSWITH_SLICE',
+    'STRING_FIND',
+    'STRING_FIND_SLICE',
+    'STRING_FORMAT',
+    'STRING_JOIN',
+    'STRING_LOWER',
+    'STRING_LSTRIP',
+    'STRING_REPLACE',
+    'STRING_RSTRIP',
+    'STRING_SPLIT',
+    'STRING_SPLIT_FIELD',
+    'STRING_SPLIT_FIELD_END',
+    'STRING_SPLIT_FIELD_EQ',
+    'STRING_SPLIT_FIELD_IS_ASCII',
+    'STRING_SPLIT_FIELD_LEN',
+    'STRING_SPLIT_FIELD_LEN_FROM_BOUNDS',
+    'STRING_SPLIT_FIELD_ORD_AT_BOUNDS',
+    'STRING_SPLIT_FIELD_START',
+    'STRING_SPLIT_FIELD_TO_INT',
+    'STRING_SPLIT_MAX',
+    'STRING_SPLIT_SEP_DICT_INC',
+    'STRING_SPLIT_VALIDATE',
+    'STRING_SPLIT_WS_DICT_INC',
+    'STRING_STARTSWITH',
+    'STRING_STARTSWITH_SLICE',
+    'STRING_STRIP',
+    'STRING_UPPER',
+    'STR_FROM_OBJ',
+    'SUB',
+    'SUBSCRIPT',
+    'SUM',
+    'TASK_WAIT',
+    'TRACE_ENTER_SLOT',
+    'TRACE_EXIT',
+    'TRUE_DIV',
+    'TRUNC',
+    'TRY_END',
+    'TRY_START',
+    'TUPLE_COUNT',
+    'TUPLE_FROM_LIST',
+    'TUPLE_INDEX',
+    'TUPLE_NEW',
+    'TYPE_GUARD',
+    'TYPE_OF',
+    'UNARY_INVERT',
+    'UNARY_NEG',
+    'UNARY_NOT',
+    'UNARY_POS',
+    'UNBOX',
+    'UNBOX_TO_RAW_INT',
+    'UNPACK_SEQUENCE',
+    'UNREACHABLE',
+    'VEC_MAX',
+    'VEC_MIN',
+    'VEC_PROD',
+    'VEC_SUM',
+    'WARN_STDERR',
+    'WHILE_END',
+    'WHILE_START',
+    'WIDEN',
+    'YIELD',
+    'YIELD_FROM',
+    'ZIP',
+    '_M_AND',
+    'gpu_barrier',
+    'gpu_block_dim',
+    'gpu_block_id',
+    'gpu_grid_dim',
+    'gpu_thread_id',
+    'ret',
+    'ret_void',
+]
+
+WireOpKind = Literal[
+    '_m_and',
+    'abs',
+    'add',
+    'aiter',
+    'all',
+    'alloc',
+    'alloc_class',
+    'alloc_class_static',
+    'alloc_class_trusted',
+    'alloc_instance',
+    'alloc_task',
+    'and',
+    'anext',
+    'any',
+    'ascii_from_obj',
+    'async_for_end',
+    'async_for_start',
+    'async_work_poll',
+    'asyncgen_new',
+    'band',
+    'binding_alias',
+    'binop',
+    'binop_add',
+    'binop_floor_div',
+    'binop_mod',
+    'binop_mul',
+    'binop_pow',
+    'binop_sub',
+    'bit_and',
+    'bit_not',
+    'bit_or',
+    'bit_xor',
+    'bool',
+    'bool_const',
+    'bor',
+    'borrow',
+    'bound_method_new',
+    'box',
+    'box_from_raw_int',
+    'br_if',
+    'branch',
+    'branch_false',
+    'branch_true',
+    'build_dict',
+    'build_list',
+    'build_set',
+    'build_slice',
+    'build_tuple',
+    'builtin_abs',
+    'builtin_all',
+    'builtin_any',
+    'builtin_bool',
+    'builtin_float',
+    'builtin_func',
+    'builtin_int',
+    'builtin_len',
+    'builtin_print',
+    'builtin_range',
+    'builtin_reversed',
+    'builtin_sorted',
+    'builtin_str',
+    'builtin_sum',
+    'builtin_type',
+    'bxor',
+    'bytearray_count',
+    'bytearray_count_slice',
+    'bytearray_endswith',
+    'bytearray_endswith_slice',
+    'bytearray_fill_range',
+    'bytearray_find',
+    'bytearray_find_slice',
+    'bytearray_from_obj',
+    'bytearray_from_str',
+    'bytearray_replace',
+    'bytearray_split',
+    'bytearray_split_max',
+    'bytearray_startswith',
+    'bytearray_startswith_slice',
+    'bytes_count',
+    'bytes_count_slice',
+    'bytes_endswith',
+    'bytes_endswith_slice',
+    'bytes_find',
+    'bytes_find_slice',
+    'bytes_from_obj',
+    'bytes_from_str',
+    'bytes_replace',
+    'bytes_split',
+    'bytes_split_max',
+    'bytes_startswith',
+    'bytes_startswith_slice',
+    'call',
+    'call_async',
+    'call_bind',
+    'call_builtin',
+    'call_func',
+    'call_function',
+    'call_guarded',
+    'call_indirect',
+    'call_internal',
+    'call_loaded_method',
+    'call_method',
+    'callargs_expand_kwstar',
+    'callargs_expand_star',
+    'callargs_new',
+    'callargs_push_kw',
+    'callargs_push_method_receiver',
+    'callargs_push_pos',
+    'cast',
+    'cast_bool',
+    'cast_float',
+    'cast_int',
+    'cast_str',
+    'check_exception',
+    'checked_add',
+    'checked_mul',
+    'chr',
+    'class_def',
+    'class_layout_field_count',
+    'class_layout_slot_count',
+    'class_set_definition',
+    'classmethod_new',
+    'closure_load',
+    'closure_store',
+    'cmp_eq',
+    'cmp_ge',
+    'cmp_gt',
+    'cmp_le',
+    'cmp_lt',
+    'cmp_ne',
+    'code_new',
+    'code_slot_set',
+    'code_slots_init',
+    'compare',
+    'complex_from_obj',
+    'const',
+    'const_bigint',
+    'const_bool',
+    'const_bytes',
+    'const_ellipsis',
+    'const_float',
+    'const_int',
+    'const_none',
+    'const_not_implemented',
+    'const_str',
+    'contains',
+    'context_enter',
+    'context_exit',
+    'copy',
+    'copy_var',
+    'dataclass_get',
+    'dataclass_new',
+    'dataclass_new_values',
+    'dataclass_set',
+    'dataclass_set_class',
+    'dec_ref',
+    'del_attr',
+    'del_attr_generic_obj',
+    'del_attr_generic_ptr',
+    'del_attr_name',
+    'del_boundary',
+    'del_index',
+    'del_item',
+    'delete_var',
+    'dict_clear',
+    'dict_copy',
+    'dict_from_obj',
+    'dict_get',
+    'dict_items',
+    'dict_keys',
+    'dict_new',
+    'dict_pop',
+    'dict_popitem',
+    'dict_set',
+    'dict_setdefault',
+    'dict_setdefault_empty_list',
+    'dict_str_int_inc',
+    'dict_unpack',
+    'dict_update',
+    'dict_update_kwstar',
+    'dict_update_missing',
+    'dict_values',
+    'div',
+    'drop_inserted',
+    'else',
+    'end_for',
+    'end_if',
+    'enumerate',
+    'eq',
+    'except_end',
+    'except_start',
+    'exception_active',
+    'exception_class',
+    'exception_clear',
+    'exception_context_set',
+    'exception_current',
+    'exception_finally_pending_observer',
+    'exception_last',
+    'exception_last_pending',
+    'exception_match_builtin',
+    'exception_new',
+    'exception_new_builtin',
+    'exception_new_builtin_empty',
+    'exception_new_builtin_one',
+    'exception_new_from_class',
+    'exception_pending',
+    'exception_pop',
+    'exception_push',
+    'exception_region_drops_inserted',
+    'exception_set_last',
+    'exception_stack_clear',
+    'exception_stack_depth',
+    'exception_stack_enter',
+    'exception_stack_exit',
+    'exception_stack_set_depth',
+    'exceptiongroup_combine',
+    'exceptiongroup_match',
+    'finally_end',
+    'finally_start',
+    'float',
+    'float_from_obj',
+    'floor_div',
+    'floordiv',
+    'for_iter',
+    'for_iter_end',
+    'for_iter_start',
+    'for_range',
+    'format_string',
+    'frame_context_set',
+    'frame_home_cell',
+    'frame_home_clear',
+    'frame_home_load',
+    'frame_home_private_cell',
+    'frame_home_store',
+    'frame_home_take',
+    'frame_locals',
+    'frame_locals_set',
+    'free',
+    'frozenset_add',
+    'frozenset_new',
+    'func_new',
+    'func_new_closure',
+    'function_closure_bits',
+    'function_defaults_version',
+    'ge',
+    'gen_close',
+    'gen_send',
+    'gen_throw',
+    'get_attr',
+    'get_attr_generic_obj',
+    'get_attr_generic_ptr',
+    'get_attr_name',
+    'get_attr_name_default',
+    'get_attr_special_obj',
+    'get_item',
+    'get_iter',
+    'getframe',
+    'goto',
+    'gpu_barrier',
+    'gpu_block_dim',
+    'gpu_block_id',
+    'gpu_grid_dim',
+    'gpu_thread_id',
+    'gt',
+    'guard_bool',
+    'guard_float',
+    'guard_int',
+    'guard_layout',
+    'guard_none',
+    'guard_str',
+    'guard_tag',
+    'guard_type',
+    'guarded_field_get',
+    'guarded_field_set',
+    'guarded_load',
+    'has_attr_name',
+    'id',
+    'identity_alias',
+    'if',
+    'if_not',
+    'import',
+    'import_from',
+    'import_name',
+    'in',
+    'inc_ref',
+    'index',
+    'index_set',
+    'init_instance',
+    'inplace_add',
+    'inplace_bit_and',
+    'inplace_bit_or',
+    'inplace_bit_xor',
+    'inplace_div',
+    'inplace_floordiv',
+    'inplace_lshift',
+    'inplace_matmul',
+    'inplace_mod',
+    'inplace_mul',
+    'inplace_pow',
+    'inplace_rshift',
+    'inplace_sub',
+    'instance_get_field',
+    'instance_has_field',
+    'instance_set_field',
+    'int',
+    'int_from_obj',
+    'int_from_str_of_obj',
+    'invert',
+    'invoke_ffi',
+    'is',
+    'is_bound_method',
+    'is_callable',
+    'is_generator',
+    'is_native_awaitable',
+    'is_not',
+    'is_pending',
+    'isinstance',
+    'issubclass',
+    'iter',
+    'iter_next',
+    'iter_next_unboxed',
+    'jump',
+    'label',
+    'le',
+    'len',
+    'line',
+    'list_append',
+    'list_clear',
+    'list_copy',
+    'list_count',
+    'list_extend',
+    'list_fill_new',
+    'list_from_range',
+    'list_index',
+    'list_index_range',
+    'list_insert',
+    'list_int_new',
+    'list_new',
+    'list_pop',
+    'list_remove',
+    'list_reverse',
+    'load',
+    'load_attr',
+    'load_const',
+    'load_local',
+    'load_method',
+    'load_super_method',
+    'load_var',
+    'loop_break',
+    'loop_break_if_exception',
+    'loop_break_if_false',
+    'loop_break_if_true',
+    'loop_carry_init',
+    'loop_carry_update',
+    'loop_continue',
+    'loop_end',
+    'loop_index_end',
+    'loop_index_next',
+    'loop_index_start',
+    'loop_start',
+    'lshift',
+    'lt',
+    'matmul',
+    'missing',
+    'mod',
+    'mod_',
+    'module_cache_del',
+    'module_cache_get',
+    'module_cache_set',
+    'module_del_global',
+    'module_del_global_if_present',
+    'module_get_attr',
+    'module_get_global',
+    'module_get_name',
+    'module_import',
+    'module_import_from',
+    'module_import_star',
+    'module_load_cached',
+    'module_new',
+    'module_set_attr',
+    'module_slot',
+    'modulo',
+    'mul',
+    'ne',
+    'neg',
+    'none_const',
+    'nop',
+    'not',
+    'not_in',
+    'object_new',
+    'object_new_bound',
+    'operator_index',
+    'or',
+    'ord',
+    'ord_at',
+    'pcall_wrap_begin',
+    'pcall_wrap_end',
+    'phi',
+    'pos',
+    'pow',
+    'pow_mod',
+    'print',
+    'print_newline',
+    'property_new',
+    'raise',
+    'raise_from',
+    'range',
+    'range_new',
+    'release',
+    'repr_from_obj',
+    'reraise',
+    'ret',
+    'ret_void',
+    'reversed',
+    'round',
+    'rshift',
+    'set_add',
+    'set_add_probe',
+    'set_attr',
+    'set_attr_generic_obj',
+    'set_attr_generic_ptr',
+    'set_attr_name',
+    'set_clear',
+    'set_difference_update',
+    'set_discard',
+    'set_intersection_update',
+    'set_item',
+    'set_new',
+    'set_pop',
+    'set_remove',
+    'set_symdiff_update',
+    'set_update',
+    'shl',
+    'shr',
+    'slice',
+    'slice_new',
+    'sorted',
+    'stack_alloc',
+    'state_block_end',
+    'state_block_start',
+    'state_label',
+    'state_set',
+    'state_switch',
+    'state_transition',
+    'state_yield',
+    'stateful_locals_register',
+    'staticmethod_new',
+    'store',
+    'store_attr',
+    'store_fast',
+    'store_index',
+    'store_local',
+    'store_subscript',
+    'store_var',
+    'str',
+    'str_from_obj',
+    'string_capitalize',
+    'string_concat',
+    'string_const',
+    'string_count',
+    'string_count_slice',
+    'string_endswith',
+    'string_endswith_slice',
+    'string_eq',
+    'string_find',
+    'string_find_slice',
+    'string_format',
+    'string_index',
+    'string_index_slice',
+    'string_join',
+    'string_lower',
+    'string_lstrip',
+    'string_partition',
+    'string_repeat',
+    'string_replace',
+    'string_rfind',
+    'string_rfind_slice',
+    'string_rindex',
+    'string_rindex_slice',
+    'string_rpartition',
+    'string_rstrip',
+    'string_split',
+    'string_split_field',
+    'string_split_field_end',
+    'string_split_field_eq',
+    'string_split_field_is_ascii',
+    'string_split_field_len',
+    'string_split_field_len_from_bounds',
+    'string_split_field_ord_at_bounds',
+    'string_split_field_start',
+    'string_split_field_to_int',
+    'string_split_max',
+    'string_split_sep_dict_inc',
+    'string_split_validate',
+    'string_split_ws_dict_inc',
+    'string_splitlines',
+    'string_startswith',
+    'string_startswith_slice',
+    'string_strip',
+    'string_upper',
+    'sub',
+    'subscript',
+    'sum',
+    'task_wait',
+    'trace_enter_slot',
+    'trace_exit',
+    'true_div',
+    'trunc',
+    'try_end',
+    'try_start',
+    'tuple_count',
+    'tuple_from_list',
+    'tuple_index',
+    'tuple_new',
+    'type_guard',
+    'type_of',
+    'unary_invert',
+    'unary_neg',
+    'unary_not',
+    'unary_op',
+    'unary_pos',
+    'unbox',
+    'unbox_to_raw_int',
+    'unpack_sequence',
+    'unreachable',
+    'vec_max',
+    'vec_min',
+    'vec_prod',
+    'vec_sum',
+    'warn_stderr',
+    'while_end',
+    'while_start',
+    'widen',
+    'yield',
+    'yield_from',
+    'zip',
+]
+
+class FrontendKinds:
+    ABS: Final = 'ABS'
+    ADD: Final = 'ADD'
+    AITER: Final = 'AITER'
+    ALL: Final = 'ALL'
+    ALLOC: Final = 'ALLOC'
+    ALLOC_CLASS: Final = 'ALLOC_CLASS'
+    ALLOC_CLASS_STATIC: Final = 'ALLOC_CLASS_STATIC'
+    ALLOC_CLASS_TRUSTED: Final = 'ALLOC_CLASS_TRUSTED'
+    ALLOC_INSTANCE: Final = 'ALLOC_INSTANCE'
+    ALLOC_TASK: Final = 'ALLOC_TASK'
+    AND: Final = 'AND'
+    ANEXT: Final = 'ANEXT'
+    ANY: Final = 'ANY'
+    ASCII_FROM_OBJ: Final = 'ASCII_FROM_OBJ'
+    ASYNCGEN_NEW: Final = 'ASYNCGEN_NEW'
+    ASYNC_FOR_END: Final = 'ASYNC_FOR_END'
+    ASYNC_FOR_START: Final = 'ASYNC_FOR_START'
+    ASYNC_WORK_POLL: Final = 'ASYNC_WORK_POLL'
+    BAND: Final = 'BAND'
+    BINDING_ALIAS: Final = 'BINDING_ALIAS'
+    BINOP_ADD: Final = 'BINOP_ADD'
+    BINOP_FLOOR_DIV: Final = 'BINOP_FLOOR_DIV'
+    BINOP_MOD: Final = 'BINOP_MOD'
+    BINOP_MUL: Final = 'BINOP_MUL'
+    BINOP_POW: Final = 'BINOP_POW'
+    BINOP_SUB: Final = 'BINOP_SUB'
+    BIT_AND: Final = 'BIT_AND'
+    BIT_NOT: Final = 'BIT_NOT'
+    BIT_OR: Final = 'BIT_OR'
+    BIT_XOR: Final = 'BIT_XOR'
+    BOOL: Final = 'BOOL'
+    BOR: Final = 'BOR'
+    BORROW: Final = 'BORROW'
+    BOUND_METHOD_NEW: Final = 'BOUND_METHOD_NEW'
+    BOX: Final = 'BOX'
+    BOX_FROM_RAW_INT: Final = 'BOX_FROM_RAW_INT'
+    BRANCH_FALSE: Final = 'BRANCH_FALSE'
+    BRANCH_TRUE: Final = 'BRANCH_TRUE'
+    BR_IF: Final = 'BR_IF'
+    BUILD_DICT: Final = 'BUILD_DICT'
+    BUILD_LIST: Final = 'BUILD_LIST'
+    BUILD_SET: Final = 'BUILD_SET'
+    BUILD_SLICE: Final = 'BUILD_SLICE'
+    BUILD_TUPLE: Final = 'BUILD_TUPLE'
+    BUILTIN_ABS: Final = 'BUILTIN_ABS'
+    BUILTIN_ALL: Final = 'BUILTIN_ALL'
+    BUILTIN_ANY: Final = 'BUILTIN_ANY'
+    BUILTIN_BOOL: Final = 'BUILTIN_BOOL'
+    BUILTIN_FLOAT: Final = 'BUILTIN_FLOAT'
+    BUILTIN_FUNC: Final = 'BUILTIN_FUNC'
+    BUILTIN_INT: Final = 'BUILTIN_INT'
+    BUILTIN_LEN: Final = 'BUILTIN_LEN'
+    BUILTIN_PRINT: Final = 'BUILTIN_PRINT'
+    BUILTIN_RANGE: Final = 'BUILTIN_RANGE'
+    BUILTIN_REVERSED: Final = 'BUILTIN_REVERSED'
+    BUILTIN_SORTED: Final = 'BUILTIN_SORTED'
+    BUILTIN_STR: Final = 'BUILTIN_STR'
+    BUILTIN_SUM: Final = 'BUILTIN_SUM'
+    BUILTIN_TYPE: Final = 'BUILTIN_TYPE'
+    BXOR: Final = 'BXOR'
+    BYTEARRAY_COUNT: Final = 'BYTEARRAY_COUNT'
+    BYTEARRAY_COUNT_SLICE: Final = 'BYTEARRAY_COUNT_SLICE'
+    BYTEARRAY_ENDSWITH: Final = 'BYTEARRAY_ENDSWITH'
+    BYTEARRAY_ENDSWITH_SLICE: Final = 'BYTEARRAY_ENDSWITH_SLICE'
+    BYTEARRAY_FILL_RANGE: Final = 'BYTEARRAY_FILL_RANGE'
+    BYTEARRAY_FIND: Final = 'BYTEARRAY_FIND'
+    BYTEARRAY_FIND_SLICE: Final = 'BYTEARRAY_FIND_SLICE'
+    BYTEARRAY_FROM_OBJ: Final = 'BYTEARRAY_FROM_OBJ'
+    BYTEARRAY_FROM_STR: Final = 'BYTEARRAY_FROM_STR'
+    BYTEARRAY_REPLACE: Final = 'BYTEARRAY_REPLACE'
+    BYTEARRAY_SPLIT: Final = 'BYTEARRAY_SPLIT'
+    BYTEARRAY_SPLIT_MAX: Final = 'BYTEARRAY_SPLIT_MAX'
+    BYTEARRAY_STARTSWITH: Final = 'BYTEARRAY_STARTSWITH'
+    BYTEARRAY_STARTSWITH_SLICE: Final = 'BYTEARRAY_STARTSWITH_SLICE'
+    BYTES_COUNT: Final = 'BYTES_COUNT'
+    BYTES_COUNT_SLICE: Final = 'BYTES_COUNT_SLICE'
+    BYTES_ENDSWITH: Final = 'BYTES_ENDSWITH'
+    BYTES_ENDSWITH_SLICE: Final = 'BYTES_ENDSWITH_SLICE'
+    BYTES_FIND: Final = 'BYTES_FIND'
+    BYTES_FIND_SLICE: Final = 'BYTES_FIND_SLICE'
+    BYTES_FROM_OBJ: Final = 'BYTES_FROM_OBJ'
+    BYTES_FROM_STR: Final = 'BYTES_FROM_STR'
+    BYTES_REPLACE: Final = 'BYTES_REPLACE'
+    BYTES_SPLIT: Final = 'BYTES_SPLIT'
+    BYTES_SPLIT_MAX: Final = 'BYTES_SPLIT_MAX'
+    BYTES_STARTSWITH: Final = 'BYTES_STARTSWITH'
+    BYTES_STARTSWITH_SLICE: Final = 'BYTES_STARTSWITH_SLICE'
+    CALL: Final = 'CALL'
+    CALLARGS_EXPAND_KWSTAR: Final = 'CALLARGS_EXPAND_KWSTAR'
+    CALLARGS_EXPAND_STAR: Final = 'CALLARGS_EXPAND_STAR'
+    CALLARGS_NEW: Final = 'CALLARGS_NEW'
+    CALLARGS_PUSH_KW: Final = 'CALLARGS_PUSH_KW'
+    CALLARGS_PUSH_METHOD_RECEIVER: Final = 'CALLARGS_PUSH_METHOD_RECEIVER'
+    CALLARGS_PUSH_POS: Final = 'CALLARGS_PUSH_POS'
+    CALL_ASYNC: Final = 'CALL_ASYNC'
+    CALL_BIND: Final = 'CALL_BIND'
+    CALL_BUILTIN: Final = 'CALL_BUILTIN'
+    CALL_FUNC: Final = 'CALL_FUNC'
+    CALL_FUNCTION: Final = 'CALL_FUNCTION'
+    CALL_GUARDED: Final = 'CALL_GUARDED'
+    CALL_INDIRECT: Final = 'CALL_INDIRECT'
+    CALL_INTERNAL: Final = 'CALL_INTERNAL'
+    CALL_LOADED_METHOD: Final = 'CALL_LOADED_METHOD'
+    CALL_METHOD: Final = 'CALL_METHOD'
+    CAST: Final = 'CAST'
+    CAST_BOOL: Final = 'CAST_BOOL'
+    CAST_FLOAT: Final = 'CAST_FLOAT'
+    CAST_INT: Final = 'CAST_INT'
+    CAST_STR: Final = 'CAST_STR'
+    CHECKED_ADD: Final = 'CHECKED_ADD'
+    CHECKED_MUL: Final = 'CHECKED_MUL'
+    CHECK_EXCEPTION: Final = 'CHECK_EXCEPTION'
+    CHR: Final = 'CHR'
+    CLASSMETHOD_NEW: Final = 'CLASSMETHOD_NEW'
+    CLASS_DEF: Final = 'CLASS_DEF'
+    CLASS_LAYOUT_FIELD_COUNT: Final = 'CLASS_LAYOUT_FIELD_COUNT'
+    CLASS_LAYOUT_SLOT_COUNT: Final = 'CLASS_LAYOUT_SLOT_COUNT'
+    CLASS_SET_DEFINITION: Final = 'CLASS_SET_DEFINITION'
+    CMP_EQ: Final = 'CMP_EQ'
+    CMP_GE: Final = 'CMP_GE'
+    CMP_GT: Final = 'CMP_GT'
+    CMP_LE: Final = 'CMP_LE'
+    CMP_LT: Final = 'CMP_LT'
+    CMP_NE: Final = 'CMP_NE'
+    CODE_NEW: Final = 'CODE_NEW'
+    CODE_SLOTS_INIT: Final = 'CODE_SLOTS_INIT'
+    CODE_SLOT_SET: Final = 'CODE_SLOT_SET'
+    COMPLEX_FROM_OBJ: Final = 'COMPLEX_FROM_OBJ'
+    CONST: Final = 'CONST'
+    CONST_BIGINT: Final = 'CONST_BIGINT'
+    CONST_BOOL: Final = 'CONST_BOOL'
+    CONST_BYTES: Final = 'CONST_BYTES'
+    CONST_ELLIPSIS: Final = 'CONST_ELLIPSIS'
+    CONST_FLOAT: Final = 'CONST_FLOAT'
+    CONST_INT: Final = 'CONST_INT'
+    CONST_NONE: Final = 'CONST_NONE'
+    CONST_NOT_IMPLEMENTED: Final = 'CONST_NOT_IMPLEMENTED'
+    CONST_STR: Final = 'CONST_STR'
+    CONTAINS: Final = 'CONTAINS'
+    CONTEXT_ENTER: Final = 'CONTEXT_ENTER'
+    CONTEXT_EXIT: Final = 'CONTEXT_EXIT'
+    COPY: Final = 'COPY'
+    COPY_VAR: Final = 'COPY_VAR'
+    DATACLASS_GET: Final = 'DATACLASS_GET'
+    DATACLASS_NEW: Final = 'DATACLASS_NEW'
+    DATACLASS_NEW_VALUES: Final = 'DATACLASS_NEW_VALUES'
+    DATACLASS_SET: Final = 'DATACLASS_SET'
+    DATACLASS_SET_CLASS: Final = 'DATACLASS_SET_CLASS'
+    DEC_REF: Final = 'DEC_REF'
+    DELATTR: Final = 'DELATTR'
+    DELATTR_GENERIC_OBJ: Final = 'DELATTR_GENERIC_OBJ'
+    DELATTR_GENERIC_PTR: Final = 'DELATTR_GENERIC_PTR'
+    DELATTR_NAME: Final = 'DELATTR_NAME'
+    DELETE_VAR: Final = 'DELETE_VAR'
+    DEL_ATTR: Final = 'DEL_ATTR'
+    DEL_ATTR_NAME: Final = 'DEL_ATTR_NAME'
+    DEL_BOUNDARY: Final = 'DEL_BOUNDARY'
+    DEL_INDEX: Final = 'DEL_INDEX'
+    DICT_CLEAR: Final = 'DICT_CLEAR'
+    DICT_COPY: Final = 'DICT_COPY'
+    DICT_FROM_OBJ: Final = 'DICT_FROM_OBJ'
+    DICT_GET: Final = 'DICT_GET'
+    DICT_ITEMS: Final = 'DICT_ITEMS'
+    DICT_KEYS: Final = 'DICT_KEYS'
+    DICT_NEW: Final = 'DICT_NEW'
+    DICT_POP: Final = 'DICT_POP'
+    DICT_POPITEM: Final = 'DICT_POPITEM'
+    DICT_SET: Final = 'DICT_SET'
+    DICT_SETDEFAULT: Final = 'DICT_SETDEFAULT'
+    DICT_SETDEFAULT_EMPTY_LIST: Final = 'DICT_SETDEFAULT_EMPTY_LIST'
+    DICT_STR_INT_INC: Final = 'DICT_STR_INT_INC'
+    DICT_UNPACK: Final = 'DICT_UNPACK'
+    DICT_UPDATE: Final = 'DICT_UPDATE'
+    DICT_UPDATE_KWSTAR: Final = 'DICT_UPDATE_KWSTAR'
+    DICT_UPDATE_MISSING: Final = 'DICT_UPDATE_MISSING'
+    DICT_VALUES: Final = 'DICT_VALUES'
+    DIV: Final = 'DIV'
+    DROP_INSERTED: Final = 'DROP_INSERTED'
+    ELSE: Final = 'ELSE'
+    END_IF: Final = 'END_IF'
+    ENUMERATE: Final = 'ENUMERATE'
+    EQ: Final = 'EQ'
+    EXCEPTIONGROUP_COMBINE: Final = 'EXCEPTIONGROUP_COMBINE'
+    EXCEPTIONGROUP_MATCH: Final = 'EXCEPTIONGROUP_MATCH'
+    EXCEPTION_ACTIVE: Final = 'EXCEPTION_ACTIVE'
+    EXCEPTION_CLASS: Final = 'EXCEPTION_CLASS'
+    EXCEPTION_CLEAR: Final = 'EXCEPTION_CLEAR'
+    EXCEPTION_CONTEXT_SET: Final = 'EXCEPTION_CONTEXT_SET'
+    EXCEPTION_CURRENT: Final = 'EXCEPTION_CURRENT'
+    EXCEPTION_FINALLY_PENDING_OBSERVER: Final = 'EXCEPTION_FINALLY_PENDING_OBSERVER'
+    EXCEPTION_LAST: Final = 'EXCEPTION_LAST'
+    EXCEPTION_LAST_PENDING: Final = 'EXCEPTION_LAST_PENDING'
+    EXCEPTION_MATCH_BUILTIN: Final = 'EXCEPTION_MATCH_BUILTIN'
+    EXCEPTION_NEW: Final = 'EXCEPTION_NEW'
+    EXCEPTION_NEW_BUILTIN: Final = 'EXCEPTION_NEW_BUILTIN'
+    EXCEPTION_NEW_BUILTIN_EMPTY: Final = 'EXCEPTION_NEW_BUILTIN_EMPTY'
+    EXCEPTION_NEW_BUILTIN_ONE: Final = 'EXCEPTION_NEW_BUILTIN_ONE'
+    EXCEPTION_NEW_FROM_CLASS: Final = 'EXCEPTION_NEW_FROM_CLASS'
+    EXCEPTION_PENDING: Final = 'EXCEPTION_PENDING'
+    EXCEPTION_POP: Final = 'EXCEPTION_POP'
+    EXCEPTION_PUSH: Final = 'EXCEPTION_PUSH'
+    EXCEPTION_REGION_DROPS_INSERTED: Final = 'EXCEPTION_REGION_DROPS_INSERTED'
+    EXCEPTION_SET_LAST: Final = 'EXCEPTION_SET_LAST'
+    EXCEPTION_STACK_CLEAR: Final = 'EXCEPTION_STACK_CLEAR'
+    EXCEPTION_STACK_DEPTH: Final = 'EXCEPTION_STACK_DEPTH'
+    EXCEPTION_STACK_ENTER: Final = 'EXCEPTION_STACK_ENTER'
+    EXCEPTION_STACK_EXIT: Final = 'EXCEPTION_STACK_EXIT'
+    EXCEPTION_STACK_SET_DEPTH: Final = 'EXCEPTION_STACK_SET_DEPTH'
+    EXCEPT_END: Final = 'EXCEPT_END'
+    EXCEPT_START: Final = 'EXCEPT_START'
+    FINALLY_END: Final = 'FINALLY_END'
+    FINALLY_START: Final = 'FINALLY_START'
+    FLOAT: Final = 'FLOAT'
+    FLOAT_FROM_OBJ: Final = 'FLOAT_FROM_OBJ'
+    FLOORDIV: Final = 'FLOORDIV'
+    FLOOR_DIV: Final = 'FLOOR_DIV'
+    FORMAT_STRING: Final = 'FORMAT_STRING'
+    FOR_ITER: Final = 'FOR_ITER'
+    FOR_ITER_END: Final = 'FOR_ITER_END'
+    FOR_ITER_START: Final = 'FOR_ITER_START'
+    FOR_RANGE: Final = 'FOR_RANGE'
+    FRAME_CONTEXT_SET: Final = 'FRAME_CONTEXT_SET'
+    FRAME_HOME_CELL: Final = 'FRAME_HOME_CELL'
+    FRAME_HOME_CLEAR: Final = 'FRAME_HOME_CLEAR'
+    FRAME_HOME_LOAD: Final = 'FRAME_HOME_LOAD'
+    FRAME_HOME_PRIVATE_CELL: Final = 'FRAME_HOME_PRIVATE_CELL'
+    FRAME_HOME_STORE: Final = 'FRAME_HOME_STORE'
+    FRAME_HOME_TAKE: Final = 'FRAME_HOME_TAKE'
+    FRAME_LOCALS: Final = 'FRAME_LOCALS'
+    FRAME_LOCALS_SET: Final = 'FRAME_LOCALS_SET'
+    FREE: Final = 'FREE'
+    FROZENSET_ADD: Final = 'FROZENSET_ADD'
+    FROZENSET_NEW: Final = 'FROZENSET_NEW'
+    FUNCTION_CLOSURE_BITS: Final = 'FUNCTION_CLOSURE_BITS'
+    FUNCTION_DEFAULTS_VERSION: Final = 'FUNCTION_DEFAULTS_VERSION'
+    FUNC_NEW: Final = 'FUNC_NEW'
+    FUNC_NEW_CLOSURE: Final = 'FUNC_NEW_CLOSURE'
+    GE: Final = 'GE'
+    GEN_CLOSE: Final = 'GEN_CLOSE'
+    GEN_SEND: Final = 'GEN_SEND'
+    GEN_THROW: Final = 'GEN_THROW'
+    GETATTR: Final = 'GETATTR'
+    GETATTR_GENERIC_OBJ: Final = 'GETATTR_GENERIC_OBJ'
+    GETATTR_GENERIC_PTR: Final = 'GETATTR_GENERIC_PTR'
+    GETATTR_NAME_DEFAULT: Final = 'GETATTR_NAME_DEFAULT'
+    GETATTR_SPECIAL_OBJ: Final = 'GETATTR_SPECIAL_OBJ'
+    GETFRAME: Final = 'GETFRAME'
+    GET_ATTR: Final = 'GET_ATTR'
+    GET_ATTR_GENERIC_OBJ: Final = 'GET_ATTR_GENERIC_OBJ'
+    GET_ATTR_GENERIC_PTR: Final = 'GET_ATTR_GENERIC_PTR'
+    GET_ATTR_NAME: Final = 'GET_ATTR_NAME'
+    GET_ATTR_NAME_DEFAULT: Final = 'GET_ATTR_NAME_DEFAULT'
+    GET_ATTR_SPECIAL_OBJ: Final = 'GET_ATTR_SPECIAL_OBJ'
+    GET_ITEM: Final = 'GET_ITEM'
+    GET_ITER: Final = 'GET_ITER'
+    GOTO: Final = 'GOTO'
+    GPU_BARRIER: Final = 'GPU_BARRIER'
+    GPU_BLOCK_DIM: Final = 'GPU_BLOCK_DIM'
+    GPU_BLOCK_ID: Final = 'GPU_BLOCK_ID'
+    GPU_GRID_DIM: Final = 'GPU_GRID_DIM'
+    GPU_THREAD_ID: Final = 'GPU_THREAD_ID'
+    GT: Final = 'GT'
+    GUARDED_FIELD_GET: Final = 'GUARDED_FIELD_GET'
+    GUARDED_FIELD_SET: Final = 'GUARDED_FIELD_SET'
+    GUARDED_GETATTR: Final = 'GUARDED_GETATTR'
+    GUARDED_LOAD: Final = 'GUARDED_LOAD'
+    GUARDED_SETATTR: Final = 'GUARDED_SETATTR'
+    GUARD_BOOL: Final = 'GUARD_BOOL'
+    GUARD_FLOAT: Final = 'GUARD_FLOAT'
+    GUARD_INT: Final = 'GUARD_INT'
+    GUARD_LAYOUT: Final = 'GUARD_LAYOUT'
+    GUARD_NONE: Final = 'GUARD_NONE'
+    GUARD_STR: Final = 'GUARD_STR'
+    GUARD_TAG: Final = 'GUARD_TAG'
+    GUARD_TYPE: Final = 'GUARD_TYPE'
+    HASATTR_NAME: Final = 'HASATTR_NAME'
+    HAS_ATTR_NAME: Final = 'HAS_ATTR_NAME'
+    ID: Final = 'ID'
+    IDENTITY_ALIAS: Final = 'IDENTITY_ALIAS'
+    IF: Final = 'IF'
+    IF_NOT: Final = 'IF_NOT'
+    IMPORT: Final = 'IMPORT'
+    IMPORT_FROM: Final = 'IMPORT_FROM'
+    IMPORT_NAME: Final = 'IMPORT_NAME'
+    IN: Final = 'IN'
+    INC_REF: Final = 'INC_REF'
+    INDEX: Final = 'INDEX'
+    INDEX_SET: Final = 'INDEX_SET'
+    INIT_INSTANCE: Final = 'INIT_INSTANCE'
+    INPLACE_ADD: Final = 'INPLACE_ADD'
+    INPLACE_BIT_AND: Final = 'INPLACE_BIT_AND'
+    INPLACE_BIT_OR: Final = 'INPLACE_BIT_OR'
+    INPLACE_BIT_XOR: Final = 'INPLACE_BIT_XOR'
+    INPLACE_DIV: Final = 'INPLACE_DIV'
+    INPLACE_FLOORDIV: Final = 'INPLACE_FLOORDIV'
+    INPLACE_LSHIFT: Final = 'INPLACE_LSHIFT'
+    INPLACE_MATMUL: Final = 'INPLACE_MATMUL'
+    INPLACE_MOD: Final = 'INPLACE_MOD'
+    INPLACE_MUL: Final = 'INPLACE_MUL'
+    INPLACE_POW: Final = 'INPLACE_POW'
+    INPLACE_RSHIFT: Final = 'INPLACE_RSHIFT'
+    INPLACE_SUB: Final = 'INPLACE_SUB'
+    INSTANCE_GET_FIELD: Final = 'INSTANCE_GET_FIELD'
+    INSTANCE_HAS_FIELD: Final = 'INSTANCE_HAS_FIELD'
+    INSTANCE_SET_FIELD: Final = 'INSTANCE_SET_FIELD'
+    INT: Final = 'INT'
+    INT_FROM_OBJ: Final = 'INT_FROM_OBJ'
+    INT_FROM_STR_OF_OBJ: Final = 'INT_FROM_STR_OF_OBJ'
+    INVERT: Final = 'INVERT'
+    INVOKE_FFI: Final = 'INVOKE_FFI'
+    IS: Final = 'IS'
+    ISINSTANCE: Final = 'ISINSTANCE'
+    ISSUBCLASS: Final = 'ISSUBCLASS'
+    IS_BOUND_METHOD: Final = 'IS_BOUND_METHOD'
+    IS_CALLABLE: Final = 'IS_CALLABLE'
+    IS_GENERATOR: Final = 'IS_GENERATOR'
+    IS_NATIVE_AWAITABLE: Final = 'IS_NATIVE_AWAITABLE'
+    IS_NOT: Final = 'IS_NOT'
+    IS_PENDING: Final = 'IS_PENDING'
+    ITER_NEW: Final = 'ITER_NEW'
+    ITER_NEXT: Final = 'ITER_NEXT'
+    ITER_NEXT_UNBOXED: Final = 'ITER_NEXT_UNBOXED'
+    JUMP: Final = 'JUMP'
+    LABEL: Final = 'LABEL'
+    LE: Final = 'LE'
+    LEN: Final = 'LEN'
+    LINE: Final = 'LINE'
+    LIST_APPEND: Final = 'LIST_APPEND'
+    LIST_CLEAR: Final = 'LIST_CLEAR'
+    LIST_COPY: Final = 'LIST_COPY'
+    LIST_COUNT: Final = 'LIST_COUNT'
+    LIST_EXTEND: Final = 'LIST_EXTEND'
+    LIST_FILL_NEW: Final = 'LIST_FILL_NEW'
+    LIST_FROM_RANGE: Final = 'LIST_FROM_RANGE'
+    LIST_INDEX: Final = 'LIST_INDEX'
+    LIST_INDEX_RANGE: Final = 'LIST_INDEX_RANGE'
+    LIST_INSERT: Final = 'LIST_INSERT'
+    LIST_INT_NEW: Final = 'LIST_INT_NEW'
+    LIST_NEW: Final = 'LIST_NEW'
+    LIST_POP: Final = 'LIST_POP'
+    LIST_REMOVE: Final = 'LIST_REMOVE'
+    LIST_REVERSE: Final = 'LIST_REVERSE'
+    LOAD: Final = 'LOAD'
+    LOAD_ATTR: Final = 'LOAD_ATTR'
+    LOAD_CLOSURE: Final = 'LOAD_CLOSURE'
+    LOAD_CONST: Final = 'LOAD_CONST'
+    LOAD_METHOD: Final = 'LOAD_METHOD'
+    LOAD_SUPER_METHOD: Final = 'LOAD_SUPER_METHOD'
+    LOAD_VAR: Final = 'LOAD_VAR'
+    LOOP_BREAK: Final = 'LOOP_BREAK'
+    LOOP_BREAK_IF_EXCEPTION: Final = 'LOOP_BREAK_IF_EXCEPTION'
+    LOOP_BREAK_IF_FALSE: Final = 'LOOP_BREAK_IF_FALSE'
+    LOOP_BREAK_IF_TRUE: Final = 'LOOP_BREAK_IF_TRUE'
+    LOOP_CONTINUE: Final = 'LOOP_CONTINUE'
+    LOOP_END: Final = 'LOOP_END'
+    LOOP_INDEX_END: Final = 'LOOP_INDEX_END'
+    LOOP_INDEX_NEXT: Final = 'LOOP_INDEX_NEXT'
+    LOOP_INDEX_START: Final = 'LOOP_INDEX_START'
+    LOOP_START: Final = 'LOOP_START'
+    LSHIFT: Final = 'LSHIFT'
+    LT: Final = 'LT'
+    MATMUL: Final = 'MATMUL'
+    MISSING: Final = 'MISSING'
+    MOD: Final = 'MOD'
+    MODULE_CACHE_DEL: Final = 'MODULE_CACHE_DEL'
+    MODULE_CACHE_GET: Final = 'MODULE_CACHE_GET'
+    MODULE_CACHE_SET: Final = 'MODULE_CACHE_SET'
+    MODULE_DEL_GLOBAL: Final = 'MODULE_DEL_GLOBAL'
+    MODULE_DEL_GLOBAL_IF_PRESENT: Final = 'MODULE_DEL_GLOBAL_IF_PRESENT'
+    MODULE_GET_ATTR: Final = 'MODULE_GET_ATTR'
+    MODULE_GET_GLOBAL: Final = 'MODULE_GET_GLOBAL'
+    MODULE_GET_NAME: Final = 'MODULE_GET_NAME'
+    MODULE_IMPORT: Final = 'MODULE_IMPORT'
+    MODULE_IMPORT_FROM: Final = 'MODULE_IMPORT_FROM'
+    MODULE_IMPORT_STAR: Final = 'MODULE_IMPORT_STAR'
+    MODULE_LOAD_CACHED: Final = 'MODULE_LOAD_CACHED'
+    MODULE_NEW: Final = 'MODULE_NEW'
+    MODULE_SET_ATTR: Final = 'MODULE_SET_ATTR'
+    MODULE_SLOT: Final = 'MODULE_SLOT'
+    MODULO: Final = 'MODULO'
+    MOD_: Final = 'MOD_'
+    MUL: Final = 'MUL'
+    NE: Final = 'NE'
+    NEG: Final = 'NEG'
+    NOP: Final = 'NOP'
+    NOT: Final = 'NOT'
+    NOT_IN: Final = 'NOT_IN'
+    OBJECT_NEW: Final = 'OBJECT_NEW'
+    OBJECT_NEW_BOUND: Final = 'OBJECT_NEW_BOUND'
+    OPERATOR_INDEX: Final = 'OPERATOR_INDEX'
+    OR: Final = 'OR'
+    ORD: Final = 'ORD'
+    ORD_AT: Final = 'ORD_AT'
+    PHI: Final = 'PHI'
+    POS: Final = 'POS'
+    POW: Final = 'POW'
+    POW_MOD: Final = 'POW_MOD'
+    PRINT: Final = 'PRINT'
+    PRINT_NEWLINE: Final = 'PRINT_NEWLINE'
+    PROPERTY_NEW: Final = 'PROPERTY_NEW'
+    RAISE: Final = 'RAISE'
+    RAISE_CAUSE: Final = 'RAISE_CAUSE'
+    RAISE_FROM: Final = 'RAISE_FROM'
+    RANGE: Final = 'RANGE'
+    RANGE_NEW: Final = 'RANGE_NEW'
+    RELEASE: Final = 'RELEASE'
+    REPR_FROM_OBJ: Final = 'REPR_FROM_OBJ'
+    RERAISE: Final = 'RERAISE'
+    REVERSED: Final = 'REVERSED'
+    ROUND: Final = 'ROUND'
+    RSHIFT: Final = 'RSHIFT'
+    SETATTR: Final = 'SETATTR'
+    SETATTR_GENERIC_OBJ: Final = 'SETATTR_GENERIC_OBJ'
+    SETATTR_GENERIC_PTR: Final = 'SETATTR_GENERIC_PTR'
+    SETATTR_NAME: Final = 'SETATTR_NAME'
+    SET_ADD: Final = 'SET_ADD'
+    SET_ADD_PROBE: Final = 'SET_ADD_PROBE'
+    SET_ATTR: Final = 'SET_ATTR'
+    SET_ATTR_GENERIC_OBJ: Final = 'SET_ATTR_GENERIC_OBJ'
+    SET_ATTR_GENERIC_PTR: Final = 'SET_ATTR_GENERIC_PTR'
+    SET_ATTR_NAME: Final = 'SET_ATTR_NAME'
+    SET_CLEAR: Final = 'SET_CLEAR'
+    SET_DIFFERENCE_UPDATE: Final = 'SET_DIFFERENCE_UPDATE'
+    SET_DISCARD: Final = 'SET_DISCARD'
+    SET_INDEX: Final = 'SET_INDEX'
+    SET_INTERSECTION_UPDATE: Final = 'SET_INTERSECTION_UPDATE'
+    SET_ITEM: Final = 'SET_ITEM'
+    SET_NEW: Final = 'SET_NEW'
+    SET_POP: Final = 'SET_POP'
+    SET_REMOVE: Final = 'SET_REMOVE'
+    SET_SYMDIFF_UPDATE: Final = 'SET_SYMDIFF_UPDATE'
+    SET_UPDATE: Final = 'SET_UPDATE'
+    SHL: Final = 'SHL'
+    SHR: Final = 'SHR'
+    SLICE: Final = 'SLICE'
+    SLICE_NEW: Final = 'SLICE_NEW'
+    SORTED: Final = 'SORTED'
+    STACK_ALLOC: Final = 'STACK_ALLOC'
+    STATEFUL_LOCALS_REGISTER: Final = 'STATEFUL_LOCALS_REGISTER'
+    STATE_BLOCK_END: Final = 'STATE_BLOCK_END'
+    STATE_BLOCK_START: Final = 'STATE_BLOCK_START'
+    STATE_LABEL: Final = 'STATE_LABEL'
+    STATE_SET: Final = 'STATE_SET'
+    STATE_SWITCH: Final = 'STATE_SWITCH'
+    STATE_TRANSITION: Final = 'STATE_TRANSITION'
+    STATE_YIELD: Final = 'STATE_YIELD'
+    STATICMETHOD_NEW: Final = 'STATICMETHOD_NEW'
+    STORE: Final = 'STORE'
+    STORE_ATTR: Final = 'STORE_ATTR'
+    STORE_CLOSURE: Final = 'STORE_CLOSURE'
+    STORE_FAST: Final = 'STORE_FAST'
+    STORE_INDEX: Final = 'STORE_INDEX'
+    STORE_SUBSCRIPT: Final = 'STORE_SUBSCRIPT'
+    STORE_VAR: Final = 'STORE_VAR'
+    STR: Final = 'STR'
+    STRING_CAPITALIZE: Final = 'STRING_CAPITALIZE'
+    STRING_COUNT: Final = 'STRING_COUNT'
+    STRING_COUNT_SLICE: Final = 'STRING_COUNT_SLICE'
+    STRING_ENDSWITH: Final = 'STRING_ENDSWITH'
+    STRING_ENDSWITH_SLICE: Final = 'STRING_ENDSWITH_SLICE'
+    STRING_FIND: Final = 'STRING_FIND'
+    STRING_FIND_SLICE: Final = 'STRING_FIND_SLICE'
+    STRING_FORMAT: Final = 'STRING_FORMAT'
+    STRING_JOIN: Final = 'STRING_JOIN'
+    STRING_LOWER: Final = 'STRING_LOWER'
+    STRING_LSTRIP: Final = 'STRING_LSTRIP'
+    STRING_REPLACE: Final = 'STRING_REPLACE'
+    STRING_RSTRIP: Final = 'STRING_RSTRIP'
+    STRING_SPLIT: Final = 'STRING_SPLIT'
+    STRING_SPLIT_FIELD: Final = 'STRING_SPLIT_FIELD'
+    STRING_SPLIT_FIELD_END: Final = 'STRING_SPLIT_FIELD_END'
+    STRING_SPLIT_FIELD_EQ: Final = 'STRING_SPLIT_FIELD_EQ'
+    STRING_SPLIT_FIELD_IS_ASCII: Final = 'STRING_SPLIT_FIELD_IS_ASCII'
+    STRING_SPLIT_FIELD_LEN: Final = 'STRING_SPLIT_FIELD_LEN'
+    STRING_SPLIT_FIELD_LEN_FROM_BOUNDS: Final = 'STRING_SPLIT_FIELD_LEN_FROM_BOUNDS'
+    STRING_SPLIT_FIELD_ORD_AT_BOUNDS: Final = 'STRING_SPLIT_FIELD_ORD_AT_BOUNDS'
+    STRING_SPLIT_FIELD_START: Final = 'STRING_SPLIT_FIELD_START'
+    STRING_SPLIT_FIELD_TO_INT: Final = 'STRING_SPLIT_FIELD_TO_INT'
+    STRING_SPLIT_MAX: Final = 'STRING_SPLIT_MAX'
+    STRING_SPLIT_SEP_DICT_INC: Final = 'STRING_SPLIT_SEP_DICT_INC'
+    STRING_SPLIT_VALIDATE: Final = 'STRING_SPLIT_VALIDATE'
+    STRING_SPLIT_WS_DICT_INC: Final = 'STRING_SPLIT_WS_DICT_INC'
+    STRING_STARTSWITH: Final = 'STRING_STARTSWITH'
+    STRING_STARTSWITH_SLICE: Final = 'STRING_STARTSWITH_SLICE'
+    STRING_STRIP: Final = 'STRING_STRIP'
+    STRING_UPPER: Final = 'STRING_UPPER'
+    STR_FROM_OBJ: Final = 'STR_FROM_OBJ'
+    SUB: Final = 'SUB'
+    SUBSCRIPT: Final = 'SUBSCRIPT'
+    SUM: Final = 'SUM'
+    TASK_WAIT: Final = 'TASK_WAIT'
+    TRACE_ENTER_SLOT: Final = 'TRACE_ENTER_SLOT'
+    TRACE_EXIT: Final = 'TRACE_EXIT'
+    TRUE_DIV: Final = 'TRUE_DIV'
+    TRUNC: Final = 'TRUNC'
+    TRY_END: Final = 'TRY_END'
+    TRY_START: Final = 'TRY_START'
+    TUPLE_COUNT: Final = 'TUPLE_COUNT'
+    TUPLE_FROM_LIST: Final = 'TUPLE_FROM_LIST'
+    TUPLE_INDEX: Final = 'TUPLE_INDEX'
+    TUPLE_NEW: Final = 'TUPLE_NEW'
+    TYPE_GUARD: Final = 'TYPE_GUARD'
+    TYPE_OF: Final = 'TYPE_OF'
+    UNARY_INVERT: Final = 'UNARY_INVERT'
+    UNARY_NEG: Final = 'UNARY_NEG'
+    UNARY_NOT: Final = 'UNARY_NOT'
+    UNARY_POS: Final = 'UNARY_POS'
+    UNBOX: Final = 'UNBOX'
+    UNBOX_TO_RAW_INT: Final = 'UNBOX_TO_RAW_INT'
+    UNPACK_SEQUENCE: Final = 'UNPACK_SEQUENCE'
+    UNREACHABLE: Final = 'UNREACHABLE'
+    VEC_MAX: Final = 'VEC_MAX'
+    VEC_MIN: Final = 'VEC_MIN'
+    VEC_PROD: Final = 'VEC_PROD'
+    VEC_SUM: Final = 'VEC_SUM'
+    WARN_STDERR: Final = 'WARN_STDERR'
+    WHILE_END: Final = 'WHILE_END'
+    WHILE_START: Final = 'WHILE_START'
+    WIDEN: Final = 'WIDEN'
+    YIELD: Final = 'YIELD'
+    YIELD_FROM: Final = 'YIELD_FROM'
+    ZIP: Final = 'ZIP'
+    _M_AND: Final = '_M_AND'
+    gpu_barrier: Final = 'gpu_barrier'
+    gpu_block_dim: Final = 'gpu_block_dim'
+    gpu_block_id: Final = 'gpu_block_id'
+    gpu_grid_dim: Final = 'gpu_grid_dim'
+    gpu_thread_id: Final = 'gpu_thread_id'
+    ret: Final = 'ret'
+    ret_void: Final = 'ret_void'
+
+
+class WireKinds:
+    _M_AND: Final = '_m_and'
+    ABS: Final = 'abs'
+    ADD: Final = 'add'
+    AITER: Final = 'aiter'
+    ALL: Final = 'all'
+    ALLOC: Final = 'alloc'
+    ALLOC_CLASS: Final = 'alloc_class'
+    ALLOC_CLASS_STATIC: Final = 'alloc_class_static'
+    ALLOC_CLASS_TRUSTED: Final = 'alloc_class_trusted'
+    ALLOC_INSTANCE: Final = 'alloc_instance'
+    ALLOC_TASK: Final = 'alloc_task'
+    AND: Final = 'and'
+    ANEXT: Final = 'anext'
+    ANY: Final = 'any'
+    ASCII_FROM_OBJ: Final = 'ascii_from_obj'
+    ASYNC_FOR_END: Final = 'async_for_end'
+    ASYNC_FOR_START: Final = 'async_for_start'
+    ASYNC_WORK_POLL: Final = 'async_work_poll'
+    ASYNCGEN_NEW: Final = 'asyncgen_new'
+    BAND: Final = 'band'
+    BINDING_ALIAS: Final = 'binding_alias'
+    BINOP: Final = 'binop'
+    BINOP_ADD: Final = 'binop_add'
+    BINOP_FLOOR_DIV: Final = 'binop_floor_div'
+    BINOP_MOD: Final = 'binop_mod'
+    BINOP_MUL: Final = 'binop_mul'
+    BINOP_POW: Final = 'binop_pow'
+    BINOP_SUB: Final = 'binop_sub'
+    BIT_AND: Final = 'bit_and'
+    BIT_NOT: Final = 'bit_not'
+    BIT_OR: Final = 'bit_or'
+    BIT_XOR: Final = 'bit_xor'
+    BOOL: Final = 'bool'
+    BOOL_CONST: Final = 'bool_const'
+    BOR: Final = 'bor'
+    BORROW: Final = 'borrow'
+    BOUND_METHOD_NEW: Final = 'bound_method_new'
+    BOX: Final = 'box'
+    BOX_FROM_RAW_INT: Final = 'box_from_raw_int'
+    BR_IF: Final = 'br_if'
+    BRANCH: Final = 'branch'
+    BRANCH_FALSE: Final = 'branch_false'
+    BRANCH_TRUE: Final = 'branch_true'
+    BUILD_DICT: Final = 'build_dict'
+    BUILD_LIST: Final = 'build_list'
+    BUILD_SET: Final = 'build_set'
+    BUILD_SLICE: Final = 'build_slice'
+    BUILD_TUPLE: Final = 'build_tuple'
+    BUILTIN_ABS: Final = 'builtin_abs'
+    BUILTIN_ALL: Final = 'builtin_all'
+    BUILTIN_ANY: Final = 'builtin_any'
+    BUILTIN_BOOL: Final = 'builtin_bool'
+    BUILTIN_FLOAT: Final = 'builtin_float'
+    BUILTIN_FUNC: Final = 'builtin_func'
+    BUILTIN_INT: Final = 'builtin_int'
+    BUILTIN_LEN: Final = 'builtin_len'
+    BUILTIN_PRINT: Final = 'builtin_print'
+    BUILTIN_RANGE: Final = 'builtin_range'
+    BUILTIN_REVERSED: Final = 'builtin_reversed'
+    BUILTIN_SORTED: Final = 'builtin_sorted'
+    BUILTIN_STR: Final = 'builtin_str'
+    BUILTIN_SUM: Final = 'builtin_sum'
+    BUILTIN_TYPE: Final = 'builtin_type'
+    BXOR: Final = 'bxor'
+    BYTEARRAY_COUNT: Final = 'bytearray_count'
+    BYTEARRAY_COUNT_SLICE: Final = 'bytearray_count_slice'
+    BYTEARRAY_ENDSWITH: Final = 'bytearray_endswith'
+    BYTEARRAY_ENDSWITH_SLICE: Final = 'bytearray_endswith_slice'
+    BYTEARRAY_FILL_RANGE: Final = 'bytearray_fill_range'
+    BYTEARRAY_FIND: Final = 'bytearray_find'
+    BYTEARRAY_FIND_SLICE: Final = 'bytearray_find_slice'
+    BYTEARRAY_FROM_OBJ: Final = 'bytearray_from_obj'
+    BYTEARRAY_FROM_STR: Final = 'bytearray_from_str'
+    BYTEARRAY_REPLACE: Final = 'bytearray_replace'
+    BYTEARRAY_SPLIT: Final = 'bytearray_split'
+    BYTEARRAY_SPLIT_MAX: Final = 'bytearray_split_max'
+    BYTEARRAY_STARTSWITH: Final = 'bytearray_startswith'
+    BYTEARRAY_STARTSWITH_SLICE: Final = 'bytearray_startswith_slice'
+    BYTES_COUNT: Final = 'bytes_count'
+    BYTES_COUNT_SLICE: Final = 'bytes_count_slice'
+    BYTES_ENDSWITH: Final = 'bytes_endswith'
+    BYTES_ENDSWITH_SLICE: Final = 'bytes_endswith_slice'
+    BYTES_FIND: Final = 'bytes_find'
+    BYTES_FIND_SLICE: Final = 'bytes_find_slice'
+    BYTES_FROM_OBJ: Final = 'bytes_from_obj'
+    BYTES_FROM_STR: Final = 'bytes_from_str'
+    BYTES_REPLACE: Final = 'bytes_replace'
+    BYTES_SPLIT: Final = 'bytes_split'
+    BYTES_SPLIT_MAX: Final = 'bytes_split_max'
+    BYTES_STARTSWITH: Final = 'bytes_startswith'
+    BYTES_STARTSWITH_SLICE: Final = 'bytes_startswith_slice'
+    CALL: Final = 'call'
+    CALL_ASYNC: Final = 'call_async'
+    CALL_BIND: Final = 'call_bind'
+    CALL_BUILTIN: Final = 'call_builtin'
+    CALL_FUNC: Final = 'call_func'
+    CALL_FUNCTION: Final = 'call_function'
+    CALL_GUARDED: Final = 'call_guarded'
+    CALL_INDIRECT: Final = 'call_indirect'
+    CALL_INTERNAL: Final = 'call_internal'
+    CALL_LOADED_METHOD: Final = 'call_loaded_method'
+    CALL_METHOD: Final = 'call_method'
+    CALLARGS_EXPAND_KWSTAR: Final = 'callargs_expand_kwstar'
+    CALLARGS_EXPAND_STAR: Final = 'callargs_expand_star'
+    CALLARGS_NEW: Final = 'callargs_new'
+    CALLARGS_PUSH_KW: Final = 'callargs_push_kw'
+    CALLARGS_PUSH_METHOD_RECEIVER: Final = 'callargs_push_method_receiver'
+    CALLARGS_PUSH_POS: Final = 'callargs_push_pos'
+    CAST: Final = 'cast'
+    CAST_BOOL: Final = 'cast_bool'
+    CAST_FLOAT: Final = 'cast_float'
+    CAST_INT: Final = 'cast_int'
+    CAST_STR: Final = 'cast_str'
+    CHECK_EXCEPTION: Final = 'check_exception'
+    CHECKED_ADD: Final = 'checked_add'
+    CHECKED_MUL: Final = 'checked_mul'
+    CHR: Final = 'chr'
+    CLASS_DEF: Final = 'class_def'
+    CLASS_LAYOUT_FIELD_COUNT: Final = 'class_layout_field_count'
+    CLASS_LAYOUT_SLOT_COUNT: Final = 'class_layout_slot_count'
+    CLASS_SET_DEFINITION: Final = 'class_set_definition'
+    CLASSMETHOD_NEW: Final = 'classmethod_new'
+    CLOSURE_LOAD: Final = 'closure_load'
+    CLOSURE_STORE: Final = 'closure_store'
+    CMP_EQ: Final = 'cmp_eq'
+    CMP_GE: Final = 'cmp_ge'
+    CMP_GT: Final = 'cmp_gt'
+    CMP_LE: Final = 'cmp_le'
+    CMP_LT: Final = 'cmp_lt'
+    CMP_NE: Final = 'cmp_ne'
+    CODE_NEW: Final = 'code_new'
+    CODE_SLOT_SET: Final = 'code_slot_set'
+    CODE_SLOTS_INIT: Final = 'code_slots_init'
+    COMPARE: Final = 'compare'
+    COMPLEX_FROM_OBJ: Final = 'complex_from_obj'
+    CONST: Final = 'const'
+    CONST_BIGINT: Final = 'const_bigint'
+    CONST_BOOL: Final = 'const_bool'
+    CONST_BYTES: Final = 'const_bytes'
+    CONST_ELLIPSIS: Final = 'const_ellipsis'
+    CONST_FLOAT: Final = 'const_float'
+    CONST_INT: Final = 'const_int'
+    CONST_NONE: Final = 'const_none'
+    CONST_NOT_IMPLEMENTED: Final = 'const_not_implemented'
+    CONST_STR: Final = 'const_str'
+    CONTAINS: Final = 'contains'
+    CONTEXT_ENTER: Final = 'context_enter'
+    CONTEXT_EXIT: Final = 'context_exit'
+    COPY: Final = 'copy'
+    COPY_VAR: Final = 'copy_var'
+    DATACLASS_GET: Final = 'dataclass_get'
+    DATACLASS_NEW: Final = 'dataclass_new'
+    DATACLASS_NEW_VALUES: Final = 'dataclass_new_values'
+    DATACLASS_SET: Final = 'dataclass_set'
+    DATACLASS_SET_CLASS: Final = 'dataclass_set_class'
+    DEC_REF: Final = 'dec_ref'
+    DEL_ATTR: Final = 'del_attr'
+    DEL_ATTR_GENERIC_OBJ: Final = 'del_attr_generic_obj'
+    DEL_ATTR_GENERIC_PTR: Final = 'del_attr_generic_ptr'
+    DEL_ATTR_NAME: Final = 'del_attr_name'
+    DEL_BOUNDARY: Final = 'del_boundary'
+    DEL_INDEX: Final = 'del_index'
+    DEL_ITEM: Final = 'del_item'
+    DELETE_VAR: Final = 'delete_var'
+    DICT_CLEAR: Final = 'dict_clear'
+    DICT_COPY: Final = 'dict_copy'
+    DICT_FROM_OBJ: Final = 'dict_from_obj'
+    DICT_GET: Final = 'dict_get'
+    DICT_ITEMS: Final = 'dict_items'
+    DICT_KEYS: Final = 'dict_keys'
+    DICT_NEW: Final = 'dict_new'
+    DICT_POP: Final = 'dict_pop'
+    DICT_POPITEM: Final = 'dict_popitem'
+    DICT_SET: Final = 'dict_set'
+    DICT_SETDEFAULT: Final = 'dict_setdefault'
+    DICT_SETDEFAULT_EMPTY_LIST: Final = 'dict_setdefault_empty_list'
+    DICT_STR_INT_INC: Final = 'dict_str_int_inc'
+    DICT_UNPACK: Final = 'dict_unpack'
+    DICT_UPDATE: Final = 'dict_update'
+    DICT_UPDATE_KWSTAR: Final = 'dict_update_kwstar'
+    DICT_UPDATE_MISSING: Final = 'dict_update_missing'
+    DICT_VALUES: Final = 'dict_values'
+    DIV: Final = 'div'
+    DROP_INSERTED: Final = 'drop_inserted'
+    ELSE: Final = 'else'
+    END_FOR: Final = 'end_for'
+    END_IF: Final = 'end_if'
+    ENUMERATE: Final = 'enumerate'
+    EQ: Final = 'eq'
+    EXCEPT_END: Final = 'except_end'
+    EXCEPT_START: Final = 'except_start'
+    EXCEPTION_ACTIVE: Final = 'exception_active'
+    EXCEPTION_CLASS: Final = 'exception_class'
+    EXCEPTION_CLEAR: Final = 'exception_clear'
+    EXCEPTION_CONTEXT_SET: Final = 'exception_context_set'
+    EXCEPTION_CURRENT: Final = 'exception_current'
+    EXCEPTION_FINALLY_PENDING_OBSERVER: Final = 'exception_finally_pending_observer'
+    EXCEPTION_LAST: Final = 'exception_last'
+    EXCEPTION_LAST_PENDING: Final = 'exception_last_pending'
+    EXCEPTION_MATCH_BUILTIN: Final = 'exception_match_builtin'
+    EXCEPTION_NEW: Final = 'exception_new'
+    EXCEPTION_NEW_BUILTIN: Final = 'exception_new_builtin'
+    EXCEPTION_NEW_BUILTIN_EMPTY: Final = 'exception_new_builtin_empty'
+    EXCEPTION_NEW_BUILTIN_ONE: Final = 'exception_new_builtin_one'
+    EXCEPTION_NEW_FROM_CLASS: Final = 'exception_new_from_class'
+    EXCEPTION_PENDING: Final = 'exception_pending'
+    EXCEPTION_POP: Final = 'exception_pop'
+    EXCEPTION_PUSH: Final = 'exception_push'
+    EXCEPTION_REGION_DROPS_INSERTED: Final = 'exception_region_drops_inserted'
+    EXCEPTION_SET_LAST: Final = 'exception_set_last'
+    EXCEPTION_STACK_CLEAR: Final = 'exception_stack_clear'
+    EXCEPTION_STACK_DEPTH: Final = 'exception_stack_depth'
+    EXCEPTION_STACK_ENTER: Final = 'exception_stack_enter'
+    EXCEPTION_STACK_EXIT: Final = 'exception_stack_exit'
+    EXCEPTION_STACK_SET_DEPTH: Final = 'exception_stack_set_depth'
+    EXCEPTIONGROUP_COMBINE: Final = 'exceptiongroup_combine'
+    EXCEPTIONGROUP_MATCH: Final = 'exceptiongroup_match'
+    FINALLY_END: Final = 'finally_end'
+    FINALLY_START: Final = 'finally_start'
+    FLOAT: Final = 'float'
+    FLOAT_FROM_OBJ: Final = 'float_from_obj'
+    FLOOR_DIV: Final = 'floor_div'
+    FLOORDIV: Final = 'floordiv'
+    FOR_ITER: Final = 'for_iter'
+    FOR_ITER_END: Final = 'for_iter_end'
+    FOR_ITER_START: Final = 'for_iter_start'
+    FOR_RANGE: Final = 'for_range'
+    FORMAT_STRING: Final = 'format_string'
+    FRAME_CONTEXT_SET: Final = 'frame_context_set'
+    FRAME_HOME_CELL: Final = 'frame_home_cell'
+    FRAME_HOME_CLEAR: Final = 'frame_home_clear'
+    FRAME_HOME_LOAD: Final = 'frame_home_load'
+    FRAME_HOME_PRIVATE_CELL: Final = 'frame_home_private_cell'
+    FRAME_HOME_STORE: Final = 'frame_home_store'
+    FRAME_HOME_TAKE: Final = 'frame_home_take'
+    FRAME_LOCALS: Final = 'frame_locals'
+    FRAME_LOCALS_SET: Final = 'frame_locals_set'
+    FREE: Final = 'free'
+    FROZENSET_ADD: Final = 'frozenset_add'
+    FROZENSET_NEW: Final = 'frozenset_new'
+    FUNC_NEW: Final = 'func_new'
+    FUNC_NEW_CLOSURE: Final = 'func_new_closure'
+    FUNCTION_CLOSURE_BITS: Final = 'function_closure_bits'
+    FUNCTION_DEFAULTS_VERSION: Final = 'function_defaults_version'
+    GE: Final = 'ge'
+    GEN_CLOSE: Final = 'gen_close'
+    GEN_SEND: Final = 'gen_send'
+    GEN_THROW: Final = 'gen_throw'
+    GET_ATTR: Final = 'get_attr'
+    GET_ATTR_GENERIC_OBJ: Final = 'get_attr_generic_obj'
+    GET_ATTR_GENERIC_PTR: Final = 'get_attr_generic_ptr'
+    GET_ATTR_NAME: Final = 'get_attr_name'
+    GET_ATTR_NAME_DEFAULT: Final = 'get_attr_name_default'
+    GET_ATTR_SPECIAL_OBJ: Final = 'get_attr_special_obj'
+    GET_ITEM: Final = 'get_item'
+    GET_ITER: Final = 'get_iter'
+    GETFRAME: Final = 'getframe'
+    GOTO: Final = 'goto'
+    GPU_BARRIER: Final = 'gpu_barrier'
+    GPU_BLOCK_DIM: Final = 'gpu_block_dim'
+    GPU_BLOCK_ID: Final = 'gpu_block_id'
+    GPU_GRID_DIM: Final = 'gpu_grid_dim'
+    GPU_THREAD_ID: Final = 'gpu_thread_id'
+    GT: Final = 'gt'
+    GUARD_BOOL: Final = 'guard_bool'
+    GUARD_FLOAT: Final = 'guard_float'
+    GUARD_INT: Final = 'guard_int'
+    GUARD_LAYOUT: Final = 'guard_layout'
+    GUARD_NONE: Final = 'guard_none'
+    GUARD_STR: Final = 'guard_str'
+    GUARD_TAG: Final = 'guard_tag'
+    GUARD_TYPE: Final = 'guard_type'
+    GUARDED_FIELD_GET: Final = 'guarded_field_get'
+    GUARDED_FIELD_SET: Final = 'guarded_field_set'
+    GUARDED_LOAD: Final = 'guarded_load'
+    HAS_ATTR_NAME: Final = 'has_attr_name'
+    ID: Final = 'id'
+    IDENTITY_ALIAS: Final = 'identity_alias'
+    IF: Final = 'if'
+    IF_NOT: Final = 'if_not'
+    IMPORT: Final = 'import'
+    IMPORT_FROM: Final = 'import_from'
+    IMPORT_NAME: Final = 'import_name'
+    IN: Final = 'in'
+    INC_REF: Final = 'inc_ref'
+    INDEX: Final = 'index'
+    INDEX_SET: Final = 'index_set'
+    INIT_INSTANCE: Final = 'init_instance'
+    INPLACE_ADD: Final = 'inplace_add'
+    INPLACE_BIT_AND: Final = 'inplace_bit_and'
+    INPLACE_BIT_OR: Final = 'inplace_bit_or'
+    INPLACE_BIT_XOR: Final = 'inplace_bit_xor'
+    INPLACE_DIV: Final = 'inplace_div'
+    INPLACE_FLOORDIV: Final = 'inplace_floordiv'
+    INPLACE_LSHIFT: Final = 'inplace_lshift'
+    INPLACE_MATMUL: Final = 'inplace_matmul'
+    INPLACE_MOD: Final = 'inplace_mod'
+    INPLACE_MUL: Final = 'inplace_mul'
+    INPLACE_POW: Final = 'inplace_pow'
+    INPLACE_RSHIFT: Final = 'inplace_rshift'
+    INPLACE_SUB: Final = 'inplace_sub'
+    INSTANCE_GET_FIELD: Final = 'instance_get_field'
+    INSTANCE_HAS_FIELD: Final = 'instance_has_field'
+    INSTANCE_SET_FIELD: Final = 'instance_set_field'
+    INT: Final = 'int'
+    INT_FROM_OBJ: Final = 'int_from_obj'
+    INT_FROM_STR_OF_OBJ: Final = 'int_from_str_of_obj'
+    INVERT: Final = 'invert'
+    INVOKE_FFI: Final = 'invoke_ffi'
+    IS: Final = 'is'
+    IS_BOUND_METHOD: Final = 'is_bound_method'
+    IS_CALLABLE: Final = 'is_callable'
+    IS_GENERATOR: Final = 'is_generator'
+    IS_NATIVE_AWAITABLE: Final = 'is_native_awaitable'
+    IS_NOT: Final = 'is_not'
+    IS_PENDING: Final = 'is_pending'
+    ISINSTANCE: Final = 'isinstance'
+    ISSUBCLASS: Final = 'issubclass'
+    ITER: Final = 'iter'
+    ITER_NEXT: Final = 'iter_next'
+    ITER_NEXT_UNBOXED: Final = 'iter_next_unboxed'
+    JUMP: Final = 'jump'
+    LABEL: Final = 'label'
+    LE: Final = 'le'
+    LEN: Final = 'len'
+    LINE: Final = 'line'
+    LIST_APPEND: Final = 'list_append'
+    LIST_CLEAR: Final = 'list_clear'
+    LIST_COPY: Final = 'list_copy'
+    LIST_COUNT: Final = 'list_count'
+    LIST_EXTEND: Final = 'list_extend'
+    LIST_FILL_NEW: Final = 'list_fill_new'
+    LIST_FROM_RANGE: Final = 'list_from_range'
+    LIST_INDEX: Final = 'list_index'
+    LIST_INDEX_RANGE: Final = 'list_index_range'
+    LIST_INSERT: Final = 'list_insert'
+    LIST_INT_NEW: Final = 'list_int_new'
+    LIST_NEW: Final = 'list_new'
+    LIST_POP: Final = 'list_pop'
+    LIST_REMOVE: Final = 'list_remove'
+    LIST_REVERSE: Final = 'list_reverse'
+    LOAD: Final = 'load'
+    LOAD_ATTR: Final = 'load_attr'
+    LOAD_CONST: Final = 'load_const'
+    LOAD_LOCAL: Final = 'load_local'
+    LOAD_METHOD: Final = 'load_method'
+    LOAD_SUPER_METHOD: Final = 'load_super_method'
+    LOAD_VAR: Final = 'load_var'
+    LOOP_BREAK: Final = 'loop_break'
+    LOOP_BREAK_IF_EXCEPTION: Final = 'loop_break_if_exception'
+    LOOP_BREAK_IF_FALSE: Final = 'loop_break_if_false'
+    LOOP_BREAK_IF_TRUE: Final = 'loop_break_if_true'
+    LOOP_CARRY_INIT: Final = 'loop_carry_init'
+    LOOP_CARRY_UPDATE: Final = 'loop_carry_update'
+    LOOP_CONTINUE: Final = 'loop_continue'
+    LOOP_END: Final = 'loop_end'
+    LOOP_INDEX_END: Final = 'loop_index_end'
+    LOOP_INDEX_NEXT: Final = 'loop_index_next'
+    LOOP_INDEX_START: Final = 'loop_index_start'
+    LOOP_START: Final = 'loop_start'
+    LSHIFT: Final = 'lshift'
+    LT: Final = 'lt'
+    MATMUL: Final = 'matmul'
+    MISSING: Final = 'missing'
+    MOD: Final = 'mod'
+    MOD_: Final = 'mod_'
+    MODULE_CACHE_DEL: Final = 'module_cache_del'
+    MODULE_CACHE_GET: Final = 'module_cache_get'
+    MODULE_CACHE_SET: Final = 'module_cache_set'
+    MODULE_DEL_GLOBAL: Final = 'module_del_global'
+    MODULE_DEL_GLOBAL_IF_PRESENT: Final = 'module_del_global_if_present'
+    MODULE_GET_ATTR: Final = 'module_get_attr'
+    MODULE_GET_GLOBAL: Final = 'module_get_global'
+    MODULE_GET_NAME: Final = 'module_get_name'
+    MODULE_IMPORT: Final = 'module_import'
+    MODULE_IMPORT_FROM: Final = 'module_import_from'
+    MODULE_IMPORT_STAR: Final = 'module_import_star'
+    MODULE_LOAD_CACHED: Final = 'module_load_cached'
+    MODULE_NEW: Final = 'module_new'
+    MODULE_SET_ATTR: Final = 'module_set_attr'
+    MODULE_SLOT: Final = 'module_slot'
+    MODULO: Final = 'modulo'
+    MUL: Final = 'mul'
+    NE: Final = 'ne'
+    NEG: Final = 'neg'
+    NONE_CONST: Final = 'none_const'
+    NOP: Final = 'nop'
+    NOT: Final = 'not'
+    NOT_IN: Final = 'not_in'
+    OBJECT_NEW: Final = 'object_new'
+    OBJECT_NEW_BOUND: Final = 'object_new_bound'
+    OPERATOR_INDEX: Final = 'operator_index'
+    OR: Final = 'or'
+    ORD: Final = 'ord'
+    ORD_AT: Final = 'ord_at'
+    PCALL_WRAP_BEGIN: Final = 'pcall_wrap_begin'
+    PCALL_WRAP_END: Final = 'pcall_wrap_end'
+    PHI: Final = 'phi'
+    POS: Final = 'pos'
+    POW: Final = 'pow'
+    POW_MOD: Final = 'pow_mod'
+    PRINT: Final = 'print'
+    PRINT_NEWLINE: Final = 'print_newline'
+    PROPERTY_NEW: Final = 'property_new'
+    RAISE: Final = 'raise'
+    RAISE_FROM: Final = 'raise_from'
+    RANGE: Final = 'range'
+    RANGE_NEW: Final = 'range_new'
+    RELEASE: Final = 'release'
+    REPR_FROM_OBJ: Final = 'repr_from_obj'
+    RERAISE: Final = 'reraise'
+    RET: Final = 'ret'
+    RET_VOID: Final = 'ret_void'
+    REVERSED: Final = 'reversed'
+    ROUND: Final = 'round'
+    RSHIFT: Final = 'rshift'
+    SET_ADD: Final = 'set_add'
+    SET_ADD_PROBE: Final = 'set_add_probe'
+    SET_ATTR: Final = 'set_attr'
+    SET_ATTR_GENERIC_OBJ: Final = 'set_attr_generic_obj'
+    SET_ATTR_GENERIC_PTR: Final = 'set_attr_generic_ptr'
+    SET_ATTR_NAME: Final = 'set_attr_name'
+    SET_CLEAR: Final = 'set_clear'
+    SET_DIFFERENCE_UPDATE: Final = 'set_difference_update'
+    SET_DISCARD: Final = 'set_discard'
+    SET_INTERSECTION_UPDATE: Final = 'set_intersection_update'
+    SET_ITEM: Final = 'set_item'
+    SET_NEW: Final = 'set_new'
+    SET_POP: Final = 'set_pop'
+    SET_REMOVE: Final = 'set_remove'
+    SET_SYMDIFF_UPDATE: Final = 'set_symdiff_update'
+    SET_UPDATE: Final = 'set_update'
+    SHL: Final = 'shl'
+    SHR: Final = 'shr'
+    SLICE: Final = 'slice'
+    SLICE_NEW: Final = 'slice_new'
+    SORTED: Final = 'sorted'
+    STACK_ALLOC: Final = 'stack_alloc'
+    STATE_BLOCK_END: Final = 'state_block_end'
+    STATE_BLOCK_START: Final = 'state_block_start'
+    STATE_LABEL: Final = 'state_label'
+    STATE_SET: Final = 'state_set'
+    STATE_SWITCH: Final = 'state_switch'
+    STATE_TRANSITION: Final = 'state_transition'
+    STATE_YIELD: Final = 'state_yield'
+    STATEFUL_LOCALS_REGISTER: Final = 'stateful_locals_register'
+    STATICMETHOD_NEW: Final = 'staticmethod_new'
+    STORE: Final = 'store'
+    STORE_ATTR: Final = 'store_attr'
+    STORE_FAST: Final = 'store_fast'
+    STORE_INDEX: Final = 'store_index'
+    STORE_LOCAL: Final = 'store_local'
+    STORE_SUBSCRIPT: Final = 'store_subscript'
+    STORE_VAR: Final = 'store_var'
+    STR: Final = 'str'
+    STR_FROM_OBJ: Final = 'str_from_obj'
+    STRING_CAPITALIZE: Final = 'string_capitalize'
+    STRING_CONCAT: Final = 'string_concat'
+    STRING_CONST: Final = 'string_const'
+    STRING_COUNT: Final = 'string_count'
+    STRING_COUNT_SLICE: Final = 'string_count_slice'
+    STRING_ENDSWITH: Final = 'string_endswith'
+    STRING_ENDSWITH_SLICE: Final = 'string_endswith_slice'
+    STRING_EQ: Final = 'string_eq'
+    STRING_FIND: Final = 'string_find'
+    STRING_FIND_SLICE: Final = 'string_find_slice'
+    STRING_FORMAT: Final = 'string_format'
+    STRING_INDEX: Final = 'string_index'
+    STRING_INDEX_SLICE: Final = 'string_index_slice'
+    STRING_JOIN: Final = 'string_join'
+    STRING_LOWER: Final = 'string_lower'
+    STRING_LSTRIP: Final = 'string_lstrip'
+    STRING_PARTITION: Final = 'string_partition'
+    STRING_REPEAT: Final = 'string_repeat'
+    STRING_REPLACE: Final = 'string_replace'
+    STRING_RFIND: Final = 'string_rfind'
+    STRING_RFIND_SLICE: Final = 'string_rfind_slice'
+    STRING_RINDEX: Final = 'string_rindex'
+    STRING_RINDEX_SLICE: Final = 'string_rindex_slice'
+    STRING_RPARTITION: Final = 'string_rpartition'
+    STRING_RSTRIP: Final = 'string_rstrip'
+    STRING_SPLIT: Final = 'string_split'
+    STRING_SPLIT_FIELD: Final = 'string_split_field'
+    STRING_SPLIT_FIELD_END: Final = 'string_split_field_end'
+    STRING_SPLIT_FIELD_EQ: Final = 'string_split_field_eq'
+    STRING_SPLIT_FIELD_IS_ASCII: Final = 'string_split_field_is_ascii'
+    STRING_SPLIT_FIELD_LEN: Final = 'string_split_field_len'
+    STRING_SPLIT_FIELD_LEN_FROM_BOUNDS: Final = 'string_split_field_len_from_bounds'
+    STRING_SPLIT_FIELD_ORD_AT_BOUNDS: Final = 'string_split_field_ord_at_bounds'
+    STRING_SPLIT_FIELD_START: Final = 'string_split_field_start'
+    STRING_SPLIT_FIELD_TO_INT: Final = 'string_split_field_to_int'
+    STRING_SPLIT_MAX: Final = 'string_split_max'
+    STRING_SPLIT_SEP_DICT_INC: Final = 'string_split_sep_dict_inc'
+    STRING_SPLIT_VALIDATE: Final = 'string_split_validate'
+    STRING_SPLIT_WS_DICT_INC: Final = 'string_split_ws_dict_inc'
+    STRING_SPLITLINES: Final = 'string_splitlines'
+    STRING_STARTSWITH: Final = 'string_startswith'
+    STRING_STARTSWITH_SLICE: Final = 'string_startswith_slice'
+    STRING_STRIP: Final = 'string_strip'
+    STRING_UPPER: Final = 'string_upper'
+    SUB: Final = 'sub'
+    SUBSCRIPT: Final = 'subscript'
+    SUM: Final = 'sum'
+    TASK_WAIT: Final = 'task_wait'
+    TRACE_ENTER_SLOT: Final = 'trace_enter_slot'
+    TRACE_EXIT: Final = 'trace_exit'
+    TRUE_DIV: Final = 'true_div'
+    TRUNC: Final = 'trunc'
+    TRY_END: Final = 'try_end'
+    TRY_START: Final = 'try_start'
+    TUPLE_COUNT: Final = 'tuple_count'
+    TUPLE_FROM_LIST: Final = 'tuple_from_list'
+    TUPLE_INDEX: Final = 'tuple_index'
+    TUPLE_NEW: Final = 'tuple_new'
+    TYPE_GUARD: Final = 'type_guard'
+    TYPE_OF: Final = 'type_of'
+    UNARY_INVERT: Final = 'unary_invert'
+    UNARY_NEG: Final = 'unary_neg'
+    UNARY_NOT: Final = 'unary_not'
+    UNARY_OP: Final = 'unary_op'
+    UNARY_POS: Final = 'unary_pos'
+    UNBOX: Final = 'unbox'
+    UNBOX_TO_RAW_INT: Final = 'unbox_to_raw_int'
+    UNPACK_SEQUENCE: Final = 'unpack_sequence'
+    UNREACHABLE: Final = 'unreachable'
+    VEC_MAX: Final = 'vec_max'
+    VEC_MIN: Final = 'vec_min'
+    VEC_PROD: Final = 'vec_prod'
+    VEC_SUM: Final = 'vec_sum'
+    WARN_STDERR: Final = 'warn_stderr'
+    WHILE_END: Final = 'while_end'
+    WHILE_START: Final = 'while_start'
+    WIDEN: Final = 'widen'
+    YIELD: Final = 'yield'
+    YIELD_FROM: Final = 'yield_from'
+    ZIP: Final = 'zip'
+
+
+# Declared lowering spellings; never derive identity with str.lower().
+FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
+    'ABS': 'abs',
+    'ADD': 'add',
+    'AITER': 'aiter',
+    'ALL': 'all',
+    'ALLOC': 'alloc',
+    'ALLOC_CLASS': 'alloc_class',
+    'ALLOC_CLASS_STATIC': 'alloc_class_static',
+    'ALLOC_CLASS_TRUSTED': 'alloc_class_trusted',
+    'ALLOC_INSTANCE': 'alloc_instance',
+    'ALLOC_TASK': 'alloc_task',
+    'AND': 'and',
+    'ANEXT': 'anext',
+    'ANY': 'any',
+    'ASCII_FROM_OBJ': 'ascii_from_obj',
+    'ASYNCGEN_NEW': 'asyncgen_new',
+    'ASYNC_FOR_END': 'async_for_end',
+    'ASYNC_FOR_START': 'async_for_start',
+    'ASYNC_WORK_POLL': 'async_work_poll',
+    'BAND': 'band',
+    'BINDING_ALIAS': 'binding_alias',
+    'BINOP_ADD': 'binop_add',
+    'BINOP_FLOOR_DIV': 'binop_floor_div',
+    'BINOP_MOD': 'binop_mod',
+    'BINOP_MUL': 'binop_mul',
+    'BINOP_POW': 'binop_pow',
+    'BINOP_SUB': 'binop_sub',
+    'BIT_AND': 'bit_and',
+    'BIT_NOT': 'bit_not',
+    'BIT_OR': 'bit_or',
+    'BIT_XOR': 'bit_xor',
+    'BOOL': 'bool',
+    'BOR': 'bor',
+    'BORROW': 'borrow',
+    'BOUND_METHOD_NEW': 'bound_method_new',
+    'BOX': 'box',
+    'BOX_FROM_RAW_INT': 'box_from_raw_int',
+    'BRANCH_FALSE': 'branch_false',
+    'BRANCH_TRUE': 'branch_true',
+    'BR_IF': 'br_if',
+    'BUILD_DICT': 'build_dict',
+    'BUILD_LIST': 'build_list',
+    'BUILD_SET': 'build_set',
+    'BUILD_SLICE': 'build_slice',
+    'BUILD_TUPLE': 'build_tuple',
+    'BUILTIN_ABS': 'builtin_abs',
+    'BUILTIN_ALL': 'builtin_all',
+    'BUILTIN_ANY': 'builtin_any',
+    'BUILTIN_BOOL': 'builtin_bool',
+    'BUILTIN_FLOAT': 'builtin_float',
+    'BUILTIN_FUNC': 'builtin_func',
+    'BUILTIN_INT': 'builtin_int',
+    'BUILTIN_LEN': 'builtin_len',
+    'BUILTIN_PRINT': 'builtin_print',
+    'BUILTIN_RANGE': 'builtin_range',
+    'BUILTIN_REVERSED': 'builtin_reversed',
+    'BUILTIN_SORTED': 'builtin_sorted',
+    'BUILTIN_STR': 'builtin_str',
+    'BUILTIN_SUM': 'builtin_sum',
+    'BUILTIN_TYPE': 'builtin_type',
+    'BXOR': 'bxor',
+    'BYTEARRAY_COUNT': 'bytearray_count',
+    'BYTEARRAY_COUNT_SLICE': 'bytearray_count_slice',
+    'BYTEARRAY_ENDSWITH': 'bytearray_endswith',
+    'BYTEARRAY_ENDSWITH_SLICE': 'bytearray_endswith_slice',
+    'BYTEARRAY_FILL_RANGE': 'bytearray_fill_range',
+    'BYTEARRAY_FIND': 'bytearray_find',
+    'BYTEARRAY_FIND_SLICE': 'bytearray_find_slice',
+    'BYTEARRAY_FROM_OBJ': 'bytearray_from_obj',
+    'BYTEARRAY_FROM_STR': 'bytearray_from_str',
+    'BYTEARRAY_REPLACE': 'bytearray_replace',
+    'BYTEARRAY_SPLIT': 'bytearray_split',
+    'BYTEARRAY_SPLIT_MAX': 'bytearray_split_max',
+    'BYTEARRAY_STARTSWITH': 'bytearray_startswith',
+    'BYTEARRAY_STARTSWITH_SLICE': 'bytearray_startswith_slice',
+    'BYTES_COUNT': 'bytes_count',
+    'BYTES_COUNT_SLICE': 'bytes_count_slice',
+    'BYTES_ENDSWITH': 'bytes_endswith',
+    'BYTES_ENDSWITH_SLICE': 'bytes_endswith_slice',
+    'BYTES_FIND': 'bytes_find',
+    'BYTES_FIND_SLICE': 'bytes_find_slice',
+    'BYTES_FROM_OBJ': 'bytes_from_obj',
+    'BYTES_FROM_STR': 'bytes_from_str',
+    'BYTES_REPLACE': 'bytes_replace',
+    'BYTES_SPLIT': 'bytes_split',
+    'BYTES_SPLIT_MAX': 'bytes_split_max',
+    'BYTES_STARTSWITH': 'bytes_startswith',
+    'BYTES_STARTSWITH_SLICE': 'bytes_startswith_slice',
+    'CALL': 'call',
+    'CALLARGS_EXPAND_KWSTAR': 'callargs_expand_kwstar',
+    'CALLARGS_EXPAND_STAR': 'callargs_expand_star',
+    'CALLARGS_NEW': 'callargs_new',
+    'CALLARGS_PUSH_KW': 'callargs_push_kw',
+    'CALLARGS_PUSH_METHOD_RECEIVER': 'callargs_push_method_receiver',
+    'CALLARGS_PUSH_POS': 'callargs_push_pos',
+    'CALL_ASYNC': 'call_async',
+    'CALL_BIND': 'call_bind',
+    'CALL_BUILTIN': 'call_builtin',
+    'CALL_FUNC': 'call_func',
+    'CALL_FUNCTION': 'call_function',
+    'CALL_GUARDED': 'call_guarded',
+    'CALL_INDIRECT': 'call_indirect',
+    'CALL_INTERNAL': 'call_internal',
+    'CALL_LOADED_METHOD': 'call_loaded_method',
+    'CALL_METHOD': 'call_method',
+    'CAST': 'cast',
+    'CAST_BOOL': 'cast_bool',
+    'CAST_FLOAT': 'cast_float',
+    'CAST_INT': 'cast_int',
+    'CAST_STR': 'cast_str',
+    'CHECKED_ADD': 'checked_add',
+    'CHECKED_MUL': 'checked_mul',
+    'CHECK_EXCEPTION': 'check_exception',
+    'CHR': 'chr',
+    'CLASSMETHOD_NEW': 'classmethod_new',
+    'CLASS_DEF': 'class_def',
+    'CLASS_LAYOUT_FIELD_COUNT': 'class_layout_field_count',
+    'CLASS_LAYOUT_SLOT_COUNT': 'class_layout_slot_count',
+    'CLASS_SET_DEFINITION': 'class_set_definition',
+    'CMP_EQ': 'cmp_eq',
+    'CMP_GE': 'cmp_ge',
+    'CMP_GT': 'cmp_gt',
+    'CMP_LE': 'cmp_le',
+    'CMP_LT': 'cmp_lt',
+    'CMP_NE': 'cmp_ne',
+    'CODE_NEW': 'code_new',
+    'CODE_SLOTS_INIT': 'code_slots_init',
+    'CODE_SLOT_SET': 'code_slot_set',
+    'COMPLEX_FROM_OBJ': 'complex_from_obj',
+    'CONST': 'const',
+    'CONST_BIGINT': 'const_bigint',
+    'CONST_BOOL': 'const_bool',
+    'CONST_BYTES': 'const_bytes',
+    'CONST_ELLIPSIS': 'const_ellipsis',
+    'CONST_FLOAT': 'const_float',
+    'CONST_INT': 'const_int',
+    'CONST_NONE': 'const_none',
+    'CONST_NOT_IMPLEMENTED': 'const_not_implemented',
+    'CONST_STR': 'const_str',
+    'CONTAINS': 'contains',
+    'CONTEXT_ENTER': 'context_enter',
+    'CONTEXT_EXIT': 'context_exit',
+    'COPY': 'copy',
+    'COPY_VAR': 'copy_var',
+    'DATACLASS_GET': 'dataclass_get',
+    'DATACLASS_NEW': 'dataclass_new',
+    'DATACLASS_NEW_VALUES': 'dataclass_new_values',
+    'DATACLASS_SET': 'dataclass_set',
+    'DATACLASS_SET_CLASS': 'dataclass_set_class',
+    'DEC_REF': 'dec_ref',
+    'DELATTR_GENERIC_OBJ': 'del_attr_generic_obj',
+    'DELATTR_GENERIC_PTR': 'del_attr_generic_ptr',
+    'DELETE_VAR': 'delete_var',
+    'DEL_ATTR': 'del_attr',
+    'DEL_ATTR_NAME': 'del_attr_name',
+    'DEL_BOUNDARY': 'del_boundary',
+    'DEL_INDEX': 'del_index',
+    'DICT_CLEAR': 'dict_clear',
+    'DICT_COPY': 'dict_copy',
+    'DICT_FROM_OBJ': 'dict_from_obj',
+    'DICT_GET': 'dict_get',
+    'DICT_ITEMS': 'dict_items',
+    'DICT_KEYS': 'dict_keys',
+    'DICT_NEW': 'dict_new',
+    'DICT_POP': 'dict_pop',
+    'DICT_POPITEM': 'dict_popitem',
+    'DICT_SET': 'dict_set',
+    'DICT_SETDEFAULT': 'dict_setdefault',
+    'DICT_SETDEFAULT_EMPTY_LIST': 'dict_setdefault_empty_list',
+    'DICT_STR_INT_INC': 'dict_str_int_inc',
+    'DICT_UNPACK': 'dict_unpack',
+    'DICT_UPDATE': 'dict_update',
+    'DICT_UPDATE_KWSTAR': 'dict_update_kwstar',
+    'DICT_UPDATE_MISSING': 'dict_update_missing',
+    'DICT_VALUES': 'dict_values',
+    'DIV': 'div',
+    'DROP_INSERTED': 'drop_inserted',
+    'ELSE': 'else',
+    'END_IF': 'end_if',
+    'ENUMERATE': 'enumerate',
+    'EQ': 'eq',
+    'EXCEPTIONGROUP_COMBINE': 'exceptiongroup_combine',
+    'EXCEPTIONGROUP_MATCH': 'exceptiongroup_match',
+    'EXCEPTION_ACTIVE': 'exception_active',
+    'EXCEPTION_CLASS': 'exception_class',
+    'EXCEPTION_CLEAR': 'exception_clear',
+    'EXCEPTION_CONTEXT_SET': 'exception_context_set',
+    'EXCEPTION_CURRENT': 'exception_current',
+    'EXCEPTION_FINALLY_PENDING_OBSERVER': 'exception_finally_pending_observer',
+    'EXCEPTION_LAST': 'exception_last',
+    'EXCEPTION_LAST_PENDING': 'exception_last_pending',
+    'EXCEPTION_MATCH_BUILTIN': 'exception_match_builtin',
+    'EXCEPTION_NEW': 'exception_new',
+    'EXCEPTION_NEW_BUILTIN': 'exception_new_builtin',
+    'EXCEPTION_NEW_BUILTIN_EMPTY': 'exception_new_builtin_empty',
+    'EXCEPTION_NEW_BUILTIN_ONE': 'exception_new_builtin_one',
+    'EXCEPTION_NEW_FROM_CLASS': 'exception_new_from_class',
+    'EXCEPTION_PENDING': 'exception_pending',
+    'EXCEPTION_POP': 'exception_pop',
+    'EXCEPTION_PUSH': 'exception_push',
+    'EXCEPTION_REGION_DROPS_INSERTED': 'exception_region_drops_inserted',
+    'EXCEPTION_SET_LAST': 'exception_set_last',
+    'EXCEPTION_STACK_CLEAR': 'exception_stack_clear',
+    'EXCEPTION_STACK_DEPTH': 'exception_stack_depth',
+    'EXCEPTION_STACK_ENTER': 'exception_stack_enter',
+    'EXCEPTION_STACK_EXIT': 'exception_stack_exit',
+    'EXCEPTION_STACK_SET_DEPTH': 'exception_stack_set_depth',
+    'EXCEPT_END': 'except_end',
+    'EXCEPT_START': 'except_start',
+    'FINALLY_END': 'finally_end',
+    'FINALLY_START': 'finally_start',
+    'FLOAT': 'float',
+    'FLOAT_FROM_OBJ': 'float_from_obj',
+    'FLOORDIV': 'floordiv',
+    'FLOOR_DIV': 'floor_div',
+    'FORMAT_STRING': 'format_string',
+    'FOR_ITER': 'for_iter',
+    'FOR_ITER_END': 'for_iter_end',
+    'FOR_ITER_START': 'for_iter_start',
+    'FOR_RANGE': 'for_range',
+    'FRAME_CONTEXT_SET': 'frame_context_set',
+    'FRAME_HOME_CELL': 'frame_home_cell',
+    'FRAME_HOME_CLEAR': 'frame_home_clear',
+    'FRAME_HOME_LOAD': 'frame_home_load',
+    'FRAME_HOME_PRIVATE_CELL': 'frame_home_private_cell',
+    'FRAME_HOME_STORE': 'frame_home_store',
+    'FRAME_HOME_TAKE': 'frame_home_take',
+    'FRAME_LOCALS': 'frame_locals',
+    'FRAME_LOCALS_SET': 'frame_locals_set',
+    'FREE': 'free',
+    'FROZENSET_ADD': 'frozenset_add',
+    'FROZENSET_NEW': 'frozenset_new',
+    'FUNCTION_CLOSURE_BITS': 'function_closure_bits',
+    'FUNCTION_DEFAULTS_VERSION': 'function_defaults_version',
+    'FUNC_NEW': 'func_new',
+    'FUNC_NEW_CLOSURE': 'func_new_closure',
+    'GE': 'ge',
+    'GEN_CLOSE': 'gen_close',
+    'GEN_SEND': 'gen_send',
+    'GEN_THROW': 'gen_throw',
+    'GETFRAME': 'getframe',
+    'GET_ATTR': 'get_attr',
+    'GET_ATTR_GENERIC_OBJ': 'get_attr_generic_obj',
+    'GET_ATTR_GENERIC_PTR': 'get_attr_generic_ptr',
+    'GET_ATTR_NAME': 'get_attr_name',
+    'GET_ATTR_NAME_DEFAULT': 'get_attr_name_default',
+    'GET_ATTR_SPECIAL_OBJ': 'get_attr_special_obj',
+    'GET_ITEM': 'get_item',
+    'GET_ITER': 'get_iter',
+    'GOTO': 'goto',
+    'GPU_BARRIER': 'gpu_barrier',
+    'GPU_BLOCK_DIM': 'gpu_block_dim',
+    'GPU_BLOCK_ID': 'gpu_block_id',
+    'GPU_GRID_DIM': 'gpu_grid_dim',
+    'GPU_THREAD_ID': 'gpu_thread_id',
+    'GT': 'gt',
+    'GUARDED_FIELD_GET': 'guarded_field_get',
+    'GUARDED_FIELD_SET': 'guarded_field_set',
+    'GUARDED_LOAD': 'guarded_load',
+    'GUARD_BOOL': 'guard_bool',
+    'GUARD_FLOAT': 'guard_float',
+    'GUARD_INT': 'guard_int',
+    'GUARD_LAYOUT': 'guard_layout',
+    'GUARD_NONE': 'guard_none',
+    'GUARD_STR': 'guard_str',
+    'GUARD_TAG': 'guard_tag',
+    'GUARD_TYPE': 'guard_type',
+    'HAS_ATTR_NAME': 'has_attr_name',
+    'ID': 'id',
+    'IDENTITY_ALIAS': 'identity_alias',
+    'IF': 'if',
+    'IF_NOT': 'if_not',
+    'IMPORT': 'import',
+    'IMPORT_FROM': 'import_from',
+    'IMPORT_NAME': 'import_name',
+    'IN': 'in',
+    'INC_REF': 'inc_ref',
+    'INDEX': 'index',
+    'INDEX_SET': 'index_set',
+    'INIT_INSTANCE': 'init_instance',
+    'INPLACE_ADD': 'inplace_add',
+    'INPLACE_BIT_AND': 'inplace_bit_and',
+    'INPLACE_BIT_OR': 'inplace_bit_or',
+    'INPLACE_BIT_XOR': 'inplace_bit_xor',
+    'INPLACE_DIV': 'inplace_div',
+    'INPLACE_FLOORDIV': 'inplace_floordiv',
+    'INPLACE_LSHIFT': 'inplace_lshift',
+    'INPLACE_MATMUL': 'inplace_matmul',
+    'INPLACE_MOD': 'inplace_mod',
+    'INPLACE_MUL': 'inplace_mul',
+    'INPLACE_POW': 'inplace_pow',
+    'INPLACE_RSHIFT': 'inplace_rshift',
+    'INPLACE_SUB': 'inplace_sub',
+    'INSTANCE_GET_FIELD': 'instance_get_field',
+    'INSTANCE_HAS_FIELD': 'instance_has_field',
+    'INSTANCE_SET_FIELD': 'instance_set_field',
+    'INT': 'int',
+    'INT_FROM_OBJ': 'int_from_obj',
+    'INT_FROM_STR_OF_OBJ': 'int_from_str_of_obj',
+    'INVERT': 'invert',
+    'INVOKE_FFI': 'invoke_ffi',
+    'IS': 'is',
+    'ISINSTANCE': 'isinstance',
+    'ISSUBCLASS': 'issubclass',
+    'IS_BOUND_METHOD': 'is_bound_method',
+    'IS_CALLABLE': 'is_callable',
+    'IS_GENERATOR': 'is_generator',
+    'IS_NATIVE_AWAITABLE': 'is_native_awaitable',
+    'IS_NOT': 'is_not',
+    'IS_PENDING': 'is_pending',
+    'ITER_NEW': 'iter',
+    'ITER_NEXT': 'iter_next',
+    'ITER_NEXT_UNBOXED': 'iter_next_unboxed',
+    'JUMP': 'jump',
+    'LABEL': 'label',
+    'LE': 'le',
+    'LEN': 'len',
+    'LINE': 'line',
+    'LIST_APPEND': 'list_append',
+    'LIST_CLEAR': 'list_clear',
+    'LIST_COPY': 'list_copy',
+    'LIST_COUNT': 'list_count',
+    'LIST_EXTEND': 'list_extend',
+    'LIST_FILL_NEW': 'list_fill_new',
+    'LIST_FROM_RANGE': 'list_from_range',
+    'LIST_INDEX': 'list_index',
+    'LIST_INDEX_RANGE': 'list_index_range',
+    'LIST_INSERT': 'list_insert',
+    'LIST_INT_NEW': 'list_int_new',
+    'LIST_NEW': 'list_new',
+    'LIST_POP': 'list_pop',
+    'LIST_REMOVE': 'list_remove',
+    'LIST_REVERSE': 'list_reverse',
+    'LOAD': 'load',
+    'LOAD_ATTR': 'load_attr',
+    'LOAD_CLOSURE': 'closure_load',
+    'LOAD_CONST': 'load_const',
+    'LOAD_METHOD': 'load_method',
+    'LOAD_SUPER_METHOD': 'load_super_method',
+    'LOAD_VAR': 'load_var',
+    'LOOP_BREAK': 'loop_break',
+    'LOOP_BREAK_IF_EXCEPTION': 'loop_break_if_exception',
+    'LOOP_BREAK_IF_FALSE': 'loop_break_if_false',
+    'LOOP_BREAK_IF_TRUE': 'loop_break_if_true',
+    'LOOP_CONTINUE': 'loop_continue',
+    'LOOP_END': 'loop_end',
+    'LOOP_INDEX_END': 'loop_index_end',
+    'LOOP_INDEX_NEXT': 'loop_index_next',
+    'LOOP_INDEX_START': 'loop_index_start',
+    'LOOP_START': 'loop_start',
+    'LSHIFT': 'lshift',
+    'LT': 'lt',
+    'MATMUL': 'matmul',
+    'MISSING': 'missing',
+    'MOD': 'mod',
+    'MODULE_CACHE_DEL': 'module_cache_del',
+    'MODULE_CACHE_GET': 'module_cache_get',
+    'MODULE_CACHE_SET': 'module_cache_set',
+    'MODULE_DEL_GLOBAL': 'module_del_global',
+    'MODULE_DEL_GLOBAL_IF_PRESENT': 'module_del_global_if_present',
+    'MODULE_GET_ATTR': 'module_get_attr',
+    'MODULE_GET_GLOBAL': 'module_get_global',
+    'MODULE_GET_NAME': 'module_get_name',
+    'MODULE_IMPORT': 'module_import',
+    'MODULE_IMPORT_FROM': 'module_import_from',
+    'MODULE_IMPORT_STAR': 'module_import_star',
+    'MODULE_LOAD_CACHED': 'module_load_cached',
+    'MODULE_NEW': 'module_new',
+    'MODULE_SET_ATTR': 'module_set_attr',
+    'MODULE_SLOT': 'module_slot',
+    'MODULO': 'modulo',
+    'MOD_': 'mod_',
+    'MUL': 'mul',
+    'NE': 'ne',
+    'NEG': 'neg',
+    'NOP': 'nop',
+    'NOT': 'not',
+    'NOT_IN': 'not_in',
+    'OBJECT_NEW': 'object_new',
+    'OBJECT_NEW_BOUND': 'object_new_bound',
+    'OPERATOR_INDEX': 'operator_index',
+    'OR': 'or',
+    'ORD': 'ord',
+    'ORD_AT': 'ord_at',
+    'PHI': 'phi',
+    'POS': 'pos',
+    'POW': 'pow',
+    'POW_MOD': 'pow_mod',
+    'PRINT': 'print',
+    'PRINT_NEWLINE': 'print_newline',
+    'PROPERTY_NEW': 'property_new',
+    'RAISE': 'raise',
+    'RAISE_FROM': 'raise_from',
+    'RANGE': 'range',
+    'RANGE_NEW': 'range_new',
+    'RELEASE': 'release',
+    'REPR_FROM_OBJ': 'repr_from_obj',
+    'RERAISE': 'reraise',
+    'REVERSED': 'reversed',
+    'ROUND': 'round',
+    'RSHIFT': 'rshift',
+    'SET_ADD': 'set_add',
+    'SET_ADD_PROBE': 'set_add_probe',
+    'SET_ATTR': 'set_attr',
+    'SET_ATTR_GENERIC_OBJ': 'set_attr_generic_obj',
+    'SET_ATTR_GENERIC_PTR': 'set_attr_generic_ptr',
+    'SET_ATTR_NAME': 'set_attr_name',
+    'SET_CLEAR': 'set_clear',
+    'SET_DIFFERENCE_UPDATE': 'set_difference_update',
+    'SET_DISCARD': 'set_discard',
+    'SET_INTERSECTION_UPDATE': 'set_intersection_update',
+    'SET_ITEM': 'set_item',
+    'SET_NEW': 'set_new',
+    'SET_POP': 'set_pop',
+    'SET_REMOVE': 'set_remove',
+    'SET_SYMDIFF_UPDATE': 'set_symdiff_update',
+    'SET_UPDATE': 'set_update',
+    'SHL': 'shl',
+    'SHR': 'shr',
+    'SLICE': 'slice',
+    'SLICE_NEW': 'slice_new',
+    'SORTED': 'sorted',
+    'STACK_ALLOC': 'stack_alloc',
+    'STATEFUL_LOCALS_REGISTER': 'stateful_locals_register',
+    'STATE_BLOCK_END': 'state_block_end',
+    'STATE_BLOCK_START': 'state_block_start',
+    'STATE_LABEL': 'state_label',
+    'STATE_SET': 'state_set',
+    'STATE_SWITCH': 'state_switch',
+    'STATE_TRANSITION': 'state_transition',
+    'STATE_YIELD': 'state_yield',
+    'STATICMETHOD_NEW': 'staticmethod_new',
+    'STORE': 'store',
+    'STORE_ATTR': 'store_attr',
+    'STORE_CLOSURE': 'closure_store',
+    'STORE_FAST': 'store_fast',
+    'STORE_INDEX': 'store_index',
+    'STORE_SUBSCRIPT': 'store_subscript',
+    'STORE_VAR': 'store_var',
+    'STR': 'str',
+    'STRING_CAPITALIZE': 'string_capitalize',
+    'STRING_COUNT': 'string_count',
+    'STRING_COUNT_SLICE': 'string_count_slice',
+    'STRING_ENDSWITH': 'string_endswith',
+    'STRING_ENDSWITH_SLICE': 'string_endswith_slice',
+    'STRING_FIND': 'string_find',
+    'STRING_FIND_SLICE': 'string_find_slice',
+    'STRING_FORMAT': 'string_format',
+    'STRING_JOIN': 'string_join',
+    'STRING_LOWER': 'string_lower',
+    'STRING_LSTRIP': 'string_lstrip',
+    'STRING_REPLACE': 'string_replace',
+    'STRING_RSTRIP': 'string_rstrip',
+    'STRING_SPLIT': 'string_split',
+    'STRING_SPLIT_FIELD': 'string_split_field',
+    'STRING_SPLIT_FIELD_END': 'string_split_field_end',
+    'STRING_SPLIT_FIELD_EQ': 'string_split_field_eq',
+    'STRING_SPLIT_FIELD_IS_ASCII': 'string_split_field_is_ascii',
+    'STRING_SPLIT_FIELD_LEN': 'string_split_field_len',
+    'STRING_SPLIT_FIELD_LEN_FROM_BOUNDS': 'string_split_field_len_from_bounds',
+    'STRING_SPLIT_FIELD_ORD_AT_BOUNDS': 'string_split_field_ord_at_bounds',
+    'STRING_SPLIT_FIELD_START': 'string_split_field_start',
+    'STRING_SPLIT_FIELD_TO_INT': 'string_split_field_to_int',
+    'STRING_SPLIT_MAX': 'string_split_max',
+    'STRING_SPLIT_SEP_DICT_INC': 'string_split_sep_dict_inc',
+    'STRING_SPLIT_VALIDATE': 'string_split_validate',
+    'STRING_SPLIT_WS_DICT_INC': 'string_split_ws_dict_inc',
+    'STRING_STARTSWITH': 'string_startswith',
+    'STRING_STARTSWITH_SLICE': 'string_startswith_slice',
+    'STRING_STRIP': 'string_strip',
+    'STRING_UPPER': 'string_upper',
+    'STR_FROM_OBJ': 'str_from_obj',
+    'SUB': 'sub',
+    'SUBSCRIPT': 'subscript',
+    'SUM': 'sum',
+    'TASK_WAIT': 'task_wait',
+    'TRACE_ENTER_SLOT': 'trace_enter_slot',
+    'TRACE_EXIT': 'trace_exit',
+    'TRUE_DIV': 'true_div',
+    'TRUNC': 'trunc',
+    'TRY_END': 'try_end',
+    'TRY_START': 'try_start',
+    'TUPLE_COUNT': 'tuple_count',
+    'TUPLE_FROM_LIST': 'tuple_from_list',
+    'TUPLE_INDEX': 'tuple_index',
+    'TUPLE_NEW': 'tuple_new',
+    'TYPE_GUARD': 'type_guard',
+    'TYPE_OF': 'type_of',
+    'UNARY_INVERT': 'unary_invert',
+    'UNARY_NEG': 'unary_neg',
+    'UNARY_NOT': 'unary_not',
+    'UNARY_POS': 'unary_pos',
+    'UNBOX': 'unbox',
+    'UNBOX_TO_RAW_INT': 'unbox_to_raw_int',
+    'UNPACK_SEQUENCE': 'unpack_sequence',
+    'UNREACHABLE': 'unreachable',
+    'VEC_MAX': 'vec_max',
+    'VEC_MIN': 'vec_min',
+    'VEC_PROD': 'vec_prod',
+    'VEC_SUM': 'vec_sum',
+    'WARN_STDERR': 'warn_stderr',
+    'WHILE_END': 'while_end',
+    'WHILE_START': 'while_start',
+    'WIDEN': 'widen',
+    'YIELD': 'yield',
+    'YIELD_FROM': 'yield_from',
+    'ZIP': 'zip',
+    '_M_AND': '_m_and',
+    'gpu_barrier': 'gpu_barrier',
+    'gpu_block_dim': 'gpu_block_dim',
+    'gpu_block_id': 'gpu_block_id',
+    'gpu_grid_dim': 'gpu_grid_dim',
+    'gpu_thread_id': 'gpu_thread_id',
+    'ret': 'ret',
+    'ret_void': 'ret_void',
+}
+
+def frontend_wire_kind(kind: FrontendOpKind) -> WireOpKind:
+    """Project a directly lowered operation through the registry."""
+    return FRONTEND_WIRE_KIND[kind]
+
 
 # Exact primitive effects share the Rust operation matrix.
-FRONTEND_OPERATOR_OPCODE: dict[str, str] = {
+FRONTEND_OPERATOR_OPCODE: dict[FrontendOpKind, str] = {
     'ABS': 'Neg',
     'ADD': 'Add',
     'BINOP_FLOOR_DIV': 'FloorDiv',
@@ -276,7 +2943,7 @@ _FRONTEND_OPERATOR_EFFECTS: dict[str, dict[tuple[str, ...], tuple[str, bool]]] =
     },
 }
 
-def frontend_operator_facts(kind: str, *operands: str | None) -> tuple[str, bool] | None:
+def frontend_operator_facts(kind: FrontendOpKind, *operands: str | None) -> tuple[str, bool] | None:
     opcode = FRONTEND_OPERATOR_OPCODE.get(kind)
     if opcode is None:
         return None
@@ -285,7 +2952,7 @@ def frontend_operator_facts(kind: str, *operands: str | None) -> tuple[str, bool
     key = tuple(ty for ty in operands if ty is not None)
     return _FRONTEND_OPERATOR_EFFECTS[opcode].get(key, ('writes_heap', False))
 
-SIMPLEIR_REGISTERED_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "_m_and",
         "abs",
@@ -826,7 +3493,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[str] = frozenset(
     }
 )
 
-SIMPLEIR_BACKEND_PRIVATE_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_BACKEND_PRIVATE_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "binop",
         "bool_const",
@@ -857,7 +3524,7 @@ SIMPLEIR_BACKEND_PRIVATE_KINDS: frozenset[str] = frozenset(
     }
 )
 
-FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
+FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "ABS",
         "ADD",
@@ -1393,7 +4060,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
 )
 
 # Explicit frontend spellings replacing the uppercase wire default.
-FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {
+FRONTEND_LOWERING_KINDS_BY_WIRE: dict[WireOpKind, tuple[FrontendOpKind, ...]] = {
     'closure_load': ('LOAD_CLOSURE',),
     'closure_store': ('STORE_CLOSURE',),
     'del_attr_generic_obj': ('DELATTR_GENERIC_OBJ',),
@@ -1404,7 +4071,7 @@ FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {
     'string_eq': (),
 }
 
-SIMPLEIR_STRUCTURAL_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_STRUCTURAL_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "br_if",
         "drop_inserted",
@@ -1431,13 +4098,13 @@ SIMPLEIR_STRUCTURAL_KINDS: frozenset[str] = frozenset(
     }
 )
 
-FRONTEND_REPOLL_KINDS: frozenset[str] = frozenset(
+FRONTEND_REPOLL_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "STATE_TRANSITION",
     }
 )
 
-FRONTEND_CALLBACK_OPERATOR_KINDS: frozenset[str] = frozenset(
+FRONTEND_CALLBACK_OPERATOR_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "ABS",
         "ADD",
@@ -1493,7 +4160,7 @@ FRONTEND_CALLBACK_OPERATOR_KINDS: frozenset[str] = frozenset(
     }
 )
 
-FRONTEND_PREDICATE_SEMANTICS: dict[str, str] = {
+FRONTEND_PREDICATE_SEMANTICS: dict[FrontendOpKind, str] = {
     'BOOL': 'truth',
     'BUILTIN_BOOL': 'truth',
     'CAST_BOOL': 'truth',
@@ -1517,7 +4184,7 @@ COMPARISON_SCALAR_DOMAINS: dict[str, tuple[int, bool]] = {
     'None': (3, False),
 }
 
-def frontend_predicate_facts(kind: str, *operands: str | None) -> tuple[bool, bool] | None:
+def frontend_predicate_facts(kind: FrontendOpKind, *operands: str | None) -> tuple[bool, bool] | None:
     category = FRONTEND_PREDICATE_SEMANTICS.get(kind)
     if category is None:
         return None
@@ -1537,9 +4204,9 @@ def frontend_predicate_facts(kind: str, *operands: str | None) -> tuple[bool, bo
         return False, False
     return True, category == 'equality' or (lhs == rhs and lhs[1])
 
-FRONTEND_COMMUTATIVE_DOMAINS: dict[str, str] = {'ADD': 'numeric', 'BIT_AND': 'i64', 'BIT_OR': 'i64', 'BIT_XOR': 'i64', 'EQ': 'unboxed_scalar', 'MUL': 'numeric', 'NE': 'unboxed_scalar'}
+FRONTEND_COMMUTATIVE_DOMAINS: dict[FrontendOpKind, str] = {'ADD': 'numeric', 'BIT_AND': 'i64', 'BIT_OR': 'i64', 'BIT_XOR': 'i64', 'EQ': 'unboxed_scalar', 'MUL': 'numeric', 'NE': 'unboxed_scalar'}
 
-def frontend_can_reorder_commutative(kind: str, *operands: str | None) -> bool:
+def frontend_can_reorder_commutative(kind: FrontendOpKind, *operands: str | None) -> bool:
     if len(operands) != 2:
         return False
     left, right = operands
@@ -1550,7 +4217,7 @@ def frontend_can_reorder_commutative(kind: str, *operands: str | None) -> bool:
         return left == right == 'int'
     return domain == 'unboxed_scalar' and left == right and left in ('int', 'float', 'bool', 'None')
 
-FRONTEND_INTRINSIC_SCALAR_RESULTS: dict[str, str] = {
+FRONTEND_INTRINSIC_SCALAR_RESULTS: dict[FrontendOpKind, str] = {
     'IS': 'bool',
     'IS_NOT': 'bool',
     'IN': 'bool',
@@ -1575,7 +4242,7 @@ FRONTEND_INTRINSIC_SCALAR_RESULTS: dict[str, str] = {
     'TYPE_OF': 'int',
 }
 
-FRONTEND_INTRINSIC_SCALAR_ARITIES: dict[str, int] = {
+FRONTEND_INTRINSIC_SCALAR_ARITIES: dict[FrontendOpKind, int] = {
     'IS': 2,
     'IS_NOT': 2,
     'IN': 2,
@@ -1884,7 +4551,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
     }
 )
 
-SIMPLEIR_VAR_RESULT_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_VAR_RESULT_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "checked_add",
         "checked_mul",
@@ -1894,7 +4561,7 @@ SIMPLEIR_VAR_RESULT_KINDS: frozenset[str] = frozenset(
     }
 )
 
-SIMPLEIR_VAR_DEFINITION_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_VAR_DEFINITION_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "delete_var",
         "store_fast",
@@ -1902,14 +4569,14 @@ SIMPLEIR_VAR_DEFINITION_KINDS: frozenset[str] = frozenset(
     }
 )
 
-SIMPLEIR_VAR_METADATA_WHEN_ARGS_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_VAR_METADATA_WHEN_ARGS_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "copy_var",
         "load_var",
     }
 )
 
-SIMPLEIR_OUT_METADATA_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_OUT_METADATA_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "dec_ref",
         "del_attr",
@@ -1938,15 +4605,19 @@ SIMPLEIR_OUT_METADATA_KINDS: frozenset[str] = frozenset(
     }
 )
 
-SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[str, int] = {
+SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[WireOpKind, int] = {
     "unpack_sequence": 1,
+}
+
+FRONTEND_FIRST_TRAILING_RESULT_ARG: dict[FrontendOpKind, int] = {
+    "UNPACK_SEQUENCE": 1,
 }
 
 # Frontend `op.kind`s that can raise at runtime — emit() attaches the
 # expression-level col_offset for traceback caret annotations. Each row
 # is either an opcode-mapped may_throw kind (cross-checked against the
 # [[opcode]] oracle at generation) or a documented frontend-specific kind.
-RAISING_KIND_NAMES: frozenset[str] = frozenset(
+RAISING_KIND_NAMES: frozenset[FrontendOpKind] = frozenset(
     {
         "SET_NEW",
         "DICT_NEW",
@@ -2048,7 +4719,7 @@ RAISING_KIND_NAMES: frozenset[str] = frozenset(
 # CHECK_EXCEPTION (control-flow / structural kinds, plus the two may_throw
 # kinds whose exceptional edge is handled structurally — RAISE,
 # STATE_TRANSITION). NOT the complement of may_throw; see op_kinds.toml.
-CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
+CHECK_EXCEPTION_SKIP_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "CHECK_EXCEPTION",
         "TRY_START",
@@ -2132,7 +4803,7 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
 # derive from [[simpleir_control_kind]], and frontend-only
 # overrides come from [[frontend_effect_kind]]. May-raise facts
 # are rendered separately from [[frontend_raising_kind]].
-FRONTEND_EFFECT_CLASS: dict[str, str] = {
+FRONTEND_EFFECT_CLASS: dict[FrontendOpKind, str] = {
     "ABS": "writes_heap",
     "ADD": "writes_heap",
     "ALLOC": "writes_heap",
@@ -2405,7 +5076,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
 
 # Control operations whose condition executes Python truthiness. Derived
 # as simpleir_truthiness_semantics_kinds intersect simpleir_control_kind.
-FRONTEND_TRUTHINESS_CONTROL_KINDS: frozenset[str] = frozenset(
+FRONTEND_TRUTHINESS_CONTROL_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "BR_IF",
         "IF",
@@ -2419,7 +5090,7 @@ FRONTEND_TRUTHINESS_CONTROL_KINDS: frozenset[str] = frozenset(
 # FRONTEND_EFFECT_CLASS so control operations can invalidate heap/guard
 # facts without losing their structural control classification.
 # Explicit false differs from an unregistered kind, which fails closed.
-FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
+FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "ABS": True,
     "ADD": True,
     "ALLOC": False,
@@ -2697,7 +5368,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
 
 # Exact s_value edges retaining defined functions at static link time.
 # Independent of first-class runtime-requirement provenance carriers.
-SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "alloc_task",
         "call",
@@ -2718,7 +5389,7 @@ SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
     }
 )
 
-SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
+SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "func_new",
         "func_new_closure",
@@ -3356,7 +6027,7 @@ SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS: dict[str, int] = {
 
 SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS: int = 81920
 
-FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
+FRONTEND_EFFECT_PURE_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "BOX",
         "BOX_FROM_RAW_INT",
@@ -3383,7 +6054,7 @@ FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
     }
 )
 
-FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[str] = frozenset(
+FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "ALLOC_TASK",
         "BUILD_DICT",
@@ -3407,7 +6078,7 @@ FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[str] = frozenset(
     }
 )
 
-FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
+FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "ABS",
         "ADD",
@@ -3589,7 +6260,7 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
     }
 )
 
-FRONTEND_EFFECT_CONTROL_KINDS: frozenset[str] = frozenset(
+FRONTEND_EFFECT_CONTROL_KINDS: frozenset[FrontendOpKind] = frozenset(
     {
         "BR_IF",
         "CHECK_EXCEPTION",
@@ -3646,7 +6317,7 @@ FRONTEND_EFFECT_CONTROL_KINDS: frozenset[str] = frozenset(
 
 # `ast.operator` subclass __name__ -> the binary-form frontend op.kind
 # (visit_BinOp). EXHAUSTIVE over ast.operator (generation-time checked).
-BINOP_OP_KIND: dict[str, str] = {
+BINOP_OP_KIND: dict[str, FrontendOpKind] = {
     "Add": "ADD",
     "Sub": "SUB",
     "Mult": "MUL",
@@ -3665,7 +6336,7 @@ BINOP_OP_KIND: dict[str, str] = {
 # `ast.operator` subclass __name__ -> the augmented-assignment op.kind
 # (visit_AugAssign). The in-place kind routes through the in-place dunder
 # (__iadd__/__ifloordiv__/...) before the binary fallback, matching CPython.
-AUGASSIGN_OP_KIND: dict[str, str] = {
+AUGASSIGN_OP_KIND: dict[str, FrontendOpKind] = {
     "Add": "INPLACE_ADD",
     "Sub": "INPLACE_SUB",
     "Mult": "INPLACE_MUL",
@@ -3687,7 +6358,7 @@ AUGASSIGN_OP_KIND: dict[str, str] = {
 # TIR, escape analysis, drop insertion, and refcount analysis consume.
 # The analyzer canonicalizes first-class aliases before checking these
 # sets; preserved Copy spellings stay explicit registry facts.
-BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS: frozenset[str] = frozenset(
+BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "alloc",
         "alloc_task",
@@ -3711,7 +6382,7 @@ BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS: frozenset[str] = frozenset(
     }
 )
 
-BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[str] = frozenset(
+BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "abs",
         "aiter",
@@ -3933,13 +6604,13 @@ BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[str] = frozenset(
     }
 )
 
-BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS: frozenset[str] = frozenset(
+BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "stack_alloc",
     }
 )
 
-BINARY_IMAGE_REF_RETAIN_KINDS: frozenset[str] = frozenset(
+BINARY_IMAGE_REF_RETAIN_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "and",
         "binding_alias",
@@ -3950,7 +6621,7 @@ BINARY_IMAGE_REF_RETAIN_KINDS: frozenset[str] = frozenset(
     }
 )
 
-BINARY_IMAGE_REF_RELEASE_KINDS: frozenset[str] = frozenset(
+BINARY_IMAGE_REF_RELEASE_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "dec_ref",
         "del_boundary",
@@ -3959,7 +6630,7 @@ BINARY_IMAGE_REF_RELEASE_KINDS: frozenset[str] = frozenset(
     }
 )
 
-BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS: frozenset[str] = frozenset(
+BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "check_exception",
         "copy",
