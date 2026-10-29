@@ -508,7 +508,14 @@ child before its fence. `attestation_records_writable_installation` in
 rewrites an attestation: it accepts only the one-way writable-to-read-only change
 of installed entries and names up to six other differences in its refusal. An
 image attested sealed skips the walk, and a write bit that reappears fails
-admission. The seal walk costs one metadata pass (77 ms for 9,260 entries, warm)
+admission.
+The base interpreter's runtime closure (`molt.python-runtime-closure.v8`)
+excludes every `__pycache__` directory, as it excludes `site-packages`. Managed
+payloads read bytecode only from their image prefix, CPython reads a PEP 3147
+cache only together with its attested source, and the base install is shared:
+any process on the host may write caches there (HF-536 found 28 `.opt-2.pyc`
+written in one afternoon, which failed every admission). A sourceless legacy
+`.pyc` beside the sources stays attested. The seal walk costs one metadata pass (77 ms for 9,260 entries, warm)
 per legacy admission; the proof-queue child also parses the attestation first
 (14 ms for 7.3 MB). Deletion restores directory owner-write only under an explicit owning
 root (`disk_guard` retirement, unpublished provisioning recovery and guard

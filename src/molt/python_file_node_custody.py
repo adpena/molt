@@ -29,7 +29,14 @@ from molt.python_identity_common import (
     _valid_sha256,
 )
 
-PYTHON_RUNTIME_PRUNED_COMPONENTS = frozenset({"site-packages", "dist-packages"})
+PYTHON_RUNTIME_DISTRIBUTION_COMPONENTS = frozenset({"site-packages", "dist-packages"})
+# PEP 3147 caches are derived from attested sources, and CPython reads one only
+# with its source. Managed execution reads bytecode from its image's own
+# pycache_prefix, never from the base install, which other processes on the
+# host write freely (HF-536). A sourceless legacy .pyc stays attested.
+PYTHON_RUNTIME_PRUNED_COMPONENTS = PYTHON_RUNTIME_DISTRIBUTION_COMPONENTS | {
+    "__pycache__"
+}
 
 
 def _is_file_entry(value: Mapping[str, object]) -> bool:
