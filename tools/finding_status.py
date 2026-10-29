@@ -36,6 +36,10 @@ _ID_PATTERN = r"(?:HF-F?|V1-)\d+"
 _ROW_RE = re.compile(rf"^\| (?P<id>{_ID_PATTERN})(?: \((?P<note>[^)|]*)\))? \|")
 _RENAMED_FROM_RE = re.compile(r"was (?P<id>(?:HF|V1)-\d+)")
 _SECTION_RE = re.compile(r"^## (?P<title>.*\S)\s*$")
+_SUBSECTION_RE = re.compile(r"^### (?P<title>.*\S)\s*$")
+_DEPENDENCY_FAMILY_RE = re.compile(r"^(?P<letter>[A-Z])\. (?P<name>\S.*)$")
+# The subsection whose table maps every open row to one root-cause family.
+DEPENDENCY_ORDER_SUBSECTION = "Family dependency order"
 _CELL_SEPARATOR_RE = re.compile(r"(?<!\\)\|")
 _KEY_RE = re.compile(r"(?P<prefix>HF-F?|V1-)(?P<number>\d+)(?P<rest>(?: \([^)|]*\))?)")
 
@@ -53,11 +57,26 @@ class FindingRow:
 
 
 @dataclass(frozen=True, slots=True)
+class DependencyFamily:
+    """One root-cause family of the ledger's family dependency order."""
+
+    letter: str
+    name: str
+    keys: tuple[str, ...]
+    line: int
+
+    @property
+    def title(self) -> str:
+        return f"{self.letter}. {self.name}"
+
+
+@dataclass(frozen=True, slots=True)
 class FindingStatus:
     """Every finding row of one ledger text, plus its structural defects."""
 
     rows: tuple[FindingRow, ...]
     problems: tuple[str, ...]
+    dependency_families: tuple[DependencyFamily, ...] = ()
 
     @property
     def open_keys(self) -> tuple[str, ...]:
@@ -102,11 +121,33 @@ def project(text: str) -> FindingStatus:
     """Project every finding row of a ledger text."""
     rows: list[FindingRow] = []
     problems: list[str] = []
+    families: list[DependencyFamily] = []
     section = ""
+    subsection = ""
     for line_number, line in enumerate(text.splitlines(), start=1):
         heading = _SECTION_RE.match(line)
         if heading is not None:
             section = heading["title"]
+            subsection = ""
+            continue
+        subheading = _SUBSECTION_RE.match(line)
+        if subheading is not None:
+            subsection = subheading["title"]
+            continue
+        if subsection.startswith(DEPENDENCY_ORDER_SUBSECTION):
+            cells = _cells(line)
+            family = _DEPENDENCY_FAMILY_RE.match(cells[0]) if cells else None
+            if family is not None and len(cells) == 3:
+                families.append(
+                    DependencyFamily(
+                        letter=family["letter"],
+                        name=family["name"],
+                        keys=tuple(
+                            key.strip() for key in cells[2].split(",") if key.strip()
+                        ),
+                        line=line_number,
+                    )
+                )
             continue
         match = _ROW_RE.match(line)
         if match is None:
@@ -138,7 +179,7 @@ def project(text: str) -> FindingStatus:
             )
         )
     problems.extend(_identity_problems(rows))
-    return FindingStatus(tuple(rows), tuple(problems))
+    return FindingStatus(tuple(rows), tuple(problems), tuple(families))
 
 
 def _identity_problems(rows: list[FindingRow]) -> list[str]:
