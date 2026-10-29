@@ -14,6 +14,12 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v17 classifies failed executions from their actual semantic guest
+stderr instead of host diagnostics. Failed raw captures retain bounded diagnostic
+text and byte identity through cleanup. Failure classifications can therefore
+change; earlier reports retain their original class and are not upgraded from
+host-warning text. This establishes no new accepted performance measurement.
+
 Methodology v16 adds complete declared application inputs and invocation through
 the existing benchmark producers. Workload v2 distinguishes a local Python
 source closure from a sealed project: package/resources, data, configuration,
@@ -461,6 +467,20 @@ includes fresh-engine startup, compilation and instantiation. Warm samples are
 filesystem/host-warmed process invocations. Historical measurements with forced
 engine settings or combined stderr retain their original scope. The methodology
 version separates the new measurement boundary from those earlier boards.
+
+The shared run observation derives semantic stderr and its diagnostic tail from
+the same guest capture; host warnings remain separate. Failed runs retain bounded
+semantic text in the existing failure payload and cell log before scratch cleanup.
+When original byte captures are available, one immutable SHA-256/byte-length pair
+identifies each complete failed capture independently of the truncated text.
+Empty bytes are known; unavailable or already normalized text has no original-byte
+identity. A digest identifies available captured bytes; completion and descendant
+closure remain separate guard requirements. Parity-only failures do not acquire
+byte identity from a different run.
+This is diagnostic evidence, not authenticated release admission. It adds one
+linear hash per known failed stream, no stream hashing on successful samples, and
+one decode per stream. It retains no extra binary or unbounded output archive.
+Historical host-warning-only reports do not establish the guest error text.
 
 Component diagnostics must retain their pipeline scope. Shared exceptional
 cleanup factoring reduced a preserved module-metadata entry from 52,161 to

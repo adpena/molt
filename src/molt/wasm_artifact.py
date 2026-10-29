@@ -13,6 +13,7 @@ from typing import (
     Mapping,
     Sequence,
     TypedDict,
+    cast,
 )
 
 from molt._wasm_abi_generated import (
@@ -25,6 +26,7 @@ from molt._wasm_abi_generated import (
 )
 
 if TYPE_CHECKING:
+    from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.toolchain_identity import StableRegularFileIdentity
     from molt.wasm_linking_symbols import WasmLinkingSymbolTable
 
@@ -41,7 +43,44 @@ def require_current_wasm_execution_manifest(payload: object) -> Mapping[str, obj
             f"Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}; "
             "rebuild this deployment with the current Molt compiler"
         )
+    _wasm_launch_environment(payload.get("launch"))
     return payload
+
+
+def _wasm_launch_environment(launch: object) -> Mapping[str, str]:
+    from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT
+
+    if not isinstance(launch, Mapping) or set(launch) != {"environment"}:
+        raise ValueError("WASM deployment launch requires exactly environment")
+    environment = launch["environment"]
+    if not isinstance(environment, Mapping):
+        raise ValueError("WASM deployment launch.environment must be a string map")
+    for name, value in environment.items():
+        if not isinstance(name, str) or not name or "=" in name or "\x00" in name:
+            raise ValueError("WASM deployment launch environment name is invalid")
+        if not isinstance(value, str) or "\x00" in value:
+            raise ValueError("WASM deployment launch environment value is invalid")
+    if any(
+        name not in environment for name in WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT
+    ):
+        raise ValueError(
+            "WASM deployment launch environment lacks required policy entries"
+        )
+    return cast(Mapping[str, str], environment)
+
+
+def wasm_execution_manifest_launch(policy: ResolvedRuntimePolicy) -> dict[str, object]:
+    """One producer-owned projection; hosts do not resolve policy again."""
+    launch = {"environment": policy.to_env_vars()}
+    _wasm_launch_environment(launch)
+    return launch
+
+
+def wasm_execution_manifest_environment(payload: object) -> dict[str, str]:
+    """Copy the admitted launch overlay, preserving omitted ambient options."""
+    manifest = require_current_wasm_execution_manifest(payload)
+    launch = cast(Mapping[str, object], manifest["launch"])
+    return dict(cast(Mapping[str, str], launch["environment"]))
 
 
 def wasm_execution_manifest_module_descriptor(

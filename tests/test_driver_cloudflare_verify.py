@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import json
@@ -42,6 +44,7 @@ def _write_execution_closure(assets_root: Path) -> dict[str, object]:
         json.dumps(
             {
                 "version": WASM_EXECUTION_MANIFEST_VERSION,
+                "launch": wasm_execution_launch(),
                 "mode": "split-runtime",
                 "modules": {
                     "app": descriptor("app.wasm"),

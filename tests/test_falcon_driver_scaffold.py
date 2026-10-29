@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import hashlib
@@ -71,6 +73,7 @@ def _write_execution_fixture(root: Path) -> None:
         json.dumps(
             {
                 "version": WASM_EXECUTION_MANIFEST_VERSION,
+                "launch": wasm_execution_launch(),
                 "mode": "split-runtime",
                 "modules": {
                     "app": descriptor("app.wasm"),
@@ -1181,7 +1184,7 @@ def test_falcon_deploy_rejects_incompatible_version_before_module_read(
     path = tmp_path / "manifest.json"
     original = json.loads(path.read_text(encoding="utf-8"))
     (tmp_path / "app.wasm").unlink()
-    for version in ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0]:
+    for version in ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0]:
         manifest = dict(original)
         if version == "missing":
             del manifest["version"]
@@ -1189,7 +1192,7 @@ def test_falcon_deploy_rejects_incompatible_version_before_module_read(
             manifest["version"] = version
         path.write_text(json.dumps(manifest), encoding="utf-8")
         with pytest.raises(
-            ValueError, match="Molt deployment manifest version must be 3"
+            ValueError, match="Molt deployment manifest version must be 4"
         ):
             execution_artifact_records(tmp_path)
 
@@ -1215,6 +1218,7 @@ def test_falcon_bundle_preserves_build_paths_and_manifest_bytes(
     if mode == "linked":
         manifest = {
             "version": WASM_EXECUTION_MANIFEST_VERSION,
+            "launch": wasm_execution_launch(),
             "mode": "linked",
             "modules": {"linked": manifest["modules"]["app"]},
             "abi": {"app_exports": {"sentinel": "linked ABI stays untouched"}},
@@ -1307,14 +1311,20 @@ def test_falcon_parallel_initialization_transfers_or_retires_host(
         "import { resolveMoltWasmUrls } from "
         + json.dumps((ROOT / "wasm/browser_host.js").as_uri())
         + ";\n"
+        + "const executionVersion = "
+        + json.dumps(WASM_EXECUTION_MANIFEST_VERSION)
+        + ";\n"
+        + "const executionLaunch = "
+        + json.dumps(wasm_execution_launch())
+        + ";\n"
         + r"""
 import assert from 'node:assert/strict';
 import { initFalconBrowserWebGpu } from './driver.mjs';
 const executionUrl = 'https://artifacts.example/build/manifest.json';
-const execution = {version: 3, mode: 'split-runtime', modules: {
+const execution = {version: executionVersion, launch: executionLaunch, mode: 'split-runtime', modules: {
   app: {path: 'code/selected.wasm'}, runtime: {path: 'rt/selected.wasm'}
 }};
-assert.deepEqual(resolveMoltWasmUrls({version: 3, mode: 'linked', modules: {
+assert.deepEqual(resolveMoltWasmUrls({version: executionVersion, launch: executionLaunch, mode: 'linked', modules: {
   linked: {path: 'code/linked.wasm'}
 }}, executionUrl), {wasmUrl: null, runtimeUrl: null,
   linkedUrl: 'https://artifacts.example/build/code/linked.wasm'});
@@ -1354,7 +1364,7 @@ for (const scenario of ['success', 'weights-first', 'config-first', 'host-first'
     return {ok: true, arrayBuffer: async () => new ArrayBuffer(2), text: async () => '{}'};
   };
   const pending = initFalconBrowserWebGpu({manifestUrl: 'https://model.example/driver.json', browserHostOptions: {
-    manifestUrl: 'https://wrong.example/default.json', manifest: {version: 3, mode: 'linked'}
+    manifestUrl: 'https://wrong.example/default.json', manifest: {version: executionVersion, launch: executionLaunch, mode: 'linked'}
   }});
   await Promise.all(entered.map(x => x.promise));
   if (scenario === 'weights-first' || scenario === 'cleanup') {
@@ -1415,6 +1425,7 @@ def test_falcon_refuses_omitted_loader_reference_even_without_descriptor(
             json.dumps(
                 {
                     "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "launch": wasm_execution_launch(),
                     "mode": "linked",
                     "modules": {"linked": original["modules"]["app"]},
                 }

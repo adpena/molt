@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import copy
@@ -41,6 +43,7 @@ def _wasm_stage_inputs(tmp_path):
     raw = _json(
         {
             "version": WASM_EXECUTION_MANIFEST_VERSION,
+            "launch": wasm_execution_launch(),
             "mode": "linked",
             "modules": {"linked": {**artifact, "path": module.name}},
         }
@@ -58,7 +61,7 @@ def _wasm_stage_inputs(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "version", ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0, 3.5]
+    "version", ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0, 4.5]
 )
 def test_wasm_stage_rejects_incompatible_manifest_before_module_stage(
     tmp_path, monkeypatch, version
@@ -84,7 +87,7 @@ def test_wasm_stage_rejects_incompatible_manifest_before_module_stage(
 
     monkeypatch.setattr(execution_root, "stage_file", observe_stage)
     root = tmp_path / "root"
-    with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
+    with pytest.raises(ValueError, match="Molt deployment manifest version must be 4"):
         consumer_replay._stage_wasm(root, "app/cell/", artifact, descriptor)
     assert reached == ["app/cell/manifest.json"]
     assert (root / "app/cell/manifest.json").read_bytes() == raw
@@ -158,6 +161,7 @@ def test_staged_manifest_decode_is_bound_to_expected_bytes(tmp_path, monkeypatch
             _json(
                 {
                     "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "launch": wasm_execution_launch(),
                     "mode": "linked",
                     "modules": {"linked": {"path": "other.wasm"}},
                 }

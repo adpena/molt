@@ -13,7 +13,7 @@ import sys
 from typing import Any, Literal, cast
 import time
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from collections import deque
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import ExitStack
@@ -52,7 +52,7 @@ from tools.batch_compile_client import (  # noqa: E402
     BatchCompileServerClient,
 )
 from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
-from tools.safe_run import observed_run_outcome  # noqa: E402
+from tools.safe_run import CapturedStreamIdentity, observed_run_outcome  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools import memory_guard  # noqa: E402
 from tools import bench_suites  # noqa: E402
@@ -289,6 +289,8 @@ class MoltFailure:
     log_refs: tuple[dict[str, str], ...] = ()
     child_returncode: int | None = None
     infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None
+    stdout_identity: CapturedStreamIdentity | None = None
+    stderr_identity: CapturedStreamIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -834,6 +836,14 @@ def _molt_build_params(
         if arg.startswith("--stdlib-profile="):
             request = replace(request, stdlib_profile=arg.split("=", maxsplit=1)[1])
             continue
+        if arg == "--capabilities":
+            if not remaining:
+                raise ValueError("--capabilities requires a value")
+            request = replace(request, capabilities=remaining.popleft())
+            continue
+        if arg.startswith("--capabilities="):
+            request = replace(request, capabilities=arg.split("=", maxsplit=1)[1])
+            continue
         raise ValueError(f"unsupported benchmark Molt build arg: {arg}")
     return build_request_to_payload(request)
 
@@ -994,6 +1004,8 @@ def _classified_molt_failure(
     infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
     default_status: str,
     detail: str | None = None,
+    stdout_identity: CapturedStreamIdentity | None = None,
+    stderr_identity: CapturedStreamIdentity | None = None,
 ) -> MoltFailure:
     if infrastructure_failure is None:
         phase = _resolved_molt_failure_phase(phase, stdout, stderr)
@@ -1042,6 +1054,8 @@ def _classified_molt_failure(
         log_refs=_failure_log_refs(stdout, stderr),
         child_returncode=child_returncode,
         infrastructure_failure=infrastructure_failure,
+        stdout_identity=stdout_identity,
+        stderr_identity=stderr_identity,
     )
 
 
@@ -1058,6 +1072,8 @@ def classify_molt_process_failure(
     child_returncode: int | None = None,
     infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
     default_status: str | None = None,
+    stdout_identity: CapturedStreamIdentity | None = None,
+    stderr_identity: CapturedStreamIdentity | None = None,
 ) -> MoltFailure:
     resolved_phase = (
         phase
@@ -1075,6 +1091,8 @@ def classify_molt_process_failure(
         orphaned_process_groups=orphaned_process_groups,
         child_returncode=child_returncode,
         infrastructure_failure=infrastructure_failure,
+        stdout_identity=stdout_identity,
+        stderr_identity=stderr_identity,
         default_status=default_status
         or ("build_failed" if resolved_phase == "build" else "runtime_failed"),
     )
@@ -1144,6 +1162,16 @@ def molt_failure_payload(failure: MoltFailure) -> dict[str, object]:
         "message": failure.message,
         "stdout_tail": _bounded_failure_text(failure.stdout),
         "stderr_tail": _bounded_failure_text(failure.stderr),
+        "stdout_identity": (
+            asdict(failure.stdout_identity)
+            if failure.stdout_identity is not None
+            else None
+        ),
+        "stderr_identity": (
+            asdict(failure.stderr_identity)
+            if failure.stderr_identity is not None
+            else None
+        ),
         "returncode": failure.returncode,
         "child_returncode": failure.child_returncode,
         "infrastructure_failure": memory_guard.infrastructure_failure_payload(
@@ -1582,6 +1610,8 @@ def _measure_runtime_command(
             returncode=res.returncode,
             stdout=observed.stdout,
             stderr=observed.stderr,
+            stdout_identity=observed.stdout_identity,
+            stderr_identity=observed.stderr_identity,
             timed_out=res.timed_out,
             elapsed_s=observed.elapsed_s,
             violation=res.violation,
