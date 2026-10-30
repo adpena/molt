@@ -723,6 +723,16 @@ separate from host graph and binding-fact validation.
   graph cache key includes that policy. Package-parent `__init__` files needed
   for an admitted leaf cannot backdoor additional external children unless the
   package is explicitly admitted.
+- The entry's own program is never external. A source belongs to the deepest
+  root that contains it, and program roots win over external roots: the
+  project, cwd, `src` and vendor roots, the root a script entry adds (its
+  directory), and the entry's top-level package (`python -m pkg` runs `pkg`,
+  `Lib/runpy.py:_run_module_as_main`). So `--module pkg` over an explicit
+  module root compiles `pkg`'s whole closure, while another package in that
+  root stays third-party; and a script's reachable set does not change when
+  `MOLT_MODULE_ROOTS` also names the script's directory.
+  `_ImportAdmissionPolicy` (`src/molt/cli/models.py`) owns the rule;
+  `_resolve_build_entry` (`src/molt/cli/build_inputs.py`) produces the roots.
 - Finder-returned extension specs use two independent admission facts: an
   extension artifact suffix (including archive members), or the private
   extension-loader declaration carried by the real loader class and its

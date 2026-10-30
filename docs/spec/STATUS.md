@@ -160,7 +160,10 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   external-package admission. `MOLT_MODULE_ROOTS`, `--lib-path`, respected
   `PYTHONPATH`, and auto site-packages can make a package resolvable, but
   transitive external package closure is admitted only by direct entry imports
-  or an explicit `MOLT_EXTERNAL_STATIC_PACKAGES` package declaration. The graph
+  or an explicit `MOLT_EXTERNAL_STATIC_PACKAGES` package declaration. The
+  entry's own program is never external: a `--module` entry's top-level
+  package and a script's directory compile their whole closure even when an
+  explicit root also names them (`import_system_contract.md`). The graph
   cache key includes this policy. Explicitly admitted external packages now
   scan package-local `.so`/`.pyd`/`.molt.wasm`/`.o`/`.a` artifact candidates
   during build admission; source-recompiled NumPy/SciPy package roots fail
