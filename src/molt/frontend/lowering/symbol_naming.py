@@ -118,7 +118,7 @@ class SymbolNamingMixin(GeneratorMixinBase):
 
     def _reserve_source_callables(self, tree: ast.Module) -> None:
         """Reserve code slots by source definition before lowering any body."""
-        pending = list(reversed(tree.body))
+        pending: list[ast.AST] = list(reversed(tree.body))
         while pending:
             node = pending.pop()
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -133,7 +133,11 @@ class SymbolNamingMixin(GeneratorMixinBase):
                 identity = CallableId(self.module_name, python_node_source_key(node))
                 symbol = self._function_symbol(node.name, kind=kind)
                 self.reserved_func_symbols[identity] = symbol
-                if kind is FunctionKind.SYNC and not getattr(node, "type_params", ()):
+                if (
+                    kind is FunctionKind.SYNC
+                    and isinstance(node, ast.FunctionDef)
+                    and not getattr(node, "type_params", ())
+                ):
                     self._register_source_callable(node, symbol)
                     self._record_func_default_specs(symbol, node.args)
                 continue
