@@ -27,6 +27,7 @@ from tools.proof_queue_pkg import (
     commands,
     custody_cas,
     execution_environment,
+    execution_custody,
     guarded_execution,
     pact,
     policy,
@@ -43,6 +44,19 @@ from tools.git_identity import repository_source_paths
 
 
 pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
+
+
+@pytest.fixture
+def linux_input_custody(monkeypatch):
+    """Model admitted input custody for controls that stop before a watcher."""
+    install_module_view(
+        monkeypatch, "sys", execution_custody.sys, execution_custody, platform="linux"
+    )
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("output-layout controls must stop before a custody monitor starts")
+
+    monkeypatch.setattr(execution_custody.LiveCustodyMonitor, "__enter__", forbidden)
 
 
 def _root(tmp_path):
@@ -161,7 +175,7 @@ def test_actual_supervisor_provisioning_requires_absolute_explicit_target(tmp_pa
 
 
 def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, linux_input_custody
 ):
     source = tmp_path / "source"
     source.mkdir()
@@ -219,7 +233,7 @@ def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
 
 
 def test_supervisor_boundary_rejects_root_replaced_during_preflight(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, linux_input_custody
 ):
     source = tmp_path / "source"
     source.mkdir()
@@ -989,7 +1003,7 @@ def test_supervisor_store_refuses_an_unbound_plain_clone(tmp_path, monkeypatch):
 @pytest.mark.parametrize("root_source", ["env", "binding", "declared"])
 @pytest.mark.parametrize("name_rule", ["exact", "windows"])
 def test_request_carries_parent_supervisor_selection_without_child_environment(
-    tmp_path, monkeypatch, git_checkout, root_source, name_rule
+    tmp_path, monkeypatch, git_checkout, root_source, name_rule, linux_input_custody
 ):
     import hashlib
     from molt import dx
@@ -1459,7 +1473,7 @@ def test_executable_cas_admission_rejects_noncomponent_logical_name(tmp_path):
 
 
 def test_oversized_metadata_image_rejects_before_preflight_or_provision(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, linux_input_custody
 ):
     source = tmp_path / "source"
     source.mkdir()
@@ -1529,7 +1543,7 @@ def test_oversized_metadata_image_rejects_before_preflight_or_provision(
     "selector", ["MOLT_DIFF_GUEST_OUTPUT_ROOT", "MOLT_DIFF_GUEST_OUTPUT_IDENTITY"]
 )
 def test_independent_guest_root_refuses_before_queue_output_side_effects(
-    tmp_path: Path, monkeypatch, selector: str
+    tmp_path: Path, monkeypatch, selector: str, linux_input_custody
 ):
     from tools.proof_queue_pkg import supervisor_generation
 

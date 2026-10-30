@@ -73,6 +73,7 @@ Full compliance corpus is opt-in (slow):
 from __future__ import annotations
 
 import argparse
+import base64
 import dataclasses
 import hashlib
 import json
@@ -89,6 +90,7 @@ import time
 import tomllib
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from enum import StrEnum
 from pathlib import Path
 from collections.abc import Callable, Iterator
 from typing import Literal
@@ -293,6 +295,17 @@ print(f"len={len(items)} sum={sum(len(s) for s in items)}")
 # ---------------------------------------------------------------------------
 
 
+class HostOS(StrEnum):
+    WINDOWS = "windows"
+    MACOS = "macos"
+    LINUX = "linux"
+
+
+class DetachedLauncher(StrEnum):
+    WINDOWS_CIM = "windows-cim"
+    POSIX_SESSION = "posix-session"
+
+
 @dataclasses.dataclass
 class Host:
     name: str
@@ -308,6 +321,14 @@ class Host:
     container: str | None = None
     # both
     remote_dir: str = "/tmp/molt_test"
+    os: HostOS | None = None
+    custody_root: str | None = None
+    checkout: str | None = None
+    python: str | None = None
+    launcher: DetachedLauncher | None = None
+    proof_cells: tuple[str, ...] = ()
+    proof_cargo_output_root: str | None = None
+    proof_metadata_root: str | None = None
 
     @property
     def is_windows(self) -> bool:
@@ -365,7 +386,39 @@ def parse_inventory(path: Path) -> list[Host]:
             shell=shell,
             container=entry.get("container"),
             remote_dir=remote_dir,
+            os=HostOS(entry["os"]) if "os" in entry else None,
+            custody_root=entry.get("custody_root"),
+            checkout=entry.get("checkout"),
+            python=entry.get("python"),
+            launcher=DetachedLauncher(entry["launcher"])
+            if "launcher" in entry
+            else None,
+            proof_cells=tuple(entry.get("proof_cells", [])),
+            proof_cargo_output_root=entry.get("proof_cargo_output_root"),
+            proof_metadata_root=entry.get("proof_metadata_root"),
         )
+        if (
+            not isinstance(entry.get("proof_cells", []), list)
+            or any(
+                not isinstance(cell, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", cell)
+                for cell in host.proof_cells
+            )
+            or len(set(host.proof_cells)) != len(host.proof_cells)
+        ):
+            raise ValueError(f"host {name!r}: proof_cells must be unique command ids")
+        if host.proof_cells and not all(
+            (host.os, host.custody_root, host.checkout, host.python, host.launcher)
+        ):
+            raise ValueError(
+                f"host {name!r}: proof host needs OS, custody_root, checkout, python and launcher"
+            )
+        if host.launcher is not None and (
+            (host.os == HostOS.WINDOWS)
+            != (host.launcher == DetachedLauncher.WINDOWS_CIM)
+            or (host.os == HostOS.WINDOWS) != (host.shell == "powershell")
+        ):
+            raise ValueError(f"host {name!r}: launcher, OS and shell disagree")
         if transport == "ssh":
             if not host.hostname or not host.user:
                 raise ValueError(
@@ -591,6 +644,56 @@ class SSHTransport(Transport):
             ]
         return self._ssh_base() + [command]
 
+    def shell_command(self, script: str, *, timeout: int = 60) -> str:
+        """Execute a script through the same SSH owner; preserve PowerShell bytes.
+
+        EncodedCommand avoids both cmd.exe and PowerShell reinterpreting quote
+        boundaries. This is also used for the farm's detached launcher.
+        """
+        command = (
+            self._ssh_base()
+            + [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                base64.b64encode(script.encode("utf-16-le")).decode("ascii"),
+            ]
+            if self.host.shell == "powershell"
+            else self._ssh_base() + ["sh -c " + shlex.quote(script)]
+        )
+        result = _guarded_run(command, timeout=timeout)
+        if result.returncode:
+            raise RuntimeError(
+                f"{self.host.name}: remote command exited {result.returncode}: {result.stderr[-2000:]} {result.stdout[-2000:]}"
+            )
+        return result.stdout.strip()
+
+    def pull(self, remote_name: str, destination: Path) -> None:
+        """Collect one literal leaf from this nonce-owned stage."""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", remote_name) or remote_name in {
+            ".",
+            "..",
+        }:
+            raise ValueError("collection requires one literal stage filename")
+        source = f"{self.host.user}@{self.host.hostname}:{self._scp_remote_path(self.remote_path(remote_name))}"
+        result = _guarded_run(
+            self._scp_base() + [source, str(destination)], timeout=180
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"{self.host.name}: collect {remote_name}: {result.stderr[-1000:]}"
+            )
+
+    def _scp_remote_path(self, path: str) -> str:
+        """SFTP path syntax is distinct from a Windows shell argument.
+
+        Backslashes in an scp source are glob escapes, not DOS separators.
+        Keep native paths in execution/custody records; serialize forward
+        slashes only at the shared SCP boundary.
+        """
+        return path.replace("\\", "/") if self.host.is_windows else path
+
     def prepare(self) -> None:
         marker = self.remote_path(".molt-owner")
         if self.host.shell == "powershell":
@@ -637,7 +740,7 @@ class SSHTransport(Transport):
         # scp each file individually so a single bad path doesn't sink the
         # whole batch; this keeps error reporting per-file.
         for src in local_files:
-            dest = f"{self.host.user}@{self.host.hostname}:{self.execution_dir}/"
+            dest = f"{self.host.user}@{self.host.hostname}:{self._scp_remote_path(self.execution_dir)}/"
             cmd = self._scp_base() + [str(src), dest]
             proc = _guarded_run(cmd, capture_output=True, text=True, timeout=180)
             if proc.returncode != 0:

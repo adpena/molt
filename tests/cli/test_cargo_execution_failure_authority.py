@@ -528,13 +528,10 @@ def test_failed_sccache_probe_has_no_counter_attestation(
 def test_canonical_cargo_environment_leaves_incremental_to_the_profile_with_sccache(
     monkeypatch: pytest.MonkeyPatch,
     wrapper: str,
+    developer_host_context: None,
 ) -> None:
     monkeypatch.setenv("RUSTC_WRAPPER", wrapper)
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
-    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
-    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
 
     env = CARGO._cargo_build_env()
 
@@ -543,14 +540,11 @@ def test_canonical_cargo_environment_leaves_incremental_to_the_profile_with_scca
 
 
 def test_sccache_keeps_an_explicit_zero_incremental(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, developer_host_context: None
 ) -> None:
     """CI pins CARGO_INCREMENTAL=0; sccache accepts it and it stays."""
     monkeypatch.setenv("RUSTC_WRAPPER", "sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "0")
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
-    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
 
     env = CARGO._cargo_build_env()
 
@@ -561,6 +555,7 @@ def test_sccache_keeps_an_explicit_zero_incremental(
 def test_canonical_cargo_environment_uses_normal_policy_without_sccache(
     monkeypatch: pytest.MonkeyPatch,
     explicit: str | None,
+    developer_host_context: None,
 ) -> None:
     for name in CARGO_WRAPPER_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
@@ -569,10 +564,6 @@ def test_canonical_cargo_environment_uses_normal_policy_without_sccache(
         monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
     else:
         monkeypatch.setenv("CARGO_INCREMENTAL", explicit)
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
-    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
-    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
 
     env = CARGO._cargo_build_env()
 
@@ -595,6 +586,7 @@ def test_existing_sccache_wrapper_is_normalized_before_nested_build(
 def test_every_cargo_wrapper_alias_removes_explicit_incremental(
     monkeypatch: pytest.MonkeyPatch,
     wrapper_env: str,
+    developer_host_context: None,
 ) -> None:
     for name in CARGO_WRAPPER_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
