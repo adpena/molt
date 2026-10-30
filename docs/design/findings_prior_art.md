@@ -116,11 +116,13 @@ whole program instead (HF-181).
 program with the owner-only premise. Compare admitted module counts and
 differential results before and after.
 
-## C. Proof cells from the dependency graph
+## C. Proof coverage
 
-**Problem.** Hand-written globs decide which tests run. Whole trees,
-feature-gated Cargo targets and feature sets therefore run nowhere (HF-73,
-HF-99, HF-565, HF-314), and keyword rules miss changes (HF-433).
+**Problem.** Proof cells are named by hand. Whole trees, feature-gated Cargo
+targets and feature sets therefore run in no cell (HF-73, HF-99, HF-565,
+HF-314), Lean modules no Lake root reaches go unbuilt (HF-63), and lint masks
+hide unreached code (HF-87, HF-178). Which cells a change selects, and whether
+a passing result is reused, belongs to F (2026-10-30 re-cut).
 
 **Prior art.**
 - *Bazel.* [F] Tests are targets with declared dependencies;
@@ -247,12 +249,21 @@ from shared CI runners.
 both commits. Equal counts with a wall-time change point to placement; relink
 with the lane's symbol order to confirm.
 
-## F. Artifact and execution identity
+## F. Observed inputs and content identity
 
 **Problem.** Molt keys artifacts by checkout path, module name or ambient
 environment. Cargo reports changed libraries Fresh (V1-01), objects differ per
 checkout (HF-372), checkouts displace each other's runtime (HF-473), and a
-loader runs an older body (V1-15).
+loader runs an older body (V1-15). The same missing fact, what a build, test
+or proof reads and the identity of that content, is restated in about ten
+places: source walks that hash debris (HF-590), records keyed by the device
+number (HF-604), undeclared environment inputs (HF-591, HF-522), hand-written
+closure lists and globs (HF-601, HF-433), and static whole-module reachability
+that selects 983 of 1008 test files for one hub change and reuses nothing
+(HF-605, HF-585, HF-334, HF-35). [I] One observed-input, content-keyed model
+serves build keys, test selection and reuse, and proof custody alike; C's
+Bazel `rdeps` item is the selection half, and HF-605's research adds the
+test-result caches (Go's test cache, Buck2, pytest-testmon).
 
 **Prior art.**
 - *Bazel Remote Execution API.* [F] An `Action` is the digest of its `Command`
@@ -769,12 +780,16 @@ launcher check; count `stat` calls. Compare with today's 34 s.
 HF-371, HF-172), per-command guard overhead (HF-517), compiler PGO (HF-458)
 and daemon admission (HF-225).
 
-## R. Development custody apparatus
+## R. Development state ownership and reconciliation
 
 **Problem.** Custody records guess ownership: four process-liveness probes,
 two wrong on Windows (HF-379); tests that write into the checkout (HF-387,
 HF-550); private scratch roots (HF-370); Windows-only harness failures
-(HF-169, HF-544, HF-551).
+(HF-169, HF-544, HF-551). Nothing reconciles declared state after a crash or
+reboot: storage, provisioning and placement each repair themselves, or wait for
+a person (HF-582, HF-583, HF-602). [I] The model is a declared-state
+reconciler that runs again on every start, as Terraform's plan and apply and
+Kubernetes controllers do; records it keeps use F's durable identity.
 
 **Prior art.**
 - *Process identity.* [F] Linux `pidfd_open` returns a descriptor bound to one
@@ -809,11 +824,16 @@ subreapers already give the fact.
 with `os.kill(pid, 0)` and with `OpenProcess` plus `GetExitCodeProcess`.
 Record which probe interrupts the child.
 
-## S. Molt self-build and CI throughput
+## S. Landing pipeline and self-build cost
 
 **Problem.** CI repeats work: one proof command at a time (HF-190, HF-27),
 181 test binaries that each link the workspace (HF-22), a target directory
 per checkout (HF-10), and a runtime crate too large for small runners (HF-68).
+The merge gate tries to be complete and serial: end-to-end, property and
+cross-OS work runs before every landing instead of on a continuous farm after
+it (HF-600), and stale queue requests ride in later batches (HF-603). [I] Rust's
+bors tests the exact merge commit, and LLVM keeps its merge-time suite small
+and runs the heavy suites on post-commit builders.
 
 **Prior art.**
 - *cargo-nextest.* [F] `cargo nextest archive` builds test binaries once;
