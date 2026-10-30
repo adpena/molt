@@ -6406,7 +6406,7 @@ def test_detached_python_child_preserves_startup_policy_without_writes(
         PYTHONPYCACHEPREFIX=str(tmp_path / "ambient bytecode"),
         PYTHONUTF8=str(1 - utf8),
     )
-    completed = CommandExecutor.for_file(__file__).run(
+    completed = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").run(
         [
             sys.executable,
             "-I",

@@ -33,7 +33,7 @@ from molt.toolchain_identity import capture_stable_regular_file  # noqa: E402
 from molt.wasm_artifact import WASM_HEADER  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_GENERATOR")
 _MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 _BUILD_TIMEOUT_SECONDS = 120
 _BROWSER_FUNCTIONS = {

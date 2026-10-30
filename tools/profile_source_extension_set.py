@@ -37,7 +37,7 @@ from tools.perf_calibration import run_and_measure  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_BENCH")
 
 
 def _git_head(source: Path) -> str:

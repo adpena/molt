@@ -44,7 +44,7 @@ from molt.browser_asset_closure import (  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_GENERATOR")
 
 
 ROOT = Path(__file__).resolve().parents[1]

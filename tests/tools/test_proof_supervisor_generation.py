@@ -449,7 +449,7 @@ def test_provision_scope_reuses_one_observer_and_keeps_each_child_guard(
     )
     environment = {"MOLT_FIXTURE_INPUT": "unchanged"}
     context = harness.HarnessExecutionContext(
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         repo_root=tmp_path,
         env=environment,
         limits=limits,
@@ -498,7 +498,7 @@ def test_provision_scope_reuses_one_observer_and_keeps_each_child_guard(
             for index in range(2):
                 result = harness.guarded_completed_process(
                     [sys.executable, "-c", f"print({index})"],
-                    prefix="MOLT_TEST",
+                    prefix="MOLT_PYTEST",
                     env=environment,
                     limits=limits,
                 )

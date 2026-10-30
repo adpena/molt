@@ -49,8 +49,6 @@ def _find_cpython() -> str:
         [
             sys.executable,
             getattr(sys, "_base_executable", ""),
-            shutil.which("python3") or "",
-            shutil.which("python") or "",
         ]
     )
     for candidate in candidates:

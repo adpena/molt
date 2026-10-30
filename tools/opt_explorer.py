@@ -47,7 +47,7 @@ from tools import sample_profile  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_BENCH")
 
 _HEADER = re.compile(r"^[0-9a-fA-F]+ <(.+)>:$")
 _INSN = re.compile(r"^\s*([0-9a-fA-F]+):\s+(\S+)\s*(.*)$")

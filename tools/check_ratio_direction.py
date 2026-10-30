@@ -73,7 +73,7 @@ from tools.scan_records import (  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 # The ONE module permitted to divide a time by a time: the source authority.
 # Every other module must route through molt.metric_ratios directly or through
