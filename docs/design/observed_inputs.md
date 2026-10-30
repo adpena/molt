@@ -47,6 +47,10 @@ What the copies cost, measured on 2026-10-30
   content. Early cutoff stops at an unchanged output.
 - **Git** (`Documentation/technical/racy-git.txt`) and **Watchman** (`content.sha1hex`). A digest is
   cached by stat key. A file changed within the timestamp tick is rehashed.
+  [Linux multigrain timestamps](https://docs.kernel.org/filesystems/multigrain-ts.html) separate
+  clock precision from timestamp generation, and
+  [Windows file times](https://learn.microsoft.com/en-us/windows/win32/sysinfo/file-times) can
+  stay unchanged until a writing handle closes, so resolution alone never proves a stat key.
 - **Google TAP** (Memon et al., ICSE-SEIP 2017), **Chromium CQ**, **LLVM**. Presubmit runs only the
   tests a change can reach. Postsubmit runs everything on trunk, finds the culprit by bisection, and
   routes the failure. Chromium reruns a failed suite "without patch" to tell a real failure from a
@@ -57,7 +61,10 @@ What the copies cost, measured on 2026-10-30
 
 1. **One content identity.** `molt.file_hashing` is the only code that maps a file to a content
    digest. Its cache key is the durable file identity (volume UUID and file ID, HF-604) plus size,
-   mtime and ctime. It applies the racy-git rule. Every other stat-keyed hash is a defect.
+   mtime and ctime; ctime catches a same-size rewrite that restores mtime. It applies the
+   racy-git rule. Windows file times can stay unchanged until a writing handle closes, so
+   Windows recomputes the digest instead of trusting the stat key. Every other stat-keyed
+   hash is a defect.
 2. **Inputs are observed, not guessed.** A step's input set is what it read: files and directory
    listings from the Python audit hook, dep-info for Rust, the module graph for the frontend, and
    tool identity for probes. Environment inputs are the typed variables from the environment

@@ -11,7 +11,10 @@ before changing the design, and keep the measured reason for a deviation in
 the owning design document.
 
 The [integration driver](ops/INTEGRATION.md) owns landing and retirement;
-`tools/proof_plan.toml` owns proof selection. To inspect a hosted run:
+`tools/proof_plan.toml` owns proof cells and commands. Which tests a change
+selects, and when a passing result is reused, follow
+[observed inputs and content identity](design/observed_inputs.md). To inspect
+a hosted run:
 
 ```bash
 uv run --python 3.12 python tools/ci_triage.py RUN_ID
@@ -435,7 +438,7 @@ molt validate
 ```
 
 Interpretation:
-- `molt validate --suite smoke` is the fast local presubmit matrix.
+- `molt validate --suite smoke` is the fast local smoke matrix.
 - `molt validate --suite custody-proof` runs the targeted custody lane for
   memory-guard, Windows process sampling, and repo process-sentinel wiring.
 - `molt validate` is the heavier full local correctness + benchmark lane.
@@ -987,10 +990,8 @@ Generated token and module-union tables contain semantic data and a stable
 pointer to that snapshot. Exact tags, commits and source hashes stay in the
 source pins and snapshot: a provenance-only refresh must emit identical table
 bytes, while changed token values or module membership must change them. This
-applies the result-equality rule behind
-[rustc's red-green algorithm](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html#improving-accuracy-the-red-green-algorithm)
-and [Salsa's change propagation](https://salsa-rs.github.io/salsa/reference/algorithm.html)
-at the generator boundary, avoiding downstream work for an unchanged result.
+is early cutoff at the generator boundary: an unchanged result causes no
+downstream work.
 
 1. Verify the official release/tag and add its full peeled commit to the existing
    source-pin file. Retain the source-versus-reference patch distinction.

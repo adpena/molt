@@ -134,12 +134,10 @@ edit (miss on the source; the next build hits in 0.59 s), and one byte appended
 to `manifest.json` (miss on the product; the rebuild republished the original
 bytes).
 
-Prior art: Cargo and Go finish a no-op build in milliseconds by checking
-recorded fingerprints; Bazel and Buck skip an action whose content-addressed
-inputs match; ninja's `restat` and the verifying traces of Mokhov, Mitchell and
-Peyton Jones are the same check. rustc incremental and Zig's cache reuse work
-inside a changed build, the edit case (HF-26). Bun's `--compile` keeps no cache
-and pays tens of seconds every time, the shape Molt's WASM no-op had.
+The no-op check follows [observed_inputs.md](observed_inputs.md), which owns
+its rules and prior art. rustc incremental and Zig's cache reuse work inside a
+changed build, the edit case (HF-26). Bun's `--compile` keeps no cache and pays
+tens of seconds every time, the shape Molt's WASM no-op had.
 
 ## Cost
 
