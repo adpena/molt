@@ -192,6 +192,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded final cleanup targets only the independently launched fixture worker retained by the unresolved guard owner",
     ),
     AllowedRawSubprocessUse(
+        "tests/tools/test_cross_run_memory_guard.py",
+        "test_trunk_posix_child_outlives_launcher_and_owns_new_session",
+        "run",
+        "the oracle needs the detached child to leave the launcher's session, which a descendant-closing guard forbids; the launcher has a 10 s timeout and the child exits by its own 15 s deadline after the finally-written release",
+    ),
+    AllowedRawSubprocessUse(
         "tests/tools/test_disk_guard.py",
         "test_explicit_legacy_target_lifetime_and_timed_retention",
         "Popen",
