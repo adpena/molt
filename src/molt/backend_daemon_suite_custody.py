@@ -181,9 +181,9 @@ def _scratch_target(path: Path, lease: Mapping) -> Path:
     """Consume the shared scratch generation proof, never just its pathname."""
     target = resolve_owned_path(path.parent / "scratch")
     owner = lease["scratch"]
-    if temporary_artifacts._identity(target) != owner[
-        "target_identity"
-    ] or not temporary_artifacts._holds_target_receipt(target, owner):
+    if not temporary_artifacts._same_identity(
+        temporary_artifacts._identity(target), owner["target_identity"]
+    ) or not temporary_artifacts._holds_target_receipt(target, owner):
         raise ValueError("suite scratch allocation changed")
     return target
 

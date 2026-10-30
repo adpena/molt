@@ -243,7 +243,7 @@ def test_legacy_publication_journal_migrates_only_witnessed_members(
     staged.write_bytes(b"new generation")
     backup = publication.staged_output_path(final, purpose="backup", suffix=".old")
     transaction = "a" * 32
-    journal = publication._journal_path(tmp_path, transaction)
+    journal = tmp_path / f".molt-artifact-publication-{transaction}.json"
 
     def old_identity(path):
         metadata = path.stat()
@@ -267,20 +267,81 @@ def test_legacy_publication_journal_migrates_only_witnessed_members(
         ],
     }
     journal.write_text(json.dumps(payload), encoding="utf-8")
+    # Replay a lost older publisher after replacing its output but before
+    # writing the durable commit point. The prior generation lives only in its
+    # backup; deleting or ignoring this journal would strand that generation.
+    final.replace(backup)
+    staged.replace(final)
     if renumbered:
-        with pytest.raises(ValueError, match="identity-unverifiable"):
-            publication._load_journal(journal, migrate=True)
+        with pytest.raises(
+            publication.JournalRecoveryRefused, match="identity-unverifiable"
+        ) as caught:
+            with publication.publication_locks([final]):
+                pass
+        assert caught.value.state is publication.JournalState.REFUSED
+        assert caught.value.journal == journal
+        assert str(journal) in caught.value.remedy
+        assert "restore" in caught.value.remedy and "retry" in caught.value.remedy
         assert json.loads(journal.read_text(encoding="utf-8")) == payload
+        assert backup.read_bytes() == b"previous generation"
+        assert final.read_bytes() == b"new generation"
+        assert not publication._journal_path(tmp_path, transaction).exists()
     else:
-        loaded = publication._load_journal(journal, migrate=True)
-        assert loaded["schema"] == "molt.artifact-publication.v3"
-        assert set(loaded["replacements"][0]["prior_identity"]) == {
-            "kind",
-            "volume",
-            "file_id",
-        }
-        # The real recovery reader consumes the upgraded journal and performs
-        # the prepared transaction's rollback without touching its prior final.
-        recovered = publication._recover_transaction((journal,))
-        assert recovered.committed is False and recovered.retained == ()
-    assert final.read_bytes() == b"previous generation"
+        # The public locking boundary discovers the older namespace, upgrades
+        # only exactly witnessed members and rolls back the interrupted write.
+        with publication.publication_locks([final]):
+            assert final.read_bytes() == b"previous generation"
+        assert not journal.exists()
+        assert not publication._journal_path(tmp_path, transaction).exists()
+        assert not backup.exists() and not staged.exists()
+
+
+def test_legacy_journal_recovery_reports_current_residue(tmp_path, monkeypatch):
+    import json
+
+    final = tmp_path / "output"
+    final.write_bytes(b"old generation")
+    staged = publication.staged_output_path(final)
+    staged.write_bytes(b"new generation")
+    backup = publication.staged_output_path(final, purpose="backup", suffix=".old")
+    transaction = "b" * 32
+    journal = tmp_path / f".molt-artifact-publication-{transaction}.json"
+    current = publication._journal_path(tmp_path, transaction)
+    payload = {
+        "schema": "molt.artifact-publication.v2",
+        "transaction_id": transaction,
+        "state": "prepared",
+        "journals": [str(journal)],
+        "removals": [],
+        "replacements": [
+            {
+                "staged": str(staged),
+                "final": str(final),
+                "backup": str(backup),
+                "had_final": True,
+                "prior_identity": [final.stat().st_dev, final.stat().st_ino],
+                "installed_identity": [staged.stat().st_dev, staged.stat().st_ino],
+            }
+        ],
+    }
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+    final.replace(backup)
+    staged.replace(final)
+    write = publication._write_journal
+
+    def interrupt_terminal(path, value):
+        if value["state"] == publication.JournalState.ROLLED_BACK.value:
+            raise OSError("interrupted terminal publication")
+        write(path, value)
+
+    with publication._publication_locks({tmp_path}):
+        with monkeypatch.context() as crash:
+            crash.setattr(publication, "_write_journal", interrupt_terminal)
+            recovered = publication._recover_transaction((journal,))
+    assert recovered.state is publication.JournalState.RECOVERED
+    assert recovered.retained == (current,)
+    assert not journal.exists() and current.exists()
+    assert final.read_bytes() == b"old generation"
+    with publication.publication_locks([final]):
+        assert final.read_bytes() == b"old generation"
+    assert not current.exists()

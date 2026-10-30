@@ -14,6 +14,7 @@ import tomllib
 import uuid
 from collections.abc import Collection, MutableMapping
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from threading import RLock
 from typing import Literal, Mapping, Sequence, cast
@@ -28,6 +29,7 @@ from molt.cargo_execution_policy import (
 )
 from molt.durable_file_identity import (
     DurableFileIdentity,
+    IdentityUnverifiable,
     file_identity,
     upgrade_legacy,
 )
@@ -187,6 +189,58 @@ class ArtifactRootSelection:
     source: ArtifactRootSource
 
 
+class ArtifactBindingState(Enum):
+    ABSENT = auto()
+    LEGACY_V1 = auto()
+    BOUND = auto()
+    REFUSED = auto()
+
+
+class ArtifactBindingEvent(Enum):
+    BIND = auto()
+    LIVE_STAT_MATCHES = auto()
+    LIVE_STAT_DIFFERS = auto()
+    IDENTITY_MATCHES = auto()
+    IDENTITY_DIFFERS = auto()
+
+
+ARTIFACT_BINDING_TRANSITIONS: dict[
+    tuple[ArtifactBindingState, ArtifactBindingEvent], ArtifactBindingState
+] = {
+    (
+        ArtifactBindingState.ABSENT,
+        ArtifactBindingEvent.BIND,
+    ): ArtifactBindingState.BOUND,
+    (
+        ArtifactBindingState.LEGACY_V1,
+        ArtifactBindingEvent.LIVE_STAT_MATCHES,
+    ): ArtifactBindingState.BOUND,
+    (
+        ArtifactBindingState.LEGACY_V1,
+        ArtifactBindingEvent.LIVE_STAT_DIFFERS,
+    ): ArtifactBindingState.REFUSED,
+    (
+        ArtifactBindingState.BOUND,
+        ArtifactBindingEvent.IDENTITY_MATCHES,
+    ): ArtifactBindingState.BOUND,
+    (
+        ArtifactBindingState.BOUND,
+        ArtifactBindingEvent.IDENTITY_DIFFERS,
+    ): ArtifactBindingState.REFUSED,
+}
+
+
+def apply_artifact_binding_event(
+    state: ArtifactBindingState, event: ArtifactBindingEvent
+) -> ArtifactBindingState:
+    try:
+        return ARTIFACT_BINDING_TRANSITIONS[state, event]
+    except KeyError:
+        raise DxConfigError(
+            f"illegal artifact-root binding transition: {state.name} + {event.name}"
+        ) from None
+
+
 @dataclass(frozen=True, slots=True)
 class _ArtifactRootBinding:
     root: Path
@@ -280,8 +334,19 @@ def _provision_artifact_root_binding(record: Path) -> None:
                 or ".." in root.parts
             ):
                 raise ValueError("invalid legacy binding root")
-            identity = upgrade_legacy(
-                root, {"device": value["device"], "inode": value["inode"]}
+            try:
+                identity = upgrade_legacy(
+                    root, {"device": value["device"], "inode": value["inode"]}
+                )
+            except IdentityUnverifiable:
+                apply_artifact_binding_event(
+                    ArtifactBindingState.LEGACY_V1,
+                    ArtifactBindingEvent.LIVE_STAT_DIFFERS,
+                )
+                raise
+            apply_artifact_binding_event(
+                ArtifactBindingState.LEGACY_V1,
+                ArtifactBindingEvent.LIVE_STAT_MATCHES,
             )
             write_exact(
                 record,
@@ -357,13 +422,19 @@ def _external_artifact_required_bytes(env: Mapping[str, str]) -> int:
 
 def _validate_artifact_binding(
     binding: _ArtifactRootBinding, env: Mapping[str, str]
-) -> None:
+) -> ArtifactBindingState:
     root = binding.root
     try:
         metadata = root.stat()
         if not stat.S_ISDIR(metadata.st_mode):
             raise ValueError("not a directory")
-        if file_identity(root, expected=metadata) != binding.identity:
+        state = apply_artifact_binding_event(
+            ArtifactBindingState.BOUND,
+            ArtifactBindingEvent.IDENTITY_MATCHES
+            if file_identity(root, expected=metadata) == binding.identity
+            else ArtifactBindingEvent.IDENTITY_DIFFERS,
+        )
+        if state is ArtifactBindingState.REFUSED:
             raise ValueError("directory identity changed (replaced or unmounted)")
         if not os.access(root, os.W_OK):
             raise ValueError("directory is not writable")
@@ -375,6 +446,7 @@ def _validate_artifact_binding(
                 f"capacity={capacity.available_bytes} bytes, "
                 f"required={capacity.required_bytes} bytes, error={capacity.error}"
             )
+        return state
     except (OSError, ValueError, RuntimeError) as exc:
         raise DxConfigError(
             f"bound artifact root {root} is unavailable or unhealthy: {exc}. "
@@ -404,6 +476,9 @@ def set_artifact_root_binding(
             if custody_layout.enclosing_checkouts(selected):
                 raise ValueError("target must be outside every source checkout")
             metadata = selected.stat()
+            apply_artifact_binding_event(
+                ArtifactBindingState.ABSENT, ArtifactBindingEvent.BIND
+            )
             binding = _ArtifactRootBinding(
                 selected, file_identity(selected, expected=metadata)
             )

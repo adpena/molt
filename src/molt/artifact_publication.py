@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import hashlib
 import os
 import re
@@ -73,6 +74,60 @@ _PUBLICATION_JOURNAL_STAGE_NAME_RE = re.compile(
 )
 
 
+class JournalState(StrEnum):
+    OPEN = "prepared"
+    COMMITTED = "committed"
+    ROLLED_BACK = "aborted"
+    RECOVERED = "recovered"
+    REFUSED = "refused"
+
+
+class JournalEvent(StrEnum):
+    COMMIT = "commit"
+    ROLLBACK = "rollback"
+    RECOVER_LEGACY = "recover-legacy"
+    REFUSE = "refuse"
+
+
+JOURNAL_TRANSITIONS: Mapping[tuple[JournalState, JournalEvent], JournalState] = {
+    (JournalState.OPEN, JournalEvent.COMMIT): JournalState.COMMITTED,
+    (JournalState.OPEN, JournalEvent.ROLLBACK): JournalState.ROLLED_BACK,
+    (JournalState.OPEN, JournalEvent.RECOVER_LEGACY): JournalState.RECOVERED,
+    (JournalState.OPEN, JournalEvent.REFUSE): JournalState.REFUSED,
+    (JournalState.RECOVERED, JournalEvent.COMMIT): JournalState.COMMITTED,
+    (JournalState.RECOVERED, JournalEvent.ROLLBACK): JournalState.ROLLED_BACK,
+    (JournalState.RECOVERED, JournalEvent.REFUSE): JournalState.REFUSED,
+}
+
+
+class JournalRecoveryRefused(OSError):
+    """Recovery retained the named journal and its member generations."""
+
+    state = JournalState.REFUSED
+
+    def __init__(self, journal: Path, detail: str):
+        self.journal = journal
+        self.remedy = (
+            f"preserve {journal} and its referenced stages/backups; restore the "
+            "journal's original member generations, then retry publication recovery"
+        )
+        super().__init__(
+            f"artifact publication recovery refused at {journal}: {detail}; {self.remedy}"
+        )
+
+
+def apply_journal_event(
+    state: JournalState, event: JournalEvent, *, journal: Path
+) -> JournalState:
+    """Apply the journal model; terminal facts cannot be reopened or reversed."""
+    try:
+        return JOURNAL_TRANSITIONS[state, event]
+    except KeyError as exc:
+        raise JournalRecoveryRefused(
+            journal, f"illegal journal transition {state.name} + {event.name}"
+        ) from exc
+
+
 @dataclass(frozen=True)
 class _PublicationDirectoryResidue:
     journals: tuple[Path, ...]
@@ -83,6 +138,7 @@ class _PublicationDirectoryResidue:
 class _TransactionRecovery:
     committed: bool
     retained: tuple[Path, ...]
+    state: JournalState
 
 
 class _RetirementEntry(TypedDict):
@@ -180,12 +236,12 @@ def _require_regular_or_absent(path: Path, *, role: str) -> None:
         raise ValueError(f"{role} is not a regular file: {path}")
 
 
-def _file_node_identity(path: Path) -> dict[str, str]:
+def _file_node_identity(path: Path) -> DurableFileIdentity:
     _require_regular_or_absent(path, role="publication generation member")
     metadata = path.stat()
     if not metadata.st_ino:
         raise ValueError(f"publication requires stable file identity: {path}")
-    return file_identity(path, expected=metadata).payload()
+    return file_identity(path, expected=metadata)
 
 
 def staged_output_path(
@@ -382,7 +438,14 @@ def _upgrade_publication_journal(payload: dict) -> dict:
 
     upgraded = copy.deepcopy(payload)
     for collection in ("replacements", "removals"):
-        for entry in upgraded.get(collection, []):
+        entries = upgraded.get(collection)
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, dict) for entry in entries
+        ):
+            raise IdentityUnverifiable(
+                "identity-unverifiable: malformed legacy publication members"
+            )
+        for entry in entries:
             for field in ("prior_identity", "installed_identity"):
                 if field not in entry or entry[field] is None:
                     continue
@@ -418,6 +481,20 @@ def _upgrade_publication_journal(payload: dict) -> dict:
 
 
 def _load_journal(path: Path) -> dict[str, Any]:
+    try:
+        return _read_journal(path)
+    except (OSError, ValueError) as exc:
+        # An older publication is non-rebuildable state. Never silently omit
+        # it just because its physical witnesses cannot be upgraded.
+        if path.name.startswith(_LEGACY_JOURNAL_PREFIX) and not path.name.startswith(
+            _PUBLICATION_JOURNAL_PREFIX
+        ):
+            apply_journal_event(JournalState.OPEN, JournalEvent.REFUSE, journal=path)
+            raise JournalRecoveryRefused(path, str(exc)) from exc
+        raise
+
+
+def _read_journal(path: Path) -> dict[str, Any]:
     path = _canonical_leaf(
         path, role="artifact publication journal", create_parent=False
     )
@@ -439,7 +516,12 @@ def _load_journal(path: Path) -> dict[str, Any]:
     expected_name = f"{prefix}{transaction_id}{_PUBLICATION_JOURNAL_SUFFIX}"
     if (
         payload.get("schema") != _PUBLICATION_JOURNAL_SCHEMA
-        or payload.get("state") not in {"prepared", "committed", "aborted"}
+        or payload.get("state")
+        not in (
+            JournalState.OPEN.value,
+            JournalState.COMMITTED.value,
+            JournalState.ROLLED_BACK.value,
+        )
         or not isinstance(transaction_id, str)
         or len(transaction_id) != 32
         or any(character not in "0123456789abcdef" for character in transaction_id)
@@ -843,10 +925,14 @@ def _move_new_final_back_to_stage(entry: Mapping[str, Any]) -> None:
     backup = Path(entry["backup"])
     had_final = bool(entry["had_final"])
     if backup.exists() or backup.is_symlink():
-        if _file_node_identity(backup) != entry["prior_identity"]:
+        if _file_node_identity(backup) != DurableFileIdentity.from_payload(
+            entry["prior_identity"]
+        ):
             raise OSError(f"publication backup identity changed: {backup}")
         if final.exists() or final.is_symlink():
-            if _file_node_identity(final) != entry["installed_identity"]:
+            if _file_node_identity(final) != DurableFileIdentity.from_payload(
+                entry["installed_identity"]
+            ):
                 raise OSError(
                     f"publication final belongs to another generation: {final}"
                 )
@@ -861,13 +947,17 @@ def _move_new_final_back_to_stage(entry: Mapping[str, Any]) -> None:
     # A missing backup can also mean an earlier rollback already restored the
     # prior final and crashed during cleanup. Keep recovery idempotent there.
     if had_final and (
-        not final.is_file() or _file_node_identity(final) != entry["prior_identity"]
+        not final.is_file()
+        or _file_node_identity(final)
+        != DurableFileIdentity.from_payload(entry["prior_identity"])
     ):
         raise OSError(
             f"cannot recover prior artifact without matching final or backup: {final}"
         )
     if not had_final and (final.exists() or final.is_symlink()):
-        if _file_node_identity(final) != entry["installed_identity"]:
+        if _file_node_identity(final) != DurableFileIdentity.from_payload(
+            entry["installed_identity"]
+        ):
             raise OSError(f"publication final belongs to another generation: {final}")
         if staged.exists() or staged.is_symlink():
             raise OSError(
@@ -889,12 +979,24 @@ def _cleanup_paths(paths: Iterator[Path]) -> tuple[Path, ...]:
 
 
 def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
+    try:
+        return _recover_transaction_members(journals)
+    except JournalRecoveryRefused:
+        raise
+    except (OSError, ValueError) as exc:
+        journal = journals[0]
+        apply_journal_event(JournalState.OPEN, JournalEvent.REFUSE, journal=journal)
+        raise JournalRecoveryRefused(journal, str(exc)) from exc
+
+
+def _recover_transaction_members(journals: tuple[Path, ...]) -> _TransactionRecovery:
     # Namespace migration is part of the already locked recovery owner. Publish
     # every current copy durably, then retire all legacy copies before touching
     # any artifact. A v2 reader never sees a v3 record under its journal name.
-    transaction_id = _PUBLICATION_JOURNAL_NAME_RE.fullmatch(journals[0].name)[
-        "transaction_id"
-    ]
+    match = _PUBLICATION_JOURNAL_NAME_RE.fullmatch(journals[0].name)
+    if match is None:
+        raise ValueError(f"invalid publication journal name: {journals[0]}")
+    transaction_id = match["transaction_id"]
     current_paths = tuple(
         _journal_path(path.parent, transaction_id) for path in journals
     )
@@ -908,13 +1010,17 @@ def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
             )
         )
     )
-    existing_copies = tuple(
-        (path, {**_load_journal(path), "journals": [str(p) for p in current_paths]})
-        for path in candidates
-        if path.is_file()
-    )
+    loaded_copies: list[tuple[Path, dict[str, Any]]] = []
+    for path in candidates:
+        if path.is_file():
+            copy = _load_journal(path)
+            copy["journals"] = [str(p) for p in current_paths]
+            loaded_copies.append((path, copy))
+    existing_copies = tuple(loaded_copies)
     if not existing_copies:
-        return _TransactionRecovery(committed=False, retained=())
+        return _TransactionRecovery(
+            committed=False, retained=(), state=JournalState.ROLLED_BACK
+        )
     copies = tuple(copy for _path, copy in existing_copies)
     cores = {_journal_core(payload) for payload in copies}
     if len(cores) != 1:
@@ -922,18 +1028,29 @@ def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
             "artifact publication journal copies disagree: "
             + ", ".join(str(path) for path in journals)
         )
-    payload = copies[0]
-    committed = any(copy["state"] == "committed" for copy in copies)
-    aborted = any(copy["state"] == "aborted" for copy in copies)
+    payload: dict[str, Any] = copies[0]
+    committed = any(
+        JournalState(copy["state"]) is JournalState.COMMITTED for copy in copies
+    )
+    aborted = any(
+        JournalState(copy["state"]) is JournalState.ROLLED_BACK for copy in copies
+    )
     if committed and aborted:
         raise OSError("artifact publication has conflicting terminal journal states")
     legacy_paths = tuple(
         path for path, _ in existing_copies if path not in current_paths
     )
+    state = (
+        JournalState.COMMITTED
+        if committed
+        else JournalState.ROLLED_BACK
+        if aborted
+        else JournalState.OPEN
+    )
     if legacy_paths:
         payload = {
             **payload,
-            "state": "committed" if committed else "aborted" if aborted else "prepared",
+            "state": state.value,
         }
         _write_journal_copies(payload)
         from molt.file_publication import durable_remove_path
@@ -941,21 +1058,26 @@ def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
         for legacy in legacy_paths:
             durable_remove_path(legacy)
         existing_copies = tuple((path, payload) for path in current_paths)
+        if state is JournalState.OPEN:
+            state = apply_journal_event(
+                state, JournalEvent.RECOVER_LEGACY, journal=current_paths[0]
+            )
     if committed:
         # A single committed copy is the durable commit point. Before deleting
         # any backup, stage, or journal, propagate it to every surviving copy:
         # otherwise a crash while deleting the only committed copy would leave
         # a prepared copy that could roll back the committed generation.
-        committed_payload = {**payload, "state": "committed"}
+        committed_payload = {**payload, "state": state.value}
         for journal, copy in existing_copies:
-            if copy["state"] == "committed":
+            if JournalState(copy["state"]) is JournalState.COMMITTED:
                 continue
             try:
                 _write_journal(journal, committed_payload)
             except OSError:
                 return _TransactionRecovery(
                     committed=True,
-                    retained=tuple(path for path in journals if path.is_file()),
+                    retained=tuple(path for path in current_paths if path.is_file()),
+                    state=state,
                 )
     replacements = tuple(payload["replacements"])
     removals = tuple(payload["removals"])
@@ -966,7 +1088,9 @@ def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
             final = Path(entry["final"])
             backup = Path(entry["backup"])
             if backup.exists() or backup.is_symlink():
-                if _file_node_identity(backup) != entry["prior_identity"]:
+                if _file_node_identity(backup) != DurableFileIdentity.from_payload(
+                    entry["prior_identity"]
+                ):
                     raise OSError(f"publication backup identity changed: {backup}")
                 if final.exists() or final.is_symlink():
                     raise OSError(
@@ -976,7 +1100,8 @@ def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
                 _durable_namespace_replace(backup, final)
             elif entry["had_final"] and (
                 not final.is_file()
-                or _file_node_identity(final) != entry["prior_identity"]
+                or _file_node_identity(final)
+                != DurableFileIdentity.from_payload(entry["prior_identity"])
             ):
                 raise OSError(
                     f"cannot recover retired artifact without matching final or backup: {final}"
@@ -985,30 +1110,39 @@ def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
         # Rollback has completed, or a prior recovery already recorded it.
         # Preserve that terminal fact in every surviving copy before deleting
         # even one: a prepared orphan must never adopt a later producer's file.
-        aborted_payload = {**payload, "state": "aborted"}
+        terminal_state = state
+        if terminal_state is not JournalState.ROLLED_BACK:
+            terminal_state = apply_journal_event(
+                state, JournalEvent.ROLLBACK, journal=current_paths[0]
+            )
+        aborted_payload = {**payload, "state": terminal_state.value}
         for journal, copy in existing_copies:
-            if copy["state"] == "aborted":
+            if JournalState(copy["state"]) is JournalState.ROLLED_BACK:
                 continue
             try:
                 _write_journal(journal, aborted_payload)
             except OSError:
                 return _TransactionRecovery(
                     committed=False,
-                    retained=tuple(path for path in journals if path.is_file()),
+                    retained=tuple(path for path in current_paths if path.is_file()),
+                    state=state,
                 )
+            state = terminal_state
     cleanup = [Path(entry["backup"]) for entry in (*removals, *replacements)]
     cleanup.extend(Path(entry["staged"]) for entry in replacements)
     retained = _cleanup_paths(
         path for path in cleanup if path.exists() or path.is_symlink()
     )
     if retained:
-        return _TransactionRecovery(committed=committed, retained=retained)
+        return _TransactionRecovery(committed=committed, retained=retained, state=state)
     retained_journals = _cleanup_paths(
         path
         for path in (Path(value) for value in payload["journals"])
         if path.exists() or path.is_symlink()
     )
-    return _TransactionRecovery(committed=committed, retained=retained_journals)
+    return _TransactionRecovery(
+        committed=committed, retained=retained_journals, state=state
+    )
 
 
 def _recover_publication_journals(
@@ -1176,10 +1310,10 @@ def publish_validated_outputs(
                     staged_output_path(final, purpose="backup", suffix=".old")
                 ),
                 "had_final": final.is_file(),
-                "prior_identity": _file_node_identity(final)
+                "prior_identity": _file_node_identity(final).payload()
                 if final.is_file()
                 else None,
-                "installed_identity": _file_node_identity(staged),
+                "installed_identity": _file_node_identity(staged).payload(),
             }
             for staged, final in normalized
         ]
@@ -1190,7 +1324,7 @@ def publish_validated_outputs(
                     staged_output_path(final, purpose="backup", suffix=".old")
                 ),
                 "had_final": final.is_file(),
-                "prior_identity": _file_node_identity(final)
+                "prior_identity": _file_node_identity(final).payload()
                 if final.is_file()
                 else None,
             }
@@ -1199,7 +1333,7 @@ def publish_validated_outputs(
         journal: dict[str, Any] = {
             "schema": _PUBLICATION_JOURNAL_SCHEMA,
             "transaction_id": transaction_id,
-            "state": "prepared",
+            "state": JournalState.OPEN.value,
             "journals": [str(path) for path in journal_paths],
             "replacements": replacement_entries,
             "removals": removal_entries,
@@ -1212,7 +1346,11 @@ def publish_validated_outputs(
                 _durable_namespace_replace(Path(entry["final"]), Path(entry["backup"]))
             for entry in replacement_entries:
                 _durable_replace(Path(entry["staged"]), Path(entry["final"]))
-            journal["state"] = "committed"
+            journal["state"] = apply_journal_event(
+                JournalState(journal["state"]),
+                JournalEvent.COMMIT,
+                journal=journal_paths[0],
+            ).value
             _write_journal_copies(journal)
         except BaseException as primary:
             try:

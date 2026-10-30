@@ -233,6 +233,24 @@ def _identity(path: Path) -> dict[str, str]:
     return file_identity(path).payload()
 
 
+def _same_identity(left: object, right: object) -> bool:
+    """Decode persisted identities before comparing filesystem custody."""
+    try:
+        return DurableFileIdentity.from_payload(
+            left
+        ) == DurableFileIdentity.from_payload(right)
+    except ValueError:
+        return False
+
+
+def _same_owner(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
+    if not _same_identity(left.get("target_identity"), right.get("target_identity")):
+        return False
+    return {key: value for key, value in left.items() if key != "target_identity"} == {
+        key: value for key, value in right.items() if key != "target_identity"
+    }
+
+
 def _target(generation: Path, owner: Mapping[str, object]) -> Path:
     raw = owner.get("target")
     if not isinstance(raw, str):
@@ -541,7 +559,7 @@ def guard_scratch(environ: Mapping[str, str]) -> Path:
             owner.get("guard_marker"), environ.get("MOLT_MEMORY_GUARD_MARKER")
         )
         or not _same_owned_path(str(target), environ.get(SCRATCH_ENV))
-        or _identity(target) != owner["target_identity"]
+        or not _same_identity(_identity(target), owner["target_identity"])
     ):
         raise ValueError("scratch is not the active parent's allocation")
     return target
@@ -605,7 +623,7 @@ def _terminal(generation: Path, owner: Mapping[str, object]) -> _ScratchTerminal
     if (
         terminal.get("schema") != SCHEMA
         or terminal.get("token") != owner["token"]
-        or terminal.get("target_identity") != owner["target_identity"]
+        or not _same_identity(terminal.get("target_identity"), owner["target_identity"])
         or not _same_owned_path(terminal.get("target"), owner.get("target"))
         or not _same_owned_path(str(generation), terminal.get("generation"))
         or terminal.get("closed") is not True
@@ -644,7 +662,9 @@ def _require_move_committed(
     if terminal.source_target is None:
         return
     try:
-        undone = _identity(Path(terminal.source_target)) == owner["target_identity"]
+        undone = _same_identity(
+            _identity(Path(terminal.source_target)), owner["target_identity"]
+        )
     except (OSError, ValueError):
         return
     if undone:
@@ -691,7 +711,7 @@ def _recover_transition_locked(
         elif (
             owner["state"] == "retiring"
             and target.exists()
-            and _identity(target) == owner["target_identity"]
+            and _same_identity(_identity(target), owner["target_identity"])
         ):
             owner = {**owner, "state": "retained"}
         else:
@@ -754,7 +774,7 @@ def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, obj
         raise ValueError("scratch is not terminal and reclaimable")
     _terminal(generation, owner)
     target = _target(generation, owner)
-    if _payload_identity(target) != owner["target_identity"]:
+    if not _same_identity(_payload_identity(target), owner["target_identity"]):
         raise ValueError("scratch target generation changed before reclamation")
     owner = {**owner, "state": "reclaiming"}
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
@@ -1005,7 +1025,9 @@ def _adopt_locked(
         }
         write_exact(generation / "owner.json", owner, durability=_RECORDS)
         return owner
-    if identity != owner["target_identity"] or not _holds_target_receipt(target, owner):
+    if not _same_identity(
+        identity, owner["target_identity"]
+    ) or not _holds_target_receipt(target, owner):
         owner = {
             **owner,
             "state": "blocked",
@@ -1213,10 +1235,10 @@ def _finish_guard_scratch_owned(
     try:
         with timings.measure(ScratchFinalizationPhase.TERMINAL_PUBLICATION):
             owner = _owner(generation)
-            if owner != lease.owner:
+            if not _same_owner(owner, lease.owner):
                 raise ValueError("scratch owner changed from the parent's allocation")
             target = _target(generation, owner)
-            if _identity(target) != owner["target_identity"]:
+            if not _same_identity(_identity(target), owner["target_identity"]):
                 raise ValueError("scratch target changed before terminal publication")
             if not closed:
                 owner = {
@@ -1268,7 +1290,7 @@ def _finish_guard_scratch_owned(
                 exclusive=True,
                 durability=_RECORDS,
             )
-            if _owner(generation) == lease.owner:
+            if _same_owner(_owner(generation), lease.owner):
                 write_exact(
                     generation / "owner.json",
                     {**lease.owner, "state": "indeterminate", "error": str(error)},
@@ -1334,7 +1356,9 @@ def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
     if owner["state"] != "retained":
         return _PendingVisit()
     terminal = _terminal(generation, owner)
-    if _payload_identity(_target(generation, owner)) != owner["target_identity"]:
+    if not _same_identity(
+        _payload_identity(_target(generation, owner)), owner["target_identity"]
+    ):
         raise ValueError("retained scratch payload identity changed")
     return _PendingVisit(
         candidate=(
@@ -1422,9 +1446,8 @@ def reclaim_terminal_scratch(
                     )
                 ):
                     _terminal(generation, owner)
-                    if (
-                        _identity(_target(generation, owner))
-                        != owner["target_identity"]
+                    if not _same_identity(
+                        _identity(_target(generation, owner)), owner["target_identity"]
                     ):
                         raise ValueError("retained scratch payload identity changed")
                     kept_count += 1
