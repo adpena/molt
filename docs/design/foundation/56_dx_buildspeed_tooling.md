@@ -383,7 +383,12 @@ order. Integration explicitly selects the executor's `CANCEL_REMAINING` failure
 policy: the first observed failure stops scheduling and cancels active siblings
 through their existing guards, regardless of declared order. The receipt keeps
 that immutable trigger and every actual outcome; cancellation cannot erase a
-racing failure or uncertain guard closure. Generic proofs retain the default
+racing failure. A gate the executor cancelled is `cancelled`, never a global
+failure: its guard's closure verdict stays on the record as
+`cancellation_cleanup`, and a gate without Cargo target access makes no claim on
+the shared target's recovery. The driver decides by the trigger first: a
+partition-scope trigger raises `GateFailure`, and the queue bisects (HF-605).
+Generic proofs retain the default
 `COLLECT_INDEPENDENT` policy, including dependency blocking and global safety stops.
 This follows the explicit collection choice in
 [Cargo's `--keep-going`](https://doc.rust-lang.org/cargo/commands/cargo-build.html#miscellaneous-options)
