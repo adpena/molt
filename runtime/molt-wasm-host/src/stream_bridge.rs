@@ -7,10 +7,9 @@ pub(super) struct RuntimeExports {
     stream_drop: Func,
     int_from_i64: Func,
     exception_pending_fast: Func,
-    pub(super) alloc: Func,
-    pub(super) handle_resolve: Func,
+    scratch_alloc: Func,
+    scratch_free: Func,
     pub(super) dec_ref_obj: Func,
-    pub(super) header_size: Option<Func>,
     pub(super) cancel_is_cancelled: Option<Func>,
 }
 
@@ -39,21 +38,21 @@ pub(super) fn runtime_exports(caller: &mut Caller<HostState>) -> Result<RuntimeE
         .get_export("molt_exception_pending_fast")
         .and_then(Extern::into_func)
         .context("missing molt_exception_pending_fast export")?;
-    let alloc = caller
-        .get_export("molt_alloc")
+    // Raw frame bytes are staged in the runtime's scratch allocator, as
+    // wasm/run_wasm.js stages them. molt_alloc allocates compiler-owned boxed
+    // fields of u64 stride, never arbitrary byte lengths.
+    let scratch_alloc = caller
+        .get_export("molt_scratch_alloc")
         .and_then(Extern::into_func)
-        .context("missing molt_alloc export")?;
-    let handle_resolve = caller
-        .get_export("molt_handle_resolve")
+        .context("missing molt_scratch_alloc export")?;
+    let scratch_free = caller
+        .get_export("molt_scratch_free")
         .and_then(Extern::into_func)
-        .context("missing molt_handle_resolve export")?;
+        .context("missing molt_scratch_free export")?;
     let dec_ref_obj = caller
         .get_export("molt_dec_ref_obj")
         .and_then(Extern::into_func)
         .context("missing molt_dec_ref_obj export")?;
-    let header_size = caller
-        .get_export("molt_header_size")
-        .and_then(Extern::into_func);
     let cancel_is_cancelled = caller
         .get_export("molt_cancel_token_is_cancelled")
         .and_then(Extern::into_func);
@@ -64,10 +63,9 @@ pub(super) fn runtime_exports(caller: &mut Caller<HostState>) -> Result<RuntimeE
         stream_drop,
         int_from_i64,
         exception_pending_fast,
-        alloc,
-        handle_resolve,
+        scratch_alloc,
+        scratch_free,
         dec_ref_obj,
-        header_size,
         cancel_is_cancelled,
     })
 }
@@ -123,34 +121,6 @@ pub(super) fn new_stream(
     result
 }
 
-fn alloc_temp_bytes(
-    caller: &mut Caller<HostState>,
-    exports: &RuntimeExports,
-    memory: &Memory,
-    bytes: &[u8],
-) -> Result<(u64, u64)> {
-    let alloc_bits = call_i64(&exports.alloc, caller, &[Val::I64(bytes.len() as i64)])? as u64;
-    if alloc_bits == 0 {
-        bail!("molt_alloc failed");
-    }
-    let ptr_bits = call_i64(
-        &exports.handle_resolve,
-        caller,
-        &[Val::I64(alloc_bits as i64)],
-    )? as u64;
-    if ptr_bits == 0 {
-        bail!("molt_handle_resolve failed");
-    }
-    let header_size = if let Some(ref func) = exports.header_size {
-        call_i64(func, caller, &[])? as u64
-    } else {
-        40
-    };
-    let payload_ptr = ptr_bits + header_size;
-    memory.write(caller, payload_ptr as usize, bytes)?;
-    Ok((alloc_bits, payload_ptr))
-}
-
 pub(super) fn send_stream_frame(
     caller: &mut Caller<HostState>,
     exports: &RuntimeExports,
@@ -158,19 +128,40 @@ pub(super) fn send_stream_frame(
     stream_bits: u64,
     payload: &[u8],
 ) -> Result<()> {
-    let (alloc_bits, payload_ptr) = alloc_temp_bytes(caller, exports, memory, payload)?;
-    let _ = call_i64(
-        &exports.stream_send,
-        caller,
-        &[
-            Val::I64(stream_bits as i64),
-            Val::I32(payload_ptr as i32),
-            Val::I64(payload.len() as i64),
-        ],
-    )?;
-    exports
-        .dec_ref_obj
-        .call(caller, &[Val::I64(alloc_bits as i64)], &mut [])?;
+    let len = payload.len() as u64;
+    if payload.is_empty() {
+        call_i64(
+            &exports.stream_send,
+            caller,
+            &[Val::I64(stream_bits as i64), Val::I32(0), Val::I64(0)],
+        )?;
+        return Ok(());
+    }
+    let ptr = call_i64(&exports.scratch_alloc, caller, &[Val::I64(len as i64)])? as u64;
+    if ptr == 0 {
+        bail!("molt_scratch_alloc failed");
+    }
+    let sent = (|| {
+        let address = u32::try_from(ptr).context("scratch frame outside wasm32 memory")?;
+        memory.write(&mut *caller, address as usize, payload)?;
+        call_i64(
+            &exports.stream_send,
+            caller,
+            &[
+                Val::I64(stream_bits as i64),
+                Val::I32(address as i32),
+                Val::I64(len as i64),
+            ],
+        )
+    })();
+    // The stream copies the frame; the scratch block is released either way.
+    let freed = exports.scratch_free.call(
+        &mut *caller,
+        &[Val::I64(ptr as i64), Val::I64(len as i64)],
+        &mut [],
+    );
+    sent?;
+    freed?;
     Ok(())
 }
 
@@ -311,8 +302,8 @@ mod tests {
                 (func (export "molt_stream_close") (param i64) (result i64)
                     i64.const 0x7ffb000000000000)
                 (func (export "molt_stream_send") (param i64 i32 i64) (result i64) i64.const 0)
-                (func (export "molt_alloc") (param i64) (result i64) i64.const 0)
-                (func (export "molt_handle_resolve") (param i64) (result i64) i64.const 0)
+                (func (export "molt_scratch_alloc") (param i64) (result i64) i64.const 0)
+                (func (export "molt_scratch_free") (param i64 i64))
                 (func (export "run") (result i64) call $new_stream)
                 (func (export "boxes") (result i32) global.get $boxes)
                 (func (export "streams") (result i32) global.get $streams)
@@ -357,5 +348,85 @@ mod tests {
                 .unwrap();
             assert_eq!(dropped, i32::from(mode == 0 || mode == 3), "mode={mode}");
         }
+    }
+
+    #[test]
+    fn stream_frames_of_any_length_are_staged_in_scratch_memory() {
+        // A 3-byte frame is not a u64 field stride: molt_alloc refuses it, so
+        // the host stages raw frames through molt_scratch_alloc/free (as
+        // wasm/run_wasm.js does) and frees the block after the stream copies it.
+        let engine = build_engine().unwrap();
+        let module = Module::new(
+            &engine,
+            r#"(module
+            (import "host" "send" (func $send))
+            (memory (export "memory") 1)
+            (global $alloc_size (mut i64) (i64.const -1))
+            (global $sent_ptr (mut i32) (i32.const -1))
+            (global $sent_len (mut i64) (i64.const -1))
+            (global $freed_ptr (mut i64) (i64.const -1))
+            (global $freed_size (mut i64) (i64.const -1))
+            (func (export "molt_exception_pending_fast") (result i64) i64.const 0)
+            (func (export "molt_int_from_i64") (param i64) (result i64) unreachable)
+            (func (export "molt_stream_new") (param i64) (result i64) unreachable)
+            (func (export "molt_dec_ref_obj") (param i64) unreachable)
+            (func (export "molt_stream_drop") (param i64) (result i64) unreachable)
+            (func (export "molt_stream_close") (param i64) (result i64) unreachable)
+            (func (export "molt_stream_send") (param i64 i32 i64) (result i64)
+                local.get 0 i64.const 456 i64.ne if unreachable end
+                local.get 1 global.set $sent_ptr
+                local.get 2 global.set $sent_len
+                i64.const 0)
+            (func (export "molt_scratch_alloc") (param i64) (result i64)
+                local.get 0 global.set $alloc_size
+                i64.const 1024)
+            (func (export "molt_scratch_free") (param i64 i64)
+                local.get 0 global.set $freed_ptr
+                local.get 1 global.set $freed_size)
+            (func (export "run") call $send)
+            (func (export "alloc_size") (result i64) global.get $alloc_size)
+            (func (export "sent_ptr") (result i32) global.get $sent_ptr)
+            (func (export "sent_len") (result i64) global.get $sent_len)
+            (func (export "freed_ptr") (result i64) global.get $freed_ptr)
+            (func (export "freed_size") (result i64) global.get $freed_size))"#,
+        )
+        .unwrap();
+        let mut store = Store::new(&engine, crate::main_tests::test_host_state());
+        let send = Func::wrap(
+            &mut store,
+            |mut caller: Caller<'_, HostState>| -> Result<()> {
+                let exports = runtime_exports(&mut caller)?;
+                let memory = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .context("missing memory export")?;
+                send_stream_frame(&mut caller, &exports, &memory, 456, b"abc")
+            },
+        );
+        let instance = Instance::new(&mut store, &module, &[send.into()]).unwrap();
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        let get_i64 = |store: &mut Store<HostState>, name: &str| {
+            instance
+                .get_typed_func::<(), i64>(&mut *store, name)
+                .unwrap()
+                .call(&mut *store, ())
+                .unwrap()
+        };
+        assert_eq!(get_i64(&mut store, "alloc_size"), 3);
+        assert_eq!(get_i64(&mut store, "sent_len"), 3);
+        assert_eq!(get_i64(&mut store, "freed_ptr"), 1024);
+        assert_eq!(get_i64(&mut store, "freed_size"), 3);
+        let sent_ptr = instance
+            .get_typed_func::<(), i32>(&mut store, "sent_ptr")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        assert_eq!(sent_ptr, 1024);
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        assert_eq!(&memory.data(&store)[1024..1027], b"abc");
     }
 }

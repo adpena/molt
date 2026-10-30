@@ -8,7 +8,6 @@ import runpy
 import struct
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +17,7 @@ from tests.process_guard_common import (
     install_module_view,
     run_custody_subject_process,
 )
+from tests.proof_queue_custody_test_support import admitted_live_custody
 
 from tools.proof_queue_pkg import (
     execution_custody,
@@ -27,6 +27,13 @@ from tools.proof_queue_pkg import (
     toolchain_capture,
     windows_createprocess,
 )
+
+# Custody subjects wait on run_custody_subject_process's one shared deadline.
+# Per-site bounds of 20-60 s guessed how fast a host starts Python; a loaded
+# host outran them under landing-like contention (a 20 s console launch timed
+# out on 2026-10-29).
+# Child payloads bound each case at 60 s, below that deadline, so their own
+# diagnostic still wins over a kill.
 
 
 def test_relative_runtime_nodes_do_not_select_working_directory_inputs(
@@ -78,7 +85,7 @@ def _run_windows_raw_python_subject(command_line, *, executable, tmp_path, **kwa
     program = (
         "import subprocess,sys;"
         "child=subprocess.run(sys.argv[1],executable=sys.argv[2],"
-        "stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15);"
+        "stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=60);"
         "sys.stdout.buffer.write(child.stdout);sys.stderr.buffer.write(child.stderr);"
         "sys.exit(child.returncode)"
     )
@@ -194,7 +201,6 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
             ],
             capture_output=True,
             text=True,
-            timeout=20,
             check=False,
         )
         assert compiled.returncode == 0, compiled.stderr
@@ -215,7 +221,6 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=20,
             check=False,
         )
         assert ordinary.returncode == 0, ordinary.stderr
@@ -344,7 +349,7 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
             "for case in cases:\n"
             " if 'putenv' in case: os.putenv('PYTHONPYCACHEPREFIX',case['putenv'])\n"
             " try:\n"
-            "  r=subprocess.run(case['argv'],capture_output=True,text=True,timeout=15)\n"
+            "  r=subprocess.run(case['argv'],capture_output=True,text=True,timeout=60)\n"
             "  rows.append({'name':case['name'],'allowed':True,'rc':r.returncode,'stdout':r.stdout})\n"
             " except PermissionError:\n"
             "  rows.append({'name':case['name'],'allowed':False})\n"
@@ -374,7 +379,6 @@ def test_python_child_bytecode_namespace_is_bound_before_launch(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=60,
             check=False,
         )
     assert completed.returncode == 0, completed.stderr
@@ -436,7 +440,7 @@ def test_python_console_shebang_uses_explicit_interpreter_custody(tmp_path):
     launcher.chmod(0o755)
     # The same genuine source executes through both ordinary kernel shebang
     # launch and the explicit interpreter boundary used by proof consumers.
-    ordinary = run_custody_subject_process([launcher], timeout=20, check=False)
+    ordinary = run_custody_subject_process([launcher], check=False)
     assert ordinary.returncode == 0
     assert marker.read_text(encoding="utf-8") == "ran"
     marker.unlink()
@@ -494,7 +498,6 @@ def test_python_console_shebang_uses_explicit_interpreter_custody(tmp_path):
             env=environment,
             capture_output=True,
             text=True,
-            timeout=30,
             check=False,
         )
     assert completed.returncode == 0, completed.stderr
@@ -536,7 +539,6 @@ def test_windows_python_crt_decoder_matches_actual_child(tmp_path, tail):
         tmp_path=tmp_path,
         capture_output=True,
         text=True,
-        timeout=20,
         check=False,
     )
     assert actual.returncode == 0, actual.stderr
@@ -572,7 +574,6 @@ def test_windows_python_doubled_quote_warning_cannot_grant_hidden_flags(tmp_path
         env=environment,
         capture_output=True,
         text=True,
-        timeout=20,
         check=False,
     )
     assert actual.returncode == 0, actual.stderr
@@ -934,7 +935,6 @@ def test_windows_python_forwarder_cannot_remove_observed_startup_options(
             ],
             capture_output=True,
             text=True,
-            timeout=30,
             check=False,
         )
         assert created.returncode == 0, created.stderr
@@ -995,7 +995,6 @@ def test_windows_python_forwarder_cannot_remove_observed_startup_options(
         env=environment,
         capture_output=True,
         text=True,
-        timeout=20,
         check=False,
     )
     assert ordinary.returncode == 0, ordinary.stderr
@@ -1060,7 +1059,6 @@ def test_windows_python_console_launcher_honors_captured_startup(tmp_path, runti
         env=unsafe_environment,
         capture_output=True,
         text=True,
-        timeout=20,
         check=False,
     )
     assert ordinary.returncode == 0, ordinary.stderr
@@ -1138,7 +1136,7 @@ def test_windows_python_console_launcher_honors_captured_startup(tmp_path, runti
             "  if value is None: env.pop(key,None)\n"
             "  else: env[key]=value\n"
             " try:\n"
-            "  result=subprocess.run(case['argv'],env=env,capture_output=True,text=True,timeout=15)\n"
+            "  result=subprocess.run(case['argv'],env=env,capture_output=True,text=True,timeout=60)\n"
             "  rows.append([case['name'],True,result.returncode,result.stdout])\n"
             " except PermissionError: rows.append([case['name'],False])\n"
             "print(json.dumps(rows))"
@@ -1164,7 +1162,6 @@ def test_windows_python_console_launcher_honors_captured_startup(tmp_path, runti
             env=environment,
             capture_output=True,
             text=True,
-            timeout=60,
             check=False,
         )
     assert completed.returncode == 0, completed.stderr
@@ -1246,7 +1243,6 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
         check=False,
         capture_output=True,
         text=True,
-        timeout=20,
     )
     assert oracle.returncode == 0, oracle.stderr
     expected = json.loads(oracle.stdout)
@@ -1288,7 +1284,6 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
             check=False,
             capture_output=True,
             text=True,
-            timeout=20,
         )
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == (
@@ -1639,7 +1634,6 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
         check=True,
         capture_output=True,
         text=True,
-        timeout=20,
     )
     caller_image = Path(probe.stdout.strip())
 
@@ -1813,7 +1807,6 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
-        timeout=60,
     )
     assert oracle_run.returncode == 0, oracle_run.stderr
     oracle = json.loads(oracle_run.stdout)
@@ -1841,7 +1834,6 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
             check=False,
             capture_output=True,
             text=True,
-            timeout=60,
         )
     assert custody_run.returncode == 0, custody_run.stderr
     observed = json.loads(custody_run.stdout)
@@ -1923,7 +1915,6 @@ def test_node_selection_names_the_image_libuv_runs(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
-        timeout=30,
     )
     oracle = json.loads(plain.stdout)
     assert os.path.samefile(oracle["stdout"], suffixed), oracle
@@ -1955,7 +1946,6 @@ def test_node_selection_names_the_image_libuv_runs(tmp_path: Path) -> None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
         )
     receipt = server.receipt()
     decisions = [
@@ -2003,7 +1993,6 @@ def test_python_payload_cannot_replace_private_audit_enforcement(
             check=False,
             capture_output=True,
             text=True,
-            timeout=20,
         )
 
     receipt = server.receipt()
@@ -2186,22 +2175,55 @@ def test_source_watch_records_create_execute_delete_transient(
     assert specs == [execution_custody.WatchSpec(source.resolve(), None)]
     monitor = execution_custody.LiveCustodyMonitor(specs)
 
-    with monitor:
+    # macOS refuses here, before any watcher, and the test skips (HF-552).
+    with admitted_live_custody(monitor):
         transient = source / "transient.py"
         transient.write_text("EXECUTED = True\n", encoding="utf-8")
         namespace = runpy.run_path(str(transient))
         assert namespace["EXECUTED"] is True
         transient.unlink()
-        # Kernel delivery is asynchronous even though enqueue is synchronous.
-        time.sleep(0.10)
+        # No wait: kernel delivery is asynchronous, and the drain fence alone
+        # must order these events into the receipt.
 
     assert tracked.read_bytes() == before
     assert not transient.exists()
     receipt = monitor.receipt()
     assert receipt["stable"] is False
+    assert receipt["errors"] == []
     assert any(
         Path(str(event["path"])).name == "transient.py" for event in receipt["events"]
     )
+
+
+def test_fence_cookies_never_enter_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (tmp_path / "source").resolve()
+    source.mkdir()
+    # The hardest placement: the fence directory inside a broad watch root,
+    # so every cookie event is also an event of that root.
+    monkeypatch.setattr(execution_custody.tempfile, "tempdir", str(source))
+    monitor = execution_custody.LiveCustodyMonitor(
+        [execution_custody.WatchSpec(source, None)]
+    )
+
+    with admitted_live_custody(monitor):
+        cookie_root = monitor._cookie_root
+
+    receipt = monitor.receipt()
+    assert receipt["errors"] == []
+    if sys.platform == "win32":
+        # Windows drains each root handle instead; it writes no cookies.
+        assert cookie_root is None
+        return
+    assert cookie_root is not None and cookie_root.parent == source
+    # Arm and drain each wrote one cookie the watcher had to deliver.
+    assert len(monitor._cookies) == 2
+    assert not any(
+        Path(str(event["path"])).is_relative_to(cookie_root)
+        for event in (*receipt["events"], *receipt["apparatus_events"])
+    )
+    assert not cookie_root.exists()
 
 
 def _install_linux_inotify(monkeypatch, *, denied=(), read_next=None):
@@ -2341,7 +2363,6 @@ print(json.dumps({
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=20,
     )
     observed = json.loads(result.stdout)
     assert observed["errors"] == []
@@ -2485,7 +2506,6 @@ def test_python_path_and_cargo_hook_launches_share_native_environment_custody(tm
             check=False,
             capture_output=True,
             text=True,
-            timeout=20,
         )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.splitlines() == ["actual-child", "actual-child"]

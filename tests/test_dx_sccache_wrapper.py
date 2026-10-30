@@ -240,9 +240,14 @@ def test_sccache_release_is_pinned_for_this_host():
     assert release.version in asset.url
 
 
-def test_cargo_build_env_incremental_on_when_sccache_off(monkeypatch):
+def test_cargo_build_env_incremental_on_when_sccache_off(
+    monkeypatch, developer_host_context
+):
     # The warm-rebuild accelerator: with sccache OFF (Windows default), incremental
     # MUST be on — else every rebuild pays the full cold runtime compile (~15 min).
+    # developer_host_context: no run context, so _cargo_build_env does not
+    # materialize the real checkout's roots (a plain clone's toolchain root
+    # lies inside the checkout).
     import molt.cli.cargo_execution as ce
 
     monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
@@ -253,7 +258,12 @@ def test_cargo_build_env_incremental_on_when_sccache_off(monkeypatch):
     assert env["CARGO_INCREMENTAL"] == "1"
 
 
-def test_cargo_build_env_leaves_incremental_to_the_profile_with_sccache(monkeypatch):
+def test_cargo_build_env_leaves_incremental_to_the_profile_with_sccache(
+    monkeypatch, developer_host_context
+):
+    # developer_host_context: no run context, so _cargo_build_env does not
+    # materialize the real checkout's roots (a plain clone's toolchain root
+    # lies inside the checkout).
     import molt.cli.cargo_execution as ce
 
     monkeypatch.setenv("RUSTC_WRAPPER", "/opt/sccache")
