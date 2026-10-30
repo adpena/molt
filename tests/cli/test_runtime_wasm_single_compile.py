@@ -2722,7 +2722,13 @@ def test_wasm_bound_policy_tracks_actual_cargo_environment(
     ],
 )
 def test_wasm_policy_binds_sccache_normalized_profile_fact(
-    monkeypatch, tmp_path, physical, explicit, profile_override, expected
+    monkeypatch,
+    tmp_path,
+    physical,
+    explicit,
+    profile_override,
+    expected,
+    short_cargo_cache,
 ):
     from molt.cargo_execution_policy import normalize_cargo_environment
     from molt.cli.runtime_wasm_build_policy import resolve_runtime_wasm_build_policy
@@ -2744,7 +2750,7 @@ def test_wasm_policy_binds_sccache_normalized_profile_fact(
     controls = {
         "CARGO_INCREMENTAL": explicit,
         "RUSTC_WRAPPER": "sccache",
-        "SCCACHE_DIR": str(tmp_path / "sccache"),
+        "SCCACHE_DIR": str(short_cargo_cache),
     }
     if profile_override is not None:
         controls["CARGO_PROFILE_DEV_FAST_INCREMENTAL"] = profile_override

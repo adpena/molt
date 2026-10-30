@@ -30,6 +30,60 @@ _CHECKOUT_TARGET_SNAPSHOT_ATTR = "_molt_checkout_target_snapshot"
 CHECKOUT_TARGET = ROOT / "target"
 
 
+@pytest.fixture
+def short_cargo_cache() -> Iterator[Path]:
+    """Owned temporary cache whose native startup socket fits on macOS."""
+    import tempfile
+    from molt.dx import storage_path
+
+    parent = storage_path(ROOT, "run-control", os.environ)
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cenv-", dir=parent) as raw:
+        yield Path(raw) / "cache"
+
+
+@pytest.fixture(autouse=True)
+def _storage_write_authority(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """New Molt Python writers must use a declared storage class/volume.
+
+    Temporary fixture roots are explicit scratch outputs. The check observes
+    actual mutation events, so a direct Path write cannot bypass the typed DX
+    API unnoticed when the producer's test runs.
+    """
+    from molt.dx import StorageWriteClaim, storage_write_check
+    from molt.checkout_state import (
+        LAST_USE_STAMP,
+        _state_metadata_root,
+        checkout_state_lock_paths,
+    )
+
+    # A lane-private artifact root can differ from the selected slot image's
+    # placement. Guarded fixture children retain that real interpreter through
+    # its existing external locks and use stamp, never its payload or siblings.
+    image = Path(sys.prefix)
+    image_controls = (
+        *checkout_state_lock_paths(image),
+        _state_metadata_root(image) / LAST_USE_STAMP,
+    )
+    image_claims = tuple(
+        StorageWriteClaim("python-environment", path, exact=True)
+        for control in image_controls
+        for path in (control, control.parent)
+    )
+
+    with storage_write_check(
+        ROOT,
+        os.environ,
+        outputs=(
+            StorageWriteClaim("temporary", tmp_path_factory.getbasetemp()),
+            *image_claims,
+        ),
+    ):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _restore_process_environment() -> Iterator[None]:
     """Every test ends with the process environment it started with.
@@ -176,7 +230,8 @@ def _run_context_env_keys() -> tuple[str, ...]:
 
 @pytest.fixture
 def developer_host_context(
-    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """Resolve paths as a developer host with no ambient run context does.
 
@@ -190,7 +245,7 @@ def developer_host_context(
     A child that runs repository tooling on the real checkout needs the
     context back: see `checkout_run_context`.
 
-    Without ``MOLT_CACHE`` a developer host's Molt cache falls back to the
+    Without ``MOLT_CACHE`` an unbound developer host's Molt cache falls back to the
     user cache base (``molt.default_paths``), so the test gets its own base
     (``XDG_CACHE_HOME``, or ``LOCALAPPDATA`` on Windows) instead of writing
     into the developer's real home cache (HF-562). ``HOME`` stays, because
@@ -219,8 +274,8 @@ def unbound_checkout_family(monkeypatch: pytest.MonkeyPatch) -> None:
         return
     original = dx.artifact_root_binding_path
 
-    def binding_path(repo_root: Path) -> Path | None:
-        path = original(repo_root)
+    def binding_path(repo_root: Path, *, common_dir: Path | None = None) -> Path | None:
+        path = original(repo_root, common_dir=common_dir)
         return None if path is not None and path.parent == real_state else path
 
     monkeypatch.setattr(dx, "artifact_root_binding_path", binding_path)

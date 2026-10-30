@@ -21,67 +21,24 @@ import time
 import argparse
 import atexit
 from contextlib import ExitStack
-from collections.abc import Sequence
+from collections.abc import Sequence, Mapping
 from pathlib import Path
 from types import ModuleType
 
 from molt import process_guard
 from molt.process_spawn import ExecStateHandoff
-from molt.file_locks import (
-    _FileLockHandle,
-    _file_lock_owned_operation,
-    _release_file_lock,
-    _try_acquire_file_lock,
-)
+from molt.file_locks import _FileLockHandle
 from tools import controller_source
 from tools.driver_errors import EXIT_USAGE, DriverError  # noqa: E402
-from tools.molt_dev_common import _COMMANDS, _say, _warn  # noqa: E402
+from tools.molt_dev_common import _COMMANDS, _say  # noqa: E402
 from tools.venv_exec import venv_python
 
 ENVIRONMENT_NAME = ".venv"
-# Retention: the newest KEEP controllers stay; an older one retires only after
-# IDLE_S without use and no live shared source owner.
-KEEP = 4
-IDLE_S = 24 * 3600
 
 
 _running_source_use: (
     tuple[int, controller_source.Controller, ExitStack, _FileLockHandle] | None
 ) = None
-
-
-def _retire_idle(directory: Path, *, current: Path, now: float) -> None:
-    """Keep the newest KEEP controllers; retire older ones idle for IDLE_S."""
-
-    entries = []
-    for entry in directory.iterdir():
-        if entry == current:
-            continue
-        marker = entry / controller_source.RECORD_NAME
-        try:
-            last_use = (marker if marker.is_file() else entry).stat().st_mtime
-        except FileNotFoundError:
-            continue
-        entries.append((last_use, entry))
-    entries.sort(reverse=True)
-    for last_use, entry in entries[KEEP - 1 :]:
-        if now - last_use >= IDLE_S:
-            handle = _try_acquire_file_lock(controller_source.source_lock_path(entry))
-            if handle is None:
-                continue
-            try:
-                with _file_lock_owned_operation(
-                    handle, expected_lock_path=controller_source.source_lock_path(entry)
-                ):
-                    marker = entry / controller_source.RECORD_NAME
-                    fresh = (marker if marker.is_file() else entry).stat().st_mtime
-                    if now - fresh >= IDLE_S:
-                        shutil.rmtree(entry)
-            except OSError as exc:
-                # Retention never decides a landing.
-                _warn(f"controller retention left {entry}: {exc}")
-            finally:
-                _release_file_lock(handle)
 
 
 def pinned_controller(
@@ -90,8 +47,15 @@ def pinned_controller(
     """The controller for main's commit, extracted once per tree set."""
 
     with controller_source.controller_source(repo, common_dir, commit) as controller:
-        _sync_environment(controller.root)
-        _retire_idle(controller.root.parent, current=controller.root, now=time.time())
+        from molt.dx import RunContext
+        from tools.molt_dev_storage import retire_idle_controllers
+
+        _sync_environment(
+            controller.root, environment=RunContext(repo).canonical_env(os.environ)
+        )
+        retire_idle_controllers(
+            controller.root.parent, current=controller.root, now=time.time()
+        )
         return controller
 
 
@@ -103,10 +67,10 @@ def _uv_executable() -> str:
     return uv
 
 
-def _sync_environment(root: Path) -> None:
+def _sync_environment(root: Path, *, environment: Mapping[str, str]) -> None:
     """Build or confirm main's locked environment; uv makes a current one a no-op."""
 
-    env = dict(os.environ)
+    env = dict(environment)
     env["UV_PROJECT_ENVIRONMENT"] = str(root / ENVIRONMENT_NAME)
     env.pop("VIRTUAL_ENV", None)
     proc = _COMMANDS.run(
@@ -144,12 +108,17 @@ def verify_pinned_controller(
 ) -> None:
     """Refuse a --pinned-controller claim that this process does not satisfy."""
 
-    expected = controller_source.controllers_root(common_dir) / key
-    if not (expected / controller_source.RECORD_NAME).is_file():
-        raise DriverError(f"pinned controller {key} has no record at {expected}")
+    physical_driver = Path(driver_file).resolve()
+    admitted = controller_source.controller_for_source(physical_driver.parent.parent)
+    if admitted is None:
+        raise DriverError(
+            f"pinned controller {key} has no record for this driver source: {driver_file}"
+        )
+    expected = admitted.root
     if (
-        Path(driver_file).resolve()
-        != expected.joinpath(*controller_source.DRIVER).resolve()
+        admitted.key != key
+        or controller_source.controller_common_dir(expected) != common_dir.resolve()
+        or physical_driver != admitted.driver
     ):
         raise DriverError(
             f"--pinned-controller {key} names {expected}, but this driver runs "
@@ -216,7 +185,9 @@ def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None
             verify_pinned_controller(
                 key,
                 driver_file=driver_file,
-                common_dir=driver.parents[4],
+                common_dir=controller_source.controller_common_dir(
+                    driver.parent.parent
+                ),
                 exec_handoff=exec_handoff,
             )
             args.controller_state_handoff = None
@@ -242,7 +213,7 @@ def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None
         raise DriverError(
             "controller driver has no pinned cache identity", code=EXIT_USAGE
         )
-    common_dir = driver.parents[4]
+    common_dir = controller_source.controller_common_dir(driver.parent.parent)
     verify_pinned_controller(
         key,
         driver_file=driver_file,

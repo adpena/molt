@@ -56,11 +56,14 @@ from molt.cli.generation_store import (
 from molt.dx import product_store_dir
 from molt import input_report
 from molt.file_deletion import delete_path
+from molt.custody_layout import Regenerable, storage_rule
 
 LAYOUT_VERSION = "v1"
 # Go's build cache trims entries no build used for five days
 # (cmd/go/internal/cache, trimLimit); a publication applies the same window.
-PRODUCT_STORE_IDLE_SECONDS = 5 * 24 * 60 * 60.0
+_RETENTION = storage_rule("products").retention
+assert isinstance(_RETENTION, Regenerable)
+PRODUCT_STORE_IDLE_SECONDS = _RETENTION.max_idle_s
 # Go renews an entry's mtime at most once an hour (cmd/go/internal/cache,
 # mtimeInterval): a renewal inside the hour cannot change what the window
 # decides, so it costs no lock and no write.

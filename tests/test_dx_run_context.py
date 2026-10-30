@@ -59,6 +59,13 @@ def test_windows_path_identity_retains_namespace_and_component_boundaries(
 pytestmark = pytest.mark.usefixtures("developer_host_context")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sccache(monkeypatch, tmp_path):
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+
+
 def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in set(CANONICAL_RUN_ENV_KEYS) | set(DX_ENV_KEYS):
         monkeypatch.delenv(key, raising=False)
@@ -882,17 +889,20 @@ def test_shell_exports_retain_bytecode_write_policy(format, expected) -> None:
 
 
 def test_run_context_dx_env_installs_cross_platform_tool_defaults(
-    tmp_path: Path,
+    tmp_path: Path, short_cargo_cache: Path
 ) -> None:
     env = RunContext(tmp_path, session_prefix="dx").dx_env(
-        {"MOLT_BACKEND_DAEMON_SOCKET_ROOT": str(tmp_path / "sockets")},
+        {
+            "MOLT_BACKEND_DAEMON_SOCKET_ROOT": str(tmp_path / "sockets"),
+            "MOLT_EXT_ROOT": str(short_cargo_cache.parent),
+        },
         create_dirs=False,
     )
 
     assert env["MOLT_BACKEND_DAEMON_SOCKET_DIR"].startswith(
         str((tmp_path / "sockets").resolve())
     )
-    assert env["SCCACHE_DIR"] == str(tmp_path.resolve() / ".sccache")
+    assert env["SCCACHE_DIR"] == str(short_cargo_cache.parent / ".sccache")
     assert env["SCCACHE_CACHE_SIZE"] == "10G"
     # sccache is off-by-default on Windows (0 hits + mid-compile crashes there);
     # auto-on elsewhere. The default is platform-derived, so assert accordingly.
@@ -1090,8 +1100,8 @@ def test_dx_project_scratch_stays_out_of_an_in_checkout_artifact_root() -> None:
     assert env["PYTHONPYCACHEPREFIX"] == str(scratch / "pycache")
 
 
-def test_dx_project_dx_env_uses_same_key_authority(tmp_path: Path) -> None:
-    project_root = tmp_path / "repo"
+def test_dx_project_dx_env_uses_same_key_authority(short_cargo_cache: Path) -> None:
+    project_root = short_cargo_cache.parent / "repo"
     project_root.mkdir()
     (project_root / "pyproject.toml").write_text(
         "[tool.molt.dx]\nprefer_external_artifacts = false\n",
@@ -2213,6 +2223,11 @@ def _git(repo: Path, *args: str) -> str:
         env={
             **os.environ,
             "MOLT_EXT_ROOT": str(artifacts),
+            "CARGO_TARGET_DIR": str(artifacts / "target"),
+            "MOLT_DIFF_CARGO_TARGET_DIR": str(artifacts / "target"),
+            "MOLT_BUILD_STATE_DIR": str(artifacts / "build-control"),
+            "MOLT_CACHE": str(artifacts / ".molt_cache"),
+            "UV_CACHE_DIR": str(artifacts / ".uv-cache"),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "t",
@@ -2476,8 +2491,10 @@ def test_tool_state_and_bundle_keys_use_captured_host_environment_semantics(
 
 
 @pytest.mark.parametrize("session", [None, "same-pinned-session"])
-def test_sibling_checkouts_reuse_only_their_own_cargo_intermediates(tmp_path, session):
-    artifact = tmp_path / "artifacts"
+def test_sibling_checkouts_reuse_only_their_own_cargo_intermediates(
+    tmp_path, session, short_cargo_cache
+):
+    artifact = short_cargo_cache.parent / "artifacts"
     first, second = tmp_path / "a", tmp_path / "b"
     # Each checkout is its own custody root, which must exist.
     first.mkdir()
@@ -2768,6 +2785,7 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
 
 def test_developer_host_default_cache_uses_a_per_test_user_cache_base(
     tmp_path_factory: pytest.TempPathFactory,
+    unbound_checkout_family: None,
 ) -> None:
     """Without MOLT_CACHE a developer host's Molt cache is the user cache base;
     the fixture gives each test its own, so no test writes the real home cache

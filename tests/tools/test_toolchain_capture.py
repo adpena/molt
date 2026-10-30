@@ -335,20 +335,19 @@ def test_python_capture_rejects_missing_or_malformed_frozen_file_authority(
         toolchain_capture.frozen_files(identity)
 
 
-def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) -> None:
+def test_toolchain_capture_compact_receipt_bounds_bytes_without_reparse(
+    tmp_path: Path,
+) -> None:
     owned = tmp_path / "owned.py"
     owned.write_text("owned\n", encoding="utf-8")
     identity = _identity(owned, rows=5_000)
     measured = run_isolated_python_probe(
         """
-        import gc
         import json
         from pathlib import Path
         import sys
-        import tracemalloc
-        from tools.proof_queue_pkg import toolchain_capture
-        # Load publish_capture's lazy policy module before the measured work.
-        import tools.proof_plan
+        from types import SimpleNamespace
+        from tools.proof_queue_pkg import custody_cas, toolchain_capture
 
         identity = json.load(sys.stdin)
         cas = Path(sys.argv[1])
@@ -356,39 +355,32 @@ def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) 
             "toolchains": identity,
             "toolchain_custody": {"prelaunch": identity, "postcompletion": identity},
         }
-        if tracemalloc.is_tracing():
-            raise RuntimeError("probe requires exclusive allocation tracing")
-        gc.collect()
-        tracemalloc.start()
-        try:
-            legacy_bytes = json.dumps(legacy, sort_keys=True).encode()
-            _, legacy_peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        legacy_size = len(legacy_bytes)
-        del legacy_bytes, legacy
-        gc.collect()
-        tracemalloc.start()
-        try:
-            summaries, reference, telemetry = toolchain_capture.publish_capture(cas, identity)
-            compact = {
-                "toolchains": summaries,
-                "toolchain_custody": {
-                    "prelaunch": summaries,
-                    "postcompletion": summaries,
-                    "identical": True,
-                },
-                "toolchain_capture": {"artifact": reference, "telemetry": telemetry},
-            }
-            compact_bytes = json.dumps(compact, sort_keys=True).encode()
-            _, compact_peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
+        legacy_size = len(json.dumps(legacy, sort_keys=True).encode())
+        del legacy
+
+        def reject_capture_decode(*args, **kwargs):
+            raise AssertionError("publication must verify bytes without reparsing the capture")
+
+        # HF-51 reparsed the published blob and allocated another full capture.
+        # Refuse that allocation at the decoder boundary; a peak-memory ratio
+        # also varies with path lengths, lazy imports and allocator state.
+        custody_cas.json = SimpleNamespace(
+            **(vars(json) | {"loads": reject_capture_decode})
+        )
+        summaries, reference, telemetry = toolchain_capture.publish_capture(cas, identity)
+        compact = {
+            "toolchains": summaries,
+            "toolchain_custody": {
+                "prelaunch": summaries,
+                "postcompletion": summaries,
+                "identical": True,
+            },
+            "toolchain_capture": {"artifact": reference, "telemetry": telemetry},
+        }
+        compact_bytes = json.dumps(compact, sort_keys=True).encode()
         print(json.dumps({
             "legacy_size": legacy_size,
-            "legacy_peak": legacy_peak,
             "compact_size": len(compact_bytes),
-            "compact_peak": compact_peak,
             "compact": compact,
         }))
         """,
@@ -403,13 +395,11 @@ def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) 
         "postcompletion": compact["toolchains"],
         "identical": True,
     }
+    # The fixed 5,000-row identity measured a 5.8 KiB receipt versus a 19 MiB
+    # legacy encoding on CPython 3.12. Keep portable headroom for path spelling.
     assert measured["compact_size"] < measured["legacy_size"] // 100
     assert measured["compact_size"] < 64 * 1024
     assert reference["compressed_bytes"] < reference["uncompressed_bytes"] // 10
-    # Publishing streams its digest check, so the compact path peaks near one
-    # encoding of the capture: 0.35-0.38 of the legacy peak measured on
-    # 2026-10-09, against 0.89 when publication re-parsed the blob (HF-51).
-    assert measured["compact_peak"] < measured["legacy_peak"] // 2
     captured = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
     assert captured["toolchains"] == identity
     assert (

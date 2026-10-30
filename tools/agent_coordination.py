@@ -1595,7 +1595,9 @@ def build_record(
         "env_ps1": str(base / "env.ps1"),
         "report_path": repo_relative(report_path, registry_root),
         "progress_log": repo_relative(base / "progress.log", registry_root),
-        "artifacts_dir": repo_relative(base / "artifacts", registry_root),
+        "artifacts_dir": str(
+            coordination_records.task_artifacts_dir(registry_root, task, os.environ)
+        ),
     }
 
 
@@ -2438,7 +2440,7 @@ def create_task(
     source_root = source_root.resolve()
     task = coordination_records.validate_task_name(task)
     base = coordination_records.task_dir(registry_root, task)
-    artifacts = base / "artifacts"
+    artifacts = coordination_records.task_artifacts_dir(registry_root, task, os.environ)
 
     created_at = utc_now()
     stamp = created_at.replace("-", "").replace(":", "").removesuffix("Z")
@@ -2462,6 +2464,7 @@ def create_task(
     if extra:
         record.update(extra)
     with checkout_state_use(((base.parent, None), (base, None))):
+        base.mkdir(parents=True, exist_ok=True)
         artifacts.mkdir(parents=True, exist_ok=True)
         (base / "progress.log").touch()
         session_env = dict(os.environ)

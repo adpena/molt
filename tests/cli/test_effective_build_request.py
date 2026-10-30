@@ -17,6 +17,28 @@ from molt.cli.entrypoint_parser import _build_entrypoint_parser
 from molt.target_python import _parse_target_python_version
 
 
+@pytest.mark.parametrize("flag", [[], ["-P"], ["--safe-path"]])
+@pytest.mark.parametrize("value", ["", "0", "1"])
+def test_safe_path_is_explicit_request_intent(tmp_path, flag, value):
+    from molt.cli.build_request import (
+        build_request_from_payload,
+        build_request_to_payload,
+    )
+
+    request = selection.resolve_build_arguments(
+        flag,
+        file_path="entry.py",
+        module=None,
+        project_root=tmp_path,
+        env={"PYTHONSAFEPATH": value},
+    )
+    assert request.safe_path is bool(flag or value)
+    assert (
+        build_request_from_payload(build_request_to_payload(request)).safe_path
+        is request.safe_path
+    )
+
+
 @pytest.mark.parametrize("guest", ["3.12", "3.13", "3.14"])
 @pytest.mark.parametrize("mode", ["file", "module"])
 def test_compare_default_oracle_follows_guest_while_frontend_stays_315(

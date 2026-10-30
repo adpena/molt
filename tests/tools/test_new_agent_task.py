@@ -25,8 +25,11 @@ def _export_value(stdout: str, key: str) -> str:
 @pytest.mark.parametrize("pinned", [False, True], ids=["init-named", "pinned"])
 @pytest.mark.usefixtures("developer_host_context")
 def test_new_agent_task_scaffolds_canonical_agent_env(
-    pinned: bool, tmp_path: Path
+    pinned: bool, tmp_path: Path, monkeypatch
 ) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
     task = f"unit-agent-{uuid4().hex}"
     pinned_session = f"lane-{uuid4().hex}"
     # The scaffold is checkout-relative; a test checkout keeps it out of the

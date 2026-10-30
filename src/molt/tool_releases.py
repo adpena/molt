@@ -507,42 +507,49 @@ def discover_tool(release: ToolRelease, toolchain_root: Path) -> ToolDiscovery |
     installed executable is not a discovery: the caller provisions afresh or
     fails closed, never trusts a partially matching install.
     """
-    from molt import input_report
+
+    from molt.checkout_state import toolchain_state_use
 
     prefix = tool_prefix(toolchain_root, release)
-    executable = tool_executable(prefix, release)
-    attestation_path = prefix / TOOL_ATTESTATION_FILENAME
-    try:
-        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(attestation, Mapping):
-        return None
-    input_report.report_probe(executable)
-    if not executable.is_file():
-        return None
-    asset = release.assets.get(str(attestation.get("asset") or ""))
-    if asset is None:
-        return None
-    executable_sha256 = _sha256_file(executable)
-    package_sha256 = None
-    if release.entrypoint is not None:
+    with toolchain_state_use((prefix,)):
+        from molt import input_report
+
+        executable = tool_executable(prefix, release)
+        attestation_path = prefix / TOOL_ATTESTATION_FILENAME
         try:
-            package_sha256 = tree_sha256(prefix / PACKAGE_DIRNAME)
-        except (OSError, ValueError, ToolReleaseError):  # or an unencodable name
+            attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return None
-    if attestation != _attestation_payload(
-        release, asset, executable_sha256, package_sha256
-    ):
-        return None
-    return ToolDiscovery(
-        release=release,
-        prefix=prefix,
-        executable=executable,
-        executable_sha256=executable_sha256,
-        asset=asset,
-        tree_sha256=package_sha256,
-    )
+        if not isinstance(attestation, Mapping):
+            return None
+        input_report.report_probe(executable)
+        if not executable.is_file():
+            return None
+        asset = release.assets.get(str(attestation.get("asset") or ""))
+        if asset is None:
+            return None
+        executable_sha256 = _sha256_file(executable)
+        package_sha256 = None
+        if release.entrypoint is not None:
+            try:
+                package_sha256 = tree_sha256(prefix / PACKAGE_DIRNAME)
+            except (OSError, ValueError, ToolReleaseError):  # or an unencodable name
+                return None
+        if attestation != _attestation_payload(
+            release, asset, executable_sha256, package_sha256
+        ):
+            return None
+        from molt.checkout_state import record_toolchain_use
+
+        record_toolchain_use(prefix)
+        return ToolDiscovery(
+            release=release,
+            prefix=prefix,
+            executable=executable,
+            executable_sha256=executable_sha256,
+            asset=asset,
+            tree_sha256=package_sha256,
+        )
 
 
 def _archive_https_host(url: str) -> str:
@@ -682,7 +689,12 @@ def provision_archive(
                 raise
             raise ToolReleaseError(busy_message) from exc
         try:
-            with _file_lock_owned_operation(lock, expected_lock_path=lock_path):
+            from molt.checkout_state import toolchain_state_use, record_toolchain_use
+
+            with (
+                _file_lock_owned_operation(lock, expected_lock_path=lock_path),
+                toolchain_state_use((archive,), create=True),
+            ):
                 previous = (
                     stable_regular_file_version(archive, label="pinned archive cache")
                     if archive.exists()
@@ -699,6 +711,7 @@ def provision_archive(
                         if source is not None:
                             with open_pinned_archive(source, size=size, sha256=sha256):
                                 pass
+                        record_toolchain_use(archive)
                         return archive
                 with OwnedTemporaryDirectory(
                     prefix="molt-archive-", dir=archive.parent
@@ -755,6 +768,7 @@ def provision_archive(
                         raise ToolReleaseError(
                             "published archive changed before admission"
                         )
+                    record_toolchain_use(archive)
                     return archive
         finally:
             _release_file_lock(lock)
@@ -767,20 +781,28 @@ def provision_archive(
 @contextmanager
 def open_pinned_archive(path: Path, *, size: int, sha256: str):
     """Bind the pin and every payload read to one owned descriptor lifetime."""
-    try:
-        if not path.is_file():
-            raise ToolReleaseError(
-                f"pinned archive absent: {path}; expected {size} bytes SHA-256 {sha256}; explicitly provision the input; consumer performs no automatic fetch"
-            )
-        with open_stable_regular_file(path, label="pinned archive") as opened:
-            identity = stable_regular_file_handle_identity(
-                opened, label="pinned archive", max_bytes=size
-            )
-            if (identity.size, identity.sha256) != (size, sha256):
-                raise ToolReleaseError(f"pinned archive identity mismatch: {path}")
-            yield opened
-    except ValueError as exc:
-        raise ToolReleaseError("open_pinned_archive refused: " + str(exc)) from exc
+
+    from molt.checkout_state import toolchain_state_use
+
+    with toolchain_state_use((path,)):
+        try:
+            if not path.is_file():
+                raise ToolReleaseError(
+                    f"pinned archive absent: {path}; expected {size} bytes SHA-256 {sha256}; explicitly provision the input; consumer performs no automatic fetch"
+                )
+            with open_stable_regular_file(path, label="pinned archive") as opened:
+                identity = stable_regular_file_handle_identity(
+                    opened, label="pinned archive", max_bytes=size
+                )
+                if (identity.size, identity.sha256) != (size, sha256):
+                    raise ToolReleaseError(f"pinned archive identity mismatch: {path}")
+                from molt.checkout_state import record_toolchain_use
+
+                record_toolchain_use(path)
+                with toolchain_state_use((path,)):
+                    yield opened
+        except ValueError as exc:
+            raise ToolReleaseError("open_pinned_archive refused: " + str(exc)) from exc
 
 
 def _extract_member(archive: Path, asset: ToolAsset, destination: Path) -> str:
@@ -920,27 +942,33 @@ def provision_tool(
     member is published before its attestation. Discovery admits only the exact
     matching pair, so an interrupted publication cannot attest different bytes.
     """
+
+    from molt.checkout_state import toolchain_state_use
+
     try:
-        existing = discover_tool(release, toolchain_root)
-        if existing is not None:
-            return existing
-        prefix = tool_prefix(toolchain_root, release)
-        prefix.parent.mkdir(parents=True, exist_ok=True)
-        # One provisioner per release: a second waits, then finds the first's
-        # attested installation instead of replacing files under its readers.
-        lock_path = prefix.parent / f".molt-provision-{release.prefix_name}.lock"
-        busy = f"{release.name} {release.version} is being provisioned: {lock_path}"
-        try:
-            lock = _acquire_file_lock(lock_path, timeout_s=600, timeout_message=busy)
-        except RuntimeError as exc:
-            if str(exc) != busy:
-                raise
-            raise ToolReleaseError(busy) from exc
-        try:
-            with _file_lock_owned_operation(lock, expected_lock_path=lock_path):
-                return _provision_unlocked(release, toolchain_root, downloads)
-        finally:
-            _release_file_lock(lock)
+        with toolchain_state_use((tool_prefix(toolchain_root, release),), create=True):
+            existing = discover_tool(release, toolchain_root)
+            if existing is not None:
+                return existing
+            prefix = tool_prefix(toolchain_root, release)
+            prefix.parent.mkdir(parents=True, exist_ok=True)
+            # One provisioner per release: a second waits, then finds the first's
+            # attested installation instead of replacing files under its readers.
+            lock_path = prefix.parent / f".molt-provision-{release.prefix_name}.lock"
+            busy = f"{release.name} {release.version} is being provisioned: {lock_path}"
+            try:
+                lock = _acquire_file_lock(
+                    lock_path, timeout_s=600, timeout_message=busy
+                )
+            except RuntimeError as exc:
+                if str(exc) != busy:
+                    raise
+                raise ToolReleaseError(busy) from exc
+            try:
+                with _file_lock_owned_operation(lock, expected_lock_path=lock_path):
+                    return _provision_unlocked(release, toolchain_root, downloads)
+            finally:
+                _release_file_lock(lock)
     except ValueError as exc:
         raise ToolReleaseError("provision_tool refused: " + str(exc)) from exc
     except OSError as exc:

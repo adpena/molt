@@ -18,7 +18,8 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Generator
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from types import ModuleType
 
@@ -111,35 +112,35 @@ def cleanup_worktree(
     # process's working directory (`Path.cwd()`) would find it deleted.
     if Path(os.getcwd()).resolve().is_relative_to(checkout):
         os.chdir(main_repo)
-    finish_retirement = prepare_checkout_retirement(checkout)
-    remove_args = ["worktree", "remove"]
-    # `git worktree remove` refuses (without --force) on ANY modified/untracked
-    # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
-    # safety policy already cleared. Our policy is the authority: if we got here
-    # with residual churn that is purely ignored/untracked, OR the operator
-    # passed --force, tell git to proceed. We never reach here with non-ignored
-    # tracked changes (those are refused above), so this --force can only be
-    # waving through churn we already deemed safe.
-    has_residual_churn = bool(git.status_porcelain())
-    if force_sha is not None or has_residual_churn:
-        remove_args.append("--force")
-    remove_args.append(str(repo))
-    proc = _run_fast_captured_command(
-        ["git", "-C", str(main_repo), *remove_args],
-        # Git for Windows may retain the launch cwd in its executable shim.
-        # Both that cwd and Git's -C must outlive the worktree being removed.
-        cwd=main_repo,
-        timeout=120.0,
-    )
-    if proc.returncode != 0:
-        _fail(
-            f"git worktree remove failed (exit {proc.returncode}): "
-            f"{proc.stderr.strip()}"
+    with prepare_checkout_retirement(checkout) as finish_retirement:
+        remove_args = ["worktree", "remove"]
+        # `git worktree remove` refuses (without --force) on ANY modified/untracked
+        # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
+        # safety policy already cleared. Our policy is the authority: if we got here
+        # with residual churn that is purely ignored/untracked, OR the operator
+        # passed --force, tell git to proceed. We never reach here with non-ignored
+        # tracked changes (those are refused above), so this --force can only be
+        # waving through churn we already deemed safe.
+        has_residual_churn = bool(git.status_porcelain())
+        if force_sha is not None or has_residual_churn:
+            remove_args.append("--force")
+        remove_args.append(str(repo))
+        proc = _run_fast_captured_command(
+            ["git", "-C", str(main_repo), *remove_args],
+            # Git for Windows may retain the launch cwd in its executable shim.
+            # Both that cwd and Git's -C must outlive the worktree being removed.
+            cwd=main_repo,
+            timeout=120.0,
         )
-        return EXIT_FAIL
-    _ok(f"removed worktree {repo}")
-    finish_retirement()
-    return EXIT_OK
+        if proc.returncode != 0:
+            _fail(
+                f"git worktree remove failed (exit {proc.returncode}): "
+                f"{proc.stderr.strip()}"
+            )
+            return EXIT_FAIL
+        _ok(f"removed worktree {repo}")
+        finish_retirement()
+        return EXIT_OK
 
 
 def release_slot(git, repo: Path, upstream_ref: str) -> int:
@@ -165,7 +166,92 @@ def release_slot(git, repo: Path, upstream_ref: str) -> int:
     return EXIT_OK
 
 
-def prepare_checkout_retirement(checkout: Path) -> Callable[[], None]:
+@contextmanager
+def prepare_checkout_retirement(
+    checkout: Path,
+) -> Generator[Callable[[], None], None, None]:
+    """Fence readers and preserve ignored/WIP signal through source removal."""
+    from molt.checkout_state import checkout_state_retirement
+    from molt.custody_layout import (
+        PackageEnvironmentKind,
+        git_directories,
+        storage_rule,
+    )
+    from tools.coordination_records import load_records, LOG_ROOT
+    from molt.dx import storage_path, artifact_root
+    from molt.exact_json import write_exact
+    from molt.checkout_state import compact_evidence
+    from tools.driver_errors import DriverError
+    from tools.disk_guard import _guard_protection
+    from typing import get_args
+
+    directories = git_directories(checkout)
+    if directories is None or directories[0] == directories[1]:
+        raise DriverError(f"retirement needs a linked worktree: {checkout}")
+    common = directories[1]
+    environment = os.environ
+    artifact = artifact_root(common.parent, environment)
+    with ExitStack() as custody:
+        for path in (
+            checkout / LOG_ROOT,
+            *(
+                checkout.joinpath(*storage_rule(kind).relative)
+                for kind in get_args(PackageEnvironmentKind)
+            ),
+        ):
+            if not custody.enter_context(checkout_state_retirement(path)):
+                raise DriverError(f"retirement kept live state: {path}")
+        if any(
+            record.active or record.status == "invalid"
+            for record in load_records(checkout)
+        ):
+            raise DriverError(
+                f"retirement kept active/unknown coordination: {checkout}"
+            )
+        guards = _guard_protection((checkout, artifact))
+        if guards.protects(checkout, artifact, recorded_owner=checkout):
+            raise DriverError(f"retirement kept guarded source: {checkout}")
+        git = _driver().Git(checkout)
+        head = git.head_sha()
+        # Git identifies all non-source payload, including ignored material
+        # outside today's known evidence paths. Unknown state is archived,
+        # never adopted as disposable because its name looks like a cache.
+        has_payload = any(
+            git._run(arguments).stdout
+            for arguments in (
+                ["ls-files", "--others", "--exclude-standard", "-z"],
+                ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+                ["diff", "--name-only", "HEAD", "-z"],
+            )
+        )
+        if has_payload:
+            archive = compact_evidence(
+                checkout,
+                storage_path(common.parent, "diagnostics", environment)
+                / "retired-checkouts",
+                kind="diagnostics",
+                remove_source=False,
+            )
+            # This index outlives removal of both the source and its Git
+            # worktree admin directory. Every raw byte is still in place if
+            # Git removal or this durable publication fails.
+            write_exact(
+                common / "molt" / "retired-evidence" / (archive.name + ".json"),
+                {
+                    "schema": "molt.checkout-evidence.v1",
+                    "checkout": str(checkout),
+                    "commit": head,
+                    "archive_index": str(archive.with_suffix(".index.json")),
+                },
+            )
+        if git.head_sha() != head:
+            raise DriverError(
+                "retirement source HEAD changed; preserved source and archive"
+            )
+        yield _prepare_checkout_state_retirement(checkout)
+
+
+def _prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None]:
     """Prepare a checkout's removal while it exists; return what runs after.
 
     Integration runs from the checkout it removes, so everything the returned

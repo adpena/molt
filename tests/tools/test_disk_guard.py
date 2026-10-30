@@ -303,6 +303,15 @@ def test_registered_worktree_discovery_is_filesystem_only_and_scope_bounded(
     scope, main, linked = _registered_worktree_scope(tmp_path)
     outside = tmp_path.parent / f"{tmp_path.name}-outside-worktree"
     _git(main, "worktree", "add", "-q", "--detach", str(outside))
+    original = dg.git_directories
+
+    def bounded(path):
+        assert path != outside.resolve(), (
+            "probed another project's checkout before scope admission"
+        )
+        return original(path)
+
+    monkeypatch.setattr(dg, "git_directories", bounded)
     monkeypatch.setenv("PATH", str(tmp_path / "no-git-tools"))
 
     assert set(dg.registered_worktree_roots(main)) == {
@@ -840,12 +849,14 @@ def test_build_control_keeps_its_owner_after_its_target_retires(
     )
     _guard_marker(markers, 8181, "spawn_pending", **fields)
     protection = dg._guard_protection((ext,))
-    cs.soft_retire(target, ext, reason="gc", owner=str(checkout))
+    cs.soft_retire(target, ext, reason="gc", owner=str(checkout), kind="scratch")
     assert not target.exists()
     assert protection.protects(control, ext) == (marker_owner == "checkout"), (
         "a control's target owner survives target retirement; it never becomes namespace-owned"
     )
-    retirement = cs.soft_retire(control, ext, reason="gc", owner=str(target))
+    retirement = cs.soft_retire(
+        control, ext, reason="gc", owner=str(target), kind="scratch"
+    )
     assert protection.protects(retirement.original, ext, recorded_owner=target) == (
         marker_owner == "checkout"
     )
@@ -4022,13 +4033,19 @@ def test_soft_retirement_and_recovery_are_single_renames(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "rename", observe_rename)
     monkeypatch.setattr(checkout_state, "write_exact", observe_record)
     retired = checkout_state.soft_retire(
-        root, tmp_path, reason="test", owner="task-owner", now=1_800_000_000.0
+        root,
+        tmp_path,
+        reason="test",
+        owner="task-owner",
+        now=1_800_000_000.0,
+        kind="scratch",
     )
     assert renamed == [(root, retired.path)] and written == [retired.record_path]
     assert retired.path.parent == tmp_path / "retired/2027-01-15"
     assert retired.path.stat().st_ino == inode and not root.exists()
     assert json.loads(retired.record_path.read_bytes()) == {
-        "schema": "molt.soft-retirement.v1",
+        "schema": "molt.soft-retirement.v2",
+        "kind": "scratch",
         "original_path": str(root),
         "reason": "test",
         "retired_at": 1_800_000_000.0,
@@ -4063,7 +4080,9 @@ def test_soft_retirement_refuses_cross_device_before_rename(tmp_path, monkeypatc
     monkeypatch.setattr(Path, "stat", other_device)
     monkeypatch.setattr(Path, "rename", forbidden)
     with pytest.raises(OSError) as caught:
-        checkout_state.soft_retire(root, tmp_path, reason="test", owner="owner")
+        checkout_state.soft_retire(
+            root, tmp_path, reason="test", owner="owner", kind="scratch"
+        )
     assert caught.value.errno == errno.EXDEV and root.is_dir()
     assert not list(tmp_path.glob("retired/*/*.retirement.json"))
 
@@ -4092,7 +4111,12 @@ def test_retirement_clock_controls_gc_and_live_custody_keeps_it(
         os.utime(root / "value", (now - 100 * DAY,) * 2)
         roots.append(
             checkout_state.soft_retire(
-                root, tmp_path, reason="test", owner="owner", now=now - age
+                root,
+                tmp_path,
+                reason="test",
+                owner="owner",
+                now=now - age,
+                kind="scratch",
             )
         )
     young, old = roots
@@ -4121,7 +4145,12 @@ def test_the_retirement_window_alone_keeps_a_young_root(tmp_path, monkeypatch):
     root.mkdir()
     now = 1_800_000_000.0
     retired = checkout_state.soft_retire(
-        root, tmp_path, reason="test", owner="owner", now=now - 1
+        root,
+        tmp_path,
+        reason="test",
+        owner="owner",
+        now=now - 1,
+        kind="scratch",
     )
     # With no window, the same one-second-old root and its record go at once.
     monkeypatch.setattr(dg, "RETIREMENT_WINDOW_S", 0)
@@ -4574,7 +4603,12 @@ def test_every_legacy_scratch_walk_is_evaluated_within_the_rotation_bound(
         roots[name], keys[name] = root, str(root)
         if family == "retired-scratch":
             retired = cs.soft_retire(
-                root, gc_root, reason="scratch", owner=str(gc_root), now=now - 8 * DAY
+                root,
+                gc_root,
+                reason="scratch",
+                owner=str(gc_root),
+                now=now - 8 * DAY,
+                kind="scratch",
             )
             _age_scratch_tree(retired.path, now - 20 * DAY)
             roots[name], keys[name] = retired.path, str(retired.record_path)
@@ -4592,9 +4626,19 @@ def test_every_legacy_scratch_walk_is_evaluated_within_the_rotation_bound(
         keys=keys,
         walk=walk,
         make_recent=make_recent,
+        retired=(lambda name: (roots[name] / "storage-index.json").is_file())
+        if family == "integration-receipts"
+        else None,
     )
     for name, root in roots.items():
-        if root.exists():
+        if family == "integration-receipts" and (root / "storage-index.json").is_file():
+            import tarfile
+
+            with tarfile.open(retirements[str(root)]) as archive:
+                assert (
+                    archive.extractfile("part-2/file-11").read() == b"legacy payload 11"
+                )
+        elif root.exists():
             assert (root / "part-0" / "file-0").read_bytes() == b"legacy payload 0"
         elif family != "retired-scratch":
             # Each idle tree was retired softly, whole, after its complete walks.
@@ -4688,7 +4732,12 @@ def test_an_incomplete_scratch_walk_never_authorizes_retirement(
     watched = later if interrupted == "later" else first
     if interrupted == "final":
         retired = cs.soft_retire(
-            first, ext, reason="scratch", owner=str(ext), now=now - 8 * DAY
+            first,
+            ext,
+            reason="scratch",
+            owner=str(ext),
+            now=now - 8 * DAY,
+            kind="scratch",
         )
         watched = retired.path
         _age_scratch_tree(watched, now - 20 * DAY)
@@ -4873,7 +4922,12 @@ def test_expired_scratch_retirement_stays_while_custody_or_activity_holds_it(
     now = 2_000_000_000.0
     _age_scratch_tree(root, now - 20 * DAY)
     retired = cs.soft_retire(
-        root, ext, reason="scratch", owner=str(ext), now=now - 8 * DAY
+        root,
+        ext,
+        reason="scratch",
+        owner=str(ext),
+        now=now - 8 * DAY,
+        kind="scratch",
     )
     with ExitStack() as stack:
         if held == "nested-lock":

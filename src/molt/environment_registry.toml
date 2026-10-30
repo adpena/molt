@@ -2686,7 +2686,7 @@ audience = "user"
 kind = "bool"
 default = "0"
 owner = "src/molt/cli/build_inputs.py"
-summary = "Truthy values (1, true, yes, on) stop molt build from auto-adding .venv and .molt-venv site-packages to the module roots, so only the project, MOLT_MODULE_ROOTS, PYTHONPATH, and explicit lib paths are searched; the value also keys the molt-run wrapper build cache."
+summary = "Truthy values (1, true, yes, on) stop molt build from auto-adding .venv and .molt-venv site-packages. The entry search root (CPython sys.path[0]), discovered src and vendor roots, MOLT_MODULE_ROOTS, respected PYTHONPATH, and explicit lib paths remain searchable; this value also keys the molt-run wrapper build cache."
 
 [[variable]]
 name = "MOLT_HOME"
@@ -3248,7 +3248,7 @@ audience = "user"
 kind = "path-list"
 default = ""
 owner = "src/molt/cli/build_inputs.py"
-summary = "os.pathsep-separated external module roots for molt build imports, the compiled runtime's sys.path, and Cython package custody; each entry is a plain path or a dotted alias (pkg.name=/path), missing entries are reported, the value keys the molt-run wrapper build cache, and unset adds no roots beyond the project."
+summary = "os.pathsep-separated external module roots for molt build imports, the compiled runtime's sys.path, and Cython package custody; each entry is a plain path or a dotted alias (pkg.name=/path), missing entries are reported, and this value keys the molt-run wrapper build cache. Plain roots follow the entry search root; unset leaves the default entry, src, vendor, and automatic site-package policies in effect."
 
 [[variable]]
 name = "MOLT_MP_DEBUG"
