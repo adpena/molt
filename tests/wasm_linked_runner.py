@@ -314,6 +314,34 @@ def build_wasm_linked(
     return output_wasm
 
 
+def molt_worker_stub_env(root: Path) -> dict[str, str]:
+    """Host overrides that answer database offload with the test worker stub.
+
+    molt-wasm-host starts ``MOLT_WORKER_CMD`` for ``molt_db``; the stub speaks
+    the worker protocol over JSON frames with fixed replies
+    (tests/fixtures/molt_worker_stub.py), as the molt_accel tests use it.
+    """
+    stub = root / "tests" / "fixtures" / "molt_worker_stub.py"
+    return {
+        "MOLT_WORKER_CMD": f"{sys.executable} -u {stub}",
+        "MOLT_WORKER_WIRE": "json",
+    }
+
+
+def run_cpython_reference(src: Path) -> subprocess.CompletedProcess[str]:
+    """Run ``src`` as a script under this CPython: the parity tests' oracle.
+
+    ``-I`` keeps the reference independent of the checkout's Molt sources and
+    of the caller's environment, as ``python script.py`` would run it.
+    """
+    return _run_wasm_test_process(
+        [sys.executable, "-I", "-B", str(src)],
+        role="tool",
+        cwd=src.parent,
+        check=True,
+    )
+
+
 def run_wasm_linked(
     root: Path, wasm_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
