@@ -8,7 +8,7 @@ schema = "molt-perf-methodology-v1"
 # instead of a filesystem walk, so fingerprint digests and cache reuse can move
 # cold and warm samples. Earlier reports retain their recorded class.
 version = 18
-content_sha256 = "fad410e988bbb2c10c0f4302e10917907547a33baa55d5389ff71365aef0a5df"
+content_sha256 = "445cfcbf33d53cff4133f094d47048dbe078880f3ad3132531a5bf1a2f3a90ca"
 
 [[methodology]]
 path = "tools/safe_run.py"
