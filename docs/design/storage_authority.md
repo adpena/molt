@@ -144,6 +144,10 @@ storage alongside a batch index, so even an ignored file whose JSON sidecar
 would be untracked leaves a clean slot. Git can name an ignored child and its
 whole directory; the harvest reduces these to disjoint maximal roots. Unknown
 signal no longer blocks a handoff merely because no producer can regenerate it.
+An ignored symlink is archived as its namespace entry through the same
+compactor, without following or adopting the target. Ordinary owned-root
+compaction retains its stricter no-link boundary. Replaced-layout pointers
+remain protected preimages; they never grant collection custody over a provider.
 Live or malformed lock custody still requires reconciliation.
 
 The autouse owning-test check observes actual Python file mutations against

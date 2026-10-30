@@ -62,7 +62,7 @@ def is_evidence_index(path: Path) -> bool:
 def evidence_index_path(root: Path) -> Path:
     return (
         root / EVIDENCE_INDEX_NAME
-        if root.is_dir()
+        if not root.is_symlink() and not root.is_junction() and root.is_dir()
         else root.with_name(root.name + "." + EVIDENCE_INDEX_NAME)
     )
 
@@ -1650,6 +1650,7 @@ def compact_evidence(
     companions: Sequence[Path] = (),
     remove_source: bool = True,
     index_retained_source: bool = False,
+    preserve_leaf_link: bool = False,
 ) -> Path:
     """Losslessly compact evidence, publishing its recovery index before removal.
 
@@ -1659,19 +1660,27 @@ def compact_evidence(
     deliberately separate from regenerable-state retirement. Retained snapshots
     opt into a source recovery index with index_retained_source; checkout
     retirement snapshots otherwise publish only the external recovery index.
+    preserve_leaf_link is namespace custody: archive/unlink the leaf itself,
+    without reading or granting custody over its target.
     """
     import tarfile
     import uuid
 
     from .file_publication import resolve_owned_path
 
-    root = resolve_owned_path(root)
+    # A lane may own an ignored namespace entry while its target belongs to a
+    # provider. Preserve that link itself, never traverse or adopt its target.
+    root = (
+        resolve_owned_path(root.parent) / root.name
+        if preserve_leaf_link and root.is_symlink()
+        else resolve_owned_path(root)
+    )
     archive_root = resolve_owned_path(archive_root)
     if archive_root == root or root in archive_root.parents:
         raise ValueError("evidence archive must be outside its source")
     kept = {str(path) for path in keep}
-    is_directory = root.is_dir()
     root_metadata = root.lstat()
+    is_directory = stat.S_ISDIR(root_metadata.st_mode)
     if not is_directory and is_evidence_index(root):
         raise ValueError("durable recovery index cannot be compacted as raw payload")
     index = evidence_index_path(root)

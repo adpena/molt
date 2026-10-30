@@ -154,21 +154,24 @@ def harvest_lane_payload(
             if any(parent == source or parent in source.parents for parent in sources):
                 continue  # Git can name an ignored child and its whole directory.
             if (
-                source.is_symlink()
-                or source.is_junction()
+                source.is_junction()
                 or not source.absolute().is_relative_to(repo.absolute())
                 or ".." in Path(relative).parts
             ):
                 raise DriverError(
                     f"payload namespace needs custody reconciliation: {source}"
                 )
-            if not custody.enter_context(checkout_state_retirement(source)):
+            resolve_owned_path(source.parent)
+            leaf_link = source.is_symlink()
+            if not custody.enter_context(
+                checkout_state_retirement(source.parent if leaf_link else source)
+            ):
                 raise DriverError(f"payload state is in use: {source}")
-            if guards.protects(
+            if not leaf_link and guards.protects(
                 source, artifact_root(repo, environment), recorded_owner=repo
             ):
                 raise DriverError(f"payload guard is in use: {source}")
-            if source.is_dir():
+            if not leaf_link and source.is_dir():
                 observation = _scratch_inventory(source, time.monotonic() + 60)
                 if observation.lock_held or observation.guards:
                     raise DriverError(f"payload native writer is in use: {source}")
@@ -177,13 +180,15 @@ def harvest_lane_payload(
                 ".cargo-lock",
                 ".cargo-build-lock",
             }:
-                if source.stat().st_size or _region_locked(source):
+                if leaf_link or source.stat().st_size or _region_locked(source):
                     raise DriverError(
                         f"payload lock needs custody reconciliation: {source}"
                     )
             sources.append(source)
         for source in sources:
-            archive = compact_evidence(source, destination, kind="lane-evidence")
+            archive = compact_evidence(
+                source, destination, kind="lane-evidence", preserve_leaf_link=True
+            )
             # A sidecar of an ignored file need not itself be ignored. Move
             # every source index to surviving Git custody, preserving its
             # contents and avoiding new untracked files in the lane.
@@ -947,6 +952,19 @@ def migration_plan(
         reason: str,
         locks: tuple[Path, ...] = (),
     ) -> None:
+        if source.is_symlink() or source.is_junction():
+            rows.append(
+                Migration(
+                    kind,
+                    source,
+                    target,
+                    "keep",
+                    allocated_bytes(source),
+                    "indirect preimage; target custody preserved",
+                    locks,
+                )
+            )
+            return
         if source.exists() and source != target:
             if kind != "replaced-compile-cache":
                 _safe_source(source, allowed=allowed)
@@ -1079,8 +1097,14 @@ def migration_plan(
                     task,
                     storage_path(primary, "lane-evidence", environment) / "archive",
                     "keep" if active else "compact",
-                    "active/referenced/unknown coordination"
-                    if active
+                    "unknown coordination record"
+                    if record is None
+                    else "invalid coordination record"
+                    if record.status == "invalid"
+                    else "active coordination"
+                    if record.active
+                    else "referenced by active coordination"
+                    if record.task in references
                     else "terminal evidence above checkout budget",
                     (common / "molt" / "lane-start" / "slots.lock",),
                 )
@@ -1163,7 +1187,9 @@ def _legacy_temp_plan(
                 allocated_bytes(path),
                 "idle legacy temp; lossless archival before raw retirement"
                 if eligible
-                else "native writer or recent last use",
+                else "native lock, guard or special entry"
+                if held
+                else "recent last use",
                 (),
                 last_use,
             )
