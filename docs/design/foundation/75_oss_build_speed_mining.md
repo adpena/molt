@@ -2,8 +2,8 @@
 compiler/build-system practice to kill the remaining wall-clock in Molt's
 iteration loop, ranked and actionable against OUR attested numbers AND OUR
 already-landed state. Author: research scout. Date: 2026-07-10. RESEARCH-ONLY
-landing (doc-only; no builds, no source edits). Composes with 74 (build-work-dedup
-doctrine — the four laws this mining serves), 73 (8GB builds / toolchain
+landing (doc-only; no builds, no source edits). Composes with observed_inputs.md (the content-identity and reuse
+authority this mining serves), 73 (8GB builds / toolchain
 provisioning / binary CDN), 56 + 08 + dx_baseline (DX build-speed arc, the daemon
 design, "module≠crate / function-is-the-codegen-unit"). Every external claim
 carries a PRIMARY-source citation (§8). Every "already landed" claim is verified
