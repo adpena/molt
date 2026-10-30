@@ -626,7 +626,9 @@ def test_cli_refuses_source_only_validation_and_forwards_build_status(
     assert budgets == [expected_bytes]
 
     assert receipts == [
-        context.roots.custody / "logs/runtime_wasm_final_preflight" / "run-current.json"
+        context.roots.custody
+        / "logs/runtime_wasm_final_preflight/v4"
+        / "run-current.json"
     ]
     assert "internal-runtime-wasm-build" in launched[0]
     assert "both" in launched[0]
@@ -675,6 +677,13 @@ def test_disk_facts_distinguish_mounts_with_same_root_spelling_and_measure_once(
     first = MountedPath(tmp_path / "first" / "outputs")
     second = MountedPath(tmp_path / "second" / "outputs")
     assert first.anchor == second.anchor
+    volume_labels = {
+        str(first): "apple-uuid:" + "a" * 32,
+        str(second): "apple-uuid:" + "b" * 32,
+    }
+    monkeypatch.setattr(
+        preflight, "_durable_volume", lambda path: volume_labels[str(path)]
+    )
     monkeypatch.setattr(
         preflight, "_nearest_existing_directory", lambda path: MountedPath(path)
     )
@@ -701,7 +710,10 @@ def test_disk_facts_distinguish_mounts_with_same_root_spelling_and_measure_once(
     facts = preflight._disk_facts([first, second, first], reserve_bytes=8)
     assert len(facts) == 2
     assert calls == [first, second]
-    assert [fact["volume"] for fact in facts] == [11, 22]
+    assert [fact["volume"] for fact in facts] == [
+        volume_labels[str(first)],
+        volume_labels[str(second)],
+    ]
     assert [fact["ready"] for fact in facts] == [True, False]
     assert [fact["free_bytes"] for fact in facts] == [10, 2]
 
