@@ -1,0 +1,57 @@
+{
+ "schema": 1,
+ "unrun": {
+  "molt-backend-rust::float_repr_cpython_parity": {
+   "finding": "HF-565",
+   "reason": "the backend-rust gate runs rust_transpiler_preview only"
+  },
+  "molt-backend::cbor_round_trip": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test enables molt-backend's cbor feature"
+  },
+  "molt-backend::jumpful_malformed_control": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-backend::lir_wasm_repr_regressions": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-backend::wasm_compilation": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-backend::wasm_data_segments": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-backend::wasm_fastcall_lowering": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-backend::wasm_import_filtering": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-backend::wasm_import_registry": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-backend::wasm_lir_fast_path_integration": {
+   "finding": "HF-565",
+   "reason": "no plan cargo test runs molt-backend's integration targets with wasm-backend; ten tests failed in these targets on main (HF-565 evidence, 0d4b89cb5a)"
+  },
+  "molt-lang-cpython-abi::l7_numeric_perf_attestation": {
+   "finding": "HF-565",
+   "reason": "run by tools/numeric_attestation runners, which the plan does not declare as a cargo test invocation of this target"
+  },
+  "molt-runtime::l7_numeric_runtime_perf_attestation": {
+   "finding": "HF-565",
+   "reason": "run by tools/numeric_attestation runners, which the plan does not declare as a cargo test invocation of this target"
+  },
+  "molt-runtime::list_delta_perf_attestation": {
+   "finding": "HF-565",
+   "reason": "run by tools/numeric_attestation runners, which the plan does not declare as a cargo test invocation of this target"
+  }
+ }
+}

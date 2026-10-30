@@ -513,6 +513,16 @@ def frontend_census(root: Path = ROOT) -> FrontendCensus:
         rel = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
         for node in ast.walk(tree):
+            # Generated named constants are consumers too. Types prove their
+            # membership; only the census proves a member still has a producer.
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "FrontendKinds"
+            ):
+                census.mentioned.setdefault(node.attr, []).append(
+                    Site(rel, node.lineno, ast.unparse(node))
+                )
             if (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)

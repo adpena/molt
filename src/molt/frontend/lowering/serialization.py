@@ -10,6 +10,14 @@ GeneratorMixinBase (the generated protocol) gives them static checking.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendOpKind,
+    WireKinds,
+    WireOpKind,
+    validate_frontend_kind,
+    validate_serialized_kind,
+)
+
 from typing import (
     Any,
     Literal,
@@ -25,10 +33,9 @@ from molt.frontend.lowering.serialization_basic_ops import SerializationBasicOps
 from molt.frontend.lowering.serialization_collection_ops import (
     SerializationCollectionOpsMixin,
 )
-from molt.frontend.lowering.serialization_context import SerializationContext
-from molt.frontend.lowering.op_kinds_generated import (
-    validate_frontend_kind,
-    validate_serialized_kind,
+from molt.frontend.lowering.serialization_context import (
+    SerializationContext,
+    SimpleIROp,
 )
 from molt.frontend.lowering.serialization_exception_ops import (
     SerializationExceptionOpsMixin,
@@ -44,6 +51,12 @@ from molt.frontend.lowering.serialization_object_attr_ops import (
 )
 
 
+_MAP_OPS_TO_JSON_KINDS_1: frozenset[FrontendOpKind] = frozenset({"ret_void", "ret"})
+_FUSE_STRING_SPLIT_FIELD_CONSUMERS_JSON_KINDS_1: frozenset[WireOpKind] = frozenset(
+    {"const", "const_bool"}
+)
+
+
 class SerializationMixin(
     SerializationBasicOpsMixin,
     SerializationFunctionOpsMixin,
@@ -53,7 +66,7 @@ class SerializationMixin(
     SerializationLoopStringAsyncOpsMixin,
 ):
     @staticmethod
-    def _require_async_poll_target(kind: str, target: Any) -> str:
+    def _require_async_poll_target(kind: FrontendOpKind, target: Any) -> str:
         if not isinstance(target, str) or not target:
             raise ValueError(
                 f"{kind} requires a nonempty table-addressable task target symbol; "
@@ -92,8 +105,8 @@ class SerializationMixin(
 
     @staticmethod
     def _scalarize_string_split_fields_json(
-        json_ops: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        json_ops: list[SimpleIROp],
+    ) -> list[SimpleIROp]:
         const_ints: dict[str, int] = {}
         const_nones: set[str] = set()
         const_strings: dict[str, str] = {}
@@ -115,7 +128,7 @@ class SerializationMixin(
         local_to_const_string: dict[str, tuple[str, int]] = {}
         current_region = 0
         control_depth = 0
-        arg_user_kinds: dict[str, set[str]] = {}
+        arg_user_kinds: dict[str, set[WireOpKind]] = {}
         for op in json_ops:
             kind = op.get("kind")
             args = op.get("args")
@@ -127,11 +140,11 @@ class SerializationMixin(
         cleanup_load_outputs = {
             out
             for op in json_ops
-            if op.get("kind") == "load_var"
+            if op.get("kind") == WireKinds.LOAD_VAR
             and isinstance((out := op.get("out")), str)
             and arg_user_kinds.get(out, set()).issubset({"del_boundary"})
         }
-        control_boundary_kinds = {
+        control_boundary_kinds: set[WireOpKind] = {
             "if",
             "else",
             "end_if",
@@ -180,17 +193,17 @@ class SerializationMixin(
             if kind in control_boundary_kinds:
                 current_region += 1
                 alias_to_split.clear()
-                if kind == "if":
+                if kind == WireKinds.IF:
                     control_depth += 1
-                elif kind == "else":
+                elif kind == WireKinds.ELSE:
                     invalidate_branch_locals(control_depth)
-                elif kind == "end_if":
+                elif kind == WireKinds.END_IF:
                     invalidate_branch_locals(control_depth)
                     control_depth = max(0, control_depth - 1)
                 else:
                     invalidate_loop_crossing_locals()
             out = op.get("out")
-            if kind == "const" and isinstance(out, str):
+            if kind == WireKinds.CONST and isinstance(out, str):
                 value = op.get("value")
                 if isinstance(value, int) and not isinstance(value, bool):
                     const_ints[out] = value
@@ -206,15 +219,15 @@ class SerializationMixin(
                 ):
                     const_ints[out] = args[0]
                 continue
-            if kind == "const_str" and isinstance(out, str):
+            if kind == WireKinds.CONST_STR and isinstance(out, str):
                 s_value = op.get("s_value")
                 if isinstance(s_value, str):
                     const_strings[out] = s_value
                 continue
-            if kind == "const_none" and isinstance(out, str):
+            if kind == WireKinds.CONST_NONE and isinstance(out, str):
                 const_nones.add(out)
                 continue
-            if kind == "string_split" and isinstance(out, str):
+            if kind == WireKinds.STRING_SPLIT and isinstance(out, str):
                 args = op.get("args")
                 if (
                     isinstance(args, list)
@@ -227,7 +240,7 @@ class SerializationMixin(
                         op_index, args[0], args[1], current_region
                     )
                 continue
-            if kind == "store_var":
+            if kind == WireKinds.STORE_VAR:
                 args = op.get("args")
                 var = op.get("var")
                 root = (
@@ -256,7 +269,7 @@ class SerializationMixin(
                 elif isinstance(var, str):
                     local_to_const_string.pop(var, None)
                 continue
-            if kind == "load_var":
+            if kind == WireKinds.LOAD_VAR:
                 var = op.get("var")
                 if isinstance(var, str) and isinstance(out, str):
                     if out in cleanup_load_outputs:
@@ -281,7 +294,7 @@ class SerializationMixin(
             used_roots = {root for root in arg_roots if root is not None}
             if not used_roots:
                 continue
-            if kind == "index" and len(args) >= 2 and arg_roots[0] is not None:
+            if kind == WireKinds.INDEX and len(args) >= 2 and arg_roots[0] is not None:
                 root = arg_roots[0]
                 index_value = const_ints.get(args[1])
                 if index_value is not None and index_value >= 0:
@@ -309,7 +322,7 @@ class SerializationMixin(
         if not remove_indexes and not replace_indexes:
             return json_ops
 
-        rewritten: list[dict[str, Any]] = []
+        rewritten: list[SimpleIROp] = []
         materialized_fields: dict[tuple[int, int], str] = {}
         for op_index, op in enumerate(json_ops):
             candidate = replace_indexes.get(op_index)
@@ -322,7 +335,7 @@ class SerializationMixin(
                 )
                 existing_output = materialized_fields.get(field_key)
                 if existing_output is None:
-                    rewritten_op = {
+                    rewritten_op: SimpleIROp = {
                         "kind": "string_split_field",
                         "args": [candidate.hay, candidate.sep, args[1]],
                         "out": output,
@@ -330,7 +343,7 @@ class SerializationMixin(
                     if isinstance(output, str):
                         materialized_fields[field_key] = output
                 else:
-                    rewritten_op = {
+                    rewritten_op: SimpleIROp = {
                         "kind": "copy_var",
                         "args": [existing_output],
                         "out": output,
@@ -344,8 +357,8 @@ class SerializationMixin(
                 rewritten.append(rewritten_op)
                 continue
             if op_index in remove_indexes:
-                if op.get("kind") == "string_split":
-                    validate_op = {
+                if op.get("kind") == WireKinds.STRING_SPLIT:
+                    validate_op: SimpleIROp = {
                         "kind": "string_split_validate",
                         "args": op.get("args", []),
                         "out": op.get("out"),
@@ -363,8 +376,8 @@ class SerializationMixin(
 
     @staticmethod
     def _fuse_string_split_field_consumers_json(
-        json_ops: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        json_ops: list[SimpleIROp],
+    ) -> list[SimpleIROp]:
         const_strings: dict[str, str] = {}
         # Values provably equal to the integer 0 / boolean False at lowering time
         # (the `has_base` flag of a no-base `int(field)` is a CONST_BOOL False).
@@ -375,11 +388,13 @@ class SerializationMixin(
         for op_index, op in enumerate(json_ops):
             out = op.get("out")
             kind = op.get("kind")
-            if kind == "const_str" and isinstance(out, str):
+            if kind == WireKinds.CONST_STR and isinstance(out, str):
                 s_value = op.get("s_value")
                 if isinstance(s_value, str):
                     const_strings[out] = s_value
-            if kind in ("const", "const_bool") and isinstance(out, str):
+            if kind in _FUSE_STRING_SPLIT_FIELD_CONSUMERS_JSON_KINDS_1 and isinstance(
+                out, str
+            ):
                 value = op.get("value")
                 if value in (0, False):
                     const_falsey.add(out)
@@ -388,16 +403,16 @@ class SerializationMixin(
                 for arg in args:
                     if isinstance(arg, str):
                         use_counts[arg] = use_counts.get(arg, 0) + 1
-            if kind == "string_split_field" and isinstance(out, str):
+            if kind == WireKinds.STRING_SPLIT_FIELD and isinstance(out, str):
                 if isinstance(args, list) and len(args) == 3:
                     str_args = [arg for arg in args if isinstance(arg, str)]
                     if len(str_args) == 3:
                         split_fields_by_out[out] = (op_index, str_args)
 
         remove_indexes: set[int] = set()
-        replace_ops: dict[int, dict[str, Any]] = {}
+        replace_ops: dict[int, SimpleIROp] = {}
 
-        def copy_source_site(src: dict[str, Any], dst: dict[str, Any]) -> None:
+        def copy_source_site(src: SimpleIROp, dst: SimpleIROp) -> None:
             if "source_line" in src:
                 dst["source_line"] = src["source_line"]
             if "col_offset" in src:
@@ -411,7 +426,7 @@ class SerializationMixin(
                 continue
             kind = op.get("kind")
             if (
-                kind == "len"
+                kind == WireKinds.LEN
                 and len(args) == 1
                 and isinstance(args[0], str)
                 and use_counts.get(args[0], 0) == 1
@@ -419,7 +434,7 @@ class SerializationMixin(
                 field = split_fields_by_out.get(args[0])
                 if field is not None:
                     field_op_index, field_args = field
-                    rewritten = {
+                    rewritten: SimpleIROp = {
                         "kind": "string_split_field_len",
                         "args": field_args,
                         "out": op.get("out"),
@@ -428,7 +443,7 @@ class SerializationMixin(
                     replace_ops[op_index] = rewritten
                     remove_indexes.add(field_op_index)
                 continue
-            if kind == "eq" and len(args) == 2:
+            if kind == WireKinds.EQ and len(args) == 2:
                 left, right = args
                 field_var: str | None = None
                 expected_var: str | None = None
@@ -452,7 +467,7 @@ class SerializationMixin(
                     expected_var = left
                 if field_var is not None and expected_var is not None:
                     field_op_index, field_args = split_fields_by_out[field_var]
-                    rewritten = {
+                    rewritten: SimpleIROp = {
                         "kind": "string_split_field_eq",
                         "args": [*field_args, expected_var],
                         "out": op.get("out"),
@@ -468,7 +483,7 @@ class SerializationMixin(
             # `string_split_field_to_int` matches byte-for-byte). The explicit-base
             # form keeps the materializing path (correct, just not specialized).
             if (
-                kind == "int_from_obj"
+                kind == WireKinds.INT_FROM_OBJ
                 and len(args) == 3
                 and isinstance(args[0], str)
                 and isinstance(args[2], str)
@@ -477,7 +492,7 @@ class SerializationMixin(
                 and args[0] in split_fields_by_out
             ):
                 field_op_index, field_args = split_fields_by_out[args[0]]
-                rewritten = {
+                rewritten: SimpleIROp = {
                     "kind": "string_split_field_to_int",
                     "args": field_args,
                     "out": op.get("out"),
@@ -489,7 +504,7 @@ class SerializationMixin(
         if not remove_indexes and not replace_ops:
             return json_ops
 
-        rewritten_ops: list[dict[str, Any]] = []
+        rewritten_ops: list[SimpleIROp] = []
         for op_index, op in enumerate(json_ops):
             if op_index in remove_indexes:
                 continue
@@ -504,7 +519,7 @@ class SerializationMixin(
         function_name: str | None = None,
         run_midend: bool = True,
         module_init_symbol: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[SimpleIROp]:
         if function_name is not None:
             self._active_midend_function_name = function_name
         else:
@@ -514,7 +529,7 @@ class SerializationMixin(
             validate_frontend_kind(op.kind, diagnostic_function)
         if run_midend:
             ops = self._run_ir_midend_passes(ops)
-        json_ops: list[dict[str, Any]] = []
+        json_ops: list[SimpleIROp] = []
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         function_owns_frame = self._function_needs_frame_trace(function_name)
         ctx = SerializationContext(
@@ -557,7 +572,7 @@ class SerializationMixin(
                     raise ValueError("unowned source module publication boundary")
                 if (
                     len(json_ops) != serialized_start + 1
-                    or json_ops[-1].get("kind") != "frame_locals_set"
+                    or json_ops[-1].get("kind") != WireKinds.FRAME_LOCALS_SET
                 ):
                     raise ValueError(
                         "source module publication boundary must serialize as one "
@@ -567,7 +582,11 @@ class SerializationMixin(
                     "source_module_publication_boundary"
                 ]
 
-        if ops and ops[-1].kind not in {"ret", "ret_void"} and not function_owns_frame:
+        if (
+            ops
+            and ops[-1].kind not in _MAP_OPS_TO_JSON_KINDS_1
+            and not function_owns_frame
+        ):
             json_ops.append({"kind": "ret_void"})
 
         # Post-pass: inject expression-level col_offset/end_col_offset into
@@ -593,7 +612,7 @@ class SerializationMixin(
             if not isinstance(entry, dict):
                 continue
             kind = entry.get("kind")
-            if kind == "line":
+            if kind == WireKinds.LINE:
                 value = entry.get("value")
                 if isinstance(value, int) and value > 0:
                     active_source_line = value
@@ -694,7 +713,7 @@ class SerializationMixin(
                 inspect_source_module_publication(func_entry, metadata)
             if name in self.module_chunk_symbols:
                 func_entry["execution_context"] = "inherited"
-            elif any(op.get("kind") == "trace_enter_slot" for op in json_ops):
+            elif any(op.get("kind") == WireKinds.TRACE_ENTER_SLOT for op in json_ops):
                 func_entry["execution_context"] = "local"
             if name == "molt_main" and self.is_entry_module:
                 metadata["app_callable_bindings"] = [
