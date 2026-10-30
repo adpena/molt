@@ -206,7 +206,7 @@ def render_primitive_effects_py(data: dict) -> str:
                 matrix[key] = facts
     lines = [
         "# Exact primitive effects share the Rust operation matrix.\n",
-        "FRONTEND_OPERATOR_OPCODE: dict[str, str] = {\n",
+        "FRONTEND_OPERATOR_OPCODE: dict[FrontendOpKind, str] = {\n",
     ]
     for kind, name in frontend_operator_map(data).items():
         lines.append(f"    {kind!r}: {name!r},\n")
@@ -221,7 +221,7 @@ def render_primitive_effects_py(data: dict) -> str:
     lines.extend(
         [
             "}\n\n",
-            "def frontend_operator_facts(kind: str, *operands: str | None) -> tuple[str, bool] | None:\n",
+            "def frontend_operator_facts(kind: FrontendOpKind, *operands: str | None) -> tuple[str, bool] | None:\n",
             "    opcode = FRONTEND_OPERATOR_OPCODE.get(kind)\n",
             "    if opcode is None:\n        return None\n",
             "    if any(ty is None for ty in operands):\n        return 'writes_heap', False\n",

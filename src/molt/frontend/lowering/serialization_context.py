@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from molt.frontend._types import SimpleIROp
 
 
 @dataclass(frozen=True, slots=True)
 class SerializationContext:
-    json_ops: list[dict[str, Any]]
+    json_ops: list[SimpleIROp]
     json_list_int_containers: set[str]
     function_name: str | None
     module_init_symbol: str | None = None

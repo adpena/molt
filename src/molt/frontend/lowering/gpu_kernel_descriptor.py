@@ -7,6 +7,13 @@ obligations of hardware admission, not assumptions made by this serializer.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    WireKinds,
+    WireOpKind,
+)
+
+from collections.abc import Mapping, Sequence
+
 import ast
 import json
 from dataclasses import dataclass
@@ -19,6 +26,18 @@ from molt.compiler_analysis.python_source_keys import python_ast_digest
 # These are descriptor semantic roles, not runtime class registrations. Evidence
 # emitted by module lowering is untrusted until final assembly compares it with
 # the captured compiler reference. Actual function symbols remain per-program.
+_INTEGRAL_CERTIFICATE_KINDS_1: frozenset[WireOpKind] = frozenset(
+    {"index", "store_index"}
+)
+_PROJECT_KINDS_1: frozenset[WireOpKind] = frozenset(
+    {"load_var", "store_var", "frame_home_store"}
+)
+_INTEGRAL_CERTIFICATE_KINDS_2: frozenset[WireOpKind] = frozenset(
+    {"mul", "sub", "lt", "add"}
+)
+_INTEGRAL_CERTIFICATE_KINDS_3: frozenset[WireOpKind] = frozenset({"end_if", "if"})
+
+
 GPU_PYTHON_BODY_REFERENCES: dict[str, tuple[str, dict[str, str]]] = {
     "molt.gpu": (
         "gpu/__init__.py",
@@ -116,12 +135,12 @@ DESCRIPTOR_PUBLICATION_SYMBOL = "molt_gpu_kernel_descriptor_set"
 def publishes_descriptor(op: object) -> bool:
     return (
         isinstance(op, dict)
-        and op.get("kind") == "call"
+        and op.get("kind") == WireKinds.CALL
         and op.get("s_value") == DESCRIPTOR_PUBLICATION_SYMBOL
     )
 
 
-def descriptor_publications(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def descriptor_publications(ops: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The existing internal metadata call's constant descriptor producers."""
     if not any(publishes_descriptor(op) for op in ops):
         return []
@@ -129,7 +148,7 @@ def descriptor_publications(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
         op["out"]: op
         for op in ops
         if isinstance(op, dict)
-        and op.get("kind") == "const_str"
+        and op.get("kind") == WireKinds.CONST_STR
         and isinstance(op.get("out"), str)
     }
     publications = []
@@ -143,7 +162,7 @@ def descriptor_publications(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return publications
 
 
-def descriptor_body_symbols(ops: list[dict[str, Any]]) -> frozenset[str]:
+def descriptor_body_symbols(ops: Sequence[Mapping[str, Any]]) -> frozenset[str]:
     """Identity references share ordinary function/link-feature reachability."""
     symbols = set()
     for constant in descriptor_publications(ops):
@@ -166,7 +185,9 @@ def _required_name(value: object) -> str:
     return value
 
 
-def project_kernel_ops(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
+def project_kernel_ops(
+    params: list[str], ops: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
     try:
         return _project(params, ops)
     except (UnsupportedKernel, KeyError, IndexError, TypeError) as exc:
@@ -175,26 +196,27 @@ def project_kernel_ops(params: list[str], ops: list[dict[str, Any]]) -> dict[str
         return {"unsupported": str(exc)}
 
 
-def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
+def _project(params: list[str], ops: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     def require(condition: bool, message: str) -> None:
         if not condition:
             raise UnsupportedKernel(message)
 
     require(len(ops) >= 7, "kernel lacks a generated entry/error boundary")
     require(
-        ops[0]["kind"] == "trace_enter_slot"
+        ops[0]["kind"] == WireKinds.TRACE_ENTER_SLOT
         and isinstance(ops[0].get("s_value"), str)
         and bool(ops[0]["s_value"]),
         "kernel lacks a compiled code owner",
     )
     require(
-        ops[1]["kind"] == "check_exception", "kernel entry lacks its error boundary"
+        ops[1]["kind"] == WireKinds.CHECK_EXCEPTION,
+        "kernel entry lacks its error boundary",
     )
-    tail = next((i for i, op in enumerate(ops) if op["kind"] == "label"), -1)
+    tail = next((i for i, op in enumerate(ops) if op["kind"] == WireKinds.LABEL), -1)
     require(
         tail >= 4
-        and ops[tail - 2]["kind"] == "trace_exit"
-        and ops[tail - 1]["kind"] == "ret",
+        and ops[tail - 2]["kind"] == WireKinds.TRACE_EXIT
+        and ops[tail - 1]["kind"] == WireKinds.RET,
         "unsupported kernel return/control flow",
     )
     require((len(ops) - tail) % 3 == 0, "invalid generated error tail")
@@ -202,11 +224,11 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
     for i in range(tail, len(ops), 3):
         label, leave, ret = ops[i : i + 3]
         require(
-            label["kind"] == "label"
+            label["kind"] == WireKinds.LABEL
             and type(label.get("value")) is int
             and label["value"] not in labels
-            and leave["kind"] == "trace_exit"
-            and ret["kind"] == "ret_void",
+            and leave["kind"] == WireKinds.TRACE_EXIT
+            and ret["kind"] == WireKinds.RET_VOID,
             "invalid generated error target",
         )
         labels.add(label["value"])
@@ -243,20 +265,20 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
         if "args" in op:
             op["args"] = args
         out = op.get("out")
-        if kind == "check_exception":
+        if kind == WireKinds.CHECK_EXCEPTION:
             require(
                 op.get("value") in labels, "exception branch escapes generated tail"
             )
-        elif kind == "line":
+        elif kind == WireKinds.LINE:
             pass
-        elif kind == "const_none":
+        elif kind == WireKinds.CONST_NONE:
             out = _required_name(out)
             none.add(out)
-        elif kind == "const_str":
+        elif kind == WireKinds.CONST_STR:
             out = _required_name(out)
             require(isinstance(op.get("s_value"), str), "string has no payload")
             strings[out] = op["s_value"]
-        elif kind == "frame_context_set":
+        elif kind == WireKinds.FRAME_CONTEXT_SET:
             require(
                 not context
                 and len(args) == 3
@@ -266,25 +288,27 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
                 "unsupported kernel frame context",
             )
             context = True
-        elif kind in {"frame_home_store", "store_var", "load_var"}:
-            source = _required_name(op["var"]) if kind == "load_var" else args[0]
+        elif kind in _PROJECT_KINDS_1:
+            source = (
+                _required_name(op["var"]) if kind == WireKinds.LOAD_VAR else args[0]
+            )
             source = aliases.get(source, source)
-            target = _required_name(op["var"] if kind == "store_var" else out)
+            target = _required_name(op["var"] if kind == WireKinds.STORE_VAR else out)
             require(source in values or source in bindings, "unsupported kernel alias")
             # Conditional assignment needs a merge, not an unconditional alias.
             require(
-                not conditions or kind == "load_var",
+                not conditions or kind == WireKinds.LOAD_VAR,
                 "conditional local mutation requires a shader merge",
             )
             aliases[target] = source
-        elif kind == "module_get_global":
+        elif kind == WireKinds.MODULE_GET_GLOBAL:
             out = _required_name(out)
             require(
                 len(args) == 2 and args[0] in none and args[1] in strings,
                 "unsupported global lookup context",
             )
             bindings[out] = [strings[args[1]]]
-        elif kind == "get_attr_generic_obj":
+        elif kind == WireKinds.GET_ATTR_GENERIC_OBJ:
             out = _required_name(out)
             require(
                 len(args) == 1
@@ -294,7 +318,7 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
             )
             binding_uses.add(args[0])
             bindings[out] = [*bindings[args[0]], op["s_value"]]
-        elif kind == "call_func":
+        elif kind == WireKinds.CALL_FUNC:
             out = _required_name(out)
             require(
                 len(args) == 1 and args[0] in bindings,
@@ -307,7 +331,7 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
             coordinates[out] = {"kind": "query", "name": out}
             values.add(out)
             projected.append({"kind": "gpu_query", "out": out})
-        elif kind == "const":
+        elif kind == WireKinds.CONST:
             out = _required_name(out)
             require(
                 type(op.get("value")) is int, "unsupported non-integer shader constant"
@@ -316,20 +340,20 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
             coordinates[out] = {"kind": "constant", "value": op["value"]}
             values.add(out)
             projected.append(op)
-        elif kind == "bool":
+        elif kind == WireKinds.BOOL:
             out = _required_name(out)
             require(
                 len(args) == 1 and args[0] in comparisons,
                 "truth conversion requires an existing boolean comparison",
             )
             aliases[out] = args[0]
-        elif kind in {"lt", "add", "sub", "mul"}:
+        elif kind in _INTEGRAL_CERTIFICATE_KINDS_2:
             out = _required_name(out)
             require(
                 len(args) == 2 and all(arg in values for arg in args),
                 "unsupported arithmetic operands",
             )
-            if kind == "lt":
+            if kind == WireKinds.LT:
                 comparisons[out] = (args[0], args[1])
             elif all(arg in constants for arg in args):
                 left, right = (constants[arg] for arg in args)
@@ -341,9 +365,10 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
                 op = {"kind": "const", "out": out, "value": folded}
             values.add(out)
             projected.append(op)
-        elif kind == "index" or kind == "store_index":
+        elif kind == WireKinds.INDEX or kind == WireKinds.STORE_INDEX:
             require(
-                len(args) == (2 if kind == "index" else 3) and args[0] in params,
+                len(args) == (2 if kind == WireKinds.INDEX else 3)
+                and args[0] in params,
                 "indexed receiver must be a kernel buffer parameter",
             )
             require(
@@ -364,20 +389,20 @@ def _project(params: list[str], ops: list[dict[str, Any]]) -> dict[str, Any]:
                 }
             )
             buffer_names.add(args[0])
-            if kind == "index":
+            if kind == WireKinds.INDEX:
                 out = _required_name(out)
                 values.add(out)
             else:
                 require(args[2] in values, "unsupported buffer store value")
             projected.append(op)
-        elif kind == "if":
+        elif kind == WireKinds.IF:
             require(
                 len(args) == 1 and args[0] in comparisons,
                 "branch requires a boolean comparison",
             )
             conditions.append(comparisons[args[0]])
             projected.append(op)
-        elif kind == "end_if":
+        elif kind == WireKinds.END_IF:
             require(bool(conditions), "unbalanced kernel branch")
             conditions.pop()
             projected.append(op)
@@ -414,7 +439,7 @@ class _IntegralFact:
 
 
 def _integral_certificate(
-    params: list[str], buffers: set[str], ops: list[dict[str, Any]]
+    params: list[str], buffers: set[str], ops: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
     """Discharge arithmetic once; publish only entry-data obligations.
 
@@ -424,9 +449,9 @@ def _integral_certificate(
     budgets, plus sign/nonzero facts solely to exclude signed-zero changes.
     No analysis graph is serialized or interpreted in the runtime.
     """
-    reads = sorted({op["args"][0] for op in ops if op["kind"] == "index"})
+    reads = sorted({op["args"][0] for op in ops if op["kind"] == WireKinds.INDEX})
     memory_indices = [
-        op["args"][1] for op in ops if op["kind"] in {"index", "store_index"}
+        op["args"][1] for op in ops if op["kind"] in _INTEGRAL_CERTIFICATE_KINDS_1
     ]
     query_outputs = {op["out"] for op in ops if op["kind"] == "gpu_query"}
     modes = (
@@ -444,7 +469,7 @@ def _integral_certificate(
             accepted = True
             for op in ops:
                 kind, args, out = op["kind"], op.get("args", []), op.get("out")
-                if kind == "const":
+                if kind == WireKinds.CONST:
                     value = op["value"]
                     fact = _IntegralFact(
                         abs(value).bit_length(), value >= 0, value != 0
@@ -454,16 +479,16 @@ def _integral_certificate(
                     # and magnitude are checked once at launch; barrier has no
                     # numeric result and cannot be used as a scalar.
                     fact = _IntegralFact(budget, True, False)
-                elif kind == "index":
+                elif kind == WireKinds.INDEX:
                     fact = memory
-                elif kind in {"add", "sub", "mul", "lt"}:
+                elif kind in _INTEGRAL_CERTIFICATE_KINDS_2:
                     left, right = (facts.get(arg) for arg in args)
                     if left is None or right is None or left.boolean or right.boolean:
                         accepted = False
                         break
-                    if kind == "lt":
+                    if kind == WireKinds.LT:
                         fact = _IntegralFact(1, True, False, True)
-                    elif kind == "mul":
+                    elif kind == WireKinds.MUL:
                         if not (
                             (left.nonnegative and right.nonnegative)
                             or (left.nonzero and right.nonzero)
@@ -477,14 +502,16 @@ def _integral_certificate(
                         )
                     else:
                         nonnegative_result = (
-                            kind == "add" and left.nonnegative and right.nonnegative
+                            kind == WireKinds.ADD
+                            and left.nonnegative
+                            and right.nonnegative
                         )
                         fact = _IntegralFact(
                             max(left.bits, right.bits) + 1,
                             nonnegative_result,
                             nonnegative_result and (left.nonzero or right.nonzero),
                         )
-                elif kind == "store_index":
+                elif kind == WireKinds.STORE_INDEX:
                     value = facts.get(args[2])
                     if value is None or value.boolean:
                         accepted = False
@@ -498,7 +525,7 @@ def _integral_certificate(
                         memory.nonzero and value.nonzero,
                     )
                     continue
-                elif kind in {"if", "end_if"}:
+                elif kind in _INTEGRAL_CERTIFICATE_KINDS_3:
                     continue
                 else:
                     raise UnsupportedKernel(
