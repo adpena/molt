@@ -103,9 +103,9 @@ over stale prose or precedent.
 
 ## Work with the live repository
 
-- Start with `uv run --python 3.12 python tools/agent_coordination.py context` (`--json` for its
-  versioned model), `git status`, nested instructions and current source/proof state. For active
-  multi-agent or Pact work, read relevant `docs/agent/ORCHESTRATION.md` sections, not the whole board.
+- Start with `uv run --no-project --python 3.12 python tools/venv_exec.py python
+  tools/agent_coordination.py context` (plain `uv run` makes a checkout `.venv`: HF-522), `git status`,
+  nested instructions and proof state; for Pact work read only relevant `docs/agent/ORCHESTRATION.md`.
 - Preserve user and parallel-agent work; never reset, clean, overwrite, revert or stage unrelated edits.
   Bind Git mutations to an explicit checkout (`git -C` or a bound Git object), assert its branch/HEAD
   and exact owned path set, and review the scoped diff before staging, committing or landing.
