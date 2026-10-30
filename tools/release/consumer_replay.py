@@ -1236,7 +1236,7 @@ def copy_cache(source,destination,restore=False,paths=None):
     if restore:
         sys.path.insert(0,str(pathlib.Path(config["compiler_source_root"])/"src"))
         os.environ.clear(); os.environ.update(config["environment"])
-        from molt.default_paths import is_backend_cache_artifact_name
+        from molt.default_paths import is_backend_cache_artifact_name,backend_cache_artifact_for_sync_receipt
         from molt.cli.backend_artifact_contract import BackendArtifactContract,BackendArtifactKind
         from molt.cli.backend_cache import restore_backend_cache_artifact
         contract=BackendArtifactContract(BackendArtifactKind(config["cache_contract"]["kind"]),config["cache_contract"]["target_triple"])
@@ -1249,8 +1249,8 @@ def copy_cache(source,destination,restore=False,paths=None):
         total+=info.st_size; count+=1
         if count>4096 or total>config["output_max_bytes"]: raise ValueError("cache snapshot exceeds compilation export budget")
         target=destination/path.relative_to(source); target.parent.mkdir(parents=True,exist_ok=True)
-        if restore and path.name.endswith(".sync.json") and cache_artifact(path.name[:-len(".sync.json")]):
-            if not path.with_name(path.name[:-len(".sync.json")]).is_file(): raise ValueError("cache snapshot receipt has no artifact")
+        if restore and (artifact:=backend_cache_artifact_for_sync_receipt(path)) is not None and cache_artifact(artifact.name):
+            if not artifact.is_file(): raise ValueError("cache snapshot receipt has no artifact")
             continue
         if restore and cache_artifact(path.name):
             restore_backend_cache_artifact(path,target,artifact_contract=contract)

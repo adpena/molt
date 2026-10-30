@@ -1865,9 +1865,16 @@ def test_backend_origin_receipt_shares_publication_eviction_lifetime(tmp_path, s
     artifact = root / ("a" * 64 + ".artifact-" + "b" * 64 + ".o")
     receipt = backend_cache_sync_receipt_path(artifact)
     receipt.write_bytes(b"original receipt")
+    foreign = [
+        artifact.with_name(artifact.name + suffix)
+        for suffix in (".sync.json", ".sync.v4.json")
+    ]
+    for path in foreign:
+        path.write_bytes(b"foreign receipt")
     if state == "paired":
         artifact.write_bytes(b"original object")
     entries = module._collect_entries(root)
+    assert all(entry.path not in foreign for entry in entries)
     selected = [entry for entry in entries if entry.path in (artifact, receipt)]
     assert len(selected) == 1
     entry = selected[0]
@@ -1888,3 +1895,4 @@ def test_backend_origin_receipt_shares_publication_eviction_lifetime(tmp_path, s
         assert module._remove_entry(entry, False) == "removed"
         assert not artifact.exists()
         assert not receipt.exists()
+    assert all(path.read_bytes() == b"foreign receipt" for path in foreign)
