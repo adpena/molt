@@ -11,7 +11,7 @@ from typing import Mapping, Sequence
 
 from tools.command_execution import CommandExecutor  # type: ignore
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 DEFAULT_EVENT_LOG = Path(".molt/state/advisory_events.jsonl")
 

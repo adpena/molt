@@ -1494,6 +1494,25 @@ impl SimpleBackend {
                         &mut block_tracked_ptr,
                     );
                 }
+                // The closed contract owns meaning, signature and result custody.
+                fc::NativeOpFamily::ContractRuntimeCalls => {
+                    use molt_ir::runtime_calls::RuntimeCall;
+                    let call = RuntimeCall::from_op(op.kind).expect("contract family");
+                    shared::emit_contract_runtime_call(
+                        &op,
+                        call,
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        representation_plan,
+                        &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
+                    );
+                }
                 // The ABI manifest admits this complete positional boxed-call family.
                 fc::NativeOpFamily::BoxedRuntimeCalls => {
                     let abi = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind)

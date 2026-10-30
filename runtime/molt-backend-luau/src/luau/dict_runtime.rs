@@ -11,7 +11,7 @@ pub(super) const DICT_CORE_RUNTIME: &str = r#"local molt_dict_none_key = {}
 local molt_dict_none_value = {}
 local molt_dict_metadata = setmetatable({}, {__mode = "k"})
 local molt_dict_view_metadata = setmetatable({}, {__mode = "k"})
-local molt_dict_iterator_metadata = setmetatable({}, {__mode = "k"})
+local molt_dict_iterator_metadata: {[any]: {dict: any, kind: string, index: number, expected_size: number, remaining: number, status: "active" | "size_failed" | "exhausted"}} = setmetatable({}, {__mode = "k"})
 local molt_callargs_metadata = setmetatable({}, {__mode = "k"})
 local molt_set_metadata = setmetatable({}, {__mode = "k"})
 local molt_identity_hashes = setmetatable({}, {__mode = "k"})
@@ -298,7 +298,7 @@ local function molt_dict_getitem(dict: {[any]: any}, key: any): any
 	return molt_dict_public_value(rawget(metadata.records, (entry_id - 1) * 7 + 7))
 end
 
-local function molt_dict_set(dict: {[any]: any}, key: any, value: any): nil
+local function molt_dict_set(dict: {[any]: any}, key: any, value: any): {[any]: any}
 	local metadata = molt_dict_require(dict)
 	local entry_id = molt_hashed_index_find(metadata, key)
 	if entry_id == 0 then
@@ -309,7 +309,7 @@ local function molt_dict_set(dict: {[any]: any}, key: any, value: any): nil
 		metadata.version += 1
 	end
 	rawset(metadata.records, (entry_id - 1) * 7 + 7, molt_dict_storage_value(value))
-	return nil
+	return dict
 end
 
 local function molt_dict_delete(dict: {[any]: any}, key: any, missing_ok: boolean?): boolean
@@ -428,15 +428,18 @@ local function molt_dict_iterator_new(value: any, kind: string?): {any}
 	if view_state ~= nil then dict = view_state.dict; selected_kind = view_state.kind end
 	local metadata = molt_dict_require(dict)
 	local iterator = {}
-	molt_dict_iterator_metadata[iterator] = {dict = dict, kind = selected_kind, index = 0, version = metadata.version}
+	molt_dict_iterator_metadata[iterator] = {dict = dict, kind = selected_kind, index = 0, expected_size = metadata.size, remaining = metadata.size, status = "active"}
 	return iterator
 end
 
 local function molt_dict_iterator_next(iterator: {any}): {any}
 	local state = molt_dict_iterator_metadata[iterator]
 	if state == nil then error({__type="TypeError", __msg="invalid dict iterator"}) end
+	if state.status == "exhausted" then return molt_pack_tuple(nil, true) end
+	if state.status == "size_failed" then error({__type="RuntimeError", __msg="dictionary changed size during iteration"}) end
 	local metadata = molt_dict_require(state.dict)
-	if metadata.version ~= state.version then
+	if metadata.size ~= state.expected_size then
+		state.status = "size_failed"
 		error({__type="RuntimeError", __msg="dictionary changed size during iteration"})
 	end
 	local order = metadata.order
@@ -445,6 +448,11 @@ local function molt_dict_iterator_next(iterator: {any}): {any}
 		local entry_id = rawget(order, index)
 		state.index = index
 		if entry_id ~= 0 then
+				if state.remaining == 0 then
+					state.status = "exhausted"; state.dict = nil
+					error({__type="RuntimeError", __msg="dictionary keys changed during iteration"})
+				end
+				state.remaining -= 1
 				local key = molt_dict_public_key(rawget(metadata.records, (entry_id - 1) * 7 + 1))
 				local value = molt_dict_public_value(rawget(metadata.records, (entry_id - 1) * 7 + 7))
 				local item = if state.kind == "keys" then key elseif state.kind == "values" then value else molt_pack_tuple(key, value)
@@ -452,48 +460,66 @@ local function molt_dict_iterator_next(iterator: {any}): {any}
 		end
 		index += 1
 	end
+	state.status = "exhausted"; state.dict = nil
 	return molt_pack_tuple(nil, true)
 end
 
-local function molt_iterator_new(iterable: any): () -> {any}
+local function molt_iter_checked(iterable: any, source_type: string?): () -> {any}
 	if molt_dict_is_ordered(iterable) or molt_dict_view_is(iterable) then
 		local state = molt_dict_iterator_new(iterable, "keys")
 		return function() return molt_dict_iterator_next(state) end
 	end
 	if type(iterable) == "table" and rawget(iterable, molt_sequence_kind_key) ~= nil then
 		local index = 0
-		local count = molt_sequence_len(iterable)
+		local exhausted = false
 		return function()
+			if exhausted then return molt_pack_tuple(nil, true) end
 			index += 1
-			if index <= count then return molt_pack_tuple(rawget(iterable, index), false) end
+			if index <= molt_sequence_len(iterable) then return molt_pack_tuple(rawget(iterable, index), false) end
+			exhausted = true
+			iterable = nil
 			return molt_pack_tuple(nil, true)
 		end
 	end
 	if molt_set_is(iterable) then
 		local index = 0
-		local metadata = molt_set_require(iterable)
-		local version = metadata.version
+		local expected_size = molt_set_require(iterable).size
+		local status: "active" | "size_failed" | "exhausted" = "active"
 		return function()
-			if metadata.version ~= version then error({__type="RuntimeError", __msg="set changed size during iteration"}) end
+			if status == "exhausted" then return molt_pack_tuple(nil, true) end
+			if status == "size_failed" then error({__type="RuntimeError", __msg="Set changed size during iteration"}) end
+			local metadata = molt_set_require(iterable)
+			if metadata.size ~= expected_size then
+				status = "size_failed"
+				error({__type="RuntimeError", __msg="Set changed size during iteration"})
+			end
 			while index < #metadata.order do
 				index += 1
 				local entry_id = rawget(metadata.order, index)
 				if entry_id ~= 0 then return molt_pack_tuple(molt_dict_public_key(rawget(metadata.records, (entry_id - 1) * 7 + 1)), false) end
 			end
+			status = "exhausted"; iterable = nil
 			return molt_pack_tuple(nil, true)
 		end
 	end
 	if type(iterable) == "string" then
 		local offset = 1
+		local exhausted = false
 		return function()
-			if offset > #iterable then return molt_pack_tuple(nil, true) end
+			if exhausted then return molt_pack_tuple(nil, true) end
+			if offset > #iterable then
+				exhausted = true; iterable = nil
+				return molt_pack_tuple(nil, true)
+			end
 			local next_offset = utf8.offset(iterable, 2, offset) or (#iterable + 1)
 			local value = string.sub(iterable, offset, next_offset - 1)
 			offset = next_offset
 			return molt_pack_tuple(value, false)
 		end
 	end
-	error({__type="TypeError", __msg="object is not a deterministic Python iterable"})
+	local kind = type(iterable)
+	local name = if kind == "nil" then "NoneType" elseif kind == "boolean" then "bool" elseif kind == "number" then source_type or "number" else kind
+	error({__type="TypeError", __msg="'" .. name .. "' object is not iterable"})
 end
 
 local function molt_dict_unpack(dict: {[any]: any}, other: {[any]: any}): nil
@@ -664,7 +690,7 @@ end
 
 local function molt_set_update(set_value: any, other: any): nil
 	if molt_set_is(other) then molt_set_scan(other, function(value) molt_set_add(set_value, value) end); return nil end
-	local iterator = molt_iterator_new(other)
+	local iterator = molt_iter_checked(other)
 	while true do
 		local step = iterator()
 		if rawget(step, 2) then break end
@@ -711,7 +737,7 @@ local function molt_callargs_expand_star(builder: {any}, iterable: any): nil
 	-- Iterator construction is the iterable-protocol authority.  Do not catch
 	-- and rewrite its failures here: a user __iter__ exception must remain the
 	-- exception observed by the call expression.
-	local iterator = molt_iterator_new(iterable)
+	local iterator = molt_iter_checked(iterable)
 	while true do
 		local step = iterator()
 		if rawget(step, 2) then break end

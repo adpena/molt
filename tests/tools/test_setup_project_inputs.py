@@ -153,7 +153,7 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.15.1\n
         env["MOLT_CI_EPHEMERAL_CUSTODY_ROOT"] += "\nEVIL=value"
     result = run_guarded_test_process(
         [str(BASH), str(ROOT / ".github/actions/setup-project/provision-python.sh")],
-        prefix="MOLT_SETUP_PYTHON_BOOTSTRAP_TEST",
+        prefix="MOLT_PYTEST",
         cwd=directory,
         env=env,
         capture_output=True,
@@ -222,7 +222,7 @@ def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
                 *options,
                 str(module.parent),
             ],
-            prefix="MOLT_SETUP_PYTHON_BYTECODE_TEST",
+            prefix="MOLT_PYTEST",
             capture_output=True,
             text=True,
             check=False,
@@ -323,7 +323,7 @@ def _run_normalizer(
     }
     completed = run_guarded_test_process(
         [str(BASH), str(NORMALIZER), str(output)],
-        prefix="MOLT_SETUP_PROJECT_INPUT_TEST",
+        prefix="MOLT_PYTEST",
         cwd=ROOT,
         env=env,
         text=True,
@@ -439,7 +439,7 @@ def test_control_characters_and_empty_atoms_fail_closed(tmp_path: Path) -> None:
         }
         completed = run_guarded_test_process(
             [str(BASH), str(NORMALIZER), str(output)],
-            prefix="MOLT_SETUP_PROJECT_INPUT_TEST",
+            prefix="MOLT_PYTEST",
             cwd=ROOT,
             env=env,
             text=True,
@@ -486,7 +486,7 @@ def test_sync_argv_is_typed_normalized_and_requires_sync(tmp_path: Path) -> None
     }
     completed = run_guarded_test_process(
         [str(BASH), str(NORMALIZER), str(output)],
-        prefix="MOLT_SETUP_PROJECT_INPUT_TEST",
+        prefix="MOLT_PYTEST",
         cwd=ROOT,
         env=env,
         text=True,
@@ -573,7 +573,7 @@ def _run_target_python_setup(tmp_path: Path, failure: str):
     uv.chmod(0o755)
     result = run_guarded_test_process(
         [str(BASH), str(script)],
-        prefix="MOLT_SETUP_TARGET_PYTHON_TEST",
+        prefix="MOLT_PYTEST",
         cwd=tmp_path,
         env={
             **os.environ,
@@ -644,7 +644,7 @@ def test_shell_metacharacters_never_execute_before_validation(tmp_path: Path) ->
     }
     completed = run_guarded_test_process(
         [str(BASH), str(NORMALIZER), str(output)],
-        prefix="MOLT_SETUP_PROJECT_INPUT_TEST",
+        prefix="MOLT_PYTEST",
         cwd=ROOT,
         env=env,
         text=True,
@@ -800,7 +800,7 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
         )
     result = run_guarded_test_process(
         [str(BASH), str(script)],
-        prefix="MOLT_SETUP_PROJECT_GROUPS_TEST",
+        prefix="MOLT_PYTEST",
         cwd=cwd,
         env={
             **os.environ,

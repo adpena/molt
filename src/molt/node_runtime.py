@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 
 from molt import process_guard
+from molt.guard_stems_generated import GuardStem
 from molt.source_root import compiler_source_root
 from molt.tool_releases import pinned_executable
 from molt.toolchain_identity import (
@@ -42,7 +43,7 @@ def _probe_node(
     *,
     source_root: Path,
     environment: ProcessEnvironment,
-    guard_prefix: str,
+    guard_prefix: GuardStem,
 ) -> NodeRuntime:
     try:
         result = process_guard.run_completed_command(
@@ -122,7 +123,7 @@ def resolve_node_runtime(
     *,
     source_root: Path | None = None,
     environment: Mapping[str, str] | None = None,
-    guard_prefix: str = "MOLT_CROSS",
+    guard_prefix: GuardStem = "MOLT_CROSS",
 ) -> NodeRuntime:
     """Resolve and probe an ordinary host without benchmark identity work."""
     environment = ProcessEnvironment(os.environ if environment is None else environment)
@@ -182,7 +183,7 @@ def admit_node_execution(
     *,
     source_root: Path | None = None,
     environment: Mapping[str, str] | None = None,
-    guard_prefix: str = "MOLT_BENCH",
+    guard_prefix: GuardStem = "MOLT_BENCH",
 ) -> NodeExecutionPlan:
     """Select, hash and version-probe once, retaining that exact executable.
 

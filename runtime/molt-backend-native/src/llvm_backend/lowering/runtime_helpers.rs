@@ -2,6 +2,19 @@ use super::*;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    pub(super) fn emit_contract_runtime_call(
+        &mut self,
+        op: &TirOp,
+        call: molt_ir::runtime_calls::RuntimeCall,
+    ) {
+        use molt_ir::runtime_calls::RuntimeCall;
+        let function = match call {
+            RuntimeCall::Iter => call.function(),
+            RuntimeCall::DictSet => call.function(),
+        };
+        self.emit_boxed_runtime_call(op, function.boxed_abi());
+    }
+
     /// Lower a preserved operation through its admitted runtime boxed-call ABI.
     /// Both bound and discarded calls execute: owned results are bound or
     /// released, while void calls produce no value. Generated semantic facts,
@@ -9,6 +22,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// raw/mixed-ABI operations are handled before this dispatch; an unclassified
     /// runtime symbol fails closed instead of borrowing operand-zero semantics.
     pub(super) fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: OpKind) -> bool {
+        if let Some(call) = molt_ir::runtime_calls::RuntimeCall::from_op(kind) {
+            self.emit_contract_runtime_call(op, call);
+            return true;
+        }
         if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {
             self.emit_boxed_runtime_call(op, abi);
             return true;
@@ -452,3 +469,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into_int_value()
     }
 }
+
+// Declared legality is a compile-time fact: LLVM lowers every staged call
+// through its generic entrypoint.
+const _: () = assert!(
+    molt_ir::runtime_calls::RuntimeCall::all_runtime_realized(
+        molt_ir::tir::target_info::TargetKind::Llvm
+    ),
+    "a staged runtime call is not runtime-realized on LLVM"
+);

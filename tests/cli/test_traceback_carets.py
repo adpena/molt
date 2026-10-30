@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,16 +37,6 @@ def _base_env() -> dict[str, str]:
     env["PYTHONPATH"] = str(ROOT / "src")
     env["MOLT_BACKEND_DAEMON"] = "0"
     return env
-
-
-def _python_executable() -> str:
-    exe = sys.executable
-    if exe and os.path.exists(exe) and os.access(exe, os.X_OK):
-        return exe
-    fallback = shutil.which("python3") or shutil.which("python")
-    if fallback:
-        return fallback
-    return exe
 
 
 # Caret line: a line that, after stripping, consists entirely of ^, ~, and spaces.
@@ -99,7 +88,7 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
         # Build
         build_result = run_cli_test_process(
             [
-                _python_executable(),
+                sys.executable,
                 "-m",
                 "molt",
                 "build",

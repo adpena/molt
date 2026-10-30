@@ -57,7 +57,7 @@ from tools.libtest_results import (  # noqa: E402
     parse_libtest,
 )
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 RESOURCE_TEST_TARGET = "resource_enforcement"
 MAX_DIAGNOSTIC_EXECUTIONS = 24

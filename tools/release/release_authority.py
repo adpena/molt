@@ -100,7 +100,7 @@ from tools.release.release_model import (  # noqa: E402
     validate_release_manifest,
 )
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v7"

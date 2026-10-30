@@ -7,6 +7,7 @@ from tools.generator_io import rustfmt_source
 from . import render_wire as _wire
 from .primitive_effects import render_primitive_effects_rs
 from .registration import registered_simpleir_kinds
+from .runtime_calls import render_runtime_calls
 from .runtime_requirements import (
     INTEGER_SEMANTIC_ROLES,
     integer_semantics_by_kind,
@@ -82,7 +83,15 @@ use crate::tir::types::TirType;
 
 
 def render_rs(data: dict) -> str:
-    return rustfmt_source(_render_rs_unformatted(data), label="op-kind Rust tables")
+    # Keep the package API and command-line facade on one complete projection.
+    # Load the ABI lazily: its normalizer also consumes the op-call rows.
+    from tools.wasm_abi_gen.manifest import load_manifest
+
+    contract = render_runtime_calls(data, load_manifest())
+    return rustfmt_source(
+        _render_rs_unformatted(data) + "\npub mod runtime_calls {\n" + contract + "}\n",
+        label="op-kind Rust tables",
+    )
 
 
 def _render_rs_unformatted(data: dict) -> str:

@@ -6072,6 +6072,83 @@ def test_runtime_callable_authorities_reject_malformed_unknowns_duplicates_and_e
             gen.load_table(path)
 
 
+def test_runtime_call_rows_reject_malformed_rows_and_legality_disagreements(
+    tmp_path: Path,
+) -> None:
+    gen = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    iter_row = (
+        '[[runtime_call]]\nkind = "iter"\nfunction = "molt_iter_checked"\n'
+        'tir_opcode = "GetIter"\nexception_protocol = "pending_exception"\n'
+        'native = "runtime"\nllvm = "runtime"\nwasm = "runtime"\n'
+        'mlir = "unsupported"\nluau = "luau_iter_carriers"\nrust = "unsupported"\n'
+    )
+    dict_row = (
+        '[[runtime_call]]\nkind = "dict_set"\nfunction = "molt_dict_set"\n'
+        'effects_from = "StoreIndex"\nexception_protocol = "pending_exception"\n'
+        'native = "runtime"\nllvm = "runtime"\nwasm = "runtime"\n'
+        'mlir = "unsupported"\nluau = "luau_dict_storage"\nrust = "unsupported"\n'
+    )
+    assert iter_row in source and dict_row in source
+    # Each mutation reaches exactly one fail-closed branch, named by its message.
+    mutations = {
+        "duplicate kind": (dict_row, 'kind = "dict_set"', 'kind = "iter"', "duplicate"),
+        "missing target": (iter_row, 'mlir = "unsupported"\n', "", "every target"),
+        "unprefixed function": (
+            dict_row,
+            'function = "molt_dict_set"',
+            'function = "dict_set"',
+            "invalid runtime function",
+        ),
+        "unknown effect authority": (
+            dict_row,
+            'effects_from = "StoreIndex"',
+            'effects_from = "NoSuchOpcode"',
+            "unknown effect authority",
+        ),
+        "unknown exception protocol": (
+            iter_row,
+            'exception_protocol = "pending_exception"',
+            'exception_protocol = "status_code"',
+            "unknown exception protocol",
+        ),
+        "unknown realization": (
+            dict_row,
+            'luau = "luau_dict_storage"',
+            'luau = "luau_magic"',
+            "unknown luau realization",
+        ),
+        "carrier on a runtime target": (
+            iter_row,
+            'native = "runtime"',
+            'native = "luau_iter_carriers"',
+            "wrong native carrier",
+        ),
+        # The Rust profile refuses ITERABLE_PROTOCOL; the row cannot admit it.
+        "realization where the profile refuses": (
+            iter_row,
+            'rust = "unsupported"',
+            'rust = "runtime"',
+            "rust legality disagrees",
+        ),
+        # The native profile admits OBJECT_MODEL; the row cannot refuse it.
+        "refusal where the profile admits": (
+            dict_row,
+            'native = "runtime"',
+            'native = "unsupported"',
+            "native legality disagrees",
+        ),
+    }
+    for label, (row, old, new, message) in mutations.items():
+        assert old in row, label
+        mutated = source.replace(row, row.replace(old, new, 1), 1)
+        assert mutated != source, label
+        path = tmp_path / f"{label.replace(' ', '_')}.toml"
+        path.write_text(mutated, encoding="utf-8")
+        with pytest.raises(gen.OpKindTableError, match=message):
+            gen.load_table(path)
+
+
 def test_runtime_callable_authority_allows_shared_implementation_symbols(
     tmp_path: Path,
 ) -> None:

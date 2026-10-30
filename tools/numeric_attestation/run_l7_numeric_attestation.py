@@ -50,7 +50,7 @@ from molt.temporary_artifacts import SCRATCH_ENV  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parent / "results" / "l7_numeric_attestation.schema.json"

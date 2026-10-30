@@ -331,9 +331,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_get_iter(&mut self, op: &TirOp) {
-        let abi = runtime_boxed_abi("molt_iter_checked", 1)
-            .expect("molt_iter_checked must have a generated boxed ABI");
-        self.emit_boxed_runtime_call(op, abi);
+        self.emit_contract_runtime_call(
+            op,
+            molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
+                .expect("typed runtime-call contract"),
+        );
     }
 
     pub(super) fn emit_iter_next(&mut self, op: &TirOp) {

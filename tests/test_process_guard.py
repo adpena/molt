@@ -29,27 +29,65 @@ def test_guard_environment_inheritance_respects_caller_rule(monkeypatch, rule):
         process_guard.os,
         process_guard,
         environ={
-            "MOLT_TEST_MAX_RSS_GB": "9",
-            "molt_test_max_total_rss_gb": "11",
+            "MOLT_PYTEST_MAX_PROCESS_RSS_GB": "9",
+            "molt_pytest_max_total_rss_gb": "11",
         },
     )
     original = ProcessEnvironment(
-        {"molt_test_max_rss_gb": "7", "Path": "first", "PATH": "second"},
+        {"molt_pytest_max_process_rss_gb": "7", "Path": "first", "PATH": "second"},
         rule=rule,
     )
     before = original.child_block()
-    result = process_guard.with_memory_guard_env(original, "MOLT_TEST")
+    result = process_guard.with_memory_guard_env(original, "MOLT_PYTEST")
     assert isinstance(result, ProcessEnvironment)
     assert result.rule is rule
-    assert result["molt_test_max_rss_gb"] == "7"
-    assert result["MOLT_TEST_MAX_RSS_GB"] == ("7" if rule is NameRule.WINDOWS else "9")
+    assert result["molt_pytest_max_process_rss_gb"] == "7"
+    assert result["MOLT_PYTEST_MAX_PROCESS_RSS_GB"] == (
+        "7" if rule is NameRule.WINDOWS else "9"
+    )
     if rule is NameRule.WINDOWS:
-        assert result["MOLT_TEST_MAX_TOTAL_RSS_GB"] == "11"
+        assert result["MOLT_PYTEST_MAX_TOTAL_RSS_GB"] == "11"
         assert result["Path"] == "second"
     else:
-        assert "MOLT_TEST_MAX_TOTAL_RSS_GB" not in result
+        assert "MOLT_PYTEST_MAX_TOTAL_RSS_GB" not in result
         assert result["Path"] == "first"
     assert original.child_block() == before
+
+
+def test_guard_environment_forwards_registered_memory_budgets_only(monkeypatch):
+    # Retired suffixes are errors to set; the guard must not carry them, or a
+    # timeout budget, into a child's explicit environment.
+    from molt.environment_registry import load_registry
+
+    retired = {
+        f"MOLT_PYTEST{row.suffix}": "9" for row in load_registry().retired_suffixes
+    }
+    assert retired
+    install_module_view(
+        monkeypatch,
+        "os",
+        process_guard.os,
+        process_guard,
+        environ={
+            **retired,
+            "MOLT_PYTEST_TIMEOUT_SEC": "5",
+            "MOLT_PYTEST_MEMORY_RESERVE_GB": "3",
+            "MOLT_MAX_PROCESS_RSS_GB": "4",
+        },
+    )
+    result = process_guard.with_memory_guard_env(ProcessEnvironment({}), "MOLT_PYTEST")
+    assert isinstance(result, ProcessEnvironment)
+    assert dict(result.items()) == {
+        "MOLT_PYTEST_MEMORY_RESERVE_GB": "3",
+        "MOLT_MAX_PROCESS_RSS_GB": "4",
+    }
+
+
+def test_guard_environment_refuses_an_unregistered_stem():
+    from molt.guard_scope import UnregisteredGuardStemError
+
+    with pytest.raises(UnregisteredGuardStemError, match="MOLT_TEST"):
+        process_guard.with_memory_guard_env(ProcessEnvironment({}), "MOLT_TEST")
 
 
 def test_spawn_type_boundary_rejects_unowned_mapping(tmp_path):
@@ -66,9 +104,9 @@ def test_spawn_type_boundary_rejects_unowned_mapping(tmp_path):
         "from molt.process_environment import ProcessEnvironment\n"
         "from molt.process_guard import run_completed_command, with_memory_guard_env\n"
         "run_completed_command(['tool'], env=ProcessEnvironment({}))\n"
-        "with_memory_guard_env(ProcessEnvironment({}), 'MOLT_TEST')\n"
+        "with_memory_guard_env(ProcessEnvironment({}), 'MOLT_PYTEST')\n"
         "run_completed_command(['tool'], env={})\n"
-        "with_memory_guard_env({}, 'MOLT_TEST')\n",
+        "with_memory_guard_env({}, 'MOLT_PYTEST')\n",
         encoding="utf-8",
     )
     result = run_guarded_test_process(
@@ -297,7 +335,7 @@ def test_guarded_boundary_rejects_false_stderr_interleaving_contract() -> None:
     with pytest.raises(ValueError, match="preserve stdout/stderr separately"):
         process_guard.run_completed_command(
             ["python", "tool.py"],
-            memory_guard_prefix="MOLT_TEST",
+            memory_guard_prefix="MOLT_PYTEST",
             stdout=subprocess.PIPE,
             text=True,
             stderr=subprocess.STDOUT,
@@ -341,7 +379,7 @@ def test_guarded_timeout_without_requested_timeout_fails_closed() -> None:
     with pytest.raises(RuntimeError, match="timeout custody is inconsistent"):
         process_guard.run_completed_command(
             ["compiler", "input.py"],
-            memory_guard_prefix="MOLT_TEST",
+            memory_guard_prefix="MOLT_PYTEST",
             timeout=None,
             guard_loader=lambda _cwd, *, guard_source_root=None: harness,
         )
@@ -378,7 +416,7 @@ def test_guarded_timeout_preserves_terminal_telemetry() -> None:
     with pytest.raises(subprocess.TimeoutExpired) as raised:
         process_guard.run_completed_command(
             ["compiler", "input.py"],
-            memory_guard_prefix="MOLT_TEST",
+            memory_guard_prefix="MOLT_PYTEST",
             timeout=5.0,
             capture_output=True,
             guard_loader=lambda _cwd, *, guard_source_root=None: harness,
@@ -429,7 +467,7 @@ def test_guard_failure_is_a_typed_error_with_terminal_telemetry(check: bool) -> 
     with pytest.raises(process_guard.GuardInfrastructureError) as raised:
         process_guard.run_completed_command(
             ["compiler", "input.py"],
-            memory_guard_prefix="MOLT_TEST",
+            memory_guard_prefix="MOLT_PYTEST",
             capture_output=True,
             check=check,
             guard_loader=lambda _cwd, *, guard_source_root=None: harness,

@@ -38,7 +38,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v9"
+_SCHEMA = "molt-build-record-v10"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -477,6 +477,42 @@ class NativeBuildResult:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class BuildProducts:
+    """The files a successful build published beside its selected output.
+
+    ``products`` maps each result artifact role to the absolute path the
+    result promises; ``consumer`` names the product a user runs. A WASM build
+    publishes a family (module, linked module, deployment manifest, optimizer
+    attestation); its record is current only while every member keeps the
+    token the build left. A native binary build publishes only its selected
+    output and reports no family.
+    """
+
+    consumer: Path
+    products: tuple[tuple[str, Path], ...]
+
+    @classmethod
+    def from_payload(cls, value: object) -> BuildProducts:
+        if not isinstance(value, dict) or set(value) != {"consumer", "products"}:
+            raise ValueError("invalid build products")
+        raw = value["products"]
+        if not isinstance(raw, dict) or not raw:
+            raise ValueError("build products must name at least one file")
+        products = []
+        for role, path in sorted(raw.items()):
+            if not isinstance(role, str) or not role:
+                raise ValueError("invalid build product role")
+            products.append((role, _record_path(path)))
+        consumer = _record_path(value["consumer"])
+        if consumer not in {path for _role, path in products}:
+            raise ValueError("build consumer is not one of its products")
+        return cls(consumer, tuple(products))
+
+    def paths(self) -> tuple[Path, ...]:
+        return tuple(path for _role, path in self.products)
+
+
 @dataclass
 class FileObservation:
     token: StatToken
@@ -500,6 +536,7 @@ class InputLedger:
     # hook; resolved against the excluded roots when the record is written.
     observed: set[tuple[str, str]] = field(default_factory=set)
     output_selection: BuildOutputSelection | None = None
+    products: BuildProducts | None = None
     result: NativeBuildResult | None = None
     claims: list[RecordedBuildClaim] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -617,6 +654,17 @@ class InputLedger:
             if self.output_selection is not None and self.output_selection != selected:
                 self.refusals.append("build selected more than one native output")
             self.output_selection = selected
+
+    def build_products(self, value: object) -> None:
+        try:
+            products = BuildProducts.from_payload(value)
+        except (TypeError, ValueError) as exc:
+            self.refuse(f"unreportable build products: {exc}")
+            return
+        with self._lock:
+            if self.products is not None and self.products != products:
+                self.refusals.append("build published conflicting products")
+            self.products = products
 
     def build_claim(self, value: object) -> None:
         try:
@@ -782,30 +830,104 @@ def record_path(state_root: Path, key: str) -> Path:
     return state_root / "build_records" / key[:2] / f"{key}.json"
 
 
+def _publication_custody(paths: set[str], outputs: tuple[Path, ...]) -> set[str]:
+    """The resolved observed paths the outputs' publications own: never inputs.
+
+    An output's family (the output, its receipt, lock, journals and stages)
+    is custody. A publication can also stage a stage, as the WASM backend
+    output's copy does, or stage a whole directory, as the WASM deployment
+    generation does beside its manifest. A path that is an owned stage of a
+    custody path, or lies inside an owned stage directory, joins the custody
+    until nothing changes. Only reserved staging names whose key names a
+    custody path in the same directory qualify, by the staging-name
+    authority; nothing is opened. Stages live beside what they stage, so only
+    paths under an output's directory are examined, and each walk stops there.
+    """
+    from molt.artifact_publication import is_publication_family_member
+    from molt.file_publication import (
+        is_staged_file_path,
+        staged_file_destination_key,
+        staging_destination_key,
+    )
+    from molt.path_custody import resolved_host_path_key
+
+    def owner_key(path: Path) -> tuple[str, str]:
+        return resolved_host_path_key(path.parent), staging_destination_key(path)
+
+    roots = {resolved_host_path_key(output.parent) for output in outputs}
+    prefixes = tuple(root.rstrip(os.sep) + os.sep for root in roots)
+
+    def nodes_below_root(path: str) -> list[Path]:
+        nodes: list[Path] = []
+        for node in (Path(path), *Path(path).parents):
+            if resolved_host_path_key(node) in roots:
+                return nodes
+            nodes.append(node)
+        return []
+
+    candidates = {
+        path: nodes
+        for path in sorted(paths)
+        if resolved_host_path_key(path).startswith(prefixes)
+        and (nodes := nodes_below_root(path))
+    }
+    custody = {
+        path
+        for path in candidates
+        if any(is_publication_family_member(Path(path), output) for output in outputs)
+    }
+    owners = {owner_key(path) for path in (*outputs, *map(Path, custody))}
+    pending = [
+        (path, nodes) for path, nodes in candidates.items() if path not in custody
+    ]
+    changed = True
+    while changed:
+        changed = False
+        remaining = []
+        for path, nodes in pending:
+            if any(
+                is_staged_file_path(node)
+                and (
+                    resolved_host_path_key(node.parent),
+                    staged_file_destination_key(node),
+                )
+                in owners
+                for node in nodes
+            ):
+                custody.add(path)
+                owners.add(owner_key(Path(path)))
+                changed = True
+            else:
+                remaining.append((path, nodes))
+        pending = remaining
+    return custody
+
+
 def resolve_observed(
     ledger: InputLedger,
     excluded_roots: tuple[Path, ...],
     *,
-    published_output: Path | None = None,
+    published_outputs: tuple[Path, ...] = (),
 ) -> None:
     """Turn the audit hook's observations into inputs.
 
-    Only named product roots and the successfully published output, with the
-    receipt, journals, lock and stages its publication keeps beside it, are
-    products. The publication lists the output's directory for its own
+    Only named product roots and the successfully published outputs (the
+    selected output and the product family published beside it), each with
+    the receipt, journals, lock and stages its publication keeps beside it,
+    are products. The publication lists each output's directory for its own
     journals, so an observed listing of that directory is custody; a reader
     that consumes the listing, such as the import topology, reports it
     explicitly. Pre-syscall audit events cannot prove write or
     directory-creation ownership. Explicit input reports are never excluded,
-    even for the published output.
+    even for a published output.
     """
-    from molt.artifact_publication import is_publication_family_member
     from molt.path_custody import resolved_host_path_key
 
-    output = (
-        None if published_output is None else Path(os.path.realpath(published_output))
-    )
-    output_parent = None if output is None else resolved_host_path_key(output.parent)
+    outputs = tuple(Path(os.path.realpath(path)) for path in published_outputs)
+    output_parents = {resolved_host_path_key(output.parent) for output in outputs}
+    observed = sorted(ledger.observed)
+    resolved_paths = {name: os.path.realpath(name) for _kind, name in observed}
+    custody = _publication_custody(set(resolved_paths.values()), outputs)
     roots = tuple(
         {
             resolved_host_path_key(os.path.realpath(root)).rstrip(os.sep) + os.sep
@@ -847,13 +969,10 @@ def resolve_observed(
             name = parent
         completed_lookups.update(chain)
 
-    for kind, name in sorted(ledger.observed):
-        resolved = os.path.realpath(name)
+    for kind, name in observed:
+        resolved = resolved_paths[name]
         real = resolved_host_path_key(resolved)
-        if output is not None and (
-            (kind == "file" and is_publication_family_member(Path(resolved), output))
-            or (kind == "directory" and real == output_parent)
-        ):
+        if resolved in custody or (kind == "directory" and real in output_parents):
             continue
         if (real + os.sep).startswith(roots):
             continue
@@ -973,10 +1092,26 @@ def write_record(
     output_token = stat_token(output.path)
     if output_token is None or not stat.S_ISREG(output_token[2]):
         return f"output {output.path} is not a regular file"
+    products: list[list[object]] = []
+    consumer = output.path
+    if ledger.products is not None:
+        if output.path not in ledger.products.paths():
+            return "selected output is not one of the published products"
+        consumer = ledger.products.consumer
+        for role, product in ledger.products.products:
+            token = stat_token(product)
+            if token is None or not stat.S_ISREG(token[2]):
+                return f"product {product} is not a regular file"
+            products.append([role, os.fspath(product), list(token)])
     payload = {
         "schema": _SCHEMA,
         "key": key,
-        "output": {"selection": output.to_dict(), "token": list(output_token)},
+        "output": {
+            "selection": output.to_dict(),
+            "token": list(output_token),
+            "consumer": os.fspath(consumer),
+            "products": products,
+        },
         "files": files,
         "directories": directories,
         "probes": probes,
@@ -1002,6 +1137,8 @@ def write_record(
 class BuildRecordHit:
     output: Path
     result: NativeBuildResult | None = None
+    # The product a user runs: the selected output, or a member of its family.
+    consumer: Path | None = None
 
 
 def check(
@@ -1046,6 +1183,20 @@ def check(
         selection.verify()
         if stat_token(selection.path) != tuple(recorded_output["token"]):
             return f"output {selection.path} changed"
+        consumer = _record_path(recorded_output["consumer"])
+        products = recorded_output["products"]
+        if not isinstance(products, list):
+            return "unreadable record: invalid products"
+        product_paths = set()
+        for role, product, token in products:
+            if not isinstance(role, str) or not role:
+                return "unreadable record: invalid product role"
+            path = _record_path(product)
+            product_paths.add(path)
+            if stat_token(path) != tuple(token):
+                return f"product {path} changed"
+        if consumer != selection.path and consumer not in product_paths:
+            return "unreadable record: consumer is not a product"
         changed = _first_change(
             payload["files"], payload["directories"], payload["probes"]
         )
@@ -1059,7 +1210,7 @@ def check(
             for selection_claim in claims:
                 selection_claim.verify()
             result.verify()
-        return BuildRecordHit(selection.path, result)
+        return BuildRecordHit(selection.path, result, consumer)
     except FileNotFoundError:
         return "no record for this request"
     except (

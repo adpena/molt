@@ -59,7 +59,7 @@ from tools.finding_status import STATE_OPEN, project  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "docs" / "agent" / "V1_HANDOFF_FINDINGS.md"
 CACHE = Path(tempfile.gettempdir()) / "molt-ci-triage"
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_CI")
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?")

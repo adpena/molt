@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -41,10 +42,10 @@ def test_generator_benchmark_uses_shared_memory_guard(monkeypatch) -> None:
         fake_guarded_completed_process,
     )
 
-    result = module._run_timed_command(["python3", "--version"])
+    result = module._run_timed_command([sys.executable, "--version"])
 
     assert result.stdout == "Python 3.12.0\n"
-    assert captured["cmd"] == ["python3", "--version"]
+    assert captured["cmd"] == [sys.executable, "--version"]
     assert captured["kwargs"]["prefix"] == "MOLT_BENCH"
     assert captured["kwargs"]["capture_output"] is True
     assert captured["kwargs"]["timeout"] == module.DEFAULT_RUN_TIMEOUT_SEC

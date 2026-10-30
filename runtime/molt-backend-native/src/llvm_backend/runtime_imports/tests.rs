@@ -113,6 +113,18 @@ fn shared_runtime_helper_imports_have_llvm_abi_authority() {
 }
 
 #[test]
+fn unchecked_iterator_has_no_llvm_machine_abi() {
+    // HF-571: `molt_iter` returns None for a non-iterable instead of raising
+    // CPython's TypeError. LLVM acquires iterators only through the checked
+    // runtime-call contract, so no route may declare the unchecked entrypoint.
+    assert_eq!(runtime_import_return_abi("molt_iter", 1), None);
+    assert_eq!(
+        runtime_import_return_abi("molt_iter_checked", 1),
+        Some(RuntimeReturnAbi::I64)
+    );
+}
+
+#[test]
 fn fixed_runtime_imports_do_not_overlap_conservative_fallbacks() {
     let conservative: HashSet<&str> = CONSERVATIVE_RUNTIME_IMPORTS
         .iter()
