@@ -26,106 +26,19 @@ from pathlib import Path
 from types import ModuleType
 
 from molt import process_guard
-from molt.custody_layout import Regenerable, storage_rule
 from molt.process_spawn import ExecStateHandoff
-from molt.file_locks import (
-    _FileLockHandle,
-    _file_lock_owned_operation,
-    _release_file_lock,
-    _try_acquire_file_lock,
-)
+from molt.file_locks import _FileLockHandle
 from tools import controller_source
 from tools.driver_errors import EXIT_USAGE, DriverError  # noqa: E402
-from tools.molt_dev_common import _COMMANDS, _say, _warn  # noqa: E402
+from tools.molt_dev_common import _COMMANDS, _say  # noqa: E402
 from tools.venv_exec import venv_python
 
 ENVIRONMENT_NAME = ".venv"
-# Retention: the newest KEEP controllers stay; an older one retires only after
-# IDLE_S without use and no live shared source owner.
-_RETENTION = storage_rule("controllers").retention
-assert isinstance(_RETENTION, Regenerable)
-KEEP = _RETENTION.keep_recent
-IDLE_S = _RETENTION.max_idle_s
 
 
 _running_source_use: (
     tuple[int, controller_source.Controller, ExitStack, _FileLockHandle] | None
 ) = None
-
-
-def _retire_idle(
-    directory: Path, *, current: Path, now: float, apply: bool = True
-) -> list[dict[str, object]]:
-    """Keep current/recent versions; lock and recheck older idle generations."""
-    entries = []
-    rows = []
-    for entry in directory.iterdir():
-        if entry == current:
-            rows.append(
-                {"class": "controllers", "path": str(entry), "action": "current"}
-            )
-            continue
-        try:
-            admitted = controller_source.controller_for_source(entry, allow_staged=True)
-        except DriverError:
-            admitted = None
-        if admitted is None:
-            rows.append(
-                {
-                    "class": "controllers",
-                    "path": str(entry),
-                    "action": "unproven-preimage",
-                }
-            )
-            continue
-        marker = entry / controller_source.RECORD_NAME
-        try:
-            entries.append((marker.stat().st_mtime, entry, entry.name == admitted.key))
-        except FileNotFoundError:
-            continue
-    entries.sort(reverse=True)
-    recent = set(
-        [entry for _, entry, published in entries if published][: max(0, KEEP - 1)]
-    )
-    for last_use, entry, _published in entries:
-        row = {
-            "class": "controllers",
-            "path": str(entry),
-            "last_use": last_use,
-            "action": "recent",
-        }
-        rows.append(row)
-        if entry in recent or now - last_use < IDLE_S:
-            continue
-        lock_path = controller_source.source_lock_path(entry)
-        try:
-            handle = _try_acquire_file_lock(lock_path, create=apply)
-        except FileNotFoundError:
-            handle = None
-        if handle is None:
-            row["action"] = (
-                "state-in-use"
-                if lock_path.exists()
-                else "unavailable-lock"
-                if apply
-                else "retire"
-            )
-            continue
-        try:
-            with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
-                fresh = (entry / controller_source.RECORD_NAME).stat().st_mtime
-                if now - fresh < IDLE_S:
-                    row["action"] = "use-changed"
-                else:
-                    row["action"] = "retire"
-                    if apply:
-                        shutil.rmtree(entry)
-        except OSError as exc:
-            row.update(action="failed", error=str(exc))
-            _warn(f"controller retention left {entry}: {exc}")
-        finally:
-            _release_file_lock(handle)
-    return rows
 
 
 def pinned_controller(
@@ -135,11 +48,14 @@ def pinned_controller(
 
     with controller_source.controller_source(repo, common_dir, commit) as controller:
         from molt.dx import RunContext
+        from tools.molt_dev_storage import retire_idle_controllers
 
         _sync_environment(
             controller.root, environment=RunContext(repo).canonical_env(os.environ)
         )
-        _retire_idle(controller.root.parent, current=controller.root, now=time.time())
+        retire_idle_controllers(
+            controller.root.parent, current=controller.root, now=time.time()
+        )
         return controller
 
 
