@@ -35,8 +35,8 @@ from tools import perf_authority as pa  # noqa: E402
 from tools import check_ratio_direction as crd  # noqa: E402
 from molt import metric_ratios  # noqa: E402
 from tests.process_guard_common import ModuleView, run_guarded_test_process  # noqa: E402
-from tools import git_identity  # noqa: E402
-from tools.git_identity import repository_source_paths  # noqa: E402
+from molt import source_admission  # noqa: E402
+from molt.source_admission import repository_source_paths  # noqa: E402
 from tools import scan_records  # noqa: E402
 
 
@@ -807,7 +807,7 @@ def test_git_inventory_rejects_malformed_or_unconfined_results(
 def test_git_source_root_accepts_windows_newline_protocol(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(git_identity, "os", ModuleView(os, name="nt"))
+    monkeypatch.setattr(source_admission, "os", ModuleView(os, name="nt"))
 
     def read_git(cwd: Path, arguments: list[str]) -> bytes:
         return (

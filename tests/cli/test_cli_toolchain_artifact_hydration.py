@@ -764,7 +764,7 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
         )
     if failure in {"artifact_identity", "metadata_refresh"}:
         admitted = {
-            "version": 4,
+            "version": 5,
             **runtime_build_fingerprint(identity),
             "cargo_environment": runtime_cargo_environment_inputs().to_dict(),
         }

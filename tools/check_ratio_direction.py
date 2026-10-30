@@ -63,7 +63,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.git_identity import repository_source_paths  # noqa: E402
+from molt.source_admission import repository_source_paths  # noqa: E402
 from tools.scan_records import (  # noqa: E402
     ScanRecords,
     decoded_text,

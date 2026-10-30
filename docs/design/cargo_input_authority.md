@@ -1,6 +1,7 @@
 # Cargo input authority
 
-Status: file coverage guard (native runtime, backend compiler and JIT runner
+Status: Git-admitted source identities and file coverage guard (HF-590;
+native runtime, backend compiler and JIT runner
 publication), crate-declared build inputs and observed Cargo environment inputs
 implemented (HF-300, HF-302, HF-371). Replacing guessed file roots with the
 complete content record remains open. Owner: build speed and artifact identity.
@@ -15,10 +16,11 @@ publishes a static asset without a compiler/runtime generation receipt. Its
 ordinary Cargo Fresh behavior cannot establish consumed-byte attestation either;
 include it when applying the complete file-input policy to source-built assets.
 To decide whether a stored compiler/runtime build is current,
-Molt hashes every file under the crate roots it guesses from the Cargo
-manifests (`cargo_source_closure._crate_source_paths`), plus the files outside
-each crate that its build reads. The guess was wrong in both directions, and
-slow:
+Molt selects crate roots from Cargo manifests
+(`cargo_source_closure._crate_source_paths`), plus crate-declared build inputs.
+`molt.source_admission` alone determines their file membership: Git-admitted
+files below directory roots and explicitly declared file inputs. The older
+recursive walks were wrong in both directions:
 
 - **It missed inputs.** The native runtime identity omitted `include/molt/molt.h` and the
   23 `include/molt/shared` headers that build scripts compile the C API shims
@@ -26,9 +28,10 @@ slow:
   `molt-runtime/src/builtins/mod.rs` compiles through `#[path]` in lanes whose
   feature closure leaves those crates out. These files now belong to the
   canonical source roots, so their changes invalidate that identity.
-- **It counts products.** Tools can write build products inside crate roots.
-  The walk includes those products, caches and publication locks even when
-  Cargo did not read them. Content hashing scales with their total bytes.
+- **It counted products.** Tools write products inside crate roots. Ignored
+  products, caches, crash stages and persistent publication locks no longer
+  enter source identities. Lock files remain in place for inode-based flock
+  custody; unlinking them would allow competing holders on different inodes.
 - **Its environment is a fixed allowlist.** It misses variables that change the
   bytes Cargo builds: `COMPILER_PATH` and `GCC_EXEC_PREFIX` (declared by the
   `cc` crate in every native lane), and, by the review, `LIBSQLITE3_FLAGS`,
@@ -134,13 +137,16 @@ the declaration that would cover them. Covering only a directory's present files
 insufficient: adding its first header could otherwise leave the identity
 unchanged. The parser is itself part of the runtime tooling identity.
 
-Admission and publication normalize their declared roots at the existing
+Directory containment (`paths_outside`) normalizes declared roots at the existing
 `realpath` boundary, then build one operation-local immutable hash index.
-Coverage checks the input itself and each ancestor against that index, using
+It checks each directory and ancestor against that index, using
 the host's `Path` equality and hashing for drive/case semantics. It preserves
 exact-root, descendant and watched-directory coverage, rejects sibling prefixes,
 and adds no filesystem observation, process spawn or persistent cache. Every
-Cargo publication consumer uses this same coverage owner.
+Cargo publication consumer uses this same coverage owner. File coverage now
+materializes the Git-admitted file union and checks exact membership (HF-590).
+That enumeration adds one Git query across all directory roots of the check;
+explicit ignored file reads can no longer pass through ancestor containment.
 
 For N observed inputs, R roots and maximum path depth D, the index stores R root
 entries and queries perform at most N(D+1) hash-membership probes, instead of
@@ -492,3 +498,45 @@ make-style grammar misreads Cargo's on Windows. The design above answers each.
 Real builds then found what the drafts had not: Cargo reports a build script
 and a root staticlib only as uplifted copies, and molt-runtime compiles
 sibling-crate files through `#[path]`.
+
+## Source membership (HF-590)
+
+`molt.source_admission.repository_source_paths` is the shared Git inventory
+parser, moved from development tooling into the compiler package. Runtime
+native/WASM/CPython-ABI identities, publication executor identity and release
+source-tree replay, backend source keys and metadata, build input reports,
+`CompilerSourceGeneration`, frontend semantic keys, link fingerprints and
+latest-source timestamps consume `admitted_source_files`. Link products and
+other explicit file roots remain declared inputs even when Git ignores them.
+The old bytecode exclusion predicates and recursive identity walks are retired.
+
+A directory declaration admits `git ls-files --cached --others
+--exclude-standard` under its literal root. Thus tracked dot files and new
+unignored source files count; ignored debris and empty directory labels do not.
+Directories in identity and generation records derive from admitted files.
+Directory replacement custody remains fenced, while timestamps changed only
+by debris cannot abort an otherwise stable compiler build. File custody and
+content checks retain their existing stable-reader authority.
+
+One live Git query captures all directory roots of an identity together. The
+NUL-framed parser memo is scoped by checkout, HEAD and index stat **and the
+current inventory bytes**. HEAD/index alone cannot detect untracked additions,
+ignore-rule edits or global exclude changes; there is no time-based inventory
+cache. Git errors refuse admission rather than selecting archive behavior.
+Outside Git, directory admission uses Cargo's dot-file rule. Installed compiler
+admission continues to use its sealed release inventory. This follows the
+[Cargo package input rule](https://doc.rust-lang.org/cargo/reference/manifest.html#the-exclude-and-include-fields).
+
+`uncovered_build_inputs` checks actual dep-info file reads against the admitted
+file union, not merely containment under a directory. An ignored `include!`
+therefore refuses publication until it is explicitly declared or admitted.
+Directory watches and Cargo's implicit whole-package watch enumerate admitted
+files; they are not claims that a script read every ignored lock's bytes.
+An explicit ignored file reported by rustc or a build script remains a read
+and is refused. Watched roots still require declared root coverage.
+
+Runtime member and family schemas are v6; artifact source fingerprints are
+version 5, backend source metadata carries schema 5 and cache source trees are
+v4. Older schemas cannot authorize reuse. Complete consumed-byte attestation
+and previously Fresh Cargo unit provenance remain the separate open contract
+above; source admission alone does not establish them.

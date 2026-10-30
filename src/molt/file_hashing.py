@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 
-_SOURCE_FINGERPRINT_IGNORED_DIRS = frozenset({"__pycache__"})
-_SOURCE_FINGERPRINT_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
+from molt.source_admission import admitted_source_files, source_directories
+
 # A timestamp near a tick can miss another same-tick write (the racy-git rule).
 DIGEST_RACY_WINDOW_NS = 2_000_000_000
 
@@ -184,46 +184,14 @@ def _sha256_file(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def _source_fingerprint_should_skip(path: Path) -> bool:
-    return (
-        any(part in _SOURCE_FINGERPRINT_IGNORED_DIRS for part in path.parts)
-        or path.suffix in _SOURCE_FINGERPRINT_IGNORED_SUFFIXES
-    )
-
-
 def _iter_source_fingerprint_files(
     path: Path, *, on_directory: Callable[[Path], None] | None = None
 ) -> Iterator[Path]:
-    """Yield the files a source fingerprint covers; report each listed
-    directory to ``on_directory`` (adding a file changes its directory)."""
-    if path.is_dir():
-        yield from _iter_source_fingerprint_dir(path, on_directory)
-        return
-    if path.exists() and path.is_file() and not _source_fingerprint_should_skip(path):
-        yield path
-
-
-def _iter_source_fingerprint_dir(
-    path: Path, on_directory: Callable[[Path], None] | None = None
-) -> Iterator[Path]:
+    files = admitted_source_files((path,))
     if on_directory is not None:
-        on_directory(path)
-    try:
-        with os.scandir(path) as iterator:
-            entries = sorted(iterator, key=lambda entry: entry.name)
-    except OSError:
-        raise
-    for entry in entries:
-        entry_path = Path(entry.path)
-        if entry.name in _SOURCE_FINGERPRINT_IGNORED_DIRS:
-            continue
-        try:
-            if entry.is_dir(follow_symlinks=False):
-                yield from _iter_source_fingerprint_dir(entry_path, on_directory)
-            elif entry.is_file() and not _source_fingerprint_should_skip(entry_path):
-                yield entry_path
-        except OSError:
-            raise
+        for directory in source_directories(files, (path,)):
+            on_directory(directory)
+    yield from files
 
 
 def _source_fingerprint_files(path: Path) -> list[Path]:
@@ -231,11 +199,7 @@ def _source_fingerprint_files(path: Path) -> list[Path]:
 
 
 def _hash_source_tree_file(path: Path, root: Path, hasher: Any) -> None:
-    try:
-        rel_path = path.relative_to(root)
-        rel_bytes = str(rel_path).encode("utf-8")
-    except ValueError:
-        rel_bytes = str(path).encode("utf-8")
+    rel_bytes = _source_fingerprint_label(path, root).encode("utf-8")
     hasher.update(rel_bytes)
     hasher.update(b"\0")
     with path.open("rb") as handle:
@@ -244,14 +208,27 @@ def _hash_source_tree_file(path: Path, root: Path, hasher: Any) -> None:
     hasher.update(b"\0")
 
 
+def _source_fingerprint_label(path: Path, root: Path) -> str:
+    # Admission already establishes component containment. Path.relative_to
+    # scans/constructs every ancestor; avoid repeating that
+    # work for each file in a closure. normcase retains Windows path semantics.
+    text = os.fspath(path)
+    prefix = os.fspath(root).rstrip(os.sep) + os.sep
+    if os.path.normcase(text[: len(prefix)]) == os.path.normcase(prefix):
+        return text[len(prefix) :]
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return text
+
+
 def _hash_source_tree_paths(
     paths: Sequence[Path],
     root: Path,
     hasher: Any,
 ) -> None:
-    for path in sorted(paths, key=lambda item: str(item)):
-        for item in _iter_source_fingerprint_files(path):
-            _hash_source_tree_file(item, root, hasher)
+    for item in admitted_source_files(paths):
+        _hash_source_tree_file(item, root, hasher)
 
 
 def _hash_source_tree_metadata(
@@ -261,29 +238,24 @@ def _hash_source_tree_metadata(
     hasher = hashlib.sha256()
     file_count = 0
     try:
-        for path in sorted(paths, key=lambda item: str(item)):
-            for item in _iter_source_fingerprint_files(path):
-                try:
-                    stat = item.stat()
-                except OSError:
-                    return None
-                change_time_ns = content_change_time_ns(item, stat)
-                if change_time_ns is None:
-                    return None
-                try:
-                    rel_path = item.relative_to(root)
-                    rel_text = str(rel_path)
-                except ValueError:
-                    rel_text = str(item)
-                hasher.update(rel_text.encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(str(stat.st_size).encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(str(change_time_ns).encode("utf-8"))
-                hasher.update(b"\0")
-                file_count += 1
+        for item in admitted_source_files(paths):
+            try:
+                stat = item.stat()
+            except OSError:
+                return None
+            change_time_ns = content_change_time_ns(item, stat)
+            if change_time_ns is None:
+                return None
+            rel_text = _source_fingerprint_label(item, root)
+            hasher.update(rel_text.encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(str(stat.st_size).encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(str(change_time_ns).encode("utf-8"))
+            hasher.update(b"\0")
+            file_count += 1
     except OSError:
         return None
     return hasher.hexdigest(), file_count

@@ -56,11 +56,11 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.static_archive_identity import artifact_content_identity
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt import input_report as _input_report
+from molt.source_admission import admitted_source_files, source_directories
 from molt.file_publication import atomic_write_bytes
 from molt.file_hashing import (
     _hash_source_tree_metadata,
     _hash_source_tree_paths,
-    _iter_source_fingerprint_files,
 )
 from molt.host_tool_products import HostToolProduct
 from molt.process_environment import ProcessEnvironment
@@ -524,15 +524,15 @@ def _backend_fingerprint(
         _backend_source_paths(project_root, backend_features, product=product),
         product=product,
     )
+    admitted = admitted_source_files(source_paths)
     if _input_report.active():
         # Enumerate every backend source for the build record, whichever
         # shortcut this fingerprint takes below.
-        for source in (*source_paths, project_root / "Cargo.lock"):
-            for path in _iter_source_fingerprint_files(
-                source, on_directory=_input_report.report_directory
-            ):
-                _input_report.report_file(path)
-    meta = f"profile:{cargo_profile}\n"
+        for directory in source_directories(admitted, source_paths):
+            _input_report.report_directory(directory)
+        for path in (*admitted, project_root / "Cargo.lock"):
+            _input_report.report_file(path)
+    meta = f"source_schema:5\nprofile:{cargo_profile}\n"
     meta += f"cargo_build:{build_admission.fingerprint}\n"
     meta += f"features:{','.join(backend_features)}\n"
     meta += f"locked_dependencies:{lock_digest}\n"
@@ -559,7 +559,7 @@ def _backend_fingerprint(
             "meta_digest": meta_digest,
             "source_state": source_state,
         }
-    inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
+    inputs_meta = _hash_source_tree_metadata(admitted, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
     if _stored_fingerprint_matches_source_metadata(
         stored_fingerprint,
@@ -579,7 +579,7 @@ def _backend_fingerprint(
     hasher = hashlib.sha256()
     hasher.update(meta.encode("utf-8"))
     try:
-        _hash_source_tree_paths(source_paths, project_root, hasher)
+        _hash_source_tree_paths(admitted, project_root, hasher)
     except OSError as exc:
         raise CompilerIdentityError(
             f"Compiler sources could not be read: {exc}"

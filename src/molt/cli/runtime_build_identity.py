@@ -10,7 +10,7 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, Iterator, Mapping, Sequence, TypeVar, assert_never, cast
+from typing import Callable, Mapping, Sequence, TypeVar, assert_never, cast
 
 from molt import input_report as _input_report
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
@@ -30,6 +30,7 @@ from molt.cli.runtime_identity_schema import (
     _digest,
     _freeze_json,
 )
+from molt.source_admission import admitted_source_files, source_directories
 from molt import host_capacity
 from molt.rust_toolchain import (
     RustLiteralRemapSource,
@@ -54,54 +55,6 @@ _TREE_HASH_MEMORY_HEADROOM_BYTES = 256 * 1024 * 1024
 _TREE_HASH_MAX_WORKERS = 32
 _TREE_HASH_BATCH_SIZE = 32
 _TREE_HASH_LOCAL = threading.local()
-
-
-def _runtime_tree_candidates(
-    root: Path,
-    *,
-    logical_root: str,
-    directories: list[str],
-) -> Iterator[tuple[str, Path]]:
-    pending: list[tuple[Path, str]] = [(root, "")]
-    while pending:
-        directory, relative_prefix = pending.pop()
-        directories.append(
-            f"{logical_root}/{relative_prefix.replace(os.sep, '/')}"
-            if relative_prefix
-            else logical_root
-        )
-        _input_report.report_directory(directory)
-        try:
-            with os.scandir(directory) as iterator:
-                entries = sorted(iterator, key=lambda entry: entry.name)
-        except OSError as exc:
-            raise OSError(
-                f"runtime input enumeration failed for {logical_root!r}: "
-                f"{directory}: {exc}"
-            ) from exc
-        subdirectories: list[tuple[Path, str]] = []
-        for entry in entries:
-            candidate = Path(entry.path)
-            relative = (
-                f"{relative_prefix}/{entry.name}" if relative_prefix else entry.name
-            )
-            try:
-                candidate_stat = entry.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise OSError(
-                    f"runtime input enumeration failed for {logical_root!r}: "
-                    f"{candidate}: {exc}"
-                ) from exc
-            if metadata_is_link_like(candidate_stat):
-                raise ValueError(
-                    f"runtime input path alias escaped logical root "
-                    f"{logical_root!r}: {candidate}"
-                )
-            if stat_module.S_ISDIR(candidate_stat.st_mode):
-                subdirectories.append((candidate, relative))
-            elif stat_module.S_ISREG(candidate_stat.st_mode):
-                yield f"{logical_root}/{relative.replace(os.sep, '/')}", candidate
-        pending.extend(reversed(subdirectories))
 
 
 @dataclass(frozen=True)
@@ -289,6 +242,7 @@ class RuntimeTreeIndex:
         root_files: dict[str, tuple[str, ...]] = {}
         root_directories: dict[str, tuple[str, ...]] = {}
         missing: set[str] = set()
+        canonical_roots: list[tuple[str, Path]] = []
         for logical_root, raw_path in roots:
             try:
                 raw_stat = raw_path.lstat()
@@ -298,7 +252,26 @@ class RuntimeTreeIndex:
                 raise ValueError(
                     f"runtime input root alias is forbidden for {logical_root!r}: {raw_path}"
                 )
-            path = raw_path.resolve(strict=False)
+            canonical_roots.append((logical_root, raw_path.resolve(strict=False)))
+        admitted = admitted_source_files(
+            tuple(path for _label, path in canonical_roots)
+        )
+        directory_roots = {
+            os.path.normcase(os.fspath(path)): path for _label, path in canonical_roots
+        }
+        shortest_root = min(map(len, directory_roots), default=0)
+        by_root: dict[Path, list[Path]] = {}
+        for item in admitted:
+            parent = os.fspath(item.parent)
+            while len(parent) >= shortest_root:
+                selected_root = directory_roots.get(os.path.normcase(parent))
+                if selected_root is not None:
+                    by_root.setdefault(selected_root, []).append(item)
+                next_parent = os.path.dirname(parent)
+                if next_parent == parent:
+                    break
+                parent = next_parent
+        for logical_root, path in canonical_roots:
             prior_root = root_labels.get(logical_root)
             if prior_root is not None and prior_root != path:
                 raise ValueError(
@@ -318,11 +291,23 @@ class RuntimeTreeIndex:
             if stat_module.S_ISREG(root_stat.st_mode):
                 candidates.append((logical_root, path))
             elif stat_module.S_ISDIR(root_stat.st_mode):
+                selected = tuple(by_root.get(path, ()))
+                prefix_length = len(os.fspath(path).rstrip(os.sep) + os.sep)
                 candidates.extend(
-                    _runtime_tree_candidates(
-                        path, logical_root=logical_root, directories=directories
+                    (
+                        f"{logical_root}/{os.fspath(item)[prefix_length:].replace(os.sep, '/')}",
+                        item,
                     )
+                    for item in selected
                 )
+                for directory in source_directories(selected, (path,)):
+                    relative = os.fspath(directory)[prefix_length:].replace(os.sep, "/")
+                    directories.append(
+                        logical_root
+                        if directory == path
+                        else f"{logical_root}/{relative}"
+                    )
+                    _input_report.report_directory(directory)
             else:
                 raise ValueError(
                     f"runtime input root is not a regular file or directory: "

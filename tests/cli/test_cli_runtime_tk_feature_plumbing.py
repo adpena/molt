@@ -549,7 +549,7 @@ def test_artifact_needs_rebuild_checks_regular_artifact_once(
     monkeypatch.setattr(Path, "stat", wrapped_stat)
     assert (
         RUNTIME_FINGERPRINTS._artifact_needs_rebuild(
-            artifact, fingerprint, {"version": 4, **fingerprint}
+            artifact, fingerprint, {"version": 5, **fingerprint}
         )
         is not present
     )
@@ -561,7 +561,7 @@ def test_artifact_needs_rebuild_on_runtime_meta_digest_mismatch(tmp_path: Path) 
     artifact.write_bytes(static_archive_bytes(b"fake-staticlib"))
     fingerprint = _source_fingerprint("current")
     assert RUNTIME_FINGERPRINTS._artifact_needs_rebuild(
-        artifact, fingerprint, {"version": 4, **fingerprint, "meta_digest": "other"}
+        artifact, fingerprint, {"version": 5, **fingerprint, "meta_digest": "other"}
     )
 
 
@@ -1331,12 +1331,12 @@ def test_runtime_fingerprint_read_observes_same_size_preserved_mtime_rewrite(
     os.utime(fingerprint_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     second = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     assert first == {
-        "version": 4,
+        "version": 5,
         **first_fingerprint,
         "cargo_environment": compiler_environment_inputs().to_dict(),
     }
     assert second == {
-        "version": 4,
+        "version": 5,
         **second_fingerprint,
         "cargo_environment": compiler_environment_inputs().to_dict(),
     }
