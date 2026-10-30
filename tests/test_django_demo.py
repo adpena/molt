@@ -16,10 +16,11 @@ HAS_DJANGO = django is not None
 pytestmark = pytest.mark.skipif(not HAS_DJANGO, reason="django not installed")
 
 
-def _setup_django() -> None:
+def _setup_django(monkeypatch: pytest.MonkeyPatch) -> None:
     root = Path(__file__).resolve().parents[1] / "demo" / "django_app"
-    sys.path.insert(0, str(root))
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "demoapp.settings")
+    monkeypatch.syspath_prepend(str(root))
+    if "DJANGO_SETTINGS_MODULE" not in os.environ:
+        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "demoapp.settings")
     assert django is not None
     django.setup()
 
@@ -30,21 +31,21 @@ def _worker_cmd() -> str:
     return f"{sys.executable} -u {worker}"
 
 
-def _setup_worker_env() -> None:
-    os.environ["MOLT_WORKER_CMD"] = _worker_cmd()
-    os.environ["MOLT_WORKER_WIRE"] = "json"
-    os.environ["MOLT_ACCEL_CLIENT_MODE"] = "per_request"
-    os.environ["MOLT_STUB_LIST_ITEMS_CODEC_OUT"] = "json"
+def _setup_worker_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MOLT_WORKER_CMD", _worker_cmd())
+    monkeypatch.setenv("MOLT_WORKER_WIRE", "json")
+    monkeypatch.setenv("MOLT_ACCEL_CLIENT_MODE", "per_request")
+    monkeypatch.setenv("MOLT_STUB_LIST_ITEMS_CODEC_OUT", "json")
     # Ensure molt_accel is importable by the stub worker.
     root = Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(root))
-    sys.path.insert(0, str(root / "src"))
-    os.environ["PYTHONPATH"] = f"{root}:{root / 'src'}"
+    monkeypatch.syspath_prepend(str(root))
+    monkeypatch.syspath_prepend(str(root / "src"))
+    monkeypatch.setenv("PYTHONPATH", f"{root}:{root / 'src'}")
 
 
-def test_demo_baseline_and_offload_parity() -> None:
-    _setup_django()
-    _setup_worker_env()
+def test_demo_baseline_and_offload_parity(monkeypatch: pytest.MonkeyPatch) -> None:
+    _setup_django(monkeypatch)
+    _setup_worker_env(monkeypatch)
     from django.test import Client
 
     client = Client()
@@ -59,9 +60,9 @@ def test_demo_baseline_and_offload_parity() -> None:
     assert set(base_json["counts"].keys()) == set(offload_json["counts"].keys())
 
 
-def test_compute_offload_parity() -> None:
-    _setup_django()
-    _setup_worker_env()
+def test_compute_offload_parity(monkeypatch: pytest.MonkeyPatch) -> None:
+    _setup_django(monkeypatch)
+    _setup_worker_env(monkeypatch)
     from django.test import Client
 
     client = Client()
@@ -76,7 +77,7 @@ def test_compute_offload_parity() -> None:
 def test_demo_baseline_sqlite_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _setup_django()
+    _setup_django(monkeypatch)
     from demoapp.db_seed import seed_db
     from django.test import Client
 
@@ -93,9 +94,9 @@ def test_demo_baseline_sqlite_mode(
     assert payload["counts"] == {"open": 2, "closed": 1}
 
 
-def test_demo_offload_table_body() -> None:
-    _setup_django()
-    _setup_worker_env()
+def test_demo_offload_table_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    _setup_django(monkeypatch)
+    _setup_worker_env(monkeypatch)
     from django.test import Client
 
     client = Client()
@@ -114,8 +115,8 @@ def test_demo_offload_table_body() -> None:
 def test_demo_offload_retry_once_on_worker_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _setup_django()
-    _setup_worker_env()
+    _setup_django(monkeypatch)
+    _setup_worker_env(monkeypatch)
     from django.test import Client
 
     sentinel = tmp_path / "fail_once.marker"

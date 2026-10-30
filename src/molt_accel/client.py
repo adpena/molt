@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import StrEnum
 import subprocess
 import threading
 import time
@@ -40,8 +42,24 @@ _POLL_INTERVAL = 0.01
 _STARTUP_GRACE_MS = 1000
 
 
+class _WorkerState(StrEnum):
+    STARTING = "starting"
+    READY = "ready"
+    DEAD = "dead"
+    REPLACED = "replaced"
+
+
+@dataclass(eq=False)
+class _Worker:
+    proc: subprocess.Popen[bytes]
+    state: _WorkerState = _WorkerState.STARTING
+    reader: threading.Thread | None = None
+    restart_after_drain: bool = False
+
+
 class _PendingResponse:
-    def __init__(self) -> None:
+    def __init__(self, proc: subprocess.Popen[bytes]) -> None:
+        self.proc = proc
         self.event = threading.Event()
         self.response: dict[str, Any] | None = None
         self.error: BaseException | None = None
@@ -76,20 +94,12 @@ class MoltClient:
         self._max_restarts = max(0, max_restarts)
         self._env = env
         self._cwd = cwd
-        self._proc: subprocess.Popen[bytes] | None = None
-        self._stdin: IO[bytes] | None = None
-        self._stdout: IO[bytes] | None = None
+        self._worker: _Worker | None = None
         self._proc_lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._pending_lock = threading.Lock()
         self._pending: dict[int, _PendingResponse] = {}
-        self._reader: threading.Thread | None = None
-        self._reader_error: BaseException | None = None
-        self._restart_after_drain = False
         self._next_id = 1
-        # The worker process that has answered a request. Until the current
-        # process answers, every request also waits for its startup.
-        self._ready_proc: subprocess.Popen[bytes] | None = None
 
     def __enter__(self) -> "MoltClient":
         self._ensure_process()
@@ -100,36 +110,77 @@ class MoltClient:
 
     def close(self) -> None:
         with self._proc_lock:
-            self._close_locked()
+            if self._worker is not None:
+                self._close_locked(self._worker)
 
-    def _close_locked(self) -> None:
-        if self._proc is None:
+    def _transition_locked(
+        self, worker: _Worker, state: _WorkerState, error: BaseException | None = None
+    ) -> None:
+        """The sole lifecycle transition authority; callers hold _proc_lock."""
+        if worker.state is state:
             return
-        try:
-            self._proc.terminate()
-            self._proc.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            self._proc.kill()
-            self._proc.wait(timeout=1)
-        finally:
-            self._proc = None
-            self._stdin = None
-            self._stdout = None
-            self._reader = None
-            self._reader_error = None
-            self._ready_proc = None
-            self._restart_after_drain = False
-            self._clear_pending(MoltWorkerUnavailable("Worker closed"))
+        allowed = {
+            _WorkerState.STARTING: {
+                _WorkerState.READY,
+                _WorkerState.DEAD,
+                _WorkerState.REPLACED,
+            },
+            _WorkerState.READY: {_WorkerState.DEAD, _WorkerState.REPLACED},
+            _WorkerState.DEAD: {_WorkerState.REPLACED},
+            _WorkerState.REPLACED: set(),
+        }
+        if state not in allowed[worker.state]:
+            raise RuntimeError(f"invalid worker transition: {worker.state} -> {state}")
+        worker.state = state
+        if state in {_WorkerState.DEAD, _WorkerState.REPLACED}:
+            assert error is not None
+            with self._pending_lock:
+                failed = [
+                    self._pending.pop(request_id)
+                    for request_id, pending in tuple(self._pending.items())
+                    if pending.proc is worker.proc
+                ]
+            for pending in failed:
+                pending.set_error(error)
 
-    def _ensure_process(self) -> None:
-        with self._proc_lock:
-            if self._reader_error is not None:
-                self._close_locked()
-            if self._proc is not None and self._proc.poll() is None:
-                self._ensure_reader()
-                return
+    def _close_locked(self, worker: _Worker) -> None:
+        self._transition_locked(
+            worker, _WorkerState.REPLACED, MoltWorkerUnavailable("Worker closed")
+        )
+        try:
+            if worker.proc.poll() is None:
+                worker.proc.terminate()
+                try:
+                    worker.proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    worker.proc.kill()
+                    worker.proc.wait(timeout=1)
+        finally:
             try:
-                self._proc = subprocess.Popen(
+                if worker.proc.stdin is not None:
+                    worker.proc.stdin.close()
+            except BrokenPipeError:
+                # Closing a buffered partial frame can flush after this
+                # worker has died. Its requests already have terminal errors.
+                pass
+            finally:
+                if self._worker is worker:
+                    self._worker = None
+
+    def _ensure_process(self) -> _Worker:
+        with self._proc_lock:
+            worker = self._worker
+            if worker is not None:
+                if (
+                    worker.state in {_WorkerState.STARTING, _WorkerState.READY}
+                    and worker.proc.poll() is None
+                ):
+                    return worker
+                # A dead process can precede its reader's EOF. Retire its
+                # requests and reader ownership before publishing a successor.
+                self._close_locked(worker)
+            try:
+                proc = subprocess.Popen(
                     self._worker_cmd,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
@@ -139,76 +190,66 @@ class MoltClient:
                 )
             except OSError as exc:
                 raise MoltWorkerUnavailable("Failed to start worker") from exc
-            if self._proc.stdin is None or self._proc.stdout is None:
+            worker = _Worker(proc)
+            self._worker = worker
+            if proc.stdin is None or proc.stdout is None:
+                self._close_locked(worker)
                 raise MoltWorkerUnavailable("Worker pipes unavailable")
-            self._stdin = self._proc.stdin
-            self._stdout = self._proc.stdout
-            self._ensure_reader()
+            worker.reader = threading.Thread(
+                target=self._reader_loop, args=(worker, proc.stdout), daemon=True
+            )
+            worker.reader.start()
+            return worker
 
-    def _ensure_reader(self) -> None:
-        if self._reader is not None and self._reader.is_alive():
-            return
-        # Callers hold _proc_lock. The reader owns exactly this process's
-        # stream: a closed or replaced process never speaks for its successor.
-        assert self._proc is not None and self._stdout is not None
-        self._reader = threading.Thread(
-            target=self._reader_loop, args=(self._proc, self._stdout), daemon=True
-        )
-        self._reader.start()
+    def _reader_loop(self, worker: _Worker, stdout: IO[bytes]) -> None:
+        try:
+            while True:
+                try:
+                    response_bytes = read_frame(stdout, max_size=self._max_frame_size)
+                except EOFError:
+                    self._set_reader_error(
+                        worker, MoltWorkerUnavailable("Worker closed the stream")
+                    )
+                    return
+                except Exception as exc:
+                    self._set_reader_error(worker, MoltWorkerUnavailable(str(exc)))
+                    return
+                try:
+                    response = decode_message(response_bytes, self._wire)
+                except Exception as exc:
+                    self._set_reader_error(worker, MoltProtocolError(str(exc)))
+                    return
+                request_id = response.get("request_id")
+                if not isinstance(request_id, int):
+                    self._set_reader_error(
+                        worker, MoltProtocolError("Missing response id")
+                    )
+                    return
+                with self._proc_lock:
+                    if worker.state not in {_WorkerState.STARTING, _WorkerState.READY}:
+                        return
+                    self._transition_locked(worker, _WorkerState.READY)
+                    with self._pending_lock:
+                        pending = self._pending.get(request_id)
+                        if pending is not None and pending.proc is worker.proc:
+                            del self._pending[request_id]
+                        else:
+                            pending = None
+                    if pending is not None:
+                        pending.set_response(response)
+        finally:
+            stdout.close()
 
-    def _reader_loop(self, proc: subprocess.Popen[bytes], stdout: IO[bytes]) -> None:
-        while True:
-            try:
-                response_bytes = read_frame(stdout, max_size=self._max_frame_size)
-            except EOFError:
-                self._set_reader_error(
-                    proc, MoltWorkerUnavailable("Worker closed the stream")
-                )
-                return
-            except Exception as exc:
-                self._set_reader_error(proc, MoltWorkerUnavailable(str(exc)))
-                return
-            try:
-                response = decode_message(response_bytes, self._wire)
-            except Exception as exc:
-                self._set_reader_error(proc, MoltProtocolError(str(exc)))
-                return
-            request_id = response.get("request_id")
-            if not isinstance(request_id, int):
-                self._set_reader_error(proc, MoltProtocolError("Missing response id"))
-                return
-            self._ready_proc = proc
-            pending = self._pop_pending(request_id)
-            if pending is None:
-                continue
-            pending.set_response(response)
-
-    def _set_reader_error(
-        self, proc: subprocess.Popen[bytes], error: BaseException
-    ) -> None:
+    def _set_reader_error(self, worker: _Worker, error: BaseException) -> None:
         with self._proc_lock:
-            # A closed process's stream ends by design. Its end must not fail
-            # requests that a replacement process already owns.
-            if self._proc is not proc:
-                return
-            self._reader_error = error
-            self._clear_pending(error)
-
-    def _clear_pending(self, error: BaseException) -> None:
-        with self._pending_lock:
-            pending = list(self._pending.values())
-            self._pending.clear()
-        for item in pending:
-            item.set_error(error)
-
-    def _pop_pending(self, request_id: int) -> _PendingResponse | None:
-        with self._pending_lock:
-            return self._pending.pop(request_id, None)
+            if worker.state is not _WorkerState.REPLACED:
+                self._transition_locked(worker, _WorkerState.DEAD, error)
 
     def _wait_for_response(
         self,
         request_id: int,
         pending: _PendingResponse,
+        worker: _Worker,
         timeout_s: float | None,
         cancel_check: CancelCheck | None,
     ) -> dict[str, Any]:
@@ -222,39 +263,36 @@ class MoltClient:
                 return pending.response
             if cancel_check is not None and cancel_check():
                 self._abandon_pending(request_id)
-                self._send_cancel(request_id)
+                self._send_cancel(request_id, worker)
                 raise MoltCancelled("Request cancelled")
             if deadline is not None and time.monotonic() >= deadline:
                 self._abandon_pending(request_id)
-                self._send_cancel(request_id)
-                self._mark_restart_after_drain()
+                self._send_cancel(request_id, worker)
+                self._mark_restart_after_drain(worker)
                 raise MoltTimeout("Worker response timed out")
-            if self._reader_error is not None:
-                raise MoltWorkerUnavailable(
-                    "Worker reader failed"
-                ) from self._reader_error
 
     def _abandon_pending(self, request_id: int) -> None:
         with self._pending_lock:
             self._pending.pop(request_id, None)
 
-    def _mark_restart_after_drain(self) -> None:
+    def _mark_restart_after_drain(self, worker: _Worker) -> None:
         if not self._restart_on_failure:
             return
-        with self._pending_lock:
-            if self._pending:
-                self._restart_after_drain = True
-                return
-        self.close()
+        with self._proc_lock:
+            worker.restart_after_drain = True
+            self._maybe_restart_locked(worker)
 
-    def _maybe_restart_if_idle(self) -> None:
-        if not self._restart_after_drain:
+    def _maybe_restart_locked(self, worker: _Worker) -> None:
+        if not worker.restart_after_drain:
             return
         with self._pending_lock:
-            if self._pending:
+            if any(pending.proc is worker.proc for pending in self._pending.values()):
                 return
-            self._restart_after_drain = False
-        self.close()
+        self._close_locked(worker)
+
+    def _maybe_restart_if_idle(self, worker: _Worker) -> None:
+        with self._proc_lock:
+            self._maybe_restart_locked(worker)
 
     def call(
         self,
@@ -304,7 +342,6 @@ class MoltClient:
                 ):
                     raise
                 attempts += 1
-                self.close()
                 if backoff_ms > 0:
                     time.sleep(backoff_ms / 1000.0)
                     if backoff_cap_ms > 0:
@@ -323,12 +360,8 @@ class MoltClient:
         metrics_hook: Hook | None,
         cancel_check: CancelCheck | None,
     ) -> Any:
-        self._ensure_process()
-        if self._stdin is None or self._stdout is None:
-            raise MoltWorkerUnavailable("Worker pipes unavailable")
-        if self._reader_error is not None:
-            raise MoltWorkerUnavailable("Worker reader failed") from self._reader_error
-        if timeout_ms > 0 and self._ready_proc is not self._proc:
+        worker = self._ensure_process()
+        if timeout_ms > 0 and worker.state is _WorkerState.STARTING:
             # Every request sent before the worker first answers waits for its
             # startup, not only the request that started it.
             timeout_ms = max(timeout_ms, _STARTUP_GRACE_MS)
@@ -338,46 +371,61 @@ class MoltClient:
         except CodecUnavailableError as exc:
             raise MoltInvalidInput(str(exc)) from exc
 
-        pending = _PendingResponse()
-        with self._pending_lock:
-            request_id = self._next_id
-            self._next_id += 1
-            self._pending[request_id] = pending
-        message = {
-            "request_id": request_id,
-            "entry": entry,
-            "timeout_ms": timeout_ms,
-            "codec": codec,
-            "payload": payload_bytes,
-        }
-        wire_payload = encode_message(message, self._wire)
-        if cancel_check is not None and cancel_check():
-            self._abandon_pending(request_id)
-            raise MoltCancelled("Request cancelled before send")
-        request_meta = {
-            "request_id": request_id,
-            "entry": entry,
-            "codec": codec,
-            "timeout_ms": timeout_ms,
-            "payload_bytes": len(payload_bytes),
-        }
-        if before_send is not None:
-            before_send(dict(request_meta))
-        timeout_s = None if timeout_ms <= 0 else timeout_ms / 1000.0
-        start = time.monotonic()
+        pending = _PendingResponse(worker.proc)
+        with self._proc_lock:
+            if worker.state not in {_WorkerState.STARTING, _WorkerState.READY}:
+                raise MoltWorkerUnavailable("Worker replaced before request admission")
+            with self._pending_lock:
+                request_id = self._next_id
+                self._next_id += 1
+                self._pending[request_id] = pending
         try:
-            with self._send_lock:
-                write_frame(self._stdin, wire_payload, max_size=self._max_frame_size)
-        except Exception as exc:
-            self._abandon_pending(request_id)
-            raise MoltWorkerUnavailable("Failed to send request") from exc
+            message = {
+                "request_id": request_id,
+                "entry": entry,
+                "timeout_ms": timeout_ms,
+                "codec": codec,
+                "payload": payload_bytes,
+            }
+            wire_payload = encode_message(message, self._wire)
+            if cancel_check is not None and cancel_check():
+                raise MoltCancelled("Request cancelled before send")
+            request_meta = {
+                "request_id": request_id,
+                "entry": entry,
+                "codec": codec,
+                "timeout_ms": timeout_ms,
+                "payload_bytes": len(payload_bytes),
+            }
+            if before_send is not None:
+                before_send(dict(request_meta))
+            timeout_s = None if timeout_ms <= 0 else timeout_ms / 1000.0
+            start = time.monotonic()
+            try:
+                with self._send_lock:
+                    with self._proc_lock:
+                        if worker.state not in {
+                            _WorkerState.STARTING,
+                            _WorkerState.READY,
+                        }:
+                            raise MoltWorkerUnavailable(
+                                "Worker replaced before request send"
+                            )
+                        assert worker.proc.stdin is not None
+                        stdin = worker.proc.stdin
+                    write_frame(stdin, wire_payload, max_size=self._max_frame_size)
+            except Exception as exc:
+                self._set_reader_error(
+                    worker, MoltWorkerUnavailable("Failed to send request")
+                )
+                raise MoltWorkerUnavailable("Failed to send request") from exc
 
-        try:
             response = self._wait_for_response(
-                request_id, pending, timeout_s, cancel_check
+                request_id, pending, worker, timeout_s, cancel_check
             )
         finally:
-            self._maybe_restart_if_idle()
+            self._abandon_pending(request_id)
+            self._maybe_restart_if_idle(worker)
         elapsed_ms = int((time.monotonic() - start) * 1000)
         if response.get("request_id") != request_id:
             raise MoltProtocolError("Mismatched response id")
@@ -416,9 +464,7 @@ class MoltClient:
             return payload_data
         return decode_payload(payload_data, response_codec)
 
-    def _send_cancel(self, request_id: int) -> None:
-        if self._stdin is None:
-            return
+    def _send_cancel(self, request_id: int, worker: _Worker) -> None:
         cancel_codec = "msgpack" if self._wire == "msgpack" else "json"
         try:
             payload = encode_payload({"request_id": request_id}, cancel_codec)
@@ -431,7 +477,12 @@ class MoltClient:
             }
             wire_payload = encode_message(message, self._wire)
             with self._send_lock:
-                write_frame(self._stdin, wire_payload, max_size=self._max_frame_size)
+                with self._proc_lock:
+                    if worker.state not in {_WorkerState.STARTING, _WorkerState.READY}:
+                        return
+                    assert worker.proc.stdin is not None
+                    stdin = worker.proc.stdin
+                write_frame(stdin, wire_payload, max_size=self._max_frame_size)
         except (BrokenPipeError, OSError):
             # Worker process is gone — cancel cannot be delivered; this is
             # expected during shutdown or after a crash.  Other callers will
