@@ -1589,7 +1589,11 @@ def _storage_path_selection(
         "integration-receipts",
         "scratch-evidence",
     ):
-        if not selected.is_dir():
+        # A scratch lease captures a future failure-evidence destination. It
+        # need not exist for successful commands; archival owns readiness and
+        # preserves raw scratch if the destination is unavailable. Durable
+        # family bindings are still validated by the selector above.
+        if kind != "scratch-evidence" and not selected.is_dir():
             raise DxConfigError(
                 f"selected artifact root is unavailable: {selected}; restore the selected volume before writing {kind}"
             )
