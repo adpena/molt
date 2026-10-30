@@ -2183,10 +2183,10 @@ def test_v1_sweeper_reclaims_its_own_records_without_observing_v2(tmp_path):
         "guard_scratch_v1_oracle",
         Path(__file__).parent / "fixtures" / "guard_scratch_v1.py",
     )
-    legacy, _ = _legacy_retained_scratch(tmp_path)
     lease, _ = _lease(tmp_path, number=2)
     _finish(lease, success=False)
     lease.release()
+    legacy, _ = _legacy_retained_scratch(tmp_path)
     root = lease.generation.parent
     before = {
         str(p.relative_to(root)): (p.stat().st_ino, p.read_bytes())

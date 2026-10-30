@@ -107,14 +107,11 @@ def _upgrade_root_declaration(value: Mapping) -> dict[str, object]:
     path = Path(value["path"])
     if not path.is_absolute() or path == Path(path.anchor) or ".." in path.parts:
         raise ValueError("identity-unverifiable: invalid legacy Cargo root path")
-    from molt.file_locks import _acquire_file_lock, _release_file_lock
+    from molt.file_locks import _shared_cache_lock
 
-    lock = _acquire_file_lock(
-        path / "molt-proof-output" / "v2" / "identity-migration.lock",
-        timeout_s=10,
-        timeout_message="Cargo root migration is busy",
-    )
-    try:
+    # Migration cannot create lock/output directories on an unproven volume.
+    lock_key = hashlib.sha256(str(path).encode()).hexdigest()[:24]
+    with _shared_cache_lock("cargo-root-identity-v2-" + lock_key):
         identity = upgrade_legacy(
             path, {"device": value["device"], "inode": value["inode"]}
         )
@@ -123,8 +120,6 @@ def _upgrade_root_declaration(value: Mapping) -> dict[str, object]:
             "path": str(path),
             "identity": identity.payload(),
         }
-    finally:
-        _release_file_lock(lock)
 
 
 def declared_root(value: object) -> dict[str, object] | None:

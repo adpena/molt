@@ -1296,3 +1296,58 @@ def test_a_warm_toolchain_resolves_a_cargo_plan_without_probe_processes(
     third = resolve()
     assert third.toolchain_identity() == first.toolchain_identity()
     assert probes == []
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_probe_store_rekeys_in_its_own_namespace(tmp_path, renumbered):
+    import hashlib
+    import time
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    tool = tmp_path / "tool"
+    tool.write_bytes(b"a tool generation")
+    identity = stable_regular_file_identity(tool, label="migration tool")
+    key = facts.ProbeKey(
+        "migration",
+        (facts.ProbeTool.from_identity(tool, identity),),
+        ("--version",),
+        None,
+        (),
+        (facts.file_input(tool),),
+    )
+    legacy_key = key.as_json()
+    metadata = tool.stat()
+    pair = [metadata.st_dev + int(renumbered), metadata.st_ino]
+    legacy_key["tools"][0]["token"][:2] = pair
+    legacy_key["inputs"][0][1][:2] = pair
+    digest = hashlib.sha256(
+        json.dumps(legacy_key, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    legacy = tmp_path / "cache" / "toolchain-facts" / "v1.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "schema": "molt.toolchain-facts.v1",
+                "facts": {
+                    digest: {
+                        "key": legacy_key,
+                        "stdout": "old answer",
+                        "stderr": "",
+                        "recorded_ns": time.time_ns(),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = legacy.read_bytes()
+    current = facts.ToolchainFactStore(tmp_path / "cache", max_age_ns=DAY_NS)
+    answer = current.lookup(key)
+    assert answer == (None if renumbered else facts.ProbeAnswer("old answer", ""))
+    assert current.path == legacy.with_name("v2.json")
+    assert legacy.read_bytes() == before
+    assert (
+        json.loads(current.path.read_text(encoding="utf-8"))["schema"]
+        == facts.STORE_SCHEMA
+    )

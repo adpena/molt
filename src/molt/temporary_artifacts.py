@@ -619,6 +619,13 @@ def _migrate_legacy_scratch(root: Path) -> list[str]:
                             )
                             _drop_index(old)
                             continue
+                        if _read_receipt(
+                            _index_path(old), label="legacy scratch index"
+                        ) != {
+                            "schema": "molt.guard-scratch.v1",
+                            "terminal_digest": owner.get("terminal_digest"),
+                        }:
+                            raise ValueError("legacy scratch index differs from owner")
                         write_exact(
                             intent_path,
                             {
@@ -627,14 +634,23 @@ def _migrate_legacy_scratch(root: Path) -> list[str]:
                             },
                         )
                     if source == old:
-                        namespace_move_exclusive(old, new)
-                    old_index, new_index = _index_path(old), _index_path(new)
-                    if old_index.exists():
-                        new_index.parent.mkdir(parents=True, exist_ok=True)
-                        namespace_move_exclusive(old_index, new_index)
+                        # Fence the namespace durably before rewriting any
+                        # member: rollback must never expose v2 under v1 names.
+                        namespace_publish_directory_exclusive(old, new)
+                    new_index = _index_path(new)
                     _upgrade_scratch_locked(new, legacy_generation=old)
                     owner = _owner(new)
-                    _publish_index(new, str(owner["terminal_digest"]))
+                    if new_index.exists():
+                        if _read_receipt(new_index, label="migrated scratch index") != {
+                            "schema": SCHEMA,
+                            "terminal_digest": owner["terminal_digest"],
+                        }:
+                            raise ValueError(
+                                "migrated scratch index differs from owner"
+                            )
+                    else:
+                        _publish_index(new, str(owner["terminal_digest"]))
+                    _drop_index(old)
                     intent_path.unlink()
             except ScratchBusy:
                 continue

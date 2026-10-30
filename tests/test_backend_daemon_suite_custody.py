@@ -12,7 +12,7 @@ import pytest
 from molt import backend_daemon_custody as daemon
 from molt import backend_daemon_suite_custody as suite
 from molt import process_model
-from molt.exact_json import write_exact
+from molt.exact_json import read_exact, write_exact
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools import memory_guard
 
@@ -2360,3 +2360,74 @@ def test_sentinel_busy_adoption_lock_skips_discovery_and_retains_known_births(
         assert sentinel._tree_tracker.known_identities[child] == before
     finally:
         _release_file_lock(lock)
+
+
+@pytest.mark.parametrize(
+    "state,renumbered", [("closed", False), ("closed", True), ("active", False)]
+)
+def test_legacy_suite_migrates_only_closed_proven_scratch(tmp_path, state, renumbered):
+    root = tmp_path / "daemon"
+    old = root / "suite-leases" / ("c" * 32) / "lease.json"
+    old.parent.mkdir(parents=True)
+    target = old.parent / "scratch"
+    target.mkdir()
+    (target / "keep").write_bytes(b"old suite payload")
+    metadata = target.stat()
+    nonce = "d" * 32
+    record = {
+        "schema": "molt.backend_daemon.suite-lease.v2",
+        "token": "c" * 32,
+        "state": state,
+        "owner_pid": 10,
+        "owner_started_at_ns": 100,
+        "guardian_pid": 11,
+        "guardian_started_at_ns": 110,
+        "project_root": str(tmp_path),
+        "daemon_root": str(root),
+        "source_digest": "e" * 64,
+        "interpreter": sys.executable,
+        "interpreter_sha256": "f" * 64,
+        "scratch": {
+            "target_identity": {
+                "device": metadata.st_dev + int(renumbered),
+                "inode": metadata.st_ino,
+            },
+            "target_receipt": nonce,
+        },
+    }
+    write_exact(old, record)
+    write_exact(
+        target / suite.temporary_artifacts._TARGET_RECEIPT,
+        {"schema": "molt.guard-scratch.v1", "nonce": nonce},
+    )
+    lock = _try_acquire_file_lock(old.parent / "owner.lock")
+    assert lock is not None
+    _release_file_lock(lock)
+    before = {
+        str(p.relative_to(old.parent)): p.read_bytes()
+        for p in old.parent.rglob("*")
+        if p.is_file()
+    }
+    outcomes = suite.migrate_legacy_suite_leases(root)
+    current = root / "suite-leases" / "v3" / record["token"] / "lease.json"
+    if renumbered or state == "active":
+        assert outcomes == [{"path": str(old), "outcome": "identity-unverifiable"}]
+        assert not current.exists()
+        assert {
+            str(p.relative_to(old.parent)): p.read_bytes()
+            for p in old.parent.rglob("*")
+            if p.is_file()
+        } == before
+    else:
+        assert outcomes == [{"path": str(old), "outcome": "migrated"}]
+        assert not old.exists()
+        migrated = suite.read_lease(current)
+        assert migrated is not None and migrated["schema"] == suite.SCHEMA
+        assert (
+            current.parent / "scratch" / "keep"
+        ).read_bytes() == b"old suite payload"
+        assert read_exact(
+            current.parent / "scratch" / suite.temporary_artifacts._TARGET_RECEIPT,
+            max_bytes=65536,
+            label="test nonce",
+        ) == {"schema": suite.temporary_artifacts.SCHEMA, "nonce": nonce}

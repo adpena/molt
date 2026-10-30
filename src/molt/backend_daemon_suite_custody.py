@@ -18,7 +18,10 @@ import uuid
 
 from molt import backend_daemon_custody as daemon, temporary_artifacts
 from molt.file_deletion import delete_path
-from molt.file_publication import resolve_owned_path, namespace_move_exclusive
+from molt.file_publication import (
+    resolve_owned_path,
+    namespace_publish_directory_exclusive,
+)
 from molt.exact_json import canonical_json_bytes, encode_exact, read_exact, write_exact
 from molt.durable_file_identity import (
     DurableFileIdentity,
@@ -236,7 +239,7 @@ def _upgrade_suite_lease(path: Path) -> None:
             )
             destination = path.parent.parent / "v3" / path.parent.name
             destination.parent.mkdir(parents=True, exist_ok=True)
-            namespace_move_exclusive(path.parent, destination)
+            namespace_publish_directory_exclusive(path.parent, destination)
             path = destination / path.name
             intent_path = destination / "identity-upgrade.json"
         if intent_path.exists():
@@ -316,24 +319,28 @@ def migrate_legacy_suite_leases(daemon_root: Path) -> list[dict[str, str]]:
     """Canonical, locked migration of closed suites; active owners stay put."""
     root = daemon_root / "suite-leases"
     outcomes = []
-    for namespace in (root, root / "v3"):
-        if not namespace.exists():
-            continue
-        for directory in sorted(namespace.iterdir()):
-            if not _TOKEN.fullmatch(directory.name):
+    # Snapshot discovery once: a failed transition resumes on the next visit,
+    # not a second implicit attempt after moving into the new namespace.
+    paths = [
+        directory / "lease.json"
+        for namespace in (root, root / "v3")
+        if namespace.exists()
+        for directory in sorted(namespace.iterdir())
+        if _TOKEN.fullmatch(directory.name)
+    ]
+    for path in paths:
+        try:
+            record = read_exact(path, max_bytes=16384, label="legacy suite discovery")
+            if (
+                record.get("schema") != "molt.backend_daemon.suite-lease.v2"
+                and not (path.parent / "identity-upgrade.json").exists()
+            ):
                 continue
-            path = directory / "lease.json"
-            try:
-                record = read_exact(
-                    path, max_bytes=16384, label="legacy suite discovery"
-                )
-                if record.get("schema") != "molt.backend_daemon.suite-lease.v2":
-                    continue
-                _upgrade_suite_lease(path)
-                outcome = "migrated"
-            except (OSError, ValueError, TypeError, KeyError):
-                outcome = "identity-unverifiable"
-            outcomes.append({"path": str(path), "outcome": outcome})
+            _upgrade_suite_lease(path)
+            outcome = "migrated"
+        except (OSError, ValueError, TypeError, KeyError):
+            outcome = "identity-unverifiable"
+        outcomes.append({"path": str(path), "outcome": outcome})
     return outcomes
 
 

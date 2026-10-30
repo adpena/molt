@@ -874,6 +874,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         receipt = (
             context.roots.custody
             / "logs/runtime_wasm_final_preflight"
+            / "v4"
             / f"{context.claim.run_id}.json"
         )
         if not host_path_is_within(receipt, context.roots.custody):
