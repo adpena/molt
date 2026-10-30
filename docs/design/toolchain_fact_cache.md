@@ -126,9 +126,8 @@ Standalone runtime and environment capture probes also use the host
 environment's admission. `lookup` accepts the inventory's exact observed
 generation. A miss hashes through the existing no-follow handle against that
 same observation. A hit still passes current-path verification, including every
-hardlink alias, and the final file and directory-membership fences. A changed
-ctime invalidates a same-size rewrite even when its mtime is restored. Windows
-continues to hash fresh content and query handle ChangeTime.
+hardlink alias, and the final file and directory-membership fences. The content
+identity rules are in [observed_inputs.md](observed_inputs.md).
 
 The capture coordinator alone reads the cache and stages completed identities;
 hash workers never touch SQLite. New digests reach the shared cache only after
@@ -152,10 +151,6 @@ inventory identity; metadata consumers still read and verify required bytes.
 It writes no digest rows until new captures or age renewal make the cache dirty.
 Cold capture additionally reads the selected bytes and commits one batch of new
 digests. The existing age budget and racy-window policy remain authoritative.
-This follows the incremental-input approach used by
-[Cargo](https://doc.rust-lang.org/cargo/reference/build-cache.html) and
-[uv](https://docs.astral.sh/uv/concepts/cache/), while retaining Molt's stronger
-ctime and closing-snapshot checks.
 
 ### Keys per probe class
 
