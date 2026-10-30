@@ -29,6 +29,94 @@ from tests.tools.test_release_supply_chain import (
 )
 
 
+@pytest.mark.parametrize("orphan", [False, True])
+def test_compilation_controller_restores_current_receipts_once(tmp_path, orphan):
+    import ast
+    import pathlib
+    import shutil
+    import stat
+    import sys
+
+    from molt.backend_protocol import (
+        BackendAddressedProgramInput,
+        BackendCodegenOrigin,
+        BackendEmissionOrigin,
+        BackendEmissionProducer,
+    )
+    from molt.cli import backend_cache
+    from molt.cli.backend_artifact_contract import (
+        BackendArtifactContract,
+        BackendArtifactKind,
+    )
+    from molt.default_paths import backend_cache_sync_receipt_path
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    source, destination = tmp_path / "seed", tmp_path / "restored"
+    source.mkdir()
+    content = b'fn main() { println!("cache"); }\n'
+    emitted = tmp_path / "emitted.rs"
+    emitted.write_bytes(content)
+    origin = BackendEmissionOrigin(
+        BackendEmissionProducer("one-shot", 101, "a" * 64),
+        BackendAddressedProgramInput(hashlib.sha256(b"lease").hexdigest(), 5, ""),
+        hashlib.sha256(content).hexdigest(),
+        len(content),
+        BackendCodegenOrigin(101, ()),
+    )
+    artifact = source / ("a" * 64 + ".artifact-" + "b" * 64 + ".rs")
+    backend_cache._publish_immutable_backend_cache_artifact(
+        emitted,
+        artifact,
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        warnings=[],
+        emission_origin=origin,
+    )
+    receipt = backend_cache_sync_receipt_path(artifact)
+    saved = receipt.read_bytes()
+    if orphan:
+        artifact.chmod(0o600)
+        artifact.unlink()
+    # Run the controller's real restore function, with real publication and
+    # files. Isolate only its process-global environment and import-path edits.
+    tree = ast.parse(consumer_replay._COMPILATION_CONTROLLER)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "copy_cache"
+    )
+    namespace = {
+        "pathlib": pathlib,
+        "shutil": shutil,
+        "stat": stat,
+        "os": SimpleNamespace(environ=dict(os.environ), fstat=os.fstat),
+        "sys": SimpleNamespace(path=list(sys.path)),
+        "config": {
+            "compiler_source_root": str(Path(__file__).resolve().parents[2]),
+            "environment": dict(os.environ),
+            "cache_contract": {"kind": "rust", "target_triple": None},
+            "output_max_bytes": 1024**2,
+        },
+    }
+    exec(
+        compile(ast.Module(body=[function], type_ignores=[]), "controller", "exec"),
+        namespace,
+    )
+    restore = namespace["copy_cache"]
+    if orphan:
+        with pytest.raises(ValueError, match="receipt has no artifact"):
+            restore(source, destination, restore=True)
+    else:
+        restore(source, destination, restore=True)
+        restored = destination / artifact.name
+        assert restored.read_bytes() == content
+        actual = json.loads(backend_cache_sync_receipt_path(restored).read_bytes())
+        current = stable_regular_file_identity(restored, label="restored cache")
+        assert actual["generation"] == current.stat_token().payload()
+        assert actual["generation"] != json.loads(saved)["generation"]
+        assert actual["emission_origin"] == origin.payload()
+    assert receipt.read_bytes() == saved
+
+
 def _wasm_stage_inputs(tmp_path):
     source = tmp_path / "emitted"
     source.mkdir()

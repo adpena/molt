@@ -276,6 +276,15 @@ def backend_cache_sync_receipt_path(artifact: Path) -> Path:
     return artifact.with_name(artifact.name + ".sync.v5.json")
 
 
+def backend_cache_artifact_for_sync_receipt(receipt: Path) -> Path | None:
+    """Decode only the current publisher's receipt namespace."""
+    name, separator, _ = receipt.name.rpartition(".sync.")
+    if not separator or not is_backend_cache_artifact_name(name):
+        return None
+    artifact = receipt.with_name(name)
+    return artifact if backend_cache_sync_receipt_path(artifact) == receipt else None
+
+
 def backend_cache_publication_lock_name(artifact: Path) -> str:
     """Publication and eviction serialize on the same artifact generation."""
     digest = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[:16]
