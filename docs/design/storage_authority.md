@@ -120,7 +120,8 @@ durable. Custom historical temp roots must be supplied explicitly.
 A superseded registered queue sandbox must be detached, clean of source changes,
 idle for a day, and free of runner/integration and lifetime locks. Its complete
 signal is archived and indexed in surviving Git custody before Git releases the
-worktree registration. Dirty, locked, branch-holding and unregistered sources
+worktree registration. The complete tree must still match the archived snapshot
+before removal; new or changed signal preserves the source. Dirty, locked, branch-holding and unregistered sources
 stay. The existing relocation primitive still supports selected clean worktree
 moves, including verified cross-volume publication; superseded registration
 retirement is a distinct operation. Controller environments regenerate at their

@@ -841,6 +841,7 @@ def _retire_replaced_sandbox(
         cwd=repo,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if branch.returncode != 1:
         return "source-holds-branch-or-unknown", None
@@ -857,14 +858,20 @@ def _retire_replaced_sandbox(
         cwd=repo,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if status.returncode or status.stdout.strip():
         return "dirty-source", None
     if not apply:
         return "ready-archive-and-retire-worktree", None
+    before = _tree_identity(source)
     archive = compact_evidence(
         source, destination, kind="integration-receipts", remove_source=False
     )
+    if _tree_identity(source) != before:
+        raise DriverError(
+            f"sandbox changed after archival; preserved source and archive: {source}"
+        )
     # The index survives Git removal and is published before it; a failed Git
     # removal leaves both source and archive for recovery.
     write_exact(
@@ -880,6 +887,7 @@ def _retire_replaced_sandbox(
         cwd=repo,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if removed.returncode:
         raise DriverError(f"archived sandbox removal deferred: {removed.stderr}")
