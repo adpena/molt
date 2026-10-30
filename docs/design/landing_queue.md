@@ -148,7 +148,7 @@ The code that decides whether a change lands is never the change.
   `config` (the data
   the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
   and `.python-version` extracts into
-  `<git-common-dir>/molt/controllers/<key>`, where the key is the digest of
+  `<artifact-root>/molt-state/controllers/<repository>/<key>`, where the key is the digest of
   those tree and blob ids. `uv sync --frozen --no-dev` builds the
   controller's environment from main's lock, and the driver runs there as
   `python -I`, so no module, dependency version or `PYTHON*` setting comes

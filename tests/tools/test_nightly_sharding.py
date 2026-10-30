@@ -33,12 +33,12 @@ def _discovery_fixture_sources() -> tuple[tuple[str, str], ...]:
     closure = local_python_import_closure(
         root, (root / relative for relative in nightly_sharding.DISCOVERY_SOURCE_SEEDS)
     )
-    # This toy checkout contains no CLI dynamic import facade or manifest;
-    # copy the real reachable Python source family, preserving import semantics.
+    # Storage/tool discovery can reach the CLI facade. Its declared manifest
+    # is part of the real closure too; omitting it changes import semantics
+    # and can turn unrelated corpus files into authority inputs.
     return tuple(
         (path.relative_to(root).as_posix(), path.read_text(encoding="utf-8"))
         for path in closure.paths
-        if path.suffix == ".py"
     )
 
 
@@ -561,7 +561,8 @@ def test_namespace_only_topology_invalidates_plan_and_measurement_contract(tmp_p
     )
     before = nightly_sharding._authority_inputs(root)
     plan = _plan(root)
-    (root / "namespace_only").mkdir()
+    # Keep the namespace inside the real manifest's admitted source roots.
+    (root / "src/namespace_only").mkdir()
     after = nightly_sharding._authority_inputs(root)
     assert before.files == after.files
     assert before.topology_digest != after.topology_digest

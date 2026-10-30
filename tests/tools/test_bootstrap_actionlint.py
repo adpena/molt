@@ -16,6 +16,7 @@ import zipfile
 
 import pytest
 
+from molt.dx import StorageWriteClaim, grant_storage_writes
 from tools import bootstrap_actionlint as bootstrap
 
 
@@ -155,7 +156,10 @@ def tool_destination(tmp_path: Path, request):
             destination.symlink_to(root, target_is_directory=True)
         except (NotImplementedError, OSError) as exc:
             pytest.skip(f"directory symlink unavailable: {exc}")
-        yield destination
+        # This root is a temporary fixture like pytest's base temp, on another
+        # volume by design. Declare it; every other path stays refused.
+        with grant_storage_writes(StorageWriteClaim("temporary", root)):
+            yield destination
 
 
 def test_bootstrap_stages_on_install_filesystem(

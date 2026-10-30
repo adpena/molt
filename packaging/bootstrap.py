@@ -19,6 +19,16 @@ import sys
 from types import ModuleType
 
 
+# The home-path authority and its complete source import closure, in dependency
+# order. Each member imports only the standard library and earlier members.
+RELEASE_SOURCE_MODULES = (
+    "path_custody",
+    "process_environment",
+    "custody_layout",
+    "default_paths",
+)
+
+
 def _release_inputs(root: Path) -> tuple[Path, str]:
     manifest = json.loads(
         (root / "source" / "release-compiler-source.json").read_text(encoding="utf-8")
@@ -41,8 +51,7 @@ def _release_inputs(root: Path) -> tuple[Path, str]:
     for name in (
         "pyproject.toml",
         "uv.lock",
-        "src/molt/default_paths.py",
-        "src/molt/process_environment.py",
+        *(f"src/molt/{module}.py" for module in RELEASE_SOURCE_MODULES),
     ):
         path = root / "source" / name
         record = inputs[name]
@@ -67,7 +76,7 @@ def _release_inputs(root: Path) -> tuple[Path, str]:
         package.__path__ = []
         modules[package_name] = package
         sys.modules[package_name] = package
-        for name in ("process_environment", "default_paths"):
+        for name in RELEASE_SOURCE_MODULES:
             source_name = f"src/molt/{name}.py"
             module_name = f"{package_name}.{name}"
             module = ModuleType(module_name)

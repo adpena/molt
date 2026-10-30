@@ -409,47 +409,59 @@ def _download(
     expected_sha256: str,
     expected_size: int | None = None,
 ) -> None:
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    lock = archive.with_name(f".{archive.name}.lock")
-    with _ExclusiveFileLock(lock):
-        if archive.exists():
-            size_matches = (
-                expected_size is None or archive.stat().st_size == expected_size
-            )
-            if size_matches and _sha256(archive) == expected_sha256:
-                print(f"[bootstrap-llvm] using cached archive {archive}", flush=True)
-                return
-            print(
-                f"[bootstrap-llvm] replacing corrupt cached archive {archive}",
-                flush=True,
-            )
-            archive.unlink()
-        tmp = archive.with_name(f".{archive.name}.{uuid.uuid4().hex}.partial")
-        print(f"[bootstrap-llvm] downloading {url}", flush=True)
-        owned_tmp = False
-        try:
-            with urllib.request.urlopen(url) as response, tmp.open("xb") as fh:
-                owned_tmp = True
-                shutil.copyfileobj(response, fh)
-                fh.flush()
-                os.fsync(fh.fileno())
-            actual_size = tmp.stat().st_size
-            if expected_size is not None and actual_size != expected_size:
-                raise SystemExit(
-                    "LLVM source archive size mismatch: "
-                    f"expected {expected_size}, found {actual_size}: {tmp}"
+
+    from molt.checkout_state import toolchain_state_use
+
+    with toolchain_state_use((archive,), create=True):
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        lock = archive.with_name(f".{archive.name}.lock")
+        with _ExclusiveFileLock(lock):
+            if archive.exists():
+                size_matches = (
+                    expected_size is None or archive.stat().st_size == expected_size
                 )
-            actual = _sha256(tmp)
-            if actual != expected_sha256:
-                raise SystemExit(
-                    f"LLVM source archive checksum mismatch: expected {expected_sha256}, "
-                    f"found {actual}: {tmp}"
+                if size_matches and _sha256(archive) == expected_sha256:
+                    print(
+                        f"[bootstrap-llvm] using cached archive {archive}", flush=True
+                    )
+                    from molt.checkout_state import record_toolchain_use
+
+                    record_toolchain_use(archive)
+                    return
+                print(
+                    f"[bootstrap-llvm] replacing corrupt cached archive {archive}",
+                    flush=True,
                 )
-            os.replace(tmp, archive)
-            _fsync_directory(archive.parent)
-        finally:
-            if owned_tmp and tmp.exists():
-                tmp.unlink()
+                archive.unlink()
+            tmp = archive.with_name(f".{archive.name}.{uuid.uuid4().hex}.partial")
+            print(f"[bootstrap-llvm] downloading {url}", flush=True)
+            owned_tmp = False
+            try:
+                with urllib.request.urlopen(url) as response, tmp.open("xb") as fh:
+                    owned_tmp = True
+                    shutil.copyfileobj(response, fh)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                actual_size = tmp.stat().st_size
+                if expected_size is not None and actual_size != expected_size:
+                    raise SystemExit(
+                        "LLVM source archive size mismatch: "
+                        f"expected {expected_size}, found {actual_size}: {tmp}"
+                    )
+                actual = _sha256(tmp)
+                if actual != expected_sha256:
+                    raise SystemExit(
+                        f"LLVM source archive checksum mismatch: expected {expected_sha256}, "
+                        f"found {actual}: {tmp}"
+                    )
+                os.replace(tmp, archive)
+                _fsync_directory(archive.parent)
+            finally:
+                if owned_tmp and tmp.exists():
+                    tmp.unlink()
+        from molt.checkout_state import record_toolchain_use
+
+        record_toolchain_use(archive)
 
 
 def _stable_file_sha256(path: Path) -> tuple[int, str]:
@@ -623,146 +635,157 @@ def _safe_extract_tar_xz(
     source_contract: dict[str, object] | None = None,
     simulate_publication_crash_after: str | None = None,
 ) -> dict[str, object]:
-    marker = destination / LLVM_SOURCE_MARKER
-    lock = destination.with_name(f".{destination.name}.extract.lock")
-    with _ExclusiveFileLock(lock):
-        _recover_publication(destination)
-        actual_archive_sha256 = _sha256(archive)
-        if actual_archive_sha256 != archive_sha256:
-            raise SystemExit(
-                "LLVM source archive changed before extraction: "
-                f"expected {archive_sha256}, found {actual_archive_sha256}: {archive}"
-            )
-        marker_payload: dict[str, object] = {}
-        if destination.is_dir() and marker.is_file():
-            try:
-                decoded = json.loads(marker.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                decoded = None
-            if isinstance(decoded, dict):
-                marker_payload = decoded
-        marker_has_attestation_shape = (
-            marker_payload.get("schema") == LLVM_SOURCE_SCHEMA
-            and isinstance(marker_payload.get("archive_sha256"), str)
-            and isinstance(marker_payload.get("source_contract"), dict)
-            and isinstance(marker_payload.get("source_tree"), dict)
-            and _source_marker_record_is_valid(marker_payload)
-        )
-        live_tree_matches_marker = False
-        if marker_has_attestation_shape:
-            recorded_projection = marker_payload.get("source_projection")
-            live_projection: dict[str, object] | None = None
-            live_projection_is_trusted = False
-            projection_matches = False
-            if isinstance(recorded_projection, dict):
-                live_projection, live_projection_is_trusted = _source_tree_projection(
-                    destination
-                )
-                projection_matches = (
-                    live_projection_is_trusted
-                    and recorded_projection.get("trusted") is True
-                    and {
-                        key: value
-                        for key, value in recorded_projection.items()
-                        if key != "trusted"
-                    }
-                    == live_projection
-                )
-                live_tree_matches_marker = projection_matches
-            if not live_tree_matches_marker:
-                live_identity = _source_tree_identity(destination)
-                live_tree_matches_marker = (
-                    marker_payload.get("source_tree") == live_identity
-                )
-            if (
-                live_tree_matches_marker
-                and marker_payload.get("archive_sha256") == archive_sha256
-                and marker_payload.get("source_contract") == (source_contract or {})
-            ):
-                if not projection_matches:
-                    if live_projection is None:
-                        live_projection, live_projection_is_trusted = (
-                            _source_tree_projection(destination)
-                        )
-                    upgraded = _source_marker_payload(
-                        archive_sha256=archive_sha256,
-                        source_contract=source_contract or {},
-                        source_tree=live_identity,
-                        source_projection={
-                            **live_projection,
-                            "trusted": live_projection_is_trusted,
-                        },
-                    )
-                    _atomic_json(marker, upgraded)
-                    marker_payload = upgraded
-                print(
-                    f"[bootstrap-llvm] using verified source tree {destination}",
-                    flush=True,
-                )
-                return marker_payload
-        if destination.exists() and not marker_has_attestation_shape:
-            raise SystemExit(
-                "refusing to replace an unattested LLVM source directory: "
-                f"{destination}"
-            )
-        staging = _publication_staging(destination, uuid.uuid4().hex)
-        staging.mkdir(parents=True)
-        try:
-            with tarfile.open(archive, "r:xz") as tf:
-                tf.extractall(staging, filter="data")
-            source_tree = _source_tree_identity(staging)
-            source_projection, source_projection_is_trusted = _source_tree_projection(
-                staging
-            )
-            payload = _source_marker_payload(
-                archive_sha256=archive_sha256,
-                source_contract=source_contract or {},
-                source_tree=source_tree,
-                source_projection={
-                    **source_projection,
-                    "trusted": source_projection_is_trusted,
-                },
-            )
-            _atomic_json(staging / LLVM_SOURCE_MARKER, payload)
+    from molt.checkout_state import toolchain_state_use
 
-            def validate(published: Path) -> None:
-                published_marker = published / LLVM_SOURCE_MARKER
+    with toolchain_state_use((archive, destination), create=True):
+        marker = destination / LLVM_SOURCE_MARKER
+        lock = destination.with_name(f".{destination.name}.extract.lock")
+        with _ExclusiveFileLock(lock):
+            _recover_publication(destination)
+            actual_archive_sha256 = _sha256(archive)
+            if actual_archive_sha256 != archive_sha256:
+                raise SystemExit(
+                    "LLVM source archive changed before extraction: "
+                    f"expected {archive_sha256}, found {actual_archive_sha256}: {archive}"
+                )
+            marker_payload: dict[str, object] = {}
+            if destination.is_dir() and marker.is_file():
                 try:
-                    observed = json.loads(published_marker.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError) as exc:
-                    raise SystemExit(
-                        f"published LLVM source marker is unreadable: {published_marker}: {exc}"
-                    ) from exc
-                published_projection, published_projection_is_trusted = (
-                    _source_tree_projection(published)
-                )
-                projection_matches = (
-                    source_projection_is_trusted
-                    and published_projection_is_trusted
-                    and published_projection == source_projection
-                )
-                if observed != payload or (
-                    not projection_matches
-                    and _source_tree_identity(published) != payload["source_tree"]
-                ):
-                    raise SystemExit(
-                        f"published LLVM source tree failed integrity projection: {published}"
-                    )
-
-            _publish_staged_prefix(
-                staging,
-                destination,
-                validate=validate,
-                simulate_crash_after=simulate_publication_crash_after,
+                    decoded = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    decoded = None
+                if isinstance(decoded, dict):
+                    marker_payload = decoded
+            marker_has_attestation_shape = (
+                marker_payload.get("schema") == LLVM_SOURCE_SCHEMA
+                and isinstance(marker_payload.get("archive_sha256"), str)
+                and isinstance(marker_payload.get("source_contract"), dict)
+                and isinstance(marker_payload.get("source_tree"), dict)
+                and _source_marker_record_is_valid(marker_payload)
             )
-            return payload
-        except (OSError, tarfile.TarError) as exc:
-            raise SystemExit(
-                f"Could not safely extract LLVM source archive: {exc}"
-            ) from exc
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
+            live_tree_matches_marker = False
+            if marker_has_attestation_shape:
+                recorded_projection = marker_payload.get("source_projection")
+                live_projection: dict[str, object] | None = None
+                live_projection_is_trusted = False
+                projection_matches = False
+                if isinstance(recorded_projection, dict):
+                    live_projection, live_projection_is_trusted = (
+                        _source_tree_projection(destination)
+                    )
+                    projection_matches = (
+                        live_projection_is_trusted
+                        and recorded_projection.get("trusted") is True
+                        and {
+                            key: value
+                            for key, value in recorded_projection.items()
+                            if key != "trusted"
+                        }
+                        == live_projection
+                    )
+                    live_tree_matches_marker = projection_matches
+                if not live_tree_matches_marker:
+                    live_identity = _source_tree_identity(destination)
+                    live_tree_matches_marker = (
+                        marker_payload.get("source_tree") == live_identity
+                    )
+                if (
+                    live_tree_matches_marker
+                    and marker_payload.get("archive_sha256") == archive_sha256
+                    and marker_payload.get("source_contract") == (source_contract or {})
+                ):
+                    if not projection_matches:
+                        if live_projection is None:
+                            live_projection, live_projection_is_trusted = (
+                                _source_tree_projection(destination)
+                            )
+                        upgraded = _source_marker_payload(
+                            archive_sha256=archive_sha256,
+                            source_contract=source_contract or {},
+                            source_tree=live_identity,
+                            source_projection={
+                                **live_projection,
+                                "trusted": live_projection_is_trusted,
+                            },
+                        )
+                        _atomic_json(marker, upgraded)
+                        marker_payload = upgraded
+                    print(
+                        f"[bootstrap-llvm] using verified source tree {destination}",
+                        flush=True,
+                    )
+                    from molt.checkout_state import record_toolchain_use
+
+                    record_toolchain_use(destination)
+                    return marker_payload
+            if destination.exists() and not marker_has_attestation_shape:
+                raise SystemExit(
+                    "refusing to replace an unattested LLVM source directory: "
+                    f"{destination}"
+                )
+            staging = _publication_staging(destination, uuid.uuid4().hex)
+            staging.mkdir(parents=True)
+            try:
+                with tarfile.open(archive, "r:xz") as tf:
+                    tf.extractall(staging, filter="data")
+                source_tree = _source_tree_identity(staging)
+                source_projection, source_projection_is_trusted = (
+                    _source_tree_projection(staging)
+                )
+                payload = _source_marker_payload(
+                    archive_sha256=archive_sha256,
+                    source_contract=source_contract or {},
+                    source_tree=source_tree,
+                    source_projection={
+                        **source_projection,
+                        "trusted": source_projection_is_trusted,
+                    },
+                )
+                _atomic_json(staging / LLVM_SOURCE_MARKER, payload)
+
+                def validate(published: Path) -> None:
+                    published_marker = published / LLVM_SOURCE_MARKER
+                    try:
+                        observed = json.loads(
+                            published_marker.read_text(encoding="utf-8")
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        raise SystemExit(
+                            f"published LLVM source marker is unreadable: {published_marker}: {exc}"
+                        ) from exc
+                    published_projection, published_projection_is_trusted = (
+                        _source_tree_projection(published)
+                    )
+                    projection_matches = (
+                        source_projection_is_trusted
+                        and published_projection_is_trusted
+                        and published_projection == source_projection
+                    )
+                    if observed != payload or (
+                        not projection_matches
+                        and _source_tree_identity(published) != payload["source_tree"]
+                    ):
+                        raise SystemExit(
+                            f"published LLVM source tree failed integrity projection: {published}"
+                        )
+
+                _publish_staged_prefix(
+                    staging,
+                    destination,
+                    validate=validate,
+                    simulate_crash_after=simulate_publication_crash_after,
+                )
+                from molt.checkout_state import record_toolchain_use
+
+                record_toolchain_use(destination)
+                return payload
+            except (OSError, tarfile.TarError) as exc:
+                raise SystemExit(
+                    f"Could not safely extract LLVM source archive: {exc}"
+                ) from exc
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
 
 
 def _publication_journal(destination: Path) -> Path:
@@ -873,8 +896,12 @@ def _recover_publication_locked(destination: Path) -> None:
 
 
 def _recover_publication(destination: Path) -> None:
-    with _ExclusiveFileLock(_publication_lock(destination)):
-        _recover_publication_locked(destination)
+
+    from molt.checkout_state import toolchain_state_use
+
+    with toolchain_state_use((destination,), create=True):
+        with _ExclusiveFileLock(_publication_lock(destination)):
+            _recover_publication_locked(destination)
 
 
 class _SimulatedPublicationCrash(BaseException):
@@ -888,64 +915,70 @@ def _publish_staged_prefix(
     validate: Callable[[Path], None],
     simulate_crash_after: str | None = None,
 ) -> None:
-    if staging.parent.resolve() != destination.parent.resolve():
-        raise SystemExit(
-            "LLVM staging and publication prefixes must share one parent for "
-            "same-volume rename publication"
-        )
-    if not staging.exists():
-        raise SystemExit(f"LLVM publication staging prefix does not exist: {staging}")
-    if staging.is_symlink() or not staging.is_dir():
-        raise SystemExit(
-            f"LLVM publication staging prefix must be a real directory: {staging}"
-        )
-    if destination.is_symlink():
-        raise SystemExit(
-            f"canonical LLVM publication destination cannot be a symlink: {destination}"
-        )
-    transaction = _publication_transaction(staging, destination)
-    with _ExclusiveFileLock(_publication_lock(destination)):
-        _recover_publication_locked(destination)
-        backup = _publication_backup(destination, transaction)
-        journal = _publication_journal(destination)
-        payload: dict[str, object] = {
-            "schema": LLVM_PUBLICATION_SCHEMA,
-            "transaction": transaction,
-            "destination": str(destination.resolve()),
-            "staging": str(staging.resolve()),
-            "backup": str(backup.resolve()),
-            "phase": "prepared",
-        }
 
-        def record(phase: str) -> None:
-            payload["phase"] = phase
-            _atomic_json(journal, payload)
-            if simulate_crash_after == phase:
-                raise _SimulatedPublicationCrash(phase)
+    from molt.checkout_state import toolchain_state_use
 
-        def mutate(phase: str) -> None:
-            if simulate_crash_after == phase:
-                raise _SimulatedPublicationCrash(phase)
-
-        record("prepared")
-        try:
-            if destination.exists():
-                destination.rename(backup)
-            mutate("old-renamed")
-            record("old-moved")
-            staging.rename(destination)
-            _fsync_directory(destination.parent)
-            mutate("new-renamed")
-            record("new-moved")
-            validate(destination)
-            record("validated")
-        except _SimulatedPublicationCrash:
-            raise
-        except BaseException:
+    with toolchain_state_use((destination,), create=True):
+        if staging.parent.resolve() != destination.parent.resolve():
+            raise SystemExit(
+                "LLVM staging and publication prefixes must share one parent for "
+                "same-volume rename publication"
+            )
+        if not staging.exists():
+            raise SystemExit(
+                f"LLVM publication staging prefix does not exist: {staging}"
+            )
+        if staging.is_symlink() or not staging.is_dir():
+            raise SystemExit(
+                f"LLVM publication staging prefix must be a real directory: {staging}"
+            )
+        if destination.is_symlink():
+            raise SystemExit(
+                f"canonical LLVM publication destination cannot be a symlink: {destination}"
+            )
+        transaction = _publication_transaction(staging, destination)
+        with _ExclusiveFileLock(_publication_lock(destination)):
             _recover_publication_locked(destination)
-            raise
-        else:
-            _recover_publication_locked(destination)
+            backup = _publication_backup(destination, transaction)
+            journal = _publication_journal(destination)
+            payload: dict[str, object] = {
+                "schema": LLVM_PUBLICATION_SCHEMA,
+                "transaction": transaction,
+                "destination": str(destination.resolve()),
+                "staging": str(staging.resolve()),
+                "backup": str(backup.resolve()),
+                "phase": "prepared",
+            }
+
+            def record(phase: str) -> None:
+                payload["phase"] = phase
+                _atomic_json(journal, payload)
+                if simulate_crash_after == phase:
+                    raise _SimulatedPublicationCrash(phase)
+
+            def mutate(phase: str) -> None:
+                if simulate_crash_after == phase:
+                    raise _SimulatedPublicationCrash(phase)
+
+            record("prepared")
+            try:
+                if destination.exists():
+                    destination.rename(backup)
+                mutate("old-renamed")
+                record("old-moved")
+                staging.rename(destination)
+                _fsync_directory(destination.parent)
+                mutate("new-renamed")
+                record("new-moved")
+                validate(destination)
+                record("validated")
+            except _SimulatedPublicationCrash:
+                raise
+            except BaseException:
+                _recover_publication_locked(destination)
+                raise
+            else:
+                _recover_publication_locked(destination)
 
 
 def _llvm_source_root(extract_root: Path, version: str) -> Path:
@@ -1075,6 +1108,9 @@ def _prepare_build_cache(
         shutil.rmtree(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
     _atomic_json(marker, identity)
+    from molt.checkout_state import record_toolchain_use
+
+    record_toolchain_use(build_dir)
 
 
 def _verify_llvm_config(prefix: Path, version: str) -> Path:
@@ -1187,90 +1223,94 @@ def _build_and_publish(
     cmake: _BuildTool,
     ninja: _BuildTool,
 ) -> tuple[LlvmPrefixVerification, Path] | None:
-    lock_path = build_dir.with_name(f".{build_dir.name}.build.lock")
-    with _ExclusiveFileLock(lock_path):
-        if is_canonical:
-            current = _verified_canonical_prefix(
-                prefix, version=args.version, required_targets=required_targets
-            )
-            if current is not None:
-                return current
 
-        _prepare_build_cache(
-            build_dir,
-            build_identity,
-        )
-        prefix.parent.mkdir(parents=True, exist_ok=True)
-        install_prefix = prefix
-        if is_canonical:
-            install_prefix = _publication_staging(prefix, uuid.uuid4().hex)
-            install_prefix.mkdir()
+    from molt.checkout_state import toolchain_state_use
 
-        cmake_configure = [
-            cmake.path,
-            "-S",
-            str(llvm_source),
-            "-B",
-            str(build_dir),
-            "-G",
-            "Ninja",
-            f"-DCMAKE_MAKE_PROGRAM={ninja.path}",
-            f"-DCMAKE_BUILD_TYPE={args.build_type}",
-            f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
-            f"-DLLVM_TARGETS_TO_BUILD={targets}",
-            f"-DLLVM_ENABLE_PROJECTS={args.projects}",
-            *(f"-D{name}={value}" for name, value in _LLVM_CMAKE_CONTRACT),
-        ]
-        try:
-            _run(cmake_configure, cwd=ROOT, env=env)
-            if args.configure_only:
-                print(f"[bootstrap-llvm] configured {build_dir}")
-                return None
-            _run(
-                [
-                    cmake.path,
-                    "--build",
-                    str(build_dir),
-                    "--target",
-                    "install",
-                    "--",
-                    "-j",
-                    str(args.jobs),
-                ],
-                cwd=ROOT,
-                env=env,
-            )
-            verification = verify_llvm_toolchain_prefix(
-                ROOT,
-                install_prefix,
-                version=args.version,
-                expected_targets=tuple(sorted(required_targets)),
-                content_policy="full",
-            )
-            attestation = write_llvm_toolchain_attestation(
-                ROOT,
-                verification,
-                projects=tuple(sorted(project_set)),
-                build_type=args.build_type,
-                published_prefix=prefix if is_canonical else None,
-            )
-            if not is_canonical:
-                return verification, attestation
-            projected: LlvmPrefixVerification | None = None
-
-            def validate(_published: Path) -> None:
-                nonlocal projected
-                projected = _validate_projected_publication(verification, prefix)
-
-            _publish_staged_prefix(install_prefix, prefix, validate=validate)
-            if projected is None:
-                raise SystemExit(
-                    "canonical LLVM publication validation did not complete"
+    with toolchain_state_use((prefix, build_dir, llvm_source), create=True):
+        lock_path = build_dir.with_name(f".{build_dir.name}.build.lock")
+        with _ExclusiveFileLock(lock_path):
+            if is_canonical:
+                current = _verified_canonical_prefix(
+                    prefix, version=args.version, required_targets=required_targets
                 )
-            return projected, prefix / ".molt-llvm-toolchain.json"
-        finally:
-            if is_canonical and install_prefix.exists():
-                shutil.rmtree(install_prefix)
+                if current is not None:
+                    return current
+
+            _prepare_build_cache(
+                build_dir,
+                build_identity,
+            )
+            prefix.parent.mkdir(parents=True, exist_ok=True)
+            install_prefix = prefix
+            if is_canonical:
+                install_prefix = _publication_staging(prefix, uuid.uuid4().hex)
+                install_prefix.mkdir()
+
+            cmake_configure = [
+                cmake.path,
+                "-S",
+                str(llvm_source),
+                "-B",
+                str(build_dir),
+                "-G",
+                "Ninja",
+                f"-DCMAKE_MAKE_PROGRAM={ninja.path}",
+                f"-DCMAKE_BUILD_TYPE={args.build_type}",
+                f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
+                f"-DLLVM_TARGETS_TO_BUILD={targets}",
+                f"-DLLVM_ENABLE_PROJECTS={args.projects}",
+                *(f"-D{name}={value}" for name, value in _LLVM_CMAKE_CONTRACT),
+            ]
+            try:
+                _run(cmake_configure, cwd=ROOT, env=env)
+                if args.configure_only:
+                    print(f"[bootstrap-llvm] configured {build_dir}")
+                    return None
+                _run(
+                    [
+                        cmake.path,
+                        "--build",
+                        str(build_dir),
+                        "--target",
+                        "install",
+                        "--",
+                        "-j",
+                        str(args.jobs),
+                    ],
+                    cwd=ROOT,
+                    env=env,
+                )
+                verification = verify_llvm_toolchain_prefix(
+                    ROOT,
+                    install_prefix,
+                    version=args.version,
+                    expected_targets=tuple(sorted(required_targets)),
+                    content_policy="full",
+                )
+                attestation = write_llvm_toolchain_attestation(
+                    ROOT,
+                    verification,
+                    projects=tuple(sorted(project_set)),
+                    build_type=args.build_type,
+                    published_prefix=prefix if is_canonical else None,
+                )
+                if not is_canonical:
+                    return verification, attestation
+                projected: LlvmPrefixVerification | None = None
+
+                def validate(_published: Path) -> None:
+                    nonlocal projected
+                    projected = _validate_projected_publication(verification, prefix)
+
+                _publish_staged_prefix(install_prefix, prefix, validate=validate)
+                if projected is None:
+                    raise SystemExit(
+                        "canonical LLVM publication validation did not complete"
+                    )
+                return projected, prefix / ".molt-llvm-toolchain.json"
+            finally:
+                if is_canonical and install_prefix.exists():
+                    shutil.rmtree(install_prefix)
 
 
 def _reattest_prefix(
