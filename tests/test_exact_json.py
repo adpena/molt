@@ -531,6 +531,8 @@ def test_retirement_does_not_follow_contained_directory_links(tmp_path: Path) ->
 def test_retirement_rejects_unavailable_identity_without_renaming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from molt.durable_file_identity import IdentityUnavailable
+
     source = tmp_path / "file"
     source.write_bytes(b"preserve")
     lstat = Path.lstat
@@ -551,7 +553,7 @@ def test_retirement_rejects_unavailable_identity_without_renaming(
         return metadata
 
     monkeypatch.setattr(Path, "lstat", without_identity)
-    with pytest.raises(ValueError, match="stable filesystem file identity"):
+    with pytest.raises(IdentityUnavailable):
         file_publication.durable_remove_path(source, retirement_scope="owned")
     assert source.read_bytes() == b"preserve"
     assert not list(tmp_path.glob(".molt-retired-v2-*"))
