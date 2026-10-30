@@ -171,3 +171,11 @@ then the private-name mangling rule in `python_private_names.py`.
   would narrow the key further.
 - HF-254's second step, moving import scanning, resolution and the binding
   analyses to Rust keyed by source content, is separate.
+
+Directory membership follows `molt.source_admission` (HF-590): one batched Git
+inventory supplies tracked and unignored files under the keyed roots. Ignored
+publication locks, crash stages and editor debris cannot split semantic stores;
+new unignored files do change the key. Explicit keyed file declarations remain
+inputs, and archives use Cargo's dot-file rule. The source fingerprint domain
+is `source-tree-v4`. See [Cargo input authority](cargo_input_authority.md#source-membership-hf-590)
+for admission, generation custody and post-build refusal rules.

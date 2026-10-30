@@ -21,7 +21,8 @@ from molt.cli.static_archive_identity import (
     artifact_content_identity,
     validate_artifact_content_identity,
 )
-from molt.file_hashing import _hash_source_tree_metadata, _iter_source_fingerprint_files
+from molt.file_hashing import _hash_source_tree_metadata
+from molt.source_admission import admitted_source_files
 from molt.exact_json import encode_exact, read_exact
 from molt.link_outputs import validate_link_output_paths
 from molt.python_identity_common import canonical_absolute_path
@@ -78,7 +79,8 @@ def _link_fingerprint(
     tool_facts: Sequence[Mapping[str, object]] = (),
     stored_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, str | None] | None:
-    inputs_meta = _hash_source_tree_metadata(inputs, project_root)
+    admitted = admitted_source_files(inputs)
+    inputs_meta = _hash_source_tree_metadata(admitted, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
     tool_identity = json.dumps(list(tool_facts), sort_keys=True, separators=(",", ":"))
     meta = "\0".join((*link_cmd, tool_identity))
@@ -100,22 +102,21 @@ def _link_fingerprint(
     hasher.update(meta.encode("utf-8"))
     hasher.update(b"\0")
     try:
-        for path in sorted(inputs, key=lambda item: str(item)):
-            for item in _iter_source_fingerprint_files(path):
-                try:
-                    identity_path = item.relative_to(project_root)
-                except ValueError:
-                    identity_path = item
-                hasher.update(str(identity_path).encode("utf-8"))
-                hasher.update(b"\0")
-                hasher.update(
-                    json.dumps(
-                        artifact_content_identity(item),
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                )
-                hasher.update(b"\0")
+        for item in admitted:
+            try:
+                identity_path = item.relative_to(project_root)
+            except ValueError:
+                identity_path = item
+            hasher.update(str(identity_path).encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(
+                json.dumps(
+                    artifact_content_identity(item),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            hasher.update(b"\0")
     except (OSError, StaticArchiveIdentityError):
         return None
     return {

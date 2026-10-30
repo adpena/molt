@@ -18,7 +18,7 @@ bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.generator_io import generator_main  # noqa: E402
-from tools.git_identity import repository_source_paths  # noqa: E402
+from molt.source_admission import repository_source_paths  # noqa: E402
 from tools.scan_records import ScanRecords, decoded_text, scan_result  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_GENERATOR")
