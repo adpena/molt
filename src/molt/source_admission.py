@@ -189,12 +189,17 @@ def _archive_files(root: Path) -> list[Path]:
     return files
 
 
-def admitted_source_files(roots: Sequence[Path]) -> tuple[Path, ...]:
+def admitted_source_files(
+    roots: Sequence[Path], *, follow_file_symlinks: bool = False
+) -> tuple[Path, ...]:
     """Capture the admitted union with one Git query per source checkout.
 
     A file root is an explicit declaration, even when ignored. A directory
     declaration never admits ignored children; Cargo dep-info refuses such
     undeclared reads at publication. Missing tracked files are not bytes.
+    Python producers follow file symlinks while retaining the import-visible
+    path. Direct-file custody consumers keep refusing aliases. Neither policy
+    traverses directory aliases into another source owner.
     """
     files: set[Path] = set()
     regular: set[Path] = set()
@@ -206,7 +211,11 @@ def admitted_source_files(roots: Sequence[Path]) -> tuple[Path, ...]:
         except FileNotFoundError:
             continue
         if metadata_is_link_like(metadata):
-            raise ValueError(f"source input root alias is forbidden: {path}")
+            if not follow_file_symlinks or not stat.S_ISREG(path.stat().st_mode):
+                raise ValueError(f"source input root alias is forbidden: {path}")
+            files.add(path)
+            regular.add(path)
+            continue
         if stat.S_ISREG(metadata.st_mode):
             files.add(path)
             regular.add(path)
@@ -229,9 +238,9 @@ def admitted_source_files(roots: Sequence[Path]) -> tuple[Path, ...]:
     result: list[Path] = []
     checked: set[Path] = set(selected)
     for path in sorted(files):
-        # Fence every admitted component before resolving aliases. Git itself
-        # lists a directory symlink as a file; neither Cargo nor hashing may
-        # follow it into another source owner.
+        # Git lists a symlink as a blob of link text, not its target bytes.
+        # A Python producer reads the target through the lexical file path;
+        # directory aliases still cannot expand Git's admitted membership.
         parent = path
         while parent not in checked:
             try:
@@ -239,9 +248,15 @@ def admitted_source_files(roots: Sequence[Path]) -> tuple[Path, ...]:
             except FileNotFoundError:
                 break
             if metadata_is_link_like(metadata):
-                raise ValueError(
-                    f"source input path alias escaped logical root: {parent}"
-                )
+                if (
+                    not follow_file_symlinks
+                    or parent != path
+                    or not stat.S_ISREG(path.stat().st_mode)
+                ):
+                    raise ValueError(
+                        f"source input path alias escaped logical root: {parent}"
+                    )
+                regular.add(path)
             checked.add(parent)
             if parent == path and stat.S_ISREG(metadata.st_mode):
                 regular.add(path)

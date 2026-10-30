@@ -507,6 +507,14 @@ Directory replacement custody remains fenced, while timestamps changed only
 by debris cannot abort an otherwise stable compiler build. File custody and
 content checks retain their existing stable-reader authority.
 
+Frontend semantic producers use `follow_file_symlinks=True`: CPython imports a
+file symlink's target bytes while retaining the link path as `__file__`. Git's
+symlink blob contains only link text, so it cannot key those producer bytes.
+Both explicit file roots and Git-admitted file members retain their lexical
+labels and hash their targets. Directory aliases cannot expand the admitted
+inventory. Runtime and publication consumers require direct regular-file
+custody and retain alias refusal; admission does not weaken their byte readers.
+
 One live Git query captures all directory roots of an identity together. The
 NUL-framed parser memo is scoped by checkout, HEAD and index stat **and the
 current inventory bytes**. HEAD/index alone cannot detect untracked additions,
