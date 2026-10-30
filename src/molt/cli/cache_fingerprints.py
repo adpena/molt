@@ -295,7 +295,7 @@ def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprint
         for relative, role in _FRONTEND_COMPILER_INPUTS.items()
         if role.keyed
     )
-    files = admitted_source_files(roots)
+    files = admitted_source_files(roots, follow_file_symlinks=True)
     return _SourceFingerprintInputs(
         files, {item: _file_content_signature(item) for item in files}
     )

@@ -253,6 +253,48 @@ def test_git_inventory_refreshes_untracked_and_ignore_edits_without_index_change
     assert hidden in admitted_source_files((source, hidden))
 
 
+@pytest.mark.parametrize("git_checkout", [False, True])
+def test_python_producer_admission_preserves_file_link_labels_and_target_bytes(
+    tmp_path: Path, git_checkout: bool
+) -> None:
+    import hashlib
+
+    from molt.cli import cache_fingerprints
+    from molt.source_admission import admitted_source_files
+
+    root = tmp_path.resolve()
+    source = root / "src/molt/frontend"
+    source.mkdir(parents=True)
+    target = root / "target.py"
+    target.write_bytes(b"VALUE = 1\n")
+    alias = source / "producer.py"
+    try:
+        alias.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    if git_checkout:
+        _git(root, "init", "-q")
+        _git(root, "add", "src/molt/frontend/producer.py")
+
+    for roots in ((alias,), (source,)):
+        with pytest.raises(ValueError, match="alias"):
+            admitted_source_files(roots)
+        files = admitted_source_files(roots, follow_file_symlinks=True)
+        assert files == (alias,)
+    before = cache_fingerprints._frontend_semantic_tooling_sources(root)
+    assert before.paths == (alias,)
+    assert dict(before.source_sha256) == {
+        alias: hashlib.sha256(b"VALUE = 1\n").hexdigest()
+    }
+
+    target.write_bytes(b"VALUE = 2\n")
+    after = cache_fingerprints._frontend_semantic_tooling_sources(root)
+    assert after.paths == (alias,)
+    assert dict(after.source_sha256) == {
+        alias: hashlib.sha256(b"VALUE = 2\n").hexdigest()
+    }
+
+
 @pytest.mark.parametrize(
     "relative", ["source.rs", "nested/a b.rs", "../sibling/file.rs", "."]
 )
