@@ -1016,6 +1016,28 @@ def _emit_native_link_result(
     return link_process.returncode
 
 
+def _report_non_native_products(
+    output: Path, consumer_output: Path | None, artifacts: Mapping[str, Any] | None
+) -> None:
+    """Report the published family a recorded build must find unchanged.
+
+    The result's artifact map is the canonical list of files this build
+    promises; each one becomes a product of its record. A role whose value is
+    not a path string refuses the record rather than going unverified.
+    """
+    from molt import input_report
+
+    if not input_report.active():
+        return
+    products: dict[str, str] = {}
+    for role, value in (artifacts or {"output": str(output)}).items():
+        if not isinstance(value, str) or not os.path.isabs(value):
+            input_report.refuse(f"build artifact {role} is not a published file")
+            return
+        products[role] = value
+    input_report.report_build_products(os.fspath(consumer_output or output), products)
+
+
 def _emit_non_native_build_result(
     *,
     output: Path,
@@ -1068,6 +1090,8 @@ def _emit_non_native_build_result(
             artifacts=artifacts,
         ),
     )
+    if custody_error is None and diagnostics_error is None:
+        _report_non_native_products(output, consumer_output, artifacts)
     if json_output:
         cache_info = _build_cache_info(
             enabled=cache,
