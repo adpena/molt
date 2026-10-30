@@ -30,7 +30,7 @@ from tools.command_execution import CommandExecutor
 from tools.driver_errors import DriverError
 from tools.git_identity import immutable_git_environment, require_git_object_id
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 SCHEMA = "molt.integration-controller.v1"
 # The driver's repository modules, the data they read from the checkout they

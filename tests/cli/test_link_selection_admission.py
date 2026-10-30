@@ -17,7 +17,7 @@ from molt.cli.source_extension_link_requirements import (
 from tests.llvm_sdk_test_support import verified_llvm_tools
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 @pytest.mark.parametrize(

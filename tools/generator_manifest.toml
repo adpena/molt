@@ -774,6 +774,7 @@ discovery_only = false
 tool = "tools/gen_environment_registry.py"
 outputs = [
   "src/molt/_environment_registry.py",
+  "src/molt/guard_stems_generated.py",
   "docs/environment-variables.generated.md",
   "runtime/molt-runtime/src/runtime_flags_generated.rs",
   "runtime/molt-host-process/src/host_process_environment_generated.rs",
@@ -784,7 +785,7 @@ toolchains = []
 check_command = "tools/gen_environment_registry.py --check"
 idempotent = true
 sync_test = "tests/test_environment_registry.py"
-closed_domains = ["RuntimeFlag", "HostProcessEnv"]
+closed_domains = ["RuntimeFlag", "HostProcessEnv", "GuardStem"]
 discovery_only = false
 
 [[closed_domain]]

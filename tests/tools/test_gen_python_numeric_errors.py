@@ -537,10 +537,15 @@ def test_capture_independent_operations_and_exact_pin(tmp_path, monkeypatch):
         commands.append(argv)
         return SimpleNamespace(stdout=json.dumps(payload), stderr="")
 
+    def for_file(source_file, *, stem):
+        assert source_file == policy.__file__
+        assert stem == "MOLT_GENERATOR"
+        return SimpleNamespace(run=run)
+
     monkeypatch.setattr(
         command_execution.CommandExecutor,
         "for_file",
-        lambda _: SimpleNamespace(run=run),
+        for_file,
     )
     executable = tmp_path / "python"
     executable.write_bytes(b"independent executable identity fixture")

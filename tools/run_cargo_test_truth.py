@@ -32,7 +32,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.libtest_results import BINARY_RECEIPT_SCHEMA, accounting_problem  # noqa: E402
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 EVIDENCE_ROOT = ROOT / "proof-receipts" / "evidence"
 RUNS_ROOT = EVIDENCE_ROOT / "cargo-test-truth-runs"
 RECEIPT = EVIDENCE_ROOT / "cargo-test-truth.json"

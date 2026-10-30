@@ -33,7 +33,7 @@ _REGULAR_GIT_MODES = frozenset({0o100644, 0o100755})
 _OBJECT_FORMAT_LENGTHS = {"sha1": 40, "sha256": 64}
 _CAPTURE_TIMEOUT_SECONDS = 120
 _BlobResult = TypeVar("_BlobResult")
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 
 
 # The source interpreter has no site imports or ambient import roots. Project

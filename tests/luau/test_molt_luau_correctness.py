@@ -108,7 +108,7 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
 def _python_output(source: str) -> str:
     """Get CPython reference output."""
     result = run_native_test_process(
-        ["python3", "-c", source],
+        [sys.executable, "-c", source],
         capture_output=True,
         text=True,
         timeout=10,
@@ -679,7 +679,7 @@ class TestPerformance:
     def _timed_python(src: str) -> tuple[str, float]:
         t0 = time.perf_counter()
         result = run_native_test_process(
-            ["python3", "-c", src],
+            [sys.executable, "-c", src],
             capture_output=True,
             text=True,
             timeout=10,

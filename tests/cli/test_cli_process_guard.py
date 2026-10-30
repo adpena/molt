@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import subprocess
 import os
 from pathlib import Path
@@ -26,7 +28,7 @@ def test_run_cli_test_process_uses_shared_memory_guard(
     )
 
     result = process_guard.run_cli_test_process(
-        ["python3", "-m", "molt.cli", "--help"],
+        [sys.executable, "-m", "molt.cli", "--help"],
         cwd=tmp_path,
         env={"PYTHONPATH": "src"},
         timeout=5,
@@ -34,7 +36,7 @@ def test_run_cli_test_process_uses_shared_memory_guard(
 
     assert result.returncode == 0
     assert result.stdout == "ok\n"
-    assert captured["cmd"] == ["python3", "-m", "molt.cli", "--help"]
+    assert captured["cmd"] == [sys.executable, "-m", "molt.cli", "--help"]
     assert captured["kwargs"]["prefix"] == "MOLT_CLI_TEST"
     assert captured["kwargs"]["cwd"] == tmp_path
     assert captured["kwargs"]["timeout"] == 5
@@ -96,7 +98,7 @@ def test_guarded_cli_test_popen_enters_memory_guard_wrapper(
     )
 
     proc = process_guard.guarded_cli_test_popen(
-        ["python3", "-c", "print('ok')"],
+        [sys.executable, "-c", "print('ok')"],
         cwd=tmp_path,
         env={"MOLT_EXT_ROOT": str(tmp_path)},
     )
@@ -111,7 +113,7 @@ def test_guarded_cli_test_popen_enters_memory_guard_wrapper(
     assert verifier.is_dir() and not list(verifier.iterdir())
     assert args[5:7] == ["-S", str(process_guard.ROOT / "tools" / "memory_guard.py")]
     assert "--summary-json" in args
-    assert args[-4:] == ["--", "python3", "-c", "print('ok')"]
+    assert args[-4:] == ["--", sys.executable, "-c", "print('ok')"]
     kwargs = captured["kwargs"]
     assert kwargs["cwd"] == tmp_path
     assert kwargs["text"] is True

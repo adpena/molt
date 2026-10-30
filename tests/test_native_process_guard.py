@@ -33,7 +33,7 @@ def test_run_native_test_process_uses_shared_memory_guard(
     )
 
     result = native_process_guard.run_native_test_process(
-        ["python3", "-m", "molt.cli", "run", "probe.py"],
+        [sys.executable, "-m", "molt.cli", "run", "probe.py"],
         cwd=tmp_path,
         env={"PYTHONPATH": "src"},
         timeout=60,
@@ -41,7 +41,7 @@ def test_run_native_test_process_uses_shared_memory_guard(
 
     assert result.returncode == 0
     assert result.stdout == "ok\n"
-    assert captured["cmd"] == ["python3", "-m", "molt.cli", "run", "probe.py"]
+    assert captured["cmd"] == [sys.executable, "-m", "molt.cli", "run", "probe.py"]
     assert captured["kwargs"]["prefix"] == "MOLT_NATIVE_TEST"
     assert captured["kwargs"]["cwd"] == tmp_path
     assert captured["kwargs"]["timeout"] == 60
@@ -103,7 +103,7 @@ def test_native_nested_default_inherits_owning_proof_budget(monkeypatch) -> None
     )
 
     native_process_guard.run_native_test_process(
-        ["python3", "tools/bench.py"],
+        [sys.executable, "tools/bench.py"],
         env={PROOF_COMMAND_TIMEOUT_ENV: "1200"},
     )
 
