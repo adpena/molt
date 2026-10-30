@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 from molt_accel.codec import (
@@ -17,6 +18,8 @@ WIRE = os.environ.get("MOLT_WORKER_WIRE") or None
 LIST_ITEMS_CODEC_OUT = os.environ.get("MOLT_STUB_LIST_ITEMS_CODEC_OUT")
 FAIL_ONCE_ENTRY = os.environ.get("MOLT_STUB_FAIL_ONCE_ENTRY")
 FAIL_ONCE_SENTINEL = os.environ.get("MOLT_STUB_FAIL_ONCE_SENTINEL")
+# Startup latency before the first read, as on a loaded host.
+STARTUP_DELAY_S = float(os.environ.get("MOLT_STUB_STARTUP_DELAY_S") or 0)
 _FAILED_ONCE = False
 
 
@@ -37,6 +40,8 @@ def _maybe_fail_once(entry: str) -> None:
 
 
 def main() -> None:
+    if STARTUP_DELAY_S:
+        time.sleep(STARTUP_DELAY_S)
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
     while True:
