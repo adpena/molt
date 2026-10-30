@@ -1622,7 +1622,7 @@ def test_locked_native_eligibility_preserves_origin_order_and_error_classificati
 
 @pytest.mark.parametrize("sidecar", [False, True])
 @pytest.mark.parametrize("renumbered", [False, True])
-def test_legacy_sync_receipt_never_rewrites_the_old_namespace(
+def test_new_sync_namespace_starts_cold_and_leaves_legacy_untouched(
     tmp_path, sidecar, renumbered
 ):
     import hashlib
@@ -1648,13 +1648,7 @@ def test_legacy_sync_receipt_never_rewrites_the_old_namespace(
     }
     legacy.write_text(json.dumps(payload), encoding="utf-8")
     before = legacy.read_bytes()
-    state = sync._read_artifact_sync_state(current, artifact=artifact)
+    state = sync._read_artifact_sync_state(current)
     assert legacy.read_bytes() == before
-    assert current.exists() is (not renumbered)
-    if renumbered:
-        assert state is None
-    else:
-        assert state["version"] == 4
-        assert sync._artifact_sync_state_matches(
-            state, source_key="source", tier="immutable", artifact=artifact
-        )
+    assert not current.exists()
+    assert state is None

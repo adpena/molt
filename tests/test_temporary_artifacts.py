@@ -2066,44 +2066,6 @@ def _legacy_retained_scratch(tmp_path, *, renumbered=False):
     return generation, target
 
 
-def test_matching_legacy_pending_scratch_rekeys_complete_grant(tmp_path):
-    generation, target = _legacy_retained_scratch(tmp_path)
-    outcome = scratch.reclaim_terminal_scratch(generation.parent / "v2")
-    assert outcome["errors"] == []
-    assert outcome["retained_count"] == 1
-    generation = generation.parent / "v2" / generation.name
-    target = generation / "payload"
-    owner = _read(generation / "owner.json")
-    terminal = _read(generation / "terminal.json")
-    assert owner["schema"] == terminal["schema"] == "molt.guard-scratch.v2"
-    assert set(owner["target_identity"]) == {"kind", "volume", "file_id"}
-    assert owner["terminal_digest"] == canonical_json_sha256(terminal)
-    assert _read(scratch._index_path(generation)) == {
-        "schema": scratch.SCHEMA,
-        "terminal_digest": owner["terminal_digest"],
-    }
-    assert (target / "keep").read_bytes() == b"retained payload"
-
-
-def test_unprovable_legacy_pending_is_retired_without_touching_payload(tmp_path):
-    generation, target = _legacy_retained_scratch(tmp_path, renumbered=True)
-    payload = {p.name: p.read_bytes() for p in target.iterdir()}
-    original_owner = (generation / "owner.json").read_bytes()
-    outcome = scratch.reclaim_terminal_scratch(generation.parent / "v2")
-    assert outcome["errors"] == []
-    assert outcome["reclaimed"] == []
-    assert outcome["retained_count"] == 0
-    assert {p.name: p.read_bytes() for p in target.iterdir()} == payload
-    assert (generation / "owner.json").read_bytes() == original_owner
-    assert not scratch._index_path(generation).exists()
-    retired = _read(
-        generation.parent / "v2" / "identity-unverifiable" / (generation.name + ".json")
-    )
-    assert retired["outcome"] == "identity-unverifiable"
-    assert retired["target"] == str(target)
-    assert scratch.reclaim_terminal_scratch(generation.parent / "v2")["errors"] == []
-
-
 def test_v2_pending_survives_simulated_renumbering(tmp_path, monkeypatch):
     from tests.test_dx_run_context import _renumber_stat_devices
 
@@ -2119,59 +2081,6 @@ def test_v2_pending_survives_simulated_renumbering(tmp_path, monkeypatch):
     assert outcome["retained_count"] == 1
     assert _read(generation / "owner.json") == owner
     assert (generation / "payload" / "keep").read_bytes() == b"payload"
-
-
-@pytest.mark.parametrize("stop_after", [1, 2, 3, 4])
-def test_scratch_rekey_recovers_interrupted_bundle(tmp_path, monkeypatch, stop_after):
-    generation, target = _legacy_retained_scratch(tmp_path)
-    original = scratch.write_exact
-    writes = 0
-
-    def interrupted(path, value, **kwargs):
-        nonlocal writes
-        original(path, value, **kwargs)
-        writes += 1
-        if writes == stop_after:
-            raise OSError("interrupted rekey")
-
-    monkeypatch.setattr(scratch, "write_exact", interrupted)
-    first = scratch.reclaim_terminal_scratch(generation.parent / "v2")
-    assert first["errors"]
-    moved = generation.parent / "v2" / generation.name
-    surviving = moved / "payload" if moved.exists() else target
-    assert (surviving / "keep").read_bytes() == b"retained payload"
-    monkeypatch.setattr(scratch, "write_exact", original)
-    outcome = scratch.reclaim_terminal_scratch(generation.parent / "v2")
-    assert outcome["errors"] == []
-    assert outcome["retained_count"] == 1
-    assert _read(moved / "owner.json")["schema"] == scratch.SCHEMA
-
-
-def test_unprovable_pending_does_not_fail_the_guarded_command(tmp_path):
-    import sys
-    from tests.process_guard_common import run_guarded_test_process
-
-    generation, target = _legacy_retained_scratch(tmp_path, renumbered=True)
-    environment = dict(os.environ)
-    environment["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "tmp" / "memory_guard")
-    for key in (
-        "MOLT_MEMORY_GUARD_TOKEN",
-        "MOLT_MEMORY_GUARD_MARKER",
-        scratch.SCRATCH_ENV,
-    ):
-        environment.pop(key, None)
-    result = run_guarded_test_process(
-        [sys.executable, "-B", "-c", "print('command passed')"],
-        cwd=Path(__file__).resolve().parents[1],
-        env=environment,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "command passed\n"
-    assert (target / "keep").read_bytes() == b"retained payload"
-    retired = _read(
-        generation.parent / "v2" / "identity-unverifiable" / (generation.name + ".json")
-    )
-    assert retired["outcome"] == "identity-unverifiable"
 
 
 def test_v1_sweeper_reclaims_its_own_records_without_observing_v2(tmp_path):
@@ -2204,3 +2113,20 @@ def test_v1_sweeper_reclaims_its_own_records_without_observing_v2(tmp_path):
         for p in root.rglob("*")
         if p.is_file()
     } == before
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_current_sweep_never_reads_or_rekeys_legacy_scratch(tmp_path, renumbered):
+    generation, target = _legacy_retained_scratch(tmp_path, renumbered=renumbered)
+    root = generation.parent
+    before = {
+        str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()
+    }
+    outcome = scratch.reclaim_terminal_scratch(
+        root / "v2", retention=scratch.ScratchRetention(count=0, bytes=0)
+    )
+    assert outcome["errors"] == [] and outcome["reclaimed"] == []
+    assert {
+        str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()
+    } == before
+    assert (target / "keep").read_bytes() == b"retained payload"

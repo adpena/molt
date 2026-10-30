@@ -42,9 +42,7 @@ import weakref
 
 from molt.durable_file_identity import (
     DurableFileIdentity,
-    IdentityUnverifiable,
     file_identity,
-    upgrade_legacy,
 )
 from molt.exact_json import (
     ExactJsonError,
@@ -345,146 +343,10 @@ def _read_receipt(path: Path, *, label: str, absent_is_residue: bool = True) -> 
         raise _CrashResidue(f"{label} is undecodable: {path}: {error}") from error
 
 
-def _upgrade_scratch_locked(
-    generation: Path, *, legacy_generation: Path | None = None
-) -> bool:
-    """Re-key a complete legacy generation, or retire only its discovery grant.
-
-    A durable intent stores the new bundle and hashes of old records. Readers
-    finish it under the generation lock before ordinary v2 parsing. A torn
-    upgrade cannot expose a partially re-keyed deletion grant.
-    """
-    if generation.parent.name != "v2":
-        raise ValueError("scratch re-key requires the v2 namespace")
-    intent_path = generation / "identity-upgrade.json"
-    old_schema = "molt.guard-scratch.v1"
-    if intent_path.exists():
-        intent = read_exact(
-            intent_path,
-            max_bytes=4 * _MAX_RECEIPT_BYTES,
-            label="scratch identity upgrade",
-        )
-    else:
-        owner = _read_receipt(generation / "owner.json", label="scratch owner")
-        if not isinstance(owner, dict) or owner.get("schema") != old_schema:
-            return False
-        previous = generation if legacy_generation is None else legacy_generation
-        if owner.get("token") != generation.name or owner.get("generation") != str(
-            previous
-        ):
-            raise ValueError("legacy scratch owner differs from generation")
-        if owner.get("target") != str(previous / "payload"):
-            raise IdentityUnverifiable("legacy scratch has no committed payload")
-        target = generation / "payload"
-        identity = upgrade_legacy(target, owner.get("target_identity"))
-        records = []
-        upgraded = {
-            **owner,
-            "schema": SCHEMA,
-            "target_identity": identity.payload(),
-            "generation": str(generation),
-            "target": str(target),
-        }
-        terminal_path = generation / "terminal.json"
-        if terminal_path.exists():
-            terminal = _read_receipt(terminal_path, label="legacy scratch terminal")
-            if (
-                not isinstance(terminal, dict)
-                or terminal.get("schema") != old_schema
-                or terminal.get("token") != owner["token"]
-                or terminal.get("target_identity") != owner["target_identity"]
-            ):
-                raise ValueError("legacy scratch terminal differs from owner")
-            old_digest = canonical_json_sha256(terminal)
-            if owner.get("terminal_digest") != old_digest:
-                raise ValueError("legacy scratch terminal was not committed")
-            updated_terminal = {
-                **terminal,
-                "schema": SCHEMA,
-                "target_identity": identity.payload(),
-                "generation": str(generation),
-                "target": str(target),
-            }
-            upgraded["terminal_digest"] = canonical_json_sha256(updated_terminal)
-            records.append([str(terminal_path), old_digest, updated_terminal])
-        records.append(
-            [str(generation / "owner.json"), canonical_json_sha256(owner), upgraded]
-        )
-        index = _index_path(generation)
-        if index.exists():
-            old_index = _read_receipt(index, label="legacy scratch pending index")
-            if old_index != {
-                "schema": old_schema,
-                "terminal_digest": owner.get("terminal_digest"),
-            }:
-                raise ValueError("legacy scratch index differs from owner")
-            records.append(
-                [
-                    str(index),
-                    canonical_json_sha256(old_index),
-                    {"schema": SCHEMA, "terminal_digest": upgraded["terminal_digest"]},
-                ]
-            )
-        if owner.get("target_receipt") is not None:
-            receipt_path = target / _TARGET_RECEIPT
-            receipt = _read_receipt(receipt_path, label="legacy scratch allocation")
-            if receipt != {"schema": old_schema, "nonce": owner["target_receipt"]}:
-                raise ValueError("legacy scratch allocation receipt differs from owner")
-            records.insert(
-                0,
-                [
-                    str(receipt_path),
-                    canonical_json_sha256(receipt),
-                    {"schema": SCHEMA, "nonce": owner["target_receipt"]},
-                ],
-            )
-        intent = {
-            "schema": SCHEMA,
-            "identity": identity.payload(),
-            "target": str(target),
-            "records": records,
-        }
-        write_exact(intent_path, intent)
-    if (
-        not isinstance(intent, dict)
-        or set(intent) != {"schema", "identity", "target", "records"}
-        or intent["schema"] != SCHEMA
-    ):
-        raise ValueError("invalid scratch identity upgrade")
-    target = Path(intent["target"])
-    if file_identity(target) != DurableFileIdentity.from_payload(intent["identity"]):
-        raise IdentityUnverifiable(
-            "identity-unverifiable: scratch changed during upgrade"
-        )
-    allowed = {
-        generation / "owner.json",
-        generation / "terminal.json",
-        _index_path(generation),
-        target / _TARGET_RECEIPT,
-    }
-    for raw, old_digest, updated in intent["records"]:
-        path = Path(raw)
-        if path not in allowed:
-            raise ValueError("scratch upgrade escaped its generation")
-        current = read_exact(
-            path, max_bytes=_MAX_RECEIPT_BYTES, label="scratch upgrade member"
-        )
-        if current == updated:
-            continue
-        if canonical_json_sha256(current) != old_digest:
-            raise ValueError("scratch upgrade member changed")
-        write_exact(path, updated)
-    # The completed intent has no authority once all records are current.
-    intent_path.unlink()
-    return False
-
-
 def _owner(generation: Path) -> dict[str, object]:
+    if generation.parent.name != "v2":
+        raise ValueError("foreign scratch version; retained by the storage authority")
     value = _read_receipt(generation / "owner.json", label="scratch owner")
-    if isinstance(value, dict) and value.get("schema") == "molt.guard-scratch.v1":
-        raise IdentityUnverifiable(
-            "legacy scratch requires its canonical locked migration"
-        )
     if not isinstance(value, dict):
         raise _owner_mismatch(generation, "owner", {}, value)
     for field, expected in (
@@ -520,152 +382,6 @@ def _owner(generation: Path) -> dict[str, object]:
         )
     DurableFileIdentity.from_payload(value["target_identity"])
     return value
-
-
-def _migrate_legacy_scratch(root: Path) -> list[str]:
-    """Move an exclusively held legacy generation before publishing new records.
-
-    The versioned intent survives interruption on either side of the rename.
-    Old sweepers can only observe the old records or an absent generation.
-    Active old owners keep their namespace and lock untouched.
-    """
-    if root.name != "v2":
-        return []
-    legacy = root.parent
-    intents = root / "identity-migrations"
-    pending = legacy / "pending"
-    if not pending.exists() and not intents.exists():
-        return []
-    root.mkdir(parents=True, exist_ok=True)
-    lock = _try_acquire_file_lock(root / "identity-migration.lock")
-    if lock is None:
-        return []
-    errors = []
-    try:
-        tokens = {
-            p.stem
-            for directory in (pending, intents)
-            if directory.exists()
-            for p in directory.iterdir()
-            if p.suffix == ".json" and _TOKEN.fullmatch(p.stem)
-        }
-        for token in sorted(tokens):
-            old, new = _generation(legacy, token), _generation(root, token)
-            intent_path = intents / (token + ".json")
-            try:
-                source = new if intent_path.exists() and new.exists() else old
-                with _locked(source):
-                    if intent_path.exists():
-                        intent = read_exact(
-                            intent_path,
-                            max_bytes=_MAX_RECEIPT_BYTES,
-                            label="scratch namespace migration",
-                        )
-                        if (
-                            set(intent) != {"schema", "identity"}
-                            or intent["schema"] != SCHEMA
-                            or file_identity(source)
-                            != DurableFileIdentity.from_payload(intent["identity"])
-                        ):
-                            raise IdentityUnverifiable(
-                                "scratch namespace migration changed"
-                            )
-                    else:
-                        owner = _read_receipt(
-                            old / "owner.json", label="legacy scratch owner"
-                        )
-                        if (
-                            not isinstance(owner, dict)
-                            or owner.get("schema") != "molt.guard-scratch.v1"
-                        ):
-                            raise ValueError(
-                                "unexpected record in legacy scratch namespace"
-                            )
-                        if (
-                            owner.get("generation") != str(old)
-                            or owner.get("token") != token
-                        ):
-                            raise ValueError("legacy scratch generation differs")
-                        target = resolve_owned_path(Path(owner["target"]))
-                        if owner.get("state") in {"leased", "indeterminate"}:
-                            if (
-                                target.parent != legacy.parent
-                                or _TARGET_NAME.fullmatch(target.name) is None
-                            ):
-                                raise ValueError(
-                                    "legacy scratch target escaped its allocation namespace"
-                                )
-                        elif target != old / "payload":
-                            raise ValueError(
-                                "legacy scratch payload escaped its generation"
-                            )
-                        try:
-                            if owner.get("state") in {"leased", "indeterminate"}:
-                                raise IdentityUnverifiable(
-                                    "legacy pending scratch has no committed terminal"
-                                )
-                            upgrade_legacy(target, owner.get("target_identity"))
-                        except (IdentityUnverifiable, FileNotFoundError):
-                            write_exact(
-                                root / "identity-unverifiable" / (token + ".json"),
-                                {
-                                    "schema": SCHEMA,
-                                    "outcome": "identity-unverifiable",
-                                    "generation": str(old),
-                                    "target": str(target),
-                                    "owner_sha256": canonical_json_sha256(owner),
-                                    "guard_marker": owner.get("guard_marker"),
-                                },
-                            )
-                            _drop_index(old)
-                            continue
-                        if _read_receipt(
-                            _index_path(old), label="legacy scratch index"
-                        ) != {
-                            "schema": "molt.guard-scratch.v1",
-                            "terminal_digest": owner.get("terminal_digest"),
-                        }:
-                            raise ValueError("legacy scratch index differs from owner")
-                        write_exact(
-                            intent_path,
-                            {
-                                "schema": SCHEMA,
-                                "identity": file_identity(old).payload(),
-                            },
-                        )
-                    if source == old:
-                        # Fence the namespace durably before rewriting any
-                        # member: rollback must never expose v2 under v1 names.
-                        namespace_publish_directory_exclusive(old, new)
-                    new_index = _index_path(new)
-                    _upgrade_scratch_locked(new, legacy_generation=old)
-                    owner = _owner(new)
-                    if new_index.exists():
-                        if _read_receipt(new_index, label="migrated scratch index") != {
-                            "schema": SCHEMA,
-                            "terminal_digest": owner["terminal_digest"],
-                        }:
-                            raise ValueError(
-                                "migrated scratch index differs from owner"
-                            )
-                    else:
-                        _publish_index(new, str(owner["terminal_digest"]))
-                    _drop_index(old)
-                    intent_path.unlink()
-            except ScratchBusy:
-                continue
-            except FileNotFoundError:
-                if not old.exists() and not new.exists() and not intent_path.exists():
-                    _drop_index(old)
-                else:
-                    errors.append(
-                        f"{intent_path}: interrupted scratch namespace migration"
-                    )
-            except (OSError, ValueError, RuntimeError) as exc:
-                errors.append(f"{intent_path}: {exc}")
-    finally:
-        _release_file_lock(lock)
-    return errors
 
 
 def windows_temporary_directory_mode(mode: int) -> int:
@@ -1317,28 +1033,6 @@ def scratch_generation(token: str, outcome: Mapping[str, object]) -> Path | None
     return None
 
 
-def _identity_retirement(generation: Path) -> dict | None:
-    root = (
-        generation.parent
-        if generation.parent.name == "v2"
-        else generation.parent / "v2"
-    )
-    path = root / "identity-unverifiable" / (generation.name + ".json")
-    if not path.exists():
-        return None
-    value = read_exact(
-        path, max_bytes=_MAX_RECEIPT_BYTES, label="scratch identity retirement"
-    )
-    if (
-        not isinstance(value, dict)
-        or value.get("schema") != SCHEMA
-        or value.get("outcome") != "identity-unverifiable"
-        or value.get("generation") != str(generation)
-    ):
-        raise ValueError("invalid scratch identity retirement")
-    return value
-
-
 def resolve_guard_scratch(
     generation: Path,
     *,
@@ -1355,27 +1049,16 @@ def resolve_guard_scratch(
     """
     generation = resolve_owned_path(generation)
     if generation.parent.name != "v2":
-        errors = _migrate_legacy_scratch(generation.parent / "v2")
-        if errors:
-            return {
-                "generation": str(generation),
-                "state": "error",
-                "resolved": False,
-                "error": "; ".join(errors),
-            }
-        migrated = generation.parent / "v2" / generation.name
-        if migrated.exists():
-            generation = migrated
+        return {
+            "generation": str(generation),
+            "state": "foreign-version",
+            "resolved": closure is not None,
+        }
     if not os.path.lexists(generation):
         return {"generation": str(generation), "state": "absent", "resolved": True}
 
     def resolve_locked() -> tuple[str, bool]:
         """Return the generation's state and whether it is resolved."""
-        retired = _identity_retirement(generation)
-        if retired is not None:
-            if not _same_owned_path(retired.get("guard_marker"), str(guard_marker)):
-                raise ValueError("scratch retirement belongs to another guard marker")
-            return "identity-unverifiable", True
         owner = _owner(generation)
         if not _same_owned_path(owner.get("guard_marker"), str(guard_marker)):
             raise ValueError("scratch generation belongs to another guard marker")
@@ -1434,14 +1117,10 @@ def inspect_guard_scratch(generation: Path) -> str:
     """Read one generation's state without its lock, for dry runs only."""
     try:
         generation = resolve_owned_path(generation)
+        if generation.parent.name != "v2":
+            return "foreign-version"
         if not os.path.lexists(generation):
             return "absent"
-        retired = _identity_retirement(generation)
-        if retired is not None:
-            return "identity-unverifiable"
-        owner = _read_receipt(generation / "owner.json", label="scratch owner")
-        if isinstance(owner, dict) and owner.get("schema") == "molt.guard-scratch.v1":
-            return "migration-required"
         return str(_owner(generation)["state"])
     except (OSError, ValueError) as error:
         return f"error: {error}"
@@ -1613,10 +1292,6 @@ class _PendingVisit:
 
 def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
     """Classify one indexed generation while the caller holds its lock."""
-    if (
-        generation.parent / "identity-migrations" / (generation.name + ".json")
-    ).exists():
-        raise ScratchBusy("scratch namespace migration is incomplete")
     owner = _owner(generation)
     # A directory snapshot is discovery, not a lease on an index. Its owner
     # may have completed reclamation since enumeration. Accept that
@@ -1680,7 +1355,6 @@ def reclaim_terminal_scratch(
     blocks its generation and is reported once (module docstring).
     """
     root = resolve_owned_path(root)
-    migration_errors = _migrate_legacy_scratch(root)
     pending = resolve_owned_path(root / "pending")
     if not pending.exists():
         return {
@@ -1688,11 +1362,11 @@ def reclaim_terminal_scratch(
             "retained_bytes": 0,
             "retained_count": 0,
             "protected_count": 0,
-            "errors": migration_errors,
+            "errors": [],
             "deferred": [],
         }
     candidates: list[tuple[int, int, Path, str, bool]] = []
-    errors: list[str] = list(migration_errors)
+    errors: list[str] = []
     deferred: list[str] = []
     removals: list[Path] = []
     protected_count = 0

@@ -1615,7 +1615,7 @@ def test_runtime_cargo_intermediate_base_is_owned_by_the_payload_lease(tmp_path)
 
 
 @pytest.mark.parametrize("renumbered", [False, True])
-def test_legacy_cargo_root_rekeys_only_a_proven_mount_session(tmp_path, renumbered):
+def test_legacy_cargo_declaration_requires_current_readmission(tmp_path, renumbered):
     root = _root(tmp_path)
     metadata = root.stat()
     legacy = {
@@ -1625,15 +1625,9 @@ def test_legacy_cargo_root_rekeys_only_a_proven_mount_session(tmp_path, renumber
         "inode": metadata.st_ino,
     }
     before = list(root.iterdir())
-    if renumbered:
-        with pytest.raises(ValueError, match="identity-unverifiable"):
-            layout.validate_root(legacy)
-        assert list(root.iterdir()) == before
-    else:
-        current = layout.validate_root(legacy)
-        assert current == layout.declare_root(str(root))
-        assert current["schema"] == "molt.proof-cargo-output-root.v2"
-        assert set(current) == {"schema", "path", "identity"}
+    with pytest.raises(ValueError, match="declaration is malformed"):
+        layout.validate_root(legacy)
+    assert list(root.iterdir()) == before
 
 
 def test_current_cargo_root_survives_device_renumbering(tmp_path, monkeypatch):

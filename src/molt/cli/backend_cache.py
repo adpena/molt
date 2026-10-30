@@ -329,9 +329,7 @@ def _backend_cache_generation(
     artifact: Path, *, identity: StableRegularFileIdentity
 ) -> _BackendCacheGeneration:
     # Caller owns the publication lock, including the byte/receipt read fence.
-    state = _read_artifact_sync_state(
-        backend_cache_sync_receipt_path(artifact), artifact=artifact
-    )
+    state = _read_artifact_sync_state(backend_cache_sync_receipt_path(artifact))
     try:
         verify_stable_regular_file_identity(identity, label="backend cache generation")
     except ValueError as error:
@@ -453,7 +451,7 @@ def restore_backend_cache_artifact(
     )
     receipt = backend_cache_sync_receipt_path(source)
     origin = None
-    state = _read_artifact_sync_state(receipt, artifact=source)
+    state = _read_artifact_sync_state(receipt)
     if receipt.exists():
         if (
             state is None
@@ -670,7 +668,7 @@ def _materialize_cached_backend_artifact(
         )
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
-        state = _read_artifact_sync_state(state_path, artifact=output_artifact)
+        state = _read_artifact_sync_state(state_path)
     if output_stat is None:
         with contextlib.suppress(OSError):
             output_stat = output_artifact.stat()
@@ -929,7 +927,7 @@ def _try_cached_backend_candidates(
         return None
     stage_start = time.perf_counter()
     state_path = _artifact_sync_state_path(project_root, output_artifact)
-    state = _read_artifact_sync_state(state_path, artifact=output_artifact)
+    state = _read_artifact_sync_state(state_path)
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_try_sync_state",
@@ -1091,7 +1089,7 @@ def _backend_daemon_skip_output_sync_flags(
         return False, False
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
-        state = _read_artifact_sync_state(state_path, artifact=output_artifact)
+        state = _read_artifact_sync_state(state_path)
     synced = _synced_backend_output_cache_hit(
         state,
         output_artifact,
@@ -1190,7 +1188,7 @@ def _stage_backend_output_and_caches(
         state_path = _artifact_sync_state_path(project_root, output_artifact)
     if output_already_synced is not False:
         if state is None:
-            state = _read_artifact_sync_state(state_path, artifact=output_artifact)
+            state = _read_artifact_sync_state(state_path)
         if output_stat is None:
             try:
                 output_stat = output_artifact.stat()

@@ -12,7 +12,7 @@ import pytest
 from molt import backend_daemon_custody as daemon
 from molt import backend_daemon_suite_custody as suite
 from molt import process_model
-from molt.exact_json import read_exact, write_exact
+from molt.exact_json import write_exact
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools import memory_guard
 
@@ -2365,7 +2365,9 @@ def test_sentinel_busy_adoption_lock_skips_discovery_and_retains_known_births(
 @pytest.mark.parametrize(
     "state,renumbered", [("closed", False), ("closed", True), ("active", False)]
 )
-def test_legacy_suite_migrates_only_closed_proven_scratch(tmp_path, state, renumbered):
+def test_current_suite_reader_never_adopts_or_rekeys_old_scratch(
+    tmp_path, state, renumbered
+):
     root = tmp_path / "daemon"
     old = root / "suite-leases" / ("c" * 32) / "lease.json"
     old.parent.mkdir(parents=True)
@@ -2408,26 +2410,10 @@ def test_legacy_suite_migrates_only_closed_proven_scratch(tmp_path, state, renum
         for p in old.parent.rglob("*")
         if p.is_file()
     }
-    outcomes = suite.migrate_legacy_suite_leases(root)
-    current = root / "suite-leases" / "v3" / record["token"] / "lease.json"
-    if renumbered or state == "active":
-        assert outcomes == [{"path": str(old), "outcome": "identity-unverifiable"}]
-        assert not current.exists()
-        assert {
-            str(p.relative_to(old.parent)): p.read_bytes()
-            for p in old.parent.rglob("*")
-            if p.is_file()
-        } == before
-    else:
-        assert outcomes == [{"path": str(old), "outcome": "migrated"}]
-        assert not old.exists()
-        migrated = suite.read_lease(current)
-        assert migrated is not None and migrated["schema"] == suite.SCHEMA
-        assert (
-            current.parent / "scratch" / "keep"
-        ).read_bytes() == b"old suite payload"
-        assert read_exact(
-            current.parent / "scratch" / suite.temporary_artifacts._TARGET_RECEIPT,
-            max_bytes=65536,
-            label="test nonce",
-        ) == {"schema": suite.temporary_artifacts.SCHEMA, "nonce": nonce}
+    assert suite.read_lease(old) is None
+    assert not (root / "suite-leases" / "v3").exists()
+    assert {
+        str(p.relative_to(old.parent)): p.read_bytes()
+        for p in old.parent.rglob("*")
+        if p.is_file()
+    } == before

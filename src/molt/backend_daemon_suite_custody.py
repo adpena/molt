@@ -20,13 +20,10 @@ from molt import backend_daemon_custody as daemon, temporary_artifacts
 from molt.file_deletion import delete_path
 from molt.file_publication import (
     resolve_owned_path,
-    namespace_publish_directory_exclusive,
 )
 from molt.exact_json import canonical_json_bytes, encode_exact, read_exact, write_exact
 from molt.durable_file_identity import (
     DurableFileIdentity,
-    upgrade_legacy,
-    file_identity,
 )
 from molt.file_locks import (
     _FileLockHandle,
@@ -210,142 +207,8 @@ def _finish_scratch(path: Path, lease: Mapping, *, closed: bool) -> dict:
     return {"state": "reclaimed"}
 
 
-def _upgrade_suite_lease(path: Path) -> None:
-    """Only an unowned legacy suite may migrate under its owner capability.
-
-    A running old producer retains its lease untouched. A durable intent
-    completes the two-file rewrite before any v3 reader can grant custody.
-    """
-    intent_path = path.parent / "identity-upgrade.json"
-    record = read_exact(path, max_bytes=16384, label="suite identity migration")
-    if not intent_path.exists() and (
-        not isinstance(record, dict)
-        or record.get("schema") != "molt.backend_daemon.suite-lease.v2"
-    ):
-        return
-    if record.get("state") != "closed":
-        raise ValueError("identity-unverifiable: legacy suite closure is unverified")
-    lock = _try_acquire_file_lock(path.parent / "owner.lock", create=False)
-    if lock is None:
-        raise ValueError(
-            "identity-unverifiable: legacy suite still has an active owner"
-        )
-    try:
-        if path.parent.parent.name != "v3":
-            # Establish identity before moving any legacy payload. The held
-            # owner lock follows the directory into its versioned namespace.
-            upgrade_legacy(
-                path.parent / "scratch", record["scratch"]["target_identity"]
-            )
-            destination = path.parent.parent / "v3" / path.parent.name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            namespace_publish_directory_exclusive(path.parent, destination)
-            path = destination / path.name
-            intent_path = destination / "identity-upgrade.json"
-        if intent_path.exists():
-            intent = read_exact(
-                intent_path, max_bytes=65536, label="suite identity upgrade"
-            )
-        else:
-            record = read_exact(path, max_bytes=16384, label="legacy suite lease")
-            if record.get("schema") == SCHEMA:
-                return
-            if path.name != "lease.json" or record.get("token") != path.parent.name:
-                raise ValueError(
-                    "identity-unverifiable: legacy suite namespace mismatch"
-                )
-            target = resolve_owned_path(path.parent / "scratch")
-            scratch = record["scratch"]
-            identity = upgrade_legacy(target, scratch["target_identity"])
-            receipt_path = target / temporary_artifacts._TARGET_RECEIPT
-            receipt = read_exact(
-                receipt_path, max_bytes=65536, label="legacy suite scratch allocation"
-            )
-            if receipt != {
-                "schema": "molt.guard-scratch.v1",
-                "nonce": scratch["target_receipt"],
-            }:
-                raise ValueError(
-                    "identity-unverifiable: legacy suite allocation changed"
-                )
-            updated = {
-                **record,
-                "schema": SCHEMA,
-                "scratch": {**scratch, "target_identity": identity.payload()},
-            }
-            from molt.exact_json import canonical_json_sha256
-
-            intent = {
-                "identity": identity.payload(),
-                "old_lease_sha256": canonical_json_sha256(record),
-                "lease": updated,
-                "old_receipt_sha256": canonical_json_sha256(receipt),
-                "receipt": {
-                    "schema": temporary_artifacts.SCHEMA,
-                    "nonce": scratch["target_receipt"],
-                },
-            }
-            write_exact(intent_path, intent)
-        target = resolve_owned_path(path.parent / "scratch")
-        if file_identity(target) != DurableFileIdentity.from_payload(
-            intent["identity"]
-        ):
-            raise ValueError(
-                "identity-unverifiable: suite scratch changed during upgrade"
-            )
-        from molt.exact_json import canonical_json_sha256
-
-        for member, updated, digest in (
-            (
-                target / temporary_artifacts._TARGET_RECEIPT,
-                intent["receipt"],
-                intent["old_receipt_sha256"],
-            ),
-            (path, intent["lease"], intent["old_lease_sha256"]),
-        ):
-            current = read_exact(
-                member, max_bytes=65536, label="suite identity upgrade member"
-            )
-            if current != updated:
-                if canonical_json_sha256(current) != digest:
-                    raise ValueError("suite identity upgrade member changed")
-                write_exact(member, updated)
-        intent_path.unlink()
-    finally:
-        _release_file_lock(lock)
-
-
-def migrate_legacy_suite_leases(daemon_root: Path) -> list[dict[str, str]]:
-    """Canonical, locked migration of closed suites; active owners stay put."""
-    root = daemon_root / "suite-leases"
-    outcomes = []
-    # Snapshot discovery once: a failed transition resumes on the next visit,
-    # not a second implicit attempt after moving into the new namespace.
-    paths = [
-        directory / "lease.json"
-        for namespace in (root, root / "v3")
-        if namespace.exists()
-        for directory in sorted(namespace.iterdir())
-        if _TOKEN.fullmatch(directory.name)
-    ]
-    for path in paths:
-        try:
-            record = read_exact(path, max_bytes=16384, label="legacy suite discovery")
-            if (
-                record.get("schema") != "molt.backend_daemon.suite-lease.v2"
-                and not (path.parent / "identity-upgrade.json").exists()
-            ):
-                continue
-            _upgrade_suite_lease(path)
-            outcome = "migrated"
-        except (OSError, ValueError, TypeError, KeyError):
-            outcome = "identity-unverifiable"
-        outcomes.append({"path": str(path), "outcome": outcome})
-    return outcomes
-
-
 def read_lease(path: Path) -> dict | None:
-    if _LEASE_CHILD_CUSTODY_ERROR is not None:
+    if _LEASE_CHILD_CUSTODY_ERROR is not None or path.parent.parent.name != "v3":
         return None
     try:
         record = read_exact(path, max_bytes=16384, label="daemon suite lease")
@@ -1131,7 +994,6 @@ class SuiteDaemonLease:
             daemon_root = (
                 bound_project_build_state_root(project_root, environ) / "backend_daemon"
             )
-            migrate_legacy_suite_leases(daemon_root)
             directory = (daemon_root / "suite-leases" / "v3" / token).resolve()
             directory.mkdir(parents=True)
             # Fork serialization covers lock acquisition as well as pipe admission:

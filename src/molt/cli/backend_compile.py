@@ -894,9 +894,7 @@ def _execute_backend_compile(
             output_sync_state_path = _artifact_sync_state_path(
                 project_root, output_artifact
             )
-            output_sync_state = _read_artifact_sync_state(
-                output_sync_state_path, artifact=output_artifact
-            )
+            output_sync_state = _read_artifact_sync_state(output_sync_state_path)
             try:
                 output_artifact_stat = output_artifact.stat()
             except OSError:

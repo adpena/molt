@@ -57,20 +57,19 @@ Preflight receipts use `logs/runtime_wasm_final_preflight/v4/`. Cargo output dec
 identities are published in `execution-v6/` request/result pairs; Cargo payload
 placement uses `molt-proof-output/v2/`. Publication journals have a `v3-` name
 and retired leaves have a `v2-` name. Historical immutable evidence is not
-rewritten. Only the canonical locked migrator reads an old namespace.
+rewritten. Only binding provisioning and recovery-journal owners read an old
+namespace through their canonical locked boundary.
 
 Canonical checkout provisioning upgrades a matching v1 binding under its
 existing provisioning lock and atomically publishes v2 alongside v1. A mismatch refuses
 with `artifact-root --bind`; replaced, unmounted and unhealthy roots refuse.
-The guard retention sweep migrates a matching scratch owner, terminal, digest,
-pending index and nonce as a single recoverable bundle after moving the held
-generation into v2. A versioned namespace intent recovers either side of that
-move; the generation intent holds
-only new records and hashes of prior records; a locked reader finishes it before
-consuming the new protocol. An unverifiable legacy pending grant is indexed
-under `identity-unverifiable/`, and leaves the sweep without touching its owner,
-terminal or payload. That entry has no ownership or deletion authority; normal
-unowned last-use retention remains responsible for its payload.
+Rebuildable state never migrates: guard and suite scratch, digest rows, probe
+answers, source hashes, build records, sync receipts and Cargo output declarations
+start cold in the current namespace. New readers do not inspect older
+namespaces. HF-582's storage authority owns their retirement by last use and
+held-lock exclusion; this module adds no namespace sweeper or retirement owner.
+The preserved v1 scratch implementation under tests is only a provenance-pinned
+oracle for concurrent version isolation.
 
 Publication journals re-key all still-witnessed members before recovery and
 refuse an unverifiable member. Mixed old/new journal copies after an interrupted
@@ -79,13 +78,9 @@ names use v2 and a digest of the stable identity, keeping component length
 bounded even for a long UUID. The existing exclusive retirement owner can
 re-key a v1 name only while its old pair matches. Unproven leaves remain put.
 
-Build records, source hashes, digest rows, toolchain probe keys and backend sync
-receipts re-key matching generations through their existing owners; changed or
-unprovable generations miss/refuse. Current Cargo-root declarations and command
-transcript records use stable identities. Historical immutable proof material
-is retained as evidence: migration at its reader proves the old pair before
-projecting a current identity; it does not rewrite a sealed historical proof or
-turn an old source receipt into qualification of new source.
+Current Cargo-root declarations and command transcript records use stable
+identities. Immutable historical evidence stays in its original namespace; it
+cannot qualify a current request without current admission.
 
 ## Primary authorities
 

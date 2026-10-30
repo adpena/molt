@@ -29,8 +29,6 @@ from molt import file_publication, input_report
 from molt.durable_file_identity import (
     DurableFileIdentity,
     file_identity,
-    upgrade_legacy,
-    upgrade_stat_token,
 )
 from molt.build_output_selection import BuildOutputSelection
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
@@ -1142,73 +1140,6 @@ class BuildRecordHit:
     consumer: Path | None = None
 
 
-def _upgrade_build_record(payload: dict) -> dict:
-    import copy
-
-    value = copy.deepcopy(payload)
-    for row in value["files"]:
-        if row[1] is not None:
-            row[1] = upgrade_stat_token(Path(row[0]).resolve(strict=True), row[1])
-    for row in value["directories"]:
-        row[1] = upgrade_stat_token(Path(row[0]).resolve(strict=True), row[1])
-    output = value["output"]
-    selection = BuildOutputSelection.from_dict(output["selection"])
-    output["token"] = upgrade_stat_token(selection.path, output["token"])
-    for row in output["products"]:
-        row[2] = upgrade_stat_token(Path(row[1]), row[2])
-    if value["result"] is not None:
-        for name in ("binary", "archive", "stub", "runtime", "compiler"):
-            artifact = value["result"][name]
-            artifact["token"] = upgrade_stat_token(
-                Path(artifact["path"]), artifact["token"]
-            )
-    for claim in value["claims"]:
-        pair = claim["directory_identity"]
-        if not isinstance(pair, list) or len(pair) != 2:
-            raise ValueError("identity-unverifiable: malformed legacy build claim")
-        claim["directory_identity"] = upgrade_legacy(
-            Path(claim["resolved_root"]), {"device": pair[0], "inode": pair[1]}
-        ).payload()
-    value["schema"] = _SCHEMA
-    return value
-
-
-def _migrate_build_record(path: Path, key: str) -> None:
-    # Only the canonical v11 location can import the legacy namespace.
-    if path.exists() or path.parent.parent.name != "v11":
-        return
-    from molt.file_locks import _acquire_file_lock, _release_file_lock
-
-    legacy = path.parent.parent.parent / path.parent.name / path.name
-    if not legacy.exists():
-        return
-    lock = _acquire_file_lock(
-        path.with_suffix(".identity-migration.lock"),
-        timeout_s=10,
-        timeout_message="build record migration is busy",
-    )
-    try:
-        if path.exists():
-            return
-        with legacy.open("rb") as stream:
-            payload = json.load(stream)
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schema") != "molt-build-record-v10"
-            or payload.get("key") != key
-        ):
-            return
-        payload = _upgrade_build_record(payload)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        file_publication.atomic_write_bytes(
-            path,
-            json.dumps(payload, separators=(",", ":")).encode(),
-            durability=file_publication.PublicationDurability.RECONSTRUCTIBLE,
-        )
-    finally:
-        _release_file_lock(lock)
-
-
 def check(
     path: Path,
     key: str,
@@ -1222,7 +1153,6 @@ def check(
     binary that build published. Never raises.
     """
     try:
-        _migrate_build_record(path, key)
         metadata = os.stat(path)
         with open(path, "rb") as handle:
             payload = json.loads(handle.read())

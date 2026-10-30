@@ -22,7 +22,6 @@ from molt.dx import artifact_root
 from molt.durable_file_identity import (
     DurableFileIdentity,
     file_identity,
-    upgrade_legacy,
 )
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 
@@ -99,38 +98,10 @@ def declare_root(raw: object) -> dict[str, object]:
     }
 
 
-def _upgrade_root_declaration(value: Mapping) -> dict[str, object]:
-    if set(value) != {"schema", "path", "device", "inode"} or not isinstance(
-        value["path"], str
-    ):
-        raise ValueError("identity-unverifiable: malformed legacy Cargo root")
-    path = Path(value["path"])
-    if not path.is_absolute() or path == Path(path.anchor) or ".." in path.parts:
-        raise ValueError("identity-unverifiable: invalid legacy Cargo root path")
-    from molt.file_locks import _shared_cache_lock
-
-    # Migration cannot create lock/output directories on an unproven volume.
-    lock_key = hashlib.sha256(str(path).encode()).hexdigest()[:24]
-    with _shared_cache_lock("cargo-root-identity-v2-" + lock_key):
-        identity = upgrade_legacy(
-            path, {"device": value["device"], "inode": value["inode"]}
-        )
-        return {
-            "schema": ROOT_SCHEMA,
-            "path": str(path),
-            "identity": identity.payload(),
-        }
-
-
 def declared_root(value: object) -> dict[str, object] | None:
     """Validate immutable syntax without requiring historical media online."""
     if value is None:
         return None
-    if (
-        isinstance(value, Mapping)
-        and value.get("schema") == "molt.proof-cargo-output-root.v1"
-    ):
-        value = _upgrade_root_declaration(value)
     if not isinstance(value, Mapping) or set(value) != {"schema", "path", "identity"}:
         raise ValueError("Cargo output root declaration is malformed")
     if value.get("schema") != ROOT_SCHEMA:
