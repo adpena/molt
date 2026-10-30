@@ -1624,9 +1624,11 @@ def test_legacy_cargo_root_rekeys_only_a_proven_mount_session(tmp_path, renumber
         "device": metadata.st_dev + int(renumbered),
         "inode": metadata.st_ino,
     }
+    before = list(root.iterdir())
     if renumbered:
         with pytest.raises(ValueError, match="identity-unverifiable"):
             layout.validate_root(legacy)
+        assert list(root.iterdir()) == before
     else:
         current = layout.validate_root(legacy)
         assert current == layout.declare_root(str(root))

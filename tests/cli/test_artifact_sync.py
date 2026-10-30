@@ -1618,3 +1618,43 @@ def test_locked_native_eligibility_preserves_origin_order_and_error_classificati
     assert function.read_bytes() == content
     current_function_receipt = backend_cache_sync_receipt_path(function).read_bytes()
     assert current_function_receipt == sealed_function_receipt
+
+
+@pytest.mark.parametrize("sidecar", [False, True])
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_sync_receipt_never_rewrites_the_old_namespace(
+    tmp_path, sidecar, renumbered
+):
+    import hashlib
+
+    artifact = tmp_path / "artifact"
+    artifact.write_bytes(b"synced generation")
+    metadata = artifact.stat()
+    if sidecar:
+        current = artifact.with_name("artifact.sync.v4.json")
+        legacy = artifact.with_name("artifact.sync.json")
+    else:
+        current = tmp_path / "artifact_sync" / "v4" / "receipt.json"
+        legacy = current.parent.parent / current.name
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 3,
+        "source_key": "source",
+        "tier": "immutable",
+        "size": metadata.st_size,
+        "sha256": hashlib.sha256(b"synced generation").hexdigest(),
+        "generation": [metadata.st_dev + int(renumbered), metadata.st_ino],
+        "emission_origin": None,
+    }
+    legacy.write_text(json.dumps(payload), encoding="utf-8")
+    before = legacy.read_bytes()
+    state = sync._read_artifact_sync_state(current, artifact=artifact)
+    assert legacy.read_bytes() == before
+    assert current.exists() is (not renumbered)
+    if renumbered:
+        assert state is None
+    else:
+        assert state["version"] == 4
+        assert sync._artifact_sync_state_matches(
+            state, source_key="source", tier="immutable", artifact=artifact
+        )

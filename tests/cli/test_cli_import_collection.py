@@ -35483,3 +35483,52 @@ print(json.dumps({{"paths": [str(path) for path in snapshot.source_paths], "fing
         assert result["paths"], "the snapshot keyed no compiler source"
         results.append(result)
     assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_source_hash_rekeys_into_versioned_namespace(tmp_path, renumbered):
+    import hashlib
+    import json
+    from molt.cli import module_source
+    from molt.durable_file_identity import file_identity
+
+    source = tmp_path / "source.py"
+    source.write_bytes(b"x = 1\n")
+    metadata = source.stat()
+    key = {
+        "path": str(source),
+        "size": metadata.st_size,
+        "mtime_ns": metadata.st_mtime_ns,
+        "ctime_ns": metadata.st_ctime_ns,
+        "inode": metadata.st_ino,
+        "device": metadata.st_dev + int(renumbered),
+    }
+    digest = hashlib.sha256(
+        json.dumps(key, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    cache = tmp_path / "cache"
+    legacy = cache / "source_hash_cache" / digest[:2] / (digest + ".json")
+    legacy.parent.mkdir(parents=True)
+    sha = hashlib.sha256(b"x = 1\n").hexdigest()
+    legacy.write_text(
+        json.dumps({"version": 1, **key, "source_sha256": sha}), encoding="utf-8"
+    )
+    before = legacy.read_bytes()
+    volume, file_id = file_identity(source).stat_prefix()
+    found = module_source._read_persistent_source_hash(
+        cache,
+        path_str=str(source),
+        size=metadata.st_size,
+        mtime_ns=metadata.st_mtime_ns,
+        ctime_ns=metadata.st_ctime_ns,
+        file_id=file_id,
+        volume=volume,
+    )
+    assert found == (None if renumbered else sha)
+    assert legacy.read_bytes() == before
+    current = list((cache / "source_hash_cache" / "v2").rglob("*.json"))
+    assert len(current) == int(not renumbered)
+    if current:
+        payload = json.loads(current[0].read_text(encoding="utf-8"))
+        assert payload["version"] == 2
+        assert "device" not in payload and "inode" not in payload

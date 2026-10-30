@@ -52,7 +52,8 @@ never encounter new records. Bindings use `artifact-root.v2.json`, guard scratch
 uses `tmp/gs/v2/`, suite leases use `suite-leases/v3/`, digest rows use
 `file-digests/v2.sqlite`, probes use `toolchain-facts/v2.json`, source hashes use
 `source_hash_cache/v2/`, build records use `build_records/v11/`, and backend sync
-receipts use `artifact_sync/v4/`. Cargo output declarations and transcript
+receipts use `artifact_sync/v4/` and immutable sidecars use `.sync.v4.json`.
+Preflight receipts use `logs/runtime_wasm_final_preflight/v4/`. Cargo output declarations and transcript
 identities are published in `execution-v6/` request/result pairs; Cargo payload
 placement uses `molt-proof-output/v2/`. Publication journals have a `v3-` name
 and retired leaves have a `v2-` name. Historical immutable evidence is not

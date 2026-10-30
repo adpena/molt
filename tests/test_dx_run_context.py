@@ -2204,10 +2204,15 @@ def test_render_env_spells_hyphenated_names_per_shell() -> None:
 
 
 def _git(repo: Path, *args: str) -> str:
+    # Git fixture setup has its own artifact custody even when the test clears
+    # the session roots to observe an unconfigured developer host.
+    artifacts = repo.parent / "git-command-artifacts"
+    artifacts.mkdir(exist_ok=True)
     completed = run_guarded_test_process(
         ["git", "-C", str(repo), *args],
         env={
             **os.environ,
+            "MOLT_EXT_ROOT": str(artifacts),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "t",
