@@ -94,7 +94,8 @@ uses `tmp/gs/v2/`, suite leases use `suite-leases/v3/`, digest rows use
 receipts use `artifact_sync/v5/` and immutable sidecars use `.sync.v5.json`.
 Preflight receipts use `logs/runtime_wasm_final_preflight/v5/`. Cargo output declarations and transcript
 identities are published in `execution-v6/` request/result pairs; Cargo payload
-placement uses `molt-proof-output/v2/`. Publication journals have a `v3-` name
+placement uses `molt-proof-output/v2/`; trunk fixture ownership uses
+`<selected role root>/v2/<nonce>/`. Publication journals have a `v3-` name
 and retired leaves have a `v2-` name. Historical immutable evidence is not
 rewritten. Only binding provisioning and recovery-journal owners read an old
 namespace through their canonical locked boundary.

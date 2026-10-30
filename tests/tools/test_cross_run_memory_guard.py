@@ -356,6 +356,7 @@ def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):
 
 def test_trunk_fixture_roots_are_explicit_disjoint_and_physically_admitted(tmp_path):
     import json
+    from molt.durable_file_identity import DurableFileIdentity, file_identity
 
     nonce = "abcde12345" * 3 + "ab"
     record = {
@@ -370,6 +371,12 @@ def test_trunk_fixture_roots_are_explicit_disjoint_and_physically_admitted(tmp_p
         "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT": "/foreign",
         "MOLT_PROOF_TEST_METADATA_ROOT": "/foreign",
     }
+    legacy_records = []
+    for selected in record["host"].values():
+        legacy = Path(selected) / nonce[:16] / "trunk-owner.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"preserved v1 owner")
+        legacy_records.append(legacy)
     declarations = trunk_loop.fixture_roots(record, env)
     assert set(declarations) == {"proof_cargo_output_root", "proof_metadata_root"}
     for field, variable in (
@@ -377,15 +384,18 @@ def test_trunk_fixture_roots_are_explicit_disjoint_and_physically_admitted(tmp_p
         ("proof_metadata_root", "MOLT_PROOF_TEST_METADATA_ROOT"),
     ):
         path = Path(env[variable])
-        assert path == Path(record["host"][field]) / nonce[:16]
+        assert path == Path(record["host"][field]) / "v2" / nonce[:16]
         declaration = declarations[field]
         metadata = path.stat()
-        assert declaration["device"] == metadata.st_dev
-        assert declaration["inode"] == metadata.st_ino
+        assert declaration["path"] == str(path)
+        assert DurableFileIdentity.from_payload(
+            declaration["identity"]
+        ) == file_identity(path, expected=metadata)
         owner = json.loads((path / "trunk-owner.json").read_text(encoding="utf-8"))
         assert owner["run_id"] == "owned-run"
         assert owner["nonce"] == nonce
         assert owner["root"] == declaration
+    assert all(path.read_bytes() == b"preserved v1 owner" for path in legacy_records)
     with pytest.raises(FileExistsError):
         trunk_loop.fixture_roots(record, env)
 
