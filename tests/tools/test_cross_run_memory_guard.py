@@ -52,10 +52,11 @@ def test_trunk_inventory_admits_only_declared_commands(tmp_path):
         trunk_loop.selected_host(
             cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
         )
-    text = cross_run.DEFAULT_INVENTORY.read_text()
+    text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
     inventory = tmp_path / "hosts.toml"
     inventory.write_text(
-        text.replace('launcher = "windows-cim"', 'launcher = "posix-session"')
+        text.replace('launcher = "windows-cim"', 'launcher = "posix-session"'),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="launcher, OS and shell disagree"):
         cross_run.parse_inventory(inventory)
@@ -163,7 +164,7 @@ if g.exists():c.write_text('completed after launcher exit')
         str(tmp_path),
     )
     launcher = subprocess.run(
-        ["/bin/sh", "-c", script], capture_output=True, text=True, timeout=10
+        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8", timeout=10
     )
     assert launcher.returncode == 0, launcher.stderr
     pid = trunk_loop.acknowledge(launcher.stdout)
@@ -171,13 +172,16 @@ if g.exists():c.write_text('completed after launcher exit')
     while not ready.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     try:
-        assert json.loads(ready.read_text()) == {"pid": pid, "session": pid}
+        assert json.loads(ready.read_text(encoding="utf-8")) == {
+            "pid": pid,
+            "session": pid,
+        }
         assert pid != os.getsid(0)
     finally:
-        release.write_text("parent already exited")
+        release.write_text("parent already exited", encoding="utf-8")
     while not complete.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert complete.read_text() == "completed after launcher exit"
+    assert complete.read_text(encoding="utf-8") == "completed after launcher exit"
 
 
 def test_trunk_seed_inputs_reuses_content_addressed_archives(tmp_path, monkeypatch):
@@ -248,7 +252,7 @@ def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
         "cells": ["cell"],
         "state": "launched",
     }
-    record_path.write_text(json.dumps(record))
+    record_path.write_text(json.dumps(record), encoding="utf-8")
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
         archive.writestr(
@@ -316,7 +320,7 @@ def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
     assert trunk_loop.collect(record_path, wait=False) == 1
     evidence = tmp_path / commit / "host/cell" / run_id / "run.log"
     assert evidence.read_bytes() == b"retained original bytes\r\n"
-    assert json.loads(record_path.read_text())["state"] == "collected"
+    assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == "collected"
     assert transport.calls == (2 if interruption == "transport" else 1)
 
 
@@ -343,7 +347,7 @@ def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):
     plugin["pytest_runtest_logreport"](report)
     paths = list(tmp_path.iterdir())
     assert len(paths) == 1
-    assert json.loads(paths[0].read_text()) == {
+    assert json.loads(paths[0].read_text(encoding="utf-8")) == {
         "nodeid": "file.py::test_contract",
         "phase": "call",
         "duration_seconds": 2.5,
@@ -378,7 +382,7 @@ def test_trunk_fixture_roots_are_explicit_disjoint_and_physically_admitted(tmp_p
         metadata = path.stat()
         assert declaration["device"] == metadata.st_dev
         assert declaration["inode"] == metadata.st_ino
-        owner = json.loads((path / "trunk-owner.json").read_text())
+        owner = json.loads((path / "trunk-owner.json").read_text(encoding="utf-8"))
         assert owner["run_id"] == "owned-run"
         assert owner["nonce"] == nonce
         assert owner["root"] == declaration
@@ -393,12 +397,12 @@ def test_trunk_refuses_missing_escaped_or_overlapping_fixture_roots(
     tmp_path, replacement
 ):
     inventory = tmp_path / "hosts.toml"
-    text = cross_run.DEFAULT_INVENTORY.read_text()
+    text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
     text = text.replace(
         "proof_metadata_root = 'C:\\Molt\\trunk-metadata'",
         "proof_metadata_root = '" + replacement + "'",
     )
-    inventory.write_text(text)
+    inventory.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="fixture roots"):
         trunk_loop.selected_host(inventory, "bat00", ["portability.queue.windows"])
 
