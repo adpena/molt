@@ -2779,36 +2779,6 @@ def test_developer_host_default_cache_uses_a_per_test_user_cache_base(
     assert not cache.is_relative_to(Path.home() / ".cache")
 
 
-def _renumber_stat_devices(monkeypatch):
-    """Simulate one coherent new mount session, including held descriptors."""
-    import stat
-
-    def renumber(original):
-        def query(*args, **kwargs):
-            metadata = original(*args, **kwargs)
-            fields = list(metadata)
-            fields[stat.ST_DEV] += 1000
-            extra = {
-                name: getattr(metadata, name)
-                for name in (
-                    "st_atime_ns",
-                    "st_mtime_ns",
-                    "st_ctime_ns",
-                    "st_birthtime",
-                    "st_birthtime_ns",
-                    "st_file_attributes",
-                    "st_reparse_tag",
-                )
-                if hasattr(metadata, name)
-            }
-            return os.stat_result(fields, extra)
-
-        return query
-
-    for name in ("stat", "lstat", "fstat"):
-        monkeypatch.setattr(os, name, renumber(getattr(os, name)))
-
-
 def test_matching_legacy_binding_upgrades_through_canonical_selection(
     bound_artifact_family,
 ):
@@ -2860,14 +2830,158 @@ def test_renumbered_legacy_binding_refuses_with_explicit_bind_remedy(
     assert json.loads(legacy_path.read_text(encoding="utf-8")) == legacy
 
 
+def _renumber_stat_devices(monkeypatch):
+    """Simulate one coherent new mount session, including held descriptors."""
+    import stat
+
+    def renumber(original):
+        def query(*args, **kwargs):
+            metadata = original(*args, **kwargs)
+            fields = list(metadata)
+            fields[stat.ST_DEV] += 1000
+            extra = {
+                name: getattr(metadata, name)
+                for name in (
+                    "st_atime_ns",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                    "st_birthtime",
+                    "st_birthtime_ns",
+                    "st_file_attributes",
+                    "st_reparse_tag",
+                )
+                if hasattr(metadata, name)
+            }
+            return os.stat_result(fields, extra)
+
+        return query
+
+    for name in ("stat", "lstat", "fstat"):
+        monkeypatch.setattr(os, name, renumber(getattr(os, name)))
+
+
+def _replay_artifact_root_stat(monkeypatch, artifacts):
+    """Substitute the reboot's stat source; volume queries keep their real authority."""
+    import stat
+    from molt import durable_file_identity as durable
+
+    actual = artifacts.stat()
+    live = {"device": 16777240, "inode": 5983296}
+
+    def replay(original):
+        def query(*args, **kwargs):
+            metadata = original(*args, **kwargs)
+            if (metadata.st_dev, metadata.st_ino) != (actual.st_dev, actual.st_ino):
+                return metadata
+            fields = list(metadata)
+            fields[stat.ST_DEV] = live["device"]
+            fields[stat.ST_INO] = live["inode"]
+            extra = {
+                name: getattr(metadata, name)
+                for name in (
+                    "st_atime_ns",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                    "st_birthtime",
+                    "st_birthtime_ns",
+                    "st_file_attributes",
+                    "st_reparse_tag",
+                )
+                if hasattr(metadata, name)
+            }
+            return os.stat_result(fields, extra)
+
+        return query
+
+    for name in ("stat", "lstat", "fstat"):
+        monkeypatch.setattr(os, name, replay(getattr(os, name)))
+    if sys.platform.startswith("linux"):
+        # Replaying the stat device allocation must retain the UUID mapping of
+        # this real test filesystem. The mount itself has not been substituted.
+        real_volume = durable._linux_volume
+        monkeypatch.setattr(
+            durable,
+            "_linux_volume",
+            lambda device: real_volume(
+                actual.st_dev if device == live["device"] else device
+            ),
+        )
+    return live
+
+
 def test_durable_binding_survives_new_device_number(bound_artifact_family, monkeypatch):
-    main, _, artifacts = bound_artifact_family
-    record = dx.artifact_root_binding_path(main)
+    main, lane, artifacts = bound_artifact_family
+    live = _replay_artifact_root_stat(monkeypatch, artifacts)
+    # Publish the original durable binding before replaying the reboot.
+    record = dx.set_artifact_root_binding(main, artifacts, {})
+    before = artifacts.stat()
+    assert (before.st_dev, before.st_ino) == (16777240, 5983296)
     saved = record.read_bytes()
-    _renumber_stat_devices(monkeypatch)
+    live["device"] = 16777246
     dx._ARTIFACT_BINDING_CACHE.clear()
-    assert dx.artifact_root_selection(main, {}).root == artifacts
+    after = artifacts.stat()
+    assert (after.st_dev, after.st_ino) == (16777246, 5983296)
+    assert dx.artifact_root_selection(lane, {}).root == artifacts
+    assert RunContext(lane).canonical_env({}, create_dirs=False)[
+        "MOLT_EXT_ROOT"
+    ] == str(artifacts)
     assert record.read_bytes() == saved
+    # Execute a real guarded child with the environment projected from the
+    # replayed binding; neither the user nor the guard repairs its record.
+    selected = RunContext(lane).canonical_env({}, create_dirs=True)
+    completed = run_guarded_test_process(
+        [sys.executable, "-B", "-c", "print('reboot replay')"],
+        cwd=lane,
+        env={**os.environ, **selected},
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "reboot replay"
+    assert record.read_bytes() == saved
+
+
+def test_durable_binding_refuses_same_inode_on_another_volume(
+    bound_artifact_family, monkeypatch
+):
+    from molt import durable_file_identity as durable
+
+    main, _, artifacts = bound_artifact_family
+    _replay_artifact_root_stat(monkeypatch, artifacts)
+    record = dx.set_artifact_root_binding(main, artifacts, {})
+    saved = record.read_bytes()
+    bound = dx._load_artifact_root_binding(record)
+    assert isinstance(bound, dx._ArtifactRootBinding)
+    original = dx.file_identity
+
+    def replaced_volume(path, *, expected=None):
+        identity = original(path, expected=expected)
+        if path != artifacts:
+            return identity
+        return durable.DurableFileIdentity(
+            identity.kind,
+            ("0" if identity.volume[0] != "0" else "1") + identity.volume[1:],
+            identity.file_id,
+        )
+
+    # Same live stat pair, path and file ID, with a substituted volume authority.
+    monkeypatch.setattr(dx, "file_identity", replaced_volume)
+    assert (artifacts.stat().st_dev, artifacts.stat().st_ino) == (16777240, 5983296)
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    with pytest.raises(
+        dx.DxConfigError, match="identity changed.*artifact-root --bind"
+    ):
+        dx.artifact_root_selection(main, {})
+    assert record.read_bytes() == saved
+
+
+def test_artifact_binding_refused_state_cannot_be_revived():
+    with pytest.raises(
+        dx.DxConfigError, match="illegal artifact-root binding transition"
+    ):
+        dx.apply_artifact_binding_event(
+            dx.ArtifactBindingState.REFUSED,
+            dx.ArtifactBindingEvent.IDENTITY_MATCHES,
+        )
 
 
 @pytest.mark.parametrize("replacement", ["directory", "volume", "unmounted"])

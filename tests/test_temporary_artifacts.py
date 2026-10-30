@@ -1103,8 +1103,8 @@ def test_guard_scratch_follows_the_selected_scratch_storage(tmp_path):
 
     root = scratch.scratch_root(lane, env)
 
-    assert root.parent.parent == ram.resolve()
-    assert root.name == "gs"
+    assert root.parent.parent.parent == ram.resolve()
+    assert root.parts[-2:] == ("gs", "v2")
 
 
 @pytest.mark.parametrize("prefix", ["disk:", ""])
@@ -1360,7 +1360,7 @@ def test_sweep_never_revives_a_generation_moved_away_under_it(
         )
     removing = lease.generation.parent / "removing"
     removing.mkdir()
-    identity = scratch._identity
+    identity = scratch._live_identity
     read = scratch.read_exact
     moved = []
 
@@ -1379,7 +1379,7 @@ def test_sweep_never_revives_a_generation_moved_away_under_it(
             move()
         return read(path, **kwargs)
 
-    monkeypatch.setattr(scratch, "_identity", concurrent_identity)
+    monkeypatch.setattr(scratch, "_live_identity", concurrent_identity)
     monkeypatch.setattr(scratch, "read_exact", concurrent_read)
     if reader == "sweep":
         result = scratch.reclaim_terminal_scratch(lease.generation.parent)
@@ -1631,18 +1631,18 @@ def _run_crash_state(
 ) -> list[str]:
     if root.exists():
         shutil.rmtree(root)
-    scratch_root = root / "tmp" / "gs"
+    scratch_root = root / "tmp" / "gs" / "v2"
     generation = scratch_root / f"{1:032x}"
     generation.mkdir(parents=True)
     if lock:
         file_locks._release_file_lock(
             file_locks._try_acquire_file_lock(generation / "lock")
         )
-    foreign = root / "tmp" / "pt-foreign0"
+    foreign = scratch_root / "pt-foreign0"
     foreign.mkdir()
     (foreign / "keep").write_bytes(b"keep")
     locations = {
-        "target": root / "tmp" / _MODEL_TARGET,
+        "target": scratch_root / _MODEL_TARGET,
         "payload": generation / "payload",
     }
     identity = {"kind": "apple-uuid", "volume": "1" * 32, "file_id": "1" * 32}
