@@ -71,7 +71,8 @@ def indexed_payload(path: Path) -> bool:
     if path.is_symlink():
         return False
     if path.is_dir():
-        return all(indexed_payload(child) for child in path.iterdir())
+        children = list(path.iterdir())
+        return bool(children) and all(indexed_payload(child) for child in children)
     if path.name != EVIDENCE_INDEX_NAME and not path.name.endswith(
         "." + EVIDENCE_INDEX_NAME
     ):
@@ -105,6 +106,22 @@ def indexed_payload(path: Path) -> bool:
         )
     except (OSError, ValueError, TypeError, KeyError):
         return False
+
+
+def _retain_source_index(source: Path, directory: Path) -> Path:
+    """Move a verified source index to surviving custody, then drop an empty shell."""
+    import uuid
+    from molt.checkout_state import evidence_index_path
+    from molt.file_publication import durable_namespace_replace
+
+    index = directory / f"{uuid.uuid4().hex}.source.json"
+    directory.mkdir(parents=True, exist_ok=True)
+    durable_namespace_replace(evidence_index_path(source), index)
+    if source.is_dir():
+        # A late uncooperative writer leaves both its new signal and the
+        # completed archive intact; never recursively remove this shell.
+        source.rmdir()
+    return index
 
 
 def harvest_lane_payload(
@@ -166,22 +183,13 @@ def harvest_lane_payload(
                     )
             sources.append(source)
         for source in sources:
-            from molt.checkout_state import evidence_index_path
-            from molt.file_publication import durable_namespace_replace
-            import uuid
-
             archive = compact_evidence(source, destination, kind="lane-evidence")
             # A sidecar of an ignored file need not itself be ignored. Move
             # every source index to surviving Git custody, preserving its
             # contents and avoiding new untracked files in the lane.
-            index = (
-                directories[1]
-                / "molt"
-                / "lane-payload-index"
-                / f"{uuid.uuid4().hex}.source.json"
+            index = _retain_source_index(
+                source, directories[1] / "molt" / "lane-payload-index"
             )
-            index.parent.mkdir(parents=True, exist_ok=True)
-            durable_namespace_replace(evidence_index_path(source), index)
             result.append(
                 {
                     "source": str(source),
@@ -1120,9 +1128,23 @@ def _legacy_temp_plan(
     # Names select Molt signal, never a disposable class. The same verified
     # archive and index boundary preserves unknown legacy bytes before removal.
     for path in sorted(legacy_temp.iterdir()):
-        if not path.name.startswith(("molt-", "molt_", "linker-crash-")):
+        if not path.name.startswith(("molt", "linker-crash-")):
             continue
-        if path.is_symlink() or is_evidence_index(path) or indexed_payload(path):
+        if is_evidence_index(path) or indexed_payload(path):
+            continue
+        if path.is_symlink() or not path.name.startswith(
+            ("molt-", "molt_", "moltd-", "linker-crash-")
+        ):
+            rows.append(
+                Migration(
+                    "replaced-temporary",
+                    path,
+                    path,
+                    "keep",
+                    allocated_bytes(path),
+                    "unknown temp producer or link; custody reconciliation required",
+                )
+            )
             continue
         last_use, held = _legacy_activity(path)
         policy = storage_rule("replaced-temporary").retention
@@ -1291,6 +1313,15 @@ def migrate(
                             )
                         )
                         row["status"] = "compacted"
+                        if item.kind == "replaced-temporary":
+                            directories = git_directories(repo)
+                            assert directories is not None
+                            row["index"] = str(
+                                _retain_source_index(
+                                    item.source,
+                                    directories[1] / "molt" / "retired-evidence",
+                                )
+                            )
                     elif item.action == "move-worktree":
                         from tools.disk_guard import _guard_protection
 

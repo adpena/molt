@@ -10452,12 +10452,15 @@ class TestStorageAuthority:
         _storage_git(repo, "init", "-q")
         monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
         old = time.time() - 2 * 86400
-        for name in ("idle", "read", "locked"):
+        for name in ("idle", "read", "locked", "empty"):
             root = temporary / f"molt-cache-test-{name}"
             root.mkdir()
             (root / "payload").write_bytes(b"legacy signal")
             for path in (root / "payload", root):
                 os.utime(path, (old, old))
+        empty = temporary / "molt-cache-test-empty"
+        (empty / "payload").unlink()
+        os.utime(empty, (old, old))
         read = temporary / "molt-cache-test-read/payload"
         os.utime(read, (time.time(), old))
         locked = temporary / "molt-cache-test-locked"
@@ -10478,8 +10481,10 @@ class TestStorageAuthority:
         )
         with tarfile.open(retired["archive"]) as archive:
             assert archive.extractfile("payload").read() == b"legacy signal"
-        assert (temporary / "molt-cache-test-idle/storage-index.json").is_file()
-        assert not (temporary / "molt-cache-test-idle/payload").exists()
+        assert Path(retired["index"]).is_file()
+        assert not (temporary / "molt-cache-test-idle").exists()
+        assert by_name["molt-cache-test-empty"]["status"] == "compacted"
+        assert not empty.exists()
         assert by_name["molt-cache-test-read"]["status"] == "kept"
         assert by_name["molt-cache-test-locked"]["status"] == "kept"
         assert (
