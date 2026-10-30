@@ -36,7 +36,7 @@ from tools.git_identity import immutable_git_environment
 from tools.git_identity import is_git_object_id  # noqa: E402
 from tools.receipt_toolchain import audit_engine_problems, observe_python_audit_engine  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 SCHEMA_VERSION = 2
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"

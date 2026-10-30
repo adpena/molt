@@ -15,7 +15,7 @@ MANIFEST_FILE = REPO_ROOT / "bench/results/reference_manifest.json"
 def _run_tool(*args: str):
     return run_guarded_test_process(
         [sys.executable, *args],
-        prefix="MOLT_BENCH_TEST",
+        prefix="MOLT_PYTEST",
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,

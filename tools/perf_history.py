@@ -56,7 +56,7 @@ HISTORY_DIR = REPO_ROOT / "bench" / "scoreboard" / "history"
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.perf_authority import perf_methodology_problems  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PERF_CALIBRATION")
 
 # A regression is only "real" if the candidate is below baseline by more than
 # this fraction (mirrors perf_regression's slowdown sensitivity). A 5% drop that

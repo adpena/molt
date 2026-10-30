@@ -57,16 +57,6 @@ def _base_env(run_context: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _python_executable() -> str:
-    exe = sys.executable
-    if exe and os.path.exists(exe) and os.access(exe, os.X_OK):
-        return exe
-    fallback = shutil.which("python3") or shutil.which("python")
-    if fallback:
-        return fallback
-    return exe
-
-
 def _patch_memory_guard_loader(
     monkeypatch: pytest.MonkeyPatch,
     loader: object,
@@ -89,7 +79,7 @@ def _run_cli(
     args: list[str], run_context: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
     return run_cli_test_process(
-        [_python_executable(), "-m", "molt.cli", *args],
+        [sys.executable, "-m", "molt.cli", *args],
         cwd=ROOT,
         env=_base_env(run_context),
         capture_output=True,
@@ -102,7 +92,7 @@ def _run_dev(
     args: list[str], run_context: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
     return run_cli_test_process(
-        [_python_executable(), "tools/dev.py", *args],
+        [sys.executable, "tools/dev.py", *args],
         cwd=ROOT,
         env=_base_env(run_context),
         capture_output=True,

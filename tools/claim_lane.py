@@ -47,7 +47,7 @@ from tools import claims_status as cs  # noqa: E402
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 # Binding the executor binds the repository, so the tools package resolves next.
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 from tools.git_identity import immutable_git_environment  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
