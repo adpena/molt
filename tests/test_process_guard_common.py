@@ -150,17 +150,17 @@ def test_run_guarded_test_process_preserves_prefix_and_timeout(monkeypatch) -> N
     )
 
     result = process_guard_common.run_guarded_test_process(
-        ["python3", "-c", "print('ok')"],
-        prefix="MOLT_UNIT_TEST",
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_PYTEST",
         env={
             **process_guard_common.guard_custody_env(),
-            "MOLT_UNIT_TEST_TIMEOUT_SEC": "12",
+            "MOLT_PYTEST_TIMEOUT_SEC": "12",
         },
     )
 
     assert result.returncode == 0
-    assert captured["cmd"] == ["python3", "-c", "print('ok')"]
-    assert captured["kwargs"]["prefix"] == "MOLT_UNIT_TEST"
+    assert captured["cmd"] == [sys.executable, "-c", "print('ok')"]
+    assert captured["kwargs"]["prefix"] == "MOLT_PYTEST"
     assert captured["kwargs"]["operation_role"] == "execution"
     assert captured["kwargs"]["timeout"] == 12
 
@@ -168,8 +168,8 @@ def test_run_guarded_test_process_preserves_prefix_and_timeout(monkeypatch) -> N
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
-        (["python3", "-m", "molt.cli", "build", "probe.py"], "build"),
-        (["python3", "-m", "molt", "build", "probe.py"], "build"),
+        ([sys.executable, "-m", "molt.cli", "build", "probe.py"], "build"),
+        ([sys.executable, "-m", "molt", "build", "probe.py"], "build"),
         (["uv", "run", "python", "-m", "molt.cli", "build", "probe.py"], "build"),
         (["molt", "build", "probe.py"], "build"),
         (["cargo", "build", "--locked"], "build"),
@@ -179,7 +179,7 @@ def test_run_guarded_test_process_preserves_prefix_and_timeout(monkeypatch) -> N
         (["clang", "--version"], "execution"),
         (["rustc", "-vV"], "execution"),
         (["rustc", "--print", "target-list"], "execution"),
-        (["python3", "build"], "execution"),
+        ([sys.executable, "build"], "execution"),
         (["node", "build"], "execution"),
     ],
 )
@@ -204,7 +204,7 @@ def test_build_role_preserves_family_custody_and_uses_shared_default(
         fake_guarded_completed_process,
     )
 
-    command = ["python3", "-m", "molt.cli", "build", "probe.py"]
+    command = [sys.executable, "-m", "molt.cli", "build", "probe.py"]
     launch = process_guard_common.run_guarded_test_process
     launch(command, prefix="MOLT_WASM_TEST", env={})
 
@@ -218,7 +218,6 @@ def test_build_role_preserves_family_custody_and_uses_shared_default(
 @pytest.mark.parametrize(
     ("env", "expected"),
     [
-        ({"MOLT_WASM_TEST_BUILD_TIMEOUT_SEC": "111"}, 111),
         ({"MOLT_WASM_TEST_TIMEOUT_SEC": "222", "MOLT_BUILD_TIMEOUT_SEC": "333"}, 222),
         ({"MOLT_BUILD_TIMEOUT_SEC": "333"}, 333),
         ({"MOLT_TEST_PROCESS_TIMEOUT_SEC": "444"}, 444),
@@ -247,13 +246,13 @@ def test_build_timeout_policy_is_compositional(
 @pytest.mark.parametrize(
     ("prefix", "command"),
     [
-        ("MOLT_NATIVE_TEST", ["python3", "tools/bench.py"]),
+        ("MOLT_NATIVE_TEST", [sys.executable, "tools/bench.py"]),
         ("MOLT_WASM_TEST", ["cargo", "build", "--locked"]),
-        ("MOLT_CLI_TEST", ["python3", "tool.py"]),
+        ("MOLT_CLI_TEST", [sys.executable, "tool.py"]),
         ("MOLT_RUST_TEST", ["rustc", "probe.rs"]),
-        ("MOLT_COMPLIANCE", ["python3", "probe.py"]),
-        ("MOLT_MUTATION", ["python3", "probe.py"]),
-        ("MOLT_SURFACE_TEST", ["python3", "probe.py"]),
+        ("MOLT_COMPLIANCE", [sys.executable, "probe.py"]),
+        ("MOLT_MUTATION", [sys.executable, "probe.py"]),
+        ("MOLT_SURFACE_TEST", [sys.executable, "probe.py"]),
     ],
 )
 def test_nested_guard_defaults_cannot_undercut_owning_proof_budget(
@@ -342,7 +341,7 @@ def test_run_guarded_test_process_preserves_check_semantics(monkeypatch) -> None
     try:
         process_guard_common.run_guarded_test_process(
             ["false"],
-            prefix="MOLT_UNIT_TEST",
+            prefix="MOLT_PYTEST",
             check=True,
         )
     except subprocess.CalledProcessError as exc:
@@ -376,7 +375,7 @@ def test_run_guarded_test_process_preserves_timeout_semantics(monkeypatch) -> No
     try:
         process_guard_common.run_guarded_test_process(
             ["sleep", "10"],
-            prefix="MOLT_UNIT_TEST",
+            prefix="MOLT_PYTEST",
             timeout=5,
         )
     except subprocess.TimeoutExpired as exc:
@@ -408,7 +407,7 @@ def test_run_guarded_test_process_does_not_infer_timeout_from_child_124(
 
     result = process_guard_common.run_guarded_test_process(
         ["child"],
-        prefix="MOLT_UNIT_TEST",
+        prefix="MOLT_PYTEST",
         timeout=5,
         check=False,
     )
@@ -570,3 +569,17 @@ def test_isolated_python_probe_excludes_concurrent_parent_allocations(tmp_path) 
     assert observed["decoded"] == {"value": 7}
     assert observed["payload"] == {"transport": "owned"}
     assert observed["peak"] < 256 * 1024
+
+
+@pytest.mark.parametrize("name", ["python", "python3", "python3.12", "Python.exe"])
+def test_a_bare_interpreter_name_never_reaches_a_process(name: str) -> None:
+    # HF-587: a name resolves through PATH (Apple's /usr/bin/python3 is 3.9).
+    with pytest.raises(ValueError, match="HF-587"):
+        process_guard_common.run_guarded_test_process([name, "-c", "pass"])
+
+
+def test_an_interpreter_named_by_path_runs() -> None:
+    result = process_guard_common.run_guarded_test_process(
+        [sys.executable, "-c", "print('ok')"]
+    )
+    assert result.returncode == 0 and result.stdout.strip() == "ok"

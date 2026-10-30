@@ -355,19 +355,6 @@ impl RustBackend {
         }
     }
 
-    pub(super) fn emit_op_dict_set(&mut self, op: &OpIR) {
-        let args = op.args.as_deref().unwrap_or(&[]);
-        if args.len() >= 3 {
-            let obj = rust_ident(&args[0]);
-            let key = rust_ident(&args[1]);
-            let val = rust_ident(&args[2]);
-            self.emit_line(&format!(
-                "molt_set_item(&mut {obj}, {key}.clone(), {val}.clone());"
-            ));
-            self.emit_alias_writeback(&obj);
-        }
-    }
-
     /// CPython's method-form LOAD_ATTR, lowered as its generic form: `var`
     /// receives the attribute and `out` no `self`, so the loaded call is an
     /// ordinary call.

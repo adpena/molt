@@ -65,7 +65,7 @@ def _run(cases: str) -> dict:
     )
     run = run_guarded_test_process(
         ["node", "--no-warnings", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

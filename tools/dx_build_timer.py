@@ -70,7 +70,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.perf_authority import non_canonical_provenance  # noqa: E402
 from tools.throughput_measurement import elapsed_sec, phase_result  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DX_BUILD")
 
 TOUCH_MARKER = b"\n// dx_build_timer touch\n"
 

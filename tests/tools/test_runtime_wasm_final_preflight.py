@@ -429,7 +429,7 @@ def test_source_identity_changes_for_tracked_and_untracked_content(
     def git(*args: str) -> None:
         run_guarded_test_process(
             ["git", *args],
-            prefix="MOLT_PYTEST_RUNTIME_WASM_PREFLIGHT_GIT",
+            prefix="MOLT_PYTEST",
             cwd=tmp_path,
             check=True,
         )

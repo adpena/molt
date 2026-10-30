@@ -15,7 +15,7 @@ from molt.process_environment import ProcessEnvironment
 
 from tools.command_execution import CommandExecutor  # type: ignore
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 DEFAULT_REPO = Path(__file__).resolve().parents[1]
 

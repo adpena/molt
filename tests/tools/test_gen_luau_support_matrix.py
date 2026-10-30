@@ -468,6 +468,48 @@ def test_generated_return_shape_dispatch_precedes_exhaustive_refusal():
     assert rows["load"].status == "compile-error"
 
 
+def test_runtime_call_projection_includes_checked_iter_and_storage_preconditions():
+    # The final exhaustive arm is unreachable: the closed runtime-call dispatch
+    # runs first. Its support facts come from the contract, not this arm's body.
+    source = """
+    fn emit_op(&mut self, op: &OpIR) {
+        if let Some(call) = molt_ir::runtime_calls::RuntimeCall::from_op(op.kind) {
+            self.emit_contract_runtime_call(op, call);
+            return;
+        }
+        match op.kind {
+            molt_ir::runtime_call_op_kinds!() => unreachable!("dispatched above"),
+            OpKind::ConstNone => { self.emit_line("nil"); }
+        }
+    }
+    """
+    rows = {row.op: row for row in mod.collect_rows_from_text(source)}
+    for kind in ("iter", "get_iter"):
+        assert rows[kind].status == "implemented-target-limited"
+        assert "`molt_iter_checked`" in rows[kind].note
+        assert "numeric source type" in rows[kind].note
+        assert "unknown carriers are rejected" in rows[kind].note
+    assert rows["iter"].note == rows["get_iter"].note
+    assert rows["dict_set"].status == "implemented-target-limited"
+    assert "`molt_dict_set`" in rows["dict_set"].note
+    assert "bypasses assignment hooks" in rows["dict_set"].note
+    assert rows["const_none"].status == "implemented-exact"
+
+
+def test_runtime_call_pattern_projects_row_domain_without_a_second_kind_list(
+    monkeypatch,
+):
+    row = dict(mod._RUNTIME_CALLS["iter"], luau="unsupported")
+    monkeypatch.setattr(mod, "_RUNTIME_CALLS", {"const_none": row})
+    match = mod.EmitterMatch(
+        "emit_op",
+        "op.kind",
+        "match op.kind { molt_ir::runtime_call_op_kinds!() => unreachable!(), }",
+    )
+    assert mod._iter_arms(match)[0][0] == ["const_none"]
+    assert mod._classify("const_none", "").status == "not-admitted"
+
+
 @pytest.mark.parametrize(
     "pattern",
     [

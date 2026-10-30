@@ -1912,6 +1912,15 @@ def _prepare_host_precompile_routing(
     # The mocked link child still receives real content-admitted scanner bytes.
     # This native-image fixture proves custody, not scanner execution behavior.
     scanner = fixture_root.native_executable("molt-wasm-facts")
+    # wasm-ld reads the link tool's import allowlist directly, so the parent
+    # binds it as a producer input. The fixture Molt root carries the real file.
+    allowlist = tmp_path / "tools" / "wasm_allowed_imports.txt"
+    allowlist.parent.mkdir(parents=True, exist_ok=True)
+    allowlist.write_bytes(
+        (
+            Path(__file__).resolve().parents[2] / "tools" / "wasm_allowed_imports.txt"
+        ).read_bytes()
+    )
     optimizer_fact = mock_wasm_optimizer_cache_fact(fixture_root)
     monkeypatch.setattr(nno, "wasm_optimizer_cache_fact", lambda: optimizer_fact)
 
@@ -1947,6 +1956,7 @@ def _prepare_host_precompile_routing(
                 if argument == "--expected-input"
             ]
             assert scanner.resolve() in {path for path, _digest in expected_inputs}
+            assert allowlist.resolve() in {path for path, _digest in expected_inputs}
             for path, digest in expected_inputs:
                 assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
             events.append("link")

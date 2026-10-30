@@ -35,7 +35,7 @@ from tools.command_execution import (  # noqa: E402
     detached_worker_pid,
 )
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 # Per-state pid/sid/command/log records are observations until the supervised
 # command and its use close. The rc file is the sole orderly terminal record.

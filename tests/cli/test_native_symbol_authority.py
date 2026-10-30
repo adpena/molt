@@ -43,7 +43,7 @@ from tests.native_artifact_fixtures import native_relocatable_object
 from molt.native_symbol_table import NativeSymbolRow
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 @pytest.mark.parametrize("violation", ["old_digest", "other_path", "closed"])

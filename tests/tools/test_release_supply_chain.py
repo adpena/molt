@@ -53,7 +53,7 @@ from tests.release_lane_fixtures import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 def _static_dependency_fixture():

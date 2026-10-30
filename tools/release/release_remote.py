@@ -36,7 +36,7 @@ from .release_model import (
     release_exit_archive_filename,
 )
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,7 +21,7 @@ from molt._host_exit import process_returncode_for_direct_os_exit  # noqa: E402
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_CROSS")
 
 
 def main(argv: list[str] | None = None) -> int:

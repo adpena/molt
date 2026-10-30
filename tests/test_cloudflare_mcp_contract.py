@@ -42,7 +42,7 @@ def _run(script: str) -> dict:
         pytest.skip("node is required for the MCP contract tests")
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

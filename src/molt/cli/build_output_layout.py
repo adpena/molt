@@ -401,9 +401,15 @@ def _resolve_output_path(
     *,
     out_dir: Path | None,
     project_root: Path,
-    record_native_binary: bool = False,
+    record_output: bool = False,
 ) -> Path:
-    if record_native_binary and input_report.active():
+    """Select one output; ``record_output`` reports the request's selected output.
+
+    Exactly one output of a build is selected for its record: the native
+    binary, or the WASM module whose published family `build_results`
+    reports beside it.
+    """
+    if record_output and input_report.active():
         selection = BuildOutputSelection.capture(
             output, default, out_dir=out_dir, project_root=project_root
         )
@@ -564,6 +570,7 @@ def _resolve_build_output_layout(
             output_root / f"output{artifact_suffix}",
             out_dir=out_dir_path,
             project_root=project_root,
+            record_output=True,
         )
         output_artifact = output_wasm
         if linked:
@@ -605,7 +612,7 @@ def _resolve_build_output_layout(
                 bin_root / f"{output_base}_molt",
                 out_dir=out_dir_path,
                 project_root=project_root,
-                record_native_binary=True,
+                record_output=True,
             )
     for path in (output_artifact, output_binary):
         if path is not None and path.parent != Path("."):

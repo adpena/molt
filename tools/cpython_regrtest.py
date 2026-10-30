@@ -52,7 +52,7 @@ EXPECTATIONS_PATH = (
 # libregrtest's exit status when tests failed; any other non-zero status is an
 # infrastructure failure that no expectation can own.
 REGRTEST_TESTS_FAILED = 2
-COMMANDS = CommandExecutor.for_file(__file__)
+COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_REGRTEST")
 
 
 @dataclass(frozen=True, slots=True)
