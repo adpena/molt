@@ -36,7 +36,9 @@ resolver now keeps ordinary builds on the persistent selected-root target and
 reserves `target/sessions/<id>` for explicit isolation lanes; the runtime cache
 below remains the cross-session artifact authority.
 
-**Obligation:**
+**Obligation** (content identity and reuse rules:
+[observed_inputs.md](../observed_inputs.md); this obligation names what the
+runtime artifact's identity covers):
 1. `molt_runtime.wasm` is built ONCE and reused across sessions. Its identity is
    content-addressed on runtime source, target triple and feature manifest, ABI,
    profile, Rust toolchain, and WASI/sysroot identities in the shared managed

@@ -14,6 +14,13 @@ from tests.native_process_guard import run_native_test_process
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sccache(monkeypatch, tmp_path):
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+
+
 def _export_value(stdout: str, key: str) -> str:
     line = next(
         line for line in stdout.splitlines() if line.startswith(f"export {key}=")

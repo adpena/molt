@@ -771,53 +771,61 @@ def load_wasi_sdk_installation(
     Explicit verification captures the tree once and checks every finite fact.
     """
 
-    expected = wasi_sdk_host_asset(root)
+    from molt.checkout_state import toolchain_state_use
+
     lexical = prefix.expanduser().absolute()
-    if lexical.name != wasi_sdk_install_prefix(lexical, expected).name:
-        raise LlvmToolchainConfigError(
-            f"WASI SDK installation {lexical} is not the identity-addressed prefix "
-            f"for host asset {expected.id}"
+    with toolchain_state_use((lexical,)):
+        expected = wasi_sdk_host_asset(root)
+        if lexical.name != wasi_sdk_install_prefix(lexical, expected).name:
+            raise LlvmToolchainConfigError(
+                f"WASI SDK installation {lexical} is not the identity-addressed prefix "
+                f"for host asset {expected.id}"
+            )
+        if not lexical.is_dir() or lexical.is_symlink() or lexical.is_junction():
+            raise LlvmToolchainConfigError(
+                f"WASI SDK installation is not a real directory: {lexical}; provision "
+                f"it with {sys.executable} tools/provision_wasi_sdk.py"
+            )
+        installed = lexical.resolve(strict=True)
+        sdk = installed / SDK_DIRNAME
+        if not sdk.is_dir() or sdk.is_symlink() or sdk.is_junction():
+            raise LlvmToolchainConfigError(
+                f"WASI SDK root is not a real directory: {sdk}"
+            )
+        try:
+            receipt = load_wasi_sdk_install_receipt(installed)
+            tree = wasi_sdk_tree_identity(sdk) if verify_tree else None
+        except WasiSdkIdentityError as exc:
+            raise LlvmToolchainConfigError(str(exc)) from exc
+        if receipt["asset"] != asdict(expected):
+            raise LlvmToolchainConfigError(
+                f"WASI SDK provision receipt differs from the exact host asset: {installed}"
+            )
+        if tree is not None and (
+            receipt["tree"] != tree.as_record()
+            or receipt["facts"] != wasi_sdk_receipt_facts(asdict(expected), tree)
+        ):
+            raise LlvmToolchainConfigError(
+                f"WASI SDK filesystem tree differs from its provisioned identity: {sdk}"
+            )
+        wasm_ld_name = executable_filename("wasm-ld", expected.id)
+        wasm_ld = sdk / "bin" / wasm_ld_name
+        llvm_nm = sdk / "bin" / executable_filename("llvm-nm", expected.id)
+        sysroot_root = sdk / "share" / "wasi-sysroot"
+        sysroot = sysroot_root
+        from molt.checkout_state import record_toolchain_use
+
+        record_toolchain_use(installed)
+        return WasiSdkInstallation(
+            prefix=installed,
+            sdk=sdk,
+            asset=expected,
+            tree_sha256=str(receipt["tree"]["sha256"]),
+            sysroot=sysroot,
+            wasm_ld=wasm_ld,
+            llvm_nm=llvm_nm,
+            facts=receipt["facts"],
         )
-    if not lexical.is_dir() or lexical.is_symlink() or lexical.is_junction():
-        raise LlvmToolchainConfigError(
-            f"WASI SDK installation is not a real directory: {lexical}; provision "
-            f"it with {sys.executable} tools/provision_wasi_sdk.py"
-        )
-    installed = lexical.resolve(strict=True)
-    sdk = installed / SDK_DIRNAME
-    if not sdk.is_dir() or sdk.is_symlink() or sdk.is_junction():
-        raise LlvmToolchainConfigError(f"WASI SDK root is not a real directory: {sdk}")
-    try:
-        receipt = load_wasi_sdk_install_receipt(installed)
-        tree = wasi_sdk_tree_identity(sdk) if verify_tree else None
-    except WasiSdkIdentityError as exc:
-        raise LlvmToolchainConfigError(str(exc)) from exc
-    if receipt["asset"] != asdict(expected):
-        raise LlvmToolchainConfigError(
-            f"WASI SDK provision receipt differs from the exact host asset: {installed}"
-        )
-    if tree is not None and (
-        receipt["tree"] != tree.as_record()
-        or receipt["facts"] != wasi_sdk_receipt_facts(asdict(expected), tree)
-    ):
-        raise LlvmToolchainConfigError(
-            f"WASI SDK filesystem tree differs from its provisioned identity: {sdk}"
-        )
-    wasm_ld_name = executable_filename("wasm-ld", expected.id)
-    wasm_ld = sdk / "bin" / wasm_ld_name
-    llvm_nm = sdk / "bin" / executable_filename("llvm-nm", expected.id)
-    sysroot_root = sdk / "share" / "wasi-sysroot"
-    sysroot = sysroot_root
-    return WasiSdkInstallation(
-        prefix=installed,
-        sdk=sdk,
-        asset=expected,
-        tree_sha256=str(receipt["tree"]["sha256"]),
-        sysroot=sysroot,
-        wasm_ld=wasm_ld,
-        llvm_nm=llvm_nm,
-        facts=receipt["facts"],
-    )
 
 
 def selected_wasi_sdk_prefix(
@@ -2022,285 +2030,307 @@ def verify_llvm_toolchain_prefix(
 ) -> LlvmPrefixVerification:
     """Verify the complete compiler/linker/MLIR prefix consumed by Molt."""
 
+    from molt.checkout_state import toolchain_state_use
+
     resolved = _normalized_prefix(prefix, environ=environ, cwd=cwd)
-    pin = required_llvm_backend_pin(root)
-    if pin is None:
-        raise LlvmToolchainConfigError(
-            f"could not resolve LLVM backend feature pin under {root}"
-        )
-    contract = load_llvm_architecture_contract(root)
-    llvm_config = (
-        _normalized_prefix(llvm_config_override, environ=environ, cwd=cwd)
-        if llvm_config_override is not None
-        else llvm_config_executable(resolved)
-    )
-    if not llvm_config.is_file():
-        raise LlvmToolchainConfigError(
-            f"LLVM/MLIR prefix does not contain llvm-config: {llvm_config}"
-        )
-    config_identity = stable_regular_file_identity(
-        llvm_config, label="LLVM configuration authority"
-    )
-    expected_version = version or pin.default_release
-    release = llvm_release(expected_version, root)
-    canonical_contract = (
-        require_attestation
-        or _llvm_attestation_custody(root, resolved, release, environ=environ, cwd=cwd)
-        == "canonical-managed-release"
-    )
-    actual_version = _run_llvm_config(
-        llvm_config, "--version", probe_timeout=probe_timeout
-    )
-    if canonical_contract and release is None:
-        raise LlvmToolchainConfigError(
-            f"canonical LLVM/MLIR prefix requires a pinned release: {expected_version}"
-        )
-    if actual_version != expected_version:
-        raise LlvmToolchainConfigError(
-            "LLVM/MLIR toolchain version does not match the manifest authority: "
-            f"expected exactly {expected_version}, found {actual_version} at {llvm_config}"
-        )
-    host_target = _run_llvm_config(
-        llvm_config, "--host-target", probe_timeout=probe_timeout
-    )
-    if re.fullmatch(r"[A-Za-z0-9_+.-]+", host_target) is None or "-" not in host_target:
-        raise LlvmToolchainConfigError(f"invalid LLVM SDK host target: {host_target!r}")
-    built_targets = tuple(
-        sorted(
-            _run_llvm_config(
-                llvm_config, "--targets-built", probe_timeout=probe_timeout
-            ).split()
-        )
-    )
-    required_targets = set(expected_targets or contract.required_targets)
-    missing_targets = sorted(required_targets.difference(built_targets))
-    if missing_targets:
-        raise LlvmToolchainConfigError(
-            f"LLVM/MLIR prefix is missing required targets {missing_targets}; "
-            f"built targets are {list(built_targets)}"
-        )
-    tools = llvm_verification_tool_paths(resolved, llvm_config)
-    directories = (
-        _required_directory(resolved, "include/llvm"),
-        _required_directory(resolved, "include/mlir"),
-        _required_directory(resolved, "include/mlir-c"),
-        _required_directory(resolved, "lib"),
-    )
-    sdk_sentinels = (
-        _required_file(resolved, "include/llvm/IR/LLVMContext.h"),
-        _required_file(resolved, "include/llvm-c/Core.h"),
-        _required_file(resolved, "include/clang/Basic/Version.h"),
-        _required_file(resolved, "include/lld/Common/Driver.h"),
-        _required_file(resolved, "include/mlir/IR/MLIRContext.h"),
-        _required_file(resolved, "include/mlir-c/IR.h"),
-        _clang_resource_header(resolved, int(expected_version.split(".")[0])),
-    )
-    link_closure, link_libraries = _llvm_link_closure(
-        resolved, llvm_config, probe_timeout=probe_timeout
-    )
-    host_linker_path = tools[3][1]
-    link_probe = _link_probe_identity(resolved, host_linker_path, link_closure)
-    if not (require_attestation and content_policy == "cached"):
-        link_probe = _compile_link_probe(
-            resolved,
-            tools[2][1],
-            host_linker_path,
-            link_closure,
-            environ=environ,
-            probe_timeout=probe_timeout,
-        )
-    lib_dir = resolved / "lib"
-    library_files = tuple(path for path in lib_dir.iterdir() if path.is_file())
-
-    def library_family(name: str) -> tuple[Path, ...]:
-        family = tuple(
-            sorted(path for path in library_files if name in path.name.lower())
-        )
-        if not family:
+    with toolchain_state_use((resolved,)):
+        pin = required_llvm_backend_pin(root)
+        if pin is None:
             raise LlvmToolchainConfigError(
-                f"{name.upper()} libraries are missing from {lib_dir}"
+                f"could not resolve LLVM backend feature pin under {root}"
             )
-        return family
-
-    library_families = tuple(
-        library_family(name) for name in ("llvm", "mlir", "polly", "lld")
-    )
-    required_libraries = tuple(
-        sorted(
-            {*link_libraries, *(path for family in library_families for path in family)}
+        contract = load_llvm_architecture_contract(root)
+        llvm_config = (
+            _normalized_prefix(llvm_config_override, environ=environ, cwd=cwd)
+            if llvm_config_override is not None
+            else llvm_config_executable(resolved)
         )
-    )
-    library_facts = tuple(
-        LlvmLibraryFact(
-            path=str(path.relative_to(resolved)).replace("\\", "/"),
-            size=path.stat().st_size,
-            mtime_ns=path.stat().st_mtime_ns,
-        )
-        for path in required_libraries
-    )
-    content_paths = _content_paths(resolved, required_libraries)
-    content_facts, content_digest = _content_manifest(
-        resolved,
-        content_paths,
-        hash_contents=content_policy == "full",
-    )
-
-    def inspect_tool(item: tuple[str, Path]) -> LlvmToolVersionFact:
-        role, path = item
-        return _tool_version_fact(
-            resolved,
-            role,
-            path,
-            expected_version=expected_version,
-            exact_version=True,
-            probe_timeout=probe_timeout,
-        )
-
-    with ThreadPoolExecutor(max_workers=len(tools)) as executor:
-        tool_versions = tuple(executor.map(inspect_tool, tools))
-
-    def asset_identity(path: Path) -> str:
-        try:
-            return str(path.relative_to(resolved)).replace("\\", "/")
-        except ValueError:
-            return f"external:{path}"
-
-    assets = tuple(
-        sorted(
-            asset_identity(path)
-            for path in (
-                *(path for _role, path in tools),
-                *directories,
-                *sdk_sentinels,
-                *required_libraries,
-                *link_libraries,
-            )
-        )
-    )
-    if require_attestation:
-        path = llvm_attestation_path(resolved)
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        if not llvm_config.is_file():
             raise LlvmToolchainConfigError(
-                f"managed LLVM/MLIR prefix lacks a valid attestation: {path}: {exc}"
-            ) from exc
-        expected = {
-            "schema": LLVM_ATTESTATION_SCHEMA,
-            "architecture_contract_sha256": contract.digest,
-            "version": actual_version,
-            "prefix": str(resolved),
-            "llvm_config": str(llvm_config),
-            "targets": list(built_targets),
-            "assets": list(assets),
-            "tool_versions": [asdict(fact) for fact in tool_versions],
-            "library_facts": [asdict(fact) for fact in library_facts],
-            "link_closure": list(link_closure),
-            "link_probe": list(link_probe),
-            "release": asdict(release) if release is not None else None,
-            "custody": _llvm_attestation_custody(
+                f"LLVM/MLIR prefix does not contain llvm-config: {llvm_config}"
+            )
+        config_identity = stable_regular_file_identity(
+            llvm_config, label="LLVM configuration authority"
+        )
+        expected_version = version or pin.default_release
+        release = llvm_release(expected_version, root)
+        canonical_contract = (
+            require_attestation
+            or _llvm_attestation_custody(
                 root, resolved, release, environ=environ, cwd=cwd
-            ),
-            "build_config": {
-                "projects": sorted(contract.required_projects),
-                "targets": list(built_targets),
-                "build_type": canonical_llvm_build_type(root),
-            },
-        }
-        mismatches = {
-            key: (payload.get(key), value)
-            for key, value in expected.items()
-            if payload.get(key) != value
-        }
-        if mismatches:
-            details = "; ".join(
-                f"{key}: attested={_attestation_value_summary(attested)} "
-                f"live={_attestation_value_summary(live)}"
-                for key, (attested, live) in mismatches.items()
             )
-            # Custody depends on the toolchain selection, so a prefix attested
-            # under another selection drifts without any byte changing.
+            == "canonical-managed-release"
+        )
+        actual_version = _run_llvm_config(
+            llvm_config, "--version", probe_timeout=probe_timeout
+        )
+        if canonical_contract and release is None:
             raise LlvmToolchainConfigError(
-                f"managed LLVM/MLIR attestation drift at {path}: {details}. "
-                "Re-attest an unchanged prefix under the selection that uses it "
-                "with `python tools/bootstrap_llvm.py --reattest`; it refuses "
-                "changed content, which needs a rebuild."
+                f"canonical LLVM/MLIR prefix requires a pinned release: {expected_version}"
             )
-        attested_content = payload.get("content_facts")
-        attested_digest = payload.get("content_digest")
-        if not isinstance(attested_content, list) or not isinstance(
-            attested_digest, str
+        if actual_version != expected_version:
+            raise LlvmToolchainConfigError(
+                "LLVM/MLIR toolchain version does not match the manifest authority: "
+                f"expected exactly {expected_version}, found {actual_version} at {llvm_config}"
+            )
+        host_target = _run_llvm_config(
+            llvm_config, "--host-target", probe_timeout=probe_timeout
+        )
+        if (
+            re.fullmatch(r"[A-Za-z0-9_+.-]+", host_target) is None
+            or "-" not in host_target
         ):
             raise LlvmToolchainConfigError(
-                f"managed LLVM/MLIR attestation lacks content proof: {path}"
+                f"invalid LLVM SDK host target: {host_target!r}"
             )
-        live_metadata = [
-            {
-                "path": fact.path,
-                "size": fact.size,
-                "mtime_ns": fact.mtime_ns,
-                "change_ns": fact.change_ns,
-            }
-            for fact in content_facts
-        ]
-        attested_metadata = [
-            {key: fact.get(key) for key in ("path", "size", "mtime_ns", "change_ns")}
-            for fact in attested_content
-            if isinstance(fact, dict)
-        ]
-        metadata_is_trusted = os.name != "nt" or all(
-            fact.change_ns is not None for fact in content_facts
+        built_targets = tuple(
+            sorted(
+                _run_llvm_config(
+                    llvm_config, "--targets-built", probe_timeout=probe_timeout
+                ).split()
+            )
         )
-        content_metadata_matches = (
-            metadata_is_trusted and live_metadata == attested_metadata
-        )
-        if content_policy == "full" or not content_metadata_matches:
-            if content_digest is None:
-                content_facts, content_digest = _content_manifest(
-                    resolved,
-                    content_paths,
-                    hash_contents=True,
-                )
-            if content_digest != attested_digest:
-                raise LlvmToolchainConfigError(
-                    f"managed LLVM/MLIR content digest drift at {path}: "
-                    f"live={content_digest} attested={attested_digest}"
-                )
-            if [asdict(fact) for fact in content_facts] != attested_content:
-                raise LlvmToolchainConfigError(
-                    f"managed LLVM/MLIR content metadata drift at {path}"
-                )
-        attested_projects = set(payload.get("projects", ()))
-        required_projects = set(contract.required_projects)
-        if not required_projects.issubset(attested_projects):
+        required_targets = set(expected_targets or contract.required_targets)
+        missing_targets = sorted(required_targets.difference(built_targets))
+        if missing_targets:
             raise LlvmToolchainConfigError(
-                "managed LLVM/MLIR attestation omits projects "
-                f"{sorted(required_projects - attested_projects)}"
+                f"LLVM/MLIR prefix is missing required targets {missing_targets}; "
+                f"built targets are {list(built_targets)}"
             )
-    verify_stable_regular_file_identity(
-        config_identity, label="LLVM configuration authority"
-    )
-    config_fact = next(fact for fact in tool_versions if fact.role == "llvm-config")
-    if (config_fact.sha256, config_fact.size) != (
-        config_identity.sha256,
-        config_identity.size,
-    ):
-        raise LlvmToolchainConfigError("llvm-config changed during SDK verification")
-    return LlvmPrefixVerification(
-        prefix=resolved,
-        llvm_config=llvm_config,
-        version=actual_version,
-        host_target=host_target,
-        targets=built_targets,
-        assets=assets,
-        tool_versions=tool_versions,
-        library_facts=library_facts,
-        content_facts=content_facts,
-        content_digest=content_digest,
-        link_closure=link_closure,
-        link_probe=link_probe,
-        release=release,
-    )
+        tools = llvm_verification_tool_paths(resolved, llvm_config)
+        directories = (
+            _required_directory(resolved, "include/llvm"),
+            _required_directory(resolved, "include/mlir"),
+            _required_directory(resolved, "include/mlir-c"),
+            _required_directory(resolved, "lib"),
+        )
+        sdk_sentinels = (
+            _required_file(resolved, "include/llvm/IR/LLVMContext.h"),
+            _required_file(resolved, "include/llvm-c/Core.h"),
+            _required_file(resolved, "include/clang/Basic/Version.h"),
+            _required_file(resolved, "include/lld/Common/Driver.h"),
+            _required_file(resolved, "include/mlir/IR/MLIRContext.h"),
+            _required_file(resolved, "include/mlir-c/IR.h"),
+            _clang_resource_header(resolved, int(expected_version.split(".")[0])),
+        )
+        link_closure, link_libraries = _llvm_link_closure(
+            resolved, llvm_config, probe_timeout=probe_timeout
+        )
+        host_linker_path = tools[3][1]
+        link_probe = _link_probe_identity(resolved, host_linker_path, link_closure)
+        if not (require_attestation and content_policy == "cached"):
+            link_probe = _compile_link_probe(
+                resolved,
+                tools[2][1],
+                host_linker_path,
+                link_closure,
+                environ=environ,
+                probe_timeout=probe_timeout,
+            )
+        lib_dir = resolved / "lib"
+        library_files = tuple(path for path in lib_dir.iterdir() if path.is_file())
+
+        def library_family(name: str) -> tuple[Path, ...]:
+            family = tuple(
+                sorted(path for path in library_files if name in path.name.lower())
+            )
+            if not family:
+                raise LlvmToolchainConfigError(
+                    f"{name.upper()} libraries are missing from {lib_dir}"
+                )
+            return family
+
+        library_families = tuple(
+            library_family(name) for name in ("llvm", "mlir", "polly", "lld")
+        )
+        required_libraries = tuple(
+            sorted(
+                {
+                    *link_libraries,
+                    *(path for family in library_families for path in family),
+                }
+            )
+        )
+        library_facts = tuple(
+            LlvmLibraryFact(
+                path=str(path.relative_to(resolved)).replace("\\", "/"),
+                size=path.stat().st_size,
+                mtime_ns=path.stat().st_mtime_ns,
+            )
+            for path in required_libraries
+        )
+        content_paths = _content_paths(resolved, required_libraries)
+        content_facts, content_digest = _content_manifest(
+            resolved,
+            content_paths,
+            hash_contents=content_policy == "full",
+        )
+
+        def inspect_tool(item: tuple[str, Path]) -> LlvmToolVersionFact:
+            role, path = item
+            return _tool_version_fact(
+                resolved,
+                role,
+                path,
+                expected_version=expected_version,
+                exact_version=True,
+                probe_timeout=probe_timeout,
+            )
+
+        with ThreadPoolExecutor(max_workers=len(tools)) as executor:
+            tool_versions = tuple(executor.map(inspect_tool, tools))
+
+        def asset_identity(path: Path) -> str:
+            try:
+                return str(path.relative_to(resolved)).replace("\\", "/")
+            except ValueError:
+                return f"external:{path}"
+
+        assets = tuple(
+            sorted(
+                asset_identity(path)
+                for path in (
+                    *(path for _role, path in tools),
+                    *directories,
+                    *sdk_sentinels,
+                    *required_libraries,
+                    *link_libraries,
+                )
+            )
+        )
+        if require_attestation:
+            path = llvm_attestation_path(resolved)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise LlvmToolchainConfigError(
+                    f"managed LLVM/MLIR prefix lacks a valid attestation: {path}: {exc}"
+                ) from exc
+            expected = {
+                "schema": LLVM_ATTESTATION_SCHEMA,
+                "architecture_contract_sha256": contract.digest,
+                "version": actual_version,
+                "prefix": str(resolved),
+                "llvm_config": str(llvm_config),
+                "targets": list(built_targets),
+                "assets": list(assets),
+                "tool_versions": [asdict(fact) for fact in tool_versions],
+                "library_facts": [asdict(fact) for fact in library_facts],
+                "link_closure": list(link_closure),
+                "link_probe": list(link_probe),
+                "release": asdict(release) if release is not None else None,
+                "custody": _llvm_attestation_custody(
+                    root, resolved, release, environ=environ, cwd=cwd
+                ),
+                "build_config": {
+                    "projects": sorted(contract.required_projects),
+                    "targets": list(built_targets),
+                    "build_type": canonical_llvm_build_type(root),
+                },
+            }
+            mismatches = {
+                key: (payload.get(key), value)
+                for key, value in expected.items()
+                if payload.get(key) != value
+            }
+            if mismatches:
+                details = "; ".join(
+                    f"{key}: attested={_attestation_value_summary(attested)} "
+                    f"live={_attestation_value_summary(live)}"
+                    for key, (attested, live) in mismatches.items()
+                )
+                # Custody depends on the toolchain selection, so a prefix attested
+                # under another selection drifts without any byte changing.
+                raise LlvmToolchainConfigError(
+                    f"managed LLVM/MLIR attestation drift at {path}: {details}. "
+                    "Re-attest an unchanged prefix under the selection that uses it "
+                    "with `python tools/bootstrap_llvm.py --reattest`; it refuses "
+                    "changed content, which needs a rebuild."
+                )
+            attested_content = payload.get("content_facts")
+            attested_digest = payload.get("content_digest")
+            if not isinstance(attested_content, list) or not isinstance(
+                attested_digest, str
+            ):
+                raise LlvmToolchainConfigError(
+                    f"managed LLVM/MLIR attestation lacks content proof: {path}"
+                )
+            live_metadata = [
+                {
+                    "path": fact.path,
+                    "size": fact.size,
+                    "mtime_ns": fact.mtime_ns,
+                    "change_ns": fact.change_ns,
+                }
+                for fact in content_facts
+            ]
+            attested_metadata = [
+                {
+                    key: fact.get(key)
+                    for key in ("path", "size", "mtime_ns", "change_ns")
+                }
+                for fact in attested_content
+                if isinstance(fact, dict)
+            ]
+            metadata_is_trusted = os.name != "nt" or all(
+                fact.change_ns is not None for fact in content_facts
+            )
+            content_metadata_matches = (
+                metadata_is_trusted and live_metadata == attested_metadata
+            )
+            if content_policy == "full" or not content_metadata_matches:
+                if content_digest is None:
+                    content_facts, content_digest = _content_manifest(
+                        resolved,
+                        content_paths,
+                        hash_contents=True,
+                    )
+                if content_digest != attested_digest:
+                    raise LlvmToolchainConfigError(
+                        f"managed LLVM/MLIR content digest drift at {path}: "
+                        f"live={content_digest} attested={attested_digest}"
+                    )
+                if [asdict(fact) for fact in content_facts] != attested_content:
+                    raise LlvmToolchainConfigError(
+                        f"managed LLVM/MLIR content metadata drift at {path}"
+                    )
+            attested_projects = set(payload.get("projects", ()))
+            required_projects = set(contract.required_projects)
+            if not required_projects.issubset(attested_projects):
+                raise LlvmToolchainConfigError(
+                    "managed LLVM/MLIR attestation omits projects "
+                    f"{sorted(required_projects - attested_projects)}"
+                )
+        verify_stable_regular_file_identity(
+            config_identity, label="LLVM configuration authority"
+        )
+        config_fact = next(fact for fact in tool_versions if fact.role == "llvm-config")
+        if (config_fact.sha256, config_fact.size) != (
+            config_identity.sha256,
+            config_identity.size,
+        ):
+            raise LlvmToolchainConfigError(
+                "llvm-config changed during SDK verification"
+            )
+        if require_attestation:
+            from molt.checkout_state import record_toolchain_use
+
+            record_toolchain_use(resolved)
+        return LlvmPrefixVerification(
+            prefix=resolved,
+            llvm_config=llvm_config,
+            version=actual_version,
+            host_target=host_target,
+            targets=built_targets,
+            assets=assets,
+            tool_versions=tool_versions,
+            library_facts=library_facts,
+            content_facts=content_facts,
+            content_digest=content_digest,
+            link_closure=link_closure,
+            link_probe=link_probe,
+            release=release,
+        )
 
 
 def write_llvm_toolchain_attestation(
@@ -2313,160 +2343,163 @@ def write_llvm_toolchain_attestation(
 ) -> Path:
     """Atomically publish proof for a completely verified managed prefix."""
 
-    contract = load_llvm_architecture_contract(root)
-    missing_projects = set(contract.required_projects).difference(projects)
-    if missing_projects:
-        raise LlvmToolchainConfigError(
-            f"cannot attest incomplete LLVM/MLIR prefix; missing projects {sorted(missing_projects)}"
-        )
-    release = verification.release
-    if release is not None:
-        mismatched_versions = {
-            fact.role: fact.version
-            for fact in verification.tool_versions
-            if fact.version != release.version
-        }
-        if verification.version != release.version or mismatched_versions:
+    from molt.checkout_state import toolchain_state_use
+
+    with toolchain_state_use((verification.prefix,)):
+        contract = load_llvm_architecture_contract(root)
+        missing_projects = set(contract.required_projects).difference(projects)
+        if missing_projects:
             raise LlvmToolchainConfigError(
-                "cannot bind a canonical LLVM release record to mixed patch versions: "
-                f"release={release.version} llvm-config={verification.version} "
-                f"tools={mismatched_versions}"
+                f"cannot attest incomplete LLVM/MLIR prefix; missing projects {sorted(missing_projects)}"
             )
-    content_facts = verification.content_facts
-    content_digest = verification.content_digest
-    content_paths = sdk_content_paths(verification)
-    rehashed_for_publication = False
-    if content_digest is None or any(not fact.sha256 for fact in content_facts):
-        content_facts, content_digest = _content_manifest(
-            verification.prefix,
-            content_paths,
-            hash_contents=True,
-        )
-        rehashed_for_publication = True
-    if content_digest is None:
-        raise LlvmToolchainConfigError(
-            "cannot attest LLVM/MLIR prefix without a complete content digest"
-        )
-    if not rehashed_for_publication:
-        current_metadata, _unused = _content_manifest(
-            verification.prefix,
-            content_paths,
-            hash_contents=False,
-        )
-
-        def metadata(facts: tuple[LlvmContentFact, ...]) -> list[dict[str, object]]:
-            return [
-                {
-                    "path": fact.path,
-                    "size": fact.size,
-                    "mtime_ns": fact.mtime_ns,
-                    "change_ns": fact.change_ns,
-                }
-                for fact in facts
-            ]
-
-        metadata_is_trusted = os.name != "nt" or all(
-            fact.change_ns is not None for fact in current_metadata
-        )
-        if not metadata_is_trusted or metadata(current_metadata) != metadata(
-            content_facts
-        ):
-            current_facts, current_digest = _content_manifest(
+        release = verification.release
+        if release is not None:
+            mismatched_versions = {
+                fact.role: fact.version
+                for fact in verification.tool_versions
+                if fact.version != release.version
+            }
+            if verification.version != release.version or mismatched_versions:
+                raise LlvmToolchainConfigError(
+                    "cannot bind a canonical LLVM release record to mixed patch versions: "
+                    f"release={release.version} llvm-config={verification.version} "
+                    f"tools={mismatched_versions}"
+                )
+        content_facts = verification.content_facts
+        content_digest = verification.content_digest
+        content_paths = sdk_content_paths(verification)
+        rehashed_for_publication = False
+        if content_digest is None or any(not fact.sha256 for fact in content_facts):
+            content_facts, content_digest = _content_manifest(
                 verification.prefix,
                 content_paths,
                 hash_contents=True,
             )
-            if current_digest != content_digest or [
-                asdict(fact) for fact in current_facts
-            ] != [asdict(fact) for fact in content_facts]:
-                raise LlvmToolchainConfigError(
-                    "LLVM/MLIR content changed before attestation publication"
+            rehashed_for_publication = True
+        if content_digest is None:
+            raise LlvmToolchainConfigError(
+                "cannot attest LLVM/MLIR prefix without a complete content digest"
+            )
+        if not rehashed_for_publication:
+            current_metadata, _unused = _content_manifest(
+                verification.prefix,
+                content_paths,
+                hash_contents=False,
+            )
+
+            def metadata(facts: tuple[LlvmContentFact, ...]) -> list[dict[str, object]]:
+                return [
+                    {
+                        "path": fact.path,
+                        "size": fact.size,
+                        "mtime_ns": fact.mtime_ns,
+                        "change_ns": fact.change_ns,
+                    }
+                    for fact in facts
+                ]
+
+            metadata_is_trusted = os.name != "nt" or all(
+                fact.change_ns is not None for fact in current_metadata
+            )
+            if not metadata_is_trusted or metadata(current_metadata) != metadata(
+                content_facts
+            ):
+                current_facts, current_digest = _content_manifest(
+                    verification.prefix,
+                    content_paths,
+                    hash_contents=True,
                 )
-    for fact in verification.tool_versions:
-        tool = verification.prefix / fact.path
-        stat = tool.stat()
-        digest = _sha256_file(tool)
-        if stat.st_size != fact.size or digest != fact.sha256:
-            raise LlvmToolchainConfigError(
-                f"required LLVM tool changed before attestation publication: {tool}"
-            )
-    content_by_path = {fact.path: fact for fact in content_facts}
-    for fact in verification.library_facts:
-        content = content_by_path.get(fact.path)
-        if (
-            content is None
-            or content.size != fact.size
-            or content.mtime_ns != fact.mtime_ns
-        ):
-            raise LlvmToolchainConfigError(
-                "required LLVM/MLIR library changed before attestation publication: "
-                f"{verification.prefix / fact.path}"
-            )
-    attested_prefix = (
-        published_prefix.expanduser().resolve()
-        if published_prefix is not None
-        else verification.prefix
-    )
-    resolved_build_type = build_type or canonical_llvm_build_type(root)
-    custody = _llvm_attestation_custody(root, attested_prefix, release)
-    if custody == "canonical-managed-release":
-        expected_projects = set(contract.required_projects)
-        expected_targets = set(required_llvm_targets_for_host(root))
-        if set(projects) != expected_projects:
-            raise LlvmToolchainConfigError(
-                "canonical LLVM project set must match exactly: "
-                f"expected={sorted(expected_projects)} found={sorted(projects)}"
-            )
-        missing_targets = sorted(expected_targets.difference(verification.targets))
-        if missing_targets:
-            raise LlvmToolchainConfigError(
-                "canonical LLVM target set is missing required targets: "
-                f"missing={missing_targets} found={list(verification.targets)}"
-            )
-        expected_build_type = canonical_llvm_build_type(root)
-        if resolved_build_type != expected_build_type:
-            raise LlvmToolchainConfigError(
-                "canonical LLVM build type must match the release manifest: "
-                f"expected={expected_build_type} found={resolved_build_type}"
-            )
-    llvm_config_relative = verification.llvm_config.relative_to(verification.prefix)
-    payload = {
-        "schema": LLVM_ATTESTATION_SCHEMA,
-        "architecture_contract_sha256": contract.digest,
-        "version": verification.version,
-        "prefix": str(attested_prefix),
-        "projects": sorted(projects),
-        "targets": list(verification.targets),
-        "assets": list(verification.assets),
-        "tool_versions": [asdict(fact) for fact in verification.tool_versions],
-        "library_facts": [asdict(fact) for fact in verification.library_facts],
-        "content_facts": [asdict(fact) for fact in content_facts],
-        "content_digest": content_digest,
-        "link_closure": list(verification.link_closure),
-        "link_probe": list(verification.link_probe),
-        "release": (asdict(release) if release is not None else None),
-        "custody": custody,
-        "build_config": {
+                if current_digest != content_digest or [
+                    asdict(fact) for fact in current_facts
+                ] != [asdict(fact) for fact in content_facts]:
+                    raise LlvmToolchainConfigError(
+                        "LLVM/MLIR content changed before attestation publication"
+                    )
+        for fact in verification.tool_versions:
+            tool = verification.prefix / fact.path
+            stat = tool.stat()
+            digest = _sha256_file(tool)
+            if stat.st_size != fact.size or digest != fact.sha256:
+                raise LlvmToolchainConfigError(
+                    f"required LLVM tool changed before attestation publication: {tool}"
+                )
+        content_by_path = {fact.path: fact for fact in content_facts}
+        for fact in verification.library_facts:
+            content = content_by_path.get(fact.path)
+            if (
+                content is None
+                or content.size != fact.size
+                or content.mtime_ns != fact.mtime_ns
+            ):
+                raise LlvmToolchainConfigError(
+                    "required LLVM/MLIR library changed before attestation publication: "
+                    f"{verification.prefix / fact.path}"
+                )
+        attested_prefix = (
+            published_prefix.expanduser().resolve()
+            if published_prefix is not None
+            else verification.prefix
+        )
+        resolved_build_type = build_type or canonical_llvm_build_type(root)
+        custody = _llvm_attestation_custody(root, attested_prefix, release)
+        if custody == "canonical-managed-release":
+            expected_projects = set(contract.required_projects)
+            expected_targets = set(required_llvm_targets_for_host(root))
+            if set(projects) != expected_projects:
+                raise LlvmToolchainConfigError(
+                    "canonical LLVM project set must match exactly: "
+                    f"expected={sorted(expected_projects)} found={sorted(projects)}"
+                )
+            missing_targets = sorted(expected_targets.difference(verification.targets))
+            if missing_targets:
+                raise LlvmToolchainConfigError(
+                    "canonical LLVM target set is missing required targets: "
+                    f"missing={missing_targets} found={list(verification.targets)}"
+                )
+            expected_build_type = canonical_llvm_build_type(root)
+            if resolved_build_type != expected_build_type:
+                raise LlvmToolchainConfigError(
+                    "canonical LLVM build type must match the release manifest: "
+                    f"expected={expected_build_type} found={resolved_build_type}"
+                )
+        llvm_config_relative = verification.llvm_config.relative_to(verification.prefix)
+        payload = {
+            "schema": LLVM_ATTESTATION_SCHEMA,
+            "architecture_contract_sha256": contract.digest,
+            "version": verification.version,
+            "prefix": str(attested_prefix),
             "projects": sorted(projects),
             "targets": list(verification.targets),
-            "build_type": resolved_build_type,
-        },
-        "llvm_config": str(attested_prefix / llvm_config_relative),
-    }
-    path = llvm_attestation_path(verification.prefix)
-    tmp = staged_file_path(path, purpose="llvm-attestation")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with tmp.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
-    return path
+            "assets": list(verification.assets),
+            "tool_versions": [asdict(fact) for fact in verification.tool_versions],
+            "library_facts": [asdict(fact) for fact in verification.library_facts],
+            "content_facts": [asdict(fact) for fact in content_facts],
+            "content_digest": content_digest,
+            "link_closure": list(verification.link_closure),
+            "link_probe": list(verification.link_probe),
+            "release": (asdict(release) if release is not None else None),
+            "custody": custody,
+            "build_config": {
+                "projects": sorted(projects),
+                "targets": list(verification.targets),
+                "build_type": resolved_build_type,
+            },
+            "llvm_config": str(attested_prefix / llvm_config_relative),
+        }
+        path = llvm_attestation_path(verification.prefix)
+        tmp = staged_file_path(path, purpose="llvm-attestation")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+        return path
 
 
 def _llvm_config_version(

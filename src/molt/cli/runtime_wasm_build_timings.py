@@ -1,7 +1,7 @@
 """Per-phase wall-clock instrumentation for the runtime-wasm build.
 
 This is the process-local attestation surface for build-work-deduplication
-doctrine 74 law 4 ("Attested"): every runtime-wasm build step emits
+observed_inputs.md invariant 6 ("Every cache is attested"): every runtime-wasm build step emits
 ``{phase, kind, mode, wall}`` so a claim about the *number of cargo compiles per
 source change* (the V1 dual-compile violation) is a measured number, not a hope.
 

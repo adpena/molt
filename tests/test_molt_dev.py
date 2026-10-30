@@ -47,6 +47,8 @@ from __future__ import annotations
 from molt.python_environment_location import environment_bytecode_arguments
 
 import json
+import tarfile
+import hashlib
 import re
 import shlex
 import shutil
@@ -72,6 +74,22 @@ from tests.process_guard_common import (
 import pytest
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+from molt.dx import storage_path
+
+# Storage placement/retention belongs to the existing development-driver cell.
+from molt.checkout_state import checkout_state_use, compact_evidence
+from molt.custody_layout import (
+    DurableEvidence,
+    Regenerable,
+    StorageRule,
+    storage_classes,
+    storage_rule,
+)
+from molt.dx import RunContext, storage_write_check, StorageWriteError
+from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+from tools import molt_dev_storage
+from tests.test_dx_run_context import _git as _storage_git
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
@@ -833,7 +851,7 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
     ],
 )
 def test_run_gate_compound_shell_preserves_durable_cargo_environment(
-    drv, tmp_path, wrapper
+    drv, tmp_path, wrapper, short_cargo_cache
 ):
     from tests.python_environment_test_support import (
         materialize_development_environment,
@@ -857,7 +875,7 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
     scratch = tmp_path / "one-command-scratch"
     scratch.mkdir()
     env.update(
-        SCCACHE_DIR=str(tmp_path / "persistent-cache"),
+        SCCACHE_DIR=str(short_cargo_cache),
         SCCACHE_SERVER_PORT="49971",
         CARGO_INCREMENTAL="1",
         TMPDIR=str(scratch),
@@ -2899,9 +2917,9 @@ def test_integrate_failure_cancels_live_sibling_and_skips_pending_gate(
     )
     head = _git(work, "rev-parse", "HEAD").stdout.strip()
     receipt = json.loads(
-        (common / "molt-integrate/receipts" / f"{head}.gates.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            storage_path(common.parent, "integration-receipts") / f"{head}.gates.json"
+        ).read_text(encoding="utf-8")
     )
     assert receipt["execution"]["failure_policy"] == "cancel_remaining"
     assert receipt["execution"]["failure_trigger"] == {
@@ -3186,6 +3204,236 @@ def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
         assert Path(row["stderr_path"]).read_text(encoding="utf-8") == expected.stderr
     assert outcomes[("race", "1")].guard_result.cancelled is False
     assert outcomes[("race", "2")].guard_result.cancelled is False
+
+
+# Receipt e6bd27dc9f (HF-605): the trigger failed at partition scope with exit
+# 1, and the executor's cancellation killed a sibling (guard 137, child -9)
+# whose guard then reported deferred Cargo recovery or indeterminate custody.
+_DEFERRED_CARGO_RECOVERY = memory_guard.CargoIncrementalQuarantine(
+    reason="signal_exit",
+    recorded_at="2026-10-30T11:40:33Z",
+    target_dir="/fixture/target/sessions/devtool",
+    quarantine_dir=None,
+    command=("synthetic-gate",),
+    cwd="/fixture/sandbox",
+    errors=(
+        "ValueError: no birth-custodied rustc incremental observations; "
+        "recovery deferred",
+    ),
+    ownership_status="deferred",
+    interruption_inventory_complete=False,
+    interruption_inventory_error=(
+        "interruption inventory unavailable after owner_cancellation"
+    ),
+)
+_INDETERMINATE_CUSTODY = memory_guard.GuardInfrastructureFailure(
+    "temporary_artifact_custody",
+    (
+        "guarded descendant closure remained indeterminate",
+        "temporary artifact terminal state is 'indeterminate'",
+    ),
+)
+
+
+def _observe_gate_cancellation(monkeypatch) -> dict:
+    """Each gate's cancellation event from the real executor, so a fixture
+    waits on the actual shared event instead of guessing an order."""
+    events: dict = {}
+    execute = molt_dev_gates.proof_executor.execute_commands
+
+    def observe_executor(*args, **kwargs):
+        run = kwargs["_run_command"]
+
+        def observe(plan, command, cancel):
+            events[command.gate.command] = cancel
+            return run(plan, command, cancel)
+
+        return execute(*args, **{**kwargs, "_run_command": observe})
+
+    monkeypatch.setattr(
+        molt_dev_gates.proof_executor, "execute_commands", observe_executor
+    )
+    return events
+
+
+def _run_block_beside_cancelled_sibling(
+    events: dict, root: Path, *, trigger: str, cleanup: str, access: str
+) -> None:
+    """Run two pytest gates through the real executor: the first ends with
+    ``trigger``, and the executor's cancellation ends the second, whose guard
+    reports ``cleanup``. The block always raises; its receipt is
+    ``root / "receipt.heavy.json"``."""
+    from dataclasses import replace
+    import threading
+
+    from tools.proof_plan import CargoTargetAccess
+
+    root.mkdir(parents=True, exist_ok=True)
+    entered = threading.Barrier(2)
+    first = (
+        _gate_outcome(1, "1 failed\n", "")
+        if trigger == "candidate"
+        else _gate_outcome(
+            125,
+            "",
+            "guard custody refused\n",
+            child_returncode=125,
+            infrastructure_failure=_INDETERMINATE_CUSTODY,
+        )
+    )
+    sibling = _gate_outcome(
+        137,
+        "",
+        "cancelled\n",
+        cancelled=True,
+        child_returncode=-9,
+        descendants_closed=cleanup != "custody",
+        infrastructure_failure=(
+            _INDETERMINATE_CUSTODY if cleanup == "custody" else None
+        ),
+        cargo_incremental_quarantine=(
+            _DEFERRED_CARGO_RECOVERY if cleanup == "cargo" else None
+        ),
+    )
+    outcomes = {("gate", "first"): first, ("gate", "sibling"): sibling}
+
+    def run(command, repo, environment, cancelled, streams=None):
+        entered.wait(timeout=30)
+        if command == ("gate", "sibling"):
+            assert events[command].wait(timeout=30), "executor did not cancel"
+            assert cancelled()
+        outcome = outcomes[command]
+        if streams is not None:
+            streams[0].write_text(outcome.stdout, encoding="utf-8")
+            streams[1].write_text(outcome.stderr, encoding="utf-8")
+        return outcome
+
+    fixture = _gate_runtime_fixture(
+        molt_dev_gates, root, {}, output_dir=root / "gate-output"
+    )
+    runtime = replace(
+        fixture,
+        environments={
+            **fixture.environments,
+            ("cargo", "python"): fixture.environments[("python",)],
+        },
+        run_captured_gate=run,
+    )
+    gates = [
+        SelectedGate(command=("gate", "first"), toolchains=("python",), pytest=True),
+        SelectedGate(
+            command=("gate", "sibling"),
+            toolchains=("cargo", "python"),
+            pytest=True,
+            cargo_target_access=CargoTargetAccess(access),
+        ),
+    ]
+    molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+    pytest.fail("a block with a failed gate returned")
+
+
+@pytest.mark.parametrize(
+    ("cleanup", "access", "evidence"),
+    [
+        ("cargo", "none", None),
+        ("cargo", "shared", "Cargo quarantine ownership or recovery is unresolved"),
+        ("custody", "none", "guard infrastructure or ownership failure"),
+    ],
+)
+def test_cancelled_sibling_leaves_the_candidate_failure_to_the_queue(
+    tmp_path, monkeypatch, cleanup, access, evidence
+):
+    events = _observe_gate_cancellation(monkeypatch)
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 1\)"):
+        _run_block_beside_cancelled_sibling(
+            events, tmp_path, trigger="candidate", cleanup=cleanup, access=access
+        )
+    receipt = json.loads((tmp_path / "receipt.heavy.json").read_text("utf-8"))
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "local.gate.1",
+        "failure_scope": "partition",
+        "reason": "exit 1",
+    }
+    first, sibling = receipt["commands"]
+    assert (first["status"], first["returncode"]) == ("failure", 1)
+    # The executor stopped the sibling; it never reached a verdict of its own.
+    assert sibling["status"] == "cancelled"
+    assert sibling["failure_scope"] == "none"
+    assert sibling["failure_reason"] == "executor cancellation"
+    assert sibling["returncode"] == 137
+    assert sibling["guard_outcome"]["child_returncode"] == -9
+    # The guard's closure verdict stays evidence. A gate without Cargo target
+    # access makes no claim on the shared target's recovery.
+    assert sibling["cancellation_cleanup"] == evidence
+    quarantine = sibling["guard_outcome"]["cargo_incremental_quarantine"]
+    assert (quarantine or {}).get("ownership_status") == (
+        "deferred" if cleanup == "cargo" else None
+    )
+
+
+def test_global_failure_without_a_candidate_trigger_stops_the_block(
+    tmp_path, monkeypatch
+):
+    events = _observe_gate_cancellation(monkeypatch)
+    with pytest.raises(DriverError, match="gate block stopped") as caught:
+        _run_block_beside_cancelled_sibling(
+            events,
+            tmp_path,
+            trigger="infrastructure",
+            cleanup="cargo",
+            access="shared",
+        )
+    assert not isinstance(caught.value, CandidateFailure)
+    receipt = json.loads((tmp_path / "receipt.heavy.json").read_text("utf-8"))
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "local.gate.1",
+        "failure_scope": "global",
+        "reason": "guard infrastructure or ownership failure",
+    }
+    assert [row["status"] for row in receipt["commands"]] == ["failure", "cancelled"]
+
+
+@pytest.mark.parametrize("trigger", ["candidate", "infrastructure"])
+def test_queue_bisects_a_candidate_failure_beside_a_cancelled_sibling(
+    drv, origin_and_clone, tmp_path, monkeypatch, trigger
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _counting_policy(work, tmp_path / "gate-runs.txt")
+    heads = [
+        _lane(work, "a", {"a.py": "a = 1\n"}),
+        _lane(work, "b", {"b.py": "b = 1\n"}),
+    ]
+    paths, requests = _enqueue(drv, work, *heads)
+    blocks: list[Path] = []
+    events = _observe_gate_cancellation(monkeypatch)
+
+    def integrate(_args):
+        blocks.append(tmp_path / "blocks" / str(len(blocks)))
+        _run_block_beside_cancelled_sibling(
+            events, blocks[-1], trigger=trigger, cleanup="cargo", access="shared"
+        )
+
+    monkeypatch.setattr(drv, "cmd_integrate", integrate)
+    if trigger == "candidate":
+        assert _run_queue(drv, work) == EXIT_OK
+        # [a b] fails and bisects; [a] and [b] then fail alone.
+        assert len(blocks) == 3
+        assert _statuses(paths, requests) == ["failed", "failed"]
+        assert (
+            "gate failed (exit 1)" in queue.read_result(paths, requests[0].id)["detail"]
+        )
+    else:
+        # No gate failed for its own reason: the runner stops, blames no lane
+        # and leaves the batch pending for an operator.
+        with pytest.raises(DriverError, match="gate block stopped") as caught:
+            _run_queue(drv, work)
+        assert not isinstance(caught.value, CandidateFailure)
+        assert len(blocks) == 1
+        assert [request.id for request in queue.pending(paths)] == [
+            request.id for request in requests
+        ]
 
 
 @pytest.mark.parametrize(
@@ -3515,13 +3763,16 @@ def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
             os.utime(path, (now - age,) * 2)
     result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     old_receipt, old_logs = receipts / "old.gates.json", receipts / "old.gates.d"
+    assert not result.errors
     assert not old_receipt.exists() and not old_logs.exists()
-    assert (
-        Path(result.retirements[str(old_receipt)]).read_text(encoding="utf-8") == "{}"
-    )
-    assert (
-        Path(result.retirements[str(old_logs)]) / "run/gate-001.stderr.log"
-    ).read_text(encoding="utf-8") == "a retained reason"
+    assert old_receipt.with_name(old_receipt.name + ".storage-index.json").is_file()
+    with tarfile.open(result.retirements[str(old_receipt)]) as archive:
+        assert archive.extractfile("old.gates.json").read() == b"{}"
+    with tarfile.open(result.retirements[str(old_logs)]) as archive:
+        assert (
+            archive.extractfile("old.gates.d/run/gate-001.stderr.log").read()
+            == b"a retained reason"
+        )
     assert (receipts / "recent.gates.json").is_file()
     assert (receipts / "recent.gates.d/run/gate-001.stderr.log").is_file()
 
@@ -4169,7 +4420,7 @@ def test_landing_commands_run_main_pinned_controller_not_the_candidate(
     assert report["role"] == "main"
     assert returncode == 41, "exec hands the landing's exit status through"
     assert report["isolated"] == 1
-    controllers = work / ".git" / "molt" / "controllers"
+    controllers = controller_source.controllers_root(work / ".git")
     (root,) = controllers.iterdir()
     assert Path(report["file"]) == (root / "tools" / "molt_dev.py").resolve()
     # It runs in the environment built from main's lock, not the caller's.
@@ -4191,8 +4442,6 @@ def test_landing_commands_run_main_pinned_controller_not_the_candidate(
 
         assert report["argv"][-2] == "--controller-state-handoff"
         handoff = ExecStateHandoff.from_json(report["argv"][-1])
-        from tools import controller_source
-
         assert controller_source.source_lock_path(root) in {
             item.path for item in handoff.descriptors
         }
@@ -4201,9 +4450,11 @@ def test_landing_commands_run_main_pinned_controller_not_the_candidate(
         assert report["argv"] == expected_argv
     record = json.loads((root / ".molt-controller.json").read_text(encoding="utf-8"))
     assert record == {
-        "schema": "molt.integration-controller.v1",
+        "schema": controller_source.SCHEMA,
         "key": root.name,
         "commit": main_tip,
+        "common_dir": str(work / ".git"),
+        "state": "ready",
     }
 
 
@@ -4213,7 +4464,7 @@ def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
     _, work = origin_and_clone
     _publish_controller_stub(work, "main")
     _land_through_real_driver(work, tmp_path / "first.json")
-    controllers = work / ".git" / "molt" / "controllers"
+    controllers = controller_source.controllers_root(work / ".git")
     (first,) = controllers.iterdir()
     planted = first / "tools" / "planted.txt"
     planted.write_text("reuse proof\n", encoding="utf-8")
@@ -4278,7 +4529,7 @@ def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
         for line in result.stdout.splitlines()
         if line.startswith('{"schema": "molt.integration-progress.v1"')
     ]
-    (root,) = (work / ".git" / "molt" / "controllers").iterdir()
+    (root,) = controller_source.controllers_root(work / ".git").iterdir()
     assert {event["controller"] for event in events} == {f"pinned:{root.name}"}
     assert events[-1]["status"] == "completed"
     assert "controller-gate" in output
@@ -4314,7 +4565,7 @@ def test_lane_start_and_retire_run_through_mains_controller_by_default(
         return result.returncode, output
 
     returncode, output = lane("start", "handoff", "--root", str(work.parent / "lanes"))
-    (controller,) = (work / ".git" / "molt" / "controllers").iterdir()
+    (controller,) = controller_source.controllers_root(work / ".git").iterdir()
     assert f"pinned controller {controller.name}" in output, output
     assert returncode in {EXIT_OK, EXIT_FAIL}, output
     if returncode == EXIT_FAIL:
@@ -4370,24 +4621,51 @@ def test_pinned_controller_claim_must_match_this_process(drv, origin_and_clone):
     key = "0" * 32
     with pytest.raises(DriverError, match="has no record"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), pinned_controller=key))
-    record = work / ".git" / "molt" / "controllers" / key / ".molt-controller.json"
+    record = (
+        controller_source.controllers_root(work / ".git")
+        / key
+        / ".molt-controller.json"
+    )
     record.parent.mkdir(parents=True)
     record.write_text("{}\n", encoding="utf-8")
-    with pytest.raises(DriverError, match="but this driver runs from"):
+    with pytest.raises(DriverError, match="has no record for this driver source"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), pinned_controller=key))
 
 
 def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
-    from tools import controller_source, molt_dev_controller as controller
+    from tools import controller_source, molt_dev_storage as storage
 
     now = 10_000_000.0
     day = 24 * 3600.0
+    entries = {}
+    artifact = tmp_path / "data"
+    artifact.mkdir()
+    directory = storage_path(
+        tmp_path,
+        "controllers",
+        {"MOLT_EXT_ROOT": str(artifact)},
+        common_dir=tmp_path / ".git",
+    )
+    directory.mkdir(parents=True)
 
     def entry(name: str, age: float) -> Path:
-        root = tmp_path / name
+        key = hashlib.sha256(name.encode()).hexdigest()[:32]
+        root = directory / key
+        entries[name] = root
         root.mkdir()
         record = root / controller_source.RECORD_NAME
-        record.write_text("{}\n", encoding="utf-8")
+        record.write_text(
+            json.dumps(
+                {
+                    "schema": controller_source.SCHEMA,
+                    "key": key,
+                    "commit": "1" * 40,
+                    "common_dir": str(tmp_path / ".git"),
+                    "state": "ready",
+                }
+            ),
+            encoding="utf-8",
+        )
         os.utime(record, (now - age, now - age))
         return root
 
@@ -4397,9 +4675,9 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
     entry("old-a", 2 * day)
     entry("old-b", 3 * day)
     entry("old-c", 4 * day)
-    controller._retire_idle(tmp_path, current=current, now=now)
+    storage.retire_idle_controllers(directory, current=current, now=now)
     # KEEP=4 counts the current controller; older entries go once idle a day.
-    assert sorted(path.name for path in tmp_path.iterdir()) == [
+    assert sorted(name for name, path in entries.items() if path.exists()) == [
         "current",
         "old-a",
         "recent-a",
@@ -4408,9 +4686,9 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
 
     for index in range(4):
         entry(f"busy-{index}", 60.0 * (index + 1))
-    controller._retire_idle(tmp_path, current=current, now=now)
+    storage.retire_idle_controllers(directory, current=current, now=now)
     # Entries beyond KEEP stay while used within the idle window.
-    assert {path.name for path in tmp_path.iterdir()} >= {
+    assert {name for name, path in entries.items() if path.exists()} >= {
         "busy-0",
         "busy-1",
         "busy-2",
@@ -4418,17 +4696,33 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
         "recent-a",
         "recent-b",
     }
-    assert not (tmp_path / "old-a").exists()
+    assert not entries["old-a"].exists()
 
 
 def _controller_source_fixture(tmp_path, key="a" * 32):
     from tools import controller_source
 
-    root = tmp_path / "molt" / "controllers" / key
+    artifact = tmp_path / "artifacts"
+    artifact.mkdir(parents=True, exist_ok=True)
+    root = (
+        storage_path(
+            tmp_path,
+            "controllers",
+            {"MOLT_EXT_ROOT": str(artifact)},
+            common_dir=tmp_path / ".git",
+        )
+        / key
+    )
     root.mkdir(parents=True)
     (root / controller_source.RECORD_NAME).write_text(
         json.dumps(
-            {"schema": controller_source.SCHEMA, "key": key, "commit": "1" * 40}
+            {
+                "schema": controller_source.SCHEMA,
+                "key": key,
+                "commit": "1" * 40,
+                "common_dir": str(tmp_path / ".git"),
+                "state": "ready",
+            }
         ),
         encoding="utf-8",
     )
@@ -4438,7 +4732,7 @@ def _controller_source_fixture(tmp_path, key="a" * 32):
 def test_controller_source_use_excludes_aged_retirement_and_staging(
     tmp_path, monkeypatch
 ):
-    from tools import controller_source, molt_dev_controller as controller
+    from tools import controller_source, molt_dev_storage as storage
 
     selected = _controller_source_fixture(tmp_path)
     staging = selected.root.with_name(
@@ -4446,24 +4740,39 @@ def test_controller_source_use_excludes_aged_retirement_and_staging(
     )
     staging.mkdir()
     (staging / "partial-source").write_bytes(b"not published")
-    monkeypatch.setattr(controller, "KEEP", 1)
+    owned_staging = selected.root.with_name(
+        controller_source.STAGING_PREFIX + selected.key + "-owned"
+    )
+    owned_staging.mkdir()
+    marker = json.loads(
+        (selected.root / controller_source.RECORD_NAME).read_text(encoding="utf-8")
+    )
+    marker["state"] = "preparing"
+    (owned_staging / controller_source.RECORD_NAME).write_text(
+        json.dumps(marker), encoding="utf-8"
+    )
+    monkeypatch.setattr(storage, "CONTROLLER_KEEP", 1)
     now = time.time()
-    old = now - 2 * controller.IDLE_S
+    old = now - 2 * storage.CONTROLLER_IDLE_S
     with controller_source.controller_source_use(selected):
         os.utime(selected.root / controller_source.RECORD_NAME, (old, old))
         os.utime(staging, (old, old))
-        controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+        os.utime(owned_staging / controller_source.RECORD_NAME, (old, old))
+        storage.retire_idle_controllers(selected.root.parent, current=tmp_path, now=now)
         assert selected.driver.parent.parent.is_dir()
         assert (staging / "partial-source").read_bytes() == b"not published"
-    controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+        assert owned_staging.exists()
+    storage.retire_idle_controllers(selected.root.parent, current=tmp_path, now=now)
     assert not selected.root.exists()
-    assert not staging.exists()
+    assert not owned_staging.exists()
+    assert staging.exists(), "unpublished preimages require explicit reconciliation"
 
 
 def test_controller_source_publishes_committed_policy_without_environment(
     origin_and_clone, monkeypatch
 ):
     from tools import controller_source, molt_dev_controller as controller
+    from tools import molt_dev_storage as storage
     from molt.file_locks import _try_acquire_file_lock
 
     _, work = origin_and_clone
@@ -4483,8 +4792,8 @@ def test_controller_source_publishes_committed_policy_without_environment(
         lambda *_: pytest.fail("source acquisition synced uv"),
     )
     monkeypatch.setattr(
-        controller,
-        "_retire_idle",
+        storage,
+        "retire_idle_controllers",
         lambda *a, **kw: pytest.fail("source acquisition swept controllers"),
     )
     with controller_source.controller_source(work, work / ".git", commit) as selected:
@@ -4653,7 +4962,7 @@ def test_detached_preentry_failure_keeps_startup_trace(tmp_path):
 def test_detached_published_source_survives_caller_removal_and_idle_retention(
     tmp_path, driver_seed, monkeypatch
 ):
-    from tools import controller_source, molt_dev_controller as controller
+    from tools import controller_source, molt_dev_storage as storage
 
     selected = _controller_source_fixture(tmp_path)
     copy_driver_trees(selected.root, seed=driver_seed)
@@ -4692,10 +5001,10 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
         # Every timestamp is deliberately stale: only real OS source use may
         # keep this controller while the detached command remains alive.
         now = time.time()
-        old = now - 2 * controller.IDLE_S
+        old = now - 2 * storage.CONTROLLER_IDLE_S
         os.utime(selected.root / controller_source.RECORD_NAME, (old, old))
-        monkeypatch.setattr(controller, "KEEP", 1)
-        controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+        monkeypatch.setattr(storage, "CONTROLLER_KEEP", 1)
+        storage.retire_idle_controllers(selected.root.parent, current=tmp_path, now=now)
         assert selected.driver.exists()
     finally:
         release.touch()
@@ -4706,7 +5015,9 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
     # Terminal publication precedes source-handle release by a few instructions.
     deadline = time.monotonic() + 5
     while selected.root.exists() and time.monotonic() < deadline:
-        controller._retire_idle(selected.root.parent, current=tmp_path, now=time.time())
+        storage.retire_idle_controllers(
+            selected.root.parent, current=tmp_path, now=time.time()
+        )
         time.sleep(0.02)
     assert not selected.root.exists()
 
@@ -5320,7 +5631,9 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
 def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeypatch):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     runner = paths.runners / "runner-1"
     runner.mkdir(parents=True)
@@ -5338,7 +5651,9 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
 def test_land_wait_reads_a_pid_that_names_no_process_as_unwritten(tmp_path, recorded):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     older, newest = paths.runners / "runner-1", paths.runners / "runner-2"
     for runner in (older, newest):
@@ -5355,7 +5670,9 @@ def test_land_wait_looks_again_at_a_doubling_interval(tmp_path, monkeypatch):
     from tools import molt_dev_queue as queue
     from tests.process_guard_common import install_module_view
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     waits: list[float] = []
 
@@ -5455,7 +5772,9 @@ def test_land_wait_counts_every_runner_that_may_still_land(tmp_path):
     from molt import process_model
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     # A stale record whose pid names a live process that is not its supervisor.
     stale = paths.runners / "runner-0"
@@ -5508,7 +5827,9 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
     from tools import molt_dev_queue as queue
     from tests.process_guard_common import install_module_view
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     # A real detached supervisor, started by this process as `land` starts it.
     runner = paths.runners / "runner-1"
@@ -5566,7 +5887,9 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     requests = [
         queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
         for index in range(1, 6)
@@ -5607,7 +5930,9 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
 
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     waiting = queue.enqueue(paths, head="f" * 40, worktree=tmp_path, branch=None)
     queue._write_plan(paths, [[waiting.id]])
     paths.results.mkdir()
@@ -5667,7 +5992,9 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
             glob_calls += 1
             return (ObservedResult(path) for path in entries)
 
-    paths = queue.QueuePaths(ObservedQueuePath(paths.root), paths.sandbox)
+    paths = queue.QueuePaths(
+        ObservedQueuePath(paths.root), paths.sandbox, paths.evidence
+    )
     monkeypatch.setattr(queue, "queue_paths", lambda _repo: paths)
     monkeypatch.setattr(queue.json, "loads", observe_loads)
     args = drv.build_parser().parse_args(
@@ -5718,7 +6045,9 @@ def test_queue_status_preserves_selected_result_parse_errors(
 ):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     paths.results.mkdir(parents=True)
     (paths.results / "newest.json").write_text("not JSON", encoding="utf-8")
     monkeypatch.setattr(queue, "queue_paths", lambda _repo: paths)
@@ -5739,7 +6068,9 @@ def test_queue_status_rejects_noninteger_recent(drv, capsys):
 def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     now = 50_000_000.0
     for index in range(queue.RUNNER_LOGS_KEPT + 3):
         runner = paths.runners / f"runner-{index:03d}"
@@ -5772,9 +6103,13 @@ def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
     assert queue.read_result(paths, held.id)["detail"] == "unharvested signal"
 
     kept = sorted(entry.name for entry in paths.runners.iterdir())
-    expected = [f"runner-{index:03d}" for index in range(queue.RUNNER_LOGS_KEPT)]
-    assert kept == sorted(expected + ["runner-live"])
-    assert queue.read_result(paths, old.id) is None
+    assert kept == sorted(
+        [f"runner-{index:03d}" for index in range(queue.RUNNER_LOGS_KEPT + 3)]
+        + ["runner-live"]
+    )
+    for index in range(queue.RUNNER_LOGS_KEPT, queue.RUNNER_LOGS_KEPT + 3):
+        assert (paths.runners / f"runner-{index:03d}" / "storage-index.json").is_file()
+    assert queue.read_result(paths, old.id)["status"] == "landed"
     assert queue.read_result(paths, recent.id)["status"] == "landed"
     assert queue.pending(paths) == [waiting]
 
@@ -6875,7 +7210,8 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             # closed, successful selection outcome before attribution may fail.
             + "import json, time\n"
             + "head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\n"
-            + "receipt = Path('.git/molt-integrate/receipts') / (head + '.gates.json')\n"
+            + "from molt.dx import storage_path\n"
+            + "receipt = storage_path(Path.cwd(), 'integration-receipts') / (head + '.gates.json')\n"
             + "while True:\n"
             + "    rows = json.loads(receipt.read_text(encoding='utf-8'))['commands']\n"
             + "    if any(r['id'] == 'local.always.1' and r['status'] == 'success' for r in rows): break\n"
@@ -8556,14 +8892,24 @@ def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_
     if outcome:
         (wt / "README.md").write_text("independent tracked edit\n", encoding="utf-8")
     key = "c" * 32
-    cache = main / ".git" / "molt" / "controllers" / key
+    cache = controller_source.controllers_root(main / ".git") / key
     copy_driver_trees(cache, seed=driver_seed)
     # Use the controller's interpreter, without the proof environment's
     # editable-install startup hooks binding Molt to a different source tree.
-    molt_dev_controller._sync_environment(cache)
+    from molt.dx import RunContext
+
+    molt_dev_controller._sync_environment(
+        cache, environment=RunContext(main).canonical_env(os.environ)
+    )
     (cache / ".molt-controller.json").write_text(
         json.dumps(
-            {"schema": controller_source.SCHEMA, "key": key, "commit": "1" * 40}
+            {
+                "schema": controller_source.SCHEMA,
+                "key": key,
+                "commit": "1" * 40,
+                "common_dir": str(main / ".git"),
+                "state": "ready",
+            }
         ),
         encoding="utf-8",
     )
@@ -8850,7 +9196,9 @@ def test_runner_liveness_probes_never_read_each_other_as_a_runner(
 ):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     paths.root.mkdir(parents=True)
     spawned = []
     monkeypatch.setattr(drv, "cmd_detached_run", lambda args: spawned.append(args))
@@ -8877,7 +9225,9 @@ def test_a_probe_never_sends_a_runner_away(drv, tmp_path, monkeypatch):
     import molt.file_locks as file_locks
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     paths.root.mkdir(parents=True)
     # A `land --wait` poller holds its shared probe as a runner starts, and
     # lets go between the runner's polls.
@@ -8913,7 +9263,9 @@ def test_a_probe_never_sends_a_runner_away(drv, tmp_path, monkeypatch):
 def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
     stamps = iter(f"2026-10-21T12:00:0{second}+00:00" for second in (0, 1, 2, 3, 4, 5))
     monkeypatch.setattr(queue, "_now", lambda: next(stamps))
     early, late = (
@@ -8933,7 +9285,7 @@ def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
 def test_queue_refuses_old_requests_without_removing_them(tmp_path):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path, tmp_path / "sandbox")
+    paths = queue.QueuePaths(tmp_path, tmp_path / "sandbox", tmp_path / "data/evidence")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     path = paths.requests / f"{request.id}.json"
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -9353,6 +9705,7 @@ import argparse, json, os, sys, time
 from pathlib import Path
 sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
 from tools import controller_source, molt_dev_controller as controller
+from tools import molt_dev_storage as storage
 from molt.checkout_state import checkout_state_retirement
 roots = [Path(item) for item in {roots!r}]
 images = [Path(item) for item in {[str(root) for root in images]!r}]
@@ -9383,9 +9736,9 @@ for old in images[:2]:
 for live in [images[2], images[3], Path({str(target)!r})]:
     with checkout_state_retirement(live) as available:
         assert not available, ('current or declared input custody lost', live)
-controller.KEEP = 1
-controller.IDLE_S = 0
-controller._retire_idle(roots[0].parent, current=Path({str(tmp_path)!r}),
+storage.CONTROLLER_KEEP = 1
+storage.CONTROLLER_IDLE_S = 0
+storage.retire_idle_controllers(roots[0].parent, current=Path({str(tmp_path)!r}),
                         now=time.time() + 10)
 assert not roots[0].exists(), 'controller 1 still retained after two execs'
 assert not roots[1].exists(), 'controller 2 still retained after next exec'
@@ -9404,7 +9757,11 @@ controller.run_controller(controller_source.Controller({selected[0].key!r}, Path
                           ['1'], repo=Path({str(target_owner)!r}))
 """
     env = dict(os.environ)
-    env.update(CARGO_TARGET_DIR=str(target), VIRTUAL_ENV=str(images[3]))
+    env.update(
+        CARGO_TARGET_DIR=str(target),
+        VIRTUAL_ENV=str(images[3]),
+        MOLT_EXT_ROOT=str(tmp_path / "common/artifacts"),
+    )
     result = run_custody_subject_process(
         [sys.executable, "-B", "-c", launch],
         cwd=REPO_ROOT,
@@ -9534,3 +9891,1132 @@ def test_only_selected_shared_target_effects_admit_shared_output_capacity(tmp_pa
     assert config.cargo_outputs(environments, [private]) == {}
     writer = SelectedGate(("cargo", "build"), private.toolchains)
     assert config.cargo_outputs(environments, [private, writer])
+
+
+@pytest.fixture
+def _storage_legacy_roots(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target-root"))
+
+
+@pytest.mark.usefixtures("developer_host_context", "_storage_legacy_roots")
+class TestStorageAuthority:
+    def test_unbound_sdk_cache_and_typed_location_share_one_selector(self, tmp_path):
+        from molt.default_paths import _default_molt_cache
+        from molt.dx import storage_location
+
+        repo, home = tmp_path / "source", tmp_path / "user"
+        repo.mkdir()
+        _storage_git(repo, "init", "-q")
+        environment = {"HOME": str(home), "USERPROFILE": str(home)}
+        selected = storage_location(repo, "compile-cache", environment)
+        assert selected.rule.volume == "checkout"
+        assert selected.path == _default_molt_cache(environ=environment, cwd=repo)
+        assert not selected.path.exists()
+
+    def test_artifact_binding_changes_cache_without_moving_installation_home(
+        self, tmp_path
+    ):
+        from molt.default_paths import _default_molt_cache, _default_molt_home
+        from molt.dx import set_artifact_root_binding, storage_location
+
+        repo, artifact = tmp_path / "source", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        environment = {
+            "HOME": str(tmp_path / "user"),
+            "USERPROFILE": str(tmp_path / "user"),
+        }
+        home = _default_molt_home(environ=environment, cwd=repo)
+        home.mkdir(parents=True)
+        (home / "installed-signal").write_bytes(b"existing installation")
+        set_artifact_root_binding(repo, artifact, environment)
+        selected = storage_location(repo, "compile-cache", environment)
+        assert selected.rule.volume == "artifact"
+        assert selected.path == artifact / ".molt_cache"
+        assert selected.path == _default_molt_cache(environ=environment, cwd=repo)
+        assert _default_molt_home(environ=environment, cwd=repo) == home
+        assert storage_path(repo, "installation", environment) == home
+        assert (home / "installed-signal").read_bytes() == b"existing installation"
+
+    def test_materialization_uses_admitted_snapshot_and_preserves_image(
+        self, tmp_path, monkeypatch
+    ):
+        from molt.dx import RunContext
+
+        repo, artifact, image = (
+            tmp_path / "source",
+            tmp_path / "data",
+            tmp_path / "image",
+        )
+        for root in (repo, artifact, image):
+            root.mkdir()
+        context = RunContext(repo)
+        selected = dict(
+            context.canonical_env({"MOLT_EXT_ROOT": str(artifact)}, create_dirs=False)
+        )
+        selected["UV_PROJECT_ENVIRONMENT"] = str(image)
+        selected["PYTHONPYCACHEPREFIX"] = str(image / "bytecode")
+        before = dict(selected)
+        monkeypatch.setattr(
+            RunContext,
+            "canonical_env",
+            lambda *_a, **_k: pytest.fail("reselected admitted context"),
+        )
+        context.materialize_environment(selected, protected_python_root=image)
+        assert selected == before
+        assert Path(selected["CARGO_TARGET_DIR"]).is_dir()
+        assert Path(selected["RUFF_CACHE_DIR"]).is_dir()
+        assert not (image / "bytecode").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    def test_deep_sccache_clients_publish_one_placement(
+        self, tmp_path, short_cargo_cache
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+        from molt.dx import sccache_server_temp_path, DxConfigError
+
+        cache = tmp_path / ("deep" * 30) / "cache"
+        roots = [short_cargo_cache.parent / str(index) for index in range(2)]
+        for root in roots:
+            root.mkdir()
+
+        def assign(root):
+            return sccache_server_temp_path(
+                REPO_ROOT,
+                cache,
+                {"MOLT_EXT_ROOT": str(root)},
+                maximum_path_bytes=80,
+                create=True,
+                server_is_live=lambda: False,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            selected = list(pool.map(assign, roots))
+        assert selected[0] == selected[1]
+        assert sum(len(list(root.glob("sct/*"))) for root in roots) == 1
+        binding = cache.with_name(cache.name + ".molt-server-temp.json")
+        record = json.loads(binding.read_text(encoding="utf-8"))
+        record["temporary"] = str(tmp_path / "unassigned")
+        binding.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(DxConfigError, match="invalid sccache temp placement"):
+            assign(roots[1])
+        assert selected[0].is_dir()
+
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    def test_deep_sccache_temp_binding_survives_changed_client_context(
+        self, tmp_path, short_cargo_cache
+    ):
+        from molt.dx import sccache_server_temp_path
+
+        cache = tmp_path / ("deep" * 30) / "cache"
+        first, second = short_cargo_cache.parent / "a", short_cargo_cache.parent / "b"
+        first.mkdir()
+        second.mkdir()
+        selected = sccache_server_temp_path(
+            REPO_ROOT,
+            cache,
+            {"MOLT_EXT_ROOT": str(first)},
+            maximum_path_bytes=80,
+            create=True,
+            server_is_live=lambda: False,
+        )
+        assert selected.is_relative_to(first)
+        cache.mkdir()
+        (cache / "provider-object").write_bytes(b"native cache signal")
+        assert (
+            sccache_server_temp_path(
+                REPO_ROOT,
+                cache,
+                {"MOLT_EXT_ROOT": str(second)},
+                maximum_path_bytes=80,
+                create=True,
+                server_is_live=lambda: pytest.fail(
+                    "an assigned cache is not reassigned"
+                ),
+            )
+            == selected
+        )
+        assert (cache / "provider-object").read_bytes() == b"native cache signal"
+
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    @pytest.mark.parametrize("preimage", ["cache", "temporary", "live-server"])
+    def test_deep_sccache_assignment_preserves_unassigned_state(
+        self, tmp_path, short_cargo_cache, preimage
+    ):
+        from molt.dx import sccache_server_temp_path, DxConfigError
+
+        cache = tmp_path / ("deep" * 30) / "cache"
+        env = {"MOLT_EXT_ROOT": str(short_cargo_cache.parent)}
+        planned = sccache_server_temp_path(REPO_ROOT, cache, env, maximum_path_bytes=80)
+        source = cache if preimage == "cache" else planned
+        if preimage != "live-server":
+            source.mkdir(parents=True)
+            (source / "signal").write_bytes(b"preserve")
+        with pytest.raises(DxConfigError, match="explicit reconciliation"):
+            sccache_server_temp_path(
+                REPO_ROOT,
+                cache,
+                env,
+                maximum_path_bytes=80,
+                create=True,
+                server_is_live=lambda: preimage == "live-server",
+            )
+        assert not cache.with_name(cache.name + ".molt-server-temp.json").exists()
+        if preimage != "live-server":
+            assert (source / "signal").read_bytes() == b"preserve"
+
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    def test_deep_sccache_assignment_observes_real_live_server(
+        self, tmp_path, short_cargo_cache
+    ):
+        import socket
+        from molt.cargo_execution_policy import sccache_server_temp_dir
+        from molt.dx import DxConfigError
+
+        endpoint = short_cargo_cache.parent / "server.sock"
+        cache = tmp_path / ("deep" * 30) / "cache"
+        env = {
+            "MOLT_EXT_ROOT": str(short_cargo_cache.parent),
+            "SCCACHE_DIR": str(cache),
+            "SCCACHE_SERVER_UDS": str(endpoint),
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(endpoint))
+            server.listen()
+            with pytest.raises(DxConfigError, match="explicit reconciliation"):
+                sccache_server_temp_dir(env, create=True)
+        selected = sccache_server_temp_dir(env, create=True)
+        assert selected.is_relative_to(short_cargo_cache.parent)
+
+    def test_retirement_archives_ignored_signal_and_keeps_a_surviving_index(
+        self, tmp_path, monkeypatch
+    ):
+        from tests.tools.test_disk_guard import _registered_worktree_scope
+        from tools import molt_dev_retire
+
+        _scope, main, linked = _registered_worktree_scope(tmp_path)
+        artifact = tmp_path / "data"
+        artifact.mkdir()
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        monkeypatch.setattr(molt_dev_retire, "_release_guest_caches", lambda *_: None)
+        payload = bytes(range(256)) * 4096
+        (linked / "logs/storage").mkdir(parents=True)
+        (linked / "logs/storage/proof.bin").write_bytes(payload)
+        with checkout_state_use(((linked / "logs/agents", None),), publish=False):
+            with pytest.raises(molt_dev.DriverError, match="live state"):
+                with molt_dev_retire.prepare_checkout_retirement(linked):
+                    pytest.fail("retirement ignored a held registry lease")
+        with molt_dev_retire.prepare_checkout_retirement(linked) as finish:
+            assert (linked / "logs/storage/proof.bin").read_bytes() == payload
+            _storage_git(main, "worktree", "remove", "--force", str(linked))
+            finish()
+        index = next((main / ".git/molt/retired-evidence").glob("*.json"))
+        manifest = json.loads(
+            Path(
+                json.loads(index.read_text(encoding="utf-8"))["archive_index"]
+            ).read_text(encoding="utf-8")
+        )
+        with tarfile.open(manifest["archive"]) as archive:
+            assert archive.extractfile("logs/storage/proof.bin").read() == payload
+        assert not linked.exists()
+
+    def test_every_class_has_volume_owner_and_closed_retention(self, tmp_path):
+        from molt.custody_layout import ExternalProviderRetention
+
+        assert len(set(storage_classes())) == len(storage_classes())
+        for kind in storage_classes():
+            rule = storage_rule(kind)
+            assert rule.owner and rule.volume
+            if isinstance(rule.retention, Regenerable):
+                assert rule.retention.max_idle_s > 0
+                assert rule.retention.max_bytes is None or rule.retention.max_bytes > 0
+            else:
+                assert isinstance(
+                    rule.retention, (DurableEvidence, ExternalProviderRetention)
+                )
+        with pytest.raises(AssertionError):
+            storage_rule("unregistered-state")  # type: ignore[invalid-argument-type]
+
+    def test_shared_provider_inventory_preserves_inputs_and_uses_provider_configuration(
+        self, tmp_path, monkeypatch
+    ):
+        from molt.custody_layout import ExternalProviderRetention
+
+        repo, artifact, home = tmp_path / "repo", tmp_path / "data", tmp_path / "home"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        for name in (".cargo", ".rustup", "npm-custom"):
+            (home / name).mkdir(parents=True)
+            (home / name / "signal").write_bytes(b"provider-owned input")
+        (home / ".npmrc").write_text(f"cache={home / 'npm-custom'}\n", encoding="utf-8")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        monkeypatch.delenv("CARGO_HOME", raising=False)
+        monkeypatch.delenv("RUSTUP_HOME", raising=False)
+        environment = dict(os.environ)
+        row = next(
+            row
+            for row in molt_dev_storage.inventory(repo, environment)
+            if row["class"] == "external-provider"
+        )
+        assert row["volume"] == "user-home" and row["owner"] == "provider"
+        assert isinstance(
+            storage_rule("external-provider").retention, ExternalProviderRetention
+        )
+        providers = {item["provider"]: item for item in row["providers"]}
+        assert providers["cargo"]["path"] == str(home / ".cargo")
+        assert providers["rustup"]["path"] == str(home / ".rustup")
+        if shutil.which("npm"):
+            assert providers["npm"]["path"] == str(home / "npm-custom")
+        else:
+            assert providers["npm"]["status"] == "provider-unavailable"
+        for name in (".cargo", ".rustup", "npm-custom"):
+            assert (home / name / "signal").read_bytes() == b"provider-owned input"
+        selected = RunContext(repo).canonical_env(environment, create_dirs=False)
+        assert "CARGO_HOME" not in selected and "RUSTUP_HOME" not in selected
+        assert environment == dict(os.environ)
+        assert row["bytes"] > 0
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(repo, environment, molt_only=False):
+                storage_path(repo, "external-provider", environment)
+                (home / "new-molt-owned-file").write_bytes(b"unadmitted")
+
+    def test_write_check_refuses_a_new_unregistered_root_even_on_artifact_volume(
+        self, tmp_path
+    ):
+        repo, artifact = tmp_path / "repo", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, {"MOLT_EXT_ROOT": str(artifact)}, molt_only=False
+            ):
+                storage_path(
+                    repo, "compile-cache", {"MOLT_EXT_ROOT": str(artifact)}
+                ).mkdir()
+                (artifact / "new-private-cache").mkdir()
+        assert not (artifact / "new-private-cache").exists()
+        from molt.exact_json import write_exact
+
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(REPO_ROOT, {"MOLT_EXT_ROOT": str(artifact)}):
+                write_exact(
+                    artifact / "new-private-cache" / "value.json", {"new": "state"}
+                )
+        # Optional cache handlers cannot swallow a violation and make the gate
+        # pass: the bounded first violation also fails at scope closure.
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, {"MOLT_EXT_ROOT": str(artifact)}, molt_only=False
+            ):
+                try:
+                    (artifact / "new-private-cache").mkdir()
+                except StorageWriteError:
+                    pass
+        assert not (artifact / "new-private-cache").exists()
+
+    def test_namespace_cleanup_does_not_follow_a_symlink_target(self, tmp_path):
+        from molt.dx import StorageWriteClaim
+
+        repo, artifact = tmp_path / "source", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        environment = {"MOLT_EXT_ROOT": str(artifact)}
+        admitted = tmp_path / "admitted"
+        admitted.mkdir()
+        external = tmp_path / "external"
+        external.write_bytes(b"host interpreter stand-in")
+        link = admitted / "python"
+        link.symlink_to(external)
+        claim = StorageWriteClaim("scratch", admitted)
+        with storage_write_check(repo, environment, molt_only=False, outputs=(claim,)):
+            renamed = admitted / "python3"
+            link.rename(renamed)
+            renamed.unlink()
+        assert external.read_bytes() == b"host interpreter stand-in"
+        link.symlink_to(external)
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, environment, molt_only=False, outputs=(claim,)
+            ):
+                link.write_bytes(b"must be refused")
+        assert external.read_bytes() == b"host interpreter stand-in"
+
+    def test_relative_open_admits_its_dir_fd_base_while_the_checkout_is_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        from molt.dx import StorageWriteClaim
+
+        if os.open not in os.supports_dir_fd:
+            pytest.skip("os.open takes no dir_fd on this platform")
+        repo, artifact = tmp_path / "source", tmp_path / "data"
+        admitted, outside = tmp_path / "admitted", tmp_path / "outside"
+        for directory in (repo, artifact, admitted, outside):
+            directory.mkdir()
+        environment = {"MOLT_EXT_ROOT": str(artifact)}
+        claim = StorageWriteClaim("scratch", admitted)
+        create = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY
+        # The open audit event reports only the relative name. The checkout as
+        # cwd must not be mistaken for the descriptor's directory.
+        monkeypatch.chdir(REPO_ROOT)
+        base = os.open(admitted, directory_flags)
+        try:
+            with storage_write_check(
+                repo, environment, molt_only=False, outputs=(claim,)
+            ):
+                os.close(os.open("00", create, 0o644, dir_fd=base))
+                with open(
+                    "01",
+                    "w",
+                    encoding="utf-8",
+                    opener=lambda name, flags: os.open(name, flags, dir_fd=base),
+                ) as stream:
+                    stream.write("admitted")
+        finally:
+            os.close(base)
+        assert sorted(path.name for path in admitted.iterdir()) == ["00", "01"]
+        assert not (REPO_ROOT / "00").exists() and not (REPO_ROOT / "01").exists()
+
+        # A descriptor into an unadmitted directory places the name outside
+        # every possible base: refused before the file exists.
+        foreign = os.open(outside, directory_flags)
+        try:
+            with pytest.raises(
+                StorageWriteError, match="outside the storage authority"
+            ):
+                with storage_write_check(
+                    repo, environment, molt_only=False, outputs=(claim,)
+                ):
+                    os.close(os.open("00", create, 0o644, dir_fd=foreign))
+            # Events that report their dir_fd keep exact attribution, even
+            # while an admitted directory is open as a possible base.
+            base = os.open(admitted, directory_flags)
+            try:
+                with pytest.raises(
+                    StorageWriteError, match="outside the storage authority"
+                ):
+                    with storage_write_check(
+                        repo, environment, molt_only=False, outputs=(claim,)
+                    ):
+                        os.mkdir("made", dir_fd=foreign)
+            finally:
+                os.close(base)
+        finally:
+            os.close(foreign)
+        assert list(outside.iterdir()) == []
+
+        # A cwd-relative write stays attributed to the cwd.
+        monkeypatch.chdir(outside)
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, environment, molt_only=False, outputs=(claim,)
+            ):
+                Path("stray").write_text("refused", encoding="utf-8")
+        assert list(outside.iterdir()) == []
+
+    def test_a_grant_extends_the_active_check_for_its_scope_only(self, tmp_path):
+        from molt.dx import StorageWriteClaim, grant_storage_writes
+
+        repo, artifact, fixture = (
+            tmp_path / "source",
+            tmp_path / "data",
+            tmp_path / "fixture",
+        )
+        for directory in (repo, artifact, fixture):
+            directory.mkdir()
+        environment = {"MOLT_EXT_ROOT": str(artifact)}
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(repo, environment, molt_only=False):
+                with grant_storage_writes(StorageWriteClaim("temporary", fixture)):
+                    (fixture / "granted").write_text("ok", encoding="utf-8")
+                    with pytest.raises(StorageWriteError):
+                        (tmp_path / "beside").write_text("x", encoding="utf-8")
+                (fixture / "after-scope").write_text("x", encoding="utf-8")
+        assert sorted(path.name for path in fixture.iterdir()) == ["granted"]
+        assert not (tmp_path / "beside").exists()
+
+    def test_heavy_repository_state_projects_to_artifact_volume(self, tmp_path):
+        repo, artifact = tmp_path / "molt-src", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        env = {"MOLT_EXT_ROOT": str(artifact)}
+        for kind in (
+            "controllers",
+            "landing-sandbox",
+            "lane-evidence",
+            "integration-receipts",
+        ):
+            assert storage_path(repo, kind, env).is_relative_to(artifact)
+            assert not storage_path(repo, kind, env).is_relative_to(repo)
+        assert storage_path(repo, "coordination", env) == repo / "logs/agents"
+
+    def test_controller_placement_uses_common_git_binding_with_separate_git_metadata(
+        self,
+        tmp_path,
+    ):
+        from molt.dx import set_artifact_root_binding
+        from tools.controller_source import controllers_root
+
+        repo, common, artifact = (
+            tmp_path / "source",
+            tmp_path / "metadata/git",
+            tmp_path / "data",
+        )
+        repo.mkdir()
+        common.parent.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q", "--separate-git-dir", str(common))
+        set_artifact_root_binding(repo, artifact, {})
+        assert controllers_root(common).is_relative_to(artifact)
+
+    def test_isolated_linked_coordination_locks_stay_inside_common_git(self, tmp_path):
+        from molt.checkout_state import checkout_state_lock_paths
+
+        repo, common, linked = (
+            tmp_path / "source",
+            tmp_path / "metadata/git",
+            tmp_path / "linked",
+        )
+        repo.mkdir()
+        common.parent.mkdir()
+        _storage_git(repo, "init", "-q", "--separate-git-dir", str(common))
+        _storage_git(
+            repo,
+            "-c",
+            "user.name=Storage",
+            "-c",
+            "user.email=storage@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        )
+        _storage_git(repo, "worktree", "add", "-qb", "linked", str(linked))
+        registry = linked / "logs/agents"
+        locks = checkout_state_lock_paths(registry)
+        assert locks and all(path.is_relative_to(common / "molt") for path in locks)
+        with checkout_state_use(((registry, None),), publish=False):
+            assert all(path.is_file() for path in locks)
+        assert not (common.parent / "target").exists()
+        assert not (linked / "target").exists()
+
+    def test_compaction_preserves_binary_signal_and_an_independent_recovery_index(
+        self, tmp_path
+    ):
+        source = tmp_path / "root-volume" / "lane"
+        source.mkdir(parents=True)
+        payload = bytes(range(256)) * 8192
+        (source / "binary.bin").write_bytes(payload)
+        (source / "coordination.json").write_text('{"status":"done"}', encoding="utf-8")
+        archive = compact_evidence(
+            source,
+            tmp_path / "data" / "evidence",
+            kind="lane-evidence",
+            keep=[Path("coordination.json")],
+        )
+        assert (source / "coordination.json").read_text(
+            encoding="utf-8"
+        ) == '{"status":"done"}'
+        assert not (source / "binary.bin").exists()
+        index = json.loads((source / "storage-index.json").read_text(encoding="utf-8"))
+        assert (
+            index["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+        )
+        with tarfile.open(archive) as stream:
+            assert stream.extractfile("binary.bin").read() == payload
+        assert archive.with_suffix(".index.json").is_file()
+        (source / "new-signal").write_bytes(b"second compaction")
+        newer = compact_evidence(
+            source, tmp_path / "data/evidence", kind="lane-evidence"
+        )
+        latest = json.loads(
+            newer.with_suffix(".index.json").read_text(encoding="utf-8")
+        )
+        assert latest["previous_index"] == str(archive.with_suffix(".index.json"))
+        with tarfile.open(archive) as stream:
+            assert stream.extractfile("binary.bin").read() == payload
+        with pytest.raises(ValueError, match="durable"):
+            molt_dev_storage.retire_regenerable(
+                [source], kind="lane-evidence", now=time.time(), apply=True
+            )
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX directory seals")
+    def test_archival_unseals_only_owned_directories_and_keeps_recovery_indices(
+        self, tmp_path
+    ):
+        source = tmp_path / "source"
+        sealed = source / "sealed"
+        sealed.mkdir(parents=True)
+        external = tmp_path / "external"
+        external.write_bytes(b"shared sealed input")
+        external.chmod(0o444)
+        os.link(external, sealed / "hardlink")
+        (sealed / "symlink").symlink_to(external)
+        sealed.chmod(0o555)
+        archive = compact_evidence(source, tmp_path / "archives", kind="diagnostics")
+        assert not sealed.exists()
+        assert external.read_bytes() == b"shared sealed input"
+        assert external.stat().st_mode & 0o777 == 0o444
+        with tarfile.open(archive) as stream:
+            assert (
+                stream.extractfile("sealed/hardlink").read() == b"shared sealed input"
+            )
+            assert stream.getmember("sealed/symlink").linkname == str(external)
+        index = source / "storage-index.json"
+        original = index.read_bytes()
+        with pytest.raises(ValueError, match="recovery index"):
+            compact_evidence(index, tmp_path / "archives", kind="diagnostics")
+        assert index.read_bytes() == original
+
+    @pytest.mark.parametrize("kind", ["scratch-evidence", "sccache-server-evidence"])
+    def test_failure_evidence_cannot_enter_regenerable_retirement(self, tmp_path, kind):
+        payload = tmp_path / "provider-failure"
+        payload.mkdir()
+        signal = payload / "crash.bin"
+        signal.write_bytes(b"unique crash signal")
+        with pytest.raises(ValueError, match="durable"):
+            molt_dev_storage.retire_regenerable(
+                [payload], kind=kind, now=time.time(), apply=True
+            )
+        assert signal.read_bytes() == b"unique crash signal"
+
+    def test_last_use_budget_never_retires_a_held_cache(self, tmp_path):
+        from molt.checkout_state import materialize_provider_cache, _state_metadata_root
+
+        root = tmp_path / ".ruff-cache"
+        materialize_provider_cache(root, kind="ruff-cache")
+        (root / "entry").write_bytes(b"cache")
+        old = time.time() - 40 * 86400
+        for path in [root, root / "entry", *_state_metadata_root(root).iterdir()]:
+            os.utime(path, (old, old))
+        with checkout_state_use(((root, None),), publish=False):
+            result = molt_dev_storage.retire_regenerable(
+                [root], kind="ruff-cache", now=time.time(), apply=True
+            )
+            assert result[0]["action"] == "state-in-use"
+            assert (root / "entry").read_bytes() == b"cache"
+        result = molt_dev_storage.retire_regenerable(
+            [root], kind="ruff-cache", now=time.time(), apply=True
+        )
+        assert result[0]["action"] == "retire" and not root.exists()
+
+    def test_read_use_keeps_old_cache_without_a_payload_write(self, tmp_path):
+        from molt.checkout_state import materialize_provider_cache, _state_metadata_root
+
+        root = tmp_path / ".ruff-cache"
+        materialize_provider_cache(root, kind="ruff-cache")
+        (root / "entry").write_bytes(b"cache")
+        old = time.time() - 40 * 86400
+        os.utime(root / "entry", (old, old))
+        os.utime(root, (old, old))
+        for path in _state_metadata_root(root).iterdir():
+            os.utime(path, (old, old))
+        with checkout_state_use(((root, None),)):
+            pass
+        result = molt_dev_storage.retire_regenerable(
+            [root], kind="ruff-cache", now=time.time(), apply=True
+        )
+        assert result[0]["action"] == "within-budget" and root.exists()
+
+    def test_byte_budget_discards_least_recent_use_first(self, tmp_path, monkeypatch):
+        from molt.checkout_state import materialize_provider_cache, _state_metadata_root
+
+        roots = [tmp_path / str(index) / ".ruff-cache" for index in range(3)]
+        now = time.time()
+        for index, root in enumerate(roots):
+            materialize_provider_cache(root, kind="ruff-cache")
+            (root / "entry").write_bytes(b"cache" * 2048)
+            for path in [root, root / "entry", *_state_metadata_root(root).iterdir()]:
+                os.utime(path, (now - (index + 1) * 86400,) * 2)
+        one = sum(
+            getattr(path.stat(), "st_blocks", path.stat().st_size // 512) * 512
+            for path in [roots[0], roots[0] / "entry"]
+        )
+        monkeypatch.setattr(
+            molt_dev_storage,
+            "storage_rule",
+            lambda _: StorageRule(
+                "artifact",
+                "ruff",
+                (".ruff-cache",),
+                Regenerable(30 * 86400, 2 * one, 1),
+            ),
+        )
+        rows = molt_dev_storage.retire_regenerable(
+            roots, kind="ruff-cache", now=now, apply=True
+        )
+        assert roots[0].is_dir() and roots[1].is_dir() and not roots[2].exists()
+        assert [row["path"] for row in rows if row["action"] == "retire"] == [
+            str(roots[2])
+        ]
+
+    def test_cache_materialization_never_adopts_unknown_preimage(self, tmp_path):
+        from molt.checkout_state import materialize_provider_cache, read_checkout_owner
+
+        root = tmp_path / ".ruff-cache"
+        root.mkdir()
+        (root / "unknown").write_bytes(b"preserve signal")
+        materialize_provider_cache(root, kind="ruff-cache")
+        assert read_checkout_owner(root) is None
+        rows = molt_dev_storage.retire_regenerable(
+            [root], kind="ruff-cache", now=time.time() + 40 * 86400, apply=True
+        )
+        assert rows[0]["action"] == "unproven-preimage"
+        assert (root / "unknown").read_bytes() == b"preserve signal"
+
+    @pytest.mark.parametrize("cross_volume", [False, True])
+    def test_registered_clean_sandbox_relocation_preserves_git_and_bytes(
+        self, tmp_path, monkeypatch, cross_volume
+    ):
+        repo, source, destination = (
+            tmp_path / "repo",
+            tmp_path / "sandbox",
+            tmp_path / "data/sandbox",
+        )
+        repo.mkdir()
+        _storage_git(repo, "init", "-q")
+        _storage_git(repo, "config", "user.email", "fixture@example.invalid")
+        _storage_git(repo, "config", "user.name", "Fixture")
+        payload = bytes(range(256)) * 4096
+        (repo / "tracked").write_bytes(payload)
+        _storage_git(repo, "add", "--", "tracked")
+        _storage_git(repo, "commit", "-qm", "sandbox source")
+        _storage_git(repo, "worktree", "add", "--detach", str(source))
+        if cross_volume:
+            original_stat = Path.stat
+
+            def different_device(path, *args, **kwargs):
+                result = original_stat(path, *args, **kwargs)
+                if path == source and kwargs.get("follow_symlinks", True):
+                    fields = list(result)
+                    fields[2] += 1
+                    return os.stat_result(fields)
+                return result
+
+            monkeypatch.setattr(Path, "stat", different_device)
+        assert molt_dev_storage._move_sandbox(repo, source, destination) == (
+            "moved-across-volumes" if cross_volume else "moved"
+        )
+        assert not source.exists() and (destination / "tracked").read_bytes() == payload
+        assert _storage_git(destination, "status", "--porcelain").strip() == ""
+        assert str(destination) in _storage_git(repo, "worktree", "list", "--porcelain")
+        if cross_volume:
+            index = json.loads(
+                source.with_name(source.name + ".storage-index.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert index["files"]["tracked"][2] == hashlib.sha256(payload).hexdigest()
+
+    def test_uv_use_metadata_does_not_modify_provider_cache(self, tmp_path):
+        root = tmp_path / ".uv-cache"
+        root.mkdir()
+        (root / "CACHEDIR.TAG").write_text("provider-owned", encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in root.iterdir()}
+        with checkout_state_use(((root, None),)):
+            pass
+        assert {path.name: path.read_bytes() for path in root.iterdir()} == before
+
+    def test_evidence_admission_failure_keeps_all_source_bytes(
+        self, tmp_path, monkeypatch
+    ):
+        from molt import disk_capacity
+
+        source = tmp_path / "evidence"
+        source.mkdir()
+        (source / "payload").write_bytes(b"irreplaceable signal")
+        monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda _: 0)
+        monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", lambda _: 0)
+        with pytest.raises(disk_capacity.DiskCapacityError):
+            compact_evidence(source, tmp_path / "data/archive", kind="lane-evidence")
+        assert (source / "payload").read_bytes() == b"irreplaceable signal"
+        assert not (source / "storage-index.json").exists()
+
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_live_landing_blocks_sandbox_migration_and_dry_run_is_read_only(
+        self, tmp_path, monkeypatch, apply
+    ):
+        repo, artifact = tmp_path / "molt-src", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        sandbox = repo / ".git/molt/landing-sandbox"
+        sandbox.mkdir(parents=True)
+        (sandbox / "signal").write_bytes(b"live landing")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        lock_path = repo / ".git/molt/landing-queue/runner.lock"
+        lock = _try_acquire_file_lock(lock_path)
+        assert lock is not None
+        try:
+            rows = molt_dev_storage.migrate(repo, os.environ, apply=apply)
+            row = next(row for row in rows if row["source"] == str(sandbox))
+            assert row["status"] == "live-lock"
+            assert (sandbox / "signal").read_bytes() == b"live landing"
+            assert not storage_path(repo, "landing-sandbox").exists()
+        finally:
+            _release_file_lock(lock)
+
+    def test_default_cache_uses_the_family_binding_without_an_environment_override(
+        self,
+        tmp_path,
+    ):
+        from molt.default_paths import _default_molt_cache
+        from molt.dx import set_artifact_root_binding, DxConfigError
+
+        repo, artifact = tmp_path / "repo", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        env = {"HOME": str(tmp_path / "home")}
+        assert (
+            _default_molt_cache(environ=env, cwd=repo / "src")
+            == tmp_path / "home/.cache/molt"
+        )
+        set_artifact_root_binding(repo, artifact, env)
+        assert (
+            _default_molt_cache(environ=env, cwd=repo / "src")
+            == artifact / ".molt_cache"
+        )
+        # A missing selected volume fails instead of redirecting new writes home.
+        artifact.rmdir()
+        from molt.default_paths import _default_user_state_cached
+
+        _default_user_state_cached.cache_clear()
+        with pytest.raises(DxConfigError, match="artifact"):
+            _default_molt_cache(environ=env, cwd=repo / "src")
+
+    def test_auxiliary_retention_shares_daily_admission(self, tmp_path, monkeypatch):
+        from tools import disk_guard
+
+        calls = []
+        monkeypatch.setattr(disk_guard, "collect", lambda **_: [])
+        disk_guard.collect_due(
+            root=tmp_path, env={}, auxiliary=lambda: calls.append("trim")
+        )
+        disk_guard.collect_due(
+            root=tmp_path, env={}, auxiliary=lambda: calls.append("duplicate")
+        )
+        assert calls == ["trim"]
+
+    @pytest.mark.parametrize("ambient_temp", [False, True])
+    def test_landing_gate_environment_carries_the_canonical_run_context(
+        self, tmp_path, monkeypatch, ambient_temp
+    ):
+        repo, artifact = tmp_path / "molt-src", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        for key in (
+            "UV_CACHE_DIR",
+            "MOLT_CACHE",
+            "PIP_CACHE_DIR",
+            "RUFF_CACHE_DIR",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "UV_PROJECT_ENVIRONMENT",
+            "MOLT_VENV",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        if ambient_temp:
+            old_temp = tmp_path / "system-temp"
+            old_temp.mkdir()
+            for key in ("TMPDIR", "TMP", "TEMP"):
+                monkeypatch.setenv(key, str(old_temp))
+        expected = RunContext(repo).canonical_env(
+            os.environ, create_dirs=False, force_default_keys=("TMPDIR", "TMP", "TEMP")
+        )
+        dry = molt_dev.gate_environment(
+            repo, session_id="storage-proof", create_dirs=False
+        )
+        assert not Path(dry["RUFF_CACHE_DIR"]).exists()
+        actual = molt_dev.gate_environment(repo, session_id="storage-proof")
+        from molt.checkout_state import read_checkout_owner
+
+        assert read_checkout_owner(Path(actual["RUFF_CACHE_DIR"])).kind == "ruff-cache"
+        for key in (
+            "UV_CACHE_DIR",
+            "MOLT_CACHE",
+            "PIP_CACHE_DIR",
+            "RUFF_CACHE_DIR",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+        ):
+            assert actual[key] == expected[key]
+            assert Path(actual[key]).is_relative_to(artifact)
+        result = run_guarded_test_process(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import tempfile; print(tempfile.gettempdir())",
+            ],
+            cwd=REPO_ROOT,
+            env=actual,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == actual["TMPDIR"]
+
+    def test_already_moved_integrator_payload_is_accepted_without_rearchiving(
+        self, tmp_path, monkeypatch
+    ):
+        repo, artifact = tmp_path / "molt-src", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        task = repo / "logs/agents/old-task"
+        task.mkdir(parents=True)
+        moved = artifact / "evidence/lanes/molt-src/old-task"
+        moved.mkdir(parents=True)
+        (moved / "payload").write_bytes(b"previously moved")
+        (task / "MOVED.txt").write_text(
+            f"2026-10-29 integrator: payload moved off the root volume\n{moved}\nfollowing HF-582's lane-payload placement; records and reports stay here.\n  payload\n",
+            encoding="utf-8",
+        )
+        rows = molt_dev_storage.migrate(repo, os.environ, apply=True)
+        row = next(row for row in rows if row["source"] == str(task))
+        assert row["status"] == "already-moved" and row["destination"] == str(moved)
+        assert (moved / "payload").read_bytes() == b"previously moved"
+        assert not (task / "storage-index.json").exists()
+        (moved / "payload").unlink()
+        row = next(
+            row
+            for row in molt_dev_storage.migrate(repo, os.environ, apply=False)
+            if row["source"] == str(task)
+        )
+        assert (
+            row["status"] == "kept" and row["reason"] == "incomplete MOVED.txt payload"
+        )
+
+    def test_legacy_temp_retention_archives_idle_signal_and_preserves_read_use_and_locks(
+        self, tmp_path, monkeypatch
+    ):
+        repo, artifact, temporary = (
+            tmp_path / "molt-src",
+            tmp_path / "data",
+            tmp_path / "host-temp",
+        )
+        for path in (repo, artifact, temporary):
+            path.mkdir()
+        _storage_git(repo, "init", "-q")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        old = time.time() - 2 * 86400
+        for name in ("idle", "read", "locked", "empty"):
+            root = temporary / f"molt-cache-test-{name}"
+            root.mkdir()
+            (root / "payload").write_bytes(b"legacy signal")
+            for path in (root / "payload", root):
+                os.utime(path, (old, old))
+        empty = temporary / "molt-cache-test-empty"
+        (empty / "payload").unlink()
+        os.utime(empty, (old, old))
+        read = temporary / "molt-cache-test-read/payload"
+        os.utime(read, (time.time(), old))
+        locked = temporary / "molt-cache-test-locked"
+        lock = _try_acquire_file_lock(locked / "writer.lock")
+        assert lock is not None
+        for path in (locked / "writer.lock", locked):
+            os.utime(path, (old, old))
+        try:
+            rows = molt_dev_storage.migrate(
+                repo, os.environ, apply=True, legacy_temp=temporary
+            )
+        finally:
+            _release_file_lock(lock)
+        by_name = {Path(row["source"]).name: row for row in rows}
+        retired = by_name["molt-cache-test-idle"]
+        assert (
+            retired["kind"] == "replaced-temporary" and retired["status"] == "compacted"
+        )
+        with tarfile.open(retired["archive"]) as archive:
+            assert archive.extractfile("payload").read() == b"legacy signal"
+        assert Path(retired["index"]).is_file()
+        assert not (temporary / "molt-cache-test-idle").exists()
+        assert by_name["molt-cache-test-empty"]["status"] == "compacted"
+        assert not empty.exists()
+        assert by_name["molt-cache-test-read"]["status"] == "kept"
+        assert by_name["molt-cache-test-locked"]["status"] == "kept"
+        assert (
+            read.read_bytes() == (locked / "payload").read_bytes() == b"legacy signal"
+        )
+        again = molt_dev_storage.migrate(
+            repo, os.environ, apply=False, legacy_temp=temporary
+        )
+        assert not any(
+            Path(row["source"]).name == "molt-cache-test-idle" for row in again
+        )
+
+    @pytest.mark.parametrize("late_signal", [False, True])
+    def test_replaced_sandbox_retires_registration_only_after_recoverable_archive(
+        self, tmp_path, monkeypatch, late_signal
+    ):
+        repo, artifact = tmp_path / "molt-src", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        _storage_git(
+            repo,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        )
+        source = repo / ".git/molt/landing-sandbox"
+        _storage_git(repo, "worktree", "add", "--detach", str(source))
+        (source / "proof-receipts").mkdir()
+        (source / "proof-receipts/proof.bin").write_bytes(b"preserved landing proof")
+        exclude = repo / ".git/info/exclude"
+        exclude.write_text("proof-receipts/\n", encoding="utf-8")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        old = time.time() - 2 * 86400
+        for path in [*source.rglob("*"), source]:
+            os.utime(path, (old, old))
+        if late_signal:
+            compact = molt_dev_storage.compact_evidence
+
+            def write_after_archival(*args, **kwargs):
+                archive = compact(*args, **kwargs)
+                (source / "proof-receipts/late.bin").write_bytes(
+                    b"new signal after archive"
+                )
+                return archive
+
+            monkeypatch.setattr(
+                molt_dev_storage, "compact_evidence", write_after_archival
+            )
+            with pytest.raises(DriverError, match="sandbox changed after archival"):
+                molt_dev_storage.migrate(repo, os.environ, apply=True)
+            assert (
+                source / "proof-receipts/late.bin"
+            ).read_bytes() == b"new signal after archive"
+            assert str(source) in _storage_git(repo, "worktree", "list", "--porcelain")
+            return
+        rows = molt_dev_storage.migrate(repo, os.environ, apply=True)
+        row = next(row for row in rows if row["source"] == str(source))
+        assert (
+            row["kind"] == "replaced-git-landing-sandbox"
+            and row["status"] == "archived-and-retired-worktree"
+        )
+        assert not source.exists()
+        assert str(source) not in _storage_git(repo, "worktree", "list", "--porcelain")
+        index = next((repo / ".git/molt/retired-evidence").glob("*.json"))
+        manifest = json.loads(
+            Path(
+                json.loads(index.read_text(encoding="utf-8"))["archive_index"]
+            ).read_text(encoding="utf-8")
+        )
+        with tarfile.open(manifest["archive"]) as archive:
+            assert (
+                archive.extractfile("proof-receipts/proof.bin").read()
+                == b"preserved landing proof"
+            )
+
+    @pytest.mark.parametrize("directory_target", [False, True])
+    def test_ignored_provider_link_is_archived_as_a_namespace_entry(
+        self, tmp_path, monkeypatch, directory_target
+    ):
+        from tools import molt_dev_lanes
+
+        repo, artifact, provider = (
+            tmp_path / "molt-src",
+            tmp_path / "data",
+            tmp_path / "shared-provider",
+        )
+        for path in (repo, artifact, provider):
+            path.mkdir()
+        _storage_git(repo, "init", "-q")
+        (repo / ".git/info/exclude").write_text("provider-alias\n", encoding="utf-8")
+        credential = provider / "credential"
+        credential.write_bytes(b"provider owned secret")
+        target = provider if directory_target else credential
+        link = repo / "provider-alias"
+        try:
+            link.symlink_to(target, target_is_directory=directory_target)
+        except OSError as exc:
+            pytest.skip(f"host cannot create the selected symlink: {exc}")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        with pytest.raises(ValueError, match="link or junction"):
+            compact_evidence(link, artifact / "must-not-adopt", kind="lane-evidence")
+        rows = molt_dev_storage.harvest_lane_payload(
+            repo, "lane-storage", ["provider-alias"], os.environ
+        )
+        assert len(rows) == 1
+        with tarfile.open(rows[0]["archive"]) as archive:
+            member = archive.getmember("provider-alias")
+            assert member.issym() and member.linkname == str(target)
+        assert not os.path.lexists(link)
+        assert credential.read_bytes() == b"provider owned secret"
+        assert set(provider.iterdir()) == {credential}
+        index = json.loads(Path(rows[0]["index"]).read_text(encoding="utf-8"))
+        assert index["source"] == str(link)
+        assert not molt_dev_lanes._unharvested_ignored_paths(molt_dev.Git(repo))[1]
+        assert _storage_git(repo, "status", "--porcelain") == ""
+
+    def test_migration_keeps_a_provider_link_at_an_old_molt_cache_coordinate(
+        self, tmp_path, monkeypatch
+    ):
+        repo, artifact, provider = (
+            tmp_path / "molt-src",
+            tmp_path / "data",
+            tmp_path / "home/.cargo",
+        )
+        for path in (repo, artifact, provider):
+            path.mkdir(parents=True)
+        _storage_git(repo, "init", "-q")
+        credential = provider / "credential"
+        credential.write_bytes(b"provider input")
+        old_cache = tmp_path / "home/.cache/molt"
+        old_cache.parent.mkdir()
+        old_cache.symlink_to(provider, target_is_directory=True)
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        rows = molt_dev_storage.migrate(repo, os.environ, apply=True)
+        row = next(row for row in rows if row["source"] == str(old_cache))
+        assert (
+            row["status"] == "kept"
+            and row["reason"] == "indirect preimage; target custody preserved"
+        )
+        assert old_cache.is_symlink()
+        assert credential.read_bytes() == b"provider input"
+        assert set(provider.iterdir()) == {credential}
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(repo, os.environ, molt_only=False):
+                storage_path(repo, "replaced-compile-cache", os.environ)
+                (provider / "unadmitted-output").write_bytes(b"not a cache grant")
+
+    @pytest.mark.parametrize("family", [False, True])
+    def test_replaced_family_sandbox_inventory_and_migration_share_the_old_producer(
+        self, tmp_path, monkeypatch, family
+    ):
+        from molt.custody_layout import repository_storage_key
+
+        repo = tmp_path / "family/molt-src" if family else tmp_path / "plain-clone"
+        repo.mkdir(parents=True)
+        artifact = tmp_path / "data"
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        # The former producer kept a sandbox outside a standalone clone as
+        # well as outside a family's molt-src checkout. Build that real input.
+        old = (
+            repo.parent
+            / "worktrees"
+            / f"landing-sandbox-{repository_storage_key(repo / '.git')}"
+        )
+        old.mkdir(parents=True)
+        assert storage_path(repo, "replaced-family-landing-sandbox", os.environ) == old
+        rows = molt_dev_storage.migration_plan(repo, os.environ)
+        row = next(row for row in rows if row.kind == "replaced-family-landing-sandbox")
+        assert row.source == old
+        assert row.action == "keep" and row.reason == "within last-use retention window"

@@ -1,4 +1,4 @@
-"""Failure-resilience (build-dedup doctrine 74, law 2) for frontend lowering.
+"""Failure keeps progress (observed_inputs.md invariant 4) for frontend lowering.
 
 A killed / failed build must NOT forfeit the modules it already lowered: each
 module's lowering is persisted THE MOMENT it succeeds, so a retry pays only for
@@ -33,7 +33,7 @@ def _clear_path_caches() -> None:
     from molt import default_paths
     from molt.cli import module_source, runtime_paths
 
-    default_paths._default_molt_cache_cached.cache_clear()
+    default_paths._default_user_state_cached.cache_clear()
     runtime_paths._build_state_root_cached.cache_clear()
     module_source._source_content_sha256_cached.cache_clear()
 

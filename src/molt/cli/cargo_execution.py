@@ -333,9 +333,12 @@ def _maybe_enable_sccache(env: ProcessEnvironmentBuilder) -> None:
         # The DX authority owns the artifact root. Deriving it here fell back to
         # the checkout, which put the cache, and the server temp dir pinned
         # beside it, inside the checkout.
-        cache_env["SCCACHE_DIR"] = development_artifact_env(
+        defaults = development_artifact_env(
             compiler_source_root(), env, create_dirs=False
-        )["SCCACHE_DIR"]
+        )
+        if "SCCACHE_DIR" not in defaults:
+            return  # The canonical selection declined the proposed DX default.
+        cache_env["SCCACHE_DIR"] = defaults["SCCACHE_DIR"]
     cache_env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env.update(cache_env)
     env["RUSTC_WRAPPER"] = sccache
