@@ -117,7 +117,7 @@ held-lock exclusion; this module adds no namespace sweeper or retirement owner.
 coordinates to that authority. Its existing migration executor archives signal
 losslessly after thirty days since last use, excludes held native/lifetime locks
 and live guards, and retains recovery indices outside the old namespace.
-Current versions are outside that inventory. A publication journal blocks
+Current versions are outside that inventory. A sibling or contained publication journal blocks
 retirement with a remedy naming the journal. Historical transcript/Cargo
 declarations remain durable evidence under their existing storage classes;
 bindings and journals retain their canonical migration owners.

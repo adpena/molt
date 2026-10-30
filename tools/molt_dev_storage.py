@@ -883,14 +883,19 @@ def _namespace_journal(root: Path) -> Path | None:
     # Use the publication owner's grammar, including interrupted journal
     # stages. Collection must never turn recovery state into a cold cache.
     from molt.artifact_publication import _publication_directory_residue
+    from itertools import chain
 
-    if not root.is_dir():
-        residue = _publication_directory_residue(root.parent)
-        return root if root in (*residue.journals, *residue.journal_stages) else None
-    for parent in (
-        root,
-        *(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink()),
-    ):
+    # A file's journal is its sibling. A directory can itself be a publication
+    # member, as well as contain members. Preserve either closure until its
+    # canonical recovery owner resolves it.
+    parents = chain(
+        (root.parent,),
+        (root,) if root.is_dir() else (),
+        (p for p in root.rglob("*") if p.is_dir() and not p.is_symlink())
+        if root.is_dir()
+        else (),
+    )
+    for parent in parents:
         residue = _publication_directory_residue(parent)
         if records := (*residue.journals, *residue.journal_stages):
             return records[0]

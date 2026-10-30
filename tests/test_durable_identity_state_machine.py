@@ -599,19 +599,53 @@ def test_namespace_retention_preserves_current_versions(
     assert new.read_bytes() == b"preserve this version's signal"
 
 
-def test_namespace_retirement_refuses_a_named_recovery_journal(tmp_path):
+@pytest.mark.parametrize("directory", [False, True])
+def test_namespace_retirement_refuses_a_named_recovery_journal(tmp_path, directory):
     from tests.test_dx_run_context import _git
 
     repo, artifact = tmp_path / "repo", tmp_path / "artifact"
     repo.mkdir()
     artifact.mkdir()
     _git(repo, "init", "-q")
-    source = artifact / "tmp/build-control" / ("a" * 64) / "build_records/v11"
-    source.mkdir(parents=True)
-    journal = source / (".molt-artifact-publication-" + "b" * 32 + ".json")
-    journal.write_bytes(b"older transaction requiring canonical recovery")
+    control = artifact / "tmp/build-control" / ("a" * 64)
+    source = control / ("build_records/v11" if directory else "artifact_sync/old.json")
+    final = source / "output" if directory else source
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"old generation")
+    staged = publication.staged_output_path(final)
+    staged.write_bytes(b"new generation")
+    backup = publication.staged_output_path(final, purpose="backup", suffix=".old")
+    journal = final.parent / (".molt-artifact-publication-" + "b" * 32 + ".json")
+
+    def pair(path):
+        metadata = path.stat()
+        return [metadata.st_dev, metadata.st_ino]
+
+    journal.write_text(
+        json.dumps(
+            {
+                "schema": "molt.artifact-publication.v2",
+                "transaction_id": "b" * 32,
+                "state": "prepared",
+                "journals": [str(journal)],
+                "removals": [],
+                "replacements": [
+                    {
+                        "staged": str(staged),
+                        "final": str(final),
+                        "backup": str(backup),
+                        "had_final": True,
+                        "prior_identity": pair(final),
+                        "installed_identity": pair(staged),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = journal.read_bytes()
     stale = time.time() - 40 * 86400
-    for path in (source, journal):
+    for path in (source, *(source.rglob("*") if directory else ())):
         os.utime(path, (stale, stale))
     rows = storage.migrate(
         repo, {"MOLT_EXT_ROOT": str(artifact)}, apply=True, repository_only=True
@@ -619,7 +653,11 @@ def test_namespace_retirement_refuses_a_named_recovery_journal(tmp_path):
     row = next(row for row in rows if row["source"] == str(source))
     assert row["status"] == "journal-recovery-required"
     assert str(journal) in row["remedy"]
-    assert journal.read_bytes() == b"older transaction requiring canonical recovery"
+    assert journal.read_bytes() == original
+    assert final.read_bytes() == b"old generation"
+    with publication.publication_locks([final]):
+        assert final.read_bytes() == b"old generation"
+    assert not journal.exists()
 
 
 def test_namespace_model_refuses_illegal_or_live_retirement():
