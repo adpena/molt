@@ -45,6 +45,10 @@ from tools.op_kinds.runtime_requirements import (  # noqa: E402 - direct-script 
     runtime_kind_requirement_masks,
     target_runtime_requirement_masks,
 )
+from tools.op_kinds.runtime_calls import (  # noqa: E402
+    runtime_call_rows,
+    runtime_call_wire_kinds,
+)
 
 SOURCE = ROOT / "runtime" / "molt-backend-luau" / "src" / "luau"
 WIRE_SOURCE = ROOT / "runtime" / "molt-ir" / "src" / "tir" / "op_kinds_generated.rs"
@@ -93,6 +97,11 @@ _PRE_SOURCE_TYPE_LIMITED = _numeric_kinds(
     "DynamicAdd", "DynamicNumeric", "DynamicTrueDiv", "DynamicUnaryNumeric"
 )
 _REGISTERED_SIMPLEIR_KINDS = registered_runtime_kinds(_OP_KIND_TABLE)
+_RUNTIME_CALLS = {
+    kind: row
+    for row in runtime_call_rows(_OP_KIND_TABLE)
+    for kind in runtime_call_wire_kinds(_OP_KIND_TABLE, row)
+}
 
 
 @dataclass(frozen=True)
@@ -248,7 +257,13 @@ def _iter_arms(
                 raise ValueError(f"unclassified wildcard in {match.function}")
             continue
         if selector is None:
-            kinds = kind_pattern_names(arm.pattern, names)
+            # This pattern is generated from the same rows as RuntimeCall's
+            # closed dispatch. Do not restore a hand-written list of its ops.
+            kinds = (
+                frozenset(_RUNTIME_CALLS)
+                if pattern == "molt_ir::runtime_call_op_kinds!()"
+                else kind_pattern_names(arm.pattern, names)
+            )
         else:
             enum, domains = selector
             variants = [
@@ -307,6 +322,38 @@ def _classify(op: str, body: str) -> Row:
             op,
             "not-admitted",
             "Shared generated target contract rejects this semantic family before source generation.",
+        )
+    if contract := _RUNTIME_CALLS.get(op):
+        realization = contract["luau"]
+        match realization:
+            case "luau_iter_carriers":
+                status = "implemented-target-limited"
+                precondition = (
+                    "Requires a proven deterministic scalar/container carrier and "
+                    "the Python numeric source type; unknown carriers are rejected."
+                )
+            case "luau_dict_storage":
+                status = "implemented-target-limited"
+                precondition = (
+                    "Requires checked deterministic dict storage; insertion bypasses "
+                    "assignment hooks and returns the same dict."
+                )
+            case "unsupported":
+                status = "not-admitted"
+                precondition = (
+                    "The generated runtime-call contract refuses this target."
+                )
+            case "runtime":
+                status = "implemented-exact"
+                precondition = "Uses the declared reference runtime call."
+            case _:
+                raise ValueError(
+                    f"unclassified Luau runtime-call realization: {realization}"
+                )
+        return Row(
+            op,
+            status,
+            f"Runtime-call contract `{contract['function']}`. {precondition}",
         )
     if op in _PRE_SOURCE_LITERAL_LIMITED:
         return Row(

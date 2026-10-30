@@ -1756,8 +1756,44 @@ def _validate_op_loop_runtime_arg(
     )
 
 
-def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
+def runtime_contract_op_loop_specs(data: dict, op_data: dict) -> list[dict]:
+    """Project the op authority into the existing WASM realization schema."""
+    projected: list[dict] = []
+    from tools.op_kinds.runtime_calls import runtime_call_rows
+
+    imports = {runtime_export_name(entry): entry for entry in data["runtime_import"]}
+    for row in runtime_call_rows(op_data):
+        entry = imports.get(row["function"])
+        if entry is None:
+            raise WasmAbiManifestError(
+                f"runtime call {row['kind']!r}: missing function ABI"
+            )
+        signature = data["static_type"][entry["type"]]
+        if any(param != "i64" for param in signature["params"]) or signature[
+            "results"
+        ] != ["i64"]:
+            raise WasmAbiManifestError(
+                f"runtime call {row['kind']!r}: requires boxed ABI"
+            )
+        name = entry["name"]
+        projected.append(
+            {
+                "kind": row["kind"],
+                "import_name": name,
+                "args": [f"local:{i}" for i in range(len(signature["params"]))],
+                "required_imports": [name],
+                "boxed_call": True,
+                "runtime_contract": True,
+            }
+        )
+    return projected
+
+
+def _expand_op_loop_runtime_calls(
+    data: dict, contract_rows: list[dict], *, allow_contract_projections: bool = False
+) -> list[dict]:
     expanded: list[dict] = []
+    contract_by_kind = {row["kind"]: row for row in contract_rows}
     explicit = data.get("op_loop_runtime_call", [])
     if not isinstance(explicit, list):
         raise WasmAbiManifestError("op_loop_runtime_call must be a list of tables")
@@ -1766,6 +1802,14 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call entry {idx} must be a table"
             )
+        if "runtime_contract" in entry:
+            if not allow_contract_projections or entry != contract_by_kind.get(
+                entry.get("kind")
+            ):
+                raise WasmAbiManifestError(
+                    "runtime-contract op-loop rows are checked projections, not source declarations"
+                )
+            continue
         if "sink" in entry:
             raise WasmAbiManifestError(
                 "op-loop sink policy is derived from the import return contract"
@@ -1841,6 +1885,7 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             if shared_boxed_call:
                 expanded_entry["shared_boxed_call"] = True
             expanded.append(expanded_entry)
+    expanded.extend(contract_rows)
     return expanded
 
 
@@ -2526,9 +2571,43 @@ def validate_loaded_manifest(
     lir_import_by_variant: dict[str, str] = {}
     seen_lir_imports: set[str] = set()
     seen_lir_preserved_copy_imports: set[str] = set()
+    from tools.op_kinds.runtime_calls import runtime_call_rows
+
+    contract_rows = {
+        row["kind"]: row
+        for row in runtime_call_rows(
+            tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
+        )
+    }
+    import_by_symbol = {runtime_export_name(entry): entry for entry in imports}
     for idx, entry in enumerate(lir_runtime_calls):
         if not isinstance(entry, dict):
             raise WasmAbiManifestError(f"lir_runtime_call entry {idx} must be a table")
+        if contract_kind := entry.get("contract_kind"):
+            if reject_manual_runtime_cfgs and (
+                "import_name" in entry or "boxed_operand_count" in entry
+            ):
+                raise WasmAbiManifestError(
+                    "contract LIR calls must not restate function or arity"
+                )
+            row = contract_rows.get(contract_kind)
+            if row is None:
+                raise WasmAbiManifestError(
+                    f"unknown LIR runtime-call contract {contract_kind!r}"
+                )
+            provider = import_by_symbol[row["function"]]
+            resolved = {
+                "import_name": provider["name"],
+                "boxed_operand_count": len(
+                    data["static_type"][provider["type"]]["params"]
+                ),
+            }
+            for key, value in resolved.items():
+                if key in entry and entry[key] != value:
+                    raise WasmAbiManifestError(
+                        "contract LIR projection disagrees with its runtime call"
+                    )
+                entry[key] = value
         variant = _validate_rust_variant("lir_runtime_call", idx, entry.get("variant"))
         if variant in seen_lir_variants:
             raise WasmAbiManifestError(
@@ -2574,7 +2653,12 @@ def validate_loaded_manifest(
             )
         seen_lir_preserved_copy_imports.add(import_name)
 
-    op_loop_runtime_calls = _expand_op_loop_runtime_calls(data)
+    op_data = tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
+    op_loop_runtime_calls = _expand_op_loop_runtime_calls(
+        data,
+        runtime_contract_op_loop_specs(data, op_data),
+        allow_contract_projections=not reject_manual_runtime_cfgs,
+    )
     seen_op_loop_runtime_kinds: set[str] = set()
     seen_op_loop_lir_variants: set[str] = set()
     for idx, entry in enumerate(op_loop_runtime_calls):

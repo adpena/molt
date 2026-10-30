@@ -1504,7 +1504,7 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
         1,
         "metadata-aware function mutation must have one emitted authority"
     );
-    assert!(!compiled.contains("pcall(molt_iterator_new"));
+    assert!(!compiled.contains("pcall(molt_iter_checked"));
     let oracle = r#"
 local function mixed_target(a, b, c, d, e) return a + b + c + d + e end
 molt_function_metadata[mixed_target] = {arg_names=molt_pack_tuple("a", "b", "c", "d", "e"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
@@ -3285,7 +3285,7 @@ molt_frozenset_build_add(frozen, "x"); molt_frozenset_build_add(frozen, nil); mo
 assert(molt_equal(set_value, frozen) and molt_repr(frozen) == "frozenset({'x', None, 1})")
 local frozen_ok, frozen_error = pcall(function() molt_set_add(frozen, 2) end)
 assert(not frozen_ok and frozen_error.__type == "AttributeError")
-local set_iterator = molt_iterator_new(set_value)
+local set_iterator = molt_iter_checked(set_value)
 local set_first = set_iterator()
 assert(rawget(set_first, 1) == nil and rawget(set_first, 2) == false)
 
@@ -4877,6 +4877,13 @@ fn iterator_loop_preserves_explicit_pending_observer_and_handled_state() {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "iterator_cleanup".into(),
+            param_types: Some(vec![
+                "list".into(),
+                "int".into(),
+                "int".into(),
+                "list".into(),
+                "object".into(),
+            ]),
             params: vec![
                 "v_src".into(),
                 "v_idx0".into(),
@@ -4890,7 +4897,7 @@ fn iterator_loop_preserves_explicit_pending_observer_and_handled_state() {
         profile: None,
     };
     let source = LuauBackend::new().compile(&ir);
-    assert!(source.contains("molt_iterator_new(v_src)"), "{source}");
+    assert!(source.contains("molt_iter_checked(v_src)"), "{source}");
     assert!(
         source.contains("molt_exception_context_set(handled)"),
         "{source}"
@@ -6234,5 +6241,172 @@ fn test_luau_tir_roundtrip_raise_catch_fails_closed_before_source() {
         error.contains("SimpleIR validation failed")
             || error.contains("rejected before source generation"),
         "exception CFG must fail before source publication, got: {error}"
+    );
+}
+
+#[test]
+fn generated_runtime_call_agreement_executes_declared_luau_specializations() {
+    use molt_ir::runtime_calls::RuntimeCall;
+    let mut functions = Vec::new();
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        let abi = call.function().boxed_abi();
+        let args = (0..abi.arity)
+            .map(|i| format!("arg{i}"))
+            .collect::<Vec<_>>();
+        let types = match call {
+            RuntimeCall::Iter => vec!["str".into()],
+            RuntimeCall::DictSet => vec!["dict[str, object]".into(), "str".into(), "bool".into()],
+        };
+        functions.push(FunctionIR {
+            name: format!("contract_{kind}"),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            params: args.clone(),
+            param_types: Some(types),
+            ops: vec![
+                OpIR {
+                    args: Some(args),
+                    out: Some("result".into()),
+                    ..OpIR::new(kind)
+                },
+                OpIR {
+                    args: Some(vec!["result".into()]),
+                    ..OpIR::new(molt_ir::OpKind::Ret)
+                },
+            ],
+            ..FunctionIR::default()
+        });
+    }
+    let ir = SimpleIR {
+        functions,
+        profile: None,
+    };
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    for &call in RuntimeCall::ALL {
+        assert!(
+            source.contains(&format!("{}(", call.function().symbol())),
+            "{source}"
+        );
+    }
+    // Select the provider closure with the executable oracle's dependencies,
+    // using the same production function emitter and prelude owner.
+    let mut fixture = LuauBackend::new();
+    for function in &ir.functions {
+        fixture.emit_function_body(function);
+    }
+    let body = std::mem::take(&mut fixture.output);
+    let oracle = format!(
+        r#"{body}
+;(function()
+local iterator = contract_iter("ab")
+assert(iterator()[1] == "a" and iterator()[1] == "b")
+assert(iterator()[2] == true)
+local d = molt_dict_new()
+setmetatable(d, {{__newindex=function() error("subclass assignment hook") end}})
+assert(contract_dict_set(d, "key", false) == d)
+assert(molt_dict_get(d, "key", true) == false)
+local ok, err = pcall(function() molt_iter_checked(1, "int") end)
+assert(not ok and err.__type == "TypeError" and err.__msg == "'int' object is not iterable")
+local float_ok, float_err = pcall(function() molt_iter_checked(1, "float") end)
+assert(not float_ok and float_err.__msg == "'float' object is not iterable")
+local xs = molt_pack_list("first")
+local live = molt_iter_checked(xs)
+assert(live()[1] == "first")
+rawset(xs, 2, "appended"); rawset(xs, molt_sequence_length_key, 2)
+assert(live()[1] == "appended")
+assert(live()[2] == true)
+rawset(xs, 3, "after exhaustion"); rawset(xs, molt_sequence_length_key, 3)
+assert(live()[2] == true)
+local dict_iter = molt_iter_checked(d)
+assert(dict_iter()[1] == "key" and dict_iter()[2] == true)
+molt_dict_set(d, "after", true)
+assert(dict_iter()[2] == true)
+local changing = molt_dict_new()
+molt_dict_set(changing, "first", 1); molt_dict_set(changing, "second", 2)
+local changing_iter = molt_iter_checked(changing)
+assert(changing_iter()[1] == "first")
+molt_dict_delete(changing, "second"); molt_dict_set(changing, "last", 3)
+assert(changing_iter()[1] == "last" and changing_iter()[2] == true)
+local extra = molt_dict_new()
+molt_dict_set(extra, "first", 1); molt_dict_set(extra, "second", 2)
+local extra_iter = molt_iter_checked(extra)
+assert(extra_iter()[1] == "first")
+molt_dict_delete(extra, "first"); molt_dict_set(extra, "last", 3)
+assert(extra_iter()[1] == "second")
+local keys_ok, keys_err = pcall(extra_iter)
+assert(not keys_ok and keys_err.__msg == "dictionary keys changed during iteration")
+assert(extra_iter()[2] == true)
+local poisoned = molt_dict_new()
+local poisoned_iter = molt_iter_checked(poisoned)
+molt_dict_set(poisoned, "new", true)
+local size_ok, size_err = pcall(poisoned_iter)
+assert(not size_ok and size_err.__msg == "dictionary changed size during iteration")
+molt_dict_delete(poisoned, "new")
+assert(not pcall(poisoned_iter))
+local set_value = molt_set_new("set")
+molt_set_add(set_value, "first")
+local set_iter = molt_iter_checked(set_value)
+assert(set_iter()[1] == "first" and set_iter()[2] == true)
+molt_set_add(set_value, "after")
+assert(set_iter()[2] == true)
+local set_changed = molt_set_new("set")
+molt_set_add(set_changed, "first")
+local set_changed_iter = molt_iter_checked(set_changed)
+molt_set_add(set_changed, "second")
+local set_ok, set_err = pcall(set_changed_iter)
+assert(not set_ok and set_err.__msg == "Set changed size during iteration")
+molt_set_discard(set_changed, "second", false)
+assert(not pcall(set_changed_iter))
+local set_same_size = molt_set_new("set")
+molt_set_add(set_same_size, "before")
+local set_same_iter = molt_iter_checked(set_same_size)
+molt_set_discard(set_same_size, "before", false); molt_set_add(set_same_size, "after")
+assert(set_same_iter()[1] == "after" and set_same_iter()[2] == true)
+print("runtime-call-agreement-ok")
+end)()
+"#
+    );
+    fixture.emit_prelude_conditional(&oracle, false);
+    assert!(
+        fixture.unsupported_ops.is_empty(),
+        "{:?}",
+        fixture.unsupported_ops
+    );
+    let source = format!("{}\n{}", fixture.output, oracle);
+    execute_lune_oracle(
+        "runtime_call_agreement",
+        &source,
+        LuneStdout::TrimmedExact("runtime-call-agreement-ok"),
+    );
+}
+
+#[test]
+fn generated_runtime_call_luau_iter_requires_declared_carrier_precondition() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "unknown_iterable".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            params: vec!["source".into()],
+            ops: vec![
+                OpIR {
+                    args: Some(vec!["source".into()]),
+                    out: Some("it".into()),
+                    ..OpIR::new(molt_ir::OpKind::Iter)
+                },
+                OpIR {
+                    args: Some(vec!["it".into()]),
+                    ..OpIR::new(molt_ir::OpKind::Ret)
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let error = LuauBackend::new().compile_checked(&ir).unwrap_err();
+    assert!(
+        error.contains("requires a proven deterministic carrier"),
+        "{error}"
     );
 }

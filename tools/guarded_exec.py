@@ -42,7 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run a command under Molt's canonical harness memory guard."
     )
-    parser.add_argument("--prefix", default="MOLT")
+    # A registered guard stem (molt.guard_stems_generated.GuardStem); empty
+    # selects the root scope, whose budgets are the MOLT_<SUFFIX> names.
+    parser.add_argument("--prefix", default="")
     parser.add_argument("--cwd", type=Path, default=ROOT)
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--timeout-env", default=None)

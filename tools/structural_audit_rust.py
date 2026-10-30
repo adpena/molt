@@ -63,6 +63,59 @@ def kind_pattern_names(
     return frozenset(names[variant] for variant in variants)
 
 
+def runtime_call_pattern_names(generated: str) -> frozenset[str] | None:
+    """Project the generated pattern only when its selector has the same domain.
+
+    This is a lexical bridge for the refusal audit's operand applicability,
+    not a second runtime-call registry or an exhaustiveness proof.
+    """
+    names = op_kind_wire_names(generated)
+    owner = rust_block_region(generated, "pub mod runtime_calls")
+    if names is None or owner is None:
+        return None
+    source = generated[slice(*owner)]
+    selector = rust_block_region(
+        source, "pub const fn from_op(kind: OpKind) -> Option<Self>"
+    )
+    pattern = rust_block_region(source, "macro_rules! runtime_call_op_kinds")
+    if selector is None or pattern is None:
+        return None
+    macro = re.fullmatch(
+        r"\(\)=>\{(?P<pattern>.+)\};", token_text(source[slice(*pattern)])
+    )
+    if macro is None:
+        return None
+    kinds = kind_pattern_names(macro["pattern"].replace("$crate::", "molt_ir::"), names)
+    if kinds is None:
+        return None
+    body = source[slice(*selector)]
+    code = token_text(body)
+    if not code.startswith("matchkind{") or rust_delimiter_end(
+        code, code.index("{")
+    ) != len(code):
+        return None
+    arms = rust_match_arms(body, "kind")
+    if (
+        not arms
+        or token_text(arms[-1].pattern) != "_"
+        or token_text(arms[-1].body) != "None"
+    ):
+        return None
+    selected: set[str] = set()
+    for arm in arms[:-1]:
+        domain = kind_pattern_names(arm.pattern, names)
+        if (
+            domain is None
+            or selected & domain
+            or not re.fullmatch(
+                r"Some\(Self::[A-Za-z_][A-Za-z0-9_]*\)", token_text(arm.body)
+            )
+        ):
+            return None
+        selected.update(domain)
+    return kinds if selected == kinds else None
+
+
 def generated_kind_table(
     body: str | None,
     result_pattern: str,

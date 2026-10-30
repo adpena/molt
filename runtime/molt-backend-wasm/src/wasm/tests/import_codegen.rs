@@ -290,3 +290,67 @@ fn explicit_trace_ops_call_their_runtime_imports() {
         );
     }
 }
+
+#[test]
+fn generated_runtime_call_agreement_imports_declared_wasm_function() {
+    use molt_ir::runtime_calls::RuntimeCall;
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        let abi = call.function().boxed_abi();
+        let args = (0..abi.arity)
+            .map(|i| format!("arg{i}"))
+            .collect::<Vec<_>>();
+        let import = crate::wasm_abi_generated::wasm_runtime_import(abi.symbol).unwrap();
+        for bound in [false, true] {
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "molt_main".into(),
+                    params: args.clone(),
+                    ops: vec![
+                        OpIR {
+                            args: Some(args.clone()),
+                            out: (bound || kind == molt_ir::OpKind::GetIter)
+                                .then(|| "result".into()),
+                            ..OpIR::new(kind)
+                        },
+                        if bound {
+                            OpIR {
+                                args: Some(vec!["result".into()]),
+                                ..OpIR::new(molt_ir::OpKind::Ret)
+                            }
+                        } else {
+                            OpIR::new(molt_ir::OpKind::RetVoid)
+                        },
+                    ],
+                    return_abi: if bound {
+                        molt_ir::FunctionReturnAbi::Value
+                    } else {
+                        molt_ir::FunctionReturnAbi::Void
+                    },
+                    ..FunctionIR::default()
+                }],
+                profile: None,
+            };
+            for reloc in [false, true] {
+                let bytes = WasmBackend::with_options(WasmCompileOptions {
+                    native_eh_enabled: false,
+                    reloc_enabled: reloc,
+                    wasm_profile: WasmProfile::Auto,
+                    ..WasmCompileOptions::default()
+                })
+                .compile(ir.clone());
+                let indices = wasm_function_import_indices(&bytes);
+                assert!(indices.contains_key(import.name()), "{call:?}: {indices:?}");
+                if !reloc {
+                    let calls = wasm_direct_call_indices_for_export(&bytes, "molt_main");
+                    assert!(
+                        calls.contains(&indices[import.name()]),
+                        "{call:?}: {calls:?}"
+                    );
+                }
+            }
+        }
+    }
+}

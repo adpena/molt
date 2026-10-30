@@ -115,7 +115,7 @@ from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E40
 
 from tools import release_criterion_receipt as release_receipt  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "tools" / "fail_closed_registry.toml"

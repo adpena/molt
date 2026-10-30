@@ -21,7 +21,7 @@ from tools.bootstrap_actionlint import ensure_actionlint  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_CI")
 
 
 def main() -> int:

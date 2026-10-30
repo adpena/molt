@@ -144,7 +144,7 @@ impl LuauBackend {
                         let step = format!("__molt_step_{}", self.temp_counter);
                         self.temp_counter += 1;
                         self.emit_line(&format!(
-                            "local {iterator} = molt_iterator_new({iterable})"
+                            "local {iterator} = molt_iter_checked({iterable})"
                         ));
                         self.emit_line("while true do");
                         self.push_indent();

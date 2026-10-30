@@ -1,8 +1,9 @@
 """Canonical typed-argv execution authority for repository tools.
 
-Tool modules bind one :class:`CommandExecutor` from their ``__file__``. Every
-completed child then receives a stable telemetry/memory prefix, canonical DX
-environment, timeout custody, and subprocess-compatible check/output behavior.
+Tool modules bind one :class:`CommandExecutor` from their ``__file__`` and a
+registered guard stem. Every completed child then runs under that stem's memory
+and timeout budgets, the canonical DX environment, timeout custody, and
+subprocess-compatible check/output behavior.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any
 
+from molt.guard_stems_generated import GuardStem
 from molt.process_spawn import PROCESS_STATE_HANDOFF_TIMEOUT_S, ProcessStateUse
 
 from tools.import_file import (
@@ -38,12 +40,6 @@ def _harness_memory_guard() -> Any:
     from tools import harness_memory_guard
 
     return harness_memory_guard
-
-
-def _prefix(source_file: str | Path, root: Path) -> str:
-    relative = Path(source_file).resolve().relative_to(root).with_suffix("")
-    identity = re.sub(r"[^A-Za-z0-9]+", "_", relative.as_posix()).strip("_")
-    return f"MOLT_{identity.upper()}"
 
 
 @lru_cache(maxsize=None)
@@ -422,13 +418,15 @@ class GuardedCommand:
 
 @dataclass(frozen=True, slots=True)
 class CommandExecutor:
-    prefix: str
+    # The registered guard scope (``molt.guard_stems_generated.GuardStem``)
+    # whose ``<STEM><SUFFIX>`` budgets bound this tool's children.
+    prefix: GuardStem
     repo_root: Path
 
     @classmethod
-    def for_file(cls, source_file: str | Path) -> "CommandExecutor":
+    def for_file(cls, source_file: str | Path, *, stem: GuardStem) -> "CommandExecutor":
         root = bind_repository_imports(source_file)
-        return cls(prefix=_prefix(source_file, root), repo_root=root)
+        return cls(prefix=stem, repo_root=root)
 
     def run(
         self,

@@ -162,7 +162,7 @@ def _run_luau(python_source: str) -> str:
 def _python_output(source: str) -> str:
     """Get CPython reference output."""
     result = run_native_test_process(
-        ["python3", "-c", source],
+        [sys.executable, "-c", source],
         capture_output=True,
         text=True,
         timeout=10,

@@ -32,7 +32,7 @@ from molt.wasm_linking_symbols import (
 )
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_WASM_LINK")
 WASM_LINK_FACTS_SCHEMA_VERSION = 7
 _WASM_FACTS_CACHE_ENTRIES = 16
 _SUCCESS_RESPONSE_KEYS = frozenset({"schema_version", "ok", "facts"})

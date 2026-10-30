@@ -73,7 +73,7 @@ from tools import harness_memory_guard, perf_calibration  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_LINK_BENCH")
 
 
 SCHEMA_VERSION = 2

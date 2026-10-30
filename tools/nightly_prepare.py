@@ -33,7 +33,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools import cpython_regrtest, nightly_sharding  # noqa: E402
 
 
-COMMANDS = CommandExecutor.for_file(__file__)
+COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_CI")
 
 
 def _write_github_outputs(path: Path, plan: dict[str, object]) -> None:

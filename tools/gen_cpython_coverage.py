@@ -21,7 +21,7 @@ from tools.generator_io import generator_main  # noqa: E402
 from tools.git_identity import repository_source_paths  # noqa: E402
 from tools.scan_records import ScanRecords, decoded_text, scan_result  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_GENERATOR")
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "cpython_coverage.toml"

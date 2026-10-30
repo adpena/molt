@@ -2319,6 +2319,38 @@ def test_live_rust_admitted_domains_close_refusal_paths(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("relative", "before", "after"),
+    [
+        (
+            "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+            "$crate::OpKind::DictSet | $crate::OpKind::Iter | $crate::OpKind::GetIter",
+            "$crate::OpKind::DictSet | $crate::OpKind::Iter",
+        ),
+        (
+            "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+            "OpKind::Iter | OpKind::GetIter => Some(Self::Iter)",
+            "OpKind::Iter | OpKind::GetIter | OpKind::ConstNone => Some(Self::Iter)",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust/op_emitter.rs",
+            "RuntimeCall::from_op(op.kind)",
+            "RuntimeCall::from_op(molt_ir::OpKind::Iter)",
+        ),
+    ],
+)
+def test_rust_runtime_call_projection_requires_matching_selector_and_pattern(
+    tmp_path, relative, before, after
+):
+    _copy_live_rust_admission_sources(tmp_path)
+    assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
+    path = tmp_path / relative
+    source = path.read_text(encoding="utf-8")
+    assert source.count(before) == 1
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    assert SA.probe_rust_backend_lowering_gaps(tmp_path)
+
+
+@pytest.mark.parametrize(
     ("relative", "owner", "before", "after"),
     [
         (

@@ -387,7 +387,7 @@ def test_ci_transport_uses_consumed_archive_and_canonical_verifier(
                 # the substituted peer; launch/capture/closure remain real.
                 from tools.command_execution import CommandExecutor
 
-                return CommandExecutor.for_file(__file__).run(
+                return CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").run(
                     [
                         sys.executable,
                         "-c",

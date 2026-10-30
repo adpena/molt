@@ -1,6 +1,7 @@
 # Build early cutoff
 
-Status: implemented, 2026-10-16 (HF-250). Owner: frontend build speed.
+Status: implemented, 2026-10-16 (HF-250); WASM product families 2026-10-29.
+Owner: frontend build speed.
 
 ## Problem
 
@@ -173,7 +174,10 @@ conflict:
   cache, Cargo target and build state roots, the backend daemon's socket
   directory, the derived backend IR lease directory for both the project and
   compiler roots, the artifact root under the output directory, the memory guard's
-  state root and its scratch generations) are not inputs. A
+  state root and its scratch generations, the Rust product store and the
+  runtime WASM generation store) are not inputs. The two stores hold immutable
+  generations selected by identities the recorded inputs derive; any checkout
+  of the artifact root rewrites their retention ledgers. A
   source checkout, a user directory, the temporary directory and the shared
   scratch root are never excluded: projects live there too, and so do guard
   lease targets. The successfully
@@ -312,9 +316,34 @@ Eligible native JSON requests retain their typed result through this same record
 Diagnostic requests still execute the pipeline because they require fresh
 measurements; unsupported additional result families also retain that path.
 
-**Refusals.** No record for non-native targets, requests
-that request unrecorded additional products or measurements (diagnostics, IR,
-linked or split output, snapshots, audit logs), non-default codegen backends, BOLT,
+**WASM product families.** A plain request for the default `wasm` target,
+unlinked or linked under the derived `*_linked.wasm` name, records too. The
+layout reports the module's selection through the same selector. The result
+owner (`build_results._report_non_native_products`) reports the family the
+result promises as one typed `BuildProducts` fact: the module, linked module,
+deployment manifest and optimizer attestation, and the one a user runs. Record
+schema v10 keeps each product's token; a hit requires every member unchanged
+and names the module a user runs. Each product's publication custody is a
+product, resolved transitively by the staging-name authority: a stage issued
+for one of its own stages (the WASM backend output is staged beside the module
+and a copy is staged for that stage) and every path inside a staged directory
+(the deployment generation is staged in one directory beside the manifest). A JSON WASM request has no
+typed result to replay and still runs the pipeline, as do split runtimes,
+precompiled images and named linked outputs. The WASM path reports what it
+reads like the native one, plus three inputs it read without reporting:
+wasm-opt's PATH search goes through `toolchain_identity.executable_candidates`;
+`tools/wasm_allowed_imports.txt`, which only wasm-ld reads, is a producer-bound
+link input, so it keys the final-link cache and the record and the link tool
+verifies its bytes; and the runtime WASM generation store is a named product
+root, since its members are immutable, selected by the identity the recorded
+runtime inputs derive, and its retention ledger is rewritten on every use.
+Measurements: [user_compile_latency.md](user_compile_latency.md).
+
+**Refusals.** No record for targets other than native and the default `wasm`
+target, for WASM JSON, split-runtime, precompile or named-linked-output requests,
+or for requests that request unrecorded additional products or measurements
+(diagnostics, IR, native linked output, snapshots, audit logs), non-default
+codegen backends, BOLT,
 file-naming inputs whose loaders do not report (type facts, PGO profiles,
 runtime feedback, capability manifests, sysroots, capability files), `ty`
 under the trust policy, external static packages, and any ledger refusal,
@@ -401,6 +430,11 @@ unused for a week are deleted, at most once an hour.
   resolution caches now retain raw source bytes as well as decoded text. Temporary
   snapshots remain collectible. No new process, optimizer, disk cache or
   generated-program work is introduced.
+- Sealed witness, macOS arm64, plain linked WASM release build, matched
+  blocks against the base commit: an unchanged rebuild took 8.55 s
+  (5.83-29.52 s, n=16) and now hits in 0.66 s (0.53-8.09 s, n=16; the miss was
+  a shared product-store renewal, since fixed); native stayed at 0.37 s.
+  Outputs are byte-identical. Details: [user_compile_latency.md](user_compile_latency.md).
 - No-change rebuild through `python -m molt.cli`: 0.155 s, from 32-44 s.
   Before the dispatcher imported each command lazily it was 0.87-1.02 s, and
   copying the binary from a store on another volume cost 1.5 s more. Keying

@@ -1029,7 +1029,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
         }
 
         // iter helper for for_iter ops
-        if used("molt_iter_list(") || used("molt_iter(") || used("molt_iter_next(") {
+        if used("molt_iter_list(") || used("molt_iter_next(") {
             self.output.push_str(concat!(
                 "fn molt_iter_list(x: &MoltValue) -> Vec<MoltValue> {\n",
                 "    match x {\n",
@@ -1038,14 +1038,6 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 "        MoltValue::Str(s) => s.code_points().map(|c| MoltValue::Str(PythonString::from_code_point(c))).collect(),\n",
                 "        _ => panic!(\"TypeError: object is not iterable\"),\n",
                 "    }\n",
-                "}\n\n",
-            ));
-        }
-        if used("molt_iter(") {
-            self.output.push_str(concat!(
-                "fn molt_iter(x: &MoltValue) -> MoltValue {\n",
-                "    let items = molt_iter_list(x);\n",
-                "    MoltValue::List(vec![MoltValue::Int(0), MoltValue::List(items)])\n",
                 "}\n\n",
             ));
         }

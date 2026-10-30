@@ -62,7 +62,7 @@ def _parse(sources: dict[str, str | None]) -> dict[str, str]:
             _PARSER,
             json.dumps(sources),
         ],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
