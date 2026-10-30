@@ -260,6 +260,7 @@ def _build_frontend_module_costs(
 def _build_module_graph_metadata(
     module_graph: Mapping[str, Path],
     *,
+    scan_authority: _ModuleGraphScanAuthority | None,
     stdlib_root: Path,
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
@@ -302,6 +303,7 @@ def _build_module_graph_metadata(
         for name, path in module_graph.items()
     }
     return _ModuleGraphMetadata(
+        scan_authority=scan_authority,
         module_source_role_by_module=MappingProxyType(source_roles),
         logical_source_path_by_module=MappingProxyType(logical_source_path_by_module),
         namespace_portions_by_module=MappingProxyType(
@@ -383,7 +385,8 @@ def _extend_native_support_source_closure(
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     target_python: TargetPythonVersion,
     slice_cache: MutableMapping[
-        tuple[Path, tuple[str, ...], ImportScanMode], _NativeSupportSourceSlice | None
+        tuple[Path, tuple[str, ...], ImportScanMode, str | None],
+        _NativeSupportSourceSlice | None,
     ],
     operation_counts: MutableMapping[str, int],
 ) -> frozenset[str]:
@@ -725,7 +728,8 @@ def _native_support_source_slices(
     stdlib_allowlist: set[str] | None = None,
     artifacts_root: Path,
     slice_cache: MutableMapping[
-        tuple[Path, tuple[str, ...], ImportScanMode], _NativeSupportSourceSlice | None
+        tuple[Path, tuple[str, ...], ImportScanMode, str | None],
+        _NativeSupportSourceSlice | None,
     ],
     operation_counts: MutableMapping[str, int],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -739,7 +743,7 @@ def _native_support_source_slices(
         mode = _source_import_scan._module_import_scan_mode(
             module, full_scan=bool(roots) or module in full_scan_modules
         )
-        cache_key = (path.resolve(), roots, mode)
+        cache_key = (path.resolve(), roots, mode, resolution_cache.target_sys_platform)
         operation_counts["native_support_slice_requests"] += 1
         operation_counts["native_support_legacy_equivalent_source_parses"] += (
             2 if roots else 1
@@ -797,6 +801,7 @@ def _native_support_source_slices(
                 package_paths=(path.parent,) if path.name == "__init__.py" else (),
                 scan=loaded_scan.scan,
                 snapshot=loaded_scan.snapshot,
+                target_sys_platform=resolution_cache.target_sys_platform,
                 target_python=target_python,
                 native_support_function_roots=roots,
             ),
@@ -1340,7 +1345,8 @@ def _materialize_import_plan(
         "native_support_legacy_equivalent_source_parses": 0,
     }
     native_support_slice_cache: dict[
-        tuple[Path, tuple[str, ...], ImportScanMode], _NativeSupportSourceSlice | None
+        tuple[Path, tuple[str, ...], ImportScanMode, str | None],
+        _NativeSupportSourceSlice | None,
     ] = {}
     native_artifact_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     while True:
@@ -1476,6 +1482,7 @@ def _materialize_import_plan(
     stdlib_allowlist.add("molt.stdlib")
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
+        scan_authority=final_scan_authority,
         stdlib_root=stdlib_root,
         entry_module=entry_module,
         entry_execution_kind=prepared_module_graph.image_scope.entry_execution_kind,
@@ -1697,6 +1704,7 @@ def _prepare_entry_module_graph(
     diagnostics_enabled: bool,
     module_reasons: MutableMapping[str, set[str]],
     json_output: bool,
+    target_sys_platform: str | None,
     target: Target,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1707,6 +1715,7 @@ def _prepare_entry_module_graph(
     stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _module_resolution._ModuleResolutionCache(
+        target_sys_platform=target_sys_platform,
         import_topology=import_topology or _module_resolution.PythonImportTopology(),
         module_root_aliases=module_root_aliases,
     )
@@ -1757,6 +1766,7 @@ def _prepare_entry_module_graph(
             import_scan_mode="full",
             scan=loaded_entry.scan,
             snapshot=entry_snapshot,
+            target_sys_platform=module_resolution_cache.target_sys_platform,
             target_python=target_python,
         ),
         import_admission_policy=import_admission_policy,

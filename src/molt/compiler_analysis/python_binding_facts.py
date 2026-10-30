@@ -117,7 +117,14 @@ class PythonSourceParameters(NamedTuple):
     kwarg: PythonSourceKey | None
 
 
+class PythonClassPreparation(StrEnum):
+    PYTHON = "python"
+    MOLT_NATIVE = "molt_native"
+
+
 class PythonElementProtocol(StrEnum):
+    CLASS_METHOD = "class_method"
+    STATIC_METHOD = "static_method"
     SUBSCRIPT = "subscript"
     ITERATE = "iterate"
     ASYNC_ITERATE = "async_iterate"
@@ -892,6 +899,11 @@ class PythonBindingFacts:
     def expression_fact(self, node: ast.AST) -> PythonExpressionFact | None:
         return self._expression_lookup.get(PythonNodeKey.from_node(node))
 
+    def expression_is(self, node: ast.AST, identity: PythonIdentity) -> bool:
+        """An expression's resolved value, independently of its spelling."""
+        fact = self.expression_fact(node)
+        return fact is not None and identity_fact_is_exact(fact.identities, identity)
+
     def class_annotation_namespace_required(self, node: ast.ClassDef) -> bool:
         """A deferred evaluator needs this class's live namespace owner.
 
@@ -1000,6 +1012,7 @@ __all__ = [
     "PythonStatementFact",
     "PythonIterationFact",
     "PythonFunctionResult",
+    "PythonClassPreparation",
     "PythonElementProtocol",
     "PythonSourceElement",
     "PythonStringAlternatives",

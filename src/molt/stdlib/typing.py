@@ -1420,8 +1420,31 @@ def cast(_typ: object, value: object) -> object:
     return _typing_cast(_typ, value)
 
 
+_overload_registry = {}
+
+
+def _overload_dummy(*args, **kwargs):
+    raise NotImplementedError(
+        "You should not call an overloaded function. "
+        "A series of @overload-decorated functions "
+        "outside a stub module should always be followed "
+        "by an implementation that is not @overload-ed."
+    )
+
+
 def overload(func):
-    return func
+    # CPython 3.12 Lib/typing.py: retain source declarations for get_overloads,
+    # including descriptor-wrapped methods, while binding the runtime dummy.
+    original = getattr(func, "__func__", func)
+    try:
+        module = original.__module__
+        qualname = original.__qualname__
+        line = original.__code__.co_firstlineno
+    except AttributeError:
+        return _overload_dummy
+    declarations = _overload_registry.setdefault(module, {}).setdefault(qualname, {})
+    declarations[line] = func
+    return _overload_dummy
 
 
 def final(f):
@@ -1464,11 +1487,14 @@ LiteralString = _SpecialForm("LiteralString", None)
 
 
 def get_overloads(func):
-    return getattr(func, "__overloads__", [])
+    original = getattr(func, "__func__", func)
+    modules = _overload_registry.get(original.__module__, {})
+    declarations = modules.get(original.__qualname__, {})
+    return list(declarations.values())
 
 
 def clear_overloads():
-    pass
+    _overload_registry.clear()
 
 
 def dataclass_transform(**kwargs):

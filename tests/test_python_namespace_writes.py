@@ -231,7 +231,7 @@ def test_unscheduled_lazy_annotation_writers_keep_enclosing_owner(future) -> Non
 )
 def test_namespace_write_codec_rejects_unschedulable_or_malformed_owner(owner) -> None:
     with pytest.raises(ValueError):
-        decode_python_namespace_write(["target", "flag", "attribute", 1, owner])
+        decode_python_namespace_write(["target", "flag", "attribute", 1, owner, None])
 
 
 @pytest.mark.parametrize(
@@ -1038,3 +1038,35 @@ def test_writes_are_reported_in_source_order() -> None:
     source = "import m\nm.b = 1\nm.a = 2\nm.b = 3\n"
     writes = _summary(source).foreign_writes
     assert [(write.name, write.line) for write in writes] == [("b", 2), ("a", 3)]
+
+
+def test_same_line_namespace_cache_writes_keep_source_site_order():
+    from dataclasses import replace
+    from molt.compiler_analysis.python_namespace_writes import (
+        refine_namespace_cache_writes,
+    )
+
+    tree = ast.parse(
+        "import sys\nsys.modules[key] = first; sys.modules[key] = second\n"
+    )
+    first, second = (
+        python_node_source_key(statement.targets[0]) for statement in tree.body[1:]
+    )
+    summary = python_namespace_summary(tree)
+    assert {write.source_site for write in summary.foreign_writes} == {first, second}
+    refined = refine_namespace_cache_writes(
+        summary,
+        [
+            (first, ("typing",), frozenset(), frozenset()),
+            (second, ("typing",), frozenset(), frozenset()),
+        ],
+    )
+    reversed_input = refine_namespace_cache_writes(
+        replace(summary, foreign_writes=tuple(reversed(summary.foreign_writes))),
+        [
+            (second, ("typing",), frozenset(), frozenset()),
+            (first, ("typing",), frozenset(), frozenset()),
+        ],
+    )
+    assert [write.source_site for write in refined.foreign_writes] == [first, second]
+    assert reversed_input == refined

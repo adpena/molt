@@ -372,6 +372,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         entry_execution_kind="direct_main",
         namespace_portions_by_module={},
         stdlib_root=tmp_path / "stdlib",
+        scan_authority=None,
     )
     bundle = NS(
         module_source_catalog=source_catalog,

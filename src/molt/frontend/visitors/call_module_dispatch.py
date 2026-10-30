@@ -107,22 +107,12 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind=call_kind, args=args, result=res))
         return res
 
-    def _named_callee_value(
-        self, target_info: MoltValue, func_id: str, node: ast.Call
-    ) -> MoltValue:
-        """The callee operand of a call through the name ``func_id``.
+    def _named_callee_value(self, node: ast.Call) -> MoltValue:
+        """Evaluate the source callee once in its actual execution namespace.
 
-        ``target_info`` is a compile-time fact about that name. It is never the
-        operand of a function-scope read: a local is read where the call reads
-        it, by the Name read that owns its source fact, frame storage and
-        capture across argument evaluation, and a module function is read from
-        the module. Module-scope code and coroutine slots already hold the
-        name's current value.
+        Code candidates are metadata. The Name read owns globals fallback,
+        recreated function contexts and capture across argument evaluation.
         """
-        if self.current_func_name == "molt_main" or func_id in self.async_locals:
-            return target_info
-        if func_id not in self.locals:
-            return self._emit_module_attr_get(func_id)
         callee = self.visit(node.func)
         if callee is None:
             raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
@@ -142,7 +132,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         if stateful_hint is None:
             return None
 
-        callee = self._named_callee_value(target_info, func_id, node)
+        callee = self._named_callee_value(node)
         return self._emit_stateful_callable_call(
             callee,
             node,

@@ -534,14 +534,22 @@ def test_source_demand_activation_join_emits_only_new_incidences(tmp_path, monke
     scan = load(source).scan.source_requests
     tree = ast.parse(source.read_text(encoding="utf-8"))
     value = ("entry", python_node_source_key(tree.body[-1].value))
+    queued_bodies = []
     engine = PythonSourceDemands(
         require_runtime_import_protocol=lambda _module: None,
         admit_imports=lambda *_: None,
-        queue_body=lambda *_: None,
+        queue_body=lambda module, owner, arguments: queued_bodies.append(
+            (module, owner, arguments)
+        ),
     )
-    engine.accept("entry", scan, full=True)
+    engine.accept("entry", scan)
     engine.demand(value, "read")
     engine.drain()
+    make_owner = python_node_source_key(tree.body[2])
+    assert any(
+        module == "entry" and owner == make_owner
+        for module, owner, _arguments in queued_bodies
+    )
     expected = {python_node_source_key(node) for node in tree.body[:2]}
     assert {
         candidate.source for candidate in engine.value_candidates[value]
@@ -594,6 +602,8 @@ def test_unchanged_body_receipts_do_not_revisit_existing_values(
     )
     empty = _ImportScanRequests((), ())
     engine.accept("module", empty)
+    # Settle initialization/cache publication before observing body receipts.
+    engine.drain()
     tree = ast.parse("\n".join(f"def value_{index}(): pass" for index in range(values)))
     for function in tree.body:
         engine.demand(("module", python_node_source_key(function)), "read")
@@ -1287,10 +1297,12 @@ def test_operation_local_source_memo_binds_namespace_premise(tmp_path, member):
     )
     tree = ast.parse(source.read_text(encoding="utf-8"))
     resolver = _ModuleResolutionCache()
-    stable = PythonNamespacePremise((), 0)
+    stable = PythonNamespacePremise((), 0, 0, ())
     rewritten = PythonNamespacePremise(
         () if member else ("TYPE_CHECKING",),
         int(PythonMember.TYPING_TYPE_CHECKING) if member else 0,
+        int(PythonMember.TYPING_TYPE_CHECKING) if member else 0,
+        (),
     )
     source_calls = []
 
@@ -1312,7 +1324,7 @@ def test_operation_local_source_memo_binds_namespace_premise(tmp_path, member):
             assert ("leaf" in graph(premise).imports) is expected
     # An equal immutable premise reuses the earlier precise result after a
     # different graph premise has been consulted; the memo may not cross them.
-    assert "leaf" not in graph(PythonNamespacePremise((), 0)).imports
+    assert "leaf" not in graph(PythonNamespacePremise((), 0, 0, ())).imports
     assert source_calls == [None, stable, rewritten]
 
 
@@ -1329,8 +1341,8 @@ def test_runtime_import_protocol_follows_the_namespace_premise() -> None:
         ).uses_runtime_import_protocol
 
     assert uses(None)
-    assert not uses(PythonNamespacePremise((), 0))
-    assert uses(PythonNamespacePremise(("flag",), 0))
+    assert not uses(PythonNamespacePremise((), 0, 0, ()))
+    assert uses(PythonNamespacePremise(("flag",), 0, 0, ()))
 
 
 @pytest.mark.parametrize(
@@ -1463,10 +1475,10 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
     snapshot = PythonSourceSnapshot.capture(path)
     premises = (
         None,
-        PythonNamespacePremise((), 0),
-        PythonNamespacePremise(("callback",), 0),
-        PythonNamespacePremise(None, 0),
-        PythonNamespacePremise((), ALL_INVALID_MEMBERS),
+        PythonNamespacePremise((), 0, 0, ()),
+        PythonNamespacePremise(("callback",), 0, 0, ()),
+        PythonNamespacePremise(None, 0, 0, ()),
+        PythonNamespacePremise((), ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, ()),
     )
     options = dict(module_name="entry", is_package=False, import_scan_mode="full")
     requests = []
@@ -1540,7 +1552,7 @@ def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
     path = write(tmp_path / "entry.py")
-    premise = PythonNamespacePremise((), 0)
+    premise = PythonNamespacePremise((), 0, 0, ())
     snapshot = PythonSourceSnapshot.capture(path)
     options = dict(module_name="entry", is_package=False, import_scan_mode="full")
     request = load(
@@ -2352,9 +2364,9 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
     )
     owner = python_node_source_key(parsed.tree.body[-1])
     for premise in (
-        PythonNamespacePremise((), 0),
-        PythonNamespacePremise(("namespace_marker",), 0),
-        PythonNamespacePremise(None, 0),
+        PythonNamespacePremise((), 0, 0, ()),
+        PythonNamespacePremise(("namespace_marker",), 0, 0, ()),
+        PythonNamespacePremise(None, 0, 0, ()),
     ):
         for source_owner, arguments in (
             (None, ()),
@@ -2400,7 +2412,7 @@ def test_module_export_fact_qualifies_target_and_namespace_premise():
     source = "__all__ = ['visible']\nmarker: __all__\n"
     tree = ast.parse(source)
     admission = _PythonAstDigestAdmission(tree)
-    closed = PythonNamespacePremise((), 0)
+    closed = PythonNamespacePremise((), 0, 0, ())
 
     def exports(minor, premise):
         return _source_import_scan._static_module_all_exports(
@@ -2418,8 +2430,10 @@ def test_module_export_fact_qualifies_target_and_namespace_premise():
         assert namespace["__annotations__"]["marker"] is namespace["__all__"]
     assert exports(13, closed).status == "unknown"
     assert exports(14, closed).names == ("visible",)
-    assert exports(14, PythonNamespacePremise(("__all__",), 0)).status == "unknown"
-    assert exports(14, PythonNamespacePremise(None, 0)).status == "unknown"
+    assert (
+        exports(14, PythonNamespacePremise(("__all__",), 0, 0, ())).status == "unknown"
+    )
+    assert exports(14, PythonNamespacePremise(None, 0, 0, ())).status == "unknown"
     assert exports(14, closed).names == ("visible",)
     with pytest.raises(ValueError, match="different tree"):
         _source_import_scan._static_module_all_exports(
@@ -2602,8 +2616,8 @@ def test_late_canonical_provider_activation_retains_application_consumer():
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
     sources = {
-        "entry": "from _intrinsics import factory\nfactory()('leaf')\n",
-        "_intrinsics": (
+        "entry": "from provider import factory\nfactory()('leaf')\n",
+        "provider": (
             "from _intrinsics import require_intrinsic as take\n"
             "def factory(): return take('molt_module_import')\n"
         ),
@@ -2615,16 +2629,15 @@ def test_late_canonical_provider_activation_retains_application_consumer():
         queue_body=lambda *_: None,
         require_runtime_import_protocol=protocols.add,
     )
-    for module in ("entry", "_intrinsics"):
+    for module in ("entry", "provider"):
         projection = _source_import_scan._collect_imports_for_graph(
             ast.parse(sources[module]),
             module,
-            namespace_premise=PythonNamespacePremise((), 0),
+            namespace_premise=PythonNamespacePremise((), 0, 0, ()),
         )
         engine.accept(
             module,
             _ImportScanRequests((), ())._replace(**projection._asdict()),
-            full=True,
         )
         engine.drain()
         if module == "entry":
@@ -2915,3 +2928,194 @@ def test_conditional_import_cache_rejects_incoherent_return_projections(
     repaired = load(entry)
     assert not repaired.cache_hit
     assert repaired.scan.source_values == cold.scan.source_values
+
+
+@pytest.fixture
+def module_cache_fact_record(tmp_path):
+    from molt.compiler_analysis.python_imports import (
+        _ImportScanRequests,
+        _SourceValueSummary,
+    )
+    from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = write(
+        tmp_path / "cache_owner.py",
+        "import sys\ndef provider():\n    return 1\n"
+        "sys.modules['alias'] = provider\n"
+        "loaded = sys.modules.get('alias', provider)\n",
+    )
+    snapshot = PythonSourceSnapshot.capture(source)
+    tree = ast.parse(snapshot.content)
+    provider = python_node_source_key(tree.body[1])
+    write_source = python_node_source_key(tree.body[2].targets[0])
+    read_source = python_node_source_key(tree.body[3].value)
+    options = dict(
+        module_name="cache_owner",
+        is_package=False,
+        import_scan_mode="full",
+        target_sys_platform="linux",
+    )
+
+    def publish(keys=("alias", "other"), contained=False):
+        values = _SourceValueSummary(
+            cache_writes=(
+                (write_source, keys, frozenset({provider}), frozenset({provider})),
+            ),
+            cache_reads=(
+                (
+                    read_source,
+                    keys,
+                    frozenset({provider}),
+                    frozenset({provider}),
+                    contained,
+                ),
+            ),
+        )
+        request = _ImportScanRequests(
+            (),
+            (),
+            source_values=values,
+            namespace_summary=python_namespace_summary(tree),
+        )
+        records._write_persisted_import_scan(
+            source, **options, scan=request, snapshot=snapshot
+        )
+        key = records._import_scan_cache_key(source, **options)
+        return source, snapshot, options, key, request
+
+    return publish
+
+
+@pytest.mark.parametrize("keys", [None, ("",), ("alias", "other")])
+@pytest.mark.parametrize("contained", [False, True])
+def test_module_cache_source_values_roundtrip_canonical_storage_facts(
+    module_cache_fact_record, keys, contained
+):
+    source, snapshot, options, key, request = module_cache_fact_record(keys, contained)
+    payload = source_records("import-scan")[key]
+    assert payload["target_sys_platform"] == "linux"
+    raw = payload["source_values"]
+    assert raw["cache_writes"][0][1] == (None if keys is None else list(keys))
+    assert raw["cache_reads"][0][-1] is contained
+    assert (
+        records._read_persisted_import_scan_record(source, **options, snapshot=snapshot)
+        == request
+    )
+    retired = copy.deepcopy(payload)
+    retired["version"] = 36
+    replace_source_record("import-scan", key, retired)
+    assert (
+        records._read_persisted_import_scan_record(source, **options, snapshot=snapshot)
+        is None
+    )
+    replace_source_record("import-scan", key, payload)
+    # Equal reads are source-only: the target generation and source-byte
+    # admission remain the existing enclosing cache authority.
+    assert (
+        records._read_persisted_import_scan_record(
+            source, **{**options, "target_sys_platform": "win32"}, snapshot=snapshot
+        )
+        is None
+    )
+    source.write_text("CHANGED = True\n", encoding="utf-8")
+    assert records._read_persisted_import_scan_record(source, **options) is None
+
+
+@pytest.mark.parametrize("field", ["cache_writes", "cache_reads"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing",
+        "container",
+        "row-width",
+        "source",
+        "keys-container",
+        "keys-empty",
+        "keys-order",
+        "keys-duplicate",
+        "keys-type",
+        "origins-container",
+        "origin-source",
+        "contained-origins-container",
+        "contained-origin-source",
+        "retired-width",
+    ],
+)
+def test_module_cache_source_values_reject_malformed_storage_facts(
+    module_cache_fact_record, field, defect
+):
+    source, snapshot, options, key, _request = module_cache_fact_record()
+    payload = source_records("import-scan")[key]
+    values = payload["source_values"]
+    row = values[field][0]
+    if defect == "missing":
+        del values[field]
+    elif defect == "container":
+        values[field] = {}
+    elif defect == "row-width":
+        row.append(None)
+    elif defect == "source":
+        row[0] = [False, 0, 1, 0, "Subscript"]
+    elif defect == "keys-container":
+        row[1] = "alias"
+    elif defect == "keys-empty":
+        row[1] = []
+    elif defect == "keys-order":
+        row[1] = ["z", "a"]
+    elif defect == "keys-duplicate":
+        row[1] = ["alias", "alias"]
+    elif defect == "keys-type":
+        row[1] = [True]
+    elif defect == "origins-container":
+        row[2] = {}
+    elif defect == "origin-source":
+        row[2] = [[-1, 0, 1, 0, "FunctionDef"]]
+    elif defect == "contained-origins-container":
+        row[3] = {}
+    elif defect == "contained-origin-source":
+        row[3] = [[-1, 0, 1, 0, "FunctionDef"]]
+    else:
+        row.pop()
+    replace_source_record("import-scan", key, payload)
+    assert (
+        records._read_persisted_import_scan_record(source, **options, snapshot=snapshot)
+        is None
+    )
+
+
+@pytest.mark.parametrize("contained", [None, 0, 1, "false"])
+def test_module_cache_read_containment_is_a_closed_boolean(
+    module_cache_fact_record, contained
+):
+    source, snapshot, options, key, _request = module_cache_fact_record()
+    payload = source_records("import-scan")[key]
+    payload["source_values"]["cache_reads"][0][-1] = contained
+    replace_source_record("import-scan", key, payload)
+    assert (
+        records._read_persisted_import_scan_record(source, **options, snapshot=snapshot)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "constructor,protocol",
+    [("classmethod", "class_method"), ("staticmethod", "static_method")],
+)
+def test_retained_descriptor_source_element_survives_cold_and_warm_scan(
+    tmp_path, constructor, protocol
+):
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    source = write(
+        tmp_path / "entry.py",
+        f"class Box:\n    @{constructor}\n    def method(cls):\n        import dormant_leaf\n",
+    )
+    premise = PythonNamespacePremise((), 0, entry_member_writes=0)
+    cold = load(source, namespace_premise=premise)
+    assert any(
+        item.protocol.value == protocol for item in cold.scan.source_values.elements
+    )
+    warm = load(source, namespace_premise=premise)
+    assert warm.cache_hit
+    assert warm.scan.source_values == cold.scan.source_values

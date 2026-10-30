@@ -24,6 +24,7 @@ from molt.compiler_analysis.python_binding_flow import (
     python_canonical_member_writes,
 )
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.compiler_analysis.python_value_identity import (
     canonical_import_binding_write_mask,
 )
@@ -42,6 +43,9 @@ class PythonNamespacePremise:
 
     foreign_writes: tuple[str, ...] | None
     member_writes: MemberMask
+    entry_member_writes: MemberMask
+    noncanonical_imports: tuple[str, ...]
+    opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None
 
 
 def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
@@ -59,7 +63,9 @@ def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
         policy,
         foreign_namespace_writes=premise.foreign_writes,
         callback_member_writes=premise.member_writes,
-        entry_invalid_members=premise.member_writes,
+        entry_invalid_members=premise.entry_member_writes,
+        noncanonical_imports=premise.noncanonical_imports,
+        opaque_activation_sources=premise.opaque_activation_sources,
     )
 
 
@@ -72,21 +78,32 @@ class PythonGraphNamespaceWrites:
     # Names written into a namespace reached by a computed ``sys.modules`` key.
     any_module: frozenset[str] | None
     members: MemberMask
+    entry_members: MemberMask
 
-    def premise(self, source: Path, children: frozenset[str]) -> PythonNamespacePremise:
+    def premise(
+        self,
+        source: Path,
+        children: frozenset[str],
+        *,
+        noncanonical_imports: tuple[str, ...] = (),
+        opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None,
+    ) -> PythonNamespacePremise:
         return _namespace_premise(
             self.by_source.get(source, frozenset()),
             self.any_module,
             self.members,
+            self.entry_members,
             children,
+            noncanonical_imports,
+            opaque_activation_sources,
         )
 
 
 NO_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
-    MappingProxyType({}), frozenset(), NO_INVALID_MEMBERS
+    MappingProxyType({}), frozenset(), NO_INVALID_MEMBERS, NO_INVALID_MEMBERS
 )
 UNKNOWN_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
-    MappingProxyType({}), None, ALL_INVALID_MEMBERS
+    MappingProxyType({}), None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS
 )
 
 
@@ -94,11 +111,26 @@ def _namespace_premise(
     named: frozenset[str] | set[str] | None,
     any_module: frozenset[str] | set[str] | None,
     members: MemberMask,
+    entry_members: MemberMask,
     children: frozenset[str],
+    noncanonical_imports: tuple[str, ...],
+    opaque_activation_sources: tuple[PythonSourceKey, ...] | None,
 ) -> PythonNamespacePremise:
     if named is None or any_module is None:
-        return PythonNamespacePremise(None, members)
-    return PythonNamespacePremise(tuple(sorted(children | named | any_module)), members)
+        return PythonNamespacePremise(
+            None,
+            members,
+            entry_members,
+            noncanonical_imports,
+            opaque_activation_sources,
+        )
+    return PythonNamespacePremise(
+        tuple(sorted(children | named | any_module)),
+        members,
+        entry_members,
+        noncanonical_imports,
+        opaque_activation_sources,
+    )
 
 
 def join_python_namespace_premises(
@@ -112,7 +144,21 @@ def join_python_namespace_premises(
         if left.foreign_writes is None or right.foreign_writes is None
         else tuple(sorted(set(left.foreign_writes) | set(right.foreign_writes)))
     )
-    return PythonNamespacePremise(names, left.member_writes | right.member_writes)
+    return PythonNamespacePremise(
+        names,
+        left.member_writes | right.member_writes,
+        left.entry_member_writes | right.entry_member_writes,
+        tuple(sorted(set(left.noncanonical_imports) | set(right.noncanonical_imports))),
+        None
+        if left.opaque_activation_sources is None
+        or right.opaque_activation_sources is None
+        else tuple(
+            sorted(
+                set(left.opaque_activation_sources)
+                | set(right.opaque_activation_sources)
+            )
+        ),
+    )
 
 
 class PythonGraphNamespaceIndex:
@@ -127,12 +173,15 @@ class PythonGraphNamespaceIndex:
         self.by_source: dict[Path, set[str] | None] = {}
         self.any_module: set[str] | None = set()
         self.members = NO_INVALID_MEMBERS
+        self.entry_members = NO_INVALID_MEMBERS
 
     def merge(self, batch: PythonGraphNamespaceWrites) -> frozenset[Path] | None:
         changed: set[Path] = set()
         members = self.members | batch.members
-        global_change = members != self.members
+        entry_members = self.entry_members | batch.entry_members
+        global_change = members != self.members or entry_members != self.entry_members
         self.members = members
+        self.entry_members = entry_members
         if self.any_module is not None:
             if batch.any_module is None:
                 self.any_module = None
@@ -167,18 +216,30 @@ class PythonGraphNamespaceIndex:
                     changed.add(source)
         return None if global_change else frozenset(changed)
 
-    def premise(self, source: Path, children: frozenset[str]) -> PythonNamespacePremise:
+    def premise(
+        self,
+        source: Path,
+        children: frozenset[str],
+        *,
+        noncanonical_imports: tuple[str, ...] = (),
+        opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None,
+    ) -> PythonNamespacePremise:
         return _namespace_premise(
             self.by_source.get(source, frozenset()),
             self.any_module,
             self.members,
+            self.entry_members,
             children,
+            noncanonical_imports,
+            opaque_activation_sources,
         )
 
 
 def graph_python_namespace_writes(
     writes: Iterable[PythonNamespaceWrite],
     resolve_module: Callable[[str], Path | None],
+    *,
+    entry: bool = True,
 ) -> PythonGraphNamespaceWrites:
     """Aggregate named writes against the caller's admitted source topology.
 
@@ -220,4 +281,5 @@ def graph_python_namespace_writes(
         ),
         None if any_module is None else frozenset(any_module),
         members,
+        members if entry else NO_INVALID_MEMBERS,
     )

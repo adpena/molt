@@ -62,10 +62,30 @@ INTRINSIC_IMPORTLIB_IMPORT_REQUIRED = 55
 INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION = 56
 INTRINSIC_IMPORTLIB_FIND_SPEC = 57
 INTRINSICS_LOAD = 58
+INTRINSIC_SYS_VERSION_INFO = 59
+INTRINSICS_RUNTIME_ACTIVE = 60
+BUILTIN_CLASSMETHOD = 61
+BUILTIN_STATICMETHOD = 62
+RETAINED_CALLABLE_WRAPPER = 63
+DATACLASSES_MODULE = 64
+DATACLASSES_DATACLASS = 65
+TYPING_OVERLOAD = 66
+MOLT_MODULE = 67
+MOLT_GPU_MODULE = 68
+GPU_KERNEL = 69
+BUILTIN_PROPERTY = 70
+DATACLASSES_KW_ONLY = 71
+DATACLASSES_INITVAR = 72
+TYPING_CLASSVAR = 73
+DATACLASSES_FIELD = 74
+BUILTIN_GETATTR = 75
+BUILTIN_HASATTR = 76
+BUILTIN_DELATTR = 77
 
 [target_property]
 SYS_PLATFORM = "sys_platform"
 OS_NAME = "os_name"
+SYS_VERSION_INFO = "sys_version_info"
 
 [import_behavior]
 LEAF = "leaf"
@@ -164,11 +184,13 @@ argument_roles = ["NAME", "PATH", "TARGET"]
 name = "molt_require_intrinsic_runtime"
 identity = "INTRINSICS_REQUIRE"
 acquisition = "required"
+compiler_from = ["require_intrinsic", "_require_intrinsic"]
 
 [[intrinsic_callable]]
 name = "molt_load_intrinsic_runtime"
 identity = "INTRINSICS_LOAD"
 acquisition = "optional"
+compiler_from = ["load_intrinsic", "_load_intrinsic"]
 
 [member_bits]
 IMPORTLIB_IMPORT_MODULE = 0
@@ -206,6 +228,20 @@ BUILTINS_SETATTR = 31
 BUILTINS_EVAL = 32
 BUILTINS_EXEC = 33
 INTRINSICS_LOAD = 34
+BUILTINS_CLASSMETHOD = 35
+BUILTINS_STATICMETHOD = 36
+DATACLASSES_DATACLASS = 37
+TYPING_OVERLOAD = 38
+MOLT_GPU = 39
+GPU_KERNEL = 40
+BUILTINS_PROPERTY = 41
+DATACLASSES_KW_ONLY = 42
+DATACLASSES_INITVAR = 43
+TYPING_CLASSVAR = 44
+DATACLASSES_FIELD = 45
+BUILTINS_GETATTR = 46
+BUILTINS_HASATTR = 47
+BUILTINS_DELATTR = 48
 
 [[builtin]]
 name = "__import__"
@@ -235,6 +271,24 @@ shape = false
 name = "setattr"
 identity = "BUILTIN_SETATTR"
 guard = "BUILTINS_SETATTR"
+shape = false
+
+[[builtin]]
+name = "getattr"
+identity = "BUILTIN_GETATTR"
+guard = "BUILTINS_GETATTR"
+shape = false
+
+[[builtin]]
+name = "hasattr"
+identity = "BUILTIN_HASATTR"
+guard = "BUILTINS_HASATTR"
+shape = false
+
+[[builtin]]
+name = "delattr"
+identity = "BUILTIN_DELATTR"
+guard = "BUILTINS_DELATTR"
 shape = false
 
 [[builtin]]
@@ -485,3 +539,93 @@ guards = ["IMPORT_HOOKS"]
 owner = "SYS_MODULE"
 name = "platform"
 guards = ["SYS_PLATFORM"]
+
+[[intrinsic_callable]]
+name = "molt_sys_version_info"
+identity = "INTRINSIC_SYS_VERSION_INFO"
+target_property = "SYS_VERSION_INFO"
+
+[[intrinsic_callable]]
+name = "molt_runtime_active_runtime"
+identity = "INTRINSICS_RUNTIME_ACTIVE"
+compiler_from = ["runtime_active"]
+
+[[builtin]]
+name = "classmethod"
+identity = "BUILTIN_CLASSMETHOD"
+guard = "BUILTINS_CLASSMETHOD"
+shape = false
+return_capture = { producer = "molt_classmethod_new", result = "RETAINED_CALLABLE_WRAPPER", protocol = "class_method" }
+
+[[builtin]]
+name = "staticmethod"
+identity = "BUILTIN_STATICMETHOD"
+guard = "BUILTINS_STATICMETHOD"
+shape = false
+return_capture = { producer = "molt_staticmethod_new", result = "RETAINED_CALLABLE_WRAPPER", protocol = "static_method" }
+
+[[module]]
+name = "dataclasses"
+identity = "DATACLASSES_MODULE"
+
+[[module]]
+name = "molt"
+identity = "MOLT_MODULE"
+
+[[module]]
+name = "molt.gpu"
+identity = "MOLT_GPU_MODULE"
+
+[[acquisition]]
+owner = "DATACLASSES_MODULE"
+name = "dataclass"
+identity = "DATACLASSES_DATACLASS"
+guard = "DATACLASSES_DATACLASS"
+
+[[acquisition]]
+owner = "TYPING_MODULE"
+name = "overload"
+identity = "TYPING_OVERLOAD"
+guard = "TYPING_OVERLOAD"
+
+[[acquisition]]
+owner = "MOLT_MODULE"
+name = "gpu"
+identity = "MOLT_GPU_MODULE"
+guard = "MOLT_GPU"
+
+[[acquisition]]
+owner = "MOLT_GPU_MODULE"
+name = "kernel"
+identity = "GPU_KERNEL"
+guard = "GPU_KERNEL"
+
+[[builtin]]
+name = "property"
+identity = "BUILTIN_PROPERTY"
+guard = "BUILTINS_PROPERTY"
+shape = false
+
+[[acquisition]]
+owner = "DATACLASSES_MODULE"
+name = "KW_ONLY"
+identity = "DATACLASSES_KW_ONLY"
+guard = "DATACLASSES_KW_ONLY"
+
+[[acquisition]]
+owner = "DATACLASSES_MODULE"
+name = "InitVar"
+identity = "DATACLASSES_INITVAR"
+guard = "DATACLASSES_INITVAR"
+
+[[acquisition]]
+owner = "TYPING_MODULE"
+name = "ClassVar"
+identity = "TYPING_CLASSVAR"
+guard = "TYPING_CLASSVAR"
+
+[[acquisition]]
+owner = "DATACLASSES_MODULE"
+name = "field"
+identity = "DATACLASSES_FIELD"
+guard = "DATACLASSES_FIELD"

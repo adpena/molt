@@ -48,7 +48,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/frontend/lowering/type_annotations.py` | 2 | authority-routed | `3.13` |
 | `src/molt/frontend/sema/constenv.py` | 1 | operational-tooling | `sys.version_info` |
 | `src/molt/frontend/visitors/call_dispatch_attribute.py` | 2 | authority-routed | `3.14` |
-| `src/molt/frontend/visitors/classes.py` | 4 | authority-routed | `3.13` |
+| `src/molt/frontend/visitors/classes.py` | 2 | authority-routed | `3.13` |
 | `src/molt/frontend/visitors/comprehensions.py` | 1 | scattered-assumption | `3.14` |
 | `src/molt/frontend/visitors/expressions.py` | 1 | scattered-assumption | `3.14` |
 | `src/molt/frontend/visitors/statement_control_flow.py` | 4 | scattered-assumption | `3.12` |
@@ -147,7 +147,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/tkinter/widgets.py` | 4 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/tomllib/__init__.py` | 1 | scattered-assumption | `3.11` |
 | `src/molt/stdlib/traceback.py` | 1 | operational-tooling | `sys.version_info` |
-| `src/molt/stdlib/typing.py` | 8 | operational-tooling | `_sys.version_info` |
+| `src/molt/stdlib/typing.py` | 9 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/unittest/__init__.py` | 2 | scattered-assumption | `3.11` |
 | `src/molt/stdlib/unittest/async_case.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/unittest/loader.py` | 4 | scattered-assumption | `3.13` |

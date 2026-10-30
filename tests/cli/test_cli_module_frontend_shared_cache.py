@@ -431,6 +431,7 @@ def test_retired_policy_context_cannot_reuse_a_persisted_lowering(
         is_package=False,
         **_LOWERING_CTX,
         module_source_role="user",
+        namespace_premise=None,
     )
     assert context is not None and "fallback_policy" not in context
     current_digest = MC._module_lowering_context_digest(context)
@@ -493,6 +494,7 @@ def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None
         is_package=False,
         **_LOWERING_CTX,
         module_source_role="user",
+        namespace_premise=None,
     )
     _bump_mtime(path)
     digest_after = MC._module_lowering_context_digest_for_module(
@@ -503,6 +505,7 @@ def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None
         is_package=False,
         **_LOWERING_CTX,
         module_source_role="user",
+        namespace_premise=None,
     )
     assert digest_before is not None and digest_before == digest_after
 
@@ -782,6 +785,7 @@ def test_changed_target_python_is_not_reused_from_shared(tmp_path, monkeypatch):
             target_python=target,
             **_LOWERING_CTX,
             module_source_role="user",
+            namespace_premise=None,
         )
 
     py312, py313 = TargetPythonVersion(3, 12, 0), TargetPythonVersion(3, 13, 0)

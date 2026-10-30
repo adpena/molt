@@ -40,6 +40,7 @@ from molt.frontend._types import (
     AsyncFrameSlotRole,
     BoundMethodHint,
     CFGGraph,
+    CallableId,
     CanonicalizationState,
     ClassId,
     ClassInfo,
@@ -93,6 +94,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_lexical_scope import PythonCodeNameLayout
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.frontend.lowering.function_lifecycle import PythonFrameContextScope
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.compiler_analysis.python_binding_facts import PythonNodeKey
     from molt.compiler_analysis.python_lexical_scope import PythonScopeCellCaptures
     from molt.frontend.sema import SemaResult
@@ -107,7 +109,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -171,6 +172,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_spec_name: Any
     module_stmt_offsets: list[int]
     mutated_classes: set[ClassId]
+    namespace_premise: PythonNamespacePremise | None
     native_callable_exports: dict[str, dict[str, Any]]
     native_python_exports: set[str]
     nonlocal_decls: set[str]
@@ -180,16 +182,16 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     python_class_body_context: Any
     python_frame_context_active: Any
     qualname_stack: list[tuple[str, bool]]
-    reserved_func_symbols: dict[str, str]
+    reserved_func_symbols: dict[CallableId, str]
     reserved_python_identifiers: set[str]
     return_label: int | None
     return_slot: MoltValue | None
     return_slot_offset: int | None
     return_unwind_depth: Any
     scope_assigned: set[str]
+    source_callable_symbols: dict[CallableId, str]
     source_path: Any
     stable_module_classes: set[str]
-    stable_module_funcs: set[str]
     state_count: int
     stdlib_allowlist: Any
     stdlib_hint_trust: Any
@@ -217,6 +219,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_spec_name: str | None = ...,
         module_execution_kind: ModuleExecutionKind | None = ...,
         module_source_role: ModuleSourceRole = ...,
+        namespace_premise: PythonNamespacePremise | None = ...,
         enable_phi: bool = ...,
         known_modules: set[str] | None = ...,
         direct_call_modules: set[str] | None = ...,
@@ -381,7 +384,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _call_has_bound_builtin_name(self, node: ast.expr) -> bool: ...
 
-    def _call_is_dataclasses_field(self, func: ast.Name) -> bool: ...
+    def _call_is_dataclasses_field(self, func: ast.expr) -> bool: ...
 
     def _call_needs_bind(self, node: ast.Call) -> bool: ...
 
@@ -1038,14 +1041,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, index_name: str, start: MoltValue, bound: int, body: list[ast.stmt]
     ) -> None: ...
 
-    def _emit_dataclass_application(
-        self, class_info: ClassInfo, class_val: MoltValue
-    ) -> MoltValue: ...
-
-    def _emit_dataclasses_field_call(
-        self, module_name: str, node: ast.Call
-    ) -> MoltValue: ...
-
     def _emit_dec_ref(self, value: MoltValue) -> MoltValue: ...
 
     def _emit_deferred_warnings(self) -> None: ...
@@ -1620,6 +1615,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target: MoltValue, iterable: MoltValue
     ) -> None: ...
 
+    def _emit_source_callable_ref(self, node: ast.Name) -> MoltValue: ...
+
     def _emit_source_import_alias_binding(self, module_name: str) -> MoltValue: ...
 
     def _emit_source_import_transaction(
@@ -1637,8 +1634,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         separator: MoltValue,
         maxsplit: MoltValue | None,
     ) -> MoltValue: ...
-
-    def _emit_stable_module_func_ref(self, name: str) -> "MoltValue": ...
 
     def _emit_state_yield_resume_entry(self, state_id: int) -> None: ...
 
@@ -1877,11 +1872,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @contextmanager
     def _function_state_scope(self) -> Generator[dict[str, Any]]: ...
 
-    def _function_symbol(
-        self, name: str, *, kind: FunctionKind = ..., reuse_reserved: bool = ...
-    ) -> str: ...
-
-    def _function_symbol_for_reference(self, name: str) -> str: ...
+    def _function_symbol(self, name: str, *, kind: FunctionKind = ...) -> str: ...
 
     def _function_symbol_in_use(
         self, symbol: str, *, kind: FunctionKind = ...
@@ -1903,10 +1894,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _guard_tag_for_hint(self, hint: str) -> int | None: ...
 
     def _has_gpu_kernel_decorator(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> bool: ...
-
-    def _has_typing_overload_decorator(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> bool: ...
 
@@ -2007,14 +1994,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @staticmethod
     def _is_class_body_managed_name(name: str) -> bool: ...
 
-    def _is_contextmanager_decorator(self, deco: ast.expr) -> bool: ...
-
     def _is_cse_eligible_op(self, op: MoltOp | str) -> bool: ...
 
     def _is_entry_app_binding_scope(self) -> bool: ...
 
-    @staticmethod
-    def _is_gpu_kernel_decorator(deco: ast.expr) -> bool: ...
+    def _is_gpu_kernel_decorator(self, deco: ast.expr) -> bool: ...
 
     def _is_heap_read_key(self, key: tuple[Any, ...]) -> bool: ...
 
@@ -2236,17 +2220,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, statements: list[ast.stmt]
     ) -> list[ast.stmt]: ...
 
-    def _module_stable_funcs(self, node: ast.Module) -> set[str]: ...
-
     def _name_has_source_binding(self, node: ast.Name) -> bool: ...
 
     def _name_read_definitely_bound(self, node: ast.Name) -> bool: ...
 
     def _name_resolves_to_builtin(self, name: str) -> bool: ...
 
-    def _named_callee_value(
-        self, target_info: MoltValue, func_id: str, node: ast.Call
-    ) -> MoltValue: ...
+    def _named_callee_value(self, node: ast.Call) -> MoltValue: ...
 
     def _new_async_internal_slot(self) -> int: ...
 
@@ -2479,6 +2459,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _register_code_symbol(self, symbol: str) -> int: ...
 
+    def _register_source_callable(
+        self, node: ast.FunctionDef | ast.Lambda, symbol: str
+    ) -> None: ...
+
     def _reload_async_value(self, offset: int, hint: TypeHint) -> MoltValue: ...
 
     def _remember_bytearray_len_hint(
@@ -2502,9 +2486,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _require_coroutine_body(self, node: ast.AST, construct: str) -> None: ...
 
-    def _reserve_function_symbol(
-        self, name: str, *, kind: FunctionKind = ...
-    ) -> str: ...
+    def _reserve_source_callables(self, tree: ast.Module) -> None: ...
 
     def _reset_async_scope_state(self) -> None: ...
 
@@ -2698,6 +2680,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _snapshot_live_exact_bindings(self) -> dict[str, ExactClassFact]: ...
 
+    def _source_callable_candidate(self, node: ast.expr) -> str | None: ...
+
+    def _source_definition_symbol(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, *, kind: FunctionKind = ...
+    ) -> str: ...
+
     def _source_imports_use_transaction(self) -> bool: ...
 
     def _specializable_builtin_name(self, node: ast.AST) -> str | None: ...
@@ -2710,8 +2698,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _split_function_args(
         args: ast.arguments,
     ) -> tuple[list[ast.arg], list[ast.arg], list[ast.arg], str | None, str | None]: ...
-
-    def _stable_module_func_candidate(self, name: str) -> str | None: ...
 
     def _stamp_exact_class(self, value: MoltValue, class_id: ClassId) -> MoltValue: ...
 

@@ -121,6 +121,21 @@ def _source_cache_sorted_strings(value: Any) -> tuple[str, ...]:
     return names
 
 
+def _source_cache_module_keys(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    keys = _source_cache_sorted_strings(value)
+    if not keys:
+        raise ValueError("invalid empty module cache key set")
+    return keys
+
+
+def _source_cache_bool(value: Any) -> bool:
+    if type(value) is not bool:
+        raise ValueError("invalid source cache boolean")
+    return value
+
+
 def _source_cache_list(value: Any) -> list[Any]:
     if not isinstance(value, list):
         raise ValueError("invalid source fact sequence")
@@ -336,7 +351,7 @@ def _decode_namespace_summary(raw: Any) -> PythonNamespaceSummary:
         raise ValueError("invalid namespace reflection line")
     writes = [
         decode_python_namespace_write(row)
-        for row in _source_cache_rows(item["foreign_writes"], 5)
+        for row in _source_cache_list(item["foreign_writes"])
     ]
     if len(set(writes)) != len(writes):
         raise ValueError("repeated foreign namespace write")
@@ -469,6 +484,13 @@ def _namespace_premise_cache_identity(
             None if premise.foreign_writes is None else list(premise.foreign_writes)
         ),
         "member_writes": premise.member_writes,
+        "entry_member_writes": premise.entry_member_writes,
+        "noncanonical_imports": list(premise.noncanonical_imports),
+        "opaque_activation_sources": (
+            None
+            if premise.opaque_activation_sources is None
+            else list(premise.opaque_activation_sources)
+        ),
     }
 
 
@@ -477,14 +499,36 @@ def _decode_namespace_premise_cache_identity(
 ) -> PythonNamespacePremise | None:
     if raw is None:
         return None
-    item = _source_cache_record(raw, {"foreign_writes", "member_writes"})
+    item = _source_cache_record(
+        raw,
+        {
+            "foreign_writes",
+            "member_writes",
+            "entry_member_writes",
+            "noncanonical_imports",
+            "opaque_activation_sources",
+        },
+    )
     foreign = item["foreign_writes"]
     if foreign is not None:
         foreign = _source_cache_sorted_strings(foreign)
-    members = item["member_writes"]
-    if type(members) is not int or members < 0 or members & ~ALL_INVALID_MEMBERS:
-        raise ValueError("invalid namespace premise member mask")
-    return PythonNamespacePremise(foreign, members)
+    members, entry_members = item["member_writes"], item["entry_member_writes"]
+    for mask in (members, entry_members):
+        if type(mask) is not int or mask < 0 or mask & ~ALL_INVALID_MEMBERS:
+            raise ValueError("invalid namespace premise member mask")
+    noncanonical = _source_cache_sorted_strings(item["noncanonical_imports"])
+    raw_sources = item["opaque_activation_sources"]
+    opaque = (
+        None
+        if raw_sources is None
+        else tuple(
+            decode_python_source_key(source)
+            for source in _source_cache_list(raw_sources)
+        )
+    )
+    if opaque is not None and tuple(sorted(set(opaque))) != opaque:
+        raise ValueError("invalid namespace activation source keys")
+    return PythonNamespacePremise(foreign, members, entry_members, noncanonical, opaque)
 
 
 def _intrinsic_source_identity(
@@ -758,7 +802,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 39
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 40
 
 
 def _import_scan_cache_key(
@@ -771,6 +815,7 @@ def _import_scan_cache_key(
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
 ) -> str:
@@ -784,6 +829,7 @@ def _import_scan_cache_key(
         repr(ModuleBodySelection.from_requested_roots(native_support_function_roots)),
         repr(_namespace_premise_cache_identity(namespace_premise)),
         target_python.tag,
+        repr(target_sys_platform),
         _frontend_semantic_tooling_fingerprint(),
     ]
     return _resolved_module_cache_key(os.fspath(path), *key_parts)
@@ -872,6 +918,7 @@ def _read_persisted_import_scan_record(
     native_support_function_roots: tuple[str, ...] = (),
     path_stat: os.stat_result | None = None,
     snapshot: _module_source.PythonSourceSnapshot | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
 ) -> _ImportScanRequests | None:
@@ -885,6 +932,7 @@ def _read_persisted_import_scan_record(
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
         target_python=target_python,
+        target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,
     )
     record = _read_import_scan_record(record_key)
@@ -910,6 +958,7 @@ def _read_persisted_import_scan_record(
         "source_bindings",
         "source_values",
         "target_python",
+        "target_sys_platform",
         "size",
         "source_sha256",
         "imports",
@@ -954,6 +1003,7 @@ def _read_persisted_import_scan_record(
             native_support_function_roots
         ).payload()
         or payload.get("target_python") != target_python.tag
+        or payload.get("target_sys_platform") != target_sys_platform
         or payload.get("parser") != [sys.implementation.name, sys.version]
         or payload.get("import_scan_mode") != import_scan_mode
         or payload.get("source_owner")
@@ -1020,8 +1070,9 @@ def _read_persisted_import_scan_record(
                 decode_python_source_key(source),
                 phase,
                 argument_count,
+                _decode_optional_source_key(owner),
             )
-            for source, phase, argument_count in rows("source_demands", 3)
+            for source, phase, argument_count, owner in rows("source_demands", 4)
         )
         if any(
             item.phase not in get_args(SourceDemandPhase)
@@ -1071,6 +1122,8 @@ def _read_persisted_import_scan_record(
                 "completions",
                 "callables",
                 "call_imports",
+                "cache_writes",
+                "cache_reads",
             },
         )
         values = _SourceValueSummary(
@@ -1178,6 +1231,29 @@ def _read_persisted_import_scan_record(
                 )
                 for identities, site, modules, origins, exposed in _source_cache_rows(
                     raw_values["call_imports"], 5
+                )
+            ),
+            tuple(
+                (
+                    decode_python_source_key(source),
+                    _source_cache_module_keys(keys),
+                    _source_cache_origins(origins),
+                    _source_cache_origins(contents),
+                )
+                for source, keys, origins, contents in _source_cache_rows(
+                    raw_values["cache_writes"], 4
+                )
+            ),
+            tuple(
+                (
+                    decode_python_source_key(source),
+                    _source_cache_module_keys(keys),
+                    _source_cache_origins(default_origins),
+                    _source_cache_origins(default_contents),
+                    _source_cache_bool(contained),
+                )
+                for source, keys, default_origins, default_contents, contained in _source_cache_rows(
+                    raw_values["cache_reads"], 5
                 )
             ),
         )
@@ -1312,6 +1388,7 @@ def _write_persisted_import_scan(
     native_support_function_roots: tuple[str, ...] = (),
     scan: _ImportScanRequests,
     snapshot: _module_source.PythonSourceSnapshot,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
 ) -> None:
@@ -1347,6 +1424,7 @@ def _write_persisted_import_scan(
                 item.source,
                 item.phase,
                 item.argument_count,
+                item.owner,
             ]
             for item in scan.source_demands
         ],
@@ -1417,8 +1495,17 @@ def _write_persisted_import_scan(
                 (owner, sorted(origins))
                 for owner, origins in scan.source_values.completions
             ],
+            "cache_writes": [
+                (source, keys, sorted(origins), sorted(contents))
+                for source, keys, origins, contents in scan.source_values.cache_writes
+            ],
+            "cache_reads": [
+                (source, keys, sorted(defaults), sorted(contents), contained)
+                for source, keys, defaults, contents, contained in scan.source_values.cache_reads
+            ],
         },
         "target_python": target_python.tag,
+        "target_sys_platform": target_sys_platform,
         **identity,
         "imports": list(scan.imports),
         "star_modules": list(scan.star_modules),
@@ -1444,6 +1531,7 @@ def _write_persisted_import_scan(
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
         target_python=target_python,
+        target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,
     )
     shared_source_records().put(

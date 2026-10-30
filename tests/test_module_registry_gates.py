@@ -506,6 +506,7 @@ def test_registry_provider_role_comes_from_resolved_source_not_module_or_path_sp
             entry_module="msilib",
             entry_execution_kind="script",
             namespace_portions_by_module={},
+            scan_authority=None,
         )
         registry = backend_ir._build_module_registry(
             entry_module="msilib",

@@ -361,6 +361,7 @@ class _PrecomputedModuleImportScan:
 
     authority: _ModuleSourceScanAuthority
     target_python_tag: str
+    target_sys_platform: str | None
     scan: _CompleteImportScan
 
     def __post_init__(self) -> None:
@@ -477,6 +478,7 @@ class _ScopedLoweringInputView:
 
 @dataclass(frozen=True)
 class _ModuleGraphMetadata:
+    scan_authority: _ModuleGraphScanAuthority | None
     logical_source_path_by_module: Mapping[str, str]
     namespace_portions_by_module: Mapping[str, tuple[str, ...]]
     module_is_package_by_module: Mapping[str, bool]

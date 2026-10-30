@@ -345,6 +345,7 @@ class _ImportScanOptions(TypedDict):
     module_name: str
     is_package: bool
     import_scan_mode: ImportScanMode
+    namespace_premise: PythonNamespacePremise | None
 
 
 def _scan_options(
@@ -354,6 +355,7 @@ def _scan_options(
         "module_name": module_name,
         "is_package": False,
         "import_scan_mode": mode,
+        "namespace_premise": None,
     }
 
 
@@ -793,7 +795,13 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
     policy = _ImportAdmissionPolicy(
         native_artifact_source_packages=frozenset({"owner"})
     )
-    unknown = PythonNamespacePremise(None, ALL_INVALID_MEMBERS)
+    unknown = PythonNamespacePremise(
+        None,
+        ALL_INVALID_MEMBERS,
+        entry_member_writes=ALL_INVALID_MEMBERS,
+        noncanonical_imports=(),
+        opaque_activation_sources=(),
+    )
     target_scan = _CompleteImportScan(
         _ImportScanRequests(
             **_source_import_scan._collect_imports_for_graph(
@@ -971,6 +979,7 @@ def test_frontend_analysis_keeps_the_snapshot_that_supplied_its_facts(
         entry_execution_kind="script",
         namespace_portions_by_module={},
         stdlib_root=tmp_path / "stdlib",
+        scan_authority=None,
     )
     seen: list[PythonSourceSnapshot] = []
 

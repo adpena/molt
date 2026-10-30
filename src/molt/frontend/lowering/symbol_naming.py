@@ -11,6 +11,10 @@ import ast
 
 from molt.python_private_names import python_definition_name
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend._types import CallableId
+from molt.compiler_analysis.python_source_keys import python_node_source_key
+from molt.compiler_analysis.python_lexical_scope import function_contains_yield
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
     STATEFUL_FUNCTION_KINDS,
@@ -18,6 +22,28 @@ from molt.compiler_analysis.python_function_kind import (
 
 
 class SymbolNamingMixin(GeneratorMixinBase):
+    def _register_source_callable(
+        self, node: ast.FunctionDef | ast.Lambda, symbol: str
+    ) -> None:
+        self.source_callable_symbols[
+            CallableId(self.module_name, python_node_source_key(node))
+        ] = symbol
+
+    def _source_callable_candidate(self, node: ast.expr) -> str | None:
+        """Resolve a code candidate from typed provenance, never a name hint.
+
+        A candidate still requires the existing runtime callable guard unless
+        the source-point binding fact proves its exact value and lifetime.
+        """
+        index = self.python_binding_index
+        fact = index.expression_fact(node) if index is not None else None
+        if fact is None or not fact.identities & int(PythonIdentity.USER_FUNCTION):
+            return None
+        if len(fact.result.source_origins) != 1:
+            return None
+        (source,) = fact.result.source_origins
+        return self.source_callable_symbols.get(CallableId(self.module_name, source))
+
     @staticmethod
     def _sanitize_module_name(name: str) -> str:
         out: list[str] = []
@@ -62,30 +88,8 @@ class SymbolNamingMixin(GeneratorMixinBase):
         self._register_code_symbol(symbol)
 
     def _function_symbol(
-        self,
-        name: str,
-        *,
-        kind: FunctionKind = FunctionKind.SYNC,
-        reuse_reserved: bool = False,
+        self, name: str, *, kind: FunctionKind = FunctionKind.SYNC
     ) -> str:
-        reserved = self.reserved_func_symbols.get(name)
-        if (
-            reuse_reserved
-            and reserved is not None
-            and self.current_func_name == "molt_main"
-            and reserved not in self.funcs_map
-            and not (
-                f"{reserved}_poll" in self.funcs_map
-                and self.func_symbol_names.get(f"{reserved}_poll") == name
-            )
-            and (
-                kind not in STATEFUL_FUNCTION_KINDS
-                or self.func_symbol_names.get(f"{reserved}_poll") == name
-                or not self._function_symbol_in_use(f"{reserved}_poll")
-            )
-        ):
-            self._claim_function_symbol(reserved, name, kind=kind)
-            return reserved
         base = "molt_user_main" if name == "main" else name
         symbol = f"{self.module_prefix}{base}"
         counter = 1
@@ -95,21 +99,47 @@ class SymbolNamingMixin(GeneratorMixinBase):
         self._claim_function_symbol(symbol, name, kind=kind)
         return symbol
 
-    def _reserve_function_symbol(
-        self, name: str, *, kind: FunctionKind = FunctionKind.SYNC
+    def _source_definition_symbol(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        *,
+        kind: FunctionKind = FunctionKind.SYNC,
     ) -> str:
-        reserved = self.reserved_func_symbols.get(name)
-        if reserved is not None:
+        identity = CallableId(self.module_name, python_node_source_key(node))
+        reserved = self.reserved_func_symbols.get(identity)
+        if (
+            reserved is not None
+            and self.current_func_name == "molt_main"
+            and reserved not in self.funcs_map
+            and f"{reserved}_poll" not in self.funcs_map
+        ):
             return reserved
-        base = "molt_user_main" if name == "main" else name
-        symbol = f"{self.module_prefix}{base}"
-        counter = 1
-        while self._function_symbol_in_use(symbol, kind=kind):
-            symbol = f"{self.module_prefix}{base}_{counter}"
-            counter += 1
-        self.reserved_func_symbols[name] = symbol
-        self._claim_function_symbol(symbol, name, kind=kind)
-        return symbol
+        return self._function_symbol(node.name, kind=kind)
+
+    def _reserve_source_callables(self, tree: ast.Module) -> None:
+        """Reserve code slots by source definition before lowering any body."""
+        pending = list(reversed(tree.body))
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in self.module_elided_deleted_funcs:
+                    continue
+                yields = function_contains_yield(node)
+                kind = (
+                    (FunctionKind.ASYNC_GENERATOR if yields else FunctionKind.ASYNC)
+                    if isinstance(node, ast.AsyncFunctionDef)
+                    else (FunctionKind.GENERATOR if yields else FunctionKind.SYNC)
+                )
+                identity = CallableId(self.module_name, python_node_source_key(node))
+                symbol = self._function_symbol(node.name, kind=kind)
+                self.reserved_func_symbols[identity] = symbol
+                if kind is FunctionKind.SYNC and not getattr(node, "type_params", ()):
+                    self._register_source_callable(node, symbol)
+                    self._record_func_default_specs(symbol, node.args)
+                continue
+            if isinstance(node, (ast.ClassDef, ast.Lambda)):
+                continue
+            pending.extend(reversed(list(ast.iter_child_nodes(node))))
 
     def _lambda_symbol(self, *, kind: FunctionKind = FunctionKind.SYNC) -> str:
         self.lambda_counter += 1

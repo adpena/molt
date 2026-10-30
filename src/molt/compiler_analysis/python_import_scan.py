@@ -51,6 +51,7 @@ from molt.compiler_analysis.static_truth import (
 )
 from molt.compiler_analysis.python_binding_facts import (
     PythonParameterRef,
+    PythonStringAlternatives,
 )
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
@@ -58,6 +59,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 )
 from molt.compiler_analysis.python_namespace_writes import (
     python_namespace_summary,
+    refine_namespace_cache_writes,
     python_package_name,
 )
 from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -75,12 +77,13 @@ from molt.compiler_analysis.python_binding_flow import (
     analyze_python_binding_facts,
     analyze_python_bindings,
 )
+from molt.compiler_analysis.python_binding_facts import PythonClassPreparation
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,
     StaticImportPlan,
     bind_static_import_call_arguments,
-    import_call_fallback_operand,
+    context_import_state,
     dunder_globals_state_from_expression,
     metadata_value_from_expression,
     module_import_context_with_metadata_proof,
@@ -106,6 +109,7 @@ _IMPORT_SCAN_MODES = frozenset({"full", "module_init"})
 
 def _source_binding_policy(
     *,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
     module_name: str | None = None,
     is_package: bool = False,
@@ -114,7 +118,9 @@ def _source_binding_policy(
 ) -> PythonBindingPolicy:
     return python_namespace_binding_policy(
         PythonBindingPolicy(
+            class_preparation=PythonClassPreparation.MOLT_NATIVE,
             target_python=target_python.feature_version,
+            target_sys_platform=target_sys_platform,
             module_name=module_name,
             module_spec_name=module_name,
             module_is_package=is_package,
@@ -327,6 +333,7 @@ def _collect_static_source_execution_requests(
     import_scan_mode: ImportScanMode = "full",
     module_name: str | None = None,
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> tuple[_StaticSourceExecutionRequest, ...]:
@@ -346,6 +353,7 @@ def _collect_static_source_execution_requests(
         source_digest=ast_digest_admission.digest,
         ast_digest_admission=ast_digest_admission,
         policy=_source_binding_policy(
+            target_sys_platform=target_sys_platform,
             target_python=target_python,
             module_name=module_name,
             is_package=source_path.name == "__init__.py",
@@ -464,6 +472,7 @@ def _collect_static_source_execution_requests(
         source_owner=source_owner,
         source_arguments=source_arguments,
         module_name=module_name,
+        target_sys_platform=target_sys_platform,
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=ast_digest_admission,
@@ -570,6 +579,7 @@ def _static_scan_nodes(
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> tuple[ast.AST, ...]:
@@ -583,7 +593,9 @@ def _static_scan_nodes(
         source_digest=ast_digest_admission.digest,
         ast_digest_admission=ast_digest_admission,
         policy=_source_binding_policy(
-            target_python=target_python, namespace_premise=namespace_premise
+            target_sys_platform=target_sys_platform,
+            target_python=target_python,
+            namespace_premise=namespace_premise,
         ).flow_policy(),
     )
     source_bindings = _source_parameter_bindings(
@@ -609,12 +621,14 @@ def _module_init_scan_nodes(
     tree: ast.AST,
     *,
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> tuple[ast.AST, ...]:
     return _static_scan_nodes(
         tree,
         include_function_bodies=False,
+        target_sys_platform=target_sys_platform,
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=ast_digest_admission,
@@ -625,12 +639,14 @@ def _full_static_scan_nodes(
     tree: ast.AST,
     *,
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> tuple[ast.AST, ...]:
     return _static_scan_nodes(
         tree,
         include_function_bodies=True,
+        target_sys_platform=target_sys_platform,
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=ast_digest_admission,
@@ -645,6 +661,7 @@ def _scan_nodes_for_import_mode(
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> tuple[ast.AST, ...]:
@@ -654,6 +671,7 @@ def _scan_nodes_for_import_mode(
         include_function_bodies=import_scan_mode == "full" and source_owner is None,
         source_owner=source_owner,
         source_arguments=source_arguments,
+        target_sys_platform=target_sys_platform,
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=ast_digest_admission,
@@ -669,6 +687,7 @@ def _collect_imports(
     source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     _runtime_catalog: _RuntimeCatalogUse | None = None,
@@ -709,6 +728,7 @@ def _collect_imports(
         source_digest=ast_digest_admission.digest,
         ast_digest_admission=ast_digest_admission,
         policy=_source_binding_policy(
+            target_sys_platform=target_sys_platform,
             target_python=target_python,
             module_name=module_name,
             is_package=is_package,
@@ -743,6 +763,50 @@ def _collect_imports(
         tuple[PythonSourceKey, PythonImportCallable], tuple[SourceImportCall, ...]
     ] = {}
     source_call_keys = {call.owner for call in binding_index.source_calls}
+    cache_writes = []
+    cache_reads = []
+    empty_receiver_origins = frozenset()
+
+    def cache_receiver_origins(node):
+        return binding_index.expression_result(node).source_origins | {
+            python_node_source_key(node)
+        }
+
+    def exact_import_dictionary(node):
+        return binding_index.expression_result(node).identities == int(
+            PythonIdentity.SYS_MODULES
+        )
+
+    def cache_keys(node):
+        key = binding_index.static_value(node)
+        if type(key) is str:
+            return (key,)
+        if isinstance(key, PythonStringAlternatives):
+            return tuple(sorted(key.values))
+        captured = _resolve_string_constant(node, loader_metadata=True)
+        return (captured,) if captured is not None else None
+
+    def cache_origins(node):
+        result = binding_index.expression_result(node)
+        origins = result.source_origins
+        if result.identities == int(PythonIdentity.CURRENT_MODULE):
+            origins |= frozenset({python_node_source_key(tree)})
+        # The existing exposed provenance is a may-containment closure. Keep
+        # both incidences when one source occurs at the top and inside a value.
+        return origins, result.exposed_source_origins
+
+    def cache_store(target, value=None):
+        if not isinstance(target, ast.Subscript) or not exact_import_dictionary(
+            target.value
+        ):
+            return False
+        keys = cache_keys(target.slice)
+        origins, contents = (
+            cache_origins(value) if value is not None else (frozenset(), frozenset())
+        )
+        cache_writes.append((python_node_source_key(target), keys, origins, contents))
+        return True
+
     projecting_helper = False
 
     def record_site(node, request, contexts=()):
@@ -794,6 +858,7 @@ def _collect_imports(
                     origin,
                     "expose" if phase == "escape" else phase,
                     argument_count,
+                    None,
                 )
                 for origin in sorted(origins)
             )
@@ -806,6 +871,7 @@ def _collect_imports(
                         ref.source,
                         "expose" if phase == "escape" else "escape",
                         None,
+                        None,
                     )
                     for ref in refs
                     if ref.source[-1] == "Module" and ref.phase == "escape"
@@ -816,7 +882,9 @@ def _collect_imports(
                 # transfers without exposing globals() used by a key-limited
                 # lookup or mutation. Actual consumers retain their demands.
                 _source_demands.append(
-                    _SourceValueDemand(python_node_source_key(tree), "expose", None)
+                    _SourceValueDemand(
+                        python_node_source_key(tree), "expose", None, None
+                    )
                 )
 
     def _import_contexts(
@@ -885,6 +953,8 @@ def _collect_imports(
         node: ast.expr,
         bindings: dict[str, object] | None = None,
         seen: set[str] | None = None,
+        *,
+        loader_metadata: bool = False,
     ) -> str | None:
         bindings = bindings or {}
         seen = seen or set()
@@ -894,9 +964,51 @@ def _collect_imports(
         )
         if isinstance(value, str):
             return value
+        if loader_metadata and isinstance(node, ast.Name) and node.id == "__name__":
+            fact = binding_index.expression_fact(node)
+            if (
+                fact is not None
+                and fact.name_lookup == "global"
+                and not fact.binding_invalidated
+                and not fact.binding_is_bound
+                and fact.module_metadata.admits_loader_borrow("__name__")
+            ):
+                names = tuple(
+                    context_import_state(context).name
+                    for context in _import_contexts(node)
+                )
+                if names and all(
+                    name.kind == "known" and type(name.value) is str for name in names
+                ):
+                    first = names[0].value
+                    if all(name.value == first for name in names):
+                        return cast(str, first)
+        if isinstance(node, ast.JoinedStr):
+            pieces = []
+            for part in node.values:
+                if isinstance(part, ast.Constant) and type(part.value) is str:
+                    pieces.append(part.value)
+                elif (
+                    isinstance(part, ast.FormattedValue)
+                    and part.conversion in {-1, 115}
+                    and part.format_spec is None
+                ):
+                    text = _resolve_string_constant(
+                        part.value, bindings, seen, loader_metadata=loader_metadata
+                    )
+                    if text is None:
+                        return None
+                    pieces.append(text)
+                else:
+                    return None
+            return "".join(pieces)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left = _resolve_string_constant(node.left, bindings, seen)
-            right = _resolve_string_constant(node.right, bindings, seen)
+            left = _resolve_string_constant(
+                node.left, bindings, seen, loader_metadata=loader_metadata
+            )
+            right = _resolve_string_constant(
+                node.right, bindings, seen, loader_metadata=loader_metadata
+            )
             if left is not None and right is not None:
                 return left + right
             return None
@@ -906,7 +1018,9 @@ def _collect_imports(
                 and node.func.attr == "join"
                 and len(node.args) == 1
             ):
-                sep = _resolve_string_constant(node.func.value, bindings, seen)
+                sep = _resolve_string_constant(
+                    node.func.value, bindings, seen, loader_metadata=loader_metadata
+                )
                 if sep is None:
                     return None
                 items = _resolve_string_sequence(node.args[0], bindings, seen)
@@ -943,7 +1057,9 @@ def _collect_imports(
                     return None
                 child_bindings: dict[str, object] = dict(bindings)
                 for param, arg in zip(params, node.args):
-                    scalar = _resolve_string_constant(arg, bindings, seen)
+                    scalar = _resolve_string_constant(
+                        arg, bindings, seen, loader_metadata=loader_metadata
+                    )
                     if scalar is not None:
                         child_bindings[param] = scalar
                         continue
@@ -953,7 +1069,10 @@ def _collect_imports(
                         continue
                     return None
                 return _resolve_string_constant(
-                    expr, child_bindings, seen | {func_name}
+                    expr,
+                    child_bindings,
+                    seen | {func_name},
+                    loader_metadata=loader_metadata,
                 )
         return None
 
@@ -1598,6 +1717,8 @@ def _collect_imports(
                         )
                     )
             return
+        if node.level == 0 and is_compiler_intrinsics_module(node.module):
+            return
         names = tuple(python_source_field(alias, "name") for alias in node.names)
         if node.level == 0:
             record_site(
@@ -1746,7 +1867,7 @@ def _collect_imports(
         iteration = binding_index.iteration_fact(node)
         if iteration is not None and _source_demands is not None:
             _source_demands.extend(
-                _SourceValueDemand(ref.source, ref.phase, None)
+                _SourceValueDemand(ref.source, ref.phase, None, None)
                 for ref in sorted(
                     iteration.deferred_execution,
                     key=lambda ref: (ref.source, ref.phase),
@@ -1760,6 +1881,212 @@ def _collect_imports(
         nonlocal needs_string_templatelib, needs_typing, uses_runtime_import_protocol
         if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.states_for(node):
             return
+        held_cache_store = False
+        native_receiver_origins = empty_receiver_origins
+        held_call_values = ()
+
+        if isinstance(node, ast.Assign):
+            held_targets = [cache_store(target, node.value) for target in node.targets]
+            held_cache_store = bool(held_targets) and all(held_targets)
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and exact_import_dictionary(target.value)
+                    and cache_keys(target.slice) is not None
+                ):
+                    native_receiver_origins |= cache_receiver_origins(target.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            held_cache_store = cache_store(node.target, node.value)
+            if (
+                isinstance(node.target, ast.Subscript)
+                and exact_import_dictionary(node.target.value)
+                and cache_keys(node.target.slice) is not None
+            ):
+                native_receiver_origins |= cache_receiver_origins(node.target.value)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                cache_store(target)
+                if (
+                    isinstance(target, ast.Subscript)
+                    and exact_import_dictionary(target.value)
+                    and cache_keys(target.slice) is not None
+                ):
+                    native_receiver_origins |= cache_receiver_origins(target.value)
+        if isinstance(node, ast.expr) and exact_import_dictionary(node):
+            # As a value this is a container; native item access/store does not
+            # execute its contents. Opaque consumers can inspect all values.
+            cache_reads.append(
+                (python_node_source_key(node), None, frozenset(), frozenset(), True)
+            )
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, ast.Load)
+            and exact_import_dictionary(node.value)
+        ):
+            keys = cache_keys(node.slice)
+            cache_reads.append(
+                (python_node_source_key(node), keys, frozenset(), frozenset(), False)
+            )
+            if keys is not None:
+                native_receiver_origins |= cache_receiver_origins(node.value)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and exact_import_dictionary(node.func.value)
+        ):
+            method = node.func.attr
+            if (
+                not node.keywords
+                and node.args
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            ):
+                if method in {"get", "__getitem__", "pop", "setdefault"} and len(
+                    node.args
+                ) <= (1 if method == "__getitem__" else 2):
+                    keys = cache_keys(node.args[0])
+                    default, default_contents = (
+                        cache_origins(node.args[1])
+                        if len(node.args) == 2
+                        else (frozenset(), frozenset())
+                    )
+                    if keys is not None:
+                        native_receiver_origins |= cache_receiver_origins(
+                            node.func.value
+                        )
+                    if len(node.args) == 2:
+                        held_call_values = (node.args[1],)
+                    cache_reads.append(
+                        (
+                            python_node_source_key(node),
+                            keys,
+                            default,
+                            default_contents,
+                            False,
+                        )
+                    )
+                    if method in {"pop", "setdefault"}:
+                        cache_writes.append(
+                            (
+                                python_node_source_key(node),
+                                keys,
+                                default if method == "setdefault" else frozenset(),
+                                default_contents
+                                if method == "setdefault"
+                                else frozenset(),
+                            )
+                        )
+            if (
+                method in {"__setitem__", "__delitem__"}
+                and not node.keywords
+                and len(node.args) == (2 if method == "__setitem__" else 1)
+            ):
+                keys = cache_keys(node.args[0])
+                origins, contents = (
+                    cache_origins(node.args[1])
+                    if method == "__setitem__"
+                    else (frozenset(), frozenset())
+                )
+                cache_writes.append(
+                    (python_node_source_key(node), keys, origins, contents)
+                )
+                if method == "__setitem__":
+                    held_call_values = (node.args[1],)
+                if keys is not None:
+                    native_receiver_origins |= cache_receiver_origins(node.func.value)
+            if method in {"update", "__init__", "__ior__"}:
+                held = []
+                for argument in node.args:
+                    if isinstance(argument, ast.Dict) and all(
+                        key is not None for key in argument.keys
+                    ):
+                        for key, value in zip(argument.keys, argument.values):
+                            origins, contents = cache_origins(value)
+                            cache_writes.append(
+                                (
+                                    python_node_source_key(node),
+                                    cache_keys(key),
+                                    origins,
+                                    contents,
+                                )
+                            )
+                        held.append(argument)
+                for keyword in node.keywords:
+                    if keyword.arg is not None:
+                        origins, contents = cache_origins(keyword.value)
+                        cache_writes.append(
+                            (
+                                python_node_source_key(node),
+                                (keyword.arg,),
+                                origins,
+                                contents,
+                            )
+                        )
+                        held.append(keyword.value)
+                held_call_values = tuple(held)
+                if method == "__ior__":
+                    cache_reads.append(
+                        (
+                            python_node_source_key(node),
+                            None,
+                            frozenset(),
+                            frozenset(),
+                            True,
+                        )
+                    )
+            if not node.args and not node.keywords:
+                if method in {"copy", "items", "values", "clear", "popitem", "keys"}:
+                    native_receiver_origins |= cache_receiver_origins(node.func.value)
+                if method in {"copy", "items", "values", "popitem"}:
+                    cache_reads.append(
+                        (
+                            python_node_source_key(node),
+                            None,
+                            frozenset(),
+                            frozenset(),
+                            True,
+                        )
+                    )
+                if method in {"clear", "popitem"}:
+                    cache_writes.append(
+                        (python_node_source_key(node), None, frozenset(), frozenset())
+                    )
+        held_call_origins = frozenset()
+        if held_call_values:
+            for held in held_call_values:
+                held_call_origins |= binding_index.expression_result(
+                    held
+                ).exposed_source_origins
+                if _source_demands is not None:
+                    top, contents = cache_origins(held)
+                    _source_demands.extend(
+                        _SourceValueDemand(origin, "release", None, None)
+                        for origin in sorted(top | contents)
+                    )
+            # The same object may also be a hashing/equality operand. Preserve
+            # that incidence even when another operand only stores it.
+            keys = []
+            if isinstance(node, ast.Call):
+                if node.func.attr in {
+                    "get",
+                    "__getitem__",
+                    "pop",
+                    "setdefault",
+                    "__setitem__",
+                    "__delitem__",
+                }:
+                    keys.extend(node.args[:1])
+                else:
+                    keys.extend(
+                        key
+                        for argument in node.args
+                        if isinstance(argument, ast.Dict)
+                        for key in argument.keys
+                        if key is not None
+                    )
+            for key in keys:
+                held_call_origins -= binding_index.expression_result(
+                    key
+                ).exposed_source_origins
         fact = (
             binding_index.statement_fact(node)
             if isinstance(node, ast.stmt)
@@ -1769,7 +2096,7 @@ def _collect_imports(
         )
         if fact is not None and _source_demands is not None:
             _source_demands.extend(
-                _SourceValueDemand(ref.source, ref.phase, None)
+                _SourceValueDemand(ref.source, ref.phase, None, None)
                 for ref in sorted(
                     fact.deferred_execution, key=lambda ref: (ref.source, ref.phase)
                 )
@@ -1777,6 +2104,13 @@ def _collect_imports(
                 # explicit call visitor below owns the invocation demand;
                 # non-call protocol and lifetime demands remain here.
                 if ref.phase != "call"
+                and (
+                    ref.phase != "protocol" or ref.source not in native_receiver_origins
+                )
+                and (
+                    ref.phase not in {"escape", "expose"}
+                    or ref.source not in held_call_origins
+                )
             )
         if isinstance(node, (ast.For, ast.AsyncFor)):
             demand_iteration(node)
@@ -1809,23 +2143,8 @@ def _collect_imports(
             # Reach the call-value transfer even when its result is discarded:
             # argument-to-formal publications belong to the executed call.
             demand(binding_index.expression_result(node), "read")
-            call = binding_index.call_fact(node)
-            fallback_operand = import_call_fallback_operand(
-                node,
-                IMPORT_CALLABLES.get(call.callee_identities)
-                if call is not None
-                else None,
-            )
-            for value in (*node.args, *(keyword.value for keyword in node.keywords)):
-                if value is fallback_operand:
-                    continue
-                demand(
-                    binding_index.expression_result(
-                        value.value if isinstance(value, ast.Starred) else value
-                    ),
-                    "escape",
-                    contents=True,
-                )
+            # Binding flow owns argument protocol/escape transfers. Repeating
+            # generic exposure here would discard proven callee/formal selection.
         elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
             demand(binding_index.expression_result(node), "read")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -1851,18 +2170,25 @@ def _collect_imports(
                 demand(
                     binding_index.expression_result(decorator), "call", argument_count=1
                 )
-            if (
-                node.decorator_list or publishes_binding(node, node.name)
-            ) and _source_demands is not None:
+            if _source_demands is not None and (
+                publishes_binding(node, node.name)
+                or isinstance(node, ast.ClassDef)
+                and node.decorator_list
+            ):
                 _source_demands.append(
-                    _SourceValueDemand(python_node_source_key(node), "expose", None)
+                    _SourceValueDemand(
+                        python_node_source_key(node), "expose", None, None
+                    )
                 )
-        elif isinstance(node, ast.Assign) and any(
-            publishes_target(node, target) for target in node.targets
+        elif (
+            isinstance(node, ast.Assign)
+            and not held_cache_store
+            and any(publishes_target(node, target) for target in node.targets)
         ):
             demand(binding_index.expression_result(node.value), "escape", contents=True)
         elif (
             isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            and not held_cache_store
             and node.value is not None
             and publishes_target(node, node.target)
         ):
@@ -1917,6 +2243,7 @@ def _collect_imports(
                         if publishes_binding(node, alias.asname or alias.name)
                         else "read",
                         None,
+                        None,
                     )
                     for alias in node.names
                 )
@@ -1926,7 +2253,9 @@ def _collect_imports(
             needs_typing = True
             if publishes_target(node, node.name) and _source_demands is not None:
                 _source_demands.append(
-                    _SourceValueDemand(python_node_source_key(node), "expose", None)
+                    _SourceValueDemand(
+                        python_node_source_key(node), "expose", None, None
+                    )
                 )
         elif template_str_cls is not None and isinstance(node, template_str_cls):
             needs_string_templatelib = True
@@ -1951,16 +2280,24 @@ def _collect_imports(
             binding_index, expression, source_bindings
         ),
     ):
+        demand_start = len(_source_demands) if _source_demands is not None else 0
         if region.phase == "evaluate":
             _visit(region.node)
         else:
             assert isinstance(region.node, ast.expr)
             demand(binding_index.expression_result(region.node), region.phase)
+        if _source_demands is not None:
+            for index in range(demand_start, len(_source_demands)):
+                _source_demands[index] = _source_demands[index]._replace(
+                    owner=region.owner
+                )
     if _source_values is not None:
         if not _source_values:
             _source_values.append(_SourceValueSummary())
         _source_values[0] = _source_values[0]._replace(
-            call_imports=tuple(dict.fromkeys(conditional_import_sites))
+            call_imports=tuple(dict.fromkeys(conditional_import_sites)),
+            cache_writes=tuple(dict.fromkeys(cache_writes)),
+            cache_reads=tuple(dict.fromkeys(cache_reads)),
         )
     if _runtime_import_protocol is not None:
         _runtime_import_protocol.append(uses_runtime_import_protocol)
@@ -1980,6 +2317,7 @@ def _collect_imports_for_graph(
     source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
@@ -2004,6 +2342,7 @@ def _collect_imports_for_graph(
         module_name,
         is_package,
         import_scan_mode=import_scan_mode,
+        target_sys_platform=target_sys_platform,
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=ast_digest_admission,
@@ -2027,16 +2366,22 @@ def _collect_imports_for_graph(
         source_sites=tuple(dict.fromkeys(source_sites)),
         all_exports=_static_module_all_exports(
             tree,
+            target_sys_platform=target_sys_platform,
             target_python=target_python,
             namespace_premise=namespace_premise,
             ast_digest_admission=ast_digest_admission,
         ),
         namespace_summary=(
-            python_namespace_summary(
-                tree,
-                package=python_package_name(module_name or "", is_package=is_package),
-                target_python=target_python.feature_version,
-                ast_digest_admission=ast_digest_admission,
+            refine_namespace_cache_writes(
+                python_namespace_summary(
+                    tree,
+                    package=python_package_name(
+                        module_name or "", is_package=is_package
+                    ),
+                    target_python=target_python.feature_version,
+                    ast_digest_admission=ast_digest_admission,
+                ),
+                source_values[0].cache_writes if source_values else (),
             )
             if source_owner is None and isinstance(tree, ast.Module)
             else None
@@ -2064,6 +2409,7 @@ def _static_module_all_exports(
     tree: ast.AST,
     *,
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> SourceAllExports:
@@ -2073,11 +2419,12 @@ def _static_module_all_exports(
     storage belongs to the read-only source generation, never a global cache.
     """
     admission = _PythonAstDigestAdmission.for_tree(tree, ast_digest_admission)
-    context = (target_python, namespace_premise)
+    context = (target_python, target_sys_platform, namespace_premise)
     cached = admission.module_all_exports.get(context)
     if cached is None:
         cached = _compute_static_module_all_exports(
             tree,
+            target_sys_platform=target_sys_platform,
             target_python=target_python,
             namespace_premise=namespace_premise,
             ast_digest_admission=admission,
@@ -2090,6 +2437,7 @@ def _compute_static_module_all_exports(
     tree: ast.AST,
     *,
     namespace_premise: PythonNamespacePremise | None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission,
 ) -> SourceAllExports:
@@ -2114,7 +2462,9 @@ def _compute_static_module_all_exports(
         source_digest=admission.digest,
         ast_digest_admission=admission,
         policy=_source_binding_policy(
-            target_python=target_python, namespace_premise=namespace_premise
+            target_sys_platform=target_sys_platform,
+            target_python=target_python,
+            namespace_premise=namespace_premise,
         ).flow_policy(),
     )
     _future, eager = module_annotation_execution(
@@ -2194,6 +2544,7 @@ def _collect_import_star_modules(
     *,
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
@@ -2207,6 +2558,7 @@ def _collect_import_star_modules(
         module_name,
         is_package,
         import_scan_mode=import_scan_mode,
+        target_sys_platform=target_sys_platform,
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=ast_digest_admission,
@@ -2227,6 +2579,7 @@ def _collect_import_scan_requests(
     source_arguments: tuple[str, ...] = (),
     import_scan_mode: ImportScanMode,
     namespace_premise: PythonNamespacePremise | None = None,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission,
     source: str | None = None,
@@ -2241,6 +2594,7 @@ def _collect_import_scan_requests(
             source_owner=source_owner,
             source_arguments=source_arguments,
             module_name=module_name,
+            target_sys_platform=target_sys_platform,
             target_python=target_python,
             namespace_premise=namespace_premise,
             ast_digest_admission=ast_digest_admission,

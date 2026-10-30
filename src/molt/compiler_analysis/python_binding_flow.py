@@ -29,6 +29,8 @@ from types import MappingProxyType
 from typing import Final, Literal, Sequence, assert_never, cast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_RETURN_CAPTURES,
+    COMPILER_INTRINSIC_CALLABLES,
     ALL_INTRINSIC_CALLABLE_IDENTITIES,
     IMPORT_CALLABLES,
     INTRINSIC_ACQUISITION_IDENTITIES,
@@ -79,6 +81,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonExpressionFact,
     PythonFunctionResult,
     PythonElementProtocol,
+    PythonClassPreparation,
     PythonSourceElement,
     PythonIterationFact,
     PythonStringAlternatives,
@@ -100,6 +103,7 @@ from molt.compiler_analysis.python_value_identity import (
     exact_identity,
     possible_identity,
 )
+from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
 )
@@ -136,6 +140,7 @@ from molt.compiler_analysis.python_effects_generated import (
     EffectMask,
 )
 from molt.compiler_analysis.static_truth import (
+    ExpressionSequenceItem,
     StaticExpressionResult,
     SourceDemandPhase,
     UNKNOWN_EXPRESSION_RESULT,
@@ -234,7 +239,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 63
+_ANALYSIS_SCHEMA: Final = 64
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -370,6 +375,10 @@ class PythonBindingFlowPolicy:
     target_python: tuple[int, int] = (3, 12)
     target_sys_platform: str | None = None
     standard_imports_are_canonical: bool = True
+    noncanonical_imports: tuple[str, ...] = ()
+    # A closed value-demand graph records source bodies whose callable/code
+    # can escape into a different FunctionType activation namespace.
+    opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None
     analyze_deferred_bodies: bool = True
     # Spec 0216 admits scoped mutation and excludes unrestricted reflection,
     # exec/eval and arbitrary monkeypatching. A module's globals then change
@@ -385,6 +394,12 @@ class PythonBindingFlowPolicy:
     # A graph writer may have run before this module starts. This is separate
     # from future callbacks; standalone analysis keeps its initial premise.
     entry_invalid_members: MemberMask = NO_INVALID_MEMBERS
+    # Producer semantics, independent of imports or namespace mutation masks.
+    class_preparation: PythonClassPreparation = PythonClassPreparation.PYTHON
+
+    def __post_init__(self) -> None:
+        if type(self.class_preparation) is not PythonClassPreparation:
+            raise TypeError("class preparation requires its closed execution model")
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,10 +418,13 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             target_python=self.target_python,
             target_sys_platform=self.target_sys_platform,
             standard_imports_are_canonical=self.standard_imports_are_canonical,
+            noncanonical_imports=self.noncanonical_imports,
+            opaque_activation_sources=self.opaque_activation_sources,
             analyze_deferred_bodies=self.analyze_deferred_bodies,
             foreign_namespace_writes=self.foreign_namespace_writes,
             callback_member_writes=self.callback_member_writes,
             entry_invalid_members=self.entry_invalid_members,
+            class_preparation=self.class_preparation,
         )
 
 
@@ -2118,19 +2136,50 @@ def _intrinsic_acquisition_identity(
 
 
 def _target_property_result(
-    target_property: PythonTargetProperty, sys_platform: str | None
+    target_property: PythonTargetProperty,
+    sys_platform: str | None,
+    target_python: tuple[int, int],
 ) -> StaticExpressionResult:
-    if sys_platform is None:
-        return UNKNOWN_EXPRESSION_RESULT
+    # Result proofs never erase acquisition, invocation, allocation failure or
+    # operand retirement. Existing conditional lowering keeps evaluation.
     match target_property:
+        case PythonTargetProperty.SYS_VERSION_INFO:
+            # alloc_sys_version_info_tuple owns five fields. This policy proves
+            # only major/minor; do not manufacture micro/releaselevel/serial.
+            items = tuple(
+                ExpressionSequenceItem(result)
+                for result in (
+                    StaticExpressionResult.scalar(target_python[0]),
+                    StaticExpressionResult.scalar(target_python[1]),
+                    StaticExpressionResult(kind="int", release_may_call=False),
+                    StaticExpressionResult(kind="str", release_may_call=False),
+                    StaticExpressionResult(kind="int", release_may_call=False),
+                )
+            )
+            return StaticExpressionResult(
+                truth=True,
+                kind="tuple",
+                identities=int(PythonIdentity.INERT_VALUE),
+                evaluation_required=True,
+                items=items,
+                length=5,
+                fresh_container=True,
+                release_may_call=False,
+            )
         case PythonTargetProperty.SYS_PLATFORM:
             value = sys_platform
         case PythonTargetProperty.OS_NAME:
-            value = "nt" if sys_platform == "win32" else "posix"
+            value = (
+                None
+                if sys_platform is None
+                else "nt"
+                if sys_platform == "win32"
+                else "posix"
+            )
         case _:
             assert_never(target_property)
-    # A result proof never erases acquisition, invocation, allocation failure
-    # or operand retirement. Existing conditional lowering keeps evaluation.
+    if value is None:
+        return UNKNOWN_EXPRESSION_RESULT
     return StaticExpressionResult.scalar(value, evaluation_required=True)
 
 
@@ -2275,6 +2324,12 @@ class _CallSemantics:
     argument_effects: EffectMask
     callee_release_safe: bool = False
     retained_argument_indices: frozenset[int] = frozenset()
+    # None retains generic-call exposure. A closed set projects only the actual
+    # operand protocols of a proven callee; stored values remain explicit escapes.
+    argument_protocol_indices: frozenset[int] | None = None
+    argument_escape_indices: frozenset[int] = frozenset()
+    deferred_execution: frozenset[DeferredExecution] = frozenset()
+    source_result_projected: bool = False
 
 
 @dataclass(slots=True)
@@ -2522,11 +2577,18 @@ class _ObservedStateFrame:
 class _Analyzer:
     def __init__(self, policy: PythonBindingFlowPolicy, source_digest: str) -> None:
         self.policy = policy
+        self._opaque_activation_sources = (
+            None
+            if policy.opaque_activation_sources is None
+            else frozenset(policy.opaque_activation_sources)
+        )
         self.source_digest = source_digest
         self.states = _StatePool()
         self.scopes: list[_Scope] = []
         self.slot_names: list[str] = []
         self.slot_owner_scope_ids: list[int] = []
+        # Native namespace freshness is a binding in the existing state pool.
+        self._class_namespace_slots: dict[int, int] = {}
         # Each class's implicit `__class__` cell (PEP 3135), by class scope id.
         self._class_cell_slots: dict[int, int] = {}
         self._class_cell_slot_mask = 0
@@ -2570,7 +2632,7 @@ class _Analyzer:
         ] = {}
         self._active_lexical_history: list[int] | None = None
         self.module_scope: _Scope | None = None
-        self.module_slots: list[int] = []
+        self.module_slots: set[int] = set()
         self.module_slot_mask = 0
         # None until a graph premise bounds the globals a callback can rebind.
         self._callback_module_names: frozenset[str] | None = None
@@ -2905,7 +2967,7 @@ class _Analyzer:
         self.module_scope.slots[name] = slot
         self.slot_names.append(f"{self.module_scope.scope_id}:{name}")
         self.slot_owner_scope_ids.append(self.module_scope.scope_id)
-        self.module_slots.append(slot)
+        self.module_slots.add(slot)
         self.module_slot_mask |= 1 << slot
         self.states.set_taint_domain(self._callback_taint_domain())
         self._scope_slot_cache.clear()
@@ -3069,6 +3131,32 @@ class _Analyzer:
             self.states.set_taint_domain(self._callback_taint_domain())
         return slot
 
+    def _native_class_namespace_slot(self, scope: _Scope) -> int:
+        slot = self._class_namespace_slots.get(scope.scope_id)
+        if slot is None:
+            slot = len(self.slot_names)
+            self.slot_names.append(f"{scope.scope_id}:native namespace")
+            self.slot_owner_scope_ids.append(scope.scope_id)
+            self._class_namespace_slots[scope.scope_id] = slot
+            self.callback_slot_mask |= 1 << slot
+            self.states.set_taint_domain(self._callback_taint_domain())
+        return slot
+
+    def _namespace_can_call(
+        self, state_id: int, scope: _Scope, name: str, *, write: bool = False
+    ) -> bool:
+        owner = scope.namespace_lookup_owner(name, write=write)
+        slot = self._class_namespace_slots.get(owner.scope_id) if owner else None
+        # The marker is reset in the same state as the new native dictionary.
+        # Existing state joins/taint domains retain every path after its birth;
+        # a shared source scope carries no mutable last-creation epoch.
+        tainted = (
+            not self.states._binding_resolution(state_id, slot).clean
+            if slot is not None
+            else self.states.get(state_id).taint_epoch != 0
+        )
+        return scope.namespace_can_call(name, write=write, namespace_tainted=tainted)
+
     def _name_uses_activation_namespace(
         self, state_id: int, scope: _Scope, name: str
     ) -> bool:
@@ -3076,6 +3164,22 @@ class _Analyzer:
             return False
         slot = self._slot_for_name(scope, name)
         if slot is None or self.module_slot_mask & (1 << slot):
+            opaque = self._opaque_activation_sources
+            if (
+                self._callback_module_names is not None
+                and name not in self._callback_module_names
+                and opaque is not None
+            ):
+                # Initialization histories already join every source-visible
+                # global value. Exposed code/callables can instead run with
+                # another globals dictionary; that fact belongs to the same
+                # source-value demand worklist, including enclosing recreations.
+                owner: _Scope | None = scope
+                while owner is not None and owner.kind != "module":
+                    if owner.source in opaque:
+                        return True
+                    owner = owner.parent
+                return False
             return True
         owner = scope.namespace_lookup_owner(name)
         return owner is not None and bool(
@@ -3095,9 +3199,7 @@ class _Analyzer:
             if storage is not None
             else UNKNOWN_EXPRESSION_RESULT
         )
-        if scope.namespace_can_call(
-            name, namespace_tainted=self.states.get(state_id).taint_epoch != 0
-        ):
+        if self._namespace_can_call(state_id, scope, name):
             # __prepare__ may return an arbitrary mapping, and an initially
             # exact dictionary can gain callback-bearing keys via reflection.
             # A prior STORE_NAME cannot establish the next lookup's behavior.
@@ -3211,9 +3313,7 @@ class _Analyzer:
         if self._callback_module_names is None and (
             invalidated
             or activation_lookup
-            or scope.namespace_can_call(
-                name, namespace_tainted=self.states.get(state_id).taint_epoch != 0
-            )
+            or self._namespace_can_call(state_id, scope, name)
         ):
             # Source availability is distinct from exact activation identity.
             # An unverified callback may install any module-owned callable.
@@ -3285,6 +3385,51 @@ class _Analyzer:
             ),
             deferred_complete=True,
             attribute_hooks=frozenset(),
+        )
+
+    def _fresh_function_wrapper_result(
+        self,
+        constructor: StaticExpressionResult,
+        function: StaticExpressionResult,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        expression: ast.expr,
+        scope: _Scope,
+        *,
+        defaults: tuple[tuple[str, StaticExpressionResult], ...],
+    ) -> StaticExpressionResult | None:
+        capture = BUILTIN_RETURN_CAPTURES.get(constructor.identities)
+        if (
+            capture is None
+            or function.identities != int(PythonIdentity.USER_FUNCTION)
+            or not function.deferred_complete
+            or any(
+                not result.value_known or literal_identity_key(result.value) is None
+                for _parameter, result in defaults
+            )
+            or function_annotation_expressions(node)
+        ):
+            return None
+        assert self._dependency_authority is not None
+        # The evaluated defaults have exact immutable literal identity, so
+        # retaining/releasing them cannot execute Python. Other retained cells
+        # need their independent owner proof. The function is newly created at
+        # this application point; older callable values stay generic.
+        for name in self._dependency_authority.summary(node).body.lexical:
+            slot = self._enclosing_slot(scope, name, annotation_owner=None)
+            if slot is not None and slot not in self.module_slots:
+                return None
+        owner = python_node_source_key(expression)
+        protocol = PythonElementProtocol(capture[1])
+        previous = self.source_elements.get(owner)
+        origins = function.source_origins | (
+            previous.origins if previous else frozenset()
+        )
+        self.source_elements[owner] = PythonSourceElement(owner, protocol, origins)
+        return StaticExpressionResult(
+            identities=int(capture[0]),
+            source_origins=frozenset({owner}),
+            deferred_complete=True,
+            evaluation_required=True,
         )
 
     def _source_element_result(
@@ -3555,6 +3700,13 @@ class _Analyzer:
     ) -> IdentityMask:
         value = NO_IDENTITIES
         for owner, identity, guard in _canonical_member_declarations(base, member):
+            if self.policy.noncanonical_imports and any(
+                provider_identity == identity
+                and not self._import_provider_is_canonical(provider)
+                for provider, provider_identity in CANONICAL_IMPORT_IDENTITIES.items()
+            ):
+                value |= OTHER_IDENTITY
+                continue
             value |= self._guarded_member_identity(
                 state_id, base, owner, identity, guard
             )
@@ -3596,7 +3748,7 @@ class _Analyzer:
     def _current_globals_item(
         self,
         state_id: int,
-        key: StaticExpressionResult,
+        key: PythonStaticValue,
         default: StaticExpressionResult | None = None,
     ) -> StaticExpressionResult | None:
         """Select namespace contents through the existing source-point storage.
@@ -3605,13 +3757,19 @@ class _Analyzer:
         Unknown loader-supplied values remain unknown; absence is not invented.
         An actual stored self-reference retains its mapping provenance.
         """
-        if (
-            self._callback_module_names is None
-            or not key.value_known
-            or type(key.value) is not str
-        ):
+        if isinstance(key, PythonStringAlternatives):
+            selections = tuple(
+                self._current_globals_item(state_id, name, default)
+                for name in sorted(key.values)
+            )
+            if not selections or any(value is None for value in selections):
+                return None
+            return join_static_expression_results(
+                tuple(value for value in selections if value is not None)
+            )
+        if self._callback_module_names is None or type(key) is not str:
             return None
-        slot = self._module_slot(key.value)
+        slot = self._module_slot(key)
         resolution = (
             self.states._binding_resolution(state_id, slot).public()
             if slot is not None
@@ -3619,7 +3777,7 @@ class _Analyzer:
         )
         if (
             self.states.get(state_id).namespace_values_unknown
-            or key.value in self._callback_module_names
+            or key in self._callback_module_names
         ) and (not resolution.present or not resolution.clean):
             return None
         result = (
@@ -3627,10 +3785,18 @@ class _Analyzer:
             if resolution.present
             else UNKNOWN_EXPRESSION_RESULT
         )
-        if default is not None and (
-            not resolution.present or resolution.identities & UNBOUND_IDENTITY
-        ):
-            result = join_static_expression_results((result, default))
+        if default is not None:
+            if not resolution.present or resolution.identities == UNBOUND_IDENTITY:
+                result = default
+            elif resolution.identities & UNBOUND_IDENTITY:
+                result = join_static_expression_results(
+                    (
+                        replace(
+                            result, identities=result.identities & ~UNBOUND_IDENTITY
+                        ),
+                        default,
+                    )
+                )
         return expression_result_for_publication(result)
 
     def _current_globals_method(
@@ -3678,7 +3844,9 @@ class _Analyzer:
                 if method in {"__getitem__", "pop"}
                 else inert_none
             )
-            selected = self._current_globals_item(state_id, positional[0], default)
+            key_fact = self.expressions.get(self._node_key(node.args[0]))
+            key = None if key_fact is None else key_fact.static_value
+            selected = self._current_globals_item(state_id, key, default)
             if selected is None:
                 if method in {"get", "__getitem__"}:
                     return None
@@ -3693,25 +3861,18 @@ class _Analyzer:
                 )
             result = selected
             if method in {"pop", "setdefault"}:
-                key = positional[0].value if positional[0].value_known else None
-                slot = self._module_slot(key) if isinstance(key, str) else None
-                present = (
-                    self.states._binding_resolution(state_id, slot).public()
-                    if slot is not None
-                    else _UNBOUND_BINDING_RESOLUTION
+                replacement = UNKNOWN_EXPRESSION_RESULT if method == "pop" else default
+                assert replacement is not None
+                state_id, written = self._store_namespace_key(
+                    state_id,
+                    key,
+                    UNBOUND_IDENTITY if method == "pop" else replacement.identities,
+                    None,
+                    replacement,
+                    scope=scope,
+                    only_if_absent=method == "setdefault",
                 )
-                if method == "pop" or (
-                    not present.present or present.identities & UNBOUND_IDENTITY
-                ):
-                    state_id, written = self._store_namespace_key(
-                        state_id,
-                        key if isinstance(key, str) else None,
-                        UNBOUND_IDENTITY if method == "pop" else result.identities,
-                        None,
-                        UNKNOWN_EXPRESSION_RESULT if method == "pop" else result,
-                        scope=scope,
-                    )
-                    effects |= written
+                effects |= written
         elif method in {"update", "__ior__", "__init__"}:
             if len(positional) > 1 or (
                 method == "__ior__" and (len(positional) != 1 or node.keywords)
@@ -3820,6 +3981,10 @@ class _Analyzer:
         result_fact = UNKNOWN_EXPRESSION_RESULT
         specialization_valid = False
         retained_argument_indices: frozenset[int] = frozenset()
+        argument_protocol_indices: frozenset[int] | None = None
+        argument_escape_indices: frozenset[int] = frozenset()
+        selected_deferred: frozenset[DeferredExecution] = frozenset()
+        source_result_projected = False
         method_shape = None
         receiver_node: ast.expr | None = None
         receiver_slot: int | None = None
@@ -3946,7 +4111,9 @@ class _Analyzer:
             and not node.keywords
         ):
             result_fact = _target_property_result(
-                target_property, self.policy.target_sys_platform
+                target_property,
+                self.policy.target_sys_platform,
+                self.policy.target_python,
             )
             result = int(PythonIdentity.INERT_VALUE)
             effects |= ALLOCATES | RAISES
@@ -4065,6 +4232,61 @@ class _Analyzer:
             effects |= (
                 EXECUTES_ARBITRARY_PYTHON | INVOKES_IMPORT_SYSTEM | ALLOCATES | RAISES
             )
+        elif (
+            exact
+            and callee
+            in {
+                int(PythonIdentity.BUILTIN_GETATTR),
+                int(PythonIdentity.BUILTIN_HASATTR),
+                int(PythonIdentity.BUILTIN_DELATTR),
+            }
+            and not node.keywords
+            and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            and len(node.args)
+            in ((2, 3) if callee == int(PythonIdentity.BUILTIN_GETATTR) else (2,))
+            and (member := _literal_string(node.args[1])) is not None
+        ):
+            # Literal selection uses the same member source graph as obj.member,
+            # including package __getattr__. It never exposes the whole owner.
+            owner = argument_results[0]
+            # The literal's real source site distinguishes member projection
+            # from a joined replacement callee's ordinary call-result site.
+            selected = python_node_source_key(node.args[1])
+            source_result_projected = True
+            previous = self.source_attributes.get(selected)
+            self.source_attributes[selected] = (
+                member,
+                owner.source_origins | (previous[1] if previous else frozenset()),
+            )
+            argument_protocol_indices = frozenset({0, 1})
+            effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
+            if callee == int(PythonIdentity.BUILTIN_GETATTR):
+                result = self._member_value(state_id, owner.identities, member, owner)
+                result_fact = StaticExpressionResult(
+                    source_origins=frozenset({selected}), evaluation_required=True
+                )
+                if len(argument_results) == 3:
+                    result |= argument_results[2].identities
+                    result_fact = join_static_expression_results(
+                        (result_fact, argument_results[2])
+                    )
+            else:
+                result = int(PythonIdentity.INERT_VALUE)
+                if callee == int(PythonIdentity.BUILTIN_DELATTR):
+                    effects |= WRITES_OBJECT_STATE | _RELEASE_CALLBACK_EFFECTS
+                    state_id = self._invalidate_member_target(
+                        state_id, owner.identities, member
+                    )
+                    result_fact = StaticExpressionResult.scalar(None)
+                    selected_deferred = frozenset(
+                        {DeferredExecution(selected, "release")}
+                    ) | frozenset(
+                        DeferredExecution(source, "mutate")
+                        for source in owner.source_origins
+                    )
+                else:
+                    result_fact = StaticExpressionResult(kind="bool")
+                    selected_deferred = frozenset({DeferredExecution(selected, "read")})
         elif exact and callee == int(PythonIdentity.BUILTIN_SETATTR):
             effects |= (
                 WRITES_OBJECT_STATE
@@ -4073,6 +4295,20 @@ class _Analyzer:
                 | _RELEASE_CALLBACK_EFFECTS
                 | RAISES
             )
+            if (
+                len(node.args) == 3
+                and not node.keywords
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+                and _literal_string(node.args[1]) is not None
+            ):
+                argument_protocol_indices = frozenset({0, 1})
+                # Attribute storage may publish the value to an opaque consumer.
+                argument_escape_indices = frozenset({2})
+            if node.args and argument_results:
+                selected_deferred |= frozenset(
+                    DeferredExecution(source, "mutate")
+                    for source in argument_results[0].source_origins
+                )
             if len(node.args) >= 2:
                 owner = self._expression_identity(node.args[0])
                 member = _literal_string(node.args[1])
@@ -4096,6 +4332,10 @@ class _Analyzer:
             specialization_valid,
             effects,
             retained_argument_indices=retained_argument_indices,
+            argument_protocol_indices=argument_protocol_indices,
+            argument_escape_indices=argument_escape_indices,
+            deferred_execution=selected_deferred,
+            source_result_projected=source_result_projected,
         )
 
     def _expression_identity(self, node: ast.AST) -> IdentityMask:
@@ -4190,8 +4430,8 @@ class _Analyzer:
             ):
                 static_value = node.value
         elif isinstance(node, ast.Name):
-            if scope.namespace_can_call(
-                node.id, namespace_tainted=self.states.get(state_id).taint_epoch != 0
+            if self._namespace_can_call(
+                state_id, scope, node.id
             ) or self._name_uses_activation_namespace(state_id, scope, node.id):
                 effects |= READS_OBJECT_STATE | EXECUTES_ARBITRARY_PYTHON | RAISES
             (
@@ -4302,7 +4542,7 @@ class _Analyzer:
                 )
                 if assignment_target.is_exact_globals_dict:
                     selected = self._current_globals_item(
-                        state_id, assignment_target.index_result
+                        state_id, assignment_target.static_index
                     )
                     if selected is not None:
                         result_override = selected
@@ -4477,7 +4717,11 @@ class _Analyzer:
             invocation_effects = call_semantics.invocation_effects
             state_id = call_semantics.state_id
             result_override = call_semantics.result
-            if callee_result.result.source_origins:
+            deferred_execution |= call_semantics.deferred_execution
+            if (
+                callee_result.result.source_origins
+                and not call_semantics.source_result_projected
+            ):
                 # A call's value is not its callee. Retain the source relation
                 # while deferred jobs publish their actual return origins.
                 call_source = python_node_source_key(node)
@@ -4550,6 +4794,29 @@ class _Analyzer:
                 and call_semantics.specialization_valid
                 and not invocation_effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
             )
+            protocol_indices = call_semantics.argument_protocol_indices
+            escape_indices = call_semantics.argument_escape_indices
+            if (
+                protocol_indices is None
+                and callee_result.identities in IMPORT_CALLABLES
+            ):
+                # Canonical import APIs inspect their operands; they do not call
+                # every function stored in a module or fallback they receive.
+                protocol_indices = frozenset(range(len(argument_results)))
+            if (
+                protocol_indices is None
+                and callee_result.identities == int(PythonIdentity.USER_FUNCTION)
+                and (opaque := self._opaque_activation_sources) is not None
+                and callee_result.result.source_origins
+                and all(
+                    source[-1] in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
+                    and source not in opaque
+                    for source in callee_result.result.source_origins
+                )
+            ):
+                # The existing call/formal graph owns uses of these arguments.
+                # Recreated/escaped code and opaque callees retain generic exposure.
+                protocol_indices = frozenset()
             executes_protocol = bool(invocation_effects & INVOKES_ITERATION_CALLBACK)
             fallback_operand = import_call_fallback_operand(
                 node, IMPORT_CALLABLES.get(callee_result.identities)
@@ -4575,7 +4842,15 @@ class _Analyzer:
                     # Evaluation and retirement still run. This API only
                     # returns its fallback; it does not call or expose it.
                     continue
-                if builtin:
+                if (
+                    protocol_indices is not None
+                    and argument_index not in protocol_indices
+                    and argument_index not in escape_indices
+                ):
+                    continue
+                if argument_index not in escape_indices and (
+                    builtin or protocol_indices is not None
+                ):
                     deferred_execution |= _operand_dispatch_deferred(
                         invocation_effects, argument, reaches_contents=True
                     )
@@ -4590,6 +4865,17 @@ class _Analyzer:
                         DeferredExecution(ref.source, "escape")
                         for ref in argument.exposed_deferred
                     )
+                    # Primary module/import sources need the same generic-call
+                    # exposure as deferred objects. The scanner must not repeat
+                    # this transfer for proven builtin/source callees.
+                    deferred_execution |= frozenset(
+                        DeferredExecution(source, "expose")
+                        for source in argument.exposed_source_origins
+                    )
+                    if argument.exposes_module_globals:
+                        deferred_execution |= frozenset(
+                            {DeferredExecution(self._module_source, "escape")}
+                        )
             if not builtin:
                 deferred_execution |= frozenset(
                     DeferredExecution(ref.source, "escape")
@@ -5819,6 +6105,13 @@ class _Analyzer:
             | RAISES
         )
         if isinstance(target.node, ast.Attribute):
+            self._record_operation_execution(
+                scope,
+                frozenset(
+                    DeferredExecution(source, "mutate")
+                    for source in target.owner_result.source_origins
+                ),
+            )
             state_id = self._invalidate_member_target(
                 state_id, target.owner_identities, target.node.attr
             )
@@ -5858,6 +6151,7 @@ class _Analyzer:
         result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT,
         *,
         scope: _Scope,
+        only_if_absent: bool = False,
     ) -> tuple[int, EffectMask]:
         """Shared item-store/delete publication for syntax and bound dict methods."""
         strings = (
@@ -5872,19 +6166,40 @@ class _Analyzer:
             state_id = self.states.invalidate_namespace_values(state_id)
             state_id = self.states.taint_slots(state_id, self.module_slot_mask)
             return self._apply_effects(state_id, UNKNOWN_EFFECTS), UNKNOWN_EFFECTS
-        effects = WRITES_GLOBAL_NAMESPACE | WRITES_OBJECT_STATE | RAISES
+        effects = RAISES
         if self.states.get(state_id).namespace_values_unknown:
             boundary = EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
             state_id = self._apply_effects(state_id, boundary)
             effects |= boundary
+        bindings = []
+        for name in sorted(strings):
+            slot = self._ensure_module_slot(name)
+            replacement = result
+            replacement_identity = value
+            if only_if_absent:
+                present = self.states._binding_resolution(state_id, slot).public()
+                if present.present and not present.identities & UNBOUND_IDENTITY:
+                    continue
+                # A possibly present value survives setdefault. Select that
+                # key's existing/default join, not the return union of all keys.
+                replacement = self._current_globals_item(state_id, name, result)
+                if replacement is None:
+                    replacement = join_static_expression_results(
+                        (UNKNOWN_EXPRESSION_RESULT, result)
+                    )
+                replacement_identity = replacement.identities
+            bindings.append((slot, replacement_identity, static_value, replacement, 0))
+        if not bindings:
+            return state_id, effects
+        effects |= WRITES_GLOBAL_NAMESPACE | WRITES_OBJECT_STATE
         if strings & _METADATA_NAMES:
             effects |= WRITES_MODULE_METADATA
         state_id, release_effects = self._replace_bindings(
             state_id,
-            tuple(
-                (self._ensure_module_slot(name), value, static_value, result, 0)
-                for name in sorted(strings)
-            ),
+            bindings,
+            # Count every selectable key, including a present key for which
+            # setdefault writes nothing. Filtering writes must not turn a
+            # conditional insertion into an unconditional binding.
             may_write=len(strings) > 1,
             scope=scope,
         )
@@ -6075,7 +6390,15 @@ class _Analyzer:
             & int(PythonMember.IMPORT_HOOKS)
         )
 
+    def _import_provider_is_canonical(self, module: str) -> bool:
+        return not any(
+            module == excluded or module.startswith(excluded + ".")
+            for excluded in self.policy.noncanonical_imports
+        )
+
     def _import_identity(self, module: str, state_id: int) -> IdentityMask:
+        if not self._import_provider_is_canonical(module):
+            return OTHER_IDENTITY
         identity = (
             PythonIdentity.INTRINSICS_MODULE
             if is_compiler_intrinsics_module(module)
@@ -6095,7 +6418,7 @@ class _Analyzer:
         # Import callbacks and earlier member replacement constrain acquisition
         # exactly as they constrain a module.attribute read. Do not resurrect a
         # canonical member merely because its module was imported again.
-        if module is None:
+        if module is None or not self._import_provider_is_canonical(f"{module}.{name}"):
             return OTHER_IDENTITY
         return self._member_value(
             state_id, self._import_identity(module, state_id), name
@@ -6156,11 +6479,7 @@ class _Analyzer:
             scope.escaped_source_origins |= result.exposed_source_origins
             if result.exposes_module_globals:
                 scope.escaped_metadata_effects |= WRITES_MODULE_METADATA
-        if scope.namespace_can_call(
-            name,
-            write=True,
-            namespace_tainted=self.states.get(state_id).taint_epoch != 0,
-        ):
+        if self._namespace_can_call(state_id, scope, name, write=True):
             self._record_operation_execution(
                 scope,
                 frozenset(
@@ -6396,10 +6715,6 @@ class _Analyzer:
                 deferred_execution |= self._known_expression_result(
                     decorator
                 ).exposed_deferred
-            if node.decorator_list:
-                deferred_execution |= frozenset(
-                    {DeferredExecution(python_node_source_key(node), "escape")}
-                )
         elif isinstance(node, ast.AugAssign):
             scope.module_metadata_effects |= (
                 self.assignment_effects.get(self._node_key(node.target), NO_EFFECTS)
@@ -6605,8 +6920,15 @@ class _Analyzer:
                 alias.name if alias.asname else alias.name.split(".", 1)[0]
                 for alias in node.names
             )
-            canonical_statement = canonical_before_import and all(
-                module in CANONICAL_IMPORT_IDENTITIES for module in identity_modules
+            canonical_statement = (
+                canonical_before_import
+                and all(
+                    module in CANONICAL_IMPORT_IDENTITIES for module in identity_modules
+                )
+                and all(
+                    self._import_provider_is_canonical(alias.name)
+                    for alias in node.names
+                )
             )
             if not canonical_statement:
                 state_id = self._apply_effects(state_id, effects)
@@ -6629,14 +6951,41 @@ class _Analyzer:
                 )
                 effects |= bind_effects
         elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and is_compiler_intrinsics_module(node.module):
+                for alias in node.names:
+                    if alias.name == "*":
+                        raise ValueError(
+                            "synthetic intrinsic imports require explicit names"
+                        )
+                    helper = COMPILER_INTRINSIC_CALLABLES.get(alias.name)
+                    if helper is not None:
+                        self._record_state(state_id)
+                        effects |= ALLOCATES | RAISES
+                    state_id, bind_effects = self._write_name(
+                        state_id,
+                        scope,
+                        alias.asname or alias.name,
+                        int(helper[0])
+                        if helper is not None
+                        else int(PythonIdentity.INERT_VALUE),
+                        result=StaticExpressionResult.scalar(None)
+                        if helper is None
+                        else StaticExpressionResult(),
+                    )
+                    effects |= bind_effects
+                return self._normal_flow(state_id, effects)
             canonical_before_import = self._canonical_imports_available(state_id)
             effects |= EXECUTES_ARBITRARY_PYTHON | INVOKES_IMPORT_SYSTEM | RAISES
             canonical_statement = (
                 canonical_before_import
                 and node.level == 0
                 and node.module is not None
+                and self._import_provider_is_canonical(node.module)
                 and all(
                     alias.name != "*"
+                    and self._import_provider_is_canonical(
+                        f"{node.module}.{alias.name}"
+                    )
                     and (
                         node.module in CANONICAL_IMPORT_IDENTITIES
                         or f"{node.module}.{alias.name}" in CANONICAL_IMPORT_IDENTITIES
@@ -6762,10 +7111,12 @@ class _Analyzer:
                 flow = self._merge_flows(flow, PythonCompletionFlow(normal=unmatched))
             return flow
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            decorators = []
             for decorator in node.decorator_list:
                 result = self.eval_expr(decorator, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
+                decorators.append((decorator, result.result))
             # Generic defaults are evaluated before entering the type-parameter
             # annotation scope, just like ordinary function defaults.
             state_id, default_effects, defaults = self._eval_arguments(
@@ -6786,22 +7137,43 @@ class _Analyzer:
                     result = self.eval_expr(annotation, state_id, definition_scope)
                     state_id = result.state_id
                     effects |= result.effects
-            function_identity = exact_identity(PythonIdentity.USER_FUNCTION)
-            if node.decorator_list:
-                decorator_effects = EXECUTES_ARBITRARY_PYTHON | RAISES
-                effects |= decorator_effects
-                state_id = self._apply_effects(state_id, decorator_effects)
-                function_identity |= OTHER_IDENTITY
+            function_result = self._deferred_function_result(node)
+            for expression, constructor in reversed(decorators):
+                self._record_state(state_id)
+                wrapped = self._fresh_function_wrapper_result(
+                    constructor,
+                    function_result,
+                    node,
+                    expression,
+                    scope,
+                    defaults=defaults,
+                )
+                if wrapped is not None:
+                    effects |= ALLOCATES | RAISES
+                    function_result = wrapped
+                else:
+                    decorator_effects = EXECUTES_ARBITRARY_PYTHON | RAISES
+                    effects |= decorator_effects
+                    self._record_operation_execution(
+                        scope,
+                        frozenset(
+                            DeferredExecution(origin, "escape")
+                            for origin in function_result.exposed_source_origins
+                        ),
+                    )
+                    state_id = self._apply_effects(state_id, decorator_effects)
+                    function_result = replace(
+                        function_result,
+                        identities=function_result.identities | OTHER_IDENTITY,
+                        deferred_complete=False,
+                        attribute_hooks=None,
+                    )
             state_id, bind_effects = self._write_name(
                 state_id,
                 scope,
                 node.name,
-                function_identity,
-                result=replace(
-                    self._deferred_function_result(node),
-                    deferred_complete=not node.decorator_list,
-                    attribute_hooks=None if node.decorator_list else frozenset(),
-                ),
+                function_result.identities,
+                result=function_result,
             )
             effects |= bind_effects
             self._queue_function(node, definition_scope, state_id, defaults)
@@ -6846,7 +7218,13 @@ class _Analyzer:
                 name=node.name,
                 declarations=declarations,
             )
-            plain_preparation = (
+            native_preparation = (
+                self.policy.class_preparation is PythonClassPreparation.MOLT_NATIVE
+                and scope.activation_namespace_stable
+                and not node.bases
+                and not node.keywords
+            )
+            plain_preparation = native_preparation or (
                 not node.bases
                 and not node.keywords
                 and self._canonical_imports_available(state_id)
@@ -6863,6 +7241,19 @@ class _Analyzer:
                 tuple(
                     (slot, UNBOUND_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, 0)
                     for slot in class_scope.slots.values()
+                )
+                + (
+                    (
+                        (
+                            self._native_class_namespace_slot(class_scope),
+                            int(PythonIdentity.INERT_VALUE),
+                            None,
+                            StaticExpressionResult.scalar(True),
+                            0,
+                        ),
+                    )
+                    if native_preparation
+                    else ()
                 ),
             )
             if not plain_preparation:
@@ -6900,8 +7291,12 @@ class _Analyzer:
                 plain_creation = (
                     plain_preparation
                     and not node.decorator_list
-                    and self._canonical_imports_available(class_state)
-                    and self.states.get(class_state).taint_epoch == 0
+                    and (
+                        not self._namespace_can_call(class_state, class_scope, "")
+                        if native_preparation
+                        else self._canonical_imports_available(class_state)
+                        and self.states.get(class_state).taint_epoch == 0
+                    )
                     and all(
                         self.states.binding(class_state, slot)
                         in {
@@ -6909,6 +7304,7 @@ class _Analyzer:
                             int(PythonIdentity.INERT_VALUE),
                             int(PythonIdentity.STATIC_FALSE),
                             int(PythonIdentity.USER_FUNCTION),
+                            int(PythonIdentity.RETAINED_CALLABLE_WRAPPER),
                         }
                         for slot in class_scope.slots.values()
                     )
@@ -6945,7 +7341,11 @@ class _Analyzer:
                     result
                     for result in namespace_values
                     if not result.deferred_complete
-                    or not result.identities & int(PythonIdentity.USER_FUNCTION)
+                    or not result.identities
+                    & int(
+                        PythonIdentity.USER_FUNCTION
+                        | PythonIdentity.RETAINED_CALLABLE_WRAPPER
+                    )
                 )
                 descriptor_refs = frozenset(
                     DeferredExecution(ref.source, "escape")
@@ -7637,6 +8037,7 @@ class _Analyzer:
                     "release",
                     "protocol",
                     "descriptor",
+                    "mutate",
                     "iterate",
                     "async_iterate",
                     "get_iter",
@@ -7838,7 +8239,7 @@ class _Analyzer:
         self._module_source = python_node_source_key(tree)
         self._module_tree = tree
         self._module_read_slots_prepared = False
-        self.module_slots = list(module.slots.values())
+        self.module_slots = set(module.slots.values())
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
         self._configure_callback_namespace(tree, ast_digest_admission)
         if self._star_import_origins:
