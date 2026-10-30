@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -187,6 +188,74 @@ def merge_rows(text: str, args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def move_to_family(text: str, args: argparse.Namespace) -> str:
+    """Move open rows into one family; each row stays in exactly one family."""
+    status = finding_status.project(text)
+    open_keys = set(status.open_keys)
+    for key in args.keys:
+        if key not in open_keys:
+            raise LedgerEditError(f"{key} is not an open row")
+    lines = text.split("\n")
+    target = _family_index(lines, status, args.to)
+    for key in args.keys:
+        for letter in _families_holding(status, key):
+            if letter != args.to:
+                _edit_family(
+                    lines,
+                    _family_index(lines, status, letter),
+                    lambda keys, key=key: [k for k in keys if k != key],
+                )
+    held = set(
+        next(
+            f.keys
+            for f in finding_status.project("\n".join(lines)).dependency_families
+            if f.letter == args.to
+        )
+    )
+    _edit_family(
+        lines, target, lambda keys: [*keys, *(k for k in args.keys if k not in held)]
+    )
+    return "\n".join(lines)
+
+
+def describe_family(text: str, args: argparse.Namespace) -> str:
+    """Restate one family's name and shared cause; its rows stay as they are."""
+    status = finding_status.project(text)
+    lines = text.split("\n")
+    index = _family_index(lines, status, args.letter)
+    cells = finding_status.cells(lines[index])
+    cells[0] = f"{args.letter}. {args.name}"
+    cells[1] = args.cause
+    lines[index] = _row(cells, empty_last=True)
+    return "\n".join(lines)
+
+
+def recut_families(text: str, args: argparse.Namespace) -> str:
+    """Apply a re-cut (family renames, then row moves) as one checked edit.
+
+    Renaming several families at once passes through states in which the
+    ledger and the prior-art record disagree, so the whole re-cut is applied
+    before the single coverage check runs.
+    """
+    try:
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise LedgerEditError(f"cannot read re-cut spec {args.spec}: {exc}") from exc
+    if not isinstance(spec, dict) or set(spec) - {"describe", "move"}:
+        raise LedgerEditError("a re-cut spec holds only 'describe' and 'move' lists")
+    for item in spec.get("describe", []):
+        if not isinstance(item, dict) or set(item) != {"letter", "name", "cause"}:
+            raise LedgerEditError(
+                f"describe entry needs letter, name and cause: {item!r}"
+            )
+        text = describe_family(text, argparse.Namespace(**item))
+    for item in spec.get("move", []):
+        if not isinstance(item, dict) or set(item) != {"keys", "to"}:
+            raise LedgerEditError(f"move entry needs keys and to: {item!r}")
+        text = move_to_family(text, argparse.Namespace(**item))
+    return text
+
+
 def next_key(text: str) -> str:
     numbers = [
         int(key.removeprefix("HF-"))
@@ -239,6 +308,17 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     for command in (merged, noted):
         for name in ("defect-note", "evidence-note", "next-note"):
             command.add_argument(f"--{name}")
+    family = sub.add_parser("family", help="move rows between families or restate one")
+    family_sub = family.add_subparsers(dest="family_command", required=True)
+    moved = family_sub.add_parser("move")
+    moved.add_argument("keys", nargs="+")
+    moved.add_argument("--to", required=True)
+    described = family_sub.add_parser("describe")
+    described.add_argument("letter")
+    described.add_argument("--name", required=True)
+    described.add_argument("--cause", required=True)
+    recut = family_sub.add_parser("recut")
+    recut.add_argument("--spec", required=True, help="JSON: describe and move lists")
     args = parser.parse_args(argv)
 
     path = root / LEDGER
@@ -246,12 +326,25 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     if args.command == "next-key":
         print(next_key(text))
         return 0
-    edit = {
-        "open": open_row,
-        "close": close_row,
-        "merge": merge_rows,
-        "note": note_row,
-    }[args.command]
+    if args.command == "family":
+        edit = {
+            "move": move_to_family,
+            "describe": describe_family,
+            "recut": recut_families,
+        }[args.family_command]
+        subject = {
+            "move": lambda: " ".join(args.keys) + f" -> {args.to}",
+            "describe": lambda: f"family {args.letter}",
+            "recut": lambda: f"re-cut {args.spec}",
+        }[args.family_command]()
+    else:
+        edit = {
+            "open": open_row,
+            "close": close_row,
+            "merge": merge_rows,
+            "note": note_row,
+        }[args.command]
+        subject = args.key
     try:
         updated = edit(text, args)
     except LedgerEditError as exc:
@@ -270,7 +363,7 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     projection = root / gen_finding_ids.OUTPUT
     projection.write_text(gen_finding_ids.render(root), encoding="utf-8")
     print(
-        f"ledger_edit: {args.command} {args.key}; wrote {LEDGER} and {gen_finding_ids.OUTPUT}"
+        f"ledger_edit: {args.command} {subject}; wrote {LEDGER} and {gen_finding_ids.OUTPUT}"
     )
     if args.command in ("close", "merge"):
         for reference in _references(updated, args.key):

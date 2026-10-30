@@ -190,3 +190,80 @@ def test_an_edit_that_breaks_family_coverage_writes_nothing(tmp_path: Path) -> N
     assert status == 1
     assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == _LEDGER
     assert not (root / "tests/findings/finding_ids.py").exists()
+
+
+def test_family_move_keeps_each_row_in_exactly_one_family(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+
+    assert ledger_edit.main(["family", "move", "HF-2", "--to", "A"], root=root) == 0
+
+    assert _family_keys(root) == {"A": ("HF-1", "HF-2"), "B": ()}
+    # Moving a row already in the target changes nothing and duplicates nothing.
+    assert ledger_edit.main(["family", "move", "HF-2", "--to", "A"], root=root) == 0
+    assert _family_keys(root) == {"A": ("HF-1", "HF-2"), "B": ()}
+
+
+def test_family_move_refuses_a_closed_or_unknown_row(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+
+    assert ledger_edit.main(["family", "move", "HF-0", "--to", "A"], root=root) == 2
+    assert ledger_edit.main(["family", "move", "HF-2", "--to", "Z"], root=root) == 2
+
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == before
+
+
+def test_family_describe_must_match_its_prior_art(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+
+    # The prior-art record names the family; a rename without it is refused.
+    assert (
+        ledger_edit.main(
+            ["family", "describe", "B", "--name", "Gamma", "--cause", "cause g"],
+            root=root,
+        )
+        == 1
+    )
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == before
+
+    renamed = _root(tmp_path / "renamed", _PRIOR_ART.replace("B. Beta", "B. Gamma"))
+    assert (
+        ledger_edit.main(
+            ["family", "describe", "B", "--name", "Gamma", "--cause", "cause g"],
+            root=renamed,
+        )
+        == 0
+    )
+    family = next(f for f in _status(renamed).dependency_families if f.letter == "B")
+    assert (family.name, family.keys) == ("Gamma", ("HF-2",))
+
+
+def test_family_recut_renames_and_moves_atomically(tmp_path: Path) -> None:
+    # Each rename alone would leave the other family out of step with its
+    # prior art; the re-cut is checked once, after every step.
+    root = _root(
+        tmp_path,
+        _PRIOR_ART.replace("A. Alpha", "A. Ash").replace("B. Beta", "B. Birch"),
+    )
+    spec = tmp_path / "recut.json"
+    spec.write_text(
+        '{"describe": ['
+        '{"letter": "A", "name": "Ash", "cause": "cause ash"},'
+        '{"letter": "B", "name": "Birch", "cause": "cause birch"}],'
+        ' "move": [{"keys": ["HF-1"], "to": "B"}]}',
+        encoding="utf-8",
+    )
+
+    assert ledger_edit.main(["family", "recut", "--spec", str(spec)], root=root) == 0
+
+    families = {f.letter: (f.name, f.keys) for f in _status(root).dependency_families}
+    assert families == {"A": ("Ash", ()), "B": ("Birch", ("HF-2", "HF-1"))}
+
+
+def test_family_recut_refuses_a_malformed_spec(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    spec = tmp_path / "recut.json"
+    spec.write_text('{"describe": [{"letter": "A"}]}', encoding="utf-8")
+
+    assert ledger_edit.main(["family", "recut", "--spec", str(spec)], root=root) == 2
