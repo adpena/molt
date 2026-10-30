@@ -327,6 +327,8 @@ class Host:
     python: str | None = None
     launcher: DetachedLauncher | None = None
     proof_cells: tuple[str, ...] = ()
+    proof_cargo_output_root: str | None = None
+    proof_metadata_root: str | None = None
 
     @property
     def is_windows(self) -> bool:
@@ -392,6 +394,8 @@ def parse_inventory(path: Path) -> list[Host]:
             if "launcher" in entry
             else None,
             proof_cells=tuple(entry.get("proof_cells", [])),
+            proof_cargo_output_root=entry.get("proof_cargo_output_root"),
+            proof_metadata_root=entry.get("proof_metadata_root"),
         )
         if (
             not isinstance(entry.get("proof_cells", []), list)

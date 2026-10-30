@@ -31,6 +31,11 @@ pin checks and failure-atomic publication as online provisioning. Locked Python
 environment publication remains owned by `molt.checkout_provisioning` and uv.
 The entire selected toolchain closure is admitted before any test starts.
 Prerequisite failure returns infrastructure evidence without launching tests.
+The inventory selects short, disjoint Cargo-output and metadata fixture roots
+for Windows portability tests, matching the explicit roles supplied by hosted
+CI. Each run admits its exclusive child directories through the existing queue
+output-layout authority and records their physical identities in provisioning
+evidence; operator shell exports are unnecessary.
 
 Windows launch uses CIM `Win32_Process.Create`; POSIX launch creates a new
 session. A host-wide OS file lock excludes competing trunk workers. The worker

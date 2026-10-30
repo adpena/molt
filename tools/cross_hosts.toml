@@ -124,3 +124,7 @@ remote_dir = 'C:\Molt\scratch\trunk-loop'
 python = 'C:\Molt\envs\molt-dx-py312\Scripts\python.exe'
 launcher = "windows-cim"
 proof_cells = ["portability.cargo-custody.windows", "portability.queue.windows"]
+# Same explicit fixture roles as ci.yml's Configure proof-queue test roots.
+# Each run claims a fresh child and admits its physical identity before testing.
+proof_cargo_output_root = 'C:\Molt\trunk-cargo'
+proof_metadata_root = 'C:\Molt\trunk-metadata'
