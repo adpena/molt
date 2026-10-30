@@ -87,7 +87,9 @@ class MoltClient:
         self._reader_error: BaseException | None = None
         self._restart_after_drain = False
         self._next_id = 1
-        self._just_started = False
+        # The worker process that has answered a request. Until the current
+        # process answers, every request also waits for its startup.
+        self._ready_proc: subprocess.Popen[bytes] | None = None
 
     def __enter__(self) -> "MoltClient":
         self._ensure_process()
@@ -115,6 +117,7 @@ class MoltClient:
             self._stdout = None
             self._reader = None
             self._reader_error = None
+            self._ready_proc = None
             self._restart_after_drain = False
             self._clear_pending(MoltWorkerUnavailable("Worker closed"))
 
@@ -140,47 +143,56 @@ class MoltClient:
                 raise MoltWorkerUnavailable("Worker pipes unavailable")
             self._stdin = self._proc.stdin
             self._stdout = self._proc.stdout
-            self._just_started = True
             self._ensure_reader()
 
     def _ensure_reader(self) -> None:
         if self._reader is not None and self._reader.is_alive():
             return
-        self._reader = threading.Thread(target=self._reader_loop, daemon=True)
+        # Callers hold _proc_lock. The reader owns exactly this process's
+        # stream: a closed or replaced process never speaks for its successor.
+        assert self._proc is not None and self._stdout is not None
+        self._reader = threading.Thread(
+            target=self._reader_loop, args=(self._proc, self._stdout), daemon=True
+        )
         self._reader.start()
 
-    def _reader_loop(self) -> None:
+    def _reader_loop(self, proc: subprocess.Popen[bytes], stdout: IO[bytes]) -> None:
         while True:
-            stdout = self._stdout
-            if stdout is None:
-                return
             try:
                 response_bytes = read_frame(stdout, max_size=self._max_frame_size)
             except EOFError:
                 self._set_reader_error(
-                    MoltWorkerUnavailable("Worker closed the stream")
+                    proc, MoltWorkerUnavailable("Worker closed the stream")
                 )
                 return
             except Exception as exc:
-                self._set_reader_error(MoltWorkerUnavailable(str(exc)))
+                self._set_reader_error(proc, MoltWorkerUnavailable(str(exc)))
                 return
             try:
                 response = decode_message(response_bytes, self._wire)
             except Exception as exc:
-                self._set_reader_error(MoltProtocolError(str(exc)))
+                self._set_reader_error(proc, MoltProtocolError(str(exc)))
                 return
             request_id = response.get("request_id")
             if not isinstance(request_id, int):
-                self._set_reader_error(MoltProtocolError("Missing response id"))
+                self._set_reader_error(proc, MoltProtocolError("Missing response id"))
                 return
+            self._ready_proc = proc
             pending = self._pop_pending(request_id)
             if pending is None:
                 continue
             pending.set_response(response)
 
-    def _set_reader_error(self, error: BaseException) -> None:
-        self._reader_error = error
-        self._clear_pending(error)
+    def _set_reader_error(
+        self, proc: subprocess.Popen[bytes], error: BaseException
+    ) -> None:
+        with self._proc_lock:
+            # A closed process's stream ends by design. Its end must not fail
+            # requests that a replacement process already owns.
+            if self._proc is not proc:
+                return
+            self._reader_error = error
+            self._clear_pending(error)
 
     def _clear_pending(self, error: BaseException) -> None:
         with self._pending_lock:
@@ -316,10 +328,10 @@ class MoltClient:
             raise MoltWorkerUnavailable("Worker pipes unavailable")
         if self._reader_error is not None:
             raise MoltWorkerUnavailable("Worker reader failed") from self._reader_error
-        if self._just_started:
-            if timeout_ms > 0:
-                timeout_ms = max(timeout_ms, _STARTUP_GRACE_MS)
-            self._just_started = False
+        if timeout_ms > 0 and self._ready_proc is not self._proc:
+            # Every request sent before the worker first answers waits for its
+            # startup, not only the request that started it.
+            timeout_ms = max(timeout_ms, _STARTUP_GRACE_MS)
 
         try:
             payload_bytes = encode_payload(payload, codec)

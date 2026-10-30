@@ -224,6 +224,45 @@ def test_client_concurrent_calls() -> None:
     client.close()
 
 
+def test_startup_grace_covers_every_request_sent_before_first_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Worker startup outlasts the request budget but not the startup grace.
+    # Every concurrent request reaches the worker before it can answer, so
+    # each one waits for startup, not only the request that started it.
+    monkeypatch.setattr(client_module, "_STARTUP_GRACE_MS", 60_000)
+    env = _worker_env()
+    env["MOLT_STUB_STARTUP_DELAY_S"] = "1.0"
+    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=env)
+    barrier = threading.Barrier(4)
+    results: list[int] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def worker(idx: int) -> None:
+        try:
+            barrier.wait()
+            response = client.call(
+                entry="echo", payload={"id": idx}, codec="json", timeout_ms=250
+            )
+            with lock:
+                results.append(response["id"])
+        except BaseException as exc:
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(idx,)) for idx in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    try:
+        assert errors == []
+        assert sorted(results) == [0, 1, 2, 3]
+    finally:
+        client.close()
+
+
 def test_client_pool_round_robin() -> None:
     pool = MoltClientPool(
         worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2
