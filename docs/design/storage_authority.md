@@ -207,6 +207,9 @@ Failed guard scratch is evidence, even when its raw retention cache expires.
 The generation lifetime lock pins a lossless, independently verified archive of
 payload and terminal records; its durable external index is published before
 raw reclamation. New allocations capture their evidence placement at admission.
+Capturing that future destination does not require an explicit artifact directory
+to exist. Archival checks readiness when it writes; durable family bindings
+still require their selected volume at admission.
 Legacy failures lacking that receipt remain untouched for explicit reconciliation.
 An unavailable archive leaves raw bytes intact. Successful scratch remains
 regenerable. Sccache server leftovers have a separate durable evidence class:
