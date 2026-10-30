@@ -159,13 +159,8 @@ def test_wasm_zipimport_package_lookup_parity(
     output_wasm = build_wasm_linked(
         root, src, tmp_path, extra_args=list(witness.extra_args)
     )
-    run = run_wasm_linked(
-        root,
-        output_wasm,
-        env_overrides={
-            "MOLT_CAPABILITIES": "fs.read,fs.write,env.read",
-        },
-    )
+    # The witness grants fs.read,fs.write,env.read at build time.
+    run = run_wasm_linked(root, output_wasm)
     assert run.returncode != 0
     assert run.stdout.splitlines() == [
         "package True value = 1",
@@ -186,13 +181,8 @@ def test_wasm_smtplib_thread_dependent_paths_fail_fast(
     output_wasm = build_wasm_linked(
         root, src, tmp_path, extra_args=list(witness.extra_args)
     )
-    run = run_wasm_linked(
-        root,
-        output_wasm,
-        env_overrides={
-            "MOLT_CAPABILITIES": "net,env.read",
-        },
-    )
+    # The witness grants net,env.read at build time.
+    run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip().splitlines() == [
         "NotImplementedError",
@@ -210,11 +200,6 @@ def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) ->
     node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
     witness = heavy_wasm_witness("missing-grants", "linked")
     src = witness.materialize(root, tmp_path)
-
-    output_wasm = build_wasm_linked(
-        root, src, tmp_path, extra_args=list(witness.extra_args)
-    )
-    manifest = wasm_runtime_manifest_path(output_wasm)
     payload_dir = tmp_path / "payload"
     payload_dir.mkdir()
     source = payload_dir / "source.bin"
@@ -222,13 +207,27 @@ def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) ->
     payload = b"source payload\x00with binary bytes\xff"
     sentinel = b"destination must survive denied truncation"
     source.write_bytes(payload)
-    command = [str(node.path), str(root / "wasm" / "run_wasm.js"), str(manifest)]
-    for grants, missing in [
-        ("", "fs.read, fs.write"),
-        ("fs.read", "fs.write"),
-        ("fs.write", "fs.read"),
-        ("fs.read,fs.write", None),
-    ]:
+    for index, (grants, missing) in enumerate(
+        [
+            ("", "fs.read, fs.write"),
+            ("fs.read", "fs.write"),
+            ("fs.write", "fs.read"),
+            ("fs.read,fs.write", None),
+        ]
+    ):
+        # Deployment manifest v4: the build's launch policy owns the grants,
+        # and every host overwrites run-time MOLT_CAPABILITIES with it.
+        build_dir = tmp_path / f"build-{index}"
+        build_dir.mkdir()
+        capability_args = ["--capabilities", grants] if grants else []
+        output_wasm = build_wasm_linked(
+            root,
+            src,
+            build_dir,
+            extra_args=[*witness.extra_args, *capability_args],
+        )
+        manifest = wasm_runtime_manifest_path(output_wasm)
+        command = [str(node.path), str(root / "wasm" / "run_wasm.js"), str(manifest)]
         destination.write_bytes(sentinel)
         env = os.environ.copy()
         # The explicit linked manifest owns runtime/table/bundle selection.
@@ -239,8 +238,9 @@ def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) ->
             "MOLT_VFS_BUNDLE",
         ):
             env.pop(key, None)
-        env["MOLT_CAPABILITY_TIER"] = "none"
-        env["MOLT_CAPABILITIES"] = grants
+        # A run-time grant of everything cannot widen the deployment policy.
+        env["MOLT_CAPABILITY_TIER"] = "full"
+        env["MOLT_CAPABILITIES"] = "fs.read,fs.write"
         run = _run_wasm_test_process(
             command, role="guest-host", cwd=payload_dir, env=env
         )
