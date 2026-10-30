@@ -732,7 +732,7 @@ def enter_build() -> bool:
 
 def transient_root(state_root: Path) -> Path:
     """Where recorded builds keep their transient files: a product root."""
-    return state_root / "build_records" / _TRANSIENT_DIRNAME
+    return state_root / "build_records" / "v11" / _TRANSIENT_DIRNAME
 
 
 @contextmanager

@@ -63,11 +63,16 @@ def _artifact_sync_payload_shape(value: object) -> bool:
 
 
 def _migrate_artifact_sync_state(path: Path, artifact: Path) -> None:
-    if path.exists() or path.parent.name != "v4":
+    if path.exists():
+        return
+    if path.parent.name == "v4":
+        legacy = path.parent.parent / path.name
+    elif path.name.endswith(".sync.v4.json"):
+        legacy = path.with_name(path.name.removesuffix(".sync.v4.json") + ".sync.json")
+    else:
         return
     from molt.file_locks import _acquire_file_lock, _release_file_lock
 
-    legacy = path.parent.parent / path.name
     if not legacy.exists():
         return
     lock = _acquire_file_lock(

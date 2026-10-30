@@ -99,22 +99,29 @@ class _AttrList(ctypes.Structure):
     ]
 
 
-def _apple_volume(fd: int) -> str:
+def _apple_volume(node: int | Path) -> str:
     # XNU substitutes the held vnode's volume root for volume attributes.
     # RETURNED_ATTRS is first; validate support before reading UUID bytes.
     attrs = _AttrList(5, 0, 0x80000000, 0x80040000, 0, 0, 0)
     buffer = ctypes.create_string_buffer(40)
     libc = ctypes.CDLL(None, use_errno=True)
-    query = libc.fgetattrlist
+    by_handle = isinstance(node, int)
+    query = libc.fgetattrlist if by_handle else libc.getattrlist
     query.argtypes = [
-        ctypes.c_int,
+        ctypes.c_int if by_handle else ctypes.c_char_p,
         ctypes.POINTER(_AttrList),
         ctypes.c_void_p,
         ctypes.c_size_t,
         ctypes.c_ulong,
     ]
     query.restype = ctypes.c_int
-    if query(fd, ctypes.byref(attrs), buffer, len(buffer), 0):
+    if query(
+        node if by_handle else os.fsencode(node),
+        ctypes.byref(attrs),
+        buffer,
+        len(buffer),
+        0 if by_handle else 1,
+    ):
         code = ctypes.get_errno()
         raise IdentityUnavailable(f"volume UUID query failed: {os.strerror(code)}")
     length, common, volume, directory, file, fork = struct.unpack_from(
@@ -259,17 +266,41 @@ def file_identity(
         raise IdentityUnavailable(
             f"file changed before durable identity capture: {path}"
         )
+    if sys.platform == "darwin":
+        # getattrlist holds the named vnode while resolving its volume. Unlike
+        # open(O_EVTONLY), READ_ATTRIBUTES does not require directory read
+        # permission. Metadata observation must not acquire content access.
+        volume = _apple_volume(path)
+        after = path.lstat()
+        if not os.path.samestat(before, after) or (
+            before.st_mode,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise IdentityUnavailable(
+                f"file changed during durable identity capture: {path}"
+            )
+        return DurableFileIdentity.from_payload(
+            {
+                "kind": VolumeKind.APPLE_UUID.value,
+                "volume": _volume(VolumeKind.APPLE_UUID, volume),
+                "file_id": f"{before.st_ino:032x}",
+            }
+        )
     flags = (
         os.O_RDONLY
         | getattr(os, "O_BINARY", 0)
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_NONBLOCK", 0)
     )
+    if sys.platform.startswith("linux"):
+        flags |= os.O_PATH
     if stat.S_ISLNK(before.st_mode):
         if sys.platform == "darwin":
             flags = (flags & ~getattr(os, "O_NOFOLLOW", 0)) | 0x200000  # O_SYMLINK
         elif sys.platform.startswith("linux"):
-            flags |= 0x200000  # O_PATH plus O_NOFOLLOW.
+            flags |= os.O_PATH  # O_PATH plus O_NOFOLLOW.
     if os.name == "nt":
         import msvcrt
 
