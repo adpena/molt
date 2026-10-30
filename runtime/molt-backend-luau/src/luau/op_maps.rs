@@ -46,15 +46,6 @@ impl LuauBackend {
                     }
                 }
             }
-            molt_ir::OpKind::DictSet => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 3 {
-                    let dict = sanitize_ident(&args[0]);
-                    let key = sanitize_ident(&args[1]);
-                    let val = sanitize_ident(&args[2]);
-                    self.emit_line(&format!("molt_dict_set({dict}, {key}, {val})"));
-                }
-            }
             molt_ir::OpKind::DictSetdefault => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {

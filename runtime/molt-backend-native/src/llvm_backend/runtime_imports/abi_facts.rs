@@ -57,7 +57,6 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_alloc_class", 2, RuntimeReturnAbi::I64),
     MOLT_ASYNCGEN_NEW,
     runtime_sig("molt_function_closure_bits", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_iter", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_stateful_locals_register", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_string_format", 2, RuntimeReturnAbi::I64),
 ];

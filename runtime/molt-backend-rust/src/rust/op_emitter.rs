@@ -6,6 +6,7 @@ use super::lowering::op_definition_vars;
 use super::runtime_surface::runtime_value_call_for_kind;
 use super::{RustBackend, rust_ident};
 use crate::OpIR;
+use molt_ir::tir::target_info::TargetKind;
 use std::collections::BTreeSet;
 
 mod builtins;
@@ -41,10 +42,27 @@ impl RustBackend {
             self.clear_alias(&definition);
         }
 
+        if let Some(call) = molt_ir::runtime_calls::RuntimeCall::from_op(op.kind) {
+            use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization};
+            assert_eq!(
+                call.realization(TargetKind::Rust),
+                RuntimeCallRealization::Unsupported
+            );
+            match call {
+                RuntimeCall::Iter => {
+                    self.emit_unsupported_op(op, "Python iterable/sequence protocol is unavailable")
+                }
+                RuntimeCall::DictSet => {
+                    self.emit_unsupported_op(op, "Python object model is unavailable")
+                }
+            }
+            return;
+        }
         if self.emit_op_literal(op) {
             return;
         }
         match op.kind {
+            molt_ir::runtime_call_op_kinds!() => unreachable!("contract calls dispatched above"),
             molt_ir::OpKind::ModuleSlot => self.emit_op_module_slot(op),
             molt_ir::OpKind::ConstNotImplemented => self.emit_op_const_not_implemented(op),
             molt_ir::OpKind::ConstEllipsis => self.emit_op_const_ellipsis(op),
@@ -119,7 +137,6 @@ impl RustBackend {
             | molt_ir::OpKind::LoopCarryInit => self.emit_op_loop_continue(op),
             molt_ir::OpKind::LoopIndexNext => self.emit_op_loop_index_next(op),
             molt_ir::OpKind::LoopIndexStart => self.emit_op_loop_index_start(op),
-            molt_ir::OpKind::Iter => self.emit_op_iter(op),
             molt_ir::OpKind::IterNext => self.emit_op_iter_next(op),
             molt_ir::OpKind::ForRange => self.emit_op_for_range(op),
             molt_ir::OpKind::ForIter => self.emit_op_for_iter(op),
@@ -193,7 +210,6 @@ impl RustBackend {
             molt_ir::OpKind::SetItem
             | molt_ir::OpKind::StoreSubscript
             | molt_ir::OpKind::StoreIndex => self.emit_op_set_item(op),
-            molt_ir::OpKind::DictSet => self.emit_op_dict_set(op),
             molt_ir::OpKind::GetAttr | molt_ir::OpKind::LoadAttr => self.emit_op_get_attr(op),
             molt_ir::OpKind::LoadMethod => self.emit_op_load_method(op),
             molt_ir::OpKind::LoadSuperMethod => self.emit_unsupported_op(
@@ -380,7 +396,6 @@ impl RustBackend {
             | molt_ir::OpKind::GetAttrGenericObj
             | molt_ir::OpKind::GetAttrGenericPtr
             | molt_ir::OpKind::GetAttrSpecialObj
-            | molt_ir::OpKind::GetIter
             | molt_ir::OpKind::Getframe
             | molt_ir::OpKind::Goto
             | molt_ir::OpKind::GpuBarrier

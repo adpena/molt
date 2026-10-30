@@ -4,14 +4,6 @@ use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results
 impl LuauBackend {
     pub(super) fn emit_iteration_op(&mut self, op: &OpIR) -> bool {
         match op.kind {
-            molt_ir::OpKind::Iter => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(iterable) = args.first() {
-                    let it = sanitize_ident(iterable);
-                    self.emit_line(&format!("local {out} = molt_iterator_new({it})"));
-                }
-            }
             molt_ir::OpKind::IterNext => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
