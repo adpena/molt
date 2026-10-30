@@ -191,14 +191,14 @@ def plan_resource_pressure(
     diff_mem_per_job_gb: float | None = None,
 ) -> ResourcePressurePlan:
     env = os.environ if environ is None else environ
-    normalized_prefix = require_guard_stem(prefix) or "MOLT"
+    stem = require_guard_stem(prefix)
+    # "MOLT" labels the root scope in the plan; lookups take the validated
+    # stem, since the label is not a registered stem.
+    normalized_prefix = stem or "MOLT"
     cpus = max(
         1, int(cpu_count if cpu_count is not None else host_capacity.cpu_count())
     )
-    memory_budget = budget or memory_guard.adaptive_memory_budget(
-        normalized_prefix,
-        env,
-    )
+    memory_budget = budget or memory_guard.adaptive_memory_budget(stem, env)
     usable_gb = _usable_memory_gb(memory_budget)
 
     max_cargo = max(1, int(max_cargo_build_jobs))

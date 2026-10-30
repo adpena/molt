@@ -215,10 +215,11 @@ def _external_repo_sentinel_active(
     env: Mapping[str, str] | None,
 ) -> bool:
     source = _effective_env(env)
-    normalized = require_guard_stem(prefix) or "MOLT"
+    # repo_sentinel_active_env_key validates the stem once; the root scope's
+    # "MOLT" spelling is its output, never a registered stem to validate again.
     return _env_bool(
         source,
-        [repo_sentinel_active_env_key(normalized), "MOLT_REPO_SENTINEL_ACTIVE"],
+        [repo_sentinel_active_env_key(prefix), "MOLT_REPO_SENTINEL_ACTIVE"],
         default=False,
     )
 
