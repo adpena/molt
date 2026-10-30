@@ -469,3 +469,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into_int_value()
     }
 }
+
+// Declared legality is a compile-time fact: LLVM lowers every staged call
+// through its generic entrypoint.
+const _: () = assert!(
+    molt_ir::runtime_calls::RuntimeCall::all_runtime_realized(
+        molt_ir::tir::target_info::TargetKind::Llvm
+    ),
+    "a staged runtime call is not runtime-realized on LLVM"
+);

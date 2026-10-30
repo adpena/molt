@@ -1224,3 +1224,13 @@ pub(in crate::native_backend::function_compiler) fn is_cold_module_chunk_functio
 ) -> bool {
     name.contains("__molt_module_chunk_")
 }
+
+// Declared legality is a compile-time fact. Native Cranelift, and the JIT that
+// shares its target plan, lower every staged call through its generic entrypoint.
+#[cfg(feature = "native-backend")]
+const _: () = assert!(
+    molt_ir::runtime_calls::RuntimeCall::all_runtime_realized(
+        molt_ir::tir::target_info::TargetKind::NativeCranelift
+    ),
+    "a staged runtime call is not runtime-realized on native Cranelift"
+);

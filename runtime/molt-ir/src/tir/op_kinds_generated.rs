@@ -49170,6 +49170,21 @@ pub mod runtime_calls {
                 (Self::Iter, TargetKind::Mlir) => RuntimeCallRealization::Unsupported,
             }
         }
+        /// Whether the generic entrypoint realizes every staged call on `target`.
+        /// Backends that lower only that realization assert it at compile time.
+        pub const fn all_runtime_realized(target: TargetKind) -> bool {
+            let mut index = 0;
+            while index < Self::ALL.len() {
+                if !matches!(
+                    Self::ALL[index].realization(target),
+                    RuntimeCallRealization::Runtime
+                ) {
+                    return false;
+                }
+                index += 1;
+            }
+            true
+        }
     }
     /// Exhaustive staged-op pattern, shared with backend admission.
     #[macro_export]
