@@ -111,10 +111,16 @@ def _build_native_binary_with_env(
     cache_dir: Path,
     backend: str,
     source_relpath: str | None = None,
+    entry_module: str | None = None,
     extra_files: dict[str, str] | None = None,
     extra_env: dict[str, str] | None = None,
     extra_build_args: list[str] | None = None,
 ) -> tuple[Path, dict[str, str]]:
+    """Build ``source`` as a script, or as ``python -m entry_module``.
+
+    An ``entry_module`` build resolves the module under ``tmp_path``, the
+    explicit module root, as ``python -m`` finds it on sys.path.
+    """
     src_path = (
         tmp_path / source_relpath
         if source_relpath is not None
@@ -145,13 +151,18 @@ def _build_native_binary_with_env(
     env["MOLT_BACKEND_DAEMON"] = "0"
     if extra_env:
         env.update(extra_env)
+    if entry_module is not None:
+        env["MOLT_MODULE_ROOTS"] = str(tmp_path)
+    entry_args = (
+        ["--module", entry_module] if entry_module is not None else [str(src_path)]
+    )
 
     build_cmd = [
         sys.executable,
         "-m",
         "molt.cli",
         "build",
-        str(src_path),
+        *entry_args,
         "--target",
         "native",
         "--build-profile",
@@ -185,6 +196,7 @@ def _build_and_run_with_env(
     cache_dir: Path,
     backend: str,
     source_relpath: str | None = None,
+    entry_module: str | None = None,
     extra_files: dict[str, str] | None = None,
     extra_env: dict[str, str] | None = None,
     extra_build_args: list[str] | None = None,
@@ -198,6 +210,7 @@ def _build_and_run_with_env(
         cache_dir=cache_dir,
         backend=backend,
         source_relpath=source_relpath,
+        entry_module=entry_module,
         extra_files=extra_files,
         extra_env=extra_env,
         extra_build_args=extra_build_args,
@@ -324,6 +337,23 @@ def _write_safetensors_fixture(path: Path, *, count: int) -> None:
     path.write_bytes(struct.pack("<Q", len(header_json)) + header_json + payload)
 
 
+def _cpython_module_reference(
+    tmp_path: Path, module: str
+) -> subprocess.CompletedProcess[str]:
+    """``python -m module`` from ``tmp_path``: the package-entry oracle.
+
+    sys.path[0] is the cwd (Python/pathconfig.c:_PyPathConfig_ComputeSysPath0);
+    ``-E -s`` keep the environment and user site out.
+    """
+    return run_native_test_process(
+        [sys.executable, "-E", "-s", "-B", "-m", module],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
 def _build_and_run_package_bootstrap(
     tmp_path: Path,
     source: str,
@@ -331,14 +361,18 @@ def _build_and_run_package_bootstrap(
     *,
     cache_suffix: str,
 ) -> subprocess.CompletedProcess[str]:
-    return _build_and_run_with_env(
+    """Build and run ``python -m pkg.main``; its output must equal CPython's."""
+    run = _build_and_run_with_env(
         tmp_path,
         source,
         name,
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-{cache_suffix}",
         cache_dir=ARTIFACT_ROOT / f".molt_cache-package-{cache_suffix}",
         backend="cranelift",
+        # ``python -m pkg.main``: the entry runs in package ``pkg``, so its
+        # relative imports resolve (Lib/runpy.py:_run_module_as_main).
         source_relpath="pkg/main.py",
+        entry_module="pkg.main",
         extra_files={
             "pkg/__init__.py": "",
             "pkg/helper.py": (
@@ -366,8 +400,11 @@ def _build_and_run_package_bootstrap(
                 "    return (__name__, __package__, sys.__name__, os.__name__)\n"
             ),
         },
-        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
     )
+    expected = _cpython_module_reference(tmp_path, "pkg.main")
+    assert expected.returncode == 0, expected.stderr
+    assert run.stdout == expected.stdout, (run.stdout, run.stderr)
+    return run
 
 
 def test_native_or_short_circuit_preserves_truthy_left(tmp_path: Path) -> None:
@@ -1240,11 +1277,11 @@ def test_native_relative_from_import_direct_call_executes(tmp_path: Path) -> Non
         cache_dir=ARTIFACT_ROOT / ".molt_cache-import-relative",
         backend="cranelift",
         source_relpath="pkg/main.py",
+        entry_module="pkg.main",
         extra_files={
             "pkg/__init__.py": "",
             "pkg/helper.py": "def ping():\n    print('ok')\n",
         },
-        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
@@ -1643,9 +1680,9 @@ def test_native_package_entry_alias_imports_preserve_os_and_sys_identity(
             "import os as os_alias\n"
             "import sys as sys_alias\n"
             "import pkg.helper as helper_alias\n"
-            "print(sys_alias is sys.modules['sys'])\n"
-            "print(os_alias is sys.modules['os'])\n"
-            "print(helper_alias is sys.modules['pkg.helper'])\n"
+            "print(sys_alias is sys_alias.modules['sys'])\n"
+            "print(os_alias is sys_alias.modules['os'])\n"
+            "print(helper_alias is sys_alias.modules['pkg.helper'])\n"
             "print(sys_alias.__name__)\n"
             "print(os_alias.__name__)\n"
             "print(helper_alias.__package__)\n"
@@ -1721,27 +1758,36 @@ def test_native_package_entry_submodule_alias_import_preserves_package_identity(
 def test_native_package_main_entrypoint_preserves_main_module_identity(
     tmp_path: Path,
 ) -> None:
+    """``python -m pkg``: the package's ``__main__`` runs as ``__main__``.
+
+    Lib/runpy.py:_run_module_as_main imports ``pkg`` and runs
+    ``pkg.__main__`` with ``__package__ == "pkg"``; the entry's helper
+    imports its sibling. The package root is an explicit module root, so the
+    build must compile the package's whole closure. CPython is the oracle.
+    """
+    source = (
+        "import sys\n"
+        "import pkg.helper as helper_alias\n"
+        "from .helper import Helper as HelperAlias\n"
+        "from .helper import ping as ping_alias\n"
+        "print(__name__)\n"
+        "print(__package__)\n"
+        "print(sys.modules['__main__'] is sys.modules[__name__])\n"
+        "print(helper_alias is sys.modules['pkg.helper'])\n"
+        "print(HelperAlias is helper_alias.Helper)\n"
+        "print(ping_alias is helper_alias.ping)\n"
+        "print(HelperAlias().describe())\n"
+        "print(ping_alias())\n"
+    )
     run = _build_and_run_with_env(
         tmp_path,
-        (
-            "import sys\n"
-            "import pkg.helper as helper_alias\n"
-            "from .helper import Helper as HelperAlias\n"
-            "from .helper import ping as ping_alias\n"
-            "print(__name__)\n"
-            "print(__package__)\n"
-            "print(sys.modules['__main__'] is sys.modules[__name__])\n"
-            "print(helper_alias is sys.modules['pkg.helper'])\n"
-            "print(HelperAlias is helper_alias.Helper)\n"
-            "print(ping_alias is helper_alias.ping)\n"
-            "print(HelperAlias().describe())\n"
-            "print(ping_alias())\n"
-        ),
+        source,
         "package_main_entrypoint_identity",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-main",
         cache_dir=ARTIFACT_ROOT / ".molt_cache-package-main",
         backend="cranelift",
         source_relpath="pkg/__main__.py",
+        entry_module="pkg",
         extra_files={
             "pkg/__init__.py": "",
             "pkg/helper.py": (
@@ -1756,10 +1802,10 @@ def test_native_package_main_entrypoint_preserves_main_module_identity(
             ),
             "pkg/sibling.py": "SIBLING = 'sibling-ok'\n",
         },
-        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
     )
-    assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip().splitlines() == [
+    expected = _cpython_module_reference(tmp_path, "pkg")
+    assert expected.returncode == 0, expected.stderr
+    assert expected.stdout.splitlines() == [
         "__main__",
         "pkg",
         "True",
@@ -1769,6 +1815,8 @@ def test_native_package_main_entrypoint_preserves_main_module_identity(
         "helper-ok",
         "sibling-ok",
     ]
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout == expected.stdout
 
 
 def test_native_top_level_alias_imports_preserve_os_sys_identity(

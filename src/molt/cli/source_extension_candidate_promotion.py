@@ -21,6 +21,7 @@ from molt.cli.source_extension_candidate_attestation import (
     validate_source_extension_candidate_attestation_payload,
 )
 from molt.cli.source_extension_publication import (
+    SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
     complete_source_extension_publication_transaction,
     _source_extension_publication_custody,
     publish_source_extension_candidate,
@@ -153,7 +154,7 @@ def publish_source_extension_set_candidate(
         lock_path = destination.parent / f".{destination.name}.producer.lock"
         producer_lock = _acquire_file_lock(
             lock_path,
-            timeout_s=300.0,
+            timeout_s=SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
             timeout_message=(
                 "timed out waiting for the canonical extension-set publication "
                 f"lock {lock_path}; another publisher owns {destination}"

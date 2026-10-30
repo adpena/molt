@@ -410,6 +410,19 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_wasm_host_test_launch.py"
+outputs = ["runtime/molt-wasm-host/tests/support/launch.rs"]
+source = "src/molt/capability_manifest.py + src/molt/wasm_artifact.py + tools/generator_io.py"
+upstream_generators = ["tools/gen_host_capabilities.py"]
+check_mode = true
+check_command = "tools/gen_wasm_host_test_launch.py --check"
+toolchains = []
+idempotent = true
+sync_test = "tests/test_gen_wasm_abi.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_browser_asset_graph.py"
 outputs = ["wasm/browser_asset_graph.generated.json"]
 source = "src/molt/browser_asset_graph.toml + declared wasm assets + tools/browser_asset_graph/{scan.mjs,package-lock.json} + tools/generator_io.py"
