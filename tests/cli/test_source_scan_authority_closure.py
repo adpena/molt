@@ -2457,7 +2457,10 @@ def test_class_mutation_activation_follows_foreign_source_and_formal_receiver(
     )
     changed = "__init__" in action or action.startswith(("install(", "set_install("))
     assert observed.stdout.strip() == ("new" if changed else "old")
-    trees = {name: ast.parse(path.read_text()) for name, path in paths.items()}
+    trees = {
+        name: ast.parse(path.read_text(encoding="utf-8"))
+        for name, path in paths.items()
+    }
     bodies = []
     engine = PythonSourceDemands(
         require_runtime_import_protocol=lambda module: None,

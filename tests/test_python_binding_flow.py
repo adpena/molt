@@ -5680,7 +5680,7 @@ def test_noncanonical_provider_import_invalidates_visible_foreign_write(
     from tests.process_guard_common import run_guarded_test_process
 
     (tmp_path / "dataclasses.py").write_text(
-        "import __main__\n__main__.FLAG = True\nmarker = 1\n"
+        "import __main__\n__main__.FLAG = True\nmarker = 1\n", encoding="utf-8"
     )
     source = "FLAG = False\n" + statement + "\nprint(FLAG)\n"
     observed = run_guarded_test_process(
