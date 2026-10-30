@@ -63,6 +63,18 @@ fields. Persisted tokens decode at their IO boundary before comparison; wire
 labels never decide physical equality. Volume-kind validation and equality
 match the closed enum exhaustively and finish with `typing.assert_never`.
 
+Named macOS capture has a qualification gap for ancestor-directory ABA
+substitution. Its two pathname stat fences can observe object A while the
+UUID query observes a temporarily substituted volume B, producing a hybrid
+identity. XNU retains a vnode only during each individual `getattrlist` call;
+the separate stat calls do not share that reference. A held descriptor joins
+UUID and file ID coherently, but metadata-only mode-000 observations cannot
+open that descriptor with `O_EVTONLY` or `O_SEARCH`. Native followed lookup
+and reuse of libc callable setup reduce cost without closing this gap.
+The current pathname implementation therefore cannot qualify the concurrent
+substitution cell. Resolving the capture boundary is required before landing;
+the existing mode-000 observation obligation must remain explicit.
+
 ## Migration and interruption
 
 Only explicit canonical migrators read a legacy identity. Both recorded stat
