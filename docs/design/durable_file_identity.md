@@ -73,6 +73,11 @@ custody. Changed or suspicious cache metadata re-hashes; Windows retains its
 existing stronger content obligations. Diagnostic preflight labels name an
 anchor path and grant no volume authority.
 
+A sync receipt's changed clocks invalidate its fast-path token. Freshly verified
+matching content can retain the same inode's emission observation after a
+last-use refresh; a different inode still refuses that observation. This does
+not create an emission attestation or rewrite the retained receipt.
+
 Volume strings are interned only after a fresh class-A query. Device-to-volume
 answers are never cached. Class A performs held-node native queries only when
 custody is required; a no-change class-B replay performs none. Operation-local

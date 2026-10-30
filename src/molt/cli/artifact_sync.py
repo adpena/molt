@@ -160,17 +160,25 @@ def _artifact_sync_emission_origin(
 ) -> BackendEmissionOrigin | None:
     """Read an observation bound to the admitted generation, never an attestation.
 
-    A cache token and freshly read content bind this observation to the current
-    artifact. The closed supervisor journal remains the origin admission
-    authority, independent of these untrusted retained observations.
+    The supplied identity includes freshly read content. A last-use refresh
+    changes the cache clocks, but preserves this inode's content observation.
+    The closed supervisor journal remains the origin admission authority,
+    independent of these untrusted retained observations.
     """
     if (
         state is None
         or not _artifact_sync_payload_shape(state)
         or state.get("sha256") != identity.sha256
         or state.get("size") != identity.size
-        or StatToken.from_payload(state["generation"]) != identity.stat_token()
         or state.get("emission_origin") is None
+    ):
+        return None
+    recorded = StatToken.from_payload(state["generation"])
+    current = identity.stat_token()
+    if (recorded.inode, recorded.mode, recorded.size) != (
+        current.inode,
+        current.mode,
+        current.size,
     ):
         return None
     try:
