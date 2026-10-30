@@ -1240,10 +1240,11 @@ fail closed; the inventory itself makes no claim about current file bytes.
   only the file).
 - Toolchain provenance is reused, not re-proved: a process captures each root set
   (Rust sysroot, LLVM SDK, C search paths such as the macOS SDK) once, and later
-  fences verify it by directory and file stat tokens. File digests persist in a
-  stat-keyed store under the Molt cache (`file-digests/v2.sqlite`) with the
-  racy-git rule; Windows always hashes, because its ChangeTime can repeat within
-  one clock tick.
+  fences verify it by directory and file stat tokens. File digests persist
+  under the Molt cache; the content identity rules are in
+  [observed inputs and content identity](design/observed_inputs.md), and the
+  persisted identity families and namespaces are in
+  [durable file identity](design/durable_file_identity.md).
 
 ### Profiling harness
 - Use `tools/profile_hotspots.py` first when the question is dev/CI wall clock:

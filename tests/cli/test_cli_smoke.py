@@ -46,16 +46,6 @@ def _base_env() -> dict[str, str]:
     return env
 
 
-def _python_executable() -> str:
-    exe = sys.executable
-    if exe and os.path.exists(exe) and os.access(exe, os.X_OK):
-        return exe
-    fallback = shutil.which("python3") or shutil.which("python")
-    if fallback:
-        return fallback
-    return exe
-
-
 def _cli_timeout() -> float | None:
     raw = os.environ.get("MOLT_CLI_TEST_TIMEOUT")
     if not raw:
@@ -70,7 +60,7 @@ def _cli_timeout() -> float | None:
 
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
-    cmd = [_python_executable(), "-m", "molt.cli", *args]
+    cmd = [sys.executable, "-m", "molt.cli", *args]
     return run_cli_test_process(
         cmd,
         cwd=ROOT,
@@ -84,7 +74,7 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
 def _run_cli_with_timeout(
     args: list[str], timeout: float
 ) -> subprocess.CompletedProcess[str]:
-    cmd = [_python_executable(), "-m", "molt.cli", *args]
+    cmd = [sys.executable, "-m", "molt.cli", *args]
     return run_cli_test_process(
         cmd,
         cwd=ROOT,
@@ -1724,7 +1714,7 @@ def test_cli_build_json_diagnostics_include_midend_policy_config(
     env["MOLT_MIDEND_BUDGET_SCALE"] = "1.5"
     res = run_cli_test_process(
         [
-            _python_executable(),
+            sys.executable,
             "-m",
             "molt.cli",
             "build",
@@ -2618,7 +2608,7 @@ def test_cli_imported_syntax_errors_keep_native_identity_and_payload(
 def _assert_imported_syntax_error_payload(tmp_path: Path, *, target: str) -> None:
     script, expected_lines = materialize_syntax_error_payload(tmp_path)
     oracle = run_cli_test_process(
-        [_python_executable(), str(script)],
+        [sys.executable, str(script)],
         cwd=tmp_path,
         env=_base_env(),
         capture_output=True,

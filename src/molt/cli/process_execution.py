@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from molt.process_environment import ProcessEnvironment
+from molt.guard_stems_generated import GuardStem
 
 import shlex
 import sys
@@ -33,7 +34,7 @@ def _run_command(
     verbose: bool = False,
     label: str | None = None,
     warnings: list[str] | None = None,
-    memory_guard_prefix: str | None = None,
+    memory_guard_prefix: GuardStem | None = None,
 ) -> int:
     cmd = [str(part) for part in cmd]
     if verbose and not json_output:
@@ -69,7 +70,7 @@ def _run_command_timed(
     cwd: Path | None = None,
     verbose: bool = False,
     capture_output: bool = False,
-    memory_guard_prefix: str | None = None,
+    memory_guard_prefix: GuardStem | None = None,
 ) -> _TimedResult:
     cmd = [str(part) for part in cmd]
     if verbose:

@@ -23,7 +23,7 @@ from tools.command_execution import CommandExecutor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 def _load_diff_module() -> ModuleType:

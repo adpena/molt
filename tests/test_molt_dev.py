@@ -3188,6 +3188,236 @@ def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
     assert outcomes[("race", "2")].guard_result.cancelled is False
 
 
+# Receipt e6bd27dc9f (HF-605): the trigger failed at partition scope with exit
+# 1, and the executor's cancellation killed a sibling (guard 137, child -9)
+# whose guard then reported deferred Cargo recovery or indeterminate custody.
+_DEFERRED_CARGO_RECOVERY = memory_guard.CargoIncrementalQuarantine(
+    reason="signal_exit",
+    recorded_at="2026-10-30T11:40:33Z",
+    target_dir="/fixture/target/sessions/devtool",
+    quarantine_dir=None,
+    command=("synthetic-gate",),
+    cwd="/fixture/sandbox",
+    errors=(
+        "ValueError: no birth-custodied rustc incremental observations; "
+        "recovery deferred",
+    ),
+    ownership_status="deferred",
+    interruption_inventory_complete=False,
+    interruption_inventory_error=(
+        "interruption inventory unavailable after owner_cancellation"
+    ),
+)
+_INDETERMINATE_CUSTODY = memory_guard.GuardInfrastructureFailure(
+    "temporary_artifact_custody",
+    (
+        "guarded descendant closure remained indeterminate",
+        "temporary artifact terminal state is 'indeterminate'",
+    ),
+)
+
+
+def _observe_gate_cancellation(monkeypatch) -> dict:
+    """Each gate's cancellation event from the real executor, so a fixture
+    waits on the actual shared event instead of guessing an order."""
+    events: dict = {}
+    execute = molt_dev_gates.proof_executor.execute_commands
+
+    def observe_executor(*args, **kwargs):
+        run = kwargs["_run_command"]
+
+        def observe(plan, command, cancel):
+            events[command.gate.command] = cancel
+            return run(plan, command, cancel)
+
+        return execute(*args, **{**kwargs, "_run_command": observe})
+
+    monkeypatch.setattr(
+        molt_dev_gates.proof_executor, "execute_commands", observe_executor
+    )
+    return events
+
+
+def _run_block_beside_cancelled_sibling(
+    events: dict, root: Path, *, trigger: str, cleanup: str, access: str
+) -> None:
+    """Run two pytest gates through the real executor: the first ends with
+    ``trigger``, and the executor's cancellation ends the second, whose guard
+    reports ``cleanup``. The block always raises; its receipt is
+    ``root / "receipt.heavy.json"``."""
+    from dataclasses import replace
+    import threading
+
+    from tools.proof_plan import CargoTargetAccess
+
+    root.mkdir(parents=True, exist_ok=True)
+    entered = threading.Barrier(2)
+    first = (
+        _gate_outcome(1, "1 failed\n", "")
+        if trigger == "candidate"
+        else _gate_outcome(
+            125,
+            "",
+            "guard custody refused\n",
+            child_returncode=125,
+            infrastructure_failure=_INDETERMINATE_CUSTODY,
+        )
+    )
+    sibling = _gate_outcome(
+        137,
+        "",
+        "cancelled\n",
+        cancelled=True,
+        child_returncode=-9,
+        descendants_closed=cleanup != "custody",
+        infrastructure_failure=(
+            _INDETERMINATE_CUSTODY if cleanup == "custody" else None
+        ),
+        cargo_incremental_quarantine=(
+            _DEFERRED_CARGO_RECOVERY if cleanup == "cargo" else None
+        ),
+    )
+    outcomes = {("gate", "first"): first, ("gate", "sibling"): sibling}
+
+    def run(command, repo, environment, cancelled, streams=None):
+        entered.wait(timeout=30)
+        if command == ("gate", "sibling"):
+            assert events[command].wait(timeout=30), "executor did not cancel"
+            assert cancelled()
+        outcome = outcomes[command]
+        if streams is not None:
+            streams[0].write_text(outcome.stdout, encoding="utf-8")
+            streams[1].write_text(outcome.stderr, encoding="utf-8")
+        return outcome
+
+    fixture = _gate_runtime_fixture(
+        molt_dev_gates, root, {}, output_dir=root / "gate-output"
+    )
+    runtime = replace(
+        fixture,
+        environments={
+            **fixture.environments,
+            ("cargo", "python"): fixture.environments[("python",)],
+        },
+        run_captured_gate=run,
+    )
+    gates = [
+        SelectedGate(command=("gate", "first"), toolchains=("python",), pytest=True),
+        SelectedGate(
+            command=("gate", "sibling"),
+            toolchains=("cargo", "python"),
+            pytest=True,
+            cargo_target_access=CargoTargetAccess(access),
+        ),
+    ]
+    molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+    pytest.fail("a block with a failed gate returned")
+
+
+@pytest.mark.parametrize(
+    ("cleanup", "access", "evidence"),
+    [
+        ("cargo", "none", None),
+        ("cargo", "shared", "Cargo quarantine ownership or recovery is unresolved"),
+        ("custody", "none", "guard infrastructure or ownership failure"),
+    ],
+)
+def test_cancelled_sibling_leaves_the_candidate_failure_to_the_queue(
+    tmp_path, monkeypatch, cleanup, access, evidence
+):
+    events = _observe_gate_cancellation(monkeypatch)
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 1\)"):
+        _run_block_beside_cancelled_sibling(
+            events, tmp_path, trigger="candidate", cleanup=cleanup, access=access
+        )
+    receipt = json.loads((tmp_path / "receipt.heavy.json").read_text("utf-8"))
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "local.gate.1",
+        "failure_scope": "partition",
+        "reason": "exit 1",
+    }
+    first, sibling = receipt["commands"]
+    assert (first["status"], first["returncode"]) == ("failure", 1)
+    # The executor stopped the sibling; it never reached a verdict of its own.
+    assert sibling["status"] == "cancelled"
+    assert sibling["failure_scope"] == "none"
+    assert sibling["failure_reason"] == "executor cancellation"
+    assert sibling["returncode"] == 137
+    assert sibling["guard_outcome"]["child_returncode"] == -9
+    # The guard's closure verdict stays evidence. A gate without Cargo target
+    # access makes no claim on the shared target's recovery.
+    assert sibling["cancellation_cleanup"] == evidence
+    quarantine = sibling["guard_outcome"]["cargo_incremental_quarantine"]
+    assert (quarantine or {}).get("ownership_status") == (
+        "deferred" if cleanup == "cargo" else None
+    )
+
+
+def test_global_failure_without_a_candidate_trigger_stops_the_block(
+    tmp_path, monkeypatch
+):
+    events = _observe_gate_cancellation(monkeypatch)
+    with pytest.raises(DriverError, match="gate block stopped") as caught:
+        _run_block_beside_cancelled_sibling(
+            events,
+            tmp_path,
+            trigger="infrastructure",
+            cleanup="cargo",
+            access="shared",
+        )
+    assert not isinstance(caught.value, CandidateFailure)
+    receipt = json.loads((tmp_path / "receipt.heavy.json").read_text("utf-8"))
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "local.gate.1",
+        "failure_scope": "global",
+        "reason": "guard infrastructure or ownership failure",
+    }
+    assert [row["status"] for row in receipt["commands"]] == ["failure", "cancelled"]
+
+
+@pytest.mark.parametrize("trigger", ["candidate", "infrastructure"])
+def test_queue_bisects_a_candidate_failure_beside_a_cancelled_sibling(
+    drv, origin_and_clone, tmp_path, monkeypatch, trigger
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _counting_policy(work, tmp_path / "gate-runs.txt")
+    heads = [
+        _lane(work, "a", {"a.py": "a = 1\n"}),
+        _lane(work, "b", {"b.py": "b = 1\n"}),
+    ]
+    paths, requests = _enqueue(drv, work, *heads)
+    blocks: list[Path] = []
+    events = _observe_gate_cancellation(monkeypatch)
+
+    def integrate(_args):
+        blocks.append(tmp_path / "blocks" / str(len(blocks)))
+        _run_block_beside_cancelled_sibling(
+            events, blocks[-1], trigger=trigger, cleanup="cargo", access="shared"
+        )
+
+    monkeypatch.setattr(drv, "cmd_integrate", integrate)
+    if trigger == "candidate":
+        assert _run_queue(drv, work) == EXIT_OK
+        # [a b] fails and bisects; [a] and [b] then fail alone.
+        assert len(blocks) == 3
+        assert _statuses(paths, requests) == ["failed", "failed"]
+        assert (
+            "gate failed (exit 1)" in queue.read_result(paths, requests[0].id)["detail"]
+        )
+    else:
+        # No gate failed for its own reason: the runner stops, blames no lane
+        # and leaves the batch pending for an operator.
+        with pytest.raises(DriverError, match="gate block stopped") as caught:
+            _run_queue(drv, work)
+        assert not isinstance(caught.value, CandidateFailure)
+        assert len(blocks) == 1
+        assert [request.id for request in queue.pending(paths)] == [
+            request.id for request in requests
+        ]
+
+
 @pytest.mark.parametrize(
     "defect",
     [
@@ -6406,7 +6636,7 @@ def test_detached_python_child_preserves_startup_policy_without_writes(
         PYTHONPYCACHEPREFIX=str(tmp_path / "ambient bytecode"),
         PYTHONUTF8=str(1 - utf8),
     )
-    completed = CommandExecutor.for_file(__file__).run(
+    completed = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").run(
         [
             sys.executable,
             "-I",

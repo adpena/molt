@@ -4714,20 +4714,65 @@ def _guarded_failure_scope(
     *,
     metrics_valid: bool,
     returncode: int,
-    cancelled: bool,
+    cancel_requested: bool,
     admitted_linker_helpers: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[str, str | None]:
-    """Classify the existing guard's evidence, never infer safe timeout from 124."""
+    """Classify the existing guard's evidence, never infer safe timeout from 124.
+
+    ``cancel_requested`` says the executor stopped this command while it ran,
+    because another command failed or the run stopped. When the guard confirms
+    that cancellation, the command never reached a verdict of its own: it is
+    cancelled, not failed, and the guard's closure verdict on it is evidence
+    (``_guard_closure_failure``), never a global failure (HF-605). A guard
+    cancellation that the executor did not request, or a request the guard
+    did not confirm, is an inconsistent outcome.
+    """
     if not metrics_valid:
         return "global", "guard outcome unavailable or inconsistent"
+    if cancel_requested or metrics.get("cancelled") is True:
+        from tools.memory_guard import GUARD_RETURN_CODE
+
+        if (
+            not cancel_requested
+            or metrics.get("cancelled") is not True
+            or returncode != GUARD_RETURN_CODE
+        ):
+            return "global", "executor cancellation lacks matching terminal outcome"
+        return "none", "executor cancellation"
+    closure = _guard_closure_failure(metrics, admitted_linker_helpers)
+    if closure is not None:
+        return "global", closure
+    if returncode == 124 or metrics.get("timed_out") is True:
+        reports = metrics.get("termination_reports", [])
+        cleanup = metrics.get("windows_job_cleanup")
+        closed = bool(reports) or (
+            isinstance(cleanup, dict) and cleanup.get("completed") is True
+        )
+        if returncode != 124 or metrics.get("timed_out") is not True or not closed:
+            return "global", "timeout lacks confirmed guard closure"
+        return "partition", "command deadline with confirmed guard closure"
+    if metrics.get("exit_signal") is not None:
+        return "global", "command ended by signal or host exception"
+    return ("none", None) if returncode == 0 else ("partition", "command failed")
+
+
+def _guard_closure_failure(
+    metrics: Mapping[str, Any],
+    admitted_linker_helpers: Mapping[str, Collection[str]] | None = None,
+) -> str | None:
+    """Why the guard cannot vouch for the host after a command, or None.
+
+    The guard's own verdicts on process closure, memory pressure, a signal to
+    the guard, Job closure and Cargo incremental recovery.
+    """
     if metrics.get("infrastructure_failure") is not None:
-        return "global", "guard infrastructure or ownership failure"
+        return "guard infrastructure or ownership failure"
     if metrics.get("descendants_closed") is not True:
-        return "global", "guard descendant closure is uncertain"
+        return "guard descendant closure is uncertain"
     if metrics.get("memory_violation") is not None:
-        return "global", "unsafe memory pressure"
+        return "unsafe memory pressure"
     if metrics.get("guard_signal") is not None:
-        return "global", "guard interrupted by signal"
+        return "guard interrupted by signal"
     reports = metrics.get("termination_reports", [])
     if not isinstance(reports, list) or any(
         not isinstance(report, dict)
@@ -4737,7 +4782,7 @@ def _guarded_failure_scope(
         or report.get("remaining_pgids")
         for report in reports
     ):
-        return "global", "guard descendant closure is uncertain"
+        return "guard descendant closure is uncertain"
     cleanup = metrics.get("windows_job_cleanup")
     if cleanup is not None and (
         not isinstance(cleanup, dict)
@@ -4748,7 +4793,7 @@ def _guarded_failure_scope(
             for process in cleanup["remaining_processes"]
         )
     ):
-        return "global", "guard job closure is uncertain"
+        return "guard job closure is uncertain"
     quarantine = metrics.get("cargo_incremental_quarantine")
     if quarantine is not None and (
         not isinstance(quarantine, dict)
@@ -4765,23 +4810,8 @@ def _guarded_failure_scope(
             )
         )
     ):
-        return "global", "Cargo quarantine ownership or recovery is unresolved"
-    if cancelled:
-        from tools.memory_guard import GUARD_RETURN_CODE
-
-        if metrics.get("cancelled") is not True or returncode != GUARD_RETURN_CODE:
-            return "global", "executor cancellation lacks matching terminal outcome"
-        return "global", "executor cancellation"
-    if returncode == 124 or metrics.get("timed_out") is True:
-        closed = bool(reports) or (
-            isinstance(cleanup, dict) and cleanup.get("completed") is True
-        )
-        if returncode != 124 or metrics.get("timed_out") is not True or not closed:
-            return "global", "timeout lacks confirmed guard closure"
-        return "partition", "command deadline with confirmed guard closure"
-    if metrics.get("exit_signal") is not None:
-        return "global", "command ended by signal or host exception"
-    return ("none", None) if returncode == 0 else ("partition", "command failed")
+        return "Cargo quarantine ownership or recovery is unresolved"
+    return None
 
 
 def _run_command(
@@ -4810,7 +4840,7 @@ def _run_command(
             "returncode": 130,
             "guard_metrics_schema": None,
             "cancelled_by_global_stop": True,
-            "failure_scope": "global",
+            "failure_scope": "none",
             "failure_reason": "executor cancellation before launch",
             "termination_escalated": False,
             "environment_policies_applied": list(applied_environment_policies),
@@ -4914,13 +4944,18 @@ def _run_command(
         metrics,
         metrics_valid=metrics_valid,
         returncode=returncode,
-        cancelled=cancelled,
+        cancel_requested=cancelled,
         admitted_linker_helpers=_admitted_linker_helpers(plan.toolchain_policies),
     )
+    cancellation_cleanup: str | None = None
     if failure_reason == "executor cancellation":
         # Raw guard cancellation remains 137. Only its admitted terminal
-        # outcome becomes the executor's public cancellation code.
+        # outcome becomes the executor's public cancellation code. The
+        # guard's closure verdict stays evidence on the cancelled record.
         status, returncode = "cancelled", 130
+        cancellation_cleanup = _guard_closure_failure(
+            metrics, _admitted_linker_helpers(plan.toolchain_policies)
+        )
     elif failure_scope == "global" and (
         cancelled or status in {"success", "cancelled"}
     ):
@@ -4963,6 +4998,7 @@ def _run_command(
         "cancelled_by_global_stop": cancelled,
         "failure_scope": failure_scope,
         "failure_reason": failure_reason,
+        "cancellation_cleanup": cancellation_cleanup,
         "guard_outcome": {
             name: metrics.get(name)
             for name in (

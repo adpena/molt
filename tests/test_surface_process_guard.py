@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -24,7 +26,7 @@ def test_run_surface_test_process_uses_shared_memory_guard(
     )
 
     result = surface_process_guard.run_surface_test_process(
-        ["python3", "-c", "print('ok')"],
+        [sys.executable, "-c", "print('ok')"],
         cwd=tmp_path,
         timeout=5,
         check=True,
@@ -32,7 +34,7 @@ def test_run_surface_test_process_uses_shared_memory_guard(
 
     assert result.returncode == 0
     assert result.stdout == "ok\n"
-    assert captured["cmd"] == ["python3", "-c", "print('ok')"]
+    assert captured["cmd"] == [sys.executable, "-c", "print('ok')"]
     assert captured["kwargs"]["prefix"] == "MOLT_SURFACE_TEST"
     assert captured["kwargs"]["cwd"] == tmp_path
     assert captured["kwargs"]["timeout"] == 5

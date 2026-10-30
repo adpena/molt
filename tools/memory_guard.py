@@ -145,7 +145,6 @@ from tools.memory_guard_core.memory_limits import (  # noqa: E402
     available_memory_bytes as available_memory_bytes,
     child_rlimit_kb_from_gb as child_rlimit_kb_from_gb,
     default_child_rlimit_gb as default_child_rlimit_gb,
-    normalize_env_prefix as normalize_env_prefix,
     max_global_rss_kb_from_gb as max_global_rss_kb_from_gb,
     max_rss_kb_from_gb as max_rss_kb_from_gb,
     physical_memory_bytes as physical_memory_bytes,

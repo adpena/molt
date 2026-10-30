@@ -13,7 +13,7 @@ import molt.cli as cli
 from molt.capability_manifest import CapabilityManifest, resolve_runtime_policy_from_env
 from molt.cli import native_main_stub
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 _NATIVE_MAIN_STUB_NAMES = (
     "_native_main_stub_snippets",

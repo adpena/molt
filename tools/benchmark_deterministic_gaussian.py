@@ -21,7 +21,7 @@ import numpy as np  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_BENCH")
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "tools" / "native" / "deterministic_correlate1d.c"

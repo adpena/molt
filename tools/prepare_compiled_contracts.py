@@ -54,7 +54,7 @@ from tests.wasm_runtime_heavy_witnesses import (  # noqa: E402
 )
 from molt.cli.script_commands import _wasm_run_build_args  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 
 def native_build_environment(

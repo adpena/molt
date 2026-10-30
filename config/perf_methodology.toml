@@ -8,7 +8,7 @@ schema = "molt-perf-methodology-v1"
 # explicit application compiler arguments change diagnostic verdicts. Earlier
 # reports retain their recorded class.
 version = 17
-content_sha256 = "baecac6a65dc478d7f34009f21c99952ca230c417aeb19922ab7582532474201"
+content_sha256 = "9b3dac84c4db32526dde477ca9c6020440e118753f202eefefa55a96cb083434"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -136,6 +136,10 @@ reason = "history repository custody commands; no benchmark samples use this exe
 [[mechanics]]
 path = "src/molt/process_guard.py"
 reason = "Node version-probe custody outside measured sample intervals"
+
+[[mechanics]]
+path = "src/molt/guard_stems_generated.py"
+reason = "registered guard-scope types for Node version-probe custody; no sample metrics or verdict policy"
 
 [[mechanics]]
 path = "src/molt/source_root.py"

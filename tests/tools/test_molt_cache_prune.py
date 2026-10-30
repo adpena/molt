@@ -1316,7 +1316,7 @@ def test_recency_never_refreshes_a_junction_target(tmp_path: Path) -> None:
     path = cache / "junction"
     run_guarded_test_process(
         ["cmd", "/c", "mklink", "/J", str(path), str(outside)],
-        prefix="MOLT_TEST_CACHE_RECENCY",
+        prefix="MOLT_PYTEST",
         check=True,
         capture_output=True,
     )

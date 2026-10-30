@@ -16,8 +16,9 @@ gates still run one at a time. The rest of the scheduling migration belongs to
 the proof executor and HF-334. The family queue,
 cross-host scheduling and reusable action receipts below remain release work.
 The [integration contract](../ops/INTEGRATION.md) owns implemented local
-behavior. Input-closed action reuse requires finer declared dependencies and
-hermetic execution; a passing log or unchanged command label cannot authorize it.
+behavior. Which tests a landing selects, and when a passing result may be
+reused, follow [observed_inputs.md](observed_inputs.md); this document owns
+what a landing runs, bisection and the queue.
 
 ## Problem
 
@@ -40,12 +41,12 @@ Measured 2026-10-14 to 2026-10-17:
   commit passed. fe30fd315 reached main unformatted, though the always-run
   rustfmt gate rejects it (HF-338).
 
-## Why not select tests from the import graph
+## Import-graph selection density
 
-Pants and Bazel select the tests a change reaches. A prototype did the same
-for Molt: the static import graph of `src/`, `tools/` and `tests/`, each
-test's `conftest.py` files, and Pants-style asset inference (a string literal
-or `ROOT / "a" / "b"` chain that names a tracked file is a dependency).
+A prototype selected the tests a change reaches through the static import
+graph of `src/`, `tools/` and `tests/`, each test's `conftest.py` files, and
+asset inference (a string literal or `ROOT / "a" / "b"` chain that names a
+tracked file is a dependency).
 
 - It selected the broken test for every break above that runs on this host
   (the uv fixture through `tools/proof_plan.toml`, the weakref scraper through
@@ -57,10 +58,11 @@ or `ROOT / "a" / "b"` chain that names a tracked file is a dependency).
   and 82 in `molt.frontend`, so any CLI or frontend change reaches every test.
 
 The shelved per-test result cache (HF-263) found the same density from
-runtime records. Import-graph selection would only say "run everything" more
-precisely for most compiler changes, and it cannot see platform-only
-failures. Selection by family stays the unit; the graph can later trim
-within a family once conftest imports are lazy.
+runtime records. The landing now selects this way
+(`tools/test_dependency_graph.py`, [testing spec](../spec/areas/testing/0007-testing.md#landing-test-selection)).
+On 2026-10-30 each hub module still selected 983 of 983 test files, and a
+platform-only failure stays invisible to it. Observed-input selection replaces
+it (stages 3 and 6 of the observed-input design).
 
 ## Selecting by plan entry, not by the plan file (HF-457)
 
@@ -93,8 +95,6 @@ only the targets a BUILD-file edit changes for the same reason.
   change and retests the ones behind it.
 - **GitHub merge queue** and **Chromium's CQ**: required checks on the merge
   result, not on the branch.
-- **Bazel** caches each test action by the digest of its inputs, so a change
-  reruns only what it can affect.
 
 ## Design
 
@@ -115,9 +115,8 @@ only the targets a BUILD-file edit changes for the same reason.
    costs O(log N) extra runs and the others still land.
 5. **Receipts.** Every candidate leaves one receipt: each command's cell,
    host, duration, peak RSS and result. Longest-first ordering reads it.
-6. **Speed by reuse, not by skipping.** A command whose declared inputs are
-   unchanged since a passing receipt on that cell reuses the receipt. This
-   needs per-command inputs finer than today's family globs.
+6. **Speed by reuse, not by skipping.** A passing result is reused only under
+   the observed-input rules (stages 1, 5 and 6 of that design).
 7. **No second path to main.** A pre-push hook refuses a push to main whose
    commit has no passing queue receipt. The `[[rule]]` tables and their
    projection are deleted once the queue owns selection.
@@ -540,5 +539,5 @@ batches and bisection, which replaces every private landing wrapper.
 2. The queue runner on this host, with the plan's family selection for the
    macOS and host-independent cells.
 3. Linux and Windows cells on the farm.
-4. Rollups, bisection, and receipt reuse by command inputs.
+4. Rollups and bisection; result reuse follows the observed-input stages.
 5. The pre-push hook; delete the `[[rule]]` tables and their projection.

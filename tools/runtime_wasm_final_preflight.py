@@ -65,7 +65,7 @@ from tools.proof_queue_pkg import state as proof_queue_state  # noqa: E402
 
 
 SCHEMA = "molt.runtime-wasm-final-preflight.v5"
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 _GIT_TIMEOUT_SECONDS = 30.0
 _COMPILER_MUTEX = "compiler-build-resource"
 _BUILD_TOOL_NAMES = frozenset(

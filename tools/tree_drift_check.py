@@ -43,7 +43,7 @@ bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 # Files whose staleness silently MASKS the witness/E1 frontier: if the shared
 # checkout's version of any of these differs from origin/main, an acceptance run
