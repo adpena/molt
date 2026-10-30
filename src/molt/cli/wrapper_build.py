@@ -164,6 +164,7 @@ def _wrapper_build_dependency_fingerprints(
         target = request.target
         import_admission_policy, admission_error = _resolve_import_admission_policy(
             external_module_roots=resolved_build_entry.external_module_roots,
+            program_module_roots=resolved_build_entry.program_module_roots,
             json_output=False,
             defer_native_artifacts=True,
             target=target,

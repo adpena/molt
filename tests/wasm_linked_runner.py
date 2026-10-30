@@ -240,20 +240,40 @@ class WasmTestBuildCommand:
     output: Path | None
 
 
+@dataclass(frozen=True)
+class ModuleEntry:
+    """A ``python -m name`` entry: ``molt build --module name`` over ``root``.
+
+    ``root`` is the directory that holds the module, passed as the explicit
+    module root (MOLT_MODULE_ROOTS), as ``python -m`` finds it on sys.path.
+    """
+
+    name: str
+    root: Path
+
+
 def wasm_linked_build_command(
     root: Path,
-    src: Path,
+    src: Path | ModuleEntry,
     out_dir: Path,
     *,
     extra_args: list[str] | None = None,
 ) -> WasmTestBuildCommand:
     out_dir = _select_out_dir(out_dir, root)
     test_artifact_root = _linked_test_artifact_root(root, out_dir)
+    if isinstance(src, ModuleEntry):
+        entry_args = ["--module", src.name]
+        entry_stem = src.name.replace(".", "_")
+    else:
+        entry_args = [str(src)]
+        entry_stem = src.stem
     env = wasm_test_build_env(
         root,
         linked=True,
-        session_id=f"test-wasm-{_wasm_test_lane()}-{src.stem}-{out_dir.name}",
+        session_id=f"test-wasm-{_wasm_test_lane()}-{entry_stem}-{out_dir.name}",
     )
+    if isinstance(src, ModuleEntry):
+        env["MOLT_MODULE_ROOTS"] = str(src.root)
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
     env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
@@ -268,7 +288,7 @@ def wasm_linked_build_command(
         "-m",
         "molt.cli",
         "build",
-        str(src),
+        *entry_args,
         "--build-profile",
         "dev",
         "--target",
@@ -284,7 +304,7 @@ def wasm_linked_build_command(
 
 def build_wasm_linked(
     root: Path,
-    src: Path,
+    src: Path | ModuleEntry,
     out_dir: Path,
     *,
     extra_args: list[str] | None = None,
@@ -312,6 +332,42 @@ def build_wasm_linked(
         "linked wasm output missing"
     )
     return output_wasm
+
+
+def molt_worker_stub_env(root: Path) -> dict[str, str]:
+    """Host overrides that answer database offload with the test worker stub.
+
+    molt-wasm-host starts ``MOLT_WORKER_CMD`` for ``molt_db``; the stub speaks
+    the worker protocol over JSON frames with fixed replies
+    (tests/fixtures/molt_worker_stub.py), as the molt_accel tests use it.
+    """
+    stub = root / "tests" / "fixtures" / "molt_worker_stub.py"
+    return {
+        "MOLT_WORKER_CMD": f"{sys.executable} -u {stub}",
+        "MOLT_WORKER_WIRE": "json",
+    }
+
+
+def run_cpython_reference(
+    src: Path | ModuleEntry, *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """Run ``src`` under this CPython: the parity tests' oracle.
+
+    A path runs as ``python script.py``; ``-I`` keeps the reference
+    independent of the checkout's Molt sources and of the caller's
+    environment. A ModuleEntry runs as ``python -m name`` from its root:
+    sys.path[0] is the cwd (Python/pathconfig.c:_PyPathConfig_ComputeSysPath0)
+    and Lib/runpy.py:_run_module_as_main runs the module as ``__main__``.
+    ``-E -s`` keep the environment and user site out; ``-I`` would also drop
+    the cwd that ``-m`` needs.
+    """
+    if isinstance(src, ModuleEntry):
+        argv = [sys.executable, "-E", "-s", "-B", "-m", src.name]
+        cwd = src.root
+    else:
+        argv = [sys.executable, "-I", "-B", str(src)]
+        cwd = src.parent
+    return _run_wasm_test_process(argv, role="tool", cwd=cwd, check=check)
 
 
 def run_wasm_linked(

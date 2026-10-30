@@ -5,6 +5,7 @@ mod support;
 
 use molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
 use support::host;
+use support::launch::deny_launch;
 
 // This retained-artifact owner also exposes external-compiler utilities.
 #[allow(dead_code)]
@@ -44,6 +45,7 @@ impl ArtifactFixture {
             "mode": "linked",
             "modules": {"linked": {"path": name, "size": content.len(), "sha256": molt_wasm_host::sha256_hex(content)}},
             "entry": {"module": "linked", "function": "_start"},
+            "launch": deny_launch(),
         });
         let manifest = self.write("manifest.json", &serde_json::to_vec(&manifest).unwrap());
         (source, manifest)
@@ -128,7 +130,8 @@ fn actual_manifest_precompile_resolves_every_member_without_executing_guest() {
         &serde_json::to_vec(&serde_json::json!({
             "version":WASM_EXECUTION_MANIFEST_VERSION,"mode":"split-runtime","modules":{
                 "app":descriptor(&app, app_bytes),"runtime":descriptor(&runtime,runtime_bytes)
-            }
+            },
+            "launch": deny_launch(),
         }))
         .unwrap(),
     );
@@ -318,13 +321,14 @@ fn actual_manifest_command_sdk_and_indirect_dispatch_keep_command_exit_semantics
 
 #[test]
 fn actual_manifest_command_rejects_unattested_versions_before_module_reads() {
+    let current = WASM_EXECUTION_MANIFEST_VERSION;
     for version in [
         None,
-        Some(serde_json::json!(2)),
-        Some(serde_json::json!(4)),
+        Some(serde_json::json!(current - 1)),
+        Some(serde_json::json!(current + 1)),
         Some(serde_json::json!(true)),
-        Some(serde_json::json!("3")),
-        Some(serde_json::json!(3.0)),
+        Some(serde_json::json!(current.to_string())),
+        Some(serde_json::json!(f64::from(current))),
         Some(serde_json::Value::Null),
     ] {
         let fixture = ArtifactFixture::new();
@@ -352,7 +356,9 @@ fn actual_manifest_command_rejects_unattested_versions_before_module_reads() {
             assert!(output.stdout.is_empty());
             let diagnostic = String::from_utf8_lossy(&output.stderr);
             assert!(
-                diagnostic.contains("Molt deployment manifest version must be 3"),
+                diagnostic.contains(&format!(
+                    "Molt deployment manifest version must be {current}"
+                )),
                 "{diagnostic}"
             );
         }
@@ -551,7 +557,8 @@ fn actual_application_reports_runtime_exit_status_and_finishes_lifetime() {
                 "mode": "linked",
                 "modules": {"linked": {"path": "application.wasm", "size": program.len(),
                     "sha256": molt_wasm_host::sha256_hex(&program)}},
-                "entry": {"module": "linked", "function": "molt_main"}
+                "entry": {"module": "linked", "function": "molt_main"},
+                "launch": deny_launch(),
             }))
             .unwrap(),
         );

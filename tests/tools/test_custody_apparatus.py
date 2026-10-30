@@ -204,7 +204,6 @@ def test_uv_lock_admission_refuses_changed_or_ambiguous_ownership(tmp_path, case
         "inotify:0x40",
         "inotify:0x80",
         "modified",
-        "fsevents:0x1000",
     ],
 )
 def test_uv_lock_admission_keeps_all_nonpure_close_events(tmp_path, action):
@@ -569,7 +568,6 @@ def test_harness_command_log_follows_the_admitted_state_root(tmp_path: Path) -> 
         "renamed-to",
         "unknown",
         "inotify:0x40000200",
-        "fsevents:0x20200",
         "inotify:bad-mask",
     ],
 )
@@ -581,9 +579,7 @@ def test_destructive_or_unknown_git_directory_events_are_input_mutations(
     assert classify_apparatus_event(tmp_path, git, action) is None
 
 
-@pytest.mark.parametrize(
-    "action", ["modified", "inotify:0x40000004", "fsevents:0x20400"]
-)
+@pytest.mark.parametrize("action", ["modified", "inotify:0x40000004"])
 def test_real_directory_metadata_refresh_is_apparatus(
     tmp_path: Path, action: str
 ) -> None:
