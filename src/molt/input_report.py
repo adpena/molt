@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol, assert_never
 
-from molt.durable_file_identity import StatToken, file_identity
+from molt.durable_file_identity import StatToken
 
 # A lookup's resolved target and file type; an empty target carries the errno
 # of a lookup that failed for a reason other than absence; None is absent.
@@ -69,12 +69,10 @@ def stat_token(
             return None
     else:
         change = metadata.st_ctime_ns
-    try:
-        identity = file_identity(Path(os.path.realpath(path)), expected=metadata)
-    except (OSError, ValueError):
+    if metadata.st_ino <= 0:
         return None
     return StatToken(
-        identity,
+        metadata.st_ino,
         metadata.st_mode,
         # Windows by-name and handle metadata can report 4096 and 0 for
         # the same unchanged directory. Its allocation length is not a
@@ -193,6 +191,9 @@ def _reads_existing_content(flags: int) -> bool:
     # These handles grant metadata access only. Identity capture must not turn
     # a proven semantic read into an additional unbound content observation.
     if flags & (getattr(os, "O_PATH", 0) | getattr(os, "O_EVTONLY", 0)):
+        return False
+    search = getattr(os, "O_SEARCH", 0)
+    if search and flags & search == search:
         return False
     # An open that creates a new file (O_CREAT|O_EXCL, or Linux's unnamed
     # O_TMPFILE) or truncates one with write access reads nothing that

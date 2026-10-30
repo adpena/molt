@@ -31,12 +31,12 @@ from tests.process_guard_common import install_module_view, run_guarded_test_pro
 def _receipt_payload(source_key: str) -> dict[str, object]:
     # Literal wire shape is independent of the writer under test.
     return {
-        "version": 4,
+        "version": 5,
         "source_key": source_key,
         "tier": "module",
         "size": 9,
         "sha256": hashlib.sha256(b"return 1\n").hexdigest(),
-        "generation": ["apple-uuid:" + "1" * 32, "2" * 32],
+        "generation": [2, 0o100600, 9, 1, 1],
         "emission_origin": None,
     }
 
@@ -829,7 +829,7 @@ def test_bytes_only_or_stale_origin_refuses_capture_but_preserves_ordinary_reuse
         receipt.unlink()
     else:
         if receipt_fault == "wrong-generation":
-            payload["generation"][1] = "f" * 32
+            payload["generation"][0] += 1
         elif receipt_fault == "wrong-output":
             payload["emission_origin"]["output"]["sha256"] = "f" * 64
         elif receipt_fault == "missing-field":
@@ -1012,12 +1012,12 @@ def test_sealed_cache_transfer_republishes_generation_without_retagging(
     origin = _original_emission_payload(content, process_id=101, scope="c" * 64)
     # A transported snapshot cannot retain the source filesystem's generation.
     receipt = {
-        "version": 4,
+        "version": 5,
         "source_key": name,
         "tier": "immutable",
         "size": len(content),
         "sha256": hashlib.sha256(content).hexdigest(),
-        "generation": ["apple-uuid:" + "1" * 32, "2" * 32],
+        "generation": [2, 0o100600, 1, 1, 1],
         "emission_origin": origin,
     }
     if defect == "receipt":
@@ -1046,9 +1046,8 @@ def test_sealed_cache_transfer_republishes_generation_without_retagging(
             backend_cache_sync_receipt_path(destination).read_text(encoding="utf-8")
         )
         assert actual["emission_origin"] == origin
-        from molt.durable_file_identity import file_identity
-
-        assert actual["generation"] == list(file_identity(destination).stat_prefix())
+        current = stable_regular_file_identity(destination, label="restored artifact")
+        assert actual["generation"] == current.stat_token().payload()
         assert actual["generation"] != receipt["generation"]
         assert destination.read_bytes() == content
         assert (
@@ -1622,8 +1621,9 @@ def test_locked_native_eligibility_preserves_origin_order_and_error_classificati
 
 @pytest.mark.parametrize("sidecar", [False, True])
 @pytest.mark.parametrize("renumbered", [False, True])
+@pytest.mark.parametrize("legacy_version", [3, 4])
 def test_new_sync_namespace_starts_cold_and_leaves_legacy_untouched(
-    tmp_path, sidecar, renumbered
+    tmp_path, sidecar, renumbered, legacy_version
 ):
     import hashlib
 
@@ -1631,14 +1631,20 @@ def test_new_sync_namespace_starts_cold_and_leaves_legacy_untouched(
     artifact.write_bytes(b"synced generation")
     metadata = artifact.stat()
     if sidecar:
-        current = artifact.with_name("artifact.sync.v4.json")
-        legacy = artifact.with_name("artifact.sync.json")
+        current = artifact.with_name("artifact.sync.v5.json")
+        legacy = artifact.with_name(
+            "artifact.sync.v4.json" if legacy_version == 4 else "artifact.sync.json"
+        )
     else:
-        current = tmp_path / "artifact_sync" / "v4" / "receipt.json"
-        legacy = current.parent.parent / current.name
+        current = tmp_path / "artifact_sync" / "v5" / "receipt.json"
+        legacy = (
+            current.parent.parent / "v4" / current.name
+            if legacy_version == 4
+            else current.parent.parent / current.name
+        )
     legacy.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 3,
+        "version": legacy_version,
         "source_key": "source",
         "tier": "immutable",
         "size": metadata.st_size,
@@ -1646,6 +1652,8 @@ def test_new_sync_namespace_starts_cold_and_leaves_legacy_untouched(
         "generation": [metadata.st_dev + int(renumbered), metadata.st_ino],
         "emission_origin": None,
     }
+    if legacy_version == 4:
+        payload["generation"] = ["apple-uuid:" + "1" * 32, f"{metadata.st_ino:032x}"]
     legacy.write_text(json.dumps(payload), encoding="utf-8")
     before = legacy.read_bytes()
     state = sync._read_artifact_sync_state(current)

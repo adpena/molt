@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from molt.durable_file_identity import DurableFileIdentity
+from molt.durable_file_identity import StatToken
 from molt.backend_protocol import BackendEmissionOrigin
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.atomic_io import _atomic_write_json
@@ -20,14 +20,14 @@ from molt.toolchain_identity import (
 # artifact. Reconstructible source-analysis candidates belong to json_cache.
 
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[str, dict[str, Any] | None]] = {}
-_ARTIFACT_SYNC_STATE_VERSION = 4
+_ARTIFACT_SYNC_STATE_VERSION = 5
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
     return _artifact_state_path(
         project_root,
         artifact,
-        subdir="artifact_sync/v4",
+        subdir="artifact_sync/v5",
         stem_suffix="",
         extension="json",
     )
@@ -49,17 +49,11 @@ def _artifact_sync_payload_shape(value: object) -> bool:
         or value["version"] != _ARTIFACT_SYNC_STATE_VERSION
     ):
         return False
-    generation = value["generation"]
-    if isinstance(generation, list) and len(generation) == 2:
-        try:
-            DurableFileIdentity.from_stat_prefix(*generation)
-        except ValueError:
-            return False
-    return (
-        isinstance(generation, list)
-        and len(generation) == 2
-        and all(isinstance(part, str) for part in generation)
-    )
+    try:
+        StatToken.from_payload(value["generation"])
+    except ValueError:
+        return False
+    return True
 
 
 def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
@@ -113,7 +107,7 @@ def _write_artifact_sync_state(
         "tier": tier,
         "size": identity.size,
         "sha256": identity.sha256,
-        "generation": list(identity.stat_token().identity.stat_prefix()),
+        "generation": identity.stat_token().payload(),
         "emission_origin": (
             emission_origin.payload() if emission_origin is not None else None
         ),
@@ -155,8 +149,7 @@ def _artifact_sync_state_matches(
     return (
         state["size"] == identity.size
         and state["sha256"] == identity.sha256
-        and DurableFileIdentity.from_stat_prefix(*state["generation"])
-        == identity.stat_token().identity
+        and StatToken.from_payload(state["generation"]) == identity.stat_token()
     )
 
 
@@ -167,17 +160,16 @@ def _artifact_sync_emission_origin(
 ) -> BackendEmissionOrigin | None:
     """Read an observation bound to the admitted generation, never an attestation.
 
-    Recency updates change timestamps, so generation custody uses file identity
-    and freshly read content. The closed supervisor journal remains the origin
-    admission authority, independent of these untrusted retained observations.
+    A cache token and freshly read content bind this observation to the current
+    artifact. The closed supervisor journal remains the origin admission
+    authority, independent of these untrusted retained observations.
     """
     if (
         state is None
         or not _artifact_sync_payload_shape(state)
         or state.get("sha256") != identity.sha256
         or state.get("size") != identity.size
-        or DurableFileIdentity.from_stat_prefix(*state["generation"])
-        != identity.stat_token().identity
+        or StatToken.from_payload(state["generation"]) != identity.stat_token()
         or state.get("emission_origin") is None
     ):
         return None

@@ -103,37 +103,59 @@ class DurableIdentityMachine(RuleBasedStateMachine):
     @contextmanager
     def _persistent_authority(self):
         """Replay stat allocation while keeping one explicit volume authority."""
-        real_stat, real_lstat = Path.stat, Path.lstat
+        real_stat, real_lstat, relative_stat = Path.stat, Path.lstat, os.stat
+        actual = real_stat(self.bound_root)
+
+        def replay_metadata(metadata):
+            if (metadata.st_dev, metadata.st_ino) != (actual.st_dev, actual.st_ino):
+                return metadata
+            values = list(metadata)
+            values[stat.ST_DEV], values[stat.ST_INO] = self.device, self.inode
+            extra = {
+                name: getattr(metadata, name)
+                for name in (
+                    "st_atime_ns",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                    "st_birthtime",
+                    "st_birthtime_ns",
+                    "st_file_attributes",
+                    "st_reparse_tag",
+                )
+                if hasattr(metadata, name)
+            }
+            return os.stat_result(values, extra)
 
         def replay(query):
             def read(path, *args, **kwargs):
-                metadata = query(path, *args, **kwargs)
-                if path != self.bound_root:
-                    return metadata
-                values = list(metadata)
-                values[stat.ST_DEV], values[stat.ST_INO] = self.device, self.inode
-                extra = {
-                    name: getattr(metadata, name)
-                    for name in (
-                        "st_atime_ns",
-                        "st_mtime_ns",
-                        "st_ctime_ns",
-                        "st_birthtime",
-                        "st_birthtime_ns",
-                        "st_file_attributes",
-                        "st_reparse_tag",
-                    )
-                    if hasattr(metadata, name)
-                }
-                return os.stat_result(values, extra)
+                return replay_metadata(query(path, *args, **kwargs))
 
             return read
 
+        def volume(fd):
+            assert isinstance(fd, int), "the volume query must use the held parent"
+            return durable._AppleVolume(42, self.volume)
+
+        def leaf(fd, name):
+            metadata = relative_stat(name, dir_fd=fd, follow_symlinks=False)
+            return durable._AppleLeaf(42, replay_metadata(metadata).st_ino)
+
         with pytest.MonkeyPatch.context() as patch:
-            # Exercise the metadata-only capture path on every test host; the
-            # platform's native query is a separately qualified cell.
+            # Real held-parent descriptors and relative lookup exercise the
+            # protocol; only the native stat allocation/volume inputs vary.
             install_module_view(patch, "sys", sys, durable, platform="darwin")
-            patch.setattr(durable, "_apple_volume", lambda node: self.volume)
+            install_module_view(
+                patch,
+                "os",
+                os,
+                durable,
+                stat=replay(relative_stat),
+                O_SEARCH=getattr(
+                    os, "O_SEARCH", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                ),
+            )
+            patch.setattr(durable, "_apple_volume", volume)
+            patch.setattr(durable, "_apple_leaf", leaf)
             patch.setattr(Path, "stat", replay(real_stat))
             patch.setattr(Path, "lstat", replay(real_lstat))
             yield patch
@@ -425,7 +447,10 @@ class DurableIdentityMachine(RuleBasedStateMachine):
                 assert observation.final.read_bytes() == b"old generation"
 
 
-TestDurableIdentityModel = DurableIdentityMachine.TestCase
+TestDurableIdentityModel = pytest.mark.skipif(
+    os.stat not in os.supports_dir_fd,
+    reason="the Darwin protocol model requires POSIX parent-relative descriptors; native Windows custody is a separate cell",
+)(DurableIdentityMachine.TestCase)
 TestDurableIdentityModel.settings = settings(
     max_examples=12,
     stateful_step_count=20,

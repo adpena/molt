@@ -627,7 +627,7 @@ def test_cli_refuses_source_only_validation_and_forwards_build_status(
 
     assert receipts == [
         context.roots.custody
-        / "logs/runtime_wasm_final_preflight/v4"
+        / "logs/runtime_wasm_final_preflight/v5"
         / "run-current.json"
     ]
     assert "internal-runtime-wasm-build" in launched[0]
@@ -641,7 +641,12 @@ def test_cli_refuses_source_only_validation_and_forwards_build_status(
 def test_disk_facts_use_native_capacity_but_keep_raw_telemetry(
     tmp_path, monkeypatch, estimated
 ):
-    from molt import disk_capacity
+    from molt import disk_capacity, durable_file_identity
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("preflight telemetry queried durable volume identity")
+
+    monkeypatch.setattr(durable_file_identity, "file_identity", forbidden)
 
     monkeypatch.setattr(disk_capacity, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 7)
@@ -662,6 +667,7 @@ def test_disk_facts_use_native_capacity_but_keep_raw_telemetry(
     )
     assert fact["ready"] is (estimated == 8 * 1024**3)
     assert bool(fact["error"]) is isinstance(estimated, Exception)
+    assert fact["volume"] == f"mount-anchor:{tmp_path}"
 
 
 def test_disk_facts_distinguish_mounts_with_same_root_spelling_and_measure_once(
@@ -677,13 +683,6 @@ def test_disk_facts_distinguish_mounts_with_same_root_spelling_and_measure_once(
     first = MountedPath(tmp_path / "first" / "outputs")
     second = MountedPath(tmp_path / "second" / "outputs")
     assert first.anchor == second.anchor
-    volume_labels = {
-        str(first): "apple-uuid:" + "a" * 32,
-        str(second): "apple-uuid:" + "b" * 32,
-    }
-    monkeypatch.setattr(
-        preflight, "_durable_volume", lambda path: volume_labels[str(path)]
-    )
     monkeypatch.setattr(
         preflight, "_nearest_existing_directory", lambda path: MountedPath(path)
     )
@@ -711,8 +710,8 @@ def test_disk_facts_distinguish_mounts_with_same_root_spelling_and_measure_once(
     assert len(facts) == 2
     assert calls == [first, second]
     assert [fact["volume"] for fact in facts] == [
-        volume_labels[str(first)],
-        volume_labels[str(second)],
+        f"mount-anchor:{first}",
+        f"mount-anchor:{second}",
     ]
     assert [fact["ready"] for fact in facts] == [True, False]
     assert [fact["free_bytes"] for fact in facts] == [10, 2]

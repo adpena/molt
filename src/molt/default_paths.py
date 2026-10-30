@@ -273,7 +273,7 @@ def is_backend_cache_artifact_name(name: str) -> bool:
 
 def backend_cache_sync_receipt_path(artifact: Path) -> Path:
     """Origin/byte generation receipt owned by the immutable artifact publisher."""
-    return artifact.with_name(artifact.name + ".sync.v4.json")
+    return artifact.with_name(artifact.name + ".sync.v5.json")
 
 
 def backend_cache_publication_lock_name(artifact: Path) -> str:
@@ -289,12 +289,12 @@ def cache_control_root(cache_root: Path) -> Path:
 
 def file_digest_cache_path(cache_root: Path) -> Path:
     """The host's stat-keyed file digest store within one cache namespace."""
-    return cache_root / "file-digests" / "v2.sqlite"
+    return cache_root / "file-digests" / "v3.sqlite"
 
 
 def toolchain_fact_store_path(cache_root: Path) -> Path:
     """The host's toolchain probe answers (`molt.toolchain_facts`) within one cache namespace."""
-    return cache_root / "toolchain-facts" / "v2.json"
+    return cache_root / "toolchain-facts" / "v3.json"
 
 
 def shared_cache_lock_path(cache_root: Path, name: str) -> Path:
