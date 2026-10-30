@@ -36,6 +36,13 @@ ignore = [
     { id = "RUSTSEC-2025-0098", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
     { id = "RUSTSEC-2025-0100", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
     { id = "RUSTSEC-2025-0134", reason = "Reviewed: rustls-pemfile is retained until direct rustls-pki-types parsing is migrated." },
+    # zstd 0.13.3 reaches the build only through wasmtime-internal-cache (molt-wasm-host's opt-in
+    # compilation cache), which calls zstd::encode_all/decode_all with default-features = false.
+    # No wasmtime release accepts zstd >= 0.14.3 yet (wasmtime-internal-cache 50.0.1, 2026-10-29,
+    # requires ^0.13.0). Remove these three when it does.
+    { id = "RUSTSEC-2026-0391", reason = "Reviewed: needs a stream encoder or decoder reused through with_context; wasmtime's cache uses only the bulk encode_all/decode_all, which build a fresh context per call." },
+    { id = "RUSTSEC-2026-0398", reason = "Reviewed: needs the zstd `seekable` feature; wasmtime-internal-cache disables default features and enables no zstd feature." },
+    { id = "RUSTSEC-2026-0403", reason = "Reviewed: needs legacy-frame support and stream::write::Decoder; wasmtime-internal-cache disables default features (legacy is off) and uses decode_all, which the advisory lists as unaffected." },
 ]
 
 # --------------------------------------------------------------------------- #

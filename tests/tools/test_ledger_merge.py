@@ -231,3 +231,53 @@ def test_a_conflicting_row_stops_the_cherry_pick(tmp_path: Path) -> None:
 
     assert picked.returncode != 0
     assert "<<<<<<< ours" in (repo / "LEDGER.md").read_text(encoding="utf-8")
+
+
+def _with_families(text: str, families: dict[str, tuple[str, str]]) -> str:
+    rows = "".join(
+        f"| {letter}. {name} | cause | {keys} |\n"
+        for letter, (name, keys) in families.items()
+    )
+    return text.replace(
+        "## Fixed\n",
+        "### Family dependency order\n\n"
+        "| Family | Cause | Keys |\n|---|---|---|\n"
+        f"{rows}\n"
+        "## Fixed\n",
+    )
+
+
+def _family_keys(text: str, letter: str) -> str:
+    line = next(line for line in text.splitlines() if line.startswith(f"| {letter}. "))
+    return line.split(" | ")[2].removesuffix(" |")
+
+
+def test_family_keys_merge_as_a_set_when_both_sides_edit_one_family() -> None:
+    # The 2026-10-29 refusal: one lane opened a row in family C, main closed
+    # another; both edited C's key list, so the old driver merged as text.
+    base = _with_families(
+        _ledger(["HF-1", "HF-2"], ["HF-0"]), {"C": ("Cells", "HF-1, HF-2")}
+    )
+    ours = _with_families(
+        _ledger(["HF-10", "HF-1", "HF-2"], ["HF-0"]),
+        {"C": ("Cells", "HF-1, HF-2, HF-10")},
+    )
+    theirs = _with_families(
+        _ledger(["HF-1"], ["HF-2", "HF-0"]), {"C": ("Cells", "HF-1")}
+    )
+
+    result = _merge(base, ours, theirs)
+
+    assert result.conflicts == ()
+    assert _family_keys(result.text, "C") == "HF-1, HF-10"
+    assert _keys(result.text) == ["HF-10", "HF-1", "HF-2", "HF-0"]
+
+
+def test_both_sides_renaming_one_family_is_a_conflict() -> None:
+    base = _with_families(_ledger(["HF-1"], []), {"C": ("Cells", "HF-1")})
+    ours = _with_families(_ledger(["HF-1"], []), {"C": ("Graph cells", "HF-1")})
+    theirs = _with_families(_ledger(["HF-1"], []), {"C": ("Proof cells", "HF-1")})
+
+    result = _merge(base, ours, theirs)
+
+    assert result.conflicts == ("family C",)

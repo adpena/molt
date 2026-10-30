@@ -556,6 +556,25 @@ def custody_root(repo_root: str | Path) -> Path:
     return custody
 
 
+def repository_custody_root(repo_root: str | Path) -> Path:
+    """Return the custody of the repository that owns this checkout.
+
+    A linked worktree belongs to the main checkout of its Git common
+    directory, wherever its own source lives. A capacity-selected volume can
+    hold a worktree (the landing sandbox), so state that follows the
+    repository, such as provisioned toolchains, reads this root and never the
+    worktree's location. A bare common directory has no main checkout; the
+    worktree's own custody stands.
+    """
+    root = Path(repo_root).expanduser().resolve()
+    directories = git_directories(root)
+    if directories is not None:
+        git_dir, common_dir = directories
+        if git_dir != common_dir and common_dir.name == ".git":
+            return custody_root(common_dir.parent)
+    return custody_root(root)
+
+
 def family_worktrees_root(main_checkout: str | Path) -> Path | None:
     """`<root>/worktrees` for a main checkout at `<root>/molt-src`, else None.
 

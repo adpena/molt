@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import hashlib
 import os
+import stat
 import shutil
 from collections import UserDict
 from types import MappingProxyType
@@ -616,3 +617,41 @@ def test_retirement_refuses_root_junction_and_preserves_nested_junction_target(
         file_publication.durable_remove_path(junction, retirement_scope="owned")
     file_publication.durable_remove_path(source, retirement_scope="owned")
     assert (outside / "payload").read_bytes() == b"preserve"
+
+
+def test_owned_path_admits_the_operating_systems_own_links() -> None:
+    # macOS: /var is a root-owned link to /private/var in the root-owned,
+    # non-writable /, and the platform temp directory lies behind it.
+    system_link = Path("/var")
+    if (
+        os.name == "nt"
+        or not system_link.is_symlink()
+        or system_link.lstat().st_uid != 0
+    ):
+        pytest.skip("this host has no root-owned /var link")
+    owned = system_link / "molt-owned-path-probe" / "child"
+    assert file_publication.resolve_owned_path(owned) == owned.resolve()
+
+
+def test_a_root_owned_link_in_a_writable_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ownership alone is not enough: a writable parent lets another user plant
+    # the link, so the rule also requires a root-owned, non-writable parent.
+    link = tmp_path / "alias"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    real_lstat = Path.lstat
+
+    def lstat(path: Path) -> os.stat_result:
+        result = real_lstat(path)
+        if path in (link, link.parent):
+            fields = list(result)
+            fields[4] = 0  # st_uid
+            if path == link.parent:
+                fields[0] = stat.S_IFDIR | 0o777
+            return os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(ValueError, match="link or junction"):
+        file_publication.resolve_owned_path(link / "child")

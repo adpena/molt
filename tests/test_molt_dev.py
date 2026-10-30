@@ -5526,6 +5526,35 @@ def test_land_queues_nothing_when_a_static_gate_fails_in_the_lane(
     assert queue.pending(queue.queue_paths(lane)) == []
 
 
+def test_land_precheck_only_runs_static_gates_and_queues_nothing(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _counting_policy(work, counter)
+    _lane(work, "handoff", {"c.py": "c = 3\n"})
+    lane = work.parent / "lane-handoff"
+    started: list[Path] = []
+    monkeypatch.setattr(
+        queue, "_start_queue_runner", lambda paths, repo, args: started.append(repo)
+    )
+    args = drv.build_parser().parse_args(
+        ["land", "--repo", str(lane), "--candidate-controller", "--precheck-only"]
+    )
+
+    assert args.func(args) == EXIT_OK
+
+    assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert queue.pending(queue.queue_paths(lane)) == []
+    assert started == []
+    with pytest.raises(SystemExit):
+        drv.build_parser().parse_args(
+            ["land", "--repo", str(lane), "--precheck-only", "--no-precheck"]
+        )
+
+
 def test_land_no_precheck_queues_without_running_gates(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
