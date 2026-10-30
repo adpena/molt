@@ -289,7 +289,7 @@ integration speedup.
 | Subcommand | Purpose |
 |---|---|
 | `integrate` | controller → fetch → rebase → verify-commits → cite → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--candidate-controller`, `--ignore` (cleanup only). |
-| `land` | Run the lane's static gates in the lane (the precheck), then queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. `--no-precheck` queues without the precheck. |
+| `land` | Run the lane's static gates in the lane (the precheck), then queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. `--no-precheck` queues without the precheck. `--precheck-only` runs the precheck and stops, queueing nothing (a worker's handoff check). |
 | `queue run` | The runner (started by `land`): land queued commits in batches through `integrate`, bisecting failures. `--candidate-controller` for a controller repair. |
 | `queue status` | Pending requests, the bisection plan and recent results as JSON. `--recent N`. |
 | `queue withdraw` | Close pending requests without testing them: `queue withdraw <request-id>... --reason TEXT`. Runs from main's pinned controller (`--candidate-controller` for a controller repair). Refuses while a batch runs, withdraws nothing if any id is not pending, and starts a runner when requests remain. |

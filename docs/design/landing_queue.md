@@ -352,7 +352,9 @@ One runner owns main. Agents enqueue and continue.
   so a lint, format, generator or policy failure costs that lane alone instead
   of a batch bisection; GitHub's merge queue likewise admits only changes whose
   required checks passed, and Zuul runs its check pipeline before its gate
-  pipeline. `--no-precheck` skips it; the batch still runs every gate. It
+  pipeline. `--no-precheck` skips it; the batch still runs every gate.
+  `--precheck-only` runs it and stops: nothing is queued and no runner
+  starts, so a worker proves its handoff on the landing path itself. It
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
