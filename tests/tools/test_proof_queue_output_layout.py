@@ -958,7 +958,14 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
 
     def run_git(root, arguments):
         result = run_guarded_test_process(
-            ["git", "-C", str(root), *arguments], text=False, check=True, timeout=30
+            ["git", "-C", str(root), *arguments],
+            env={
+                **os.environ,
+                "MOLT_EXT_ROOT": str(tmp_path / "git-observer-artifacts"),
+            },
+            text=False,
+            check=True,
+            timeout=30,
         )
         assert isinstance(result.stdout, bytes)
         return result.stdout
