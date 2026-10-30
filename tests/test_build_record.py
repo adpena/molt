@@ -2312,9 +2312,7 @@ def test_paths_inside_an_output_stage_directory_are_publication_custody(
 
 
 @pytest.mark.parametrize("renumbered", [False, True])
-def test_legacy_build_record_rekeys_only_live_matching_generations(
-    tmp_path, renumbered
-):
+def test_legacy_build_record_is_a_cold_miss_without_rewriting_it(tmp_path, renumbered):
     _source, _tool, output, record = _fixture(tmp_path)
     payload = json.loads(record.read_text(encoding="utf-8"))
 
@@ -2333,9 +2331,7 @@ def test_legacy_build_record_rekeys_only_live_matching_generations(
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text(json.dumps(payload), encoding="utf-8")
     record.unlink()
-    assert _current(record, output) is (not renumbered)
-    if not renumbered:
-        assert (
-            json.loads(record.read_text(encoding="utf-8"))["schema"]
-            == "molt-build-record-v11"
-        )
+    before = legacy.read_bytes()
+    assert not _current(record, output)
+    assert not record.exists()
+    assert legacy.read_bytes() == before

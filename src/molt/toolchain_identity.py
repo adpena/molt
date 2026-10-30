@@ -20,7 +20,6 @@ from typing import BinaryIO
 from molt.durable_file_identity import (
     DurableFileIdentity,
     file_identity,
-    upgrade_legacy,
 )
 from molt.default_paths import executable_environment_value, expand_user_path
 from molt.process_environment import ProcessEnvironment
@@ -881,62 +880,8 @@ class FileDigestCache:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS digests_recorded ON digests (recorded_ns)"
         )
-        if self.store.name == "v2.sqlite":
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS identity_migration (completed INTEGER PRIMARY KEY CHECK(completed=1))"
-            )
-            if (
-                connection.execute(
-                    "SELECT completed FROM identity_migration"
-                ).fetchone()
-                is None
-            ):
-                legacy = self.store.with_name("v1.sqlite")
-                with connection:
-                    if legacy.exists():
-                        with closing(
-                            sqlite3.connect(legacy.as_uri() + "?mode=ro", uri=True)
-                        ) as old:
-                            columns = [
-                                row[1]
-                                for row in old.execute("PRAGMA table_info(digests)")
-                            ]
-                            if "dev" in columns:
-                                self._rekey_rows(
-                                    connection, old.execute("SELECT * FROM digests")
-                                )
-                    connection.execute(
-                        "INSERT OR IGNORE INTO identity_migration VALUES (1)"
-                    )
         connection.execute("PRAGMA user_version=2")
         return connection
-
-    @staticmethod
-    def _rekey_rows(connection: sqlite3.Connection, rows) -> None:
-        for row in rows:
-            path, device, inode, mode, size, mtime, ctime, digest, recorded = row
-            try:
-                metadata = Path(path).lstat()
-                identity = upgrade_legacy(
-                    Path(path), {"device": device, "inode": inode}
-                )
-                if _stat_identity(metadata)[2:] != (mode, size, mtime, ctime):
-                    continue
-            except (OSError, ValueError):
-                continue
-            connection.execute(
-                "INSERT OR IGNORE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    path,
-                    *identity.stat_prefix(),
-                    mode,
-                    size,
-                    mtime,
-                    ctime,
-                    digest,
-                    recorded,
-                ),
-            )
 
     def _rows(self) -> dict[str, tuple[tuple[str, str, int, int, int, int], str, int]]:
         if self._recorded is None:

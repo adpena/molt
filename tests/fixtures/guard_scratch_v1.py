@@ -1,4 +1,5 @@
 # Frozen production authority from bbd853d0f00d993667e5461174feaece018b3ab8.
+# Source: src/molt/temporary_artifacts.py
 # Compatibility oracle only; never imported by production.
 """Guard-owned scratch: terminal receipts, never age or PID, permit deletion.
 

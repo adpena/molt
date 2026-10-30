@@ -486,8 +486,6 @@ def _read_persistent_source_hash(
         volume=volume,
     )
     payload = _read_source_hash_cache_payload(cache_path)
-    if payload is None:
-        payload = _migrate_source_hash(cache_root, Path(path_str), volume, file_id)
     if (
         not isinstance(payload, dict)
         or payload.get("version") != _SOURCE_HASH_CACHE_SCHEMA_VERSION
@@ -538,70 +536,6 @@ def _write_persistent_source_hash(
         "source_sha256": source_hash,
     }
     _write_source_hash_cache_payload(cache_path, payload)
-
-
-def _migrate_source_hash(
-    cache_root: Path, path: Path, volume: str, file_id: str
-) -> dict | None:
-    from molt.file_locks import _acquire_file_lock, _release_file_lock
-
-    lock = _acquire_file_lock(
-        cache_root / "source_hash_cache" / "v2" / "identity-migration.lock",
-        timeout_s=10,
-        timeout_message="source hash migration is busy",
-    )
-    try:
-        metadata = path.stat()
-        legacy = {
-            "path": str(path),
-            "size": metadata.st_size,
-            "mtime_ns": metadata.st_mtime_ns,
-            "ctime_ns": metadata.st_ctime_ns,
-            "inode": metadata.st_ino,
-            "device": metadata.st_dev,
-        }
-        encoded = json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
-        digest = hashlib.sha256(encoded).hexdigest()
-        old_path = cache_root / "source_hash_cache" / digest[:2] / (digest + ".json")
-        old = _read_source_hash_cache_payload(old_path)
-        if (
-            not isinstance(old, dict)
-            or old.get("version") != 1
-            or any(old.get(k) != v for k, v in legacy.items())
-        ):
-            return None
-        source_hash = old.get("source_sha256")
-        if not isinstance(source_hash, str) or not source_hash:
-            return None
-        from molt.durable_file_identity import upgrade_legacy
-
-        identity = upgrade_legacy(
-            path, {"device": old["device"], "inode": old["inode"]}
-        )
-        if identity.stat_prefix() != (volume, file_id):
-            return None
-        _write_persistent_source_hash(
-            cache_root,
-            path_str=str(path),
-            size=metadata.st_size,
-            mtime_ns=metadata.st_mtime_ns,
-            ctime_ns=metadata.st_ctime_ns,
-            volume=volume,
-            file_id=file_id,
-            source_hash=source_hash,
-        )
-        return {
-            "version": 2,
-            "path": str(path),
-            "size": metadata.st_size,
-            "mtime_ns": metadata.st_mtime_ns,
-            "ctime_ns": metadata.st_ctime_ns,
-            "volume": volume,
-            "file_id": file_id,
-            "source_sha256": source_hash,
-        }
-    finally:
-        _release_file_lock(lock)
 
 
 @functools.lru_cache(maxsize=16384)

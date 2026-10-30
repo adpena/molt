@@ -1562,7 +1562,7 @@ def test_searchable_executable_has_narrow_error_classification(denial):
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows never reuses detached digests")
 @pytest.mark.parametrize("renumbered", [False, True])
-def test_legacy_digest_database_rekeys_only_provable_rows(
+def test_new_digest_database_starts_cold_without_reading_legacy_rows(
     tmp_path, monkeypatch, renumbered
 ):
     import sqlite3
@@ -1593,16 +1593,13 @@ def test_legacy_digest_database_rekeys_only_provable_rows(
     new_store = tmp_path / "v2.sqlite"
     cache = identity.FileDigestCache(new_store, max_age_ns=10**18)
     found = cache.lookup(path, expected_path_stat=metadata, label="legacy digest")
-    if renumbered:
-        assert found is None
-    else:
-        assert found is not None and found.sha256 == digest
+    assert found is None
     with sqlite3.connect(new_store) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(digests)")}
         assert "dev" not in columns and "ino" not in columns
         assert {"volume", "file_id"} <= columns
     # Old immutable cache material remains for older running readers. Its
-    # contents never become current v2 authority without the matching fence.
+    # contents never become current v2 authority.
     with sqlite3.connect(store) as connection:
         assert connection.execute("SELECT dev FROM digests").fetchone() == (
             metadata.st_dev + int(renumbered),

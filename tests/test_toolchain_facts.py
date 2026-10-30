@@ -1299,7 +1299,9 @@ def test_a_warm_toolchain_resolves_a_cargo_plan_without_probe_processes(
 
 
 @pytest.mark.parametrize("renumbered", [False, True])
-def test_legacy_probe_store_rekeys_in_its_own_namespace(tmp_path, renumbered):
+def test_new_probe_store_starts_cold_without_reading_legacy_answers(
+    tmp_path, renumbered
+):
     import hashlib
     import time
     from molt.toolchain_identity import stable_regular_file_identity
@@ -1344,10 +1346,7 @@ def test_legacy_probe_store_rekeys_in_its_own_namespace(tmp_path, renumbered):
     before = legacy.read_bytes()
     current = facts.ToolchainFactStore(tmp_path / "cache", max_age_ns=DAY_NS)
     answer = current.lookup(key)
-    assert answer == (None if renumbered else facts.ProbeAnswer("old answer", ""))
+    assert answer is None
     assert current.path == legacy.with_name("v2.json")
     assert legacy.read_bytes() == before
-    assert (
-        json.loads(current.path.read_text(encoding="utf-8"))["schema"]
-        == facts.STORE_SCHEMA
-    )
+    assert not current.path.exists()

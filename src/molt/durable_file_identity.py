@@ -358,25 +358,3 @@ def upgrade_legacy(path: Path, value: object) -> DurableFileIdentity:
             "identity-unverifiable: legacy filesystem object changed"
         )
     return file_identity(path, expected=metadata)
-
-
-def upgrade_stat_token(path: Path, token: object) -> list[object]:
-    """Re-key a legacy full token only while every recorded field matches."""
-    if (
-        not isinstance(token, (list, tuple))
-        or len(token) < 6
-        or any(type(v) is not int for v in token[:6])
-    ):
-        raise IdentityUnverifiable("identity-unverifiable: invalid legacy stat token")
-    metadata = path.lstat()
-    if (
-        metadata.st_mode,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
-    ) != tuple(token[2:6]):
-        raise IdentityUnverifiable(
-            "identity-unverifiable: legacy file generation changed"
-        )
-    identity = upgrade_legacy(path, {"device": token[0], "inode": token[1]})
-    return [*identity.stat_prefix(), *token[2:]]

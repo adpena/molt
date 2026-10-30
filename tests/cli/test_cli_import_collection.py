@@ -35486,7 +35486,7 @@ print(json.dumps({{"paths": [str(path) for path in snapshot.source_paths], "fing
 
 
 @pytest.mark.parametrize("renumbered", [False, True])
-def test_legacy_source_hash_rekeys_into_versioned_namespace(tmp_path, renumbered):
+def test_new_source_hash_namespace_starts_cold(tmp_path, renumbered):
     import hashlib
     import json
     from molt.cli import module_source
@@ -35524,11 +35524,7 @@ def test_legacy_source_hash_rekeys_into_versioned_namespace(tmp_path, renumbered
         file_id=file_id,
         volume=volume,
     )
-    assert found == (None if renumbered else sha)
+    assert found is None
     assert legacy.read_bytes() == before
     current = list((cache / "source_hash_cache" / "v2").rglob("*.json"))
-    assert len(current) == int(not renumbered)
-    if current:
-        payload = json.loads(current[0].read_text(encoding="utf-8"))
-        assert payload["version"] == 2
-        assert "device" not in payload and "inode" not in payload
+    assert current == []
