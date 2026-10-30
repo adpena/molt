@@ -170,6 +170,22 @@ def selected_host(inventory: Path, name: str, cells: list[str]):
     if not cells or len(set(cells)) != len(cells) or set(cells) - set(host.proof_cells):
         raise ValueError(f"{name}: select unique commands from {host.proof_cells}")
     host_paths(host, "preflight")
+    if host.is_windows:
+        if not host.proof_cargo_output_root or not host.proof_metadata_root:
+            raise ValueError(
+                "Windows proofs require explicit Cargo and metadata fixture roots"
+            )
+        root = PureWindowsPath(host.custody_root)
+        fixture_roots = [
+            PureWindowsPath(value)
+            for value in (host.proof_cargo_output_root, host.proof_metadata_root)
+        ]
+        if any(
+            not value.is_relative_to(root) or value == root for value in fixture_roots
+        ):
+            raise ValueError("proof fixture roots must belong to host custody")
+        if any(a.is_relative_to(b) for a, b in (fixture_roots, fixture_roots[::-1])):
+            raise ValueError("proof fixture roots must be disjoint")
     return host
 
 
@@ -542,6 +558,44 @@ def worker_environment(record: dict) -> dict[str, str]:
     return env
 
 
+def fixture_roots(record: dict, env: dict[str, str]) -> dict:
+    """Project CI's explicit native-fixture roles through their existing owner.
+
+    These are physical output declarations, not toolchain pins. Never inherit
+    another run's roots or choose a volume by a failed test/path budget.
+    """
+    from tools.proof_queue_pkg.cargo_output_layout import declare_root
+    from molt.file_publication import resolve_owned_path
+
+    declarations = {}
+    for field, variable in (
+        ("proof_cargo_output_root", "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT"),
+        ("proof_metadata_root", "MOLT_PROOF_TEST_METADATA_ROOT"),
+    ):
+        env.pop(variable, None)
+        selected = record["host"].get(field)
+        if selected is None:
+            continue
+        parent = resolve_owned_path(Path(selected))
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = parent / record["nonce"][:16]
+        directory.mkdir(exist_ok=False)
+        declaration = declare_root(str(directory))
+        write_json(
+            directory / "trunk-owner.json",
+            {
+                "schema": SCHEMA,
+                "run_id": record["run_id"],
+                "nonce": record["nonce"],
+                "role": field,
+                "root": declaration,
+            },
+        )
+        declarations[field] = declaration
+        env[variable] = str(directory)
+    return declarations
+
+
 def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
     from molt import checkout_provisioning
     from molt.dx import canonical_toolchain_root
@@ -555,6 +609,7 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
 
     checkout = Path(record["checkout"])
     env = worker_environment(record)
+    roots = fixture_roots(record, env)
     tool_root = canonical_toolchain_root(checkout, env, require_exists=False)
     from molt.disk_capacity import require_build_capacity
 
@@ -613,6 +668,7 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
             "python": str(python),
             "toolchains": record["selection"]["toolchains"],
             "admission": json.loads(result.stdout),
+            "fixture_roots": roots,
         },
     )
     return python, env
@@ -717,6 +773,8 @@ def worker(record_path: Path) -> int:
         traceback.print_exc()
         status = "infrastructure"
     finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
         for cell in record["cells"]:
             directory = stage / cell
             directory.mkdir(exist_ok=True)

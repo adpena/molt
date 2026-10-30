@@ -305,6 +305,59 @@ def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):
     }
 
 
+def test_trunk_fixture_roots_are_explicit_disjoint_and_physically_admitted(tmp_path):
+    import json
+
+    nonce = "abcde12345" * 3 + "ab"
+    record = {
+        "nonce": nonce,
+        "run_id": "owned-run",
+        "host": {
+            "proof_cargo_output_root": str(tmp_path / "cargo"),
+            "proof_metadata_root": str(tmp_path / "metadata"),
+        },
+    }
+    env = {
+        "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT": "/foreign",
+        "MOLT_PROOF_TEST_METADATA_ROOT": "/foreign",
+    }
+    declarations = trunk_loop.fixture_roots(record, env)
+    assert set(declarations) == {"proof_cargo_output_root", "proof_metadata_root"}
+    for field, variable in (
+        ("proof_cargo_output_root", "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT"),
+        ("proof_metadata_root", "MOLT_PROOF_TEST_METADATA_ROOT"),
+    ):
+        path = Path(env[variable])
+        assert path == Path(record["host"][field]) / nonce[:16]
+        declaration = declarations[field]
+        metadata = path.stat()
+        assert declaration["device"] == metadata.st_dev
+        assert declaration["inode"] == metadata.st_ino
+        owner = json.loads((path / "trunk-owner.json").read_text())
+        assert owner["run_id"] == "owned-run"
+        assert owner["nonce"] == nonce
+        assert owner["root"] == declaration
+    with pytest.raises(FileExistsError):
+        trunk_loop.fixture_roots(record, env)
+
+
+@pytest.mark.parametrize(
+    "replacement", ["", r"E:\Molt\fixtures", r"C:\Molt\trunk-cargo"]
+)
+def test_trunk_refuses_missing_escaped_or_overlapping_fixture_roots(
+    tmp_path, replacement
+):
+    inventory = tmp_path / "hosts.toml"
+    text = cross_run.DEFAULT_INVENTORY.read_text()
+    text = text.replace(
+        "proof_metadata_root = 'C:\\Molt\\trunk-metadata'",
+        "proof_metadata_root = '" + replacement + "'",
+    )
+    inventory.write_text(text)
+    with pytest.raises(ValueError, match="fixture roots"):
+        trunk_loop.selected_host(inventory, "bat00", ["portability.queue.windows"])
+
+
 def test_local_expected_uses_memory_guard(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

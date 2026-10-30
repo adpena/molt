@@ -35,6 +35,11 @@ The selected command/dependency closure supplies required toolchains. Existing
 (which owns locked `uv sync`) and `proof_plan.admit_toolchains` retain admission.
 Pinned releases use `molt.tool_releases`, not a second downloader or installer.
 Unsupported or absent providers fail provisioning before any test starts.
+The inventory also selects the two short, disjoint fixture-output roles that
+`ci.yml`'s portability setup supplies. Each run exclusively claims a child and
+admits it through `proof_queue_pkg.cargo_output_layout.declare_root` before tests.
+Neither the toolchain closure nor DX's general scratch defaults declare these
+native fixture roots; their absence is harness failure, not a product red.
 This does not claim whole-suite product preparation (HF-586); future cells must
 declare their actual product dependencies in the proof plan before selection.
 
@@ -82,7 +87,7 @@ second JUnit parser or uncorrected review-v2 behavior would duplicate authority.
   separate task custody from execution and retain a content-addressed cache
   across tasks. Stage 1 borrows that separation without deploying a service.
 - [Chromium sheriffs](https://www.chromium.org/developers/tree-sheriffs/) and
-  [Sheriff-o-Matic](https://chromium.googlesource.com/infra/infra/+/main/appengine/sheriff-o-matic/)
+  [Sheriff-o-Matic](https://chromium.googlesource.com/chromium/src.git/+/28cd42b49b5f93a409d6daf04e8258d569e8ff47/docs/sheriff.md#sheriff_o_matic)
   group actionable failures for owners; proposed ledger edits serve that role.
 - [LLVM developer policy](https://www.llvm.org/docs/DeveloperPolicy.html#buildbots)
   uses post-commit, platform-specific builders and author notification; retain
@@ -96,10 +101,11 @@ second JUnit parser or uncorrected review-v2 behavior would duplicate authority.
 - [Bazel repository cache and distdir](https://bazel.build/run/build#repository-cache)
   reuse hash-identified downloads; [remote execution](https://bazel.build/remote/rbe)
   distinguishes remote work from cache hits. A retained log is not a fresh proof.
-- The owner's Spawn write-up (2026-10-29 dispatch: trunk every 15 minutes,
-  fix-forward, judges) informs Stage 2's bounded cadence and routing. Its URL was
-  not supplied or located; those details are owner-provided requirements, not an
-  independently verified external source.
+- The owner's [Spawn write-up](https://x.com/jsnnsa/status/2115623382721126826)
+  (2026-10-29 dispatch: trunk every 15 minutes, fix-forward, judges) informs
+  Stage 2's bounded cadence and routing. The original URL was located through a
+  secondary index, but its body was inaccessible to the research client; those
+  details remain owner-provided requirements, not independently verified claims.
 
 ## Proof obligations
 
