@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tests.wasm_linked_runner import ModuleEntry, run_cpython_reference
+from molt.dx import project_cargo_target_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +117,7 @@ def _build_native_binary_with_env(
     extra_files: dict[str, str] | None = None,
     extra_env: dict[str, str] | None = None,
     extra_build_args: list[str] | None = None,
+    build_cwd: Path | None = None,
 ) -> tuple[Path, dict[str, str]]:
     """Build ``source`` as a script, or as ``python -m entry_module``.
 
@@ -177,7 +180,7 @@ def _build_native_binary_with_env(
 
     build = run_native_test_process(
         build_cmd,
-        cwd=ROOT,
+        cwd=ROOT if build_cwd is None else build_cwd,
         env=env,
         capture_output=True,
         text=True,
@@ -185,6 +188,56 @@ def _build_native_binary_with_env(
     )
     assert build.returncode == 0, build.stdout + build.stderr
     return out_path, env
+
+
+@pytest.mark.parametrize("module", [True, False], ids=["module", "package-script"])
+def test_native_entry_search_path_matches_cpython(tmp_path: Path, module: bool) -> None:
+    fixture = ROOT / "tests/fixtures/entry_search_path"
+    source_root = tmp_path / "program"
+    shutil.copytree(fixture, source_root)
+    (source_root / "pyproject.toml").write_text("", encoding="utf-8")
+    relative = "probe_pkg/__main__.py" if module else "probe_pkg/script.py"
+    entry = ModuleEntry("probe_pkg", source_root) if module else source_root / relative
+    expected = run_cpython_reference(entry, cwd=source_root, check=False)
+    assert expected.returncode == 1
+    assert expected.stdout.splitlines() == (
+        ["self-import-ok self-import-ok", "before-missing-helper"]
+        if module
+        else ["self-import-ok", "before-missing-package"]
+    )
+    missing = "helper" if module else "probe_pkg"
+    assert f"ModuleNotFoundError: No module named '{missing}'" in expected.stderr
+
+    binary, env = _build_native_binary_with_env(
+        source_root,
+        (source_root / relative).read_text(encoding="utf-8"),
+        "entry_search_path",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-entry-search-path",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache",
+        backend="cranelift",
+        source_relpath=relative,
+        entry_module="probe_pkg" if module else None,
+        build_cwd=source_root,
+        extra_env={
+            "CARGO_TARGET_DIR": str(
+                project_cargo_target_dir(ROOT, os.environ, session_scoped=False)
+            ),
+            "MOLT_DIFF_CARGO_TARGET_DIR": str(
+                project_cargo_target_dir(ROOT, os.environ, session_scoped=False)
+            ),
+        },
+    )
+    run = run_native_test_process(
+        [str(binary)],
+        cwd=source_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    # HF-595 can affect the unresolved runtime import's predicate error.
+    assert run.returncode == expected.returncode, run.stdout + run.stderr
+    assert run.stdout == expected.stdout
 
 
 def _build_and_run_with_env(

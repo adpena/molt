@@ -140,7 +140,7 @@ def _isolated_runtime_wasm_cache(
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "runtime-cache"))
     from molt import default_paths
 
-    default_paths._default_molt_cache_cached.cache_clear()
+    default_paths._default_user_state_cached.cache_clear()
 
 
 @pytest.mark.parametrize(

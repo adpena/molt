@@ -25,6 +25,9 @@ def _git(root, *args):
 
 @pytest.fixture
 def published_source(tmp_path, monkeypatch):
+    artifact = tmp_path / "controller-storage"
+    artifact.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
     repo = tmp_path / "source"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -368,13 +371,13 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         else "src/molt/cache_eviction.py"
     )
     binding = (
-        "\n_real_collect_due = collect_due\ndef collect_due(*, root=None, env=None):\n"
+        "\n_real_collect_due = collect_due\ndef collect_due(*, root=None, env=None, auxiliary=None):\n"
         if operation == "checkout"
         else "\n_real_collect_due = automatic_retention\n"
         "def automatic_retention(env, *, cache_root=None, min_interval_seconds=0, wait_for_lock=False):\n"
     )
     invocation = (
-        "    return _real_collect_due(root=root, env=env)\n"
+        "    return _real_collect_due(root=root, env=env, auxiliary=auxiliary)\n"
         if operation == "checkout"
         else "    return _real_collect_due(env, cache_root=cache_root, min_interval_seconds=min_interval_seconds, wait_for_lock=wait_for_lock)\n"
     )
@@ -435,6 +438,14 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
 
     barrier = tmp_path / "release-collector"
     environment = dict(os.environ)
+    environment.update(
+        MOLT_TARGET_ROOT=str(tmp_path / "target-root"),
+        UV_CACHE_DIR=str(artifacts / ".uv-cache"),
+        MOLT_CACHE=str(artifacts / ".molt_cache"),
+        PIP_CACHE_DIR=str(artifacts / ".pip-cache"),
+        RUFF_CACHE_DIR=str(artifacts / ".ruff-cache"),
+        SCCACHE_DIR=str(artifacts / ".sccache"),
+    )
     environment["CHECKOUT_MAINTENANCE_BARRIER"] = str(barrier)
     # A poisoned ambient source cannot replace the snapshot's startup imports.
     environment["PYTHONPATH"] = str(lane / "poisoned-imports")

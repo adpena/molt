@@ -27,9 +27,8 @@ from molt.checkout_state import (
     WalkRotation,
     agent_evidence_idle_s,
     checkout_state_retirement,
-    soft_retire,
+    compact_evidence,
 )
-from molt.custody_layout import custody_root
 from molt.file_publication import resolve_owned_path
 from molt.portable_paths import portable_path_component, portable_relative_path
 
@@ -97,6 +96,19 @@ def validate_task_name(task: str) -> str:
 
 def task_dir(repo_root: Path, task: str) -> Path:
     return repo_root / LOG_ROOT / validate_task_name(task)
+
+
+def task_artifacts_dir(
+    repo_root: Path, task: str, environment: Mapping[str, str]
+) -> Path:
+    from molt.dx import storage_path, checkout_component
+
+    return (
+        storage_path(repo_root, "lane-evidence", environment)
+        / checkout_component(repo_root)
+        / validate_task_name(task)
+        / "artifacts"
+    )
 
 
 def _validate_ownership_request(value: object) -> None:
@@ -517,25 +529,16 @@ def harvest_agent_evidence(
                                     {**item, "reason": "coordination-changed"}
                                 )
                                 continue
-                            retirement = soft_retire(
-                                task,
-                                custody_root(repo_root),
-                                reason="terminal-agent-evidence",
-                                owner=str(record.path),
-                                now=now,
+                            archive_root = (
+                                task_artifacts_dir(
+                                    repo_root, record.task, environment
+                                ).parent
+                                / "archive"
                             )
-                            item["retired_path"] = str(retirement.path)
-                            for relative in kept:
-                                destination = task / relative
-                                destination.parent.mkdir(parents=True, exist_ok=True)
-                                # Same-volume hardlinks retain the small evidence
-                                # without a second read, byte copy or unbounded
-                                # text buffer. GC unlinks only its retired name.
-                                os.link(
-                                    retirement.path / relative,
-                                    destination,
-                                    follow_symlinks=False,
-                                )
+                            archive = compact_evidence(
+                                task, archive_root, kind="lane-evidence", keep=kept
+                            )
+                            item["retired_path"] = str(archive)
                             registry_stamps[log_root] = log_root.stat().st_mtime_ns
                             record_stamps[record.path] = _record_signature(record.path)
                     results.append(item)

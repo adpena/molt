@@ -468,7 +468,7 @@ def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
             )
         ),
     )
-    DEFAULT_PATHS._default_molt_cache_cached.cache_clear()
+    DEFAULT_PATHS._default_user_state_cached.cache_clear()
     DEFAULT_PATHS._default_molt_home_cached.cache_clear()
     DEFAULT_PATHS._default_molt_bin_cached.cache_clear()
     cli_build_output_layout._default_build_base_cached.cache_clear()
@@ -1762,7 +1762,13 @@ def test_cli_config_json() -> None:
     assert "sources" in payload["data"]
 
 
-def test_cli_dx_env_json_has_cross_platform_defaults() -> None:
+def test_cli_dx_env_json_has_cross_platform_defaults(
+    monkeypatch, tmp_path: Path, short_cargo_cache: Path
+) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(short_cargo_cache.parent))
     res = _run_cli(["dx", "env", "--format", "json"])
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
@@ -2593,9 +2599,9 @@ def test_default_cache_does_not_expand_unused_platform_root(
         "HOME": "~",
         "USERPROFILE": "~",
     }
-    assert DEFAULT_PATHS._default_molt_cache(environ=env) == tmp_path / "cache" / (
-        "Molt" if windows else "molt"
-    )
+    assert DEFAULT_PATHS._default_molt_cache(
+        environ=env, cwd=tmp_path
+    ) == tmp_path / "cache" / ("Molt" if windows else "molt")
 
 
 @pytest.mark.long_pole

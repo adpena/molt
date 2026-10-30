@@ -92,7 +92,13 @@ _PASSTHROUGH_ENV_PREFIXES = (
 
 def _default_output_root() -> Path:
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return REPO_ROOT / "bench" / "results" / "friends" / timestamp
+    from molt.dx import storage_path
+
+    return (
+        storage_path(REPO_ROOT, "benchmark-evidence", os.environ)
+        / "friends"
+        / timestamp
+    )
 
 
 def _project_python() -> str:

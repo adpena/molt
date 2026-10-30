@@ -26,6 +26,13 @@ from molt.cli.backend_execution import _backend_codegen_env_digest
 pytestmark = pytest.mark.usefixtures("developer_host_context")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sccache(monkeypatch, tmp_path):
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+
+
 def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     baseline = _backend_codegen_env_digest(is_wasm=False, env={})
     for name, value in (
@@ -553,3 +560,75 @@ def test_every_backend_gets_one_absolute_cache_root_from_molt(tmp_path, monkeypa
     assert _daemon_digest(
         tmp_path, monkeypatch, {**build, "MOLT_CACHE": str(tmp_path / "other")}
     ) != _daemon_digest(tmp_path, monkeypatch, build)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+def test_deep_artifact_root_declines_auto_cache_and_still_computes_daemon_digest(
+    tmp_path, monkeypatch, capsys, short_cargo_cache
+):
+    from molt import cargo_execution_policy as policy, dx
+    from molt.cli import cargo_execution
+    from molt.process_environment import ProcessEnvironmentBuilder
+    from tests.sccache_test_support import provision_fixture_sccache
+
+    tools, executable = provision_fixture_sccache(monkeypatch, tmp_path)
+    deep = tmp_path / ("deep" * 30) / "artifacts"
+    deep.mkdir(parents=True)
+    base = {
+        **os.environ,
+        "MOLT_EXT_ROOT": str(deep),
+        "MOLT_TARGET_ROOT": str(tools),
+        "MOLT_USE_SCCACHE": "auto",
+    }
+    assert dx.pinned_sccache(base) == str(executable)
+    monkeypatch.setattr(policy, "_sccache_socket_degrade_warned", False)
+    selected = dx.RunContext(tmp_path).dx_env(base, create_dirs=False)
+    for name in (
+        "RUSTC_WRAPPER",
+        "SCCACHE_DIR",
+        "SCCACHE_SERVER_UDS",
+        "SCCACHE_SERVER_PORT",
+    ):
+        assert name not in selected
+    # The same configuration may be normalized repeatedly by daemon identity
+    # and Cargo consumers; it still declines and emits just one diagnostic.
+    cargo = ProcessEnvironmentBuilder(selected)
+    cargo_execution._maybe_enable_sccache(cargo)
+    assert "RUSTC_WRAPPER" not in cargo
+    assert _daemon_digest(tmp_path, monkeypatch, selected)
+    err = capsys.readouterr().err
+    assert err.count("WARNING") == 1
+    assert "shorter artifact root" in err and "explicit short SCCACHE_DIR" in err
+    assert not (deep / ".sccache").exists()
+    assert not (deep / "sct").exists()
+
+    explicit = {**base, "SCCACHE_DIR": str(deep / ".sccache")}
+    projected = policy.sccache_server_temp_dir(explicit)
+    assert projected is not None
+    assert dx.storage_path(tmp_path, "sccache-server-evidence", explicit) == projected
+    assert len(os.fsencode(projected / "sccacheXXXXXX" / "sock")) > 103
+    for request in ({**base, "MOLT_USE_SCCACHE": "1"}, explicit):
+        with pytest.raises(
+            policy.SccacheSocketPathError, match="explicit short SCCACHE_DIR"
+        ):
+            dx.RunContext(tmp_path).dx_env(request, create_dirs=False)
+        cargo_request = ProcessEnvironmentBuilder(request)
+        with pytest.raises(policy.SccacheSocketPathError):
+            cargo_execution._maybe_enable_sccache(cargo_request)
+        assert "RUSTC_WRAPPER" not in cargo_request
+    with pytest.raises(policy.SccacheSocketPathError):
+        policy.sccache_server_temp_dir(explicit, create=True)
+    assert not (deep / ".sccache.molt-server-temp.json").exists()
+    assert not (deep / "sct").exists()
+
+    shallow = short_cargo_cache.parent
+    wired = dx.RunContext(tmp_path).dx_env(
+        {**base, "MOLT_EXT_ROOT": str(shallow)}, create_dirs=False
+    )
+    assert wired["RUSTC_WRAPPER"] == str(executable)
+    assert wired["SCCACHE_DIR"] == str(shallow / ".sccache")
+    assert sum(name in wired for name in policy.SCCACHE_SERVER_ENDPOINT_ENV_NAMES) == 1
+    override = dx.RunContext(tmp_path).dx_env(
+        {**base, "SCCACHE_DIR": str(short_cargo_cache)}, create_dirs=False
+    )
+    assert override["RUSTC_WRAPPER"] == str(executable)
