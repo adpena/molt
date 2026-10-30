@@ -2246,7 +2246,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cl.set_defaults(func=molt_dev_retire.cmd_cleanup)
 
     # lane: orchestrator-owned lane worktrees (tools/molt_dev_lanes.py)
-    from tools.molt_dev_storage import add_arguments as add_storage_arguments
+    from tools.molt_dev_storage_cli import add_arguments as add_storage_arguments
 
     add_storage_arguments(sub)
     p_ln = sub.add_parser("lane", help="start, retire or list lane/<slug> worktrees")
