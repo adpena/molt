@@ -627,8 +627,25 @@ python tools/molt_dev.py storage migrate --repo /primary/checkout --dry-run \
 ```
 
 Review every `keep`/`live-lock` row before approving `--apply`. Unknown preimages,
-active/referenced lanes, locked landings and unproven old temp/cache custody
-remain. No migration is an implicit test, startup or daily-GC side effect.
+active/referenced lanes, locked landings and recent use remain. Named replaced
+repository layouts use the same last-use collector in daily GC; historical user
+cache and host-temp inspection require explicit operator scope. Legacy temp
+idle for six hours is archived with an index before raw retirement, including
+unregistered signal; names never grant disposable-data custody. Valid integrator
+`MOVED.txt` transfers report `already-moved`. No test applies live migration.
+Unknown ignored lane signal is harvested into the lane payload class before
+handoff/retirement. Verified archives and source indices are recorded in common
+Git storage under `molt/lane-payload-index`, which survives slot reuse. Stale
+provisioned inputs and live/malformed lock custody still require reconciliation.
+Gate environments replace ambient TMPDIR/TMP/TEMP with canonical scratch;
+pytest also updates Python's cached tempfile view during early bootstrap.
+
+The `external-provider` class reports Cargo home, rustup home and npm cache
+sizes and provider retention. It preserves their configured locations and
+compiler-input custody; Molt never migrates or prunes them. Cargo's global-cache
+GC is disabled offline; npm cache verification is provider/user invoked and has
+no automatic age bound. See the primary sources in the storage design.
+
 Tests exercise temporary roots and check actual Python writes against typed
 claims; exhaustive typing rejects classes without placement/retention policy.
 

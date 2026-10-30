@@ -1773,6 +1773,42 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
     result = queue.read_result(paths, request.id)
     assert result is not None
     assert result["schema"] == "molt.landing-result.v2"
+    if hold in {
+        "ignored",
+        "pycache-stranger",
+        "pycache-directory",
+        "legacy-bytecode",
+        "package-stranger",
+        "untagged-cache",
+        "egg-info-stranger",
+        "scratch-stranger",
+        "state-lock-with-data",
+    }:
+        import tarfile
+
+        assert result["status"] == "landed", result
+        recovered = False
+        for index in (main / ".git/molt/lane-payload-index").glob("*.json"):
+            record = json.loads(index.read_text(encoding="utf-8"))
+            if record["schema"] != "molt.lane-payload.v1":
+                continue
+            assert record["task"] == "lane-held"
+            for payload in record["payloads"]:
+                source = Path(payload["source"])
+                if source == sentinel or source in sentinel.parents:
+                    member = (
+                        sentinel.name
+                        if source == sentinel
+                        else sentinel.relative_to(source).as_posix()
+                    )
+                    with tarfile.open(payload["archive"]) as archive:
+                        assert archive.extractfile(member).read() == before
+                    recovered = True
+        assert recovered, "unknown signal has no independent recovery index"
+        assert not sentinel.exists()
+        _assert_released(main, worktree)
+        assert _ref(main, "refs/heads/lane/held") is None
+        return
     assert result["status"] == "landed_retirement_failed"
     assert result["landed"] == tip
     assert "lane retire held" in result["detail"]

@@ -1019,6 +1019,13 @@ def test_pytest_process_enters_run_context_roots_and_keeps_explicit_ones(
     monkeypatch.setenv("MOLT_CACHE", str(explicit_cache))
     monkeypatch.setenv("MOLT_SESSION_ID", "pytest-41")
     monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    import tempfile
+
+    old_temp = tmp_path / "system-temp"
+    old_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(old_temp))
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(key, str(old_temp))
 
     pytest_memory_guard_bootstrap.install_pytest_run_context()
 
@@ -1036,6 +1043,11 @@ def test_pytest_process_enters_run_context_roots_and_keeps_explicit_ones(
     assert target.is_relative_to(artifact_root / "target")
     assert "sessions" not in target.relative_to(artifact_root).parts
     assert REPO_ROOT / "target" / "sessions" not in target.parents
+    selected_temp = dx.scratch_root(REPO_ROOT, os.environ)
+    assert Path(tempfile.gettempdir()) == selected_temp
+    assert all(
+        Path(os.environ[key]) == selected_temp for key in ("TMPDIR", "TMP", "TEMP")
+    )
 
 
 def test_checkout_target_oracle_reports_what_a_session_adds(tmp_path: Path) -> None:

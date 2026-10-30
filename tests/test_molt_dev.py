@@ -9861,15 +9861,65 @@ class TestStorageAuthority:
         assert not linked.exists()
 
     def test_every_class_has_volume_owner_and_closed_retention(self, tmp_path):
+        from molt.custody_layout import ExternalProviderRetention
+
         assert len(set(storage_classes())) == len(storage_classes())
         for kind in storage_classes():
             rule = storage_rule(kind)
             assert rule.owner and rule.volume
-            if not isinstance(rule.retention, DurableEvidence):
+            if isinstance(rule.retention, Regenerable):
                 assert rule.retention.max_idle_s > 0
                 assert rule.retention.max_bytes is None or rule.retention.max_bytes > 0
+            else:
+                assert isinstance(
+                    rule.retention, (DurableEvidence, ExternalProviderRetention)
+                )
         with pytest.raises(AssertionError):
             storage_rule("unregistered-state")  # type: ignore[invalid-argument-type]
+
+    def test_shared_provider_inventory_preserves_inputs_and_uses_provider_configuration(
+        self, tmp_path, monkeypatch
+    ):
+        from molt.custody_layout import ExternalProviderRetention
+
+        repo, artifact, home = tmp_path / "repo", tmp_path / "data", tmp_path / "home"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        for name in (".cargo", ".rustup", "npm-custom"):
+            (home / name).mkdir(parents=True)
+            (home / name / "signal").write_bytes(b"provider-owned input")
+        (home / ".npmrc").write_text(f"cache={home / 'npm-custom'}\n", encoding="utf-8")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        monkeypatch.delenv("CARGO_HOME", raising=False)
+        monkeypatch.delenv("RUSTUP_HOME", raising=False)
+        environment = dict(os.environ)
+        row = next(
+            row
+            for row in molt_dev_storage.inventory(repo, environment)
+            if row["class"] == "external-provider"
+        )
+        assert row["volume"] == "user-home" and row["owner"] == "provider"
+        assert isinstance(
+            storage_rule("external-provider").retention, ExternalProviderRetention
+        )
+        providers = {item["provider"]: item for item in row["providers"]}
+        assert providers["cargo"]["path"] == str(home / ".cargo")
+        assert providers["rustup"]["path"] == str(home / ".rustup")
+        if shutil.which("npm"):
+            assert providers["npm"]["path"] == str(home / "npm-custom")
+        else:
+            assert providers["npm"]["status"] == "provider-unavailable"
+        for name in (".cargo", ".rustup", "npm-custom"):
+            assert (home / name / "signal").read_bytes() == b"provider-owned input"
+        selected = RunContext(repo).canonical_env(environment, create_dirs=False)
+        assert "CARGO_HOME" not in selected and "RUSTUP_HOME" not in selected
+        assert environment == dict(os.environ)
+        assert row["bytes"] > 0
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(repo, environment, molt_only=False):
+                storage_path(repo, "external-provider", environment)
+                (home / "new-molt-owned-file").write_bytes(b"unadmitted")
 
     def test_write_check_refuses_a_new_unregistered_root_even_on_artifact_volume(
         self, tmp_path
@@ -10296,8 +10346,9 @@ class TestStorageAuthority:
         )
         assert calls == ["trim"]
 
+    @pytest.mark.parametrize("ambient_temp", [False, True])
     def test_landing_gate_environment_carries_the_canonical_run_context(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, ambient_temp
     ):
         repo, artifact = tmp_path / "molt-src", tmp_path / "data"
         repo.mkdir()
@@ -10316,7 +10367,14 @@ class TestStorageAuthority:
         ):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
-        expected = RunContext(repo).canonical_env(os.environ, create_dirs=False)
+        if ambient_temp:
+            old_temp = tmp_path / "system-temp"
+            old_temp.mkdir()
+            for key in ("TMPDIR", "TMP", "TEMP"):
+                monkeypatch.setenv(key, str(old_temp))
+        expected = RunContext(repo).canonical_env(
+            os.environ, create_dirs=False, force_default_keys=("TMPDIR", "TMP", "TEMP")
+        )
         dry = molt_dev.gate_environment(
             repo, session_id="storage-proof", create_dirs=False
         )
@@ -10336,3 +10394,146 @@ class TestStorageAuthority:
         ):
             assert actual[key] == expected[key]
             assert Path(actual[key]).is_relative_to(artifact)
+        result = run_guarded_test_process(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import tempfile; print(tempfile.gettempdir())",
+            ],
+            cwd=REPO_ROOT,
+            env=actual,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == actual["TMPDIR"]
+
+    def test_already_moved_integrator_payload_is_accepted_without_rearchiving(
+        self, tmp_path, monkeypatch
+    ):
+        repo, artifact = tmp_path / "molt-src", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        task = repo / "logs/agents/old-task"
+        task.mkdir(parents=True)
+        moved = artifact / "evidence/lanes/molt-src/old-task"
+        moved.mkdir(parents=True)
+        (moved / "payload").write_bytes(b"previously moved")
+        (task / "MOVED.txt").write_text(
+            f"2026-10-29 integrator: payload moved off the root volume\n{moved}\nfollowing HF-582's lane-payload placement; records and reports stay here.\n  payload\n",
+            encoding="utf-8",
+        )
+        rows = molt_dev_storage.migrate(repo, os.environ, apply=True)
+        row = next(row for row in rows if row["source"] == str(task))
+        assert row["status"] == "already-moved" and row["destination"] == str(moved)
+        assert (moved / "payload").read_bytes() == b"previously moved"
+        assert not (task / "storage-index.json").exists()
+        (moved / "payload").unlink()
+        row = next(
+            row
+            for row in molt_dev_storage.migrate(repo, os.environ, apply=False)
+            if row["source"] == str(task)
+        )
+        assert (
+            row["status"] == "kept" and row["reason"] == "incomplete MOVED.txt payload"
+        )
+
+    def test_legacy_temp_retention_archives_idle_signal_and_preserves_read_use_and_locks(
+        self, tmp_path, monkeypatch
+    ):
+        repo, artifact, temporary = (
+            tmp_path / "molt-src",
+            tmp_path / "data",
+            tmp_path / "host-temp",
+        )
+        for path in (repo, artifact, temporary):
+            path.mkdir()
+        _storage_git(repo, "init", "-q")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        old = time.time() - 2 * 86400
+        for name in ("idle", "read", "locked"):
+            root = temporary / f"molt-cache-test-{name}"
+            root.mkdir()
+            (root / "payload").write_bytes(b"legacy signal")
+            for path in (root / "payload", root):
+                os.utime(path, (old, old))
+        read = temporary / "molt-cache-test-read/payload"
+        os.utime(read, (time.time(), old))
+        locked = temporary / "molt-cache-test-locked"
+        lock = _try_acquire_file_lock(locked / "writer.lock")
+        assert lock is not None
+        for path in (locked / "writer.lock", locked):
+            os.utime(path, (old, old))
+        try:
+            rows = molt_dev_storage.migrate(
+                repo, os.environ, apply=True, legacy_temp=temporary
+            )
+        finally:
+            _release_file_lock(lock)
+        by_name = {Path(row["source"]).name: row for row in rows}
+        retired = by_name["molt-cache-test-idle"]
+        assert (
+            retired["kind"] == "replaced-temporary" and retired["status"] == "compacted"
+        )
+        with tarfile.open(retired["archive"]) as archive:
+            assert archive.extractfile("payload").read() == b"legacy signal"
+        assert (temporary / "molt-cache-test-idle/storage-index.json").is_file()
+        assert not (temporary / "molt-cache-test-idle/payload").exists()
+        assert by_name["molt-cache-test-read"]["status"] == "kept"
+        assert by_name["molt-cache-test-locked"]["status"] == "kept"
+        assert (
+            read.read_bytes() == (locked / "payload").read_bytes() == b"legacy signal"
+        )
+        again = molt_dev_storage.migrate(
+            repo, os.environ, apply=False, legacy_temp=temporary
+        )
+        assert not any(
+            Path(row["source"]).name == "molt-cache-test-idle" for row in again
+        )
+
+    def test_replaced_sandbox_retires_registration_only_after_recoverable_archive(
+        self, tmp_path, monkeypatch
+    ):
+        repo, artifact = tmp_path / "molt-src", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        _storage_git(
+            repo,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        )
+        source = repo / ".git/molt/landing-sandbox"
+        _storage_git(repo, "worktree", "add", "--detach", str(source))
+        (source / "proof-receipts").mkdir()
+        (source / "proof-receipts/proof.bin").write_bytes(b"preserved landing proof")
+        exclude = repo / ".git/info/exclude"
+        exclude.write_text("proof-receipts/\n", encoding="utf-8")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        old = time.time() - 2 * 86400
+        for path in [*source.rglob("*"), source]:
+            os.utime(path, (old, old))
+        rows = molt_dev_storage.migrate(repo, os.environ, apply=True)
+        row = next(row for row in rows if row["source"] == str(source))
+        assert (
+            row["kind"] == "replaced-git-landing-sandbox"
+            and row["status"] == "archived-and-retired-worktree"
+        )
+        assert not source.exists()
+        assert str(source) not in _storage_git(repo, "worktree", "list", "--porcelain")
+        index = next((repo / ".git/molt/retired-evidence").glob("*.json"))
+        manifest = json.loads(
+            Path(json.loads(index.read_text())["archive_index"]).read_text()
+        )
+        with tarfile.open(manifest["archive"]) as archive:
+            assert (
+                archive.extractfile("proof-receipts/proof.bin").read()
+                == b"preserved landing proof"
+            )

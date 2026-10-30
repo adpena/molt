@@ -29,6 +29,9 @@ when a capacity-selected output volume changes.
 | Benchmark reports | Artifact root `bench/results` | Durable; source baselines remain source inputs |
 | Backend sockets | Existing short host socket selector when required by OS path limits | Existing daemon liveness; no payload-cache exception |
 | User installation | Existing selected installation root | User owned; never automatic deletion |
+| External provider homes | User home defaults; existing Cargo/rustup and npm configuration selects actual paths | Provider owns configuration, payload and collection; inventory reports sizes |
+| Replaced controller, Git sandbox, family sandbox, receipt and lane layouts | Their original named coordinates | Last use plus native/lifetime/queue locks; archive signal before retiring raw storage or Git registration |
+| Replaced Molt user cache and host temp | Original user-cache selector and explicitly inventoried host temp | Thirty days for old cache, six hours for old temp, with a two-hour minimum grace; lossless archive and index before raw retirement |
 
 The existing daily collector admits auxiliary retention under its own lock;
 compile-cache retention keeps its existing provider cadence. No second
@@ -70,7 +73,7 @@ creating state inside a checkout being removed. Package
 environments use the same checkout-state lock namespace and descriptor handoff
 as Python environments.
 
-The two volume assignments are artifact and checkout custody. The latter
+The volume assignments are artifact, checkout custody, user home and historical host temp. Checkout custody
 retains the existing executable-toolchain, user-installation and short host
 socket selectors; moving outputs never silently reassigns those owners.
 Existing build-output age/pressure policies keep their own execution mechanism;
@@ -103,12 +106,40 @@ the reviewed plan is an integrator action, separate from deploying new path
 selectors. It never enumerates other projects, Codex worktrees, VM disks or
 snapshots. A locked landing stays. Unregistered temp/cache preimages require
 custody reconciliation; names alone do not prove they are safe to retire.
-Same-volume sandbox migration uses Git worktree move. Across volumes it
-copies a registered clean worktree, compares content/type/mode identities,
-repairs Git registration, verifies again and publishes a recovery index before
-removing the old regenerable source copy. Dirty/unregistered sources remain.
-Controller environments are regenerated at their selected location, since
-moving a venv would leave absolute interpreter/script paths stale.
+Each replaced layout has its own `ReplacedStorageClass` in the same closed
+storage enumeration. The daily collector uses the same finite inventory and
+last-use policy for repository-owned preimages. Historical user-cache and
+host-temp preimages require an explicit operator scope (`storage migrate`, or
+`storage trim --legacy-temp-root`); an arbitrary SDK/test checkout cannot adopt
+an account's global history. Old temp names select signal for preservation,
+not disposable data. Full recursive metadata observes payload reads and writes;
+held native locks, guards, sockets and recent use retain the source. Raw bytes
+are collected only after lossless archive verification. Source indices remain
+durable. Custom historical temp roots must be supplied explicitly.
+
+A superseded registered queue sandbox must be detached, clean of source changes,
+idle for a day, and free of runner/integration and lifetime locks. Its complete
+signal is archived and indexed in surviving Git custody before Git releases the
+worktree registration. Dirty, locked, branch-holding and unregistered sources
+stay. The existing relocation primitive still supports selected clean worktree
+moves, including verified cross-volume publication; superseded registration
+retirement is a distinct operation. Controller environments regenerate at their
+selected location, since moving a venv would leave absolute script paths stale.
+
+The integrator's `MOVED.txt` protocol is accepted as an existing transfer: its
+single destination must be the named artifact-volume lane directory and every
+listed payload must exist. Planning reports `already-moved` and preserves that
+index. Missing destinations or listed entries remain unknown/protected; no
+fallback destination is invented.
+
+Lane handoff and retirement archive unknown ignored signal into the canonical
+lane payload class using `task_artifacts_dir`. The archive is independently
+verified before raw removal. Source recovery indices move into common Git
+storage alongside a batch index, so even an ignored file whose JSON sidecar
+would be untracked leaves a clean slot. Git can name an ignored child and its
+whole directory; the harvest reduces these to disjoint maximal roots. Unknown
+signal no longer blocks a handoff merely because no producer can regenerate it.
+Live or malformed lock custody still requires reconciliation.
 
 The autouse owning-test check observes actual Python file mutations against
 typed claims, including code bypassing `storage_path`; an unknown artifact-root
@@ -119,7 +150,11 @@ not an OS sandbox for external
 native tools or emitted user programs.
 
 Landing gates receive `RunContext.canonical_env`, including `UV_CACHE_DIR`,
-`MOLT_CACHE`, provider caches and scratch `TMPDIR`/`TMP`/`TEMP`. Their interpreter
+`MOLT_CACHE`, provider caches and scratch `TMPDIR`/`TMP`/`TEMP`. Temp selection
+replaces an inherited system-temp value. Pytest's early bootstrap uses the same
+scratch selection, materializes its owned root, and updates `tempfile.tempdir`
+even if a preceding import cached the host default. This applies to xdist
+workers without changing product-store fixture scope. Their interpreter
 and bytecode policy still come from the existing gate/image owner.
 Actual gate preparation materializes the admitted environment snapshot after
 capacity checks, including provider provenance, without reselecting its image
@@ -164,17 +199,42 @@ exclusive custody, while external link targets and file modes stay unchanged.
 An unavailable archive defers the soft raw-evidence budget and preserves its
 signal without invalidating a command whose process closure is established.
 
-## Open shared-provider boundary
+## Shared-provider decision (integrator, 2026-10-29)
 
-The universal all-state claim is not yet closed over shared native-provider
-homes. [Cargo home](https://doc.rust-lang.org/cargo/guide/cargo-home.html)
-contains dependency caches, configuration, credentials and installed commands;
-Molt's `rust_toolchain.cargo_home_path` uses it as a compiler-input authority.
-[npm's cache](https://docs.npmjs.com/cli/v11/using-npm/config/#cache) also has a
-shared user-home default. They are not currently typed Molt storage classes.
-The integrator must decide whether these remain external owner-managed tool
-inputs or whether HF-582 expands to migrate those input authorities. They must
-not be silently redirected, adopted or pruned as output directories.
+`external-provider` is one closed typed storage class: default volume is the
+user's home, owner is the native provider, and retention is
+`ExternalProviderRetention`. Cargo home, rustup home and npm cache are its
+members. Cargo/rustup retain their existing canonical selectors. npm resolves
+its own configuration through an offline `npm config get cache` probe, including
+npmrc and environment precedence. An unavailable provider, failed configuration
+probe or incomplete size observation is reported as unknown, without inventing
+a path. Member sizes are observations, not Molt-reclaimable bytes.
+
+Molt never redirects, migrates, adopts or prunes shared provider homes. They
+contain compiler inputs, credentials, configuration and installed commands used
+by other projects; redirecting them would change input and tool custody.
+Observing the class also grants no Python storage-write claim over the user's
+home. This decision closes the ownership enumeration, without asserting a
+finite Molt-enforced byte or age budget for provider state.
+
+[Cargo home](https://doc.rust-lang.org/cargo/guide/cargo-home.html) documents
+configuration, credentials and installed commands alongside cached dependencies.
+The current [Cargo cache policy](https://doc.rust-lang.org/cargo/reference/config.html#cache)
+tracks last use and normally checks daily on build/fetch commands. Downloaded
+cache data expires after three unused months; locally regenerable data after
+one month. Deletion is disabled with `--offline`/`--frozen`, and provider/user
+configuration can disable automatic collection. These rules cover Cargo's
+global dependency cache, not installed commands, credentials or build outputs.
+
+[npm's cache contract](https://docs.npmjs.com/cli/v11/commands/npm-cache/)
+states that `npm cache verify` checks index/data integrity and collects unneeded
+data. npm does not automatically remove unused cache data by age, so no such
+bound is claimed; provider/user invocation owns collection. The
+[rustup installation contract](https://rust-lang.github.io/rustup/installation/index.html)
+separately owns installed toolchains and configuration under `RUSTUP_HOME`.
+Toolchain removal is the provider/user's
+[`rustup toolchain uninstall`](https://rust-lang.github.io/rustup/examples.html) action;
+Cargo's cache GC is not a rustup toolchain collector.
 
 A failed scratch generation publishes a blocked state before its payload move
 and remains blocked through archival. Only a durable verified archive grants

@@ -17,7 +17,7 @@ from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
-from typing import Literal, Mapping, Sequence, cast
+from typing import Literal, Mapping, Sequence, cast, get_args
 
 from molt import python_environment_contract as _contract
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
@@ -1517,6 +1517,38 @@ def _storage_path_selection(
     """
     view = os.environ if env is None else env
     rule = custody_layout.storage_rule(kind)
+    if kind == "external-provider":
+        return expand_user_path("~", environment=view)
+    if kind == "replaced-compile-cache":
+        return expand_user_path("~/.cache/molt", environment=view)
+    if kind == "replaced-temporary":
+        roots = custody_layout.legacy_host_temp_roots(view)
+        if not roots:
+            raise DxConfigError(
+                "legacy host temp location is unknown; supply --legacy-temp-root to migration"
+            )
+        return roots[0]
+    if kind in {
+        "replaced-controllers",
+        "replaced-git-landing-sandbox",
+        "replaced-integration-receipts",
+        "replaced-family-landing-sandbox",
+        "replaced-lane-evidence",
+    }:
+        directories = custody_layout.git_directories(repo_root)
+        common = common_dir or (
+            directories[1] if directories is not None else repo_root / ".git"
+        )
+        if kind == "replaced-family-landing-sandbox":
+            primary = common.parent
+            return (
+                custody_layout.custody_root(primary)
+                / "worktrees"
+                / f"landing-sandbox-{custody_layout.repository_storage_key(common)}"
+            )
+        if kind == "replaced-lane-evidence":
+            return repo_root / "logs" / "agents"
+        return common.joinpath(*rule.relative[1:])
     if kind == "toolchains":
         return canonical_toolchain_root(repo_root, view, require_exists=False)
     if kind == "sccache-server-evidence" and view.get("SCCACHE_DIR", "").strip():
@@ -1722,6 +1754,8 @@ _STORAGE_AUDIT_INSTALLED = False
 
 def _storage_projection(kind: custody_layout.StorageClass, path: Path) -> Path:
     """Observe an admitted typed selector, including captured child overrides."""
+    if kind == "external-provider":
+        return path  # Observing a provider home grants no Molt write custody.
     if _STORAGE_WRITE_CHECKS:
         raw = path.absolute()
         if all(
@@ -1867,6 +1901,8 @@ def storage_write_check(
     claims = [
         StorageWriteClaim(kind, storage_path(repo, kind, environment))
         for kind in custody_layout.storage_classes()
+        if kind != "external-provider"
+        and kind not in get_args(custody_layout.ReplacedStorageClass)
     ]
     # A class's container also holds its producer's shared locks/indices.
     claims.extend(
