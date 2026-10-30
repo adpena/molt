@@ -390,7 +390,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `guard-wiring-source-observation` | 3 | 0 |
 | `rust-source-scan-consumers` | 5 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
-| `build-early-cutoff` | 9 | 0 |
+| `build-early-cutoff` | 10 | 0 |
 | `runtime-cargo-input-custody` | 57 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |

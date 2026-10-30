@@ -5,18 +5,25 @@
 Operation-local stat fences continue to use device/inode while the handles or
 operation are alive. Persistent volume identities contain no device number.
 
-macOS obtains `ATTR_VOL_UUID` through `fgetattrlist` for an existing handle or
-`getattrlist(FSOPT_NOFOLLOW)` for a metadata-only named observation. Returned
-attribute masks and length must report a supported, nonzero UUID. XNU holds the
-queried vnode and resolves its mount root internally for volume attributes.
-Named capture fences device/inode, mode, size and both change clocks around the
-query. It requires read-attributes access, preserving observations of directories
-without read/search permission; it never opens their contents. The file id is
-the observed inode. A combined non-root file ID/volume UUID query is unavailable:
-XNU's [`ATTR_CMN_VOL_INVALID` mask](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_attrlist.c)
-rejects `ATTR_CMN_FILEID` when volume attributes are requested, and volume
-queries substitute the mount root. Molt therefore keeps the fenced file stat
-and UUID query separate, rather than treating a root's file ID as the leaf's.
+macOS holds the parent directory with `O_SEARCH`. It queries the direct leaf's
+`ATTR_CMN_FILEID` and real `ATTR_CMN_DEVID` through `getattrlistat` relative to
+that descriptor, and its volume UUID/real device through `fgetattrlist` on the
+same held parent. The leaf and parent real devices must agree within the
+operation; no device-to-UUID result is cached. Leaf and parent identity fences
+reject changes. A mode-000 leaf needs no open; an unsearchable parent, unsupported
+attributes, or a leaf mounted on a different volume raises typed
+`ParentCaptureUnavailable` with a remedy. The filesystem root uses the held root
+and relative `.`. An ancestor replacement can no longer combine two volumes.
+
+[Apple's getattrlist manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/getattrlist.2.html)
+defines metadata-only permissions and nofollow lookup.
+[XNU vfs_attrlist.c](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_attrlist.c)
+uses `nameiat` for `getattrlistat`, returns the leaf's `va_fileid` for FILEID,
+and resolves `VFS_ROOT` from the held vnode's mount for non-root volume queries.
+Its `FSOPT_RETURN_REALDEV` path uses the real mount device rather than a
+firmlink-projected device; [attr.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/attr.h)
+defines that option as 0x200. A combined non-root FILEID/volume-UUID query is not
+used: volume queries substitute the mount root and reject the leaf FILEID field.
 Linux maps the live file's device to a **block node's rdev**
 in `/dev/disk/by-uuid`; absent or ambiguous mappings on non-volatile filesystems
 refuse durable custody with a remedy to provide a unique filesystem UUID mapping.
@@ -46,34 +53,30 @@ volume serial and all 128 file-id bits; directory opens use backup semantics
 and reparse-point opens do not traverse the leaf. Unknown capabilities refuse.
 There is no path-, volume-label-, device-, or inode-only fallback.
 
-Queried volume strings are interned per process. Device-to-volume answers are
-not cached: device numbers can be reused without a process restart. Each
-capture queries the current volume authority and fences the direct node's
-metadata; handle-based capture also fences the held descriptor.
-macOS therefore issues one UUID query per capture; Linux enumerates the UUID
-links per capture, with one followed stat per entry; Windows issues one
-FileIdInfo query. This favors live mount correctness over a stale device-keyed
-cache. It is a syscall/allocation description, not a measured latency claim.
-Captured regular-file versions memoize their durable projection only when a
-persisted token is requested; existing operation-only captures acquire no new
-filesystem capability requirement.
+There are two identity classes. `DurableFileIdentity` is class A, a custody
+authority whose closed volume-kind handling ends with `typing.assert_never`.
+`StatToken` is class B: an inode, mode, size and both mutation clocks, with its
+path supplied by the enclosing cache key. It contains no device or volume.
 
-The internal `StatToken` carries `DurableFileIdentity` and named mutation
-fields. Persisted tokens decode at their IO boundary before comparison; wire
-labels never decide physical equality. Volume-kind validation and equality
-match the closed enum exhaustively and finish with `typing.assert_never`.
+| Class | Persisted families | Authority |
+| --- | --- | --- |
+| A | Artifact-root binding; guard/suite ownership; publication journals; retired-name recovery | Refuse a substituted volume before adoption, movement or deletion. |
+| A | Cargo-root declarations; opened transcript identities; incremental-deletion inventories; build-result storage claims | Prove write, evidence or deletion custody, independently of cache admission. |
+| B | Build-record input/output/product tokens; digest rows; toolchain probe keys; source hashes; sync receipts; preflight diagnostic labels | Cache hints only; retain content verification and the existing racy-window rules. |
 
-Named macOS capture has a qualification gap for ancestor-directory ABA
-substitution. Its two pathname stat fences can observe object A while the
-UUID query observes a temporarily substituted volume B, producing a hybrid
-identity. XNU retains a vnode only during each individual `getattrlist` call;
-the separate stat calls do not share that reference. A held descriptor joins
-UUID and file ID coherently, but metadata-only mode-000 observations cannot
-open that descriptor with `O_EVTONLY` or `O_SEARCH`. Native followed lookup
-and reuse of libc callable setup reduce cost without closing this gap.
-The current pathname implementation therefore cannot qualify the concurrent
-substitution cell. Resolving the capture boundary is required before landing;
-the existing mode-000 observation obligation must remain explicit.
+The accepted class-B trade follows [Git statinfo](https://github.com/git/git/blob/master/statinfo.c):
+its `st_dev` comparison is conditional on `USE_STDEV`. A replaced volume can
+supply different content at the same path with identical inode, size, mode,
+mtime and ctime; a cache fast path can accept that stat coincidence. Molt
+accepts that risk for class B, while class A never uses this heuristic to prove
+custody. Changed or suspicious cache metadata re-hashes; Windows retains its
+existing stronger content obligations. Diagnostic preflight labels name an
+anchor path and grant no volume authority.
+
+Volume strings are interned only after a fresh class-A query. Device-to-volume
+answers are never cached. Class A performs held-node native queries only when
+custody is required; a no-change class-B replay performs none. Operation-local
+handle/stat fences may still compare device and inode for their bounded lifetime.
 
 ## Migration and interruption
 
@@ -86,10 +89,10 @@ movement or deletion.
 Every host-state schema owns a versioned namespace. Old readers and sweepers
 never encounter new records. Bindings use `artifact-root.v2.json`, guard scratch
 uses `tmp/gs/v2/`, suite leases use `suite-leases/v3/`, digest rows use
-`file-digests/v2.sqlite`, probes use `toolchain-facts/v2.json`, source hashes use
-`source_hash_cache/v2/`, build records use `build_records/v11/`, and backend sync
-receipts use `artifact_sync/v4/` and immutable sidecars use `.sync.v4.json`.
-Preflight receipts use `logs/runtime_wasm_final_preflight/v4/`. Cargo output declarations and transcript
+`file-digests/v3.sqlite`, probes use `toolchain-facts/v3.json`, source hashes use
+`source_hash_cache/v3/`, build records use `build_records/v12/`, and backend sync
+receipts use `artifact_sync/v5/` and immutable sidecars use `.sync.v5.json`.
+Preflight receipts use `logs/runtime_wasm_final_preflight/v5/`. Cargo output declarations and transcript
 identities are published in `execution-v6/` request/result pairs; Cargo payload
 placement uses `molt-proof-output/v2/`. Publication journals have a `v3-` name
 and retired leaves have a `v2-` name. Historical immutable evidence is not
@@ -127,8 +130,7 @@ names use v2 and a digest of the stable identity, keeping component length
 bounded even for a long UUID. The existing exclusive retirement owner can
 re-key a v1 name only while its old pair matches. Unproven leaves remain put.
 
-Current Cargo-root declarations and command transcript records use stable
-identities. Immutable historical evidence stays in its original namespace; it
+Current Cargo-root declarations and command transcript records remain class A. Immutable historical evidence stays in its original namespace; it
 cannot qualify a current request without current admission.
 
 ## Primary authorities

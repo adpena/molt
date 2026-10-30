@@ -42,7 +42,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v11"
+_SCHEMA = "molt-build-record-v12"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -723,7 +723,7 @@ def enter_build() -> bool:
 
 def transient_root(state_root: Path) -> Path:
     """Where recorded builds keep their transient files: a product root."""
-    return state_root / "build_records" / "v11" / _TRANSIENT_DIRNAME
+    return state_root / "build_records" / "v12" / _TRANSIENT_DIRNAME
 
 
 @contextmanager
@@ -819,7 +819,7 @@ def request_key(
 
 
 def record_path(state_root: Path, key: str) -> Path:
-    return state_root / "build_records" / "v11" / key[:2] / f"{key}.json"
+    return state_root / "build_records" / "v12" / key[:2] / f"{key}.json"
 
 
 def _publication_custody(paths: set[str], outputs: tuple[Path, ...]) -> set[str]:

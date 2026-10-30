@@ -27,7 +27,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import os
-from molt.durable_file_identity import StatToken, file_identity
+from molt.durable_file_identity import StatToken
 from pathlib import Path
 import stat
 import subprocess
@@ -52,7 +52,7 @@ from molt.toolchain_identity import (
 )
 
 
-STORE_SCHEMA = "molt.toolchain-facts.v2"
+STORE_SCHEMA = "molt.toolchain-facts.v3"
 
 # The environment each probe class reads, decided from the tool's own source
 # and documented in the design. A name outside its set cannot change the
@@ -223,7 +223,7 @@ def file_input(path: Path | str) -> FileInput:
     except (FileNotFoundError, NotADirectoryError):
         return name, None
     node = StatToken(
-        file_identity(Path(name), expected=metadata),
+        metadata.st_ino,
         metadata.st_mode,
         metadata.st_size,
         metadata.st_mtime_ns,
@@ -240,7 +240,7 @@ def file_input(path: Path | str) -> FileInput:
         node,
         link_text,
         StatToken(
-            file_identity(Path(name).resolve(strict=True), expected=target),
+            target.st_ino,
             target.st_mode,
             target.st_size,
             target.st_mtime_ns,

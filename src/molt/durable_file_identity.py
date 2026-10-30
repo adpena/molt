@@ -119,32 +119,28 @@ class DurableFileIdentity:
 
 @dataclass(frozen=True, slots=True)
 class StatToken:
-    """A typed durable identity plus mutation clocks; wire strings stay at IO."""
+    """Class-B cache hint; its enclosing key owns the path, content owns truth."""
 
-    identity: DurableFileIdentity
+    inode: int
     mode: int
     size: int
     mtime_ns: int
     ctime_ns: int
 
-    def payload(self) -> list[str | int]:
-        return [
-            *self.identity.stat_prefix(),
-            self.mode,
-            self.size,
-            self.mtime_ns,
-            self.ctime_ns,
-        ]
+    def payload(self) -> list[int]:
+        return [self.inode, self.mode, self.size, self.mtime_ns, self.ctime_ns]
 
     @classmethod
     def from_payload(cls, value: object) -> StatToken:
         if (
             not isinstance(value, list)
-            or len(value) != 6
-            or any(type(n) is not int for n in value[2:])
+            or len(value) != 5
+            or any(type(n) is not int for n in value)
+            or value[0] <= 0
+            or value[2] < 0
         ):
-            raise IdentityUnavailable("invalid durable stat token")
-        return cls(DurableFileIdentity.from_stat_prefix(value[0], value[1]), *value[2:])
+            raise ValueError("invalid cache stat token")
+        return cls(*value)
 
 
 # Intern queried volume facts only. In particular, never cache st_dev -> UUID:
@@ -163,45 +159,171 @@ class _AttrList(ctypes.Structure):
     ]
 
 
-def _apple_volume(node: int | Path) -> str:
-    # XNU substitutes the held vnode's volume root for volume attributes.
-    # RETURNED_ATTRS is first; validate support before reading UUID bytes.
-    attrs = _AttrList(5, 0, 0x80000000, 0x80040000, 0, 0, 0)
-    buffer = ctypes.create_string_buffer(40)
+@dataclass(frozen=True, slots=True)
+class _AppleVolume:
+    device: int
+    uuid: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AppleLeaf:
+    device: int
+    file_id: int
+
+
+class ParentCaptureReason(StrEnum):
+    UNAVAILABLE = "parent-capture-unavailable"
+    CROSS_MOUNT = "cross-mount-leaf"
+    CHANGED = "parent-or-leaf-changed"
+
+
+class ParentCaptureUnavailable(IdentityUnavailable):
+    def __init__(self, reason: ParentCaptureReason, path: Path, detail: str):
+        self.reason = reason
+        match reason:
+            case ParentCaptureReason.UNAVAILABLE:
+                self.remedy = "use a searchable parent directory on a supported volume"
+            case ParentCaptureReason.CROSS_MOUNT:
+                self.remedy = "select a directory below the mount root on the same volume as its parent"
+            case ParentCaptureReason.CHANGED:
+                self.remedy = (
+                    "restore the original parent and leaf, then retry identity capture"
+                )
+            case _:
+                assert_never(reason)
+        super().__init__(f"{reason.value}: {path}: {detail}; {self.remedy}")
+
+
+def _apple_attributes(
+    fd: int, leaf: str | None, *, common: int, volume: int, size: int
+) -> bytes:
+    """XNU attr.h ABI: real device numbers are operation-local mount fences."""
+    attrs = _AttrList(5, 0, common, volume, 0, 0, 0)
+    buffer = ctypes.create_string_buffer(size)
     libc = ctypes.CDLL(None, use_errno=True)
-    by_handle = isinstance(node, int)
-    query = libc.fgetattrlist if by_handle else libc.getattrlist
-    query.argtypes = [
-        ctypes.c_int if by_handle else ctypes.c_char_p,
-        ctypes.POINTER(_AttrList),
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_ulong,
-    ]
+    if leaf is None:
+        query = libc.fgetattrlist
+        query.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(_AttrList),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_ulong,
+        ]
+        arguments = (fd, ctypes.byref(attrs), buffer, size, 0x200)
+    else:
+        query = libc.getattrlistat
+        query.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.POINTER(_AttrList),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_ulong,
+        ]
+        arguments = (fd, os.fsencode(leaf), ctypes.byref(attrs), buffer, size, 0x201)
     query.restype = ctypes.c_int
-    if query(
-        node if by_handle else os.fsencode(node),
-        ctypes.byref(attrs),
-        buffer,
-        len(buffer),
-        0 if by_handle else 1,
-    ):
+    if query(*arguments):
         code = ctypes.get_errno()
-        raise IdentityUnavailable(f"volume UUID query failed: {os.strerror(code)}")
-    length, common, volume, directory, file, fork = struct.unpack_from(
-        "=6I", buffer.raw
-    )
+        raise IdentityUnavailable(
+            f"held-parent attribute query failed: {os.strerror(code)}"
+        )
+    length, returned, vol, directory, file, fork = struct.unpack_from("=6I", buffer.raw)
     if (
-        length != 40
-        or common != 0x80000000
-        or not volume & 0x00040000
+        length != size
+        or returned != common
+        or vol != (volume & 0x7FFFFFFF)
         or any((directory, file, fork))
     ):
-        raise IdentityUnavailable("filesystem did not return a volume UUID")
-    uuid = buffer.raw[24:40].hex()
+        raise IdentityUnavailable(
+            "filesystem did not return the requested real-device attributes"
+        )
+    return buffer.raw
+
+
+def _apple_volume(fd: int) -> _AppleVolume:
+    # fgetattrlist holds this vnode; XNU resolves its mount root for UUID/DEVID.
+    data = _apple_attributes(fd, None, common=0x80000002, volume=0x80040000, size=44)
+    device = struct.unpack_from("=I", data, 24)[0]
+    uuid = data[28:44].hex()
     if not int(uuid, 16):
         raise IdentityUnavailable("filesystem has no volume UUID")
-    return uuid
+    return _AppleVolume(device, uuid)
+
+
+def _apple_leaf(fd: int, leaf: str) -> _AppleLeaf:
+    # FILEID is the non-root leaf's va_fileid. RETURN_REALDEV avoids firmlink IDs.
+    data = _apple_attributes(fd, leaf, common=0x82000002, volume=0, size=36)
+    device, file_id = struct.unpack_from("=IQ", data, 24)
+    if file_id <= 0:
+        raise IdentityUnavailable("filesystem has no leaf file ID")
+    return _AppleLeaf(device, file_id)
+
+
+def _apple_identity(path: Path, expected: os.stat_result | None) -> DurableFileIdentity:
+    parent, leaf = (path.parent, path.name) if path.name else (path, ".")
+    search = getattr(os, "O_SEARCH", None)
+    if search is None:
+        raise ParentCaptureUnavailable(
+            ParentCaptureReason.UNAVAILABLE, path, "O_SEARCH is unavailable"
+        )
+    try:
+        fd = os.open(parent, search | os.O_CLOEXEC)
+    except (OSError, AttributeError) as exc:
+        raise ParentCaptureUnavailable(
+            ParentCaptureReason.UNAVAILABLE, path, str(exc)
+        ) from exc
+    try:
+        held = os.fstat(fd)
+        before = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        if not (
+            stat.S_ISDIR(before.st_mode)
+            or stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+        ):
+            raise IdentityUnavailable(
+                "durable identity requires a direct file or directory"
+            )
+        if expected is not None and not os.path.samestat(before, expected):
+            raise ParentCaptureUnavailable(
+                ParentCaptureReason.CHANGED, path, "opening stat differs"
+            )
+        first = _apple_leaf(fd, leaf)
+        volume = _apple_volume(fd)
+        last = _apple_leaf(fd, leaf)
+        after = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        if first.device != volume.device:
+            raise ParentCaptureUnavailable(
+                ParentCaptureReason.CROSS_MOUNT,
+                path,
+                "leaf and parent are on different real mounts",
+            )
+        if (
+            first != last
+            or first.file_id != before.st_ino
+            or first.file_id != after.st_ino
+            or not os.path.samestat(held, os.fstat(fd))
+            or (before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            != (after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        ):
+            raise ParentCaptureUnavailable(
+                ParentCaptureReason.CHANGED,
+                path,
+                "held parent or relative leaf changed",
+            )
+        return DurableFileIdentity(
+            VolumeKind.APPLE_UUID,
+            _volume(VolumeKind.APPLE_UUID, volume.uuid),
+            f"{first.file_id:032x}",
+        )
+    except ParentCaptureUnavailable:
+        raise
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ParentCaptureUnavailable(
+            ParentCaptureReason.UNAVAILABLE, path, str(exc)
+        ) from exc
+    finally:
+        os.close(fd)
 
 
 def _linux_volume(device: int, by_uuid: Path = Path("/dev/disk/by-uuid")) -> str:
@@ -366,7 +488,7 @@ def identity_from_fd(
         if metadata.st_ino <= 0:
             raise IdentityUnavailable("filesystem has no file id")
         if sys.platform == "darwin":
-            kind, volume = VolumeKind.APPLE_UUID, _apple_volume(fd)
+            kind, volume = VolumeKind.APPLE_UUID, _apple_volume(fd).uuid
         elif sys.platform.startswith("linux"):
             if _linux_filesystem_type(fd) in {0x01021994, 0x858458F6}:  # tmpfs, ramfs
                 kind, volume = (
@@ -391,6 +513,8 @@ def file_identity(
     path: Path, *, expected: os.stat_result | None = None
 ) -> DurableFileIdentity:
     """Capture a direct node and fence its name against the held descriptor."""
+    if sys.platform == "darwin":
+        return _apple_identity(path, expected)
     before = path.lstat()
     if not (
         stat.S_ISDIR(before.st_mode)
@@ -403,28 +527,6 @@ def file_identity(
     if expected is not None and not os.path.samestat(before, expected):
         raise IdentityUnavailable(
             f"file changed before durable identity capture: {path}"
-        )
-    if sys.platform == "darwin":
-        # getattrlist holds the named vnode while resolving its volume. Unlike
-        # open(O_EVTONLY), READ_ATTRIBUTES does not require directory read
-        # permission. Metadata observation must not acquire content access.
-        volume = _apple_volume(path)
-        after = path.lstat()
-        if not os.path.samestat(before, after) or (
-            before.st_mode,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        ) != (after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise IdentityUnavailable(
-                f"file changed during durable identity capture: {path}"
-            )
-        return DurableFileIdentity.from_payload(
-            {
-                "kind": VolumeKind.APPLE_UUID.value,
-                "volume": _volume(VolumeKind.APPLE_UUID, volume),
-                "file_id": f"{before.st_ino:032x}",
-            }
         )
     flags = (
         os.O_RDONLY

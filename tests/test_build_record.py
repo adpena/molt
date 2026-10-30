@@ -93,6 +93,35 @@ def test_an_unchanged_build_is_current(tmp_path: Path) -> None:
     assert not _current(record, output, "j" * 64), "the key binds"
 
 
+def test_no_change_build_tokens_ignore_device_renumbering(tmp_path, monkeypatch):
+    _source, _tool, output, record = _fixture(tmp_path)
+    capture = input_report.stat_token
+    captures = []
+
+    def renumbered(path, metadata=None):
+        current = os.stat(path) if metadata is None else metadata
+        fields = list(current)
+        fields[stat.ST_DEV] += 6
+        replayed = os.stat_result(
+            fields,
+            {
+                "st_atime_ns": current.st_atime_ns,
+                "st_mtime_ns": current.st_mtime_ns,
+                "st_ctime_ns": current.st_ctime_ns,
+            },
+        )
+        captures.append(path)
+        return capture(path, replayed)
+
+    def unexpected_hash(_path):
+        pytest.fail("device renumbering invalidated unchanged cache metadata")
+
+    monkeypatch.setattr(build_record, "stat_token", renumbered)
+    monkeypatch.setattr(build_record, "_file_sha256", unexpected_hash)
+    assert _current(record, output)
+    assert captures
+
+
 def test_output_selection_survives_first_publication_and_checks_directory_kind(
     tmp_path,
 ):
@@ -1511,7 +1540,7 @@ def test_an_unreportable_directory_keeps_its_original_fact_and_refusal(
 
 
 def test_unused_records_are_trimmed(tmp_path: Path) -> None:
-    root = tmp_path / "build_records" / "v11"
+    root = tmp_path / "build_records" / "v12"
     old = build_record.record_path(tmp_path, "a" * 64)
     new = build_record.record_path(tmp_path, "b" * 64)
     for path in (old, new):
@@ -1529,7 +1558,7 @@ def test_unused_records_are_trimmed(tmp_path: Path) -> None:
 def test_record_trimming_preserves_live_and_unproven_transient_allocations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    records = tmp_path / "build_records" / "v11"
+    records = tmp_path / "build_records" / "v12"
     transient = build_record.transient_root(tmp_path)
     abandoned = transient / "build-unproven"
     abandoned.mkdir(parents=True)
@@ -1940,7 +1969,7 @@ def test_checksum_validation_survives_aging_and_equal_metadata(
     assert row[3] == "checksum"
     # Present an old, unchanged metadata generation. Replay must retain its
     # checksum obligation even when both timestamp clocks are long past.
-    row[1][4] = row[1][5] = 1
+    row[1][3] = row[1][4] = 1
     frozen_token = input_report.StatToken.from_payload(row[1])
     record.write_text(json.dumps(payload), encoding="utf-8")
     real_stat_token = build_record.stat_token
@@ -2311,17 +2340,23 @@ def test_paths_inside_an_output_stage_directory_are_publication_custody(
     assert ledger.directories.keys() == {os.fspath(out)}
 
 
-@pytest.mark.parametrize("renumbered", [False, True])
-def test_legacy_build_record_is_a_cold_miss_without_rewriting_it(tmp_path, renumbered):
+@pytest.mark.parametrize(
+    "legacy_version,renumbered", [(10, False), (10, True), (11, False)]
+)
+def test_legacy_build_record_is_a_cold_miss_without_rewriting_it(
+    tmp_path, legacy_version, renumbered
+):
     _source, _tool, output, record = _fixture(tmp_path)
     payload = json.loads(record.read_text(encoding="utf-8"))
 
     def old_token(name, token):
         metadata = Path(name).stat()
+        if legacy_version == 11:
+            return ["apple-uuid:" + "1" * 32, f"{metadata.st_ino:032x}", *token[1:]]
         return [
             metadata.st_dev + int(renumbered),
             metadata.st_ino,
-            *token[2:],
+            *token[1:],
         ]
 
     for row in payload["files"]:
@@ -2330,8 +2365,13 @@ def test_legacy_build_record_is_a_cold_miss_without_rewriting_it(tmp_path, renum
     for row in payload["directories"]:
         row[1] = old_token(row[0], row[1])
     payload["output"]["token"] = old_token(output, payload["output"]["token"])
-    payload["schema"] = "molt-build-record-v10"
-    legacy = record.parent.parent.parent / record.parent.name / record.name
+    payload["schema"] = f"molt-build-record-v{legacy_version}"
+    root = record.parent.parent.parent
+    legacy = (
+        root / "v11" / record.parent.name / record.name
+        if legacy_version == 11
+        else root / record.parent.name / record.name
+    )
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text(json.dumps(payload), encoding="utf-8")
     record.unlink()

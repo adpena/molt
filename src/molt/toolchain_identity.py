@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import hashlib
 from io import BufferedReader
 import os
@@ -18,9 +18,7 @@ import time
 from typing import BinaryIO
 
 from molt.durable_file_identity import (
-    DurableFileIdentity,
     StatToken,
-    file_identity,
 )
 from molt.default_paths import executable_environment_value, expand_user_path
 from molt.process_environment import ProcessEnvironment
@@ -72,26 +70,10 @@ class StableRegularFileVersion:
     size: int
     _stat_identity: tuple[int, int, int, int, int, int]
     _content_change_time_ns: int
-    _durable_identity: DurableFileIdentity | None = field(
-        default=None, kw_only=True, compare=False, repr=False
-    )
 
     def stat_token(self) -> StatToken:
-        """Durable projection; the captured local fence remains independent."""
-        identity = self._durable_identity
-        if identity is None:
-            metadata = self.path.lstat()
-            if _stat_identity(metadata) != self._stat_identity:
-                raise StableRegularFileChangedError(
-                    f"file changed before token capture: {self.path}"
-                )
-            identity = file_identity(self.path, expected=metadata)
-            object.__setattr__(self, "_durable_identity", identity)
-        return StatToken(
-            identity,
-            *self._stat_identity[2:5],
-            self._content_change_time_ns,
-        )
+        """Class-B cache hint; operation-local device fences remain separate."""
+        return StatToken(*self._stat_identity[1:5], self._content_change_time_ns)
 
 
 @dataclass(frozen=True, slots=True)
@@ -747,8 +729,6 @@ def _regular_file_identity(
     metadata: os.stat_result,
     change_time_ns: int,
     digest: str,
-    *,
-    durable_identity: DurableFileIdentity | None = None,
 ) -> StableRegularFileIdentity:
     return StableRegularFileIdentity(
         path=path,
@@ -756,7 +736,6 @@ def _regular_file_identity(
         sha256=digest,
         _stat_identity=_stat_identity(metadata),
         _content_change_time_ns=change_time_ns,
-        _durable_identity=durable_identity,
     )
 
 
@@ -851,7 +830,7 @@ def stable_regular_file_identity(
 class FileDigestCache:
     """Stat-keyed SHA-256 digests that processes on one host reuse.
 
-    A recorded digest is reused only for a file whose (volume, file id, mode,
+    A recorded digest is reused only for a path whose (inode, mode,
     size, mtime_ns, ctime_ns) equals the observation it was recorded with, and
     only digests of files whose timestamps were already older than the racy
     window are recorded. POSIX kernels update ctime on every write and callers
@@ -871,13 +850,13 @@ class FileDigestCache:
         self.store.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.store, timeout=60)
         columns = [row[1] for row in connection.execute("PRAGMA table_info(digests)")]
-        if "dev" in columns:
+        if "dev" in columns or "volume" in columns:
             connection.close()
-            raise ValueError("legacy digest namespace requires the canonical v2 store")
+            raise ValueError("legacy digest namespace requires the canonical v3 store")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute(
             "CREATE TABLE IF NOT EXISTS digests (path TEXT PRIMARY KEY,"
-            " volume TEXT NOT NULL, file_id TEXT NOT NULL, mode INTEGER NOT NULL,"
+            " inode TEXT NOT NULL, mode INTEGER NOT NULL,"
             " size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,"
             " ctime_ns INTEGER NOT NULL, sha256 TEXT NOT NULL,"
             " recorded_ns INTEGER NOT NULL)"
@@ -885,7 +864,7 @@ class FileDigestCache:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS digests_recorded ON digests (recorded_ns)"
         )
-        connection.execute("PRAGMA user_version=2")
+        connection.execute("PRAGMA user_version=3")
         return connection
 
     def _rows(self) -> dict[str, tuple[StatToken, str, int]]:
@@ -893,12 +872,12 @@ class FileDigestCache:
             with closing(self._connect()) as connection:
                 self._recorded = {
                     row[0]: (
-                        StatToken.from_payload(list(row[1:7])),
+                        StatToken.from_payload([int(row[1]), *row[2:6]]),
+                        row[6],
                         row[7],
-                        row[8],
                     )
                     for row in connection.execute(
-                        "SELECT path, volume, file_id, mode, size, mtime_ns, ctime_ns,"
+                        "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
                         " sha256, recorded_ns FROM digests"
                     )
                 }
@@ -942,8 +921,7 @@ class FileDigestCache:
             )
         key = os.fspath(path)
         token = StatToken(
-            file_identity(path, expected=expected_path_stat),
-            *_stat_identity(expected_path_stat)[2:],
+            *_stat_identity(expected_path_stat)[1:],
         )
         recorded = self._rows().get(key)
         if recorded is not None and recorded[0] == token:
@@ -954,7 +932,6 @@ class FileDigestCache:
                 expected_path_stat,
                 expected_path_stat.st_ctime_ns,
                 recorded[1],
-                durable_identity=token.identity,
             )
         return None
 
@@ -974,12 +951,12 @@ class FileDigestCache:
         if not self._pending:
             return
         rows = [
-            (path, *token.payload(), sha256, self._started_ns)
+            (path, str(token.inode), *token.payload()[1:], sha256, self._started_ns)
             for path, (token, sha256) in self._pending.items()
         ]
         with closing(self._connect()) as connection, connection:
             connection.executemany(
-                "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             connection.execute(

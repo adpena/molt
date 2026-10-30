@@ -2866,6 +2866,7 @@ def _replay_artifact_root_stat(monkeypatch, artifacts):
     from molt import durable_file_identity as durable
 
     actual = artifacts.stat()
+    actual_stat = os.stat
     live = {"device": 16777240, "inode": 5983296}
 
     def replay(original):
@@ -2895,6 +2896,17 @@ def _replay_artifact_root_stat(monkeypatch, artifacts):
 
     for name in ("stat", "lstat", "fstat"):
         monkeypatch.setattr(os, name, replay(getattr(os, name)))
+    if sys.platform == "darwin":
+        native_leaf = durable._apple_leaf
+
+        def replay_leaf(fd, leaf):
+            captured = native_leaf(fd, leaf)
+            metadata = actual_stat(leaf, dir_fd=fd, follow_symlinks=False)
+            if (metadata.st_dev, metadata.st_ino) == (actual.st_dev, actual.st_ino):
+                return durable._AppleLeaf(captured.device, live["inode"])
+            return captured
+
+        monkeypatch.setattr(durable, "_apple_leaf", replay_leaf)
     if sys.platform.startswith("linux"):
         # Replaying the stat device allocation must retain the UUID mapping of
         # this real test filesystem. The mount itself has not been substituted.
@@ -2993,7 +3005,12 @@ def test_durable_binding_refuses_replacement_or_unmount(
     main, _, artifacts = bound_artifact_family
     if replacement == "volume":
         if sys.platform == "darwin":
-            monkeypatch.setattr(durable, "_apple_volume", lambda fd: "f" * 32)
+            native_volume = durable._apple_volume
+            monkeypatch.setattr(
+                durable,
+                "_apple_volume",
+                lambda fd: durable._AppleVolume(native_volume(fd).device, "f" * 32),
+            )
         elif sys.platform.startswith("linux"):
             monkeypatch.setattr(
                 durable, "_linux_volume", lambda device: "another-filesystem"
@@ -3196,3 +3213,160 @@ def test_statx_missing_from_libc_has_the_disk_remedy(monkeypatch):
         durable.UniqueMountIdentityUnavailable, match="MOLT_SCRATCH_STORAGE=disk"
     ):
         durable._linux_unique_mount_id(42)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS parent capture")
+def test_apple_identity_ancestor_aba_never_combines_two_volumes(tmp_path, monkeypatch):
+    """Replay c4-apple-ancestor-aba.json with both native volume authorities."""
+    import tempfile
+    from molt import durable_file_identity as durable
+
+    parent = tmp_path / "original-parent"
+    parent.mkdir()
+    subject = parent / "leaf"
+    subject.write_bytes(b"original volume")
+    parked = parent.with_name("held-original-parent")
+    with tempfile.TemporaryDirectory(
+        prefix="molt-identity-aba-", dir="/private/tmp"
+    ) as name:
+        foreign = Path(name) / "foreign-parent"
+        foreign.mkdir()
+        foreign_subject = foreign / subject.name
+        foreign_subject.write_bytes(b"foreign volume")
+        before = durable.file_identity(subject)
+        other = durable.file_identity(foreign_subject)
+        if before.volume == other.volume:
+            pytest.skip("native ancestor ABA requires two distinct volume UUIDs")
+        expected = subject.lstat()
+        native_volume = durable._apple_volume
+        observed = []
+
+        def swap_ancestor(fd):
+            assert isinstance(fd, int), "capture must query the held parent descriptor"
+            parent.rename(parked)
+            try:
+                parent.symlink_to(foreign, target_is_directory=True)
+                assert subject.read_bytes() == b"foreign volume"
+                # The path now addresses B, while fd retains A's real vnode.
+                captured = native_volume(fd)
+                observed.append(captured.uuid)
+                return captured
+            finally:
+                if parent.is_symlink():
+                    parent.unlink()
+                parked.rename(parent)
+
+        monkeypatch.setattr(durable, "_apple_volume", swap_ancestor)
+        try:
+            captured = durable.file_identity(subject, expected=expected)
+        except durable.ParentCaptureUnavailable as refused:
+            assert refused.remedy and refused.reason in durable.ParentCaptureReason
+        else:
+            assert captured == before
+            assert captured != durable.DurableFileIdentity(
+                before.kind, other.volume, before.file_id
+            ), "a foreign UUID must never be joined to the original inode"
+        assert observed and all(volume == before.volume for volume in observed)
+        assert subject.read_bytes() == b"original volume"
+        assert foreign_subject.read_bytes() == b"foreign volume"
+        assert not parent.is_symlink() and not parked.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS parent capture")
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_apple_identity_mode_zero_leaf_needs_no_leaf_open(tmp_path, monkeypatch, kind):
+    from molt import durable_file_identity as durable
+
+    parent = tmp_path / "searchable-parent"
+    parent.mkdir()
+    subject = parent / "mode-zero-leaf"
+    if kind == "file":
+        subject.write_bytes(b"metadata only")
+    else:
+        subject.mkdir()
+    before = durable.file_identity(subject)
+    native_open = os.open
+    opened = []
+
+    def open_parent(path, flags, *args, **kwargs):
+        assert Path(path) == parent, "identity capture must not open the mode-zero leaf"
+        opened.append(Path(path))
+        return native_open(path, flags, *args, **kwargs)
+
+    install_module_view(monkeypatch, "os", os, durable, open=open_parent)
+    subject.chmod(0)
+    try:
+        assert durable.file_identity(subject) == before
+    finally:
+        subject.chmod(0o600 if kind == "file" else 0o700)
+    assert opened
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or (os.name != "nt" and os.geteuid() == 0),
+    reason="native macOS search permissions as an unprivileged user",
+)
+def test_apple_identity_unsearchable_parent_refuses_with_typed_remedy(tmp_path):
+    from molt import durable_file_identity as durable
+
+    parent = tmp_path / "unsearchable-parent"
+    parent.mkdir()
+    subject = parent / "leaf"
+    subject.write_bytes(b"retained")
+    parent.chmod(0)
+    try:
+        with pytest.raises(durable.ParentCaptureUnavailable) as caught:
+            durable.file_identity(subject)
+        assert caught.value.reason is durable.ParentCaptureReason.UNAVAILABLE
+        assert "searchable parent" in caught.value.remedy
+        assert str(subject) in str(caught.value)
+    finally:
+        parent.chmod(0o700)
+    assert subject.read_bytes() == b"retained"
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="native macOS real device attributes"
+)
+def test_apple_identity_refuses_a_masked_cross_mount_leaf(tmp_path, monkeypatch):
+    from molt import durable_file_identity as durable
+
+    subject = tmp_path / "leaf"
+    subject.write_bytes(b"retained")
+    metadata = subject.lstat()
+    # Ordinary metadata claims one device, as a virtual/firmlink view may do.
+    assert metadata.st_dev == tmp_path.stat().st_dev
+    native_leaf = durable._apple_leaf
+    captured_devices = []
+
+    def other_real_mount(fd, leaf):
+        captured = native_leaf(fd, leaf)
+        captured_devices.append(captured.device)
+        return durable._AppleLeaf(captured.device ^ 0x80000000, captured.file_id)
+
+    monkeypatch.setattr(durable, "_apple_leaf", other_real_mount)
+    with pytest.raises(durable.ParentCaptureUnavailable) as caught:
+        durable.file_identity(subject, expected=metadata)
+    assert caught.value.reason is durable.ParentCaptureReason.CROSS_MOUNT
+    assert "same volume as its parent" in caught.value.remedy
+    assert captured_devices
+    assert subject.read_bytes() == b"retained"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS root capture")
+def test_apple_identity_volume_root_uses_held_relative_dot(monkeypatch):
+    from molt import durable_file_identity as durable
+
+    root = Path("/")
+    metadata = root.stat()
+    native_leaf = durable._apple_leaf
+    leaves = []
+
+    def root_leaf(fd, leaf):
+        leaves.append(leaf)
+        return native_leaf(fd, leaf)
+
+    monkeypatch.setattr(durable, "_apple_leaf", root_leaf)
+    captured = durable.file_identity(root, expected=metadata)
+    assert int(captured.file_id, 16) == metadata.st_ino
+    assert leaves and all(leaf == "." for leaf in leaves)
