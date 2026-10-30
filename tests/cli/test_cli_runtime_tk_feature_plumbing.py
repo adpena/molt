@@ -1183,6 +1183,9 @@ def test_backend_fingerprint_reuses_clean_source_state_without_metadata_scan(
         fail_metadata_scan,
         raising=True,
     )
+    monkeypatch.setattr(
+        cli_backend_binary, "admitted_source_files", fail_metadata_scan, raising=True
+    )
     reused = cli_backend_binary._backend_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
