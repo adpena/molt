@@ -17,7 +17,7 @@ def _run_ai_fallback_script(script: str) -> dict[str, object]:
         pytest.skip("node is required for Cloudflare AI fallback contract tests")
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

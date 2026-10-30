@@ -45,7 +45,7 @@ from molt.target_python import (  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_BENCH")
 
 
 def _utc_stamp() -> str:

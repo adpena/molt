@@ -82,7 +82,7 @@ _COMMAND_ENVIRONMENT_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*=(?=")')
 _COMMAND_PROGRAM_OVERRIDE = re.compile(r'\[(?=")')
 # gcc collect2.cc under -debug: fprintf (stderr, "ld_file_name        = %s\n").
 _COLLECT2_LINKER_REPORT = re.compile(r"ld_file_name +=\x20(.*)")
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 
 def _image_membership_error(

@@ -20,7 +20,7 @@ def _run_worker_script(script_text: str, cwd: Path):
     script.write_text(script_text, encoding="utf-8")
     return run_guarded_test_process(
         ["node", "--experimental-strip-types", str(script)],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=ROOT,
         text=True,
         capture_output=True,

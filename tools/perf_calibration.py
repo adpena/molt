@@ -54,7 +54,7 @@ from tools import harness_memory_guard  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from molt.windows_process_api import bind_process_query_api  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PERF_CALIBRATION")
 
 # ---------------------------------------------------------------------------
 # Windows peak-working-set via ctypes (macOS/Linux use stdlib only).

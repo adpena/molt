@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from molt.cli.cargo_resource_custody import CargoResourceCustody
     from molt.llvm_link_plan import LlvmNativeLinkPlan
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 _ROOT = Path(__file__).resolve().parents[2]
 _COMMON = re.compile(rb"/usr/share/common-licenses/([A-Za-z0-9][A-Za-z0-9+_.-]*)")
 

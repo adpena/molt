@@ -74,7 +74,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.git_identity import clean_checkout_status_arguments  # noqa: E402
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_CI")
 SCHEMA_VERSION = 4
 KIND = "molt_nightly_runtime_bundle"
 MANIFEST_NAME = "nightly-runtime-manifest.json"
