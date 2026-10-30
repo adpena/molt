@@ -35,6 +35,7 @@ def test_resolve_module_roots_omits_auto_site_packages_when_hermetic(
     roots = cli_build_inputs._resolve_module_roots(
         project_root,
         cwd_root,
+        entry_search_root=cwd_root,
         respect_pythonpath=False,
     )
 
@@ -69,6 +70,7 @@ def test_missing_module_root_env_entries_fail_closed(
     resolution = cli_build_inputs._resolve_module_root_resolution(
         project_root,
         project_root,
+        entry_search_root=project_root,
         respect_pythonpath=False,
     )
     assert resolution.missing_env_roots == (str(missing_root), posix_style)

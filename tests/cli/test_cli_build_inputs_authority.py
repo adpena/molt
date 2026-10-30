@@ -5,6 +5,7 @@ from molt.cli.config_resolution import _select_codegen_backend
 
 import inspect
 import importlib
+import os
 import sys
 from importlib.machinery import PathFinder
 from pathlib import Path
@@ -17,6 +18,8 @@ from molt.cli.python_import_topology import (
     PythonImportTopology,
     PythonImportTopologyChangedError,
 )
+from molt.cli import module_resolution
+from tests.process_guard_common import run_guarded_test_process
 
 _BUILD_INPUT_NAMES = (
     "_VALID_AUDIT_SINKS",
@@ -40,6 +43,7 @@ _BUILD_INPUT_NAMES = (
     "_resolve_wrapper_build_entry",
     "_configured_build_entry_selector",
     "_entry_value_looks_like_path",
+    "_entry_search_root",
 )
 
 
@@ -73,22 +77,123 @@ def _select_entry(
 
 
 def test_entry_module_selection_retains_earlier_shadow_misses(tmp_path: Path) -> None:
-    project, earlier = tmp_path / "project", tmp_path / "earlier"
+    project, earlier, later = (
+        tmp_path / "project",
+        tmp_path / "earlier",
+        tmp_path / "later",
+    )
     project.mkdir()
     earlier.mkdir()
-    source = project / "selected_entry.py"
+    later.mkdir()
+    source = later / "selected_entry.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
     entry = _select_entry(
-        project, module="selected_entry", env={"MOLT_MODULE_ROOTS": str(earlier)}
+        project,
+        module="selected_entry",
+        env={"MOLT_MODULE_ROOTS": os.pathsep.join(map(str, (earlier, later)))},
     )
     assert entry.source_path == source
     shadow = earlier / source.name
     shadow.write_bytes(source.read_bytes())
     importlib.invalidate_caches()
-    observed = PathFinder.find_spec("selected_entry", [str(earlier), str(project)])
+    observed = PathFinder.find_spec("selected_entry", [str(earlier), str(later)])
     assert observed is not None and observed.origin == str(shadow)
     with pytest.raises(PythonImportTopologyChangedError):
         entry.import_topology.validate()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "script",
+        "package-script",
+        "package",
+        "submodule",
+        "external",
+        "missing",
+        "symlink",
+    ],
+)
+def test_entry_search_root_is_cpython_sys_path_zero(tmp_path: Path, mode: str) -> None:
+    project = tmp_path / "project"
+    package = project / "probe_pkg"
+    package.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    code = "import sys\nprint(sys.path[0])\n"
+    for path in (project / "entry.py", package / "__main__.py", package / "sub.py"):
+        path.write_text(code, encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cwd = outside if mode in {"external", "missing"} else project
+    env = {"MOLT_HERMETIC_MODULE_ROOTS": "1"}
+    oracle_env = dict(os.environ)
+    oracle_env.pop("PYTHONPATH", None)
+    module = None
+    file = None
+    if mode in {"package", "submodule", "external", "missing"}:
+        module = "probe_pkg.sub" if mode == "submodule" else "probe_pkg"
+        args = ["-m", module]
+        if mode == "external":
+            env["MOLT_MODULE_ROOTS"] = str(project)
+            oracle_env["PYTHONPATH"] = str(project)
+    else:
+        source = project / "entry.py" if mode == "script" else package / "sub.py"
+        if mode == "symlink":
+            alias = outside / "entry.py"
+            try:
+                alias.symlink_to(source)
+            except OSError as exc:
+                pytest.skip(f"host cannot create source alias: {exc}")
+            source = alias
+        file = str(source)
+        args = [file]
+    oracle = run_guarded_test_process(
+        [sys.executable, "-s", "-B", *args], cwd=cwd, env=oracle_env
+    )
+    entry, error = build_inputs._resolve_build_entry(
+        file_path=file,
+        module=module,
+        project_root=project,
+        cwd_root=project,
+        stdlib_root=module_resolution._stdlib_root_path(),
+        respect_pythonpath=False,
+        json_output=False,
+        source_cwd=cwd,
+        env=env,
+    )
+    if mode == "missing":
+        assert oracle.returncode != 0
+        assert "No module named probe_pkg" in oracle.stderr
+        assert entry is None and error is not None
+        return
+    assert oracle.returncode == 0, oracle.stderr
+    assert error is None and entry is not None
+    search_root = Path(oracle.stdout.strip())
+    assert entry.module_roots[0] == search_root
+    assert search_root in entry.program_module_roots
+    assert entry.image_scope is not None
+    assert entry.image_scope.module_roots == tuple(entry.module_roots)
+    assert entry.image_scope.diagnostic_payload()["module_roots"] == [
+        str(root) for root in entry.module_roots
+    ]
+    if module is not None:
+        assert package in entry.program_module_roots
+        assert package not in entry.module_roots
+    elif mode != "script":
+        assert project not in entry.module_roots
+        # Ownership must survive even though this root cannot resolve imports.
+        assert project in entry.program_module_roots
+
+
+def test_entry_search_root_precedes_explicit_roots(tmp_path: Path) -> None:
+    cwd = tmp_path / "cwd"
+    external = tmp_path / "external"
+    for directory in (cwd, external):
+        directory.mkdir()
+        (directory / "entry.py").write_text("pass\n", encoding="utf-8")
+    entry = _select_entry(cwd, module="entry", env={"MOLT_MODULE_ROOTS": str(external)})
+    assert entry.source_path == cwd / "entry.py"
 
 
 def test_entry_package_selection_retains_missing_main(tmp_path: Path) -> None:
@@ -153,6 +258,7 @@ def test_root_selection_retains_missing_root_candidates(
     before = build_inputs._resolve_module_root_resolution(
         tmp_path,
         tmp_path,
+        entry_search_root=tmp_path,
         respect_pythonpath=False,
         env={},
         import_topology=owner,
@@ -161,7 +267,7 @@ def test_root_selection_retains_missing_root_candidates(
     assert added not in before.roots
     added.mkdir(parents=True)
     after = build_inputs._resolve_module_root_resolution(
-        tmp_path, tmp_path, respect_pythonpath=False, env={}
+        tmp_path, tmp_path, entry_search_root=tmp_path, respect_pythonpath=False, env={}
     )
     assert added in after.roots
     with pytest.raises(PythonImportTopologyChangedError):
@@ -181,6 +287,7 @@ def test_relative_root_alias_uses_request_cwd_and_retains_selector(
     selected = build_inputs._resolve_module_root_resolution(
         project,
         project,
+        entry_search_root=project,
         respect_pythonpath=False,
         env={
             "MOLT_MODULE_ROOTS": "logical.vendor=vendor_package",
@@ -250,6 +357,7 @@ def test_venv_root_selection_custodies_version_and_site_misses(
     before = build_inputs._resolve_module_root_resolution(
         tmp_path,
         tmp_path,
+        entry_search_root=tmp_path,
         respect_pythonpath=False,
         env={},
         import_topology=owner,
@@ -258,7 +366,7 @@ def test_venv_root_selection_custodies_version_and_site_misses(
     assert site not in before.roots
     site.mkdir(parents=True)
     after = build_inputs._resolve_module_root_resolution(
-        tmp_path, tmp_path, respect_pythonpath=False, env={}
+        tmp_path, tmp_path, entry_search_root=tmp_path, respect_pythonpath=False, env={}
     )
     assert site in after.roots
     with pytest.raises(PythonImportTopologyChangedError):

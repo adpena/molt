@@ -430,6 +430,20 @@ Metadata construction and native-provider publication use that same cleanup path
   be explicit through `MOLT_MODULE_ROOTS`.
 - Runtime mutation of `sys.path` is allowed only when explicitly enabled.
 - Resolution order is stable and documented in build metadata.
+- The entry search root is CPython's `sys.path[0]`: a file entry uses the
+  resolved script's own directory, including when it lies inside a package;
+  `--module pkg` and `--module pkg.sub` use the invocation cwd. Module
+  selection never adds the package directory or changes cwd to its parent.
+  Outside the package parent, module selection requires an additional search
+  root or fails. The entry root precedes configured roots; `src`, vendor,
+  explicit module/library roots and respected `PYTHONPATH` retain their
+  build-time policy. A discovered project/cwd root owns program sources but
+  does not itself add a search location. `_entry_search_root` in
+  `src/molt/cli/build_inputs.py` owns this derivation; graph discovery, image
+  scope and resolver cache identities consume its ordered roots.
+  See CPython [pathconfig.c](https://github.com/python/cpython/blob/v3.12.11/Python/pathconfig.c#L394-L518),
+  [main.c](https://github.com/python/cpython/blob/v3.12.11/Modules/main.c#L584-L637),
+  and [runpy.py](https://github.com/python/cpython/blob/v3.12.11/Lib/runpy.py#L173-L200).
 
 ### 3.2 Allowed Forms
 - `import x`, `import x as y`
@@ -733,6 +747,9 @@ separate from host graph and binding-fact validation.
   `MOLT_MODULE_ROOTS` also names the script's directory.
   `_ImportAdmissionPolicy` (`src/molt/cli/models.py`) owns the rule;
   `_resolve_build_entry` (`src/molt/cli/build_inputs.py`) produces the roots.
+  For a script nested in a regular package, package ancestry determines only
+  program ownership. Explicitly making its enclosing package importable does
+  not turn that package into external code or add its parent to search roots.
 - Finder-returned extension specs use two independent admission facts: an
   extension artifact suffix (including archive members), or the private
   extension-loader declaration carried by the real loader class and its
