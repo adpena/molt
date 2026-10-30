@@ -561,7 +561,8 @@ def test_namespace_only_topology_invalidates_plan_and_measurement_contract(tmp_p
     )
     before = nightly_sharding._authority_inputs(root)
     plan = _plan(root)
-    (root / "namespace_only").mkdir()
+    # Keep the namespace inside the real manifest's admitted source roots.
+    (root / "src/namespace_only").mkdir()
     after = nightly_sharding._authority_inputs(root)
     assert before.files == after.files
     assert before.topology_digest != after.topology_digest
