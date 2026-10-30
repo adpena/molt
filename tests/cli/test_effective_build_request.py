@@ -621,6 +621,7 @@ def test_actual_cache_and_admission_consumers_use_effective_target(
         entry_module="main",
         target_python=_parse_target_python_version("3.12"),
         external_module_roots=(),
+        program_module_roots=(),
     )
     observed = []
     monkeypatch.setattr(

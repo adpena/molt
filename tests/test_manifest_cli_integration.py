@@ -130,7 +130,12 @@ def test_shared_locks_create_cross_platform_lock_files(tmp_path: Path):
         assert (tmp_path / "stdlib.o.publish.lock").exists()
 
 
-def test_cargo_build_env_does_not_select_a_python_generator(monkeypatch):
+def test_cargo_build_env_does_not_select_a_python_generator(
+    monkeypatch, developer_host_context
+):
+    # developer_host_context: no run context, so _cargo_build_env does not
+    # materialize the real checkout's roots (a plain clone's toolchain root
+    # lies inside the checkout).
     monkeypatch.delenv("MOLT_BUILD_PYTHON", raising=False)
     assert "MOLT_BUILD_PYTHON" not in cli_cargo_execution._cargo_build_env()
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "missing-poison")

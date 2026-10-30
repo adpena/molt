@@ -36,6 +36,7 @@ def _run_node(
     *,
     authorities: list[dict[str, str]],
     token_override: str | None = None,
+    stdin: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     node = _node()
     policy = {
@@ -55,10 +56,11 @@ def _run_node(
         completed = run_custody_subject_process(
             [node, "-e", script],
             env=environment,
+            stdin=stdin,
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
     return completed, server.receipt()
 
@@ -486,9 +488,13 @@ def test_node_terminated_worker_preserves_denied_child_request(tmp_path: Path) -
 
 
 def test_node_worker_exit_does_not_discard_an_unfinished_decision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pending_marker = tmp_path / "decision-pending"
+    # The broker tells the root through a pipe that the Worker's decision is
+    # pending. A watched marker file made this handshake depend on
+    # fseventsd, which can deliver seconds late or stall under load; the
+    # Worker then never retired and the run hit its timeout.
+    pending_read, pending_write = os.pipe()
     released = threading.Event()
     original = execution_custody.ChildCustodyEventServer._decide_child
 
@@ -496,8 +502,9 @@ def test_node_worker_exit_does_not_discard_an_unfinished_decision(
         if intent["requested"] == "molt-proof-release-pending-decision":
             released.set()
             return original(server, intent, runtime)
-        pending_marker.write_text("pending", encoding="utf-8")
-        if not released.wait(timeout=10):
+        os.write(pending_write, b"pending\n")
+        # Below the run's own deadline, so this diagnostic wins over a kill.
+        if not released.wait(timeout=30):
             raise RuntimeError("test parent did not observe Worker exit")
         raise RuntimeError("retained unfinished child decision")
 
@@ -506,15 +513,18 @@ def test_node_worker_exit_does_not_discard_an_unfinished_decision(
     )
     worker = "require('child_process').spawnSync(process.execPath,['--version']);"
     root = (
-        "const {Worker}=require('worker_threads');const fs=require('fs');let retiring=false;"
-        f"const watch=fs.watch({json.dumps(str(tmp_path))},async (_,name)=>{{"
-        "if(name!=='decision-pending'||retiring)return;retiring=true;"
+        "const {Worker}=require('worker_threads');"
+        "process.stdin.once('data',async ()=>{"
         "await w.terminate();"
         "try{require('child_process').spawnSync('molt-proof-release-pending-decision')}catch(_){}"
-        "watch.close();});"
+        "process.stdin.destroy();});"
         f"const w=new Worker({json.dumps(worker)},{{eval:true}});w.on('error',()=>{{}});"
     )
-    completed, receipt = _run_node(root, authorities=[])
+    try:
+        completed, receipt = _run_node(root, authorities=[], stdin=pending_read)
+    finally:
+        os.close(pending_read)
+        os.close(pending_write)
 
     assert completed.returncode == 0, completed.stderr
     assert released.is_set()

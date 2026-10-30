@@ -58,6 +58,11 @@ _PUBLICATION_STATES = {
 }
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
+# How long a producer or publisher waits for another one that holds the same
+# destination's lock. The holder's work, not this bound, orders them; the bound
+# only ends a wait on a holder that never finishes.
+SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S = 300.0
+
 
 @dataclass(frozen=True, slots=True)
 class SourceExtensionPublicationCustody:
