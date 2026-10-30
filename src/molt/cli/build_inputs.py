@@ -63,7 +63,6 @@ from molt.cli.models import (
 from molt.cli.module_graph_discovery import _record_module_reason
 from molt.cli.module_resolution import (
     _ModuleRootAliases,
-    _entry_module_root_for_path,
     _is_stdlib_resolved_path,
     _module_name_from_path,
     _parse_module_root_alias_entry,
@@ -168,7 +167,23 @@ def _resolve_entry_module(
     return None
 
 
-def _entry_package_root(source_path: Path, entry_module: str) -> Path | None:
+def _entry_search_root(*, script_path: Path | None, source_cwd: Path) -> Path:
+    """CPython's sys.path[0]: resolved script directory, or cwd for ``-m``.
+
+    Python/pathconfig.c:_PyPathConfig_ComputeSysPath0 does not walk packages;
+    Lib/runpy.py:_run_module_as_main does not add the selected module's parent.
+    ``script_path`` is the topology-custodied, resolved file selector.
+    """
+    return script_path.parent if script_path is not None else source_cwd.resolve()
+
+
+def _entry_package_root(
+    source_path: Path,
+    entry_module: str,
+    *,
+    is_script: bool,
+    import_topology: PythonImportTopology,
+) -> Path | None:
     """The directory of the entry's top-level package, or None for a module.
 
     ``python -m probe_pkg`` runs the package it names (Lib/runpy.py:
@@ -176,7 +191,22 @@ def _entry_package_root(source_path: Path, entry_module: str) -> Path | None:
     is an external root. The walk follows the dotted name up from the entry
     file; an aliased root (MOLT_MODULE_ROOTS ``prefix=path``) whose directory
     name differs ends the walk at the directory the alias names.
+
+    A script's execution identity need not name its enclosing package. Its
+    regular package ancestry still owns program sources, independently of
+    the search root. This walk never contributes a search location.
     """
+    if is_script:
+        directory = source_path.parent
+        package_root = None
+        while import_topology.is_file(directory / "__init__.py"):
+            package_root = directory
+            parent = directory.parent
+            if parent == directory:
+                break
+            directory = parent
+        if package_root is not None:
+            return package_root
     package_parts = entry_module.split(".")
     if source_path.name != "__init__.py":
         package_parts = package_parts[:-1]
@@ -405,9 +435,24 @@ def _resolve_build_entry(
     assert selector is not None
     file_path = selector.file_path
     module = selector.module
+    request_cwd = Path.cwd() if source_cwd is None else source_cwd
+    source_path: Path | None = None
+    entry_module: str | None = None
+    if file_path:
+        selector_path = request_cwd / Path(file_path)
+        selected_source = import_topology.probe(selector_path)
+        if selected_source is None:
+            return None, _fail(
+                f"File not found: {selector_path}", json_output, command=command
+            )
+        source_path = selected_source.path
+    entry_search_root = _entry_search_root(
+        script_path=source_path, source_cwd=request_cwd
+    )
     module_root_resolution = _resolve_module_root_resolution(
         project_root,
         cwd_root,
+        entry_search_root=entry_search_root,
         respect_pythonpath=respect_pythonpath,
         lib_paths=lib_paths or [],
         env=env,
@@ -427,25 +472,6 @@ def _resolve_build_entry(
     module_roots = list(module_root_resolution.roots)
     external_module_roots = tuple(module_root_resolution.external_roots)
     program_module_roots = list(module_root_resolution.program_roots)
-    source_path: Path | None = None
-    entry_module: str | None = None
-    if file_path:
-        selector_path = (source_cwd or Path.cwd()) / Path(file_path)
-        selected_source = import_topology.probe(selector_path)
-        if selected_source is None:
-            return None, _fail(
-                f"File not found: {selector_path}", json_output, command=command
-            )
-        source_path = selected_source.path
-        # The root a script adds is the program's own directory: its
-        # sys.path[0] (Python/pathconfig.c:_PyPathConfig_ComputeSysPath0)
-        # when the script is not inside a package.
-        script_root = _entry_module_root_for_path(
-            source_path, import_topology=import_topology
-        ).resolve()
-        module_roots.append(script_root)
-        program_module_roots.append(script_root)
-        module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     if module:
         resolved = _resolve_entry_module(
             module,
@@ -460,8 +486,6 @@ def _resolve_build_entry(
                 command=command,
             )
         entry_module, source_path = resolved
-        module_roots.append(source_path.parent.resolve())
-        module_roots = list(dict.fromkeys(module_roots))
     elif source_path is not None:
         entry_module = _module_name_from_path(
             source_path,
@@ -475,7 +499,12 @@ def _resolve_build_entry(
             json_output,
             command=command,
         )
-    entry_package_root = _entry_package_root(source_path, entry_module)
+    entry_package_root = _entry_package_root(
+        source_path,
+        entry_module,
+        is_script=module is None,
+        import_topology=import_topology,
+    )
     if entry_package_root is not None:
         program_module_roots.append(entry_package_root.resolve())
     try:
@@ -1018,6 +1047,7 @@ def _resolve_module_root_resolution(
     project_root: Path,
     cwd_root: Path,
     *,
+    entry_search_root: Path,
     respect_pythonpath: bool,
     lib_paths: list[str] | None = None,
     env: Mapping[str, str] | None = None,
@@ -1040,6 +1070,10 @@ def _resolve_module_root_resolution(
         if not external:
             internal_roots.add(resolved)
 
+    # Search order starts with the entry's sys.path[0], independently of
+    # program ownership. Project/cwd roots still own program sources below,
+    # but must not make an enclosing package importable from a script.
+    add_root(entry_search_root, external=False)
     hermetic_module_roots = request_env.get(
         "MOLT_HERMETIC_MODULE_ROOTS", ""
     ).lower() in {
@@ -1081,8 +1115,9 @@ def _resolve_module_root_resolution(
     )
 
     for root in (project_root, cwd_root):
-        if topology.probe(root) is not None:
-            add_root(root, external=False)
+        selected = topology.probe(root)
+        if selected is not None:
+            internal_roots.add(selected.path)
         src_root = root / "src"
         if topology.probe(src_root) is not None:
             add_root(src_root, external=False)
@@ -1119,7 +1154,7 @@ def _resolve_module_root_resolution(
     return _ModuleRootResolution(
         roots=roots,
         external_roots=external,
-        program_roots=tuple(root for root in roots if root in internal_roots),
+        program_roots=tuple(sorted(internal_roots)),
         missing_env_roots=tuple(missing_env_roots),
         module_root_aliases=tuple(dict.fromkeys(module_root_aliases)),
     )
@@ -1129,6 +1164,7 @@ def _resolve_module_roots(
     project_root: Path,
     cwd_root: Path,
     *,
+    entry_search_root: Path,
     respect_pythonpath: bool,
     lib_paths: list[str] | None = None,
 ) -> list[Path]:
@@ -1136,6 +1172,7 @@ def _resolve_module_roots(
         _resolve_module_root_resolution(
             project_root,
             cwd_root,
+            entry_search_root=entry_search_root,
             respect_pythonpath=respect_pythonpath,
             lib_paths=lib_paths,
         ).roots
