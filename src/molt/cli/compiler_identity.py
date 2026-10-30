@@ -357,57 +357,21 @@ class CompilerSourceGeneration:
     def _topology(
         roots: tuple[Path, ...],
     ) -> tuple[tuple[Path, ...], tuple[tuple[Path, tuple[int, ...]], ...]]:
-        from molt.file_hashing import (
-            _source_fingerprint_files,
-            _source_fingerprint_should_skip,
-            content_change_time_ns,
-        )
+        from molt.source_admission import admitted_source_files, source_directories
         from molt.file_publication import metadata_is_link_like
 
-        def scan_error(error: OSError) -> None:
-            raise error
-
-        files: set[Path] = set()
+        files = admitted_source_files(roots)
         directories: dict[Path, tuple[int, ...]] = {}
-        for root in roots:
-            if metadata_is_link_like(root.lstat()):
+        for path in source_directories(files, roots):
+            metadata = path.lstat()
+            if metadata_is_link_like(metadata):
                 raise CompilerIdentityError(
-                    f"Compiler source root is not directly owned: {root}"
+                    f"Compiler source directory is not directly owned: {path}"
                 )
-            files.update(_source_fingerprint_files(root))
-            if not root.is_dir():
-                continue
-            for directory, children, _names in os.walk(
-                root, followlinks=False, onerror=scan_error
-            ):
-                path = Path(directory)
-                children[:] = [
-                    name
-                    for name in children
-                    if not _source_fingerprint_should_skip(path / name)
-                ]
-                # Cargo can follow a source directory alias even though the
-                # source enumerator does not. Never admit that unowned subtree.
-                for name in children:
-                    child = path / name
-                    if metadata_is_link_like(child.lstat()):
-                        raise CompilerIdentityError(
-                            f"Compiler source directory is not directly owned: {child}"
-                        )
-                metadata = path.lstat()
-                change_time = content_change_time_ns(path, metadata)
-                if metadata_is_link_like(metadata) or change_time is None:
-                    raise CompilerIdentityError(
-                        f"Compiler directory has no direct generation custody: {path}"
-                    )
-                directories[path] = (
-                    metadata.st_dev,
-                    metadata.st_ino,
-                    metadata.st_mode,
-                    metadata.st_mtime_ns,
-                    change_time,
-                )
-        return tuple(sorted(files)), tuple(sorted(directories.items()))
+            # Membership is the admitted set. Directory timestamps also change
+            # for ignored locks/stages, so only replacement custody is fenced.
+            directories[path] = (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+        return files, tuple(sorted(directories.items()))
 
     @classmethod
     def capture(cls, roots: Sequence[Path]) -> CompilerSourceGeneration:

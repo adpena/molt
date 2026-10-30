@@ -14,7 +14,7 @@ import pytest
 from molt.process_environment import NameRule, ProcessEnvironment
 from tests.test_python_external_custody import standard_finders  # noqa: F401
 from tests.process_guard_common import run_guarded_test_process
-from tools.git_identity import repository_source_paths
+from molt.source_admission import repository_source_paths
 
 from tools.proof_queue_pkg import cargo_cache_custody as cache
 from tools.proof_queue_pkg import (

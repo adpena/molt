@@ -1297,15 +1297,11 @@ def _merge_module_graph_with_reason(
 
 
 def _latest_mtime(paths: list[Path]) -> float:
-    latest = 0.0
-    for path in paths:
-        if path.is_dir():
-            for item in path.rglob("*"):
-                if item.is_file():
-                    latest = max(latest, item.stat().st_mtime)
-        elif path.exists():
-            latest = max(latest, path.stat().st_mtime)
-    return latest
+    from molt.source_admission import admitted_source_files
+
+    return max(
+        (path.stat().st_mtime for path in admitted_source_files(paths)), default=0.0
+    )
 
 
 def _parse_audit_log_flag(value: str) -> dict[str, str]:

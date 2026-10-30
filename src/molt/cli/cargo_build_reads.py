@@ -33,6 +33,7 @@ from molt.file_publication import metadata_is_link_like
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.exact_json import loads_exact
 from molt.process_environment import ProcessEnvironment
+from molt.source_admission import admitted_source_files
 from molt.toolchain_identity import (
     StableRegularFileHandle,
     open_stable_regular_file,
@@ -524,7 +525,14 @@ def uncovered_build_inputs(
     publication refuses it, as Bazel refuses an undeclared inclusion. Every
     Cargo product that keys its generation by a source closure checks here.
     """
-    uncovered = paths_outside((*reads.files, *reads.directories), workspace_root, roots)
+    roots = tuple(roots)
+    workspace_root = Path(os.path.realpath(workspace_root))
+    admitted = frozenset(admitted_source_files(roots))
+    uncovered = tuple(
+        path.relative_to(workspace_root).as_posix()
+        for path in reads.files
+        if path not in admitted
+    ) + paths_outside(reads.directories, workspace_root, roots)
     if not uncovered:
         return None
     return (
@@ -876,30 +884,24 @@ def _read_build_script_output(path: Path) -> tuple[tuple[str, ...], tuple[str, .
 
 
 def _files_under(path: Path) -> Iterator[Path]:
-    # Cargo scans a directory named by rerun-if-changed recursively.
-    for directory, _children, names in os.walk(path):
-        for name in names:
-            candidate = Path(directory) / name
-            if candidate.is_file():
-                yield Path(os.path.realpath(candidate))
+    # Directory watches do not assert byte reads of ignored debris. Explicit
+    # rustc/script file reads remain exact and must pass the admission guard.
+    yield from admitted_source_files((path,))
 
 
 def _package_files(package: Path) -> Iterator[Path]:
-    """Every file of one package, without nested packages or its target
-    directory. Cargo lists the package through Git; this walk lists at least
-    as much, so an extra file can only cost a rebuild."""
-    for directory, children, names in os.walk(package):
-        current = Path(directory)
-        children[:] = [
-            name
-            for name in children
-            if not (current == package and name == "target")
-            and not (current / name / "Cargo.toml").is_file()
-        ]
-        for name in names:
-            candidate = current / name
-            if candidate.is_file():
-                yield Path(os.path.realpath(candidate))
+    """Cargo's package fallback, excluding nested packages and target outputs."""
+    for candidate in admitted_source_files((package,)):
+        relative = candidate.relative_to(package)
+        if relative.parts[0] == "target":
+            continue
+        if any(
+            (parent / "Cargo.toml").is_file()
+            for parent in candidate.parents
+            if parent != package and parent.is_relative_to(package)
+        ):
+            continue
+        yield candidate
 
 
 def _local_package_root(package_id: object) -> Path | None:

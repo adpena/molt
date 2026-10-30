@@ -40,7 +40,7 @@ from tools.proof_queue_pkg import (
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 from tests.test_custody_layout import git_checkout as git_checkout
 from tests.test_dx_run_context import _git
-from tools.git_identity import repository_source_paths
+from molt.source_admission import repository_source_paths
 
 
 pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")

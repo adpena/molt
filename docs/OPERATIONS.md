@@ -1183,6 +1183,12 @@ Benchmarks that cannot survive a disconnect are not acceptable.
 
 ### Build time
 
+`molt build --verbose` reports frontend lowering-cache hits and the admitted
+compiler/runtime product paths. Equal immutable product paths across checkouts,
+without a source-build notice, show product reuse. These lines use the existing
+admission and cache results; they do not enable build diagnostics. An unchanged
+build record finishes before these stages and reports `inputs unchanged`.
+
 Compiler caches use atomic publication without durability barriers when their
 contents can be reconstructed: source/import/analysis and lowering records,
 toolchain and backend-analysis memos, wrapper build manifests, and both directions

@@ -375,7 +375,7 @@ def test_git_path_metadata_preserves_legal_path_bytes(
 ) -> None:
     from tests.test_dx_run_context import _git
     from tests.process_guard_common import run_guarded_test_process
-    from tools.git_identity import repository_source_paths
+    from molt.source_admission import repository_source_paths
 
     lane = git_checkout / ".claude" / "worktrees" / name
     _git(git_checkout, "worktree", "add", "-q", "--detach", str(lane))
