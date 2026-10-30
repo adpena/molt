@@ -619,6 +619,7 @@ def test_prefixed_module_root_is_external_admission_root(
     resolved = cli_build_inputs._resolve_module_root_resolution(
         ROOT,
         ROOT,
+        entry_search_root=ROOT,
         respect_pythonpath=False,
         lib_paths=[],
     )
@@ -4385,6 +4386,7 @@ def test_respect_pythonpath_keeps_repo_src_internal(
     resolved = cli_build_inputs._resolve_module_root_resolution(
         ROOT,
         ROOT,
+        entry_search_root=ROOT,
         respect_pythonpath=True,
         lib_paths=[],
     )
@@ -4680,6 +4682,76 @@ def test_script_entry_root_named_as_module_root_stays_program_source(
         "neighbor",
         "neighbor.heavy",
     } <= set(graph)
+
+
+@pytest.mark.parametrize("module", [True, False], ids=["module", "package-script"])
+def test_entry_search_path_graph_matches_cpython(tmp_path: Path, module: bool) -> None:
+    from tests.wasm_linked_runner import ModuleEntry, run_cpython_reference
+
+    project = tmp_path / "project"
+    shutil.copytree(ROOT / "tests/fixtures/entry_search_path", project)
+    entry = (
+        ModuleEntry("probe_pkg", project) if module else project / "probe_pkg/script.py"
+    )
+    oracle = run_cpython_reference(entry, cwd=project, check=False)
+    missing = "helper" if module else "probe_pkg"
+    assert oracle.returncode == 1
+    assert f"ModuleNotFoundError: No module named '{missing}'" in oracle.stderr
+    graph = _entry_build_graph(
+        tmp_path,
+        module="probe_pkg" if module else None,
+        file_path=None if module else project / "probe_pkg/script.py",
+        # An explicit root equal to the search root must preserve admission.
+        # For scripts, avoid explicitly adding the enclosing package parent.
+        module_roots_env=project if module else project / "probe_pkg",
+    )
+    assert missing not in graph
+    if module:
+        assert {
+            "probe_pkg",
+            "probe_pkg.__main__",
+            "probe_pkg.helper",
+            "probe_pkg.sibling",
+        } <= set(graph)
+    else:
+        assert "sibling" in graph
+        assert "probe_pkg.script" not in graph
+
+
+@pytest.mark.parametrize("filename", ["entry.py", "__init__.py"])
+def test_nested_script_keeps_enclosing_package_admission(
+    tmp_path: Path, filename: str
+) -> None:
+    from tests.process_guard_common import run_guarded_test_process
+
+    roots = tmp_path / "roots"
+    _write_entry_package_with_external_neighbor(roots)
+    nested = roots / "probe_pkg" / "nested"
+    nested.mkdir()
+    (nested / "__init__.py").write_text("", encoding="utf-8")
+    entry = nested / filename
+    entry.write_text(
+        "from probe_pkg.helper import ping\nprint(ping())\n", encoding="utf-8"
+    )
+    # The enclosing package is importable only because this explicit root
+    # supplies it, like PYTHONPATH under CPython. It remains program source;
+    # a different package in that same external root does not become one.
+    oracle = run_guarded_test_process(
+        [sys.executable, "-s", "-B", str(entry)],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(roots)},
+    )
+    assert oracle.returncode == 0, oracle.stderr
+    assert oracle.stdout == "sib-abs\n"
+    graph = _entry_build_graph(tmp_path, file_path=entry, module_roots_env=roots)
+    assert {
+        "probe_pkg",
+        "probe_pkg.helper",
+        "probe_pkg.sibling",
+        "probe_pkg.absolute_sibling",
+    } <= set(graph)
+    assert "neighbor" not in graph
+    assert "neighbor.heavy" not in graph
 
 
 def test_import_admission_source_belongs_to_its_deepest_root(tmp_path: Path) -> None:
@@ -27288,6 +27360,7 @@ def test_run_wrapper_build_manifest_caches_module_entries(
         json_output=True,
         command="run",
         build_args=[],
+        source_cwd=project,
     )
     assert error is None
     assert resolved is not None
@@ -27531,6 +27604,7 @@ def test_wrapper_cache_input_rejects_expired_source_admission(
         "json_output": True,
         "command": "run",
         "build_args": [],
+        "source_cwd": project,
     }
     admitted, error = cli_build_inputs._resolve_wrapper_build_entry(**resolve_kwargs)
     assert error is None and admitted is not None

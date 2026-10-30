@@ -430,6 +430,32 @@ Metadata construction and native-provider publication use that same cleanup path
   be explicit through `MOLT_MODULE_ROOTS`.
 - Runtime mutation of `sys.path` is allowed only when explicitly enabled.
 - Resolution order is stable and documented in build metadata.
+- The entry search root is CPython's `sys.path[0]`: a file entry uses the
+  script's own directory, including when it lies inside a package;
+  `--module pkg` and `--module pkg.sub` use the invocation cwd. Module
+  selection never adds the package directory or changes cwd to its parent.
+  Outside the package parent, module selection requires an additional search
+  root or fails. The entry root precedes configured roots; `src`, vendor,
+  explicit module/library roots and respected `PYTHONPATH` retain their
+  build-time policy. A discovered project/cwd root owns program sources but
+  does not itself add a search location. `_entry_search_root` in
+  `src/molt/cli/build_inputs.py` owns this derivation; graph discovery, image
+  scope and resolver cache identities consume its ordered roots.
+  See CPython [pathconfig.c](https://github.com/python/cpython/blob/v3.12.11/Python/pathconfig.c#L394-L518),
+  [main.c](https://github.com/python/cpython/blob/v3.12.11/Modules/main.c#L584-L637),
+  and [runpy.py](https://github.com/python/cpython/blob/v3.12.11/Lib/runpy.py#L173-L200).
+  `_PyPathConfig_ComputeSysPath0` (`Python/pathconfig.c:394`) is unchanged from
+  CPython 3.12 through 3.15 development: `-m` uses the absolute invocation cwd;
+  POSIX scripts take `readlink` then `realpath`, while Windows uses
+  `GetFullPathNameW` without resolving script links. Molt chooses this branch
+  from the declared compilation target, not the compiler host, and retains
+  the lexical script selector until that choice. `molt build -P`/`--safe-path`
+  and nonempty `PYTHONSAFEPATH` suppress the implicit entry root, as
+  `pymain_run_python` (`Modules/main.c:588`) does for `config->safe_path`.
+  Explicit search roots remain available. This is build-time import admission;
+  it does not claim runtime startup-flag qualification. CPython's `-c` empty
+  path and directory/zip `main_importer_path` are separate entry forms, outside
+  Molt's file/module build selector contract.
 
 ### 3.2 Allowed Forms
 - `import x`, `import x as y`
@@ -733,6 +759,9 @@ separate from host graph and binding-fact validation.
   `MOLT_MODULE_ROOTS` also names the script's directory.
   `_ImportAdmissionPolicy` (`src/molt/cli/models.py`) owns the rule;
   `_resolve_build_entry` (`src/molt/cli/build_inputs.py`) produces the roots.
+  For a script nested in a regular package, package ancestry determines only
+  program ownership. Explicitly making its enclosing package importable does
+  not turn that package into external code or add its parent to search roots.
 - Finder-returned extension specs use two independent admission facts: an
   extension artifact suffix (including archive members), or the private
   extension-loader declaration carried by the real loader class and its
