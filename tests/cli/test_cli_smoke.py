@@ -1772,7 +1772,13 @@ def test_cli_config_json() -> None:
     assert "sources" in payload["data"]
 
 
-def test_cli_dx_env_json_has_cross_platform_defaults() -> None:
+def test_cli_dx_env_json_has_cross_platform_defaults(
+    monkeypatch, tmp_path: Path, short_cargo_cache: Path
+) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(short_cargo_cache.parent))
     res = _run_cli(["dx", "env", "--format", "json"])
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)

@@ -3533,13 +3533,17 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     monkeypatch,
     tmp_path: Path,
     wrapper_env: str,
+    short_cargo_cache: Path,
 ) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
     for name in (*CARGO_WRAPPER_ENV_NAMES, *SCCACHE_SERVER_ENDPOINT_ENV_NAMES):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(wrapper_env, "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     # A run's scratch TMPDIR must not reach the shared sccache server (HF-105).
-    monkeypatch.setenv("SCCACHE_DIR", str(tmp_path / "artifacts" / ".sccache"))
+    monkeypatch.setenv("SCCACHE_DIR", str(short_cargo_cache))
     for name in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.setenv(name, str(tmp_path / "run-scratch"))
     from molt.cargo_execution_policy import sccache_server_temp_dir
