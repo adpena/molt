@@ -21,8 +21,8 @@ from molt.cli.compiler_metadata import (
 )
 from molt.file_hashing import (
     _sha256_file,
-    _source_fingerprint_files,
 )
+from molt.source_admission import admitted_source_files
 from molt.host_tool_products import HostToolProduct
 from molt.cli.python_source_closure import local_python_import_graph_transaction
 
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from molt.process_environment import ProcessEnvironment
 
 
-_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
+_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v4"
 
 
 def _backend_crate_source_closure(
@@ -290,19 +290,15 @@ def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprint
     is left out, so a source that appears later changes the key.
     """
     molt_root = (_compiler_python_source_root(project_root) / "molt").resolve()
-    paths: list[Path] = []
-    source_sha256: dict[Path, str] = {}
-    for relative, role in _FRONTEND_COMPILER_INPUTS.items():
-        if not role.keyed:
-            continue
-        path = molt_root / relative
-        files = _source_fingerprint_files(path)
-        if not files:
-            continue
-        paths.append(path)
-        for item in files:
-            source_sha256[item] = _file_content_signature(item)
-    return _SourceFingerprintInputs(tuple(sorted(paths)), source_sha256)
+    roots = tuple(
+        molt_root / relative
+        for relative, role in _FRONTEND_COMPILER_INPUTS.items()
+        if role.keyed
+    )
+    files = admitted_source_files(roots, follow_file_symlinks=True)
+    return _SourceFingerprintInputs(
+        files, {item: _file_content_signature(item) for item in files}
+    )
 
 
 # Per-process cache of source-tree content digests. The key includes a
@@ -461,22 +457,27 @@ def _source_tree_content_signature(
     source_sha256: Mapping[Path, str],
 ) -> tuple[str, ...]:
     signature: list[str] = []
-    for path_key in path_keys:
-        path = pathlib.Path(path_key)
-        for item in _source_fingerprint_files(path):
-            try:
-                rel_text = str(item.relative_to(root))
-            except ValueError:
-                rel_text = str(item)
-            digest = source_sha256.get(item)
-            if digest is None:
-                # A directory may also contain non-Python inputs or symlink
-                # aliases. Reuse captured identity for the latter; retain all
-                # other frontend assets as ordinary byte-keyed inputs.
-                digest = source_sha256.get(item.resolve()) if source_sha256 else None
-            if digest is None:
-                digest = _file_content_signature(item)
-            signature.append(f"{rel_text}={digest}")
+    # A supplied map is the complete admitted snapshot from discovery. Its
+    # bytes and membership are already frozen for this immutable operation.
+    files = (
+        tuple(sorted(source_sha256))
+        if source_sha256
+        else admitted_source_files(tuple(pathlib.Path(key) for key in path_keys))
+    )
+    for item in files:
+        try:
+            rel_text = str(item.relative_to(root))
+        except ValueError:
+            rel_text = str(item)
+        digest = source_sha256.get(item)
+        if digest is None:
+            # A directory may also contain non-Python inputs or symlink
+            # aliases. Reuse captured identity for the latter; retain all
+            # other frontend assets as ordinary byte-keyed inputs.
+            digest = source_sha256.get(item.resolve()) if source_sha256 else None
+        if digest is None:
+            digest = _file_content_signature(item)
+        signature.append(f"{rel_text}={digest}")
     return tuple(signature)
 
 

@@ -505,7 +505,9 @@ class _BinaryImageScope:
         object.__setattr__(
             self,
             "module_roots",
-            tuple(dict.fromkeys(root.resolve() for root in self.module_roots)),
+            # Search-root spelling has already been selected by the entry
+            # authority (Windows keeps script-directory aliases).
+            tuple(dict.fromkeys(root.absolute() for root in self.module_roots)),
         )
         if not self.root_modules:
             object.__setattr__(self, "root_modules", (self.entry_module,))

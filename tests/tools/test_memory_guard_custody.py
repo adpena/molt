@@ -884,18 +884,17 @@ def test_active_readers_cost_live_records_not_history(tmp_path, monkeypatch):
     ]
 
 
-def test_retired_history_keeps_the_newest_records(tmp_path, monkeypatch):
-    monkeypatch.setattr(custody, "RETIRED_GUARD_MARKER_KEEP", 3)
-    monkeypatch.setattr(custody, "_RETIRED_PRUNE_SLACK", 1)
+def test_retired_history_preserves_every_record_beyond_previous_count_limit(tmp_path):
     active = _active(tmp_path)
-    for pid in range(10, 15):
+    originals = {}
+    for pid in range(10, 331):
         marker = _marker(active, pid=pid, status="completed")
-        # A retired marker keeps its last-write time; newer pids wrote later.
-        os.utime(marker, ns=(pid * 10**9, pid * 10**9))
-        report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
-        assert report.retired == 1
-    names = sorted(path.name for path in _retired(tmp_path).iterdir())
-    assert names == [f"guard-{pid}-{pid:032x}.json" for pid in (12, 13, 14)]
+        originals[marker.name] = marker.read_bytes()
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.retired == len(originals)
+    assert {
+        path.name: path.read_bytes() for path in _retired(tmp_path).iterdir()
+    } == originals
 
 
 def test_guard_marker_lookup_reads_active_and_retired_records_of_one_pid(

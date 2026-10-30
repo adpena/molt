@@ -33,7 +33,7 @@ def _clear_path_caches() -> None:
     from molt import default_paths
     from molt.cli import module_source, runtime_paths
 
-    default_paths._default_molt_cache_cached.cache_clear()
+    default_paths._default_user_state_cached.cache_clear()
     runtime_paths._build_state_root_cached.cache_clear()
     module_source._source_content_sha256_cached.cache_clear()
 

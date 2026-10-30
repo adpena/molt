@@ -1,4 +1,9 @@
-"""Shared stdlib-only user-state paths, including verified bundle bootstrap."""
+"""Shared user-state paths, including verified bundle bootstrap.
+
+packaging/bootstrap.py admits this module with its complete source closure,
+`RELEASE_SOURCE_MODULES`, before any `molt` package is importable. A module
+import outside the standard library joins that closure in the same change.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +15,16 @@ import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from dataclasses import replace
+from typing import Literal
 
 from .process_environment import ProcessEnvironment
+from .custody_layout import (
+    Regenerable,
+    StorageLocation,
+    enclosing_checkouts,
+    storage_rule,
+)
 
 
 def executable_environment_value(
@@ -117,16 +130,25 @@ def configured_artifact_root_text(env: Mapping[str, str] | None = None) -> str |
 
 
 @functools.lru_cache(maxsize=128)
-def _default_molt_cache_cached(
+def _default_user_state_cached(
+    kind: Literal["compile-cache", "installation"],
     values: tuple[tuple[str, str], ...],
     cwd_str: str,
     platform_name: str,
     home: str | None,
-) -> Path:
-    # Keep both precedence and the external-root existence check inside this
-    # existing cache. Lower-priority selectors are expanded only if selected.
+) -> StorageLocation:
+    # Keep precedence and family selection inside the memoized authority.
+    # Expand lower-priority selectors only when selected.
     env = dict(values)
     operation_cwd = Path(cwd_str)
+    rule = storage_rule(kind)
+    if kind == "installation" and (selected := _path_override(env, "MOLT_HOME")):
+        path = Path(selected)
+        return StorageLocation(
+            kind,
+            path if path.is_absolute() else (operation_cwd / path).absolute(),
+            rule,
+        )
     selected = _path_override(env, "MOLT_CACHE")
     if selected is None:
         external_text = configured_artifact_root_text(env)
@@ -135,34 +157,56 @@ def _default_molt_cache_cached(
             if external_text
             else None
         )
+        if external is None and kind == "compile-cache":
+            # The family binding is DX's authority, including its identity and
+            # missing-volume checks. DX is outside the bootstrap closure; import
+            # it only when selection is actually needed at runtime.
+            checkouts = enclosing_checkouts(operation_cwd)
+            if checkouts:
+                from .dx import configured_artifact_root
+
+                bound = configured_artifact_root(env, relative_to=checkouts[0])
+                external = os.fspath(bound) if bound is not None else None
         external_path = Path(external) if external else operation_cwd
         if not external_path.is_absolute():
             external_path = operation_cwd / external_path
-        if external and external_path.is_dir():
-            selected = os.fspath(external_path / ".molt_cache")
+        if external:
+            selected = os.fspath(
+                external_path.joinpath(*storage_rule("compile-cache").relative)
+            )
         else:
+            rule = replace(rule, volume="checkout")
             windows = platform_name == "win32"
             base = _path_override(env, "LOCALAPPDATA" if windows else "XDG_CACHE_HOME")
             if base is not None:
                 selected = os.fspath(Path(base) / ("Molt" if windows else "molt"))
             elif home is None:
-                selected = os.fspath(external_path / ".molt_cache")
+                selected = os.fspath(
+                    external_path.joinpath(*storage_rule("compile-cache").relative)
+                )
             elif windows:
                 selected = os.fspath(Path(home) / "AppData" / "Local" / "Molt")
             else:
                 selected = os.fspath(Path(home) / ".cache" / "molt")
     path = Path(selected)
-    return path if path.is_absolute() else (operation_cwd / path).absolute()
+    path = path if path.is_absolute() else (operation_cwd / path).absolute()
+    if kind == "installation":
+        path = cache_home_root(path)
+    return StorageLocation(kind, path, rule)
 
 
-def _default_molt_cache(
-    *, environ: Mapping[str, str] | None = None, cwd: Path | None = None
-) -> Path:
+def user_state_location(
+    kind: Literal["compile-cache", "installation"],
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> StorageLocation:
     env = ProcessEnvironment(os.environ if environ is None else environ)
     values = tuple(
         (key, executable_environment_value(env, key))
         for key in (
             "MOLT_CACHE",
+            "MOLT_HOME",
             "MOLT_EXT_ROOT",
             "XDG_CACHE_HOME",
             "LOCALAPPDATA",
@@ -174,16 +218,33 @@ def _default_molt_cache(
         )
         if key in env
     )
-    return _default_molt_cache_cached(
+    selected = _default_user_state_cached(
+        kind,
         values,
         os.fspath(Path.cwd() if cwd is None else cwd),
         sys.platform,
         _default_home_str(environ),
     )
+    # DX is outside the bootstrap closure. An active DX write check already
+    # loaded its observer; expose the typed selection without importing DX
+    # merely for optional development instrumentation.
+    observer = getattr(sys.modules.get("molt.dx"), "_storage_projection", None)
+    if observer is not None:
+        observer(kind, selected.path)
+    return selected
 
 
-DEFAULT_MOLT_CACHE_MAX_GB = "30"
-DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
+def _default_molt_cache(
+    *, environ: Mapping[str, str] | None = None, cwd: Path | None = None
+) -> Path:
+    return user_state_location("compile-cache", environ=environ, cwd=cwd).path
+
+
+_CACHE_RETENTION = storage_rule("compile-cache").retention
+assert isinstance(_CACHE_RETENTION, Regenerable)
+assert _CACHE_RETENTION.max_bytes is not None
+DEFAULT_MOLT_CACHE_MAX_GB = str(int(_CACHE_RETENTION.max_bytes / 1024**3))
+DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = str(int(_CACHE_RETENTION.max_idle_s / 86400))
 
 
 def resolve_budget(
@@ -427,14 +488,11 @@ def _default_molt_home_cached(path: str, cwd_str: str) -> Path:
 def _default_molt_home(
     *, environ: Mapping[str, str] | None = None, cwd: Path | None = None
 ) -> Path:
-    env = os.environ if environ is None else environ
-    selected = _path_override(env, "MOLT_HOME")
-    if selected is None:
-        selected = os.fspath(
-            cache_home_root(_default_molt_cache(environ=environ, cwd=cwd))
-        )
+    # Installation custody keeps its original explicit selectors and user
+    # location. A new family binding for regenerable cache cannot move it.
+    selected = user_state_location("installation", environ=environ, cwd=cwd).path
     return _default_molt_home_cached(
-        selected, os.fspath(Path.cwd() if cwd is None else cwd)
+        str(selected), os.fspath(Path.cwd() if cwd is None else cwd)
     )
 
 

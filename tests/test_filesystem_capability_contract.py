@@ -13,7 +13,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from tests.module_isolation import forget_module
+from tests.module_isolation import forget_module, private_module_copy
 from tests.process_guard_common import ModuleView
 from tests.stdlib_intrinsic_registry import (
     intrinsic_registry,
@@ -1297,7 +1297,7 @@ def test_environ_repr_preserves_live_iterator_callback_mutation_failure(monkeypa
 def test_urllib_proxy_constructor_captures_route_and_empty_handler_never_reads_environment(
     monkeypatch, proxies
 ):
-    import urllib.request as oracle
+    oracle = private_module_copy("urllib.request")
 
     environment = {
         "http_proxy": "http://captured.invalid:3128",
@@ -1518,10 +1518,7 @@ def test_windows_which_current_directory_query_is_selected_and_conditional(
 @pytest.mark.parametrize("flavor", ["posix", "nt"])
 @pytest.mark.parametrize("raw", [False, True])
 def test_os_path_expansion_matches_cpython_protocols(monkeypatch, flavor, raw):
-    import ntpath
-    import posixpath
-
-    oracle = ntpath if flavor == "nt" else posixpath
+    oracle = private_module_copy("ntpath" if flavor == "nt" else "posixpath")
     events = []
 
     class Mapping(dict):
@@ -1628,11 +1625,8 @@ def test_os_path_expansion_matches_cpython_protocols(monkeypatch, flavor, raw):
 @pytest.mark.parametrize("flavor", ["posix", "nt"])
 @pytest.mark.parametrize("raw", [False, True])
 def test_os_expandvars_preserves_mapping_callbacks(monkeypatch, flavor, raw):
-    import ntpath
-    import posixpath
-
     module = _os_module(monkeypatch, {})
-    oracle = ntpath if flavor == "nt" else posixpath
+    oracle = private_module_copy("ntpath" if flavor == "nt" else "posixpath")
     failure = RuntimeError("mapping lookup failed")
 
     def capture(use_oracle, scenario):
@@ -1695,11 +1689,8 @@ def test_os_expandvars_preserves_mapping_callbacks(monkeypatch, flavor, raw):
 def test_os_expandvars_bytes_without_environb_uses_live_text_mapping(
     monkeypatch, flavor
 ):
-    import ntpath
-    import posixpath
-
     module = _os_module(monkeypatch, {})
-    oracle = ntpath if flavor == "nt" else posixpath
+    oracle = private_module_copy("ntpath" if flavor == "nt" else "posixpath")
     monkeypatch.delattr(module, "environb", raising=False)
 
     def capture(use_oracle):
@@ -1832,7 +1823,7 @@ def test_os_expanduser_uses_pwd_only_on_the_cpython_absent_route(monkeypatch):
 
 
 def test_os_windows_expanduser_selected_mapping_and_path_callbacks(monkeypatch):
-    import ntpath
+    ntpath = private_module_copy("ntpath")
 
     events = []
 

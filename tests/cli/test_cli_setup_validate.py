@@ -48,6 +48,13 @@ RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validat
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sccache(monkeypatch, tmp_path):
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+
+
 def _base_env(run_context: dict[str, str]) -> dict[str, str]:
     # The child runs on the real checkout, so it gets the session's run
     # context back (`checkout_run_context`) on top of the test's settings.
@@ -578,8 +585,9 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
 def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    short_cargo_cache: Path,
 ) -> None:
-    artifact_root = tmp_path / "artifacts"
+    artifact_root = short_cargo_cache.parent / "artifacts"
     env = ProcessEnvironmentBuilder(
         {
             "PATH": "/usr/bin",

@@ -405,7 +405,7 @@ def test_publication_action_change_reuses_only_compile() -> None:
         second = runtime_build_fingerprint(after, scope=scope)
         assert (first["hash"] == second["hash"]) is (scope == "compile")
         assert fingerprints._runtime_fingerprint_payload_is_valid(
-            {"version": 4, **first}
+            {"version": 5, **first}
         )
 
 
@@ -414,7 +414,7 @@ def test_fingerprint_is_a_checked_projection_not_an_independent_claim(
     scope: str,
 ) -> None:
     identity = native_runtime_staticlib_identity()
-    payload = {"version": 4, **runtime_build_fingerprint(identity, scope=scope)}
+    payload = {"version": 5, **runtime_build_fingerprint(identity, scope=scope)}
     assert fingerprints._runtime_fingerprint_payload_is_valid(payload)
     payload["hash"] = "f" * 64
     assert not fingerprints._runtime_fingerprint_payload_is_valid(payload)
@@ -423,7 +423,7 @@ def test_fingerprint_is_a_checked_projection_not_an_independent_claim(
 @pytest.mark.parametrize("scope", [[], {}, 1, None, "unrecognized"])
 def test_untrusted_fingerprint_scope_fails_without_type_leak(scope: object) -> None:
     payload = {
-        "version": 4,
+        "version": 5,
         **runtime_build_fingerprint(native_runtime_staticlib_identity()),
     }
     payload["build_identity_scope"] = scope
@@ -435,14 +435,14 @@ def test_fingerprint_reader_rejects_duplicate_keys_and_restored_mtime(
 ) -> None:
     path = tmp_path / "identity.json"
     payload = {
-        "version": 4,
+        "version": 5,
         **runtime_build_fingerprint(native_runtime_staticlib_identity()),
     }
     original = json.dumps(payload)
     path.write_text(original, encoding="utf-8")
     assert fingerprints._read_runtime_fingerprint(path) == payload
     before = path.stat()
-    path.write_text(original.replace('"version": 4', '"version": 3'), encoding="utf-8")
+    path.write_text(original.replace('"version": 5', '"version": 3'), encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert fingerprints._read_runtime_fingerprint(path) is None
     path.write_text('{"version":4,' + original[1:], encoding="utf-8")
@@ -471,7 +471,7 @@ def test_cargo_artifact_fingerprint_uses_explicit_observed_environment(
     )
     stored = fingerprints._read_runtime_fingerprint(receipt)
     assert stored is not None
-    assert stored["version"] == 4
+    assert stored["version"] == 5
     assert stored["cargo_environment"] == {
         "schema": "molt.cargo-environment-inputs.v1",
         "name_rule": rule.value,
@@ -546,7 +546,7 @@ def test_artifact_receipt_cannot_omit_or_forge_cargo_observation(
             require_artifact_digest=require_digest,
         )
     # Final-link projections remain valid, but cannot admit a Cargo result.
-    link_projection = {"version": 4, **plan}
+    link_projection = {"version": 5, **plan}
     assert fingerprints._runtime_fingerprint_payload_is_valid(link_projection)
     with pytest.raises(ValueError, match="Cargo environment inputs"):
         fingerprints._admitted_runtime_fingerprint(plan, link_projection)

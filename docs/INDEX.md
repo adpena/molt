@@ -74,6 +74,7 @@ the source of truth.
 - Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [design/parallel_build_architecture.md](design/parallel_build_architecture.md), [architecture/compilation-model.md](architecture/compilation-model.md)
 - Verified namespace premises (binding-flow precision across callbacks: `TYPE_CHECKING`, relative-import metadata, canonical members; HF-226): [design/verified_namespace_premises.md](design/verified_namespace_premises.md)
 - Typed identity, state machines and formalization (the standing rule AGENTS.md points to): [design/foundation/typed_identity_state_machines.md](design/foundation/typed_identity_state_machines.md)
+- Call anatomy (why compiled calls cost 4-8x CPython's instructions; execution context, frame records and compile-time binding, staged with instruction budgets; HF-185, HF-561): [design/foundation/call_anatomy.md](design/foundation/call_anatomy.md)
 - Typed suspension state machines (generator/coroutine frames as typed, liveness-sized slots; leading practice from Rust, LLVM, CPython, V8, Kotlin, C#, Swift, WasmFX; HF-229, HF-230): [design/typed_suspension_state_machines.md](design/typed_suspension_state_machines.md)
 - Backend compile daemon (concurrent requests, request-scoped settings, single flight, retirement): [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - Host capacity and scheduling (one CPU and memory authority, declared per-unit needs, one scheduler; HF-334): [design/host_capacity.md](design/host_capacity.md)

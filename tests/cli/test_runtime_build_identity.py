@@ -618,7 +618,7 @@ def test_identity_json_objects_reject_non_string_key_aliasing() -> None:
     with pytest.raises(ValueError, match="incomplete"):
         schema.RuntimeBuildIdentity.from_dict(
             {
-                "schema": "molt.runtime-build-member-identity.v5",
+                "schema": "molt.runtime-build-member-identity.v6",
                 "digest": "0" * 64,
                 "compile_digest": "0" * 64,
                 "family_digest": "0" * 64,

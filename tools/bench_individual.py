@@ -39,7 +39,6 @@ bind_repository_imports(__file__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 TOOLS_ROOT = Path(__file__).resolve().parent
-BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
 
 
 from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
@@ -907,7 +906,10 @@ def _main(workload_custody: ExitStack) -> None:
         raise SystemExit("--samples must be >= 1")
     if args.warmup < 0:
         raise SystemExit("--warmup must be >= 0")
-    BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    from molt.dx import storage_path
+
+    results_dir = storage_path(REPO_ROOT, "benchmark-evidence", os.environ)
+    results_dir.mkdir(parents=True, exist_ok=True)
     BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
@@ -1036,7 +1038,7 @@ def _main(workload_custody: ExitStack) -> None:
         print(f"Results written to {out_path}")
     else:
         # Also dump to a default location
-        default_out = BENCH_RESULTS_DIR / (
+        default_out = results_dir / (
             "bench_individual_" + datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + ".json"
         )
         write_json(default_out, report, validate_inputs=finish_workload_custody)

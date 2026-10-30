@@ -162,6 +162,53 @@ def test_safe_linked_worktree_keeps_its_existing_layout(
     assert custody_layout.custody_root(lane) == expected
 
 
+@pytest.mark.parametrize(
+    "shape", ["sibling", "external-family", "external-managed", "external-plain"]
+)
+def test_linked_worktree_toolchains_follow_the_repository_not_its_volume(
+    git_checkout: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shape: str,
+) -> None:
+    """A worktree on a capacity-selected volume keeps the repository's toolchains.
+
+    The landing sandbox lives at ``<artifact>/worktrees/landing-sandbox-*``; its
+    location-derived custody named a store without the pinned LLVM or uv, so
+    admission accepted Homebrew's instead.
+    """
+    from molt import dx
+    from tests.test_dx_run_context import _git
+
+    lane = {
+        "sibling": git_checkout.parent / "worktrees" / "lane",
+        "external-family": tmp_path / "volume" / "Molt" / "worktrees" / "sandbox",
+        "external-managed": tmp_path / "codex" / "worktrees" / "id" / "molt-src",
+        "external-plain": tmp_path / "external" / "lane",
+    }[shape]
+    _git(git_checkout, "worktree", "add", "-q", "--detach", str(lane))
+    repository = custody_layout.custody_root(git_checkout)
+    assert custody_layout.repository_custody_root(git_checkout) == repository
+    assert custody_layout.repository_custody_root(lane) == repository
+    # The fixtures live under the OS temp root; take the durable branch.
+    monkeypatch.setattr(dx, "_host_scratch_roots", lambda: ())
+    custody = dx.checkout_custody(lane, {}, require_exists=False)
+    assert custody.kind == "durable"
+    assert custody.toolchain_root == repository / dx.DEFAULT_TARGET_ROOT_DIRNAME
+    # Source and output custody still follow the worktree's own family.
+    assert custody.custody_root == custody_layout.custody_root(lane)
+    if shape != "sibling":
+        assert custody.custody_root != repository
+
+
+def test_repository_custody_of_a_plain_tree_is_its_own_custody(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "family" / "molt-src"
+    tree.mkdir(parents=True)
+    assert custody_layout.repository_custody_root(tree) == tree.parent.resolve()
+
+
 def test_nested_independent_clone_does_not_put_outputs_in_its_parent_source(
     git_checkout: Path,
 ) -> None:
@@ -230,15 +277,19 @@ def test_landing_source_is_external_and_repository_scoped(
     primary.mkdir(parents=True)
     _git(primary, "init", "-q")
     common = primary / ".git"
-    selected = custody_layout.landing_sandbox_path(primary, common)
+    selected = custody_layout.landing_sandbox_path(common, artifact=primary.parent)
     assert not selected.is_relative_to(primary)
     assert custody_layout.enclosing_checkouts(selected) == ()
-    assert selected == custody_layout.landing_sandbox_path(primary, common)
+    assert selected == custody_layout.landing_sandbox_path(
+        common, artifact=primary.parent
+    )
 
     other = tmp_path / "other.git"
     other.mkdir()
     _git(other, "init", "-q", "--bare")
-    assert selected != custody_layout.landing_sandbox_path(primary, other)
+    assert selected != custody_layout.landing_sandbox_path(
+        other, artifact=primary.parent
+    )
 
 
 def test_landing_source_escapes_an_enclosing_checkout(git_checkout: Path) -> None:
@@ -247,7 +298,9 @@ def test_landing_source_escapes_an_enclosing_checkout(git_checkout: Path) -> Non
     nested = git_checkout / "nested" / "molt-src"
     nested.mkdir(parents=True)
     _git(nested, "init", "-q")
-    selected = custody_layout.landing_sandbox_path(nested, nested / ".git")
+    selected = custody_layout.landing_sandbox_path(
+        nested / ".git", artifact=git_checkout.parent
+    )
     assert not selected.is_relative_to(git_checkout)
     assert custody_layout.enclosing_checkouts(selected) == ()
 
@@ -256,7 +309,9 @@ def test_landing_source_escapes_an_enclosing_checkout(git_checkout: Path) -> Non
 def test_landing_source_refuses_aliases_into_another_source(
     git_checkout: Path, alias: str
 ) -> None:
-    selected = custody_layout.landing_sandbox_path(git_checkout, git_checkout / ".git")
+    selected = custody_layout.landing_sandbox_path(
+        git_checkout / ".git", artifact=git_checkout.parent
+    )
     if alias == "source":
         selected.parent.mkdir(parents=True)
         link, target = selected, git_checkout
@@ -285,7 +340,9 @@ def test_landing_source_refuses_aliases_into_another_source(
     except OSError as exc:
         pytest.skip(f"host cannot create directory symlinks: {exc}")
     with pytest.raises(ValueError, match="symlink|inside another source checkout"):
-        custody_layout.landing_sandbox_path(git_checkout, git_checkout / ".git")
+        custody_layout.landing_sandbox_path(
+            git_checkout / ".git", artifact=git_checkout.parent
+        )
 
 
 @pytest.mark.parametrize(
@@ -318,7 +375,7 @@ def test_git_path_metadata_preserves_legal_path_bytes(
 ) -> None:
     from tests.test_dx_run_context import _git
     from tests.process_guard_common import run_guarded_test_process
-    from tools.git_identity import repository_source_paths
+    from molt.source_admission import repository_source_paths
 
     lane = git_checkout / ".claude" / "worktrees" / name
     _git(git_checkout, "worktree", "add", "-q", "--detach", str(lane))

@@ -198,7 +198,7 @@ def test_daemon_dispatch_converts_compiler_identity_rejection(
         "configuration",
         "restored-source",
         "restored-lock",
-        "restored-topology",
+        "replaced-directory",
     ],
 )
 def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
@@ -261,10 +261,11 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
             changed.write_bytes(b"other-generation")
             changed.write_bytes(original)
             os.utime(changed, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-        elif mutation == "restored-topology":
-            extra = source.parent / "during-cargo.rs"
-            extra.write_text("pub const TEMP: u8 = 1;", encoding="utf-8")
-            extra.unlink()
+        elif mutation == "replaced-directory":
+            detached = source.parent.with_name("detached-source")
+            source.parent.rename(detached)
+            source.parent.mkdir()
+            (detached / source.name).rename(source)
         elif mutation == "lock":
             lock = tmp_path / "Cargo.lock"
             lock.write_text(

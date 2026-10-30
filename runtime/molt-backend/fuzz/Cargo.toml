@@ -41,3 +41,4 @@ doc = false
 [patch.crates-io]
 cranelift-object = { path = "../../../vendor/rust/cranelift-object" }
 object = { path = "../../../vendor/rust/object" }
+regalloc2 = { path = "../../../vendor/rust/regalloc2" }

@@ -461,6 +461,7 @@ def build(request: BuildRequest) -> int:
                 audit_log=request.audit_log,
                 io_mode=request.io_mode,
                 respect_pythonpath=request.respect_pythonpath,
+                safe_path=request.safe_path,
                 lib_paths=request.lib_paths or [],
                 python_version=request.python_version,
                 build_config=request.build_config,

@@ -67,6 +67,7 @@ def _resolve_entry(
         respect_pythonpath=False,
         json_output=False,
         build_config=build_config,
+        source_cwd=project_root,
     )
 
 

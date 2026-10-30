@@ -22,7 +22,6 @@ import pytest
 _MODULE_RESOLUTION_NAMES = (
     "_ModuleResolutionCache",
     "_case_exact_file",
-    "_entry_module_root_for_path",
     "_has_namespace_dir",
     "_is_runtime_owned_module_path",
     "_is_stdlib_module",
@@ -41,7 +40,6 @@ _MODULE_RESOLUTION_NAMES = (
 _MODULE_RESOLUTION_DEFINITIONS = (
     "class _ModuleResolutionCache",
     "def _case_exact_file(",
-    "def _entry_module_root_for_path(",
     "def _has_namespace_dir(",
     "def _is_runtime_owned_module_path(",
     "def _is_stdlib_module(",
