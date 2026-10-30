@@ -83,6 +83,7 @@ def test_target_property_callable_catalog_has_exact_manifest_producers() -> None
     assert schema.target_properties == (
         ("SYS_PLATFORM", "sys_platform"),
         ("OS_NAME", "os_name"),
+        ("SYS_VERSION_INFO", "sys_version_info"),
     )
     assert tuple(row for row in schema.intrinsic_callables if row.target_property) == (
         gen.IntrinsicCallable(
@@ -94,6 +95,13 @@ def test_target_property_callable_catalog_has_exact_manifest_producers() -> None
         ),
         gen.IntrinsicCallable(
             "molt_os_name", "INTRINSIC_OS_NAME", 0, (), target_property="OS_NAME"
+        ),
+        gen.IntrinsicCallable(
+            "molt_sys_version_info",
+            "INTRINSIC_SYS_VERSION_INFO",
+            0,
+            (),
+            target_property="SYS_VERSION_INFO",
         ),
     )
     assert catalog.INTRINSIC_CALLABLE_IDENTITIES["molt_sys_platform"] is (
@@ -402,3 +410,127 @@ def test_real_acquisition_and_named_replacement_share_the_guard(
     assert reads[2].identities & int(identity)
     assert not reads[4].identities & int(identity)
     assert python_canonical_member_writes(module, member) & int(guard)
+
+
+def test_retained_descriptor_catalog_uses_exact_manifest_producers() -> None:
+    assert gen.load_schema().builtin_return_captures == (
+        (
+            "BUILTIN_CLASSMETHOD",
+            "RETAINED_CALLABLE_WRAPPER",
+            "class_method",
+            "molt_classmethod_new",
+        ),
+        (
+            "BUILTIN_STATICMETHOD",
+            "RETAINED_CALLABLE_WRAPPER",
+            "static_method",
+            "molt_staticmethod_new",
+        ),
+    )
+    assert catalog.BUILTIN_RETURN_CAPTURES == {
+        int(catalog.PythonIdentity.BUILTIN_CLASSMETHOD): (
+            catalog.PythonIdentity.RETAINED_CALLABLE_WRAPPER,
+            "class_method",
+        ),
+        int(catalog.PythonIdentity.BUILTIN_STATICMETHOD): (
+            catalog.PythonIdentity.RETAINED_CALLABLE_WRAPPER,
+            "static_method",
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "before,after,expected",
+    [
+        (
+            'producer = "molt_classmethod_new"',
+            'producer = "molt_tk_do_one_event"',
+            "unary manifest producer",
+        ),
+        (
+            'producer = "molt_classmethod_new"',
+            'producer = "missing_producer"',
+            "unary manifest producer",
+        ),
+        (
+            'protocol = "class_method"',
+            'protocol = "subscript"',
+            "callable wrapper protocol",
+        ),
+        (
+            'protocol = "class_method"',
+            'protocol = "unknown_wrapper"',
+            "unknown builtin retained protocol",
+        ),
+        (
+            'guard = "BUILTINS_CLASSMETHOD"\nshape = false',
+            'guard = "BUILTINS_CLASSMETHOD"\nshape = true',
+            "must not declare a shape",
+        ),
+    ],
+)
+def test_retained_descriptor_catalog_rejects_unproven_capture(
+    tmp_path, before, after, expected
+):
+    source = gen.SOURCE.read_text(encoding="utf-8")
+    assert before in source
+    path = tmp_path / "invalid.toml"
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    with pytest.raises(gen.SchemaError, match=expected):
+        gen.load_schema(path)
+
+
+def test_synthetic_intrinsic_from_catalog_owns_all_native_producers():
+    expected = {
+        "require_intrinsic": (
+            catalog.PythonIdentity.INTRINSICS_REQUIRE,
+            "molt_require_intrinsic_runtime",
+        ),
+        "_require_intrinsic": (
+            catalog.PythonIdentity.INTRINSICS_REQUIRE,
+            "molt_require_intrinsic_runtime",
+        ),
+        "load_intrinsic": (
+            catalog.PythonIdentity.INTRINSICS_LOAD,
+            "molt_load_intrinsic_runtime",
+        ),
+        "_load_intrinsic": (
+            catalog.PythonIdentity.INTRINSICS_LOAD,
+            "molt_load_intrinsic_runtime",
+        ),
+        "runtime_active": (
+            catalog.PythonIdentity.INTRINSICS_RUNTIME_ACTIVE,
+            "molt_runtime_active_runtime",
+        ),
+    }
+    assert dict(catalog.COMPILER_INTRINSIC_CALLABLES) == expected
+    producers = {
+        entry.name
+        for entry in gen.parse_intrinsic_manifest(
+            gen.INTRINSIC_MANIFEST.read_text(encoding="utf-8")
+        )
+    }
+    assert {name for _, name in expected.values()} <= producers
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ('compiler_from = ["runtime_active"]', "compiler_from = []"),
+        (
+            'compiler_from = ["runtime_active"]',
+            'compiler_from = ["runtime_active", "runtime_active"]',
+        ),
+        ('compiler_from = ["runtime_active"]', 'compiler_from = ["require_intrinsic"]'),
+        ('compiler_from = ["runtime_active"]', "compiler_from = [1]"),
+    ],
+)
+def test_synthetic_intrinsic_from_catalog_rejects_unclosed_producer(
+    tmp_path, before, after
+):
+    source = tmp_path / "catalog.toml"
+    text = gen.SOURCE.read_text(encoding="utf-8")
+    assert before in text
+    source.write_text(text.replace(before, after), encoding="utf-8")
+    with pytest.raises(gen.SchemaError):
+        gen.load_schema(source)

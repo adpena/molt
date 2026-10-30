@@ -2529,6 +2529,7 @@ class _SourceValueDemand(NamedTuple):
     source: PythonSourceKey
     phase: SourceDemandPhase
     argument_count: int | None
+    owner: PythonSourceKey | None
 
 
 class _SourceImportBinding(NamedTuple):
@@ -2574,6 +2575,25 @@ class _SourceValueSummary(NamedTuple):
     callables: tuple[tuple[PythonSourceKey, int], ...] = ()
     # Candidate identity selects these plans only when this call executes.
     call_imports: tuple[SourceImportCall, ...] = ()
+    cache_writes: tuple[
+        tuple[
+            PythonSourceKey,
+            tuple[str, ...] | None,
+            frozenset[PythonSourceKey],
+            frozenset[PythonSourceKey],
+        ],
+        ...,
+    ] = ()
+    cache_reads: tuple[
+        tuple[
+            PythonSourceKey,
+            tuple[str, ...] | None,
+            frozenset[PythonSourceKey],
+            frozenset[PythonSourceKey],
+            bool,
+        ],
+        ...,
+    ] = ()
 
 
 class _ImportScanRequests(NamedTuple):

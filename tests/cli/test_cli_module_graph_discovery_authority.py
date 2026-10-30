@@ -1325,7 +1325,13 @@ def test_precomputed_namespace_mismatch_reprojects_identified_bytes(tmp_path):
         source_snapshot=snapshot,
         target_python=target,
         precomputed_scan=precomputed,
-        namespace_premise=PythonNamespacePremise((), 0),
+        namespace_premise=PythonNamespacePremise(
+            (),
+            0,
+            entry_member_writes=0,
+            noncanonical_imports=(),
+            opaque_activation_sources=None,
+        ),
     )
     assert "lazy" not in precise.scan.imports
     assert precise.snapshot is snapshot
@@ -1353,7 +1359,13 @@ def test_matching_precomputed_scan_keeps_bytes_until_graph_fixpoint(
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     target = TargetPythonVersion(3, 12, 0)
-    premise = PythonNamespacePremise((), 0)
+    premise = PythonNamespacePremise(
+        (),
+        0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+        opaque_activation_sources=None,
+    )
     snapshot = PythonSourceSnapshot.capture(entry)
     prepared = module_graph_discovery._load_module_import_scan(
         entry,
@@ -1411,7 +1423,13 @@ def test_matching_precomputed_scan_cannot_override_explicit_source(
     path = tmp_path / "entry.py"
     path.write_text("import stored\n", encoding="utf-8")
     target = TargetPythonVersion(3, 12, 0)
-    premise = PythonNamespacePremise((), 0)
+    premise = PythonNamespacePremise(
+        (),
+        0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+        opaque_activation_sources=None,
+    )
     snapshot = PythonSourceSnapshot.capture(path)
     cache = module_resolution._ModuleResolutionCache()
     prepared = module_graph_discovery._load_module_import_scan(
@@ -2217,7 +2235,15 @@ def test_closure_publication_visits_only_its_changed_authority_rows(tmp_path, ve
         tmp_path / "prior.py",
         "module_init",
         body_selection=ModuleBodySelection("complete_source"),
-        namespace_premise=PythonNamespacePremise((), 0) if verified else None,
+        namespace_premise=PythonNamespacePremise(
+            (),
+            0,
+            entry_member_writes=0,
+            noncanonical_imports=(),
+            opaque_activation_sources=None,
+        )
+        if verified
+        else None,
     )
     added = _ModuleSourceScanAuthority(
         "added",
@@ -2225,7 +2251,16 @@ def test_closure_publication_visits_only_its_changed_authority_rows(tmp_path, ve
         "module_init",
         body_selection=ModuleBodySelection("complete_source"),
     )
-    revised = replace(prior, namespace_premise=PythonNamespacePremise(("handler",), 0))
+    revised = replace(
+        prior,
+        namespace_premise=PythonNamespacePremise(
+            ("handler",),
+            0,
+            entry_member_writes=0,
+            noncanonical_imports=(),
+            opaque_activation_sources=None,
+        ),
+    )
     graph = DeltaOnlyMap({"prior": prior.source_path})
     sources = DeltaOnlyMap({"prior": prior})
     module_graph_discovery._merge_discovered_module_graph(

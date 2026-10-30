@@ -77,6 +77,7 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
         frontend_module_costs={n: 1.0 for n in names},
         stdlib_like_by_module={n: False for n in names},
         module_source_role_by_module={n: "user" for n in names},
+        scan_authority=None,
     )
     return FE._run_frontend_parallel_layer_batches(
         names,

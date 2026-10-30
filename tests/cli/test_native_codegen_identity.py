@@ -122,6 +122,7 @@ def test_effective_cpu_features_separate_all_outer_native_cache_keys(
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
         module_source_role_by_module={},
+        scan_authority=None,
     )
     contract = resolve_backend_artifact_contract(
         target=admit_target("native"), emit_mode="bin"

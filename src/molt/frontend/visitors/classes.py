@@ -17,9 +17,14 @@ from typing import (
     cast,
 )
 
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_lexical_scope import (
     PythonLexicalScopeVisitor,
+    DefinitionLexicalRegions,
+    LexicalDefinitionNode,
     class_body_functions,
+    definition_lexical_regions,
 )
 from molt.frontend._types import (
     BUILTIN_LAYOUT_MIN,
@@ -48,95 +53,6 @@ from molt.frontend.visitors.class_method_compilation import (
 
 
 class ClassDefVisitorMixin(ClassMethodCompilationMixin):
-    def _emit_dataclass_application(
-        self,
-        class_info: ClassInfo,
-        class_val: MoltValue,
-    ) -> MoltValue:
-        """Emit the compile-time-recognized ``@dataclass`` runtime application.
-
-        The ``@dataclass`` transform is construction-method-agnostic: it operates
-        on a *finished* class object via ``setattr`` / ``cls.x = ...`` and reads
-        ``cls.__annotations__`` (eagerly materialized through Python 3.13 and
-        provided by the runtime's lazy type descriptor on Python 3.14+).  It
-        therefore applies identically whether ``class_val``
-        came from the static "outlined ``CLASS_DEF``" path or from the dynamic
-        metaclass-call path the #50 block-execution re-lower uses.  Centralizing
-        the emission here keeps exactly ONE code path that publishes the dataclass
-        transform, so a dataclass whose body needs block execution (control flow /
-        ``del`` / non-Name assign target) still gets its generated dunders.
-
-        When ``class_info`` is not a dataclass this is a no-op and returns
-        ``class_val`` unchanged.  Otherwise it emits the
-        ``dataclasses.dataclass(cls, init=..., repr=..., ...)`` call and returns
-        the possibly rebuilt (for example, ``slots=True``) result. The class
-        statement publishes only its final value after all transforms.
-        """
-        if not class_info.get("dataclass"):
-            return class_val
-
-        dataclass_params = class_info.get("dataclass_params", {})
-
-        def emit_bool(value: bool) -> MoltValue:
-            res = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
-            return res
-
-        # Route the compile-time-recognized ``@dataclass`` path through the
-        # public ``dataclasses.dataclass`` wrapper rather than the internal
-        # ``_molt_apply_dataclass`` worker.  The wrapper performs the same work
-        # but its calling convention — single positional ``cls`` plus keyword-only
-        # options — matches the natural Python semantics, avoiding an 11-argument
-        # positional-only call into the worker that exposed an SSA/dominator
-        # interaction during module init (frontend bypass would intermittently
-        # corrupt the class binding before module attribute publication).
-        kw_specs = [
-            ("init", emit_bool(dataclass_params.get("init", True))),
-            ("repr", emit_bool(dataclass_params.get("repr", True))),
-            ("eq", emit_bool(dataclass_params.get("eq", True))),
-            ("order", emit_bool(dataclass_params.get("order", False))),
-            ("unsafe_hash", emit_bool(dataclass_params.get("unsafe_hash", False))),
-            ("frozen", emit_bool(dataclass_params.get("frozen", False))),
-            ("match_args", emit_bool(dataclass_params.get("match_args", True))),
-            ("kw_only", emit_bool(dataclass_params.get("kw_only", False))),
-            ("slots", emit_bool(dataclass_params.get("slots", False))),
-            ("weakref_slot", emit_bool(dataclass_params.get("weakref_slot", False))),
-        ]
-        helper_val = self._emit_module_attr_get_on("dataclasses", "dataclass")
-        callargs = MoltValue(self.next_var(), type_hint="callargs")
-        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-        # Single positional argument: the class itself.
-        self.emit(
-            MoltOp(
-                kind="CALLARGS_PUSH_POS",
-                args=[callargs, class_val],
-                result=MoltValue("none"),
-            )
-        )
-        # Keyword-only options matching CPython's dataclass signature.
-        for kw_name, kw_val in kw_specs:
-            key_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_KW",
-                    args=[callargs, key_val, kw_val],
-                    result=MoltValue("none"),
-                )
-            )
-        # ``dataclass`` always returns the (possibly rebuilt) class object.
-        # Preserve the rebuilt object for final statement publication. No
-        # intermediate class value is visible in the defining namespace.
-        applied_cls = MoltValue(self.next_var(), type_hint="type")
-        self.emit(
-            MoltOp(
-                kind="CALL_BIND",
-                args=[helper_val, callargs],
-                result=applied_cls,
-            )
-        )
-        return applied_cls
-
     def _class_layout_version(
         self,
         class_id: ClassId,
@@ -160,6 +76,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         self, class_id: ClassId, class_info: ClassInfo
     ) -> bool:
         if class_id.module != self.module_name:
+            return False
+        if not class_info.get("constructor_binding_proven"):
             return False
         index = self._class_index
         if index is None or class_id not in index.top_level:
@@ -201,6 +119,18 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # args and decide whether `__init__` should run.
         if not self._class_resolves_default_object_new(class_id, class_info):
             return False
+        for owner in self._class_mro(class_id):
+            info = self.classes.get(owner) if isinstance(owner, ClassId) else None
+            if info is None:
+                continue
+            initializer = info.get("methods", {}).get("__init__")
+            if initializer is not None:
+                # The existing body proof admits only field assignments and
+                # implicit/explicit None. Other initializers require the real
+                # type protocol's return-value validation and call context.
+                if initializer.get("inline_init_assigns") is None:
+                    return False
+                break
         return self._class_layout_stable(class_id)
 
     def _class_defines_finalizer(self, class_id: ClassId) -> bool:
@@ -369,73 +299,89 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         scope.annotation_namespace_cell = self._emit_cell_new(scope.ns)
 
     def _collect_static_attributes(self, class_node: ast.ClassDef) -> tuple[str, ...]:
-        """Collect attribute names set via self.X = ... in class body methods.
+        """CPython's syntactic self stores, independently of descriptor layout.
 
-        Returns a tuple of unique attribute names in definition order,
-        matching CPython 3.13+ __static_attributes__.
+        Python 3.13 records the literal ``self`` spelling in function bodies,
+        including nested functions and decorated methods, and sorts the result.
+        It does not infer the first parameter's receiver. Only compiled stores
+        count; annotation-only targets and stringized annotations produce none.
         """
-        attrs: list[str] = []
-        seen: set[str] = set()
+        attrs: set[str] = set()
+        eager = self.eager_annotations and not self.future_annotations
+        future = self.future_annotations
 
         class SelfAttrCollector(ast.NodeVisitor):
-            def __init__(self, self_name: str) -> None:
-                self.self_name = self_name
+            in_function = False
 
-            def visit_Assign(self, node: ast.Assign) -> None:
-                for target in node.targets:
-                    self._check(target)
-                self.generic_visit(node.value)
+            def visit_function_nodes(self, nodes: tuple[ast.AST, ...]) -> None:
+                previous = self.in_function
+                self.in_function = True
+                try:
+                    for node in nodes:
+                        self.visit(node)
+                finally:
+                    self.in_function = previous
 
-            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-                self._check(node.target)
-
-            def visit_AugAssign(self, node: ast.AugAssign) -> None:
-                self._check(node.target)
-
-            def _check(self, target: ast.AST) -> None:
-                if (
-                    isinstance(target, ast.Attribute)
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == self.self_name
-                    and target.attr not in seen
-                ):
-                    seen.add(target.attr)
-                    attrs.append(target.attr)
+            def visit_header(
+                self, node: LexicalDefinitionNode
+            ) -> DefinitionLexicalRegions:
+                regions = definition_lexical_regions(
+                    node, eager_annotations=eager, future_annotations=future
+                )
+                for expression in regions.enclosing:
+                    self.visit(expression)
+                self.visit_function_nodes(regions.annotations)
+                return regions
 
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return  # Don't recurse into nested functions
+                self.visit_function_nodes(self.visit_header(node).body)
 
             def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
+                self.visit_function_nodes(self.visit_header(node).body)
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                self.visit_function_nodes(self.visit_header(node).body)
+
+            def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+                self.visit_function_nodes(self.visit_header(node).body)
+
+            def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
+                self.visit_header(node)
+
+            def visit_Attribute(self, node: ast.Attribute) -> None:
+                if (
+                    self.in_function
+                    and isinstance(node.ctx, ast.Store)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"
+                ):
+                    attrs.add(node.attr)
+                self.generic_visit(node)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                if node.value is not None:
+                    self.visit(node.value)
+                    self.visit(node.target)
+                elif isinstance(node.target, ast.Attribute):
+                    self.visit(node.target.value)
+                elif isinstance(node.target, ast.Subscript):
+                    self.visit(node.target.value)
+                    self.visit(node.target.slice)
+                if not self.in_function and not future:
+                    if eager:
+                        self.visit(node.annotation)
+                    else:
+                        self.visit_function_nodes((node.annotation,))
 
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return  # Don't recurse into nested classes
+                # Nested classes own their body metadata; their headers still
+                # execute in the enclosing function.
+                self.visit_header(node)
 
-        for item in class_node.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # CPython's `__static_attributes__` only records attributes
-                # assigned via `self.X = ...` from regular instance methods.
-                # `@classmethod`, `@staticmethod`, and the implicit-classmethod
-                # methods (`__new__`, `__init_subclass__`, `__class_getitem__`)
-                # do NOT contribute — their first parameter binds to the class
-                # itself, not to an instance.
-                if not _function_is_instance_method(item):
-                    continue
-                # First parameter is self
-                self_name = "self"
-                if item.args.args:
-                    self_name = item.args.args[0].arg
-                collector = SelfAttrCollector(self_name)
-                for stmt in item.body:
-                    collector.visit(stmt)
-            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-                # Class-level annotations like x: int
-                name = item.target.id
-                if name not in seen:
-                    seen.add(name)
-                    attrs.append(name)
-
-        return tuple(attrs)
+        collector = SelfAttrCollector()
+        for statement in class_node.body:
+            collector.visit(statement)
+        return tuple(sorted(attrs))
 
     def _verify_classcell_result(
         self, class_name: str, cell: MoltValue, result: MoltValue
@@ -509,212 +455,50 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         """
         dataclass_opts: dict[str, bool] | None = None
         other_decorators: list[ast.expr] = []
-        if node.decorator_list:
-            for deco in node.decorator_list:
-                if isinstance(deco, ast.Name) and deco.id == "dataclass":
-                    if dataclass_opts is not None:
-                        raise FrontendRejection(
-                            Diagnostic.SYNTAX_FORM,
-                            "Multiple dataclass decorators are not supported",
-                        )
-                    dataclass_opts = {
-                        "init": True,
-                        "repr": True,
-                        "eq": True,
-                        "order": False,
-                        "unsafe_hash": False,
-                        "frozen": False,
-                        "match_args": True,
-                        "kw_only": False,
-                        "slots": False,
-                        "weakref_slot": False,
-                    }
-                    continue
-                if (
-                    isinstance(deco, ast.Attribute)
-                    and isinstance(deco.value, ast.Name)
-                    and deco.value.id == "dataclasses"
-                    and deco.attr == "dataclass"
-                ):
-                    if dataclass_opts is not None:
-                        raise FrontendRejection(
-                            Diagnostic.SYNTAX_FORM,
-                            "Multiple dataclass decorators are not supported",
-                        )
-                    dataclass_opts = {
-                        "init": True,
-                        "repr": True,
-                        "eq": True,
-                        "order": False,
-                        "unsafe_hash": False,
-                        "frozen": False,
-                        "match_args": True,
-                        "kw_only": False,
-                        "slots": False,
-                        "weakref_slot": False,
-                    }
-                    continue
-                if (
-                    isinstance(deco, ast.Call)
-                    and isinstance(deco.func, ast.Name)
-                    and deco.func.id == "dataclass"
-                ):
-                    if dataclass_opts is not None:
-                        raise FrontendRejection(
-                            Diagnostic.SYNTAX_FORM,
-                            "Multiple dataclass decorators are not supported",
-                        )
-                    dataclass_opts = {
-                        "init": True,
-                        "repr": True,
-                        "eq": True,
-                        "order": False,
-                        "unsafe_hash": False,
-                        "frozen": False,
-                        "match_args": True,
-                        "kw_only": False,
-                        "slots": False,
-                        "weakref_slot": False,
-                    }
-                    _DATACLASS_VALID_OPTS = {
-                        "init",
-                        "repr",
-                        "eq",
-                        "order",
-                        "unsafe_hash",
-                        "frozen",
-                        "match_args",
-                        "kw_only",
-                        "slots",
-                        "weakref_slot",
-                    }
-                    for kw in deco.keywords:
-                        if kw.arg is None:
-                            # **kwargs spread — resolve from module-level constant dicts
-                            resolved = False
-                            if isinstance(kw.value, ast.Name):
-                                varname = kw.value.id
-                                if varname in self.module_const_dicts:
-                                    for dk, dv in self.module_const_dicts[
-                                        varname
-                                    ].items():
-                                        if dk in _DATACLASS_VALID_OPTS and isinstance(
-                                            dv, bool
-                                        ):
-                                            dataclass_opts[dk] = dv
-                                    resolved = True
-                            if resolved:
-                                continue
-                            raise FrontendRejection(
-                                Diagnostic.SYNTAX_FORM,
-                                "dataclass **kwargs spread: cannot resolve '"
-                                + (
-                                    kw.value.id
-                                    if isinstance(kw.value, ast.Name)
-                                    else "?"
-                                )
-                                + "' at compile time. Define it as a module-level "
-                                + "constant dict (e.g., OPTS = {'slots': True})",
-                            )
-                        if kw.arg not in _DATACLASS_VALID_OPTS:
-                            # Unknown option — skip it (CPython would raise TypeError
-                            # but we prefer to compile and let the runtime handle it)
-                            continue
-                        if (
-                            isinstance(kw.value, ast.Constant)
-                            and kw.value.value is None
-                        ):
-                            # None means "use the default" in CPython
-                            continue
-                        if not isinstance(kw.value, ast.Constant) or not isinstance(
-                            kw.value.value, bool
-                        ):
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                f"dataclass {kw.arg} must be a boolean literal",
-                            )
-                        dataclass_opts[kw.arg] = kw.value.value
-                    continue
-                if (
-                    isinstance(deco, ast.Call)
-                    and isinstance(deco.func, ast.Attribute)
-                    and isinstance(deco.func.value, ast.Name)
-                    and deco.func.value.id == "dataclasses"
-                    and deco.func.attr == "dataclass"
-                ):
-                    if dataclass_opts is not None:
-                        raise FrontendRejection(
-                            Diagnostic.SYNTAX_FORM,
-                            "Multiple dataclass decorators are not supported",
-                        )
-                    dataclass_opts = {
-                        "init": True,
-                        "repr": True,
-                        "eq": True,
-                        "order": False,
-                        "unsafe_hash": False,
-                        "frozen": False,
-                        "match_args": True,
-                        "kw_only": False,
-                        "slots": False,
-                        "weakref_slot": False,
-                    }
-                    _DATACLASS_VALID_OPTS2 = {
-                        "init",
-                        "repr",
-                        "eq",
-                        "order",
-                        "unsafe_hash",
-                        "frozen",
-                        "match_args",
-                        "kw_only",
-                        "slots",
-                        "weakref_slot",
-                    }
-                    for kw in deco.keywords:
-                        if kw.arg is None:
-                            resolved = False
-                            if isinstance(kw.value, ast.Name):
-                                varname = kw.value.id
-                                if varname in self.module_const_dicts:
-                                    for dk, dv in self.module_const_dicts[
-                                        varname
-                                    ].items():
-                                        if dk in _DATACLASS_VALID_OPTS2 and isinstance(
-                                            dv, bool
-                                        ):
-                                            dataclass_opts[dk] = dv
-                                    resolved = True
-                            if resolved:
-                                continue
-                            raise FrontendRejection(
-                                Diagnostic.SYNTAX_FORM,
-                                "dataclass **kwargs spread: cannot resolve '"
-                                + (
-                                    kw.value.id
-                                    if isinstance(kw.value, ast.Name)
-                                    else "?"
-                                )
-                                + "' at compile time. Define it as a module-level "
-                                + "constant dict (e.g., OPTS = {'slots': True})",
-                            )
-                        if (
-                            isinstance(kw.value, ast.Constant)
-                            and kw.value.value is None
-                        ):
-                            # None means "use the default" in CPython
-                            continue
-                        if not isinstance(kw.value, ast.Constant) or not isinstance(
-                            kw.value.value, bool
-                        ):
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                f"dataclass {kw.arg} must be a boolean literal",
-                            )
-                        dataclass_opts[kw.arg] = kw.value.value
-                    continue
+        index = self.python_binding_index
+        for position, deco in enumerate(node.decorator_list):
+            target = deco.func if isinstance(deco, ast.Call) else deco
+            if (
+                index is None
+                or not index.expression_is(target, PythonIdentity.DATACLASSES_DATACLASS)
+                # The static layout describes the undecorated class. An inner
+                # wrapper may return a different class; run that chain normally.
+                or position != len(node.decorator_list) - 1
+                or isinstance(deco, ast.Call)
+                and deco.args
+            ):
                 other_decorators.append(deco)
-
+                continue
+            dataclass_opts = {
+                "init": True,
+                "repr": True,
+                "eq": True,
+                "order": False,
+                "unsafe_hash": False,
+                "frozen": False,
+                "match_args": True,
+                "kw_only": False,
+                "slots": False,
+                "weakref_slot": False,
+            }
+            if not isinstance(deco, ast.Call):
+                continue
+            for keyword in deco.keywords:
+                if keyword.arg is None:
+                    # A name-keyed constant table cannot prove the mapping's
+                    # contents at this decorator's source point. Evaluate its
+                    # real argument protocol through the ordinary runtime call.
+                    dataclass_opts = None
+                    break
+                if keyword.arg not in dataclass_opts or not (
+                    isinstance(keyword.value, ast.Constant)
+                    and type(keyword.value.value) is bool
+                ):
+                    dataclass_opts = None
+                    break
+                dataclass_opts[keyword.arg] = keyword.value.value
+            if dataclass_opts is None:
+                other_decorators.append(deco)
         return dataclass_opts, other_decorators
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -740,20 +524,19 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         self.class_annotation_exec_map = None
         self.class_annotation_exec_counter = 0
         dataclass_opts, other_decorators = self._class_decorator_plan(node)
-        # @dataclass combined with other decorators is allowed.  Molt
-        # processes @dataclass internally (innermost), then applies the
-        # remaining decorators as outer wrappers — matching CPython
-        # semantics for the common patterns (@final @dataclass, etc.).
+        # Python captures every decorator expression before class execution,
+        # then applies the captured values in reverse order. Static dataclass
+        # metadata never authorizes a later lookup of the decorator binding.
 
         decorator_vals: list[MoltValue] = []
-        if other_decorators:
-            for deco in other_decorators:
+        if node.decorator_list:
+            for deco in node.decorator_list:
                 decorator_val = self.visit(deco)
                 if decorator_val is None:
                     raise FrontendRejection(
                         Diagnostic.SYNTAX_FORM, "Unsupported class decorator"
                     )
-                decorator_vals.append(decorator_val)
+                decorator_vals.append(self._capture_expression_reference(decorator_val))
 
         type_param_vals, type_param_map = self._emit_type_params_values(node)
         if type_param_map:
@@ -868,6 +651,27 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # molt_class_set_base raises CPython's TypeError when the statement
         # runs; base names cannot decide identity at compile time.
         dynamic = dynamic_build or len(bases) > 1
+        opaque = (
+            self.namespace_premise.opaque_activation_sources
+            if self.namespace_premise is not None
+            else None
+        )
+        source = python_node_source_key(node)
+        definition_sources = (
+            source,
+            *(python_node_source_key(method) for method in class_body_functions(node)),
+        )
+        definition_exposed = opaque is not None and any(
+            key in opaque for key in definition_sources
+        )
+        constructor_binding_proven = (
+            self.namespace_premise is not None
+            and self.namespace_premise.foreign_writes is not None
+            and opaque is not None
+            and not definition_exposed
+        )
+        if definition_exposed:
+            dynamic = True
         for base_ref in bases:
             if isinstance(base_ref, BuiltinClass):
                 continue
@@ -921,26 +725,43 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         if name not in field_order:
                             field_order.append(name)
 
-            def _annotation_kind(annotation: ast.AST) -> str | None:
-                def _matches(expr: ast.AST, name: str) -> bool:
-                    if isinstance(expr, ast.Name):
-                        return expr.id == name
-                    if isinstance(expr, ast.Attribute):
-                        return expr.attr == name
-                    return False
+            init_requires_binding = any(
+                isinstance(base, ClassId)
+                and self.classes.get(base, {}).get(
+                    "dataclass_init_requires_binding", False
+                )
+                for base in mro[1:]
+            )
+            fields_known = not self.future_annotations
 
-                if _matches(annotation, "KW_ONLY"):
-                    return "kw_only"
-                if isinstance(annotation, ast.Subscript):
-                    if _matches(annotation.value, "ClassVar"):
-                        return "classvar"
-                    if _matches(annotation.value, "InitVar"):
-                        return "initvar"
-                if _matches(annotation, "ClassVar"):
-                    return "classvar"
-                if _matches(annotation, "InitVar"):
-                    return "initvar"
-                return None
+            def _annotation_kind(annotation: ast.expr) -> str:
+                index = self.python_binding_index
+                if index is None or self.future_annotations:
+                    return "unknown"
+                target = (
+                    annotation.value
+                    if isinstance(annotation, ast.Subscript)
+                    else annotation
+                )
+                for identity, kind in (
+                    (PythonIdentity.DATACLASSES_KW_ONLY, "kw_only"),
+                    (PythonIdentity.DATACLASSES_INITVAR, "initvar"),
+                    (PythonIdentity.TYPING_CLASSVAR, "classvar"),
+                ):
+                    if index.expression_is(target, identity):
+                        return kind
+                fact = index.expression_fact(annotation)
+                if (
+                    fact is None
+                    or isinstance(annotation, ast.Constant)
+                    and isinstance(annotation.value, str)
+                ):
+                    return "unknown"
+                # An unknown subscription or callback can return a dataclass
+                # marker. Only a closed result identity proves a regular field.
+                if fact.identities & int(PythonIdentity.OTHER | PythonIdentity.UNBOUND):
+                    return "unknown"
+                return "field"
 
             for item in node.body:
                 if isinstance(item, ast.AnnAssign) and isinstance(
@@ -948,6 +769,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 ):
                     name = item.target.id
                     kind = _annotation_kind(item.annotation)
+                    if kind in {"kw_only", "initvar"}:
+                        init_requires_binding = True
+                    if kind == "unknown":
+                        fields_known = False
                     if kind == "kw_only":
                         continue
                     if kind not in {"classvar", "initvar"}:
@@ -967,6 +792,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     for target in item.targets:
                         if isinstance(target, ast.Name):
                             class_attrs[target.id] = item.value
+            if not fields_known:
+                dynamic = True
+                field_order = []
+                field_hints = {}
             field_indices = {name: idx for idx, name in enumerate(field_order)}
             min_layout = self._builtin_min_layout(mro)
             size = max(len(field_order) * 8, min_layout)
@@ -990,6 +819,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 "repr": repr_generated,
                 "slots": dataclass_opts["slots"],
                 "dataclass_params": dataclass_opts,
+                "dataclass_init_requires_binding": init_requires_binding,
+                "constructor_binding_proven": constructor_binding_proven,
                 "methods": methods,
                 "pending_methods": pending_methods,
                 "needs_classcell": needs_classcell,
@@ -1124,7 +955,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     # `__class_getitem__`) take a class as their first
                     # argument; assignments through it set class attributes
                     # via the dict, never instance fields.
-                    if not _function_is_instance_method(method):
+                    if not _function_is_instance_method(
+                        method, self.python_binding_index
+                    ):
                         continue
                     # Use the actual first parameter name (e.g. "self", "s")
                     # so that ``def __init__(s, x): s.x = x`` correctly
@@ -1166,6 +999,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 or inherits_custom_meta
                 or dynamic_build,
                 decorated=bool(other_decorators),
+                constructor_binding_proven=constructor_binding_proven,
             )
 
         # Layout expectations come from immutable potential slots, not values
@@ -1727,7 +1561,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # Static and dynamic construction return a value. Dataclass rebuilding
         # and ordinary decorators transform it before the defining scope sees
         # one final binding, including custom class namespace mappings.
-        class_val = self._emit_dataclass_application(class_info, class_val)
         if type_param_vals:
             self._emit_attach_type_params(class_val, type_param_vals)
             class_getitem = self._emit_module_attr_get_on(
@@ -1758,7 +1591,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         result=push_res,
                     )
                 )
-                res = MoltValue(self.next_var(), type_hint="Any")
+                res = MoltValue(
+                    self.next_var(),
+                    type_hint="type"
+                    if dataclass_opts is not None and not other_decorators
+                    else "Any",
+                )
                 self.emit(
                     MoltOp(kind="CALL_BIND", args=[decorator_val, callargs], result=res)
                 )
@@ -1770,7 +1608,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         bound_class = self.globals.get(node.name)
         if (
             self.current_func_name == "molt_main"
-            and not decorator_vals
+            and not other_decorators
             and not dynamic_build
             and bound_class is not None
             and bound_class.name == class_val.name

@@ -304,10 +304,9 @@ def test_intrinsic_globals_escape_requires_exact_runtime_source_custody(
         )
 
     if claim == "matching":
-        assert set(collect().imports) == set(custody.modules) | {
-            "_intrinsics",
-            "_intrinsics.require_intrinsic",
-        }
+        # Compiler-owned acquisitions produce no Python module body. Runtime
+        # namespace escape still admits exactly the custodied catalog.
+        assert set(collect().imports) == set(custody.modules)
     elif claim == "ast":
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
@@ -666,6 +665,7 @@ def test_real_asyncio_and_importlib_dynamic_sources_join_runtime_custody(
         module_reasons=reasons,
         json_output=False,
         target=admit_target("native"),
+        target_sys_platform=None,
     )
 
     assert error is None and prepared is not None
@@ -795,6 +795,7 @@ def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
             resolution_cache=_ModuleResolutionCache(),
             project_root=tmp_path,
             runtime_import_custody=generation,
+            namespace_premise=None,
         )
 
     first = analyze(custody)
@@ -856,6 +857,7 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
         json_output=False,
         target=admit_target("native"),
         stdlib_profile="micro",
+        target_sys_platform=None,
     )
     assert error is None and graph is not None
     plan = _materialize_import_plan(

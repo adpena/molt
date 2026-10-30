@@ -70,6 +70,25 @@ class PythonIdentity(IntFlag):
     INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION = 1 << 56
     INTRINSIC_IMPORTLIB_FIND_SPEC = 1 << 57
     INTRINSICS_LOAD = 1 << 58
+    INTRINSIC_SYS_VERSION_INFO = 1 << 59
+    INTRINSICS_RUNTIME_ACTIVE = 1 << 60
+    BUILTIN_CLASSMETHOD = 1 << 61
+    BUILTIN_STATICMETHOD = 1 << 62
+    RETAINED_CALLABLE_WRAPPER = 1 << 63
+    DATACLASSES_MODULE = 1 << 64
+    DATACLASSES_DATACLASS = 1 << 65
+    TYPING_OVERLOAD = 1 << 66
+    MOLT_MODULE = 1 << 67
+    MOLT_GPU_MODULE = 1 << 68
+    GPU_KERNEL = 1 << 69
+    BUILTIN_PROPERTY = 1 << 70
+    DATACLASSES_KW_ONLY = 1 << 71
+    DATACLASSES_INITVAR = 1 << 72
+    TYPING_CLASSVAR = 1 << 73
+    DATACLASSES_FIELD = 1 << 74
+    BUILTIN_GETATTR = 1 << 75
+    BUILTIN_HASATTR = 1 << 76
+    BUILTIN_DELATTR = 1 << 77
 
 
 class PythonMember(IntFlag):
@@ -108,11 +127,26 @@ class PythonMember(IntFlag):
     BUILTINS_EVAL = 1 << 32
     BUILTINS_EXEC = 1 << 33
     INTRINSICS_LOAD = 1 << 34
+    BUILTINS_CLASSMETHOD = 1 << 35
+    BUILTINS_STATICMETHOD = 1 << 36
+    DATACLASSES_DATACLASS = 1 << 37
+    TYPING_OVERLOAD = 1 << 38
+    MOLT_GPU = 1 << 39
+    GPU_KERNEL = 1 << 40
+    BUILTINS_PROPERTY = 1 << 41
+    DATACLASSES_KW_ONLY = 1 << 42
+    DATACLASSES_INITVAR = 1 << 43
+    TYPING_CLASSVAR = 1 << 44
+    DATACLASSES_FIELD = 1 << 45
+    BUILTINS_GETATTR = 1 << 46
+    BUILTINS_HASATTR = 1 << 47
+    BUILTINS_DELATTR = 1 << 48
 
 
 class PythonTargetProperty(Enum):
     SYS_PLATFORM = 'sys_platform'
     OS_NAME = 'os_name'
+    SYS_VERSION_INFO = 'sys_version_info'
 
 
 class PythonImportBehavior(Enum):
@@ -142,7 +176,7 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 34359738367
+ALL_INVALID_MEMBERS: Final[MemberMask] = 562949953421311
 
 class PythonImportCallable(NamedTuple):
     behavior: PythonImportBehavior
@@ -195,6 +229,25 @@ INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProx
         'molt_importlib_find_spec': PythonIdentity.INTRINSIC_IMPORTLIB_FIND_SPEC,
         'molt_require_intrinsic_runtime': PythonIdentity.INTRINSICS_REQUIRE,
         'molt_load_intrinsic_runtime': PythonIdentity.INTRINSICS_LOAD,
+        'molt_sys_version_info': PythonIdentity.INTRINSIC_SYS_VERSION_INFO,
+        'molt_runtime_active_runtime': PythonIdentity.INTRINSICS_RUNTIME_ACTIVE,
+    }
+)
+
+COMPILER_INTRINSIC_CALLABLES: Final[Mapping[str, tuple[PythonIdentity, str]]] = MappingProxyType(
+    {
+        'require_intrinsic': (PythonIdentity.INTRINSICS_REQUIRE, 'molt_require_intrinsic_runtime'),
+        '_require_intrinsic': (PythonIdentity.INTRINSICS_REQUIRE, 'molt_require_intrinsic_runtime'),
+        'load_intrinsic': (PythonIdentity.INTRINSICS_LOAD, 'molt_load_intrinsic_runtime'),
+        '_load_intrinsic': (PythonIdentity.INTRINSICS_LOAD, 'molt_load_intrinsic_runtime'),
+        'runtime_active': (PythonIdentity.INTRINSICS_RUNTIME_ACTIVE, 'molt_runtime_active_runtime'),
+    }
+)
+
+BUILTIN_RETURN_CAPTURES: Final[Mapping[IdentityMask, tuple[PythonIdentity, str]]] = MappingProxyType(
+    {
+        int(PythonIdentity.BUILTIN_CLASSMETHOD): (PythonIdentity.RETAINED_CALLABLE_WRAPPER, 'class_method'),
+        int(PythonIdentity.BUILTIN_STATICMETHOD): (PythonIdentity.RETAINED_CALLABLE_WRAPPER, 'static_method'),
     }
 )
 
@@ -202,6 +255,7 @@ INTRINSIC_TARGET_PROPERTIES: Final[Mapping[IdentityMask, PythonTargetProperty]] 
     {
         int(PythonIdentity.INTRINSIC_SYS_PLATFORM): PythonTargetProperty.SYS_PLATFORM,
         int(PythonIdentity.INTRINSIC_OS_NAME): PythonTargetProperty.OS_NAME,
+        int(PythonIdentity.INTRINSIC_SYS_VERSION_INFO): PythonTargetProperty.SYS_VERSION_INFO,
     }
 )
 
@@ -274,6 +328,8 @@ ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
     int(PythonIdentity.INTRINSIC_IMPORTLIB_FIND_SPEC) |
     int(PythonIdentity.INTRINSICS_REQUIRE) |
     int(PythonIdentity.INTRINSICS_LOAD) |
+    int(PythonIdentity.INTRINSIC_SYS_VERSION_INFO) |
+    int(PythonIdentity.INTRINSICS_RUNTIME_ACTIVE) |
     0
 )
 
@@ -295,6 +351,9 @@ BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = M
         'locals': (PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),
         'vars': (PythonIdentity.BUILTIN_VARS, PythonMember.BUILTINS_VARS),
         'setattr': (PythonIdentity.BUILTIN_SETATTR, PythonMember.BUILTINS_SETATTR),
+        'getattr': (PythonIdentity.BUILTIN_GETATTR, PythonMember.BUILTINS_GETATTR),
+        'hasattr': (PythonIdentity.BUILTIN_HASATTR, PythonMember.BUILTINS_HASATTR),
+        'delattr': (PythonIdentity.BUILTIN_DELATTR, PythonMember.BUILTINS_DELATTR),
         'eval': (PythonIdentity.BUILTIN_EVAL, PythonMember.BUILTINS_EVAL),
         'exec': (PythonIdentity.BUILTIN_EXEC, PythonMember.BUILTINS_EXEC),
         'bool': (PythonIdentity.BUILTIN_BOOL, PythonMember.BUILTINS_BOOL),
@@ -312,6 +371,9 @@ BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = M
         'set': (PythonIdentity.BUILTIN_SET, PythonMember.BUILTINS_SET),
         'str': (PythonIdentity.BUILTIN_STR, PythonMember.BUILTINS_STR),
         'tuple': (PythonIdentity.BUILTIN_TUPLE, PythonMember.BUILTINS_TUPLE),
+        'classmethod': (PythonIdentity.BUILTIN_CLASSMETHOD, PythonMember.BUILTINS_CLASSMETHOD),
+        'staticmethod': (PythonIdentity.BUILTIN_STATICMETHOD, PythonMember.BUILTINS_STATICMETHOD),
+        'property': (PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),
     }
 )
 
@@ -369,6 +431,9 @@ CANONICAL_IMPORT_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyT
         'typing': PythonIdentity.TYPING_MODULE,
         'typing_extensions': PythonIdentity.TYPING_MODULE,
         '_intrinsics': PythonIdentity.INTRINSICS_MODULE,
+        'dataclasses': PythonIdentity.DATACLASSES_MODULE,
+        'molt': PythonIdentity.MOLT_MODULE,
+        'molt.gpu': PythonIdentity.MOLT_GPU_MODULE,
     }
 )
 
@@ -387,11 +452,24 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('_intrinsics', '_require_intrinsic'): (PythonIdentity.INTRINSICS_REQUIRE, PythonMember.INTRINSICS_REQUIRE),
         ('_intrinsics', 'load_intrinsic'): (PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),
         ('_intrinsics', '_load_intrinsic'): (PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),
+        ('dataclasses', 'dataclass'): (PythonIdentity.DATACLASSES_DATACLASS, PythonMember.DATACLASSES_DATACLASS),
+        ('typing', 'overload'): (PythonIdentity.TYPING_OVERLOAD, PythonMember.TYPING_OVERLOAD),
+        ('typing_extensions', 'overload'): (PythonIdentity.TYPING_OVERLOAD, PythonMember.TYPING_OVERLOAD),
+        ('molt', 'gpu'): (PythonIdentity.MOLT_GPU_MODULE, PythonMember.MOLT_GPU),
+        ('molt.gpu', 'kernel'): (PythonIdentity.GPU_KERNEL, PythonMember.GPU_KERNEL),
+        ('dataclasses', 'KW_ONLY'): (PythonIdentity.DATACLASSES_KW_ONLY, PythonMember.DATACLASSES_KW_ONLY),
+        ('dataclasses', 'InitVar'): (PythonIdentity.DATACLASSES_INITVAR, PythonMember.DATACLASSES_INITVAR),
+        ('typing', 'ClassVar'): (PythonIdentity.TYPING_CLASSVAR, PythonMember.TYPING_CLASSVAR),
+        ('typing_extensions', 'ClassVar'): (PythonIdentity.TYPING_CLASSVAR, PythonMember.TYPING_CLASSVAR),
+        ('dataclasses', 'field'): (PythonIdentity.DATACLASSES_FIELD, PythonMember.DATACLASSES_FIELD),
         ('builtins', '__import__'): (PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),
         ('builtins', 'globals'): (PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),
         ('builtins', 'locals'): (PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),
         ('builtins', 'vars'): (PythonIdentity.BUILTIN_VARS, PythonMember.BUILTINS_VARS),
         ('builtins', 'setattr'): (PythonIdentity.BUILTIN_SETATTR, PythonMember.BUILTINS_SETATTR),
+        ('builtins', 'getattr'): (PythonIdentity.BUILTIN_GETATTR, PythonMember.BUILTINS_GETATTR),
+        ('builtins', 'hasattr'): (PythonIdentity.BUILTIN_HASATTR, PythonMember.BUILTINS_HASATTR),
+        ('builtins', 'delattr'): (PythonIdentity.BUILTIN_DELATTR, PythonMember.BUILTINS_DELATTR),
         ('builtins', 'eval'): (PythonIdentity.BUILTIN_EVAL, PythonMember.BUILTINS_EVAL),
         ('builtins', 'exec'): (PythonIdentity.BUILTIN_EXEC, PythonMember.BUILTINS_EXEC),
         ('builtins', 'bool'): (PythonIdentity.BUILTIN_BOOL, PythonMember.BUILTINS_BOOL),
@@ -409,6 +487,9 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('builtins', 'set'): (PythonIdentity.BUILTIN_SET, PythonMember.BUILTINS_SET),
         ('builtins', 'str'): (PythonIdentity.BUILTIN_STR, PythonMember.BUILTINS_STR),
         ('builtins', 'tuple'): (PythonIdentity.BUILTIN_TUPLE, PythonMember.BUILTINS_TUPLE),
+        ('builtins', 'classmethod'): (PythonIdentity.BUILTIN_CLASSMETHOD, PythonMember.BUILTINS_CLASSMETHOD),
+        ('builtins', 'staticmethod'): (PythonIdentity.BUILTIN_STATICMETHOD, PythonMember.BUILTINS_STATICMETHOD),
+        ('builtins', 'property'): (PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),
     }
 )
 
@@ -426,11 +507,22 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         '_require_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, PythonIdentity.INTRINSICS_REQUIRE, PythonMember.INTRINSICS_REQUIRE),),
         'load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),),
         '_load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),),
+        'dataclass': ((PythonIdentity.DATACLASSES_MODULE, PythonIdentity.DATACLASSES_DATACLASS, PythonMember.DATACLASSES_DATACLASS),),
+        'overload': ((PythonIdentity.TYPING_MODULE, PythonIdentity.TYPING_OVERLOAD, PythonMember.TYPING_OVERLOAD),),
+        'gpu': ((PythonIdentity.MOLT_MODULE, PythonIdentity.MOLT_GPU_MODULE, PythonMember.MOLT_GPU),),
+        'kernel': ((PythonIdentity.MOLT_GPU_MODULE, PythonIdentity.GPU_KERNEL, PythonMember.GPU_KERNEL),),
+        'KW_ONLY': ((PythonIdentity.DATACLASSES_MODULE, PythonIdentity.DATACLASSES_KW_ONLY, PythonMember.DATACLASSES_KW_ONLY),),
+        'InitVar': ((PythonIdentity.DATACLASSES_MODULE, PythonIdentity.DATACLASSES_INITVAR, PythonMember.DATACLASSES_INITVAR),),
+        'ClassVar': ((PythonIdentity.TYPING_MODULE, PythonIdentity.TYPING_CLASSVAR, PythonMember.TYPING_CLASSVAR),),
+        'field': ((PythonIdentity.DATACLASSES_MODULE, PythonIdentity.DATACLASSES_FIELD, PythonMember.DATACLASSES_FIELD),),
         '__import__': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),),
         'globals': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),),
         'locals': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),),
         'vars': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_VARS, PythonMember.BUILTINS_VARS),),
         'setattr': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SETATTR, PythonMember.BUILTINS_SETATTR),),
+        'getattr': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_GETATTR, PythonMember.BUILTINS_GETATTR),),
+        'hasattr': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_HASATTR, PythonMember.BUILTINS_HASATTR),),
+        'delattr': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_DELATTR, PythonMember.BUILTINS_DELATTR),),
         'eval': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_EVAL, PythonMember.BUILTINS_EVAL),),
         'exec': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_EXEC, PythonMember.BUILTINS_EXEC),),
         'bool': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BOOL, PythonMember.BUILTINS_BOOL),),
@@ -448,6 +540,9 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         'set': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SET, PythonMember.BUILTINS_SET),),
         'str': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_STR, PythonMember.BUILTINS_STR),),
         'tuple': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_TUPLE, PythonMember.BUILTINS_TUPLE),),
+        'classmethod': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CLASSMETHOD, PythonMember.BUILTINS_CLASSMETHOD),),
+        'staticmethod': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_STATICMETHOD, PythonMember.BUILTINS_STATICMETHOD),),
+        'property': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),),
     }
 )
 
@@ -465,11 +560,22 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         '_require_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, 2048),),
         'load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, 17179869184),),
         '_load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, 17179869184),),
+        'dataclass': ((PythonIdentity.DATACLASSES_MODULE, 137438953472),),
+        'overload': ((PythonIdentity.TYPING_MODULE, 274877906944),),
+        'gpu': ((PythonIdentity.MOLT_MODULE, 549755813888),),
+        'kernel': ((PythonIdentity.MOLT_GPU_MODULE, 1099511627776),),
+        'KW_ONLY': ((PythonIdentity.DATACLASSES_MODULE, 4398046511104),),
+        'InitVar': ((PythonIdentity.DATACLASSES_MODULE, 8796093022208),),
+        'ClassVar': ((PythonIdentity.TYPING_MODULE, 17592186044416),),
+        'field': ((PythonIdentity.DATACLASSES_MODULE, 35184372088832),),
         '__import__': ((PythonIdentity.BUILTINS_MODULE, 136),),
         'globals': ((PythonIdentity.BUILTINS_MODULE, 268435456),),
         'locals': ((PythonIdentity.BUILTINS_MODULE, 536870912),),
         'vars': ((PythonIdentity.BUILTINS_MODULE, 1073741824),),
         'setattr': ((PythonIdentity.BUILTINS_MODULE, 2147483648),),
+        'getattr': ((PythonIdentity.BUILTINS_MODULE, 70368744177664),),
+        'hasattr': ((PythonIdentity.BUILTINS_MODULE, 140737488355328),),
+        'delattr': ((PythonIdentity.BUILTINS_MODULE, 281474976710656),),
         'eval': ((PythonIdentity.BUILTINS_MODULE, 4294967296),),
         'exec': ((PythonIdentity.BUILTINS_MODULE, 8589934592),),
         'bool': ((PythonIdentity.BUILTINS_MODULE, 8192),),
@@ -487,6 +593,9 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         'set': ((PythonIdentity.BUILTINS_MODULE, 4194304),),
         'str': ((PythonIdentity.BUILTINS_MODULE, 131072),),
         'tuple': ((PythonIdentity.BUILTINS_MODULE, 1048576),),
+        'classmethod': ((PythonIdentity.BUILTINS_MODULE, 34359738368),),
+        'staticmethod': ((PythonIdentity.BUILTINS_MODULE, 68719476736),),
+        'property': ((PythonIdentity.BUILTINS_MODULE, 2199023255552),),
         'meta_path': ((PythonIdentity.SYS_MODULE, 128),),
         'path_hooks': ((PythonIdentity.SYS_MODULE, 128),),
         'path_importer_cache': ((PythonIdentity.SYS_MODULE, 128),),
@@ -498,4 +607,4 @@ CANONICAL_WILDCARD_WRITES: Final[tuple[tuple[PythonIdentity, MemberMask], ...]] 
     (PythonIdentity.MODULE_SPEC_CLASS, 64),
 )
 
-ANY_CANONICAL_MODULE_IDENTITY: Final[IdentityMask] = 1426064037
+ANY_CANONICAL_MODULE_IDENTITY: Final[IdentityMask] = 461168601844164854437

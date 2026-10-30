@@ -181,6 +181,7 @@ def test_module_registry_origins_are_the_reported_paths(
         entry_module="app",
         entry_execution_kind="script",
         namespace_portions_by_module={},
+        scan_authority=None,
     )
     registry = backend_ir._build_module_registry(
         entry_module="app",

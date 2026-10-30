@@ -95,6 +95,7 @@ def _expand_static_package_all_star_children(
                 exports = _source_import_scan._static_module_all_exports(
                     parsed.tree,
                     target_python=target_python,
+                    target_sys_platform=resolution_cache.target_sys_platform,
                     ast_digest_admission=parsed.admission,
                 )
             except (OSError, SyntaxError, UnicodeError) as exc:

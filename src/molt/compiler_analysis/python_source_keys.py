@@ -264,7 +264,8 @@ class _PythonAstDigestAdmission:
     )
 
     module_all_exports: dict[
-        tuple[TargetPythonVersion, PythonNamespacePremise | None], SourceAllExports
+        tuple[TargetPythonVersion, str | None, PythonNamespacePremise | None],
+        SourceAllExports,
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     namespace_summaries: dict[

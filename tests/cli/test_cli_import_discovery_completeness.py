@@ -335,7 +335,13 @@ def test_partial_source_cache_retains_candidates_and_diagnostics(
         closure.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
     )
     variants = cache["entries"]["src/pkg/entry.py"]
-    premise = PythonNamespacePremise((), 0)
+    premise = PythonNamespacePremise(
+        (),
+        0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+        opaque_activation_sources=None,
+    )
     source_key = closure._analysis_policy_digest("pkg.entry", False, source, premise)
     semantic_key = closure._analysis_policy_digest(
         "pkg.entry", False, semantic, premise

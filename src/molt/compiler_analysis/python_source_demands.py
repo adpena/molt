@@ -38,9 +38,18 @@ from molt.compiler_analysis.static_truth import (
 class SourceCandidate(NamedTuple):
     module: str
     source: PythonSourceKey | None
-    kind: Literal["value", "instance", "resumable"] = "value"
+    kind: Literal[
+        "value",
+        "instance",
+        "resumable",
+        "class_descriptor",
+        "static_descriptor",
+        "bound_class_method",
+        "bound_static_method",
+    ] = "value"
     contained: bool = False
     identity: PythonIdentity | None = None
+    receiver: tuple[str, PythonSourceKey | None] | None = None
 
     @property
     def value(self) -> tuple[str, PythonSourceKey | None]:
@@ -50,6 +59,13 @@ class SourceCandidate(NamedTuple):
 class SourceMember(NamedTuple):
     owner: SourceCandidate
     name: str
+
+
+class SourceCacheItem(NamedTuple):
+    key: str | None
+    # None normally means every key. A wildcard write is also a possible
+    # provider for each literal-key read without mixing unrelated literal keys.
+    wildcard: bool = False
 
 
 class SourceReturn(NamedTuple):
@@ -68,6 +84,7 @@ SourceValue = tuple[
     str,
     PythonSourceKey
     | SourceMember
+    | SourceCacheItem
     | SourceReturn
     | SourceAwait
     | SourceGeneratorCompletion
@@ -101,14 +118,33 @@ class PythonSourceDemands:
         self.queue_body = queue_body
         self.require_runtime_import_protocol = require_runtime_import_protocol
         self._consumer: str | None = None
+        # A monotone projection of existing activation transitions. The delta
+        # wakes only source scans whose globals-custody proof has changed.
+        self._opaque_activation_sources: dict[str, set[PythonSourceKey]] = {}
+        self._opaque_activation_changes: set[str] = set()
         self.modules: set[str] = set()
-        self.full_modules: set[str] = set()
+        self.owner_demands: dict[
+            tuple[str, PythonSourceKey],
+            set[tuple[PythonSourceKey, SourceDemandPhase, int | None]],
+        ] = {}
         self.imported_modules: set[str] = set()
         self.value_candidates: dict[SourceValue, set[SourceCandidate]] = {}
         self.value_users: dict[SourceValue, set[SourceValue]] = {}
         self.value_phases: dict[SourceValue, set[SourceDemand]] = {}
         self.pending_phases: dict[SourceValue, set[SourceDemand]] = {}
         self.elements: dict[SourceValue, PythonSourceElement] = {}
+        self.cache_origins: dict[SourceCacheItem, set[tuple[SourceValue, bool]]] = {}
+        self.cache_reads: dict[
+            SourceValue,
+            frozenset[
+                tuple[
+                    tuple[str, ...] | None,
+                    frozenset[PythonSourceKey],
+                    frozenset[PythonSourceKey],
+                    bool,
+                ]
+            ],
+        ] = {}
         self.calls: dict[SourceValue, PythonSourceCall] = {}
         self.callables: dict[SourceValue, int] = {}
         self.call_imports: dict[SourceValue, frozenset[SourceImportCall]] = {}
@@ -128,7 +164,7 @@ class PythonSourceDemands:
         self.attributes: dict[SourceValue, tuple[str, frozenset[PythonSourceKey]]] = {}
         self.import_bindings: dict[SourceValue, _SourceImportBinding] = {}
         self.value_jobs: set[SourceValue] = set()
-        self.body_jobs: set[tuple[str, PythonSourceKey, tuple[str, ...]]] = set()
+        self.body_jobs: dict[SourceValue, set[tuple[str, ...]]] = {}
         self.activated: set[
             tuple[
                 SourceCandidate,
@@ -186,15 +222,24 @@ class PythonSourceDemands:
         self._invalidate_value(value)
         return True
 
-    def accept(
-        self, module_name: str, scan: _ImportScanRequests, *, full: bool = False
+    def hold_cache_origins(
+        self, item: SourceCacheItem, values: set[tuple[SourceValue, bool]]
     ) -> None:
+        known = self.cache_origins.setdefault(item, set())
+        if values - known:
+            known.update(values)
+            self.queue_value(("", item))
+
+    def accept(self, module_name: str, scan: _ImportScanRequests) -> None:
         self.modules.add(module_name)
+        # Ordinary initialization can publish its admitted source namespace too.
+        # This is may-provenance, not proof of cache presence or execution order.
+        publication = {((module_name, None), False)}
+        self.hold_cache_origins(SourceCacheItem(module_name), publication)
+        self.hold_cache_origins(SourceCacheItem(None), publication)
         if self.exports.get(module_name) != scan.all_exports:
             self.exports[module_name] = scan.all_exports
             self._invalidate_value((module_name, None))
-        if full:
-            self.full_modules.add(module_name)
         self.imported_modules.update(
             (*scan.imports, *scan.dynamic_relative_import_candidates)
         )
@@ -330,7 +375,40 @@ class PythonSourceDemands:
                         incidence.arguments,
                         consumer=incidence.consumer,
                     )
+        for _source, keys, origins, contents in scan.source_values.cache_writes:
+            values: set[tuple[SourceValue, bool]] = {
+                ((module_name, origin), False) for origin in origins
+            } | {((module_name, origin), True) for origin in contents}
+            items = (
+                [SourceCacheItem(key) for key in keys]
+                if keys is not None
+                else [SourceCacheItem(None, True)]
+            )
+            items.append(SourceCacheItem(None))
+            for item in items:
+                self.hold_cache_origins(item, values)
+                self.demand(("", item), "release", consumer=module_name)
+        for (
+            source,
+            keys,
+            defaults,
+            default_contents,
+            contained,
+        ) in scan.source_values.cache_reads:
+            value = (module_name, source)
+            self._publish(
+                self.cache_reads,
+                value,
+                self.cache_reads.get(value, frozenset())
+                | {(keys, defaults, default_contents, contained)},
+            )
         for request in scan.source_demands:
+            if request.owner is not None:
+                self.owner_demands.setdefault((module_name, request.owner), set()).add(
+                    (request.source, request.phase, request.argument_count)
+                )
+                if (module_name, request.owner) not in self.body_jobs:
+                    continue
             self.demand(
                 (module_name, request.source),
                 request.phase,
@@ -340,9 +418,34 @@ class PythonSourceDemands:
         for value in self.pending_modules.pop(module_name, ()):
             self.queue_value(value)
 
+    def opaque_activation_sources(
+        self, module_name: str
+    ) -> tuple[PythonSourceKey, ...]:
+        return tuple(sorted(self._opaque_activation_sources.get(module_name, ())))
+
+    def drain_opaque_activation_changes(self) -> frozenset[str]:
+        changed = frozenset(self._opaque_activation_changes)
+        self._opaque_activation_changes.clear()
+        return changed
+
     def drain(self) -> None:
         while self.queue:
             self.process_value(self.queue.popleft())
+
+    def _bind_receiver(
+        self, callee: SourceCandidate, receiver: SourceCandidate
+    ) -> None:
+        parameters = self.parameters.get(callee.value)
+        positional = parameters.positional if parameters is not None else ()
+        vararg = parameters.vararg if parameters is not None else None
+        parameter = positional[0] if positional else vararg
+        if parameter is not None:
+            formal = (callee.module, parameter)
+            argument = receiver._replace(contained=receiver.contained or not positional)
+            known = self.arguments.setdefault(formal, set())
+            if argument not in known:
+                known.add(argument)
+                self.queue_value(formal)
 
     def select_member(
         self,
@@ -354,11 +457,30 @@ class PythonSourceDemands:
         from_star=False,
         visiting=frozenset(),
         member_visiting=frozenset(),
+        binding_owner=None,
     ):
         if owner.identity is not None:
             return set()
         owner_module, owner_source = owner.value
         result = set()
+        binding_owner = owner if binding_owner is None else binding_owner
+        if owner.kind in {
+            "class_descriptor",
+            "static_descriptor",
+            "bound_class_method",
+        }:
+            if name == "__func__" or (
+                name == "__wrapped__" and owner.kind != "bound_class_method"
+            ):
+                return {owner._replace(kind="value", receiver=None)}
+            if (
+                owner.kind == "bound_class_method"
+                and name == "__self__"
+                and owner.receiver is not None
+            ):
+                return set(self.watch(owner.receiver, user))
+            self.demand(owner.value, "expose")
+            return result
         if owner.contained or owner in member_visiting:
             return result
         member_visiting = member_visiting | {owner}
@@ -390,7 +512,20 @@ class PythonSourceDemands:
                 )
         if namespace.get(name):
             for origin in namespace[name]:
-                result.update(self.watch((owner_module, origin), user))
+                for candidate in tuple(self.watch((owner_module, origin), user)):
+                    if candidate.kind == "class_descriptor":
+                        self._bind_receiver(
+                            candidate, binding_owner._replace(kind="value")
+                        )
+                        result.add(
+                            candidate._replace(
+                                kind="bound_class_method", receiver=binding_owner.value
+                            )
+                        )
+                    elif candidate.kind == "static_descriptor":
+                        result.add(candidate._replace(kind="bound_static_method"))
+                    else:
+                        result.add(candidate)
         elif owner_source is None:
             child = f"{owner_module}.{name}"
             if from_import:
@@ -405,7 +540,11 @@ class PythonSourceDemands:
                     inherited = SourceCandidate(*candidate.value, owner.kind)
                     result.update(
                         self.select_member(
-                            inherited, name, user, member_visiting=member_visiting
+                            inherited,
+                            name,
+                            user,
+                            member_visiting=member_visiting,
+                            binding_owner=binding_owner,
                         )
                     )
         else:
@@ -438,6 +577,24 @@ class PythonSourceDemands:
         if phase in {"read", "factory"} or incidence in self.activated:
             return
         self.activated.add(incidence)
+        if (
+            phase in {"escape", "expose"}
+            and origin.identity is None
+            and origin.source is not None
+            and origin.source[-1]
+            in {
+                "FunctionDef",
+                "AsyncFunctionDef",
+                "Lambda",
+                "GeneratorExp",
+                "TypeAlias",
+                "ClassDef",
+            }
+        ):
+            known = self._opaque_activation_sources.setdefault(origin.module, set())
+            if origin.source not in known:
+                known.add(origin.source)
+                self._opaque_activation_changes.add(origin.module)
         previous = self._consumer
         self._consumer = consumer
         try:
@@ -453,6 +610,40 @@ class PythonSourceDemands:
         argument_count: int | None,
     ) -> None:
         module_name, owner = origin.value
+        if phase == "mutate":
+            # A member store may change a source callable's execution target
+            # (__code__, defaults, __init__, ...). Resolve the actual receiver
+            # through ordinary source/formal provenance before exposing it.
+            # Mutating a module member does not expose its entire namespace.
+            if (
+                not origin.contained
+                and owner is not None
+                and owner[-1]
+                in {"FunctionDef", "AsyncFunctionDef", "Lambda", "ClassDef"}
+            ):
+                self.activate(
+                    origin,
+                    "descriptor" if origin.kind == "instance" else "expose",
+                    arguments,
+                    argument_count=argument_count,
+                )
+            return
+        if origin.kind in {"class_descriptor", "static_descriptor"}:
+            if phase == "call" and origin.kind == "class_descriptor":
+                return
+            self.activate(
+                origin._replace(kind="value"),
+                phase,
+                arguments,
+                argument_count=argument_count,
+            )
+            return
+        if (
+            origin.kind == "bound_class_method"
+            and phase in {"escape", "expose"}
+            and origin.receiver is not None
+        ):
+            self.demand(origin.receiver, "expose")
         if origin.contained:
             if phase in {"escape", "release", "expose", "protocol", "descriptor"}:
                 self.activate(origin._replace(contained=False), phase, arguments)
@@ -646,17 +837,24 @@ class PythonSourceDemands:
                         | result.yielded_exposed
                     ):
                         self.demand((module_name, source), "escape")
-            if (
-                module_name not in self.full_modules
-                and (module_name, owner, arguments) not in self.body_jobs
-            ):
-                self.body_jobs.add((module_name, owner, arguments))
+            body_arguments = self.body_jobs.setdefault(origin.value, set())
+            if arguments not in body_arguments:
+                body_arguments.add(arguments)
+                for source, requested_phase, count in self.owner_demands.get(
+                    (module_name, owner), ()
+                ):
+                    self.demand(
+                        (module_name, source),
+                        requested_phase,
+                        argument_count=count,
+                        consumer=module_name,
+                    )
                 self.queue_body(module_name, owner, arguments)
 
     def process_value(self, value: SourceValue) -> None:
         self.value_jobs.discard(value)
         module_name, source = value
-        if module_name not in self.modules:
+        if module_name not in self.modules and not isinstance(source, SourceCacheItem):
             self.pending_modules.setdefault(module_name, set()).add(value)
             return
         candidates = (
@@ -670,7 +868,34 @@ class PythonSourceDemands:
             if isinstance(source, tuple)
             else set()
         )
-        if isinstance(source, SourceReturn):
+        if isinstance(source, SourceCacheItem):
+            for origin, contained in tuple(self.cache_origins.get(source, ())):
+                candidates.update(
+                    item._replace(contained=item.contained or contained)
+                    for item in self.watch(origin, value)
+                )
+        elif value in self.cache_reads:
+            for keys, defaults, default_contents, contained in self.cache_reads[value]:
+                items = (
+                    [SourceCacheItem(key) for key in keys]
+                    if keys is not None
+                    else [SourceCacheItem(None)]
+                )
+                if keys is not None:
+                    items.append(SourceCacheItem(None, True))
+                for item in items:
+                    candidates.update(
+                        item._replace(contained=contained or item.contained)
+                        for item in self.watch(("", item), value)
+                    )
+                for default in defaults:
+                    candidates.update(self.watch((module_name, default), value))
+                for default in default_contents:
+                    candidates.update(
+                        item._replace(contained=True)
+                        for item in self.watch((module_name, default), value)
+                    )
+        elif isinstance(source, SourceReturn):
             for callee in tuple(self.watch(source.callee, value)):
                 candidates.update(self._returned_values(callee, value))
         elif isinstance(source, SourceAwait):
@@ -684,17 +909,8 @@ class PythonSourceDemands:
             if source.owner.kind == "instance":
                 for callee in candidates:
                     self.watch(callee.value, value)
-                    parameters = self.parameters.get(callee.value)
-                    positional = parameters.positional if parameters is not None else ()
-                    vararg = parameters.vararg if parameters is not None else None
-                    parameter = positional[0] if positional else vararg
-                    if parameter is not None:
-                        formal = (callee.module, parameter)
-                        argument = source.owner._replace(contained=not positional)
-                        known = self.arguments.setdefault(formal, set())
-                        if argument not in known:
-                            known.add(argument)
-                            self.queue_value(formal)
+                    if callee.kind not in {"bound_class_method", "bound_static_method"}:
+                        self._bind_receiver(callee, source.owner)
         elif source is not None and source[-1] == "arg":
             candidates.update(self.arguments.get(value, ()))
         elif source is None or source[-1] == "Module":
@@ -718,7 +934,23 @@ class PythonSourceDemands:
             element = self.elements[value]
             for owner in element.origins:
                 for candidate in tuple(self.watch((module_name, owner), value)):
-                    if candidate.contained:
+                    if element.protocol in {
+                        PythonElementProtocol.CLASS_METHOD,
+                        PythonElementProtocol.STATIC_METHOD,
+                    }:
+                        candidates.add(
+                            candidate._replace(
+                                kind="class_descriptor"
+                                if element.protocol
+                                == PythonElementProtocol.CLASS_METHOD
+                                else "static_descriptor"
+                            )
+                        )
+                    elif candidate.contained:
+                        # Exposed provenance is transitive may-containment, not
+                        # an exact container depth. A selector can yield the
+                        # value itself or another container still holding it.
+                        candidates.add(candidate)
                         candidates.add(candidate._replace(contained=False))
                     else:
                         match element.protocol:
@@ -745,6 +977,13 @@ class PythonSourceDemands:
                                         asynchronous=element.protocol
                                         == PythonElementProtocol.ASYNC_ITERATE,
                                     )
+                                )
+                            case (
+                                PythonElementProtocol.CLASS_METHOD
+                                | PythonElementProtocol.STATIC_METHOD
+                            ):
+                                raise AssertionError(
+                                    "descriptor construction is handled before selection"
                                 )
                             case _ as impossible:
                                 assert_never(impossible)
@@ -838,7 +1077,12 @@ class PythonSourceDemands:
                 normalized = normalize_stdlib_module_name(imported)
                 if imported not in self.modules and normalized in self.modules:
                     imported = normalized
-                for candidate in tuple(self.watch((imported, None), value)):
+                imported_candidates = (
+                    self.watch((imported, None), value)
+                    | self.watch(("", SourceCacheItem(imported)), value)
+                    | self.watch(("", SourceCacheItem(None, True)), value)
+                )
+                for candidate in tuple(imported_candidates):
                     if binding.attribute in {None, "*"}:
                         candidates.add(candidate)
                     else:
@@ -888,6 +1132,8 @@ class PythonSourceDemands:
         keywords = dict(parameters.keywords)
         for name, origins, exposed in call.arguments:
             if isinstance(name, int):
+                if callee.kind == "bound_class_method":
+                    name += 1
                 targets = (
                     ((parameters.positional[name], False),)
                     if name < len(parameters.positional)
@@ -951,7 +1197,10 @@ class PythonSourceDemands:
     def _returned_values(
         self, callee: SourceCandidate, user: SourceValue
     ) -> set[SourceCandidate]:
-        if callee.identity is not None or callee.kind == "resumable":
+        if callee.identity is not None or callee.kind in {
+            "resumable",
+            "class_descriptor",
+        }:
             return set()
         self.watch(callee.value, user)
         if self._function_kind(callee) != FunctionKind.SYNC:
