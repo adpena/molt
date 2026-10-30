@@ -92,18 +92,15 @@ second JUnit parser or uncorrected review-v2 behavior would duplicate authority.
 - [Chromium sheriffs](https://www.chromium.org/developers/tree-sheriffs/) and
   [Sheriff-o-Matic](https://chromium.googlesource.com/chromium/src.git/+/28cd42b49b5f93a409d6daf04e8258d569e8ff47/docs/sheriff.md#sheriff_o_matic)
   group actionable failures for owners; proposed ledger edits serve that role.
-- [LLVM developer policy](https://www.llvm.org/docs/DeveloperPolicy.html#buildbots)
-  uses post-commit, platform-specific builders and author notification; retain
-  commit/parent identity instead of attributing every red to the latest author.
-- [Google TAP culprit finding](https://research.google.com/pubs/archive/45794.pdf)
-  motivates continuous postsubmit and narrowed failure investigation; no culprit
-  claim follows from a single failing run.
+- [Observed inputs and content identity](observed_inputs.md) owns the
+  postsubmit role and its prior art (TAP, LLVM). Here a red keeps its commit and
+  parent identity instead of blaming the latest author, and no culprit claim
+  follows from a single failing run.
 - [Rust bors](https://forge.rust-lang.org/infra/docs/bors.html) separates merge
   ownership; [crater](https://github.com/rust-lang/crater) compares explicit
   experiments and records platform limitations. The farm does not own landing.
 - [Bazel repository cache and distdir](https://bazel.build/run/build#repository-cache)
-  reuse hash-identified downloads; [remote execution](https://bazel.build/remote/rbe)
-  distinguishes remote work from cache hits. A retained log is not a fresh proof.
+  reuse hash-identified downloads, as the seeded archives do.
 - The owner's [Spawn write-up](https://x.com/jsnnsa/status/2115623382721126826)
   (2026-10-29 dispatch: trunk every 15 minutes, fix-forward, judges) informs
   Stage 2's bounded cadence and routing. The original URL was located through a

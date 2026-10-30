@@ -453,9 +453,10 @@ To test Tier 1:
 A landing runs every test file that depends on a changed path.
 `tools/test_dependency_graph.py` derives the relation from the tracked sources
 of the candidate commit; `GateConfig.select` (`tools/molt_dev_policy.py`) runs
-each selected file under its own proof cell. Prior art: Pants dependency
-inference (imports, string assets, conftest files), Bazel
-`rdeps(universe, set)`, Buck2's target determinator and pytest-testmon.
+each selected file under its own proof cell. This static relation is today's
+selection; [observed inputs and content identity](../../../design/observed_inputs.md)
+owns the selection and reuse rules and their prior art, and replaces it with
+observed reads.
 
 - **Imports.** Every `import` outside `if TYPE_CHECKING:`, literal
   `importlib.import_module` names, and (in a test file) dotted names it patches

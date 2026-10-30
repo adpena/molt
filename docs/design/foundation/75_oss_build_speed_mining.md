@@ -39,9 +39,10 @@ M05/M07/M09/M12).
 
 ## 0. What this doc is (and the anti-duplication guard)
 
-This is the **evidence + ranking layer** under doctrine 74. Doctrine 74 states
-the *laws* (content-addressed, failure-resilient, config-lattice, attested). This
-doc mines the OSS state of the art and maps each lever onto **Molt's attested
+This is the **evidence + ranking layer** under
+[observed_inputs.md](../observed_inputs.md), which owns the reuse rules (one
+content identity, observed inputs, two-level keys, failure keeps progress,
+attestation). This doc mines the OSS state of the art and maps each lever onto **Molt's attested
 per-iteration costs (§1)** AND **Molt's already-landed build machinery (§7)**,
 so no lever below re-invents something the tree already has.
 
@@ -66,7 +67,7 @@ or a daemon." It is two precise gaps:
    *frontend* module graph + analysis resident with fine-grained invalidation.
 
 Nothing here was built or measured this session. Every "expected win" is a
-**hypothesis to gate** (M05/74 law 4): attach a before/after wall attestation
+**hypothesis to gate** (M05; attestation, invariant 6): attach a before/after wall attestation
 before claiming any of it landed. A cache/profile that "exists but cold-starts"
 is a FAILING one (the M55 trap).
 
@@ -106,7 +107,7 @@ Effort S/M/L. Risk = correctness/regression risk. "Status" flags whether the
 
 ## 3. Top-5 do-next (concrete first steps)
 
-Ordered by leverage. Each is a hypothesis with an attestation gate (74 law 4).
+Ordered by leverage. Each is a hypothesis with an attestation gate (invariant 6).
 
 ### DO-1 — superseded profile and reuse recommendation
 
@@ -154,7 +155,7 @@ edit re-codegens only changed functions of the ~95s `backend_subprocess_compile`
 facts + config-lattice node + tooling fingerprint — exactly as Turborepo/Buck2
 hash `cmd + all inputs + upstream hashes` [8][9] (a missing input = silent stale
 codegen, the M34/M36 class). Add `{key, hit|miss, wall}` lines and a hit-rate
-gate (74 law 4).
+gate (invariant 6).
 
 ### DO-4 (landed, then superseded) — dev wasm-opt at `-O1`
 The build-intent resolver selected non-converging `O1` for dev and the
@@ -260,11 +261,12 @@ Verified against the worktree tree at `origin/main` HEAD `d4888f7103`:
   that policy and explicit workspace/hot-crate optimization settings. See
   [Cargo workspace truth custody](../../spec/areas/tooling/0001-toolchains.md#cargo-workspace-truth-custody)
   for the current authority and the separate shipped-runtime policies.
-- **Config-lattice reuse + stable dep-cache — LANDED (opt-in).** V1
+- **Single runtime-wasm compile + stable dep-cache — LANDED.** V1
   (c1ff76bd7d/f21164c7e6 single combined compile, now the sole split-runtime
-  `both` producer with no dual-compile kill switch/retry), V2 (c13e2e216f stable dep-cache
-  default-on for iteration profiles), V3 (0ac15702df `MOLT_BUILD_REUSE_COMPATIBLE`
-  config-lattice reuse) per CLAIMS BUILD-DEDUP-B rows.
+  `both` producer with no dual-compile kill switch/retry) and V2 (c13e2e216f
+  stable dep-cache default-on for iteration profiles), per CLAIMS
+  BUILD-DEDUP-B rows. V3 config-lattice reuse (0ac15702df) was removed by
+  9d0e03a5f7: runtime WASM generations pin exact identity.
 - **Runtime wasm profile resolver — LANDED.** `src/molt/cli/runtime_build.py`
   `_resolve_wasm_cargo_profile`: precedence = explicit `MOLT_WASM_CARGO_PROFILE`
   → `MOLT_RUNTIME_BUILD_PROFILE` (iteration knob, e.g. `dev-fast`) → default
