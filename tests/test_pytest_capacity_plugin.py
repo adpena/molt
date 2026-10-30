@@ -64,12 +64,14 @@ def test_auto_workers_fit_the_declared_unit_in_memory(tmp_path: Path) -> None:
     assert _workers(tmp_path, "--molt-worker-memory-gb=1000000") == 1
 
 
-def test_auto_workers_are_bounded_by_the_cpus_the_process_may_use(
-    tmp_path: Path,
-) -> None:
-    # A unit too small to matter leaves the CPU count as the bound.
-    assert _workers(tmp_path, "--molt-worker-memory-gb=0.0001") == (
-        host_capacity.cpu_count()
+def test_auto_workers_are_bounded_by_the_cpus_the_process_may_use(monkeypatch) -> None:
+    # Inspect the actual selection without launching one worker per host CPU.
+    # The bounded-memory and explicit-count cases below exercise child wiring.
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+    config = SimpleNamespace(getoption=lambda name: 0.0001)
+    assert (
+        pytest_capacity_plugin.pytest_xdist_auto_num_workers(config)
+        == host_capacity.cpu_count()
     )
 
 

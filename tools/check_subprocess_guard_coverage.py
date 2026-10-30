@@ -174,6 +174,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded cleanup targets only the child this adversarial reader-start oracle created",
     ),
     AllowedRawSubprocessUse(
+        "tests/test_molt_accel_client.py",
+        "test_dead_worker_buffered_stdin_cleanup_preserves_replacement",
+        "process.terminate",
+        "models a worker that dies mid-send by stopping only the stub child the client under test spawned; "
+        "the unreaped Popen handle pins that child, and the guard's verified kill refuses its own process group",
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_molt_dev.py",
         "test_detached_invalid_ack_retains_parent_use_after_exception_gc",
         "process.terminate",

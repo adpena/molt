@@ -32,7 +32,7 @@ from tools.git_identity import immutable_git_environment, require_git_object_id
 
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
-SCHEMA = "molt.integration-controller.v1"
+SCHEMA = "molt.integration-controller.v2"
 # The driver's repository modules, the data they read from the checkout they
 # run from (``config``: tool release pins and policy tables, 1.9 MB), and the
 # Python startup source, project, lock and interpreter version that define its
@@ -63,7 +63,19 @@ class Controller:
 
 
 def controllers_root(common_dir: Path) -> Path:
-    return common_dir / "molt" / "controllers"
+    from molt.dx import storage_path
+
+    return storage_path(common_dir.parent, "controllers", common_dir=common_dir)
+
+
+def controller_common_dir(root: Path) -> Path:
+    """Read the source's repository binding, independent of payload placement."""
+    controller = controller_for_source(root)
+    if controller is None:
+        raise DriverError(f"no controller source at {root}")
+    return Path(
+        json.loads((root / RECORD_NAME).read_text(encoding="utf-8"))["common_dir"]
+    )
 
 
 def source_lock_path(root: Path) -> Path:
@@ -74,7 +86,9 @@ def source_lock_path(root: Path) -> Path:
     return root.parent.parent / "controller-use" / f"{key}.lock"
 
 
-def controller_for_source(root: Path) -> Controller | None:
+def controller_for_source(
+    root: Path, *, allow_staged: bool = False
+) -> Controller | None:
     """Admit an existing physical controller; ordinary checkouts return None."""
     root = root.resolve()
     marker = root / RECORD_NAME
@@ -84,16 +98,35 @@ def controller_for_source(root: Path) -> Controller | None:
         record = json.loads(marker.read_text(encoding="utf-8"))
         if (
             not isinstance(record, dict)
-            or set(record) != {"schema", "key", "commit"}
+            or set(record) != {"schema", "key", "commit", "common_dir", "state"}
             or record["schema"] != SCHEMA
-            or record["key"] != root.name
-            or re.fullmatch(r"[0-9a-f]{32}", root.name) is None
+            or not isinstance(record["key"], str)
+            or re.fullmatch(r"[0-9a-f]{32}", record["key"]) is None
+            or record["state"] not in {"preparing", "ready"}
+            or not (
+                (record["key"] == root.name and record["state"] == "ready")
+                or (
+                    allow_staged
+                    and root.name.startswith(f"{STAGING_PREFIX}{record['key']}-")
+                )
+            )
+            or not isinstance(record["common_dir"], str)
+            or not Path(record["common_dir"]).is_absolute()
         ):
             raise ValueError("invalid controller source record")
+        from molt.custody_layout import storage_rule, repository_storage_key
+
+        relative = storage_rule("controllers").relative
+        if len(root.parents) <= len(relative) + 1 or root != root.parents[
+            len(relative) + 1
+        ].joinpath(
+            *relative, repository_storage_key(Path(record["common_dir"])), root.name
+        ):
+            raise ValueError("controller source is outside its typed storage layout")
         require_git_object_id(record["commit"], label="controller source commit")
     except (OSError, ValueError, TypeError) as error:
         raise DriverError(f"cannot admit controller source {root}: {error}") from error
-    return Controller(key=root.name, root=root)
+    return Controller(key=record["key"], root=root)
 
 
 def _admit_source_use(controller: Controller, handle: _FileLockHandle) -> None:
@@ -146,7 +179,7 @@ def controller_source(
     )
     try:
         if not (root / RECORD_NAME).is_file():
-            _extract(repo, commit, root, key)
+            _extract(repo, commit, root, key, common_dir=common_dir)
         controller = Controller(key=key, root=root)
         _admit_source_use(controller, handle)
         yield controller
@@ -195,16 +228,29 @@ def controller_key(repo: Path, commit: str) -> str:
     return digest.hexdigest()[:32]
 
 
-def _extract(repo: Path, commit: str, root: Path, key: str) -> None:
+def _extract(
+    repo: Path, commit: str, root: Path, key: str, *, common_dir: Path
+) -> None:
+    from molt.disk_capacity import require_storage_capacity
+
+    require_storage_capacity((root,), kind="controllers")
     archive = _git_bytes(
         repo, "archive", "--format=tar", commit, "--", *CONTROLLER_PATHS
     )
     root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f"{STAGING_PREFIX}{key}-", dir=root.parent))
     try:
+        record = {
+            "schema": SCHEMA,
+            "key": key,
+            "commit": commit,
+            "common_dir": str(common_dir.resolve()),
+            "state": "preparing",
+        }
+        (staging / RECORD_NAME).write_text(json.dumps(record) + "\n", encoding="utf-8")
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as members:
             members.extractall(staging, filter="data")
-        record = {"schema": SCHEMA, "key": key, "commit": commit}
+        record["state"] = "ready"
         (staging / RECORD_NAME).write_text(json.dumps(record) + "\n", encoding="utf-8")
         try:
             os.rename(staging, root)

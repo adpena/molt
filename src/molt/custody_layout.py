@@ -19,10 +19,16 @@ import os
 import re
 import stat
 import tempfile
+import sys
+from dataclasses import dataclass
+from typing import Literal, assert_never, get_args
 from functools import cache
 from pathlib import Path
+from collections.abc import Mapping
 
-from molt.path_custody import host_path_is_within, resolved_host_path_key
+# Relative: the release bootstrap admits this module in memory before any
+# `molt` package is importable (packaging/bootstrap.py).
+from .path_custody import host_path_is_within, resolved_host_path_key
 
 MAIN_CHECKOUT_DIRNAME = "molt-src"
 WORKTREES_DIRNAME = "worktrees"
@@ -33,6 +39,390 @@ BUNDLES_DIRNAME = "drift-bundles"
 # The SPRAWL threshold (M67): at most this many live worktrees, and `lane
 # start` refuses a lane that would pass it (owner, 2026-10-22: 12).
 LIVE_WORKTREE_LIMIT = 12
+
+# Storage identity is closed here, including the existing checkout-state subset.
+# Layout consumers project this authority; they must not register private roots.
+CheckoutStateKind = Literal[
+    "cargo-target",
+    "uv-environment",
+    "python-environment",
+    "pytest-cache",
+    "hypothesis-home",
+    "build-control",
+    "scratch",
+]
+EvidenceClass = Literal[
+    "lane-evidence",
+    "integration-receipts",
+    "diagnostics",
+    "benchmark-evidence",
+    "scratch-evidence",
+    "sccache-server-evidence",
+]
+ToolchainStateKind = Literal["toolchains"]
+ProviderCacheKind = Literal["pip-cache", "ruff-cache"]
+PackageEnvironmentKind = Literal["browser-environment", "edgebox-environment"]
+OwnedStateKind = Literal[
+    CheckoutStateKind, ToolchainStateKind, ProviderCacheKind, PackageEnvironmentKind
+]
+ReplacedStorageClass = Literal[
+    "replaced-controllers",
+    "replaced-git-landing-sandbox",
+    "replaced-family-landing-sandbox",
+    "replaced-integration-receipts",
+    "replaced-lane-evidence",
+    "replaced-compile-cache",
+    "replaced-temporary",
+]
+StorageClass = Literal[
+    CheckoutStateKind,
+    EvidenceClass,
+    "compile-cache",
+    "uv-cache",
+    ProviderCacheKind,
+    PackageEnvironmentKind,
+    "sccache",
+    ToolchainStateKind,
+    "controllers",
+    "landing-sandbox",
+    "coordination",
+    "temporary",
+    "products",
+    "installation",
+    "run-control",
+    "backend-sockets",
+    "external-provider",
+    ReplacedStorageClass,
+]
+StorageVolume = Literal["artifact", "checkout", "user-home", "host-temp"]
+
+
+def legacy_host_temp_roots(environment: Mapping[str, str]) -> tuple[Path, ...]:
+    """Host defaults replaced by DX scratch, independent of rebound TMPDIR.
+
+    Arbitrary historical operator overrides require --legacy-temp-root. These
+    are host storage coordinates; they never describe a compilation target.
+    """
+    if sys.platform == "darwin":
+        # Darwin's public <unistd.h> _CS_DARWIN_USER_TEMP_DIR. CPython does
+        # not expose its name in confstr_names, but accepts the ABI constant.
+        selected = os.confstr(65537)
+        if selected is None:
+            raise ValueError("Darwin did not supply its user temp authority")
+        return (Path(selected).resolve(),)
+    if os.name == "nt":
+        local = environment.get("LOCALAPPDATA")
+        return () if not local else (Path(local) / "Temp",)
+    return (Path("/tmp"), Path("/var/tmp"))
+
+
+@dataclass(frozen=True)
+class Regenerable:
+    max_idle_s: float
+    # None retains the existing provider's age/pressure policy, without
+    # inventing a byte limit that its executor does not enforce.
+    max_bytes: int | None
+    keep_recent: int = 0
+
+
+@dataclass(frozen=True)
+class DurableEvidence:
+    # Above this size, payload belongs on the artifact volume. An index and
+    # coordination records remain at the original coordinate indefinitely.
+    checkout_bytes: int = 1024 * 1024
+    compact_after_s: float | None = None
+
+
+@dataclass(frozen=True)
+class ExternalProviderRetention:
+    """Provider policy is descriptive; it never grants Molt collection custody."""
+
+    cargo: str = "Cargo global-cache GC: 3 months downloaded, 1 month regenerable; disabled offline"
+    npm: str = "provider/user invokes npm cache verify; no automatic age collector"
+    rustup: str = (
+        "provider/user manages installed toolchains; rustup toolchain uninstall"
+    )
+
+
+@dataclass(frozen=True)
+class StorageRule:
+    volume: StorageVolume
+    owner: str
+    relative: tuple[str, ...]
+    retention: Regenerable | DurableEvidence | ExternalProviderRetention
+
+
+@dataclass(frozen=True)
+class StorageLocation:
+    """A resolved placement, including a provider's checkout-custody default."""
+
+    kind: StorageClass
+    path: Path
+    rule: StorageRule
+
+
+def storage_rule(kind: StorageClass) -> StorageRule:
+    """The volume, producer and retention of every Molt state class.
+
+    An added Literal without a policy fails ty's exhaustive match. Byte/idle
+    limits are defaults; existing cache/checkouts configuration remains the
+    policy override boundary. No evidence policy grants deletion authority.
+    """
+    gib = 1024**3
+    month = 30 * 86400.0
+    match kind:
+        case "external-provider":
+            return StorageRule("user-home", "provider", (), ExternalProviderRetention())
+        case "replaced-controllers":
+            return StorageRule(
+                "checkout",
+                "controller-source",
+                (".git", "molt", "controllers"),
+                DurableEvidence(compact_after_s=86400.0),
+            )
+        case "replaced-git-landing-sandbox":
+            return StorageRule(
+                "checkout",
+                "landing-queue",
+                (".git", "molt", "landing-sandbox"),
+                DurableEvidence(compact_after_s=86400.0),
+            )
+        case "replaced-family-landing-sandbox":
+            return StorageRule(
+                "checkout",
+                "landing-queue",
+                ("worktrees",),
+                DurableEvidence(compact_after_s=86400.0),
+            )
+        case "replaced-integration-receipts":
+            return StorageRule(
+                "checkout",
+                "landing-gates",
+                (".git", "molt-integrate"),
+                DurableEvidence(compact_after_s=3 * 86400.0),
+            )
+        case "replaced-lane-evidence":
+            return StorageRule(
+                "checkout",
+                "coordination-records",
+                ("logs", "agents"),
+                DurableEvidence(compact_after_s=3 * 86400.0),
+            )
+        case "replaced-compile-cache":
+            return StorageRule(
+                "user-home",
+                "cache-eviction",
+                (".cache", "molt"),
+                DurableEvidence(compact_after_s=month),
+            )
+        case "replaced-temporary":
+            return StorageRule(
+                "host-temp",
+                "legacy Molt writers",
+                (),
+                DurableEvidence(compact_after_s=6 * 3600.0),
+            )
+        case "cargo-target":
+            return StorageRule(
+                "artifact",
+                "cargo",
+                ("target", "checkouts"),
+                Regenerable(month, None),
+            )
+        case "uv-environment":
+            return StorageRule(
+                "artifact",
+                "checkout-provisioning",
+                ("uv-project-envs",),
+                Regenerable(month, None),
+            )
+        case "python-environment":
+            return StorageRule(
+                "artifact",
+                "checkout-provisioning",
+                ("build-environments", "development"),
+                Regenerable(month, None),
+            )
+        case "browser-environment":
+            return StorageRule(
+                "checkout",
+                "checkout-provisioning",
+                ("tools", "browser_asset_graph", "node_modules"),
+                Regenerable(month, gib),
+            )
+        case "edgebox-environment":
+            return StorageRule(
+                "checkout",
+                "checkout-provisioning",
+                (
+                    "examples",
+                    "edgebox",
+                    "packages",
+                    "edgebox-cloudflare",
+                    "node_modules",
+                ),
+                Regenerable(month, gib),
+            )
+        case "pytest-cache":
+            return StorageRule(
+                "artifact",
+                "pytest",
+                (SCRATCH_DIRNAME, "pytest-cache"),
+                Regenerable(month, None),
+            )
+        case "hypothesis-home":
+            return StorageRule(
+                "artifact",
+                "hypothesis",
+                (SCRATCH_DIRNAME, "hypothesis"),
+                Regenerable(month, None),
+            )
+        case "build-control":
+            return StorageRule(
+                "artifact",
+                "build-state-layout",
+                (SCRATCH_DIRNAME, "build-control"),
+                Regenerable(month, None),
+            )
+        case "scratch" | "temporary":
+            return StorageRule(
+                "artifact",
+                "run-context",
+                (SCRATCH_DIRNAME,),
+                Regenerable(3 * 86400.0, None),
+            )
+        case "compile-cache":
+            return StorageRule(
+                "artifact",
+                "cache-eviction",
+                (".molt_cache",),
+                Regenerable(month, 30 * gib),
+            )
+        case "uv-cache":
+            return StorageRule(
+                "artifact",
+                "uv cache prune",
+                (".uv-cache",),
+                Regenerable(month, 10 * gib),
+            )
+        case "pip-cache":
+            return StorageRule(
+                "artifact", "pip", (".pip-cache",), Regenerable(month, 2 * gib)
+            )
+        case "ruff-cache":
+            return StorageRule(
+                "artifact", "ruff", (".ruff-cache",), Regenerable(month, gib)
+            )
+        case "sccache":
+            return StorageRule(
+                "artifact", "sccache", (".sccache",), Regenerable(month, 10 * gib)
+            )
+        case "toolchains":
+            # Executable placement is a measured decision, independent of build
+            # outputs. DX's canonical_toolchain_root owns explicit overrides.
+            return StorageRule(
+                "checkout",
+                "tool-release provisioning",
+                ("target-root",),
+                Regenerable(month, 15 * gib),
+            )
+        case "controllers":
+            return StorageRule(
+                "artifact",
+                "controller-source",
+                ("molt-state", "controllers"),
+                Regenerable(86400.0, None, 4),
+            )
+        case "landing-sandbox":
+            return StorageRule(
+                "artifact",
+                "landing-queue",
+                ("worktrees",),
+                Regenerable(86400.0, None, 1),
+            )
+        case "scratch-evidence":
+            return StorageRule(
+                "artifact", "process guards", ("evidence", "scratch"), DurableEvidence()
+            )
+        case "sccache-server-evidence":
+            return StorageRule(
+                "artifact", "sccache server", ("sct",), DurableEvidence()
+            )
+        case "lane-evidence":
+            return StorageRule(
+                "artifact",
+                "coordination-records",
+                ("evidence", "lanes"),
+                DurableEvidence(compact_after_s=3 * 86400.0),
+            )
+        case "integration-receipts":
+            return StorageRule(
+                "artifact",
+                "landing-gates",
+                ("evidence", "integration"),
+                DurableEvidence(),
+            )
+        case "benchmark-evidence":
+            return StorageRule(
+                "artifact", "benchmark tools", ("bench", "results"), DurableEvidence()
+            )
+        case "diagnostics":
+            return StorageRule(
+                "artifact", "process/maintenance guards", ("logs",), DurableEvidence()
+            )
+        case "run-control":
+            return StorageRule(
+                "artifact",
+                "process/pytest guards",
+                (SCRATCH_DIRNAME,),
+                DurableEvidence(),
+            )
+        case "backend-sockets":
+            return StorageRule(
+                "checkout", "backend-daemon", (), Regenerable(7200, None)
+            )
+        case "coordination":
+            return StorageRule(
+                "checkout",
+                "coordination-records",
+                ("logs", "agents"),
+                DurableEvidence(),
+            )
+        case "products":
+            return StorageRule(
+                "artifact",
+                "product-store",
+                ("products",),
+                Regenerable(5 * 86400.0, None),
+            )
+        case "installation":
+            return StorageRule("checkout", "installer/user", (), DurableEvidence(0))
+        case _:
+            assert_never(kind)
+
+
+def storage_classes() -> tuple[StorageClass, ...]:
+    return get_args(StorageClass)
+
+
+# Historical checkout evidence is never a generic cleanup target. New payload
+# uses its external storage class; explicit checkout retirement archives these
+# old/source-local coordinates before removing their source checkout.
+CHECKOUT_EVIDENCE_PATHS: tuple[tuple[EvidenceClass, tuple[str, ...]], ...] = (
+    ("diagnostics", ("logs",)),
+    ("diagnostics", ("bench", "results")),
+    ("diagnostics", ("bench", "scoreboard", "host_calibration")),
+    ("diagnostics", ("tests", "harness", "reports")),
+    ("diagnostics", ("tmp",)),
+)
+
+
+def repository_storage_key(common_dir: Path) -> str:
+    return hashlib.sha256(os.fsencode(resolved_host_path_key(common_dir))).hexdigest()[
+        :16
+    ]
+
+
 # Lanes reuse the slot worktrees `<root>/worktrees/slot-01` to `slot-12`. A
 # released slot stays registered and detached, so the next lane inherits its
 # path-keyed Cargo target, sccache keys and checkout inputs warm (HF-491). A
@@ -130,6 +520,24 @@ def enclosing_checkouts(path: str | Path) -> tuple[Path, ...]:
     )
 
 
+def coordination_state_root(source: Path) -> Path:
+    """The existing coordination lock namespace must outlive linked source.
+
+    Named families already have an external custody root. An unconfigured
+    linked checkout uses its common Git custody instead of materializing
+    control files inside the checkout that retirement is removing.
+    """
+    selected = custody_root(source)
+    if selected == source:
+        try:
+            directories = git_directories(source)
+        except (OSError, ValueError, RuntimeError):
+            directories = None
+        if directories is not None and directories[0] != directories[1]:
+            selected = directories[1] / "molt"
+    return selected
+
+
 def custody_root(repo_root: str | Path) -> Path:
     """Return automatic custody without entering another source checkout."""
     root = Path(repo_root).expanduser().resolve()
@@ -161,7 +569,11 @@ def family_worktrees_root(main_checkout: str | Path) -> Path | None:
     return root.parent / WORKTREES_DIRNAME
 
 
-def landing_sandbox_path(primary_checkout: str | Path, common_dir: str | Path) -> Path:
+def landing_sandbox_path(
+    common_dir: str | Path,
+    *,
+    artifact: Path,
+) -> Path:
     """One repository's integration source, outside every other checkout.
 
     Queue control remains in the Git common directory. Its source must not
@@ -169,16 +581,9 @@ def landing_sandbox_path(primary_checkout: str | Path, common_dir: str | Path) -
     The common-directory identity keeps unrelated repositories distinct, even
     when they share an external worktree parent or use separate Git metadata.
     """
-    primary = Path(primary_checkout).expanduser().resolve()
     common = Path(common_dir).expanduser().resolve()
-    custody = custody_root(primary)
-    # A plain clone owns repo-local artifacts, but another source worktree
-    # cannot live there. Nested checkouts have already promoted custody beyond
-    # their enclosing source owners.
-    external = custody.parent if custody == primary else custody
-    repository_key = hashlib.sha256(
-        os.fsencode(resolved_host_path_key(common))
-    ).hexdigest()[:16]
+    external = artifact.resolve(strict=False)
+    repository_key = repository_storage_key(common)
     candidate = external / WORKTREES_DIRNAME / f"landing-sandbox-{repository_key}"
     selected = candidate.resolve(strict=False)
     if selected != candidate:

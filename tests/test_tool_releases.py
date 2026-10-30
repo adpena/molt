@@ -269,6 +269,21 @@ def test_provisioning_installs_and_attests_only_a_byte_exact_download(
     assert attestation["schema"] == tool_releases.TOOL_ATTESTATION_SCHEMA
     assert attestation["executable_sha256"] == discovery.executable_sha256
     assert tool_releases.discover_tool(release, toolchain_root) == discovery
+    from molt.checkout_state import (
+        read_checkout_owner,
+        CheckoutOwner,
+        checkout_state_retirement,
+        toolchain_state_use,
+    )
+
+    assert read_checkout_owner(discovery.prefix) == CheckoutOwner(
+        toolchain_root, "toolchains"
+    )
+    with toolchain_state_use((discovery.prefix,)):
+        with checkout_state_retirement(discovery.prefix) as available:
+            assert not available
+    with checkout_state_retirement(discovery.prefix) as available:
+        assert available
     assert (
         tool_releases.provision_tool(release, toolchain_root, downloads=downloads)
         == discovery

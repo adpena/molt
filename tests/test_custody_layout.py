@@ -230,15 +230,19 @@ def test_landing_source_is_external_and_repository_scoped(
     primary.mkdir(parents=True)
     _git(primary, "init", "-q")
     common = primary / ".git"
-    selected = custody_layout.landing_sandbox_path(primary, common)
+    selected = custody_layout.landing_sandbox_path(common, artifact=primary.parent)
     assert not selected.is_relative_to(primary)
     assert custody_layout.enclosing_checkouts(selected) == ()
-    assert selected == custody_layout.landing_sandbox_path(primary, common)
+    assert selected == custody_layout.landing_sandbox_path(
+        common, artifact=primary.parent
+    )
 
     other = tmp_path / "other.git"
     other.mkdir()
     _git(other, "init", "-q", "--bare")
-    assert selected != custody_layout.landing_sandbox_path(primary, other)
+    assert selected != custody_layout.landing_sandbox_path(
+        other, artifact=primary.parent
+    )
 
 
 def test_landing_source_escapes_an_enclosing_checkout(git_checkout: Path) -> None:
@@ -247,7 +251,9 @@ def test_landing_source_escapes_an_enclosing_checkout(git_checkout: Path) -> Non
     nested = git_checkout / "nested" / "molt-src"
     nested.mkdir(parents=True)
     _git(nested, "init", "-q")
-    selected = custody_layout.landing_sandbox_path(nested, nested / ".git")
+    selected = custody_layout.landing_sandbox_path(
+        nested / ".git", artifact=git_checkout.parent
+    )
     assert not selected.is_relative_to(git_checkout)
     assert custody_layout.enclosing_checkouts(selected) == ()
 
@@ -256,7 +262,9 @@ def test_landing_source_escapes_an_enclosing_checkout(git_checkout: Path) -> Non
 def test_landing_source_refuses_aliases_into_another_source(
     git_checkout: Path, alias: str
 ) -> None:
-    selected = custody_layout.landing_sandbox_path(git_checkout, git_checkout / ".git")
+    selected = custody_layout.landing_sandbox_path(
+        git_checkout / ".git", artifact=git_checkout.parent
+    )
     if alias == "source":
         selected.parent.mkdir(parents=True)
         link, target = selected, git_checkout
@@ -285,7 +293,9 @@ def test_landing_source_refuses_aliases_into_another_source(
     except OSError as exc:
         pytest.skip(f"host cannot create directory symlinks: {exc}")
     with pytest.raises(ValueError, match="symlink|inside another source checkout"):
-        custody_layout.landing_sandbox_path(git_checkout, git_checkout / ".git")
+        custody_layout.landing_sandbox_path(
+            git_checkout / ".git", artifact=git_checkout.parent
+        )
 
 
 @pytest.mark.parametrize(
