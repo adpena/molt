@@ -5895,8 +5895,7 @@ import_name = "del_attr_object"
 
 [[lir_runtime_call]]
 variant = "Iter"
-import_name = "iter"
-boxed_operand_count = 1
+contract_kind = "iter"
 
 [[lir_runtime_call]]
 variant = "IterNext"
@@ -6401,7 +6400,6 @@ kinds = [
   "is_generator",
   "is_native_awaitable",
   "is_callable",
-  "iter",
   "aiter",
   "iter_next",
   "anext",
@@ -6469,7 +6467,6 @@ kinds = [
   "list_insert",
   "dict_get",
   "dict_str_int_inc",
-  "dict_set",
   "dict_setdefault",
   "dict_update_missing",
   "callargs_push_kw",

@@ -1026,6 +1026,9 @@ def load_table(table_path: Path = TABLE) -> dict:
             + ", ".join(sorted(unknown_class_definition_carriers))
         )
 
+    from .runtime_calls import runtime_call_rows
+
+    runtime_call_rows(data)
     return data
 
 

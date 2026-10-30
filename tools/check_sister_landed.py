@@ -56,7 +56,7 @@ bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 from tools import claims_status as cs  # noqa: E402
 from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio  # noqa: E402

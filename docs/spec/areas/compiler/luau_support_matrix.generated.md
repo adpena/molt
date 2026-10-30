@@ -10,9 +10,9 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 
 ## Summary
 
-- `compile-error`: `85`
-- `implemented-exact`: `193`
-- `implemented-target-limited`: `16`
+- `compile-error`: `84`
+- `implemented-exact`: `191`
+- `implemented-target-limited`: `19`
 - `not-admitted`: `242`
 - `total`: `536`
 
@@ -193,7 +193,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `dict_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dict_pop` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_popitem` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `dict_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `dict_set` | `implemented-target-limited` | Runtime-call contract `molt_dict_set`. Requires checked deterministic dict storage; insertion bypasses assignment hooks and returns the same dict. |
 | `dict_setdefault` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_setdefault_empty_list` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_str_int_inc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -275,7 +275,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `get_attr_name_default` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_attr_special_obj` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `get_item` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `get_iter` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
+| `get_iter` | `implemented-target-limited` | Runtime-call contract `molt_iter_checked`. Requires a proven deterministic scalar/container carrier and the Python numeric source type; unknown carriers are rejected. |
 | `getframe` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `goto` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `gpu_barrier` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -338,7 +338,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `is_pending` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `isinstance` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `issubclass` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `iter` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `iter` | `implemented-target-limited` | Runtime-call contract `molt_iter_checked`. Requires a proven deterministic scalar/container carrier and the Python numeric source type; unknown carriers are rejected. |
 | `iter_next` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `iter_next_unboxed` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `jump` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |

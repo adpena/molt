@@ -51,7 +51,7 @@ DATED_PLAN_NAME_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-.*plan.*\.md$", re.IGNORECASE
 )
 DOCUMENT_SUFFIXES = frozenset({".md", ".rst", ".txt"})
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 
 class PlanningDocumentRefusal(enum.Enum):

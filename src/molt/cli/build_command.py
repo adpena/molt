@@ -80,22 +80,42 @@ def _cpu_model() -> str:
         return platform.processor() or "unknown-cpu"
 
 
+def _wasm_cutoff_request(request: BuildRequest) -> bool:
+    """Whether a WASM request publishes only the family its record verifies.
+
+    The default ``wasm`` target qualifies, unlinked or linked under the
+    derived ``*_linked.wasm`` name: the module, linked module, deployment
+    manifest and optimizer attestation are the products the result reports.
+    A JSON request has no typed WASM result to replay; a split runtime, a
+    precompiled image or a named linked output publishes outputs the record
+    does not select.
+    """
+    return (
+        request.target is TargetKind.WASM
+        and not request.json_output
+        and not request.split_runtime
+        and not request.precompile
+        and request.linked_output is None
+    )
+
+
 def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
     """(key, record path) when this request may reuse a recorded build.
 
-    Only a native binary build with the cache enabled qualifies. Its actual
-    output selection comes from the recorded layout, never from a guessed
-    entry name or project root. A request that publishes anything beyond the
-    binary, or reads an input no authority reports to the build record, never
-    cuts off.
+    A native binary build or a qualifying WASM build (`_wasm_cutoff_request`)
+    with the cache enabled qualifies. Its actual output selection comes from
+    the recorded layout, never from a guessed entry name or project root. A
+    request that publishes anything beyond its recorded product family, or
+    reads an input no authority reports to the build record, never cuts off.
     """
     capabilities = request.capabilities
+    native = request.target is TargetKind.NATIVE
     if (
-        request.target is not TargetKind.NATIVE
+        not (native or _wasm_cutoff_request(request))
         or not request.cache
-        or request.emit not in (None, "bin")
+        or request.emit not in ((None, "bin") if native else (None,))
         or request.emit_ir is not None
-        or request.linked
+        or (native and request.linked)
         or request.linked_output is not None
         or request.split_runtime
         or request.snapshot
@@ -154,7 +174,7 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
     binary is projected separately as one product file."""
     from molt import dx, memory_guard_paths, temporary_artifacts
     from molt.cli import runtime_paths
-    from molt.cli.build_output_layout import _default_build_base
+    from molt.cli.build_output_layout import _default_build_base, _wasm_runtime_root
     from molt.cli.project_roots import _find_project_root
     from molt.source_root import compiler_source_root
 
@@ -178,6 +198,15 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         runtime_paths._cargo_target_root(compiler_root),
         memory_guard_paths.memory_guard_state_root(compiler_root, os.environ),
         temporary_artifacts.scratch_root(compiler_root, os.environ),
+        # The generation stores of Rust products and runtime WASM pairs hold
+        # immutable generations named by the identity the recorded inputs
+        # select, plus a retention ledger and lock that any checkout's build
+        # rewrites. Without an artifact root they lie inside the Cargo targets
+        # excluded above.
+        dx.product_store_dir(project_root, os.environ),
+        dx.product_store_dir(compiler_root, os.environ),
+        _wasm_runtime_root(project_root),
+        _wasm_runtime_root(compiler_root),
     ]
     if os.environ.get("MOLT_CACHE"):
         roots.append(Path(os.environ["MOLT_CACHE"]))
@@ -203,7 +232,9 @@ def _record_build(
     try:
         output = ledger.output_selection
         if output is None:
-            return "native output selection was not reported"
+            return "output selection was not reported"
+        if request.target is not TargetKind.NATIVE and ledger.products is None:
+            return "WASM products were not reported"
         if request.json_output and ledger.result is None:
             return (
                 ledger.refusals[0]
@@ -211,7 +242,7 @@ def _record_build(
                 else "native JSON result was not reported"
             )
         if output.output != request.output:
-            return "native output selection differs from the build request"
+            return "output selection differs from the build request"
         _report_executed_code(ledger)
         capabilities = request.capabilities
         if isinstance(capabilities, str):
@@ -232,7 +263,10 @@ def _record_build(
                     if claim.kind is _build_record.BuildClaimKind.PRODUCT
                 ),
             ),
-            published_output=output.path,
+            published_outputs=(
+                output.path,
+                *(() if ledger.products is None else ledger.products.paths()),
+            ),
         )
         return _build_record.write_record(record, key, ledger, output=output)
     except Exception as error:  # noqa: BLE001 - the build already succeeded
@@ -267,7 +301,8 @@ def _with_early_cutoff(
                 assert change.result is not None
                 return _emit_reused_native_build_result(change.result)
             _success(
-                f"Successfully built {change.output} (inputs unchanged)",
+                f"Successfully built {change.consumer or change.output} "
+                "(inputs unchanged)",
                 file=sys.stderr,
             )
             return 0

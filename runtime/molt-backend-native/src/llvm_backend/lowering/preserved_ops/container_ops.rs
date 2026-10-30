@@ -13,7 +13,6 @@ define_llvm_op_kinds!(
     OpKind::TupleNew,
     OpKind::SetNew,
     OpKind::FrozensetNew,
-    OpKind::Iter,
     OpKind::UnpackSequence,
 );
 
@@ -63,16 +62,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // constructor and in-place construction mutator share the same
                 // failure/ownership protocol as dict and set literals.
                 self.emit_build_frozenset(op);
-                true
-            }
-
-            OpKind::Iter => {
-                if op.operands.len() != 1 {
-                    return false;
-                }
-                let abi = runtime_boxed_abi("molt_iter_checked", 1)
-                    .expect("molt_iter_checked must have a generated boxed ABI");
-                self.emit_boxed_runtime_call(op, abi);
                 true
             }
 

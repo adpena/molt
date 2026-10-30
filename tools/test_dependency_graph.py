@@ -61,7 +61,7 @@ ROOT = bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 # Bump when the extracted facts change shape or meaning; cached facts of an
 # older scanner are never reused.

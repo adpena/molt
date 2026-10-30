@@ -37,7 +37,7 @@ _BINARY_NAME = "molt-ir-verify.exe" if os.name == "nt" else "molt-ir-verify"
 _BUILD_LOCK = threading.Lock()
 _BINARY_READY: set[Path] = set()
 _PROCESS_LOCAL_LOCK = threading.Lock()
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_IR_VERIFY")
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 
 

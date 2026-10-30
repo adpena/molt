@@ -51,7 +51,7 @@ TMP = scratch_dir(ROOT, "startup_bench")
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_BENCH")
 
 PROBES = {
     "hello": 'print("hello startup")\n',

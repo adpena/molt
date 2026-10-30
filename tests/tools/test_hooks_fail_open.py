@@ -24,7 +24,7 @@ import tools.hooks._common as common  # noqa: E402
 import tools.hooks.session_digest as sd  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 def _raise():

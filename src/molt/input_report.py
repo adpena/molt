@@ -44,6 +44,7 @@ class WorkerFactKind(StrEnum):
     PROBE = "probe"
     REFUSE = "refuse"
     BUILD_OUTPUT = "build_output"
+    BUILD_PRODUCTS = "build_products"
     BUILD_CLAIM = "build_claim"
     BUILD_RESULT = "build_result"
     READ_STARTED = "read_started"
@@ -125,6 +126,8 @@ class FactSink(Protocol):
     def observe(self, entry: tuple[str, str]) -> None: ...
 
     def build_output(self, selection: object) -> None: ...
+
+    def build_products(self, products: object, /) -> None: ...
 
     def build_claim(self, claim: object, /) -> None: ...
 
@@ -422,6 +425,8 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
     elif kind is WorkerFactKind.BUILD_OUTPUT:
         _, selection = entry
         sink.build_output(selection)
+    elif kind is WorkerFactKind.BUILD_PRODUCTS:
+        sink.build_products(entry[1])
     elif kind is WorkerFactKind.BUILD_CLAIM:
         sink.build_claim(entry[1])
     elif kind is WorkerFactKind.BUILD_RESULT:
@@ -685,6 +690,20 @@ def report_build_output(selection: Mapping[str, str | None]) -> None:
         sink.build_output(dict(selection))
     else:
         _worker_log([WorkerFactKind.BUILD_OUTPUT, dict(selection)])
+
+
+def report_build_products(consumer: str, products: Mapping[str, str]) -> None:
+    """Report the files a successful build published beside its selected output.
+
+    ``products`` maps each result artifact role to its absolute path, as the
+    result promises them to the user; ``consumer`` is the one a user runs. A
+    recorded build is current only while every product keeps its token.
+    """
+    payload = {"consumer": consumer, "products": dict(products)}
+    if _SINK is not None:
+        _SINK.build_products(payload)
+    else:
+        _worker_log([WorkerFactKind.BUILD_PRODUCTS, payload])
 
 
 def report_build_claim(claim: Mapping[str, object]) -> None:

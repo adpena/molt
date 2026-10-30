@@ -57,7 +57,7 @@ from tools.proof_queue_pkg import (
 from tools.proof_queue_pkg import diagnostic_engine, diagnostic_model
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 
 def _live_custody_instability(

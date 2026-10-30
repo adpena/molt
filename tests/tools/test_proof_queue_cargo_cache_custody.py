@@ -2646,7 +2646,7 @@ def test_workspace_real_cargo_warm_and_declared_edits(
         try:
             result = guarded_completed_process(
                 inputs["command"],
-                prefix="MOLT_QUEUE_REUSE_ORACLE",
+                prefix="MOLT_PYTEST",
                 cwd=source,
                 env=lease.environment,
                 timeout=30,

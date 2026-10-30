@@ -232,7 +232,7 @@ class BuildPythonAdmission:
         from molt.temporary_artifacts import OwnedTemporaryDirectory
 
         self._input_log_dir = input_report.worker_log_dir()
-        self._executor = process_guard.source_command_executor("MOLT_BUILD_PYTHON")
+        self._executor = process_guard.source_command_executor("MOLT_BUILD")
         self._stderr = tempfile.TemporaryFile(mode="w+b")
         self._verifier_prefix_owner = OwnedTemporaryDirectory(
             prefix="molt-python-verifier-"

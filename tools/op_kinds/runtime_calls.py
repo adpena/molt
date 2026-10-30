@@ -1,0 +1,218 @@
+"""Join op meaning to the existing runtime ABI; never restate a signature."""
+
+from __future__ import annotations
+
+from .errors import OpKindTableError
+from .registration import registered_simpleir_kinds
+from .render_wire import variant
+from .runtime_requirements import (
+    runtime_kind_requirement_masks,
+    target_runtime_requirement_masks,
+)
+
+REALIZATIONS = {
+    "runtime": "Runtime",
+    "luau_iter_carriers": "LuauIterCarriers",
+    "luau_dict_storage": "LuauDictStorage",
+    "unsupported": "Unsupported",
+}
+
+
+def runtime_call_rows(data: dict) -> list[dict]:
+    rows = data.get("runtime_call", [])
+    targets = tuple(
+        profile["target"] for profile in data["simpleir_target_runtime_profiles"]
+    )
+    if not isinstance(rows, list):
+        raise OpKindTableError("runtime_call must be an array of tables")
+    seen: set[str] = set()
+    kinds = registered_simpleir_kinds(data)
+    requirement_masks = runtime_kind_requirement_masks(data)
+    target_masks = target_runtime_requirement_masks(data)
+    projected: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("runtime_call row must be a table")
+        kind = row.get("kind")
+        if not isinstance(kind, str) or kind not in kinds or kind in seen:
+            raise OpKindTableError(
+                f"duplicate or unregistered runtime-call kind {kind!r}"
+            )
+        seen.add(kind)
+        effect_key = "tir_opcode" if "tir_opcode" in row else "effects_from"
+        if set(row) != {"kind", "function", effect_key, "exception_protocol", *targets}:
+            raise OpKindTableError(
+                f"runtime call {kind!r}: expected function and every target"
+            )
+        if not isinstance(row["function"], str) or not row["function"].startswith(
+            "molt_"
+        ):
+            raise OpKindTableError(f"runtime call {kind!r}: invalid runtime function")
+        if not isinstance(row[effect_key], str) or row[effect_key] not in {
+            opcode["name"] for opcode in data["opcode"]
+        }:
+            raise OpKindTableError(f"runtime call {kind!r}: unknown effect authority")
+        for spelling in runtime_call_wire_kinds(data, row):
+            if spelling in projected:
+                raise OpKindTableError(
+                    f"runtime call {kind!r}: duplicate projected op {spelling!r}"
+                )
+            projected.add(spelling)
+        if row["exception_protocol"] != "pending_exception":
+            raise OpKindTableError(f"runtime call {kind!r}: unknown exception protocol")
+        for target in targets:
+            if not isinstance(row[target], str) or row[target] not in REALIZATIONS:
+                raise OpKindTableError(
+                    f"runtime call {kind!r}: unknown {target} realization"
+                )
+            if row[target] not in (
+                {"runtime", "unsupported", "luau_iter_carriers", "luau_dict_storage"}
+                if target == "luau"
+                else {"runtime", "unsupported"}
+            ):
+                raise OpKindTableError(f"runtime call {kind!r}: wrong {target} carrier")
+            # Legality has one authority: the target runtime profiles. A row
+            # names a realization where its profile admits the operation, and
+            # refuses only where that profile already refuses it.
+            admitted = all(
+                not requirement_masks.get(spelling, 0) & ~target_masks[target]
+                for spelling in runtime_call_wire_kinds(data, row)
+            )
+            if admitted == (row[target] == "unsupported"):
+                raise OpKindTableError(
+                    f"runtime call {kind!r}: {target} legality disagrees with its runtime profile"
+                )
+    return sorted(rows, key=lambda row: row["kind"])
+
+
+def runtime_call_wire_kinds(data: dict, row: dict) -> tuple[str, ...]:
+    """Join the typed opcode's existing canonical wire projection, not an alias table."""
+    result = [row["kind"]]
+    if opcode := row.get("tir_opcode"):
+        canonical = [
+            entry["canonical"]
+            for entry in data["kind"]
+            if entry.get("mapper_opcode") == opcode
+        ]
+        if len(canonical) != 1:
+            raise OpKindTableError(
+                f"runtime call {row['kind']!r}: typed opcode requires one canonical projection"
+            )
+        if canonical[0] not in result:
+            result.append(canonical[0])
+    return tuple(result)
+
+
+def render_runtime_calls(data: dict, abi: dict) -> str:
+    # Import here: the ABI loader projects these same op rows into WASM.
+    from tools.wasm_abi_gen.manifest import runtime_boxed_call_specs
+
+    rows = runtime_call_rows(data)
+    functions = {row["runtime_name"]: row for row in runtime_boxed_call_specs(abi)}
+    for row in rows:
+        if row["function"] not in functions:
+            raise OpKindTableError(
+                f"runtime call {row['kind']!r}: no boxed function ABI"
+            )
+    out = [
+        "// @generated by tools/gen_op_kinds.py; DO NOT EDIT.\n",
+        "// Op identity: tir/op_kinds.toml; function ABI: wasm_abi_manifest.toml.\n",
+        "use crate::{OpKind, runtime_boxed_abi_generated::RuntimeFn, tir::target_info::TargetKind};\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum RuntimeCall {\n",
+        *(f"    {variant(row['kind'])},\n" for row in rows),
+        "}\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeCallRealization { Runtime, LuauIterCarriers, LuauDictStorage, Unsupported }\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeArgumentOwnership { Borrowed }\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeExceptionProtocol { PendingException }\n",
+        "impl RuntimeCall {\n",
+        "    pub const ALL: &'static [Self] = &[",
+        ", ".join(f"Self::{variant(row['kind'])}" for row in rows),
+        "];\n",
+        "    pub const fn from_op(kind: OpKind) -> Option<Self> { match kind {\n",
+        *(
+            f"{' | '.join('OpKind::' + variant(kind) for kind in runtime_call_wire_kinds(data, row))} => Some(Self::{variant(row['kind'])}),\n"
+            for row in rows
+        ),
+        "_ => None, } }\n",
+        "    pub const fn from_opcode(opcode: crate::tir::ops::OpCode) -> Option<Self> { match opcode {\n",
+        *(
+            f"crate::tir::ops::OpCode::{row['tir_opcode']} => Some(Self::{variant(row['kind'])}),\n"
+            for row in rows
+            if "tir_opcode" in row
+        ),
+        "_ => None, } }\n",
+        "    pub const fn op_kinds(self) -> &'static [OpKind] { match self {\n",
+        *(
+            f"Self::{variant(row['kind'])} => &[{', '.join('OpKind::' + variant(kind) for kind in runtime_call_wire_kinds(data, row))}],\n"
+            for row in rows
+        ),
+        "} }\n",
+        "    pub const fn op(self) -> OpKind { match self {\n",
+        *(
+            f"Self::{variant(row['kind'])} => OpKind::{variant(row['kind'])},\n"
+            for row in rows
+        ),
+        "} }\n",
+        "    pub const fn function(self) -> RuntimeFn { match self {\n",
+        *(
+            f"Self::{variant(row['kind'])} => RuntimeFn::{variant(row['function'].removeprefix('molt_'))},\n"
+            for row in rows
+        ),
+        "} }\n",
+        "    /// Explicit references to the canonical effect matrix, never inert Copy.\n",
+        "    pub fn effects(self) -> crate::tir::op_kinds_generated::OpcodeEffects {\n",
+        "        use crate::tir::{op_kinds_generated::opcode_effects_table, ops::OpCode};\n",
+        "        opcode_effects_table(match self {\n",
+        *(
+            f"Self::{variant(row['kind'])} => OpCode::{row.get('tir_opcode', row.get('effects_from'))},\n"
+            for row in rows
+        ),
+        "        })\n    }\n",
+        "    pub const fn exception_protocol(self) -> RuntimeExceptionProtocol { match self {\n",
+        *(
+            f"Self::{variant(row['kind'])} => RuntimeExceptionProtocol::PendingException,\n"
+            for row in rows
+        ),
+        "    } }\n",
+        "    /// Boxed entrypoints borrow operands; the result ABI owns its refinement.\n",
+        "    pub fn argument_ownership(self, index: usize) -> RuntimeArgumentOwnership {\n",
+        "        assert!(index < self.function().boxed_abi().arity);\n",
+        "        RuntimeArgumentOwnership::Borrowed\n    }\n",
+        "    pub const fn realization(self, target: TargetKind) -> RuntimeCallRealization {\n",
+        "        match (self, target) {\n",
+    ]
+    for row in rows:
+        for profile in data["simpleir_target_runtime_profiles"]:
+            out.append(
+                f"(Self::{variant(row['kind'])}, TargetKind::{profile['rust_variant']}) => RuntimeCallRealization::{REALIZATIONS[row[profile['target']]]},\n"
+            )
+    out += [
+        "} }\n",
+        "    /// Whether the generic entrypoint realizes every staged call on `target`.\n",
+        "    /// Backends that lower only that realization assert it at compile time.\n",
+        "    pub const fn all_runtime_realized(target: TargetKind) -> bool {\n",
+        "        let mut index = 0;\n",
+        "        while index < Self::ALL.len() {\n",
+        "            if !matches!(Self::ALL[index].realization(target), RuntimeCallRealization::Runtime) {\n",
+        "                return false;\n",
+        "            }\n",
+        "            index += 1;\n",
+        "        }\n",
+        "        true\n",
+        "    }\n",
+        "}\n",
+    ]
+    out += [
+        "/// Exhaustive staged-op pattern, shared with backend admission.\n",
+        "#[macro_export]\nmacro_rules! runtime_call_op_kinds { () => { ",
+        " | ".join(
+            f"$crate::OpKind::{variant(kind)}"
+            for row in rows
+            for kind in runtime_call_wire_kinds(data, row)
+        ),
+        " }; }\n",
+    ]
+    return "".join(out)

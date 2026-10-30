@@ -6391,3 +6391,30 @@ mapper_opcode = "IsPending"
 canonical = "task_wait"
 aliases = []
 mapper_opcode = "TaskWait"
+
+# Stage-1 runtime-call meaning. Function signatures and result custody belong to
+# wasm_abi_manifest.toml. Native/JIT/LLVM/WASM use its generic entrypoint;
+# source backends must check their declared carrier specialization.
+[[runtime_call]]
+kind = "iter"
+function = "molt_iter_checked"
+tir_opcode = "GetIter"
+exception_protocol = "pending_exception"
+native = "runtime"
+llvm = "runtime"
+wasm = "runtime"
+mlir = "unsupported"
+luau = "luau_iter_carriers"
+rust = "unsupported"
+
+[[runtime_call]]
+kind = "dict_set"
+function = "molt_dict_set"
+effects_from = "StoreIndex"
+exception_protocol = "pending_exception"
+native = "runtime"
+llvm = "runtime"
+wasm = "runtime"
+mlir = "unsupported"
+luau = "luau_dict_storage"
+rust = "unsupported"
