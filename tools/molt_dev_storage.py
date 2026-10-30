@@ -38,9 +38,20 @@ from molt.custody_layout import (
     PackageEnvironmentKind,
 )
 from molt.dx import artifact_root, storage_path, storage_location
-from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+from molt.file_locks import (
+    _file_lock_owned_operation,
+    _release_file_lock,
+    _try_acquire_file_lock,
+)
 from molt.file_publication import resolve_owned_path
 from tools.driver_errors import DriverError
+
+# Controller retention: the newest CONTROLLER_KEEP controllers stay; an older one
+# retires only after CONTROLLER_IDLE_S without use and no live shared source owner.
+_CONTROLLER_RETENTION = storage_rule("controllers").retention
+assert isinstance(_CONTROLLER_RETENTION, Regenerable)
+CONTROLLER_KEEP = _CONTROLLER_RETENTION.keep_recent
+CONTROLLER_IDLE_S = _CONTROLLER_RETENTION.max_idle_s
 
 
 def allocated_bytes(root: Path) -> int:
@@ -314,6 +325,86 @@ def external_providers(
     return rows
 
 
+def retire_idle_controllers(
+    directory: Path, *, current: Path, now: float, apply: bool = True
+) -> list[dict[str, object]]:
+    """Keep current/recent versions; lock and recheck older idle generations."""
+    from tools import controller_source
+    from tools.molt_dev_common import _warn
+
+    entries = []
+    rows = []
+    for entry in directory.iterdir():
+        if entry == current:
+            rows.append(
+                {"class": "controllers", "path": str(entry), "action": "current"}
+            )
+            continue
+        try:
+            admitted = controller_source.controller_for_source(entry, allow_staged=True)
+        except DriverError:
+            admitted = None
+        if admitted is None:
+            rows.append(
+                {
+                    "class": "controllers",
+                    "path": str(entry),
+                    "action": "unproven-preimage",
+                }
+            )
+            continue
+        marker = entry / controller_source.RECORD_NAME
+        try:
+            entries.append((marker.stat().st_mtime, entry, entry.name == admitted.key))
+        except FileNotFoundError:
+            continue
+    entries.sort(reverse=True)
+    recent = set(
+        [entry for _, entry, published in entries if published][
+            : max(0, CONTROLLER_KEEP - 1)
+        ]
+    )
+    for last_use, entry, _published in entries:
+        row = {
+            "class": "controllers",
+            "path": str(entry),
+            "last_use": last_use,
+            "action": "recent",
+        }
+        rows.append(row)
+        if entry in recent or now - last_use < CONTROLLER_IDLE_S:
+            continue
+        lock_path = controller_source.source_lock_path(entry)
+        try:
+            handle = _try_acquire_file_lock(lock_path, create=apply)
+        except FileNotFoundError:
+            handle = None
+        if handle is None:
+            row["action"] = (
+                "state-in-use"
+                if lock_path.exists()
+                else "unavailable-lock"
+                if apply
+                else "retire"
+            )
+            continue
+        try:
+            with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
+                fresh = (entry / controller_source.RECORD_NAME).stat().st_mtime
+                if now - fresh < CONTROLLER_IDLE_S:
+                    row["action"] = "use-changed"
+                else:
+                    row["action"] = "retire"
+                    if apply:
+                        shutil.rmtree(entry)
+        except OSError as exc:
+            row.update(action="failed", error=str(exc))
+            _warn(f"controller retention left {entry}: {exc}")
+        finally:
+            _release_file_lock(handle)
+    return rows
+
+
 def trim(
     repo: Path,
     environment: Mapping[str, str],
@@ -333,7 +424,6 @@ def trim(
     from molt.checkout_state import read_checkout_owner
     from typing import get_args
     from tools.molt_dev_common import _COMMANDS
-    from tools import molt_dev_controller
     from tools import controller_source
     from tools.disk_guard import _guard_protection
 
@@ -368,13 +458,13 @@ def trim(
                 key=lambda path: (path / ".molt-controller.json").stat().st_mtime,
             )
             result.extend(
-                molt_dev_controller._retire_idle(
+                retire_idle_controllers(
                     directory, current=current, now=time.time(), apply=apply
                 )
             )
         else:
             result.extend(
-                molt_dev_controller._retire_idle(
+                retire_idle_controllers(
                     directory, current=directory, now=time.time(), apply=apply
                 )
             )

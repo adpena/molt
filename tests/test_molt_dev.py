@@ -4403,7 +4403,7 @@ def test_pinned_controller_claim_must_match_this_process(drv, origin_and_clone):
 
 
 def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
-    from tools import controller_source, molt_dev_controller as controller
+    from tools import controller_source, molt_dev_storage as storage
 
     now = 10_000_000.0
     day = 24 * 3600.0
@@ -4445,7 +4445,7 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
     entry("old-a", 2 * day)
     entry("old-b", 3 * day)
     entry("old-c", 4 * day)
-    controller._retire_idle(directory, current=current, now=now)
+    storage.retire_idle_controllers(directory, current=current, now=now)
     # KEEP=4 counts the current controller; older entries go once idle a day.
     assert sorted(name for name, path in entries.items() if path.exists()) == [
         "current",
@@ -4456,7 +4456,7 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
 
     for index in range(4):
         entry(f"busy-{index}", 60.0 * (index + 1))
-    controller._retire_idle(directory, current=current, now=now)
+    storage.retire_idle_controllers(directory, current=current, now=now)
     # Entries beyond KEEP stay while used within the idle window.
     assert {name for name, path in entries.items() if path.exists()} >= {
         "busy-0",
@@ -4502,7 +4502,7 @@ def _controller_source_fixture(tmp_path, key="a" * 32):
 def test_controller_source_use_excludes_aged_retirement_and_staging(
     tmp_path, monkeypatch
 ):
-    from tools import controller_source, molt_dev_controller as controller
+    from tools import controller_source, molt_dev_storage as storage
 
     selected = _controller_source_fixture(tmp_path)
     staging = selected.root.with_name(
@@ -4521,18 +4521,18 @@ def test_controller_source_use_excludes_aged_retirement_and_staging(
     (owned_staging / controller_source.RECORD_NAME).write_text(
         json.dumps(marker), encoding="utf-8"
     )
-    monkeypatch.setattr(controller, "KEEP", 1)
+    monkeypatch.setattr(storage, "CONTROLLER_KEEP", 1)
     now = time.time()
-    old = now - 2 * controller.IDLE_S
+    old = now - 2 * storage.CONTROLLER_IDLE_S
     with controller_source.controller_source_use(selected):
         os.utime(selected.root / controller_source.RECORD_NAME, (old, old))
         os.utime(staging, (old, old))
         os.utime(owned_staging / controller_source.RECORD_NAME, (old, old))
-        controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+        storage.retire_idle_controllers(selected.root.parent, current=tmp_path, now=now)
         assert selected.driver.parent.parent.is_dir()
         assert (staging / "partial-source").read_bytes() == b"not published"
         assert owned_staging.exists()
-    controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+    storage.retire_idle_controllers(selected.root.parent, current=tmp_path, now=now)
     assert not selected.root.exists()
     assert not owned_staging.exists()
     assert staging.exists(), "unpublished preimages require explicit reconciliation"
@@ -4542,6 +4542,7 @@ def test_controller_source_publishes_committed_policy_without_environment(
     origin_and_clone, monkeypatch
 ):
     from tools import controller_source, molt_dev_controller as controller
+    from tools import molt_dev_storage as storage
     from molt.file_locks import _try_acquire_file_lock
 
     _, work = origin_and_clone
@@ -4561,8 +4562,8 @@ def test_controller_source_publishes_committed_policy_without_environment(
         lambda *_: pytest.fail("source acquisition synced uv"),
     )
     monkeypatch.setattr(
-        controller,
-        "_retire_idle",
+        storage,
+        "retire_idle_controllers",
         lambda *a, **kw: pytest.fail("source acquisition swept controllers"),
     )
     with controller_source.controller_source(work, work / ".git", commit) as selected:
@@ -4731,7 +4732,7 @@ def test_detached_preentry_failure_keeps_startup_trace(tmp_path):
 def test_detached_published_source_survives_caller_removal_and_idle_retention(
     tmp_path, driver_seed, monkeypatch
 ):
-    from tools import controller_source, molt_dev_controller as controller
+    from tools import controller_source, molt_dev_storage as storage
 
     selected = _controller_source_fixture(tmp_path)
     copy_driver_trees(selected.root, seed=driver_seed)
@@ -4770,10 +4771,10 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
         # Every timestamp is deliberately stale: only real OS source use may
         # keep this controller while the detached command remains alive.
         now = time.time()
-        old = now - 2 * controller.IDLE_S
+        old = now - 2 * storage.CONTROLLER_IDLE_S
         os.utime(selected.root / controller_source.RECORD_NAME, (old, old))
-        monkeypatch.setattr(controller, "KEEP", 1)
-        controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+        monkeypatch.setattr(storage, "CONTROLLER_KEEP", 1)
+        storage.retire_idle_controllers(selected.root.parent, current=tmp_path, now=now)
         assert selected.driver.exists()
     finally:
         release.touch()
@@ -4784,7 +4785,9 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
     # Terminal publication precedes source-handle release by a few instructions.
     deadline = time.monotonic() + 5
     while selected.root.exists() and time.monotonic() < deadline:
-        controller._retire_idle(selected.root.parent, current=tmp_path, now=time.time())
+        storage.retire_idle_controllers(
+            selected.root.parent, current=tmp_path, now=time.time()
+        )
         time.sleep(0.02)
     assert not selected.root.exists()
 
@@ -9443,6 +9446,7 @@ import argparse, json, os, sys, time
 from pathlib import Path
 sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
 from tools import controller_source, molt_dev_controller as controller
+from tools import molt_dev_storage as storage
 from molt.checkout_state import checkout_state_retirement
 roots = [Path(item) for item in {roots!r}]
 images = [Path(item) for item in {[str(root) for root in images]!r}]
@@ -9473,9 +9477,9 @@ for old in images[:2]:
 for live in [images[2], images[3], Path({str(target)!r})]:
     with checkout_state_retirement(live) as available:
         assert not available, ('current or declared input custody lost', live)
-controller.KEEP = 1
-controller.IDLE_S = 0
-controller._retire_idle(roots[0].parent, current=Path({str(tmp_path)!r}),
+storage.CONTROLLER_KEEP = 1
+storage.CONTROLLER_IDLE_S = 0
+storage.retire_idle_controllers(roots[0].parent, current=Path({str(tmp_path)!r}),
                         now=time.time() + 10)
 assert not roots[0].exists(), 'controller 1 still retained after two execs'
 assert not roots[1].exists(), 'controller 2 still retained after next exec'
