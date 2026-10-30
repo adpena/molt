@@ -5,6 +5,10 @@ from __future__ import annotations
 from .errors import OpKindTableError
 from .registration import registered_simpleir_kinds
 from .render_wire import variant
+from .runtime_requirements import (
+    runtime_kind_requirement_masks,
+    target_runtime_requirement_masks,
+)
 
 REALIZATIONS = {
     "runtime": "Runtime",
@@ -23,6 +27,8 @@ def runtime_call_rows(data: dict) -> list[dict]:
         raise OpKindTableError("runtime_call must be an array of tables")
     seen: set[str] = set()
     kinds = registered_simpleir_kinds(data)
+    requirement_masks = runtime_kind_requirement_masks(data)
+    target_masks = target_runtime_requirement_masks(data)
     projected: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -65,6 +71,17 @@ def runtime_call_rows(data: dict) -> list[dict]:
                 else {"runtime", "unsupported"}
             ):
                 raise OpKindTableError(f"runtime call {kind!r}: wrong {target} carrier")
+            # Legality has one authority: the target runtime profiles. A row
+            # names a realization where its profile admits the operation, and
+            # refuses only where that profile already refuses it.
+            admitted = all(
+                not requirement_masks.get(spelling, 0) & ~target_masks[target]
+                for spelling in runtime_call_wire_kinds(data, row)
+            )
+            if admitted == (row[target] == "unsupported"):
+                raise OpKindTableError(
+                    f"runtime call {kind!r}: {target} legality disagrees with its runtime profile"
+                )
     return sorted(rows, key=lambda row: row["kind"])
 
 
@@ -172,7 +189,22 @@ def render_runtime_calls(data: dict, abi: dict) -> str:
             out.append(
                 f"(Self::{variant(row['kind'])}, TargetKind::{profile['rust_variant']}) => RuntimeCallRealization::{REALIZATIONS[row[profile['target']]]},\n"
             )
-    out += ["} }\n}\n"]
+    out += [
+        "} }\n",
+        "    /// Whether the generic entrypoint realizes every staged call on `target`.\n",
+        "    /// Backends that lower only that realization assert it at compile time.\n",
+        "    pub const fn all_runtime_realized(target: TargetKind) -> bool {\n",
+        "        let mut index = 0;\n",
+        "        while index < Self::ALL.len() {\n",
+        "            if !matches!(Self::ALL[index].realization(target), RuntimeCallRealization::Runtime) {\n",
+        "                return false;\n",
+        "            }\n",
+        "            index += 1;\n",
+        "        }\n",
+        "        true\n",
+        "    }\n",
+        "}\n",
+    ]
     out += [
         "/// Exhaustive staged-op pattern, shared with backend admission.\n",
         "#[macro_export]\nmacro_rules! runtime_call_op_kinds { () => { ",

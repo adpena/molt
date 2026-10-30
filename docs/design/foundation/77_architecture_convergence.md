@@ -99,6 +99,11 @@ the dict insertion primitive bypasses subclass `__setitem__`.
 Target legality uses the existing `TargetKind` and generated target profiles.
 JIT shares the native Cranelift target plan; Rust and MLIR retain their existing
 runtime-protocol refusals. There is no separate runtime-call target vocabulary.
+The generator rejects a row that refuses a target its profile admits, or names a
+realization for a target its profile refuses. Native/JIT, LLVM and WASM lower
+only the generic realization, so each asserts the generated
+`RuntimeCall::all_runtime_realized` at compile time; another realization there
+fails to build.
 
 The generators produce closed `RuntimeFn` and staged `RuntimeCall` identities,
 function signatures and custody, and the op-to-call mapping. Every backend

@@ -69,6 +69,15 @@ pub(crate) fn assert_runtime_i64_call(import: WasmRuntimeImport, arg_count: usiz
 
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
 
+// Declared legality is a compile-time fact: the generated op-loop projection
+// lowers every staged call through its generic runtime import.
+const _: () = assert!(
+    molt_ir::runtime_calls::RuntimeCall::all_runtime_realized(
+        molt_ir::tir::target_info::TargetKind::Wasm
+    ),
+    "a staged runtime call is not runtime-realized on WASM"
+);
+
 #[cfg(test)]
 mod tests {
     use super::{IMPORT_REGISTRY, WasmRuntimeImport};
