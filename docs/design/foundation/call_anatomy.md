@@ -748,9 +748,14 @@ def fib(n):
     if n < 2:
         return n
     return fib(n - 1) + fib(n - 2)
+
+
 def main():
     print(fib(30))
+
+
 main()
+
 
 # p2: counted loop (heap int once total passes 47 bits)
 def main():
@@ -758,13 +763,18 @@ def main():
     for i in range(10_000_000):
         total += i
     print(total)
+
+
 main()
+
 
 # p3: attribute store and load
 class Point:
     def __init__(self, x, y):
         self.x = x
         self.y = y
+
+
 def main():
     p = Point(1, 2)
     total = 0
@@ -772,27 +782,38 @@ def main():
         p.x = i
         total += p.x
     print(total)
+
+
 main()
+
 
 # p4: method call
 class Counter:
     def __init__(self):
         self.step = 1
+
     def inc(self, v):
         return v + 1
+
+
 def main():
     c = Counter()
     total = 0
     for i in range(5_000_000):
         total = c.inc(total)
     print(total)
+
+
 main()
+
 
 # p5: constructor and two stores (the perf gate's `struct` row)
 class Point:
     def __init__(self, x=0, y=0):
         self.x = x
         self.y = y
+
+
 def main():
     i = 0
     while i < 1_000_000:
@@ -801,17 +822,24 @@ def main():
         p.y = i + 1
         i += 1
     print(i)
+
+
 main()
 
 # p6: struct.pack
 import struct
+
+
 def main():
     total = 0
     for i in range(1_000_000):
         b = struct.pack("<ii", i, i + 1)
         total += len(b)
     print(total)
+
+
 main()
+
 
 # p7: raise and catch (HF-561)
 def main():
@@ -822,16 +850,23 @@ def main():
         except ValueError:
             total += 1
     print(total)
+
+
 main()
+
 
 # p8: module function call
 def add(a, b):
     return a + b
+
+
 def main():
     total = 0
     for i in range(10_000_000):
         total = add(total, i)
     print(total)
+
+
 main()
 
 # x1: exception __init__ descriptor kinds
