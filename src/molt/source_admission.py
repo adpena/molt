@@ -14,7 +14,6 @@ import stat
 from functools import lru_cache
 
 from molt.file_publication import metadata_is_link_like
-from molt.process_guard import run_completed_command
 
 
 def _version(path: Path) -> tuple[int, ...] | None:
@@ -128,6 +127,10 @@ def _checkout_root(path: Path) -> Path | None:
 
 
 def _read_git(root: Path, arguments: list[str]) -> bytes:
+    # The CLI parser reaches this module through file hashing; it must not
+    # load the process guard until Git actually runs (HF-228).
+    from molt.process_guard import run_completed_command
+
     result = run_completed_command(
         ["git", "--no-optional-locks", "-C", str(root), *arguments],
         cwd=root,
