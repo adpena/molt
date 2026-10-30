@@ -14413,11 +14413,10 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
     stat = module_path.stat()
     from molt.durable_file_identity import file_identity
 
-    volume, file_id = file_identity(module_path).stat_prefix()
+    identity = file_identity(module_path)
     stat_identity_is_strong = cli_module_source._source_hash_stat_identity_is_strong(
         ctime_ns=stat.st_ctime_ns,
-        file_id=file_id,
-        volume=volume,
+        identity=identity,
     )
     assert hash_calls == (1 if stat_identity_is_strong else 2)
 
@@ -35514,15 +35513,14 @@ def test_new_source_hash_namespace_starts_cold(tmp_path, renumbered):
         json.dumps({"version": 1, **key, "source_sha256": sha}), encoding="utf-8"
     )
     before = legacy.read_bytes()
-    volume, file_id = file_identity(source).stat_prefix()
+    identity = file_identity(source)
     found = module_source._read_persistent_source_hash(
         cache,
         path_str=str(source),
         size=metadata.st_size,
         mtime_ns=metadata.st_mtime_ns,
         ctime_ns=metadata.st_ctime_ns,
-        file_id=file_id,
-        volume=volume,
+        identity=identity,
     )
     assert found is None
     assert legacy.read_bytes() == before

@@ -10,7 +10,9 @@ store is discarded and rewritten.
 
 from __future__ import annotations
 
-from molt.durable_file_identity import DurableFileIdentity, VolumeKind
+from dataclasses import replace
+
+from molt.durable_file_identity import DurableFileIdentity, StatToken, VolumeKind
 
 import json
 import os
@@ -62,7 +64,20 @@ def _key(**overrides: object) -> facts.ProbeKey:
         "argv": ("--print", "cfg"),
         "cwd": "/project",
         "environment": (("RUSTC_BOOTSTRAP", None), ("SDKROOT", "/sdk")),
-        "inputs": (("/sysroot/lib/librustc_driver.dylib", (1, 2, 3, 4, 5, 6)),),
+        "inputs": (
+            (
+                "/sysroot/lib/librustc_driver.dylib",
+                facts.FileToken(
+                    StatToken(
+                        DurableFileIdentity(VolumeKind.APPLE_UUID, "1" * 32, "2" * 32),
+                        3,
+                        4,
+                        5,
+                        6,
+                    )
+                ),
+            ),
+        ),
     }
     fields.update(overrides)
     return facts.ProbeKey(**fields)  # type: ignore[arg-type]
@@ -375,7 +390,7 @@ def test_each_key_input_changes_the_digest(mutation: str) -> None:
             ),
         )
     elif mutation == "tool-token":
-        token = (*tool.token[:5], tool.token[5] + 1)
+        token = replace(tool.token, ctime_ns=tool.token.ctime_ns + 1)
         changed["tools"] = (
             facts.ProbeTool(
                 tool.entrypoint,
@@ -400,12 +415,36 @@ def test_each_key_input_changes_the_digest(mutation: str) -> None:
         changed["environment"] = (("RUSTC_BOOTSTRAP", "1"), ("SDKROOT", "/sdk"))
     elif mutation == "input-token":
         changed["inputs"] = (
-            ("/sysroot/lib/librustc_driver.dylib", (1, 2, 3, 4, 5, 7)),
+            (
+                "/sysroot/lib/librustc_driver.dylib",
+                facts.FileToken(
+                    StatToken(
+                        DurableFileIdentity(VolumeKind.APPLE_UUID, "1" * 32, "2" * 32),
+                        3,
+                        4,
+                        5,
+                        7,
+                    )
+                ),
+            ),
         )
     elif mutation == "input-absent":
         changed["inputs"] = (("/sysroot/lib/librustc_driver.dylib", None),)
     elif mutation == "input-path":
-        changed["inputs"] = (("/sysroot/lib/other.dylib", (1, 2, 3, 4, 5, 6)),)
+        changed["inputs"] = (
+            (
+                "/sysroot/lib/other.dylib",
+                facts.FileToken(
+                    StatToken(
+                        DurableFileIdentity(VolumeKind.APPLE_UUID, "1" * 32, "2" * 32),
+                        3,
+                        4,
+                        5,
+                        6,
+                    )
+                ),
+            ),
+        )
     else:
         changed["inputs"] = (*base.inputs, ("/sysroot/lib/target.json", None))
     assert _key(**changed).digest() != base.digest()
@@ -423,23 +462,29 @@ def test_file_and_directory_inputs_name_absence_links_and_listings(
     regular = tmp_path / "lib.dylib"
     regular.write_bytes(b"lib")
     name, token = facts.file_input(regular)
-    assert name == os.fspath(regular) and token is not None and len(token) == 6
-    assert token[3] == 3 and stat.S_ISREG(int(token[2]))
+    assert (
+        name == os.fspath(regular) and token is not None and len(token.payload()) == 6
+    )
+    assert token.node.size == 3 and stat.S_ISREG(token.node.mode)
     if os.name != "nt":
         link = tmp_path / "link"
         link.symlink_to(regular)
         _name, link_token = facts.file_input(link)
-        assert link_token is not None and link_token[6] == os.fspath(regular)
-        assert stat.S_ISLNK(int(link_token[2]))
+        assert link_token is not None and link_token.link_text == os.fspath(regular)
+        assert stat.S_ISLNK(link_token.node.mode)
         # A probe reads through the link: an edit behind it changes the key.
         _rewrite_with_restored_mtime(regular, b"LIB")
         regular.write_bytes(b"libs")
         _name, edited = facts.file_input(link)
-        assert edited is not None and edited[:7] == link_token[:7]
-        assert edited[7] != link_token[7]
+        assert (
+            edited is not None
+            and edited.node == link_token.node
+            and edited.link_text == link_token.link_text
+        )
+        assert edited.target != link_token.target
         dangling = tmp_path / "dangling"
         dangling.symlink_to(tmp_path / "gone")
-        assert facts.file_input(dangling)[1][7] is None
+        assert facts.file_input(dangling)[1].target is None
     (tmp_path / "sub").mkdir()
     (tmp_path / "notes.txt").write_bytes(b"text")
     listing = facts.directory_inputs(tmp_path)

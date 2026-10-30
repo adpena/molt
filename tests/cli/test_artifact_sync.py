@@ -36,7 +36,7 @@ def _receipt_payload(source_key: str) -> dict[str, object]:
         "tier": "module",
         "size": 9,
         "sha256": hashlib.sha256(b"return 1\n").hexdigest(),
-        "generation": [11, 22],
+        "generation": ["apple-uuid:" + "1" * 32, "2" * 32],
         "emission_origin": None,
     }
 

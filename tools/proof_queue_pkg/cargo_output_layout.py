@@ -23,7 +23,7 @@ from molt.durable_file_identity import (
     DurableFileIdentity,
     file_identity,
 )
-from molt.exact_json import canonical_json_bytes, canonical_json_sha256
+from molt.exact_json import canonical_json_sha256
 
 
 ROOT_SCHEMA = "molt.proof-cargo-output-root.v2"
@@ -131,15 +131,20 @@ def validate_root(value: object) -> dict[str, object] | None:
         raise ValueError(
             "declared Cargo output root is unavailable; no fallback is permitted"
         ) from exc
-    if canonical_json_bytes(declaration) != canonical_json_bytes(current):
+    if declaration["path"] != current["path"] or DurableFileIdentity.from_payload(
+        declaration["identity"]
+    ) != DurableFileIdentity.from_payload(current["identity"]):
         raise ValueError("declared Cargo output root was replaced or remounted")
     return current
 
 
 def same_root(left: object, right: object) -> bool:
-    return canonical_json_bytes(declared_root(left)) == canonical_json_bytes(
-        declared_root(right)
-    )
+    a, b = declared_root(left), declared_root(right)
+    if a is None or b is None:
+        return a is b
+    return a["path"] == b["path"] and DurableFileIdentity.from_payload(
+        a["identity"]
+    ) == DurableFileIdentity.from_payload(b["identity"])
 
 
 def _directory_identity(path: Path) -> tuple[int, int] | None:
