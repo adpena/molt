@@ -536,6 +536,15 @@ def cmd_land(args: argparse.Namespace) -> int:
             upstream=upstream,
             session_id=os.environ.get("MOLT_SESSION_ID", "devtool"),
         )
+    if args.precheck_only:
+        # A worker's handoff check: the same controller, selection and gate
+        # environment as a landing, and no queue state or runner.
+        _ok(
+            f"{git.short(head)} is already on {args.remote}/{args.branch}; nothing to check"
+            if already_landed
+            else f"precheck passed for {git.short(head)}; nothing queued"
+        )
+        return EXIT_OK
     request = enqueue(paths, head=head, worktree=repo, branch=branch)
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
@@ -1077,11 +1086,18 @@ def add_queue_arguments(
         help="run this checkout's driver and runner instead of main's pinned "
         "controller (repairs a broken controller)",
     )
-    p_land.add_argument(
+    precheck = p_land.add_mutually_exclusive_group()
+    precheck.add_argument(
         "--no-precheck",
         action="store_true",
         help="queue without first running the lane's static gates in the lane "
         "(the batch still runs every gate)",
+    )
+    precheck.add_argument(
+        "--precheck-only",
+        action="store_true",
+        help="run the lane's static gates exactly as land does, then stop: "
+        "nothing is queued and no runner starts (a worker's handoff check)",
     )
     add_pinned_controller_arguments(p_land)
     p_land.set_defaults(func=cmd_land)
