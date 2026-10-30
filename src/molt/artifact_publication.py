@@ -480,9 +480,9 @@ def _upgrade_publication_journal(payload: dict) -> dict:
     return upgraded
 
 
-def _load_journal(path: Path) -> dict[str, Any]:
+def _load_journal(path: Path, *, recover_legacy: bool = True) -> dict[str, Any]:
     try:
-        return _read_journal(path)
+        return _read_journal(path, recover_legacy=recover_legacy)
     except (OSError, ValueError) as exc:
         # An older publication is non-rebuildable state. Never silently omit
         # it just because its physical witnesses cannot be upgraded.
@@ -494,7 +494,7 @@ def _load_journal(path: Path) -> dict[str, Any]:
         raise
 
 
-def _read_journal(path: Path) -> dict[str, Any]:
+def _read_journal(path: Path, *, recover_legacy: bool) -> dict[str, Any]:
     path = _canonical_leaf(
         path, role="artifact publication journal", create_parent=False
     )
@@ -509,13 +509,18 @@ def _read_journal(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != _PUBLICATION_JOURNAL_KEYS:
         raise OSError(f"invalid artifact publication journal payload: {path}")
     legacy = payload.get("schema") == "molt.artifact-publication.v2"
-    if legacy:
+    if legacy and recover_legacy:
         payload = _upgrade_publication_journal(payload)
     transaction_id = payload.get("transaction_id")
     prefix = _LEGACY_JOURNAL_PREFIX if legacy else _PUBLICATION_JOURNAL_PREFIX
     expected_name = f"{prefix}{transaction_id}{_PUBLICATION_JOURNAL_SUFFIX}"
     if (
-        payload.get("schema") != _PUBLICATION_JOURNAL_SCHEMA
+        payload.get("schema")
+        != (
+            "molt.artifact-publication.v2"
+            if legacy and not recover_legacy
+            else _PUBLICATION_JOURNAL_SCHEMA
+        )
         or payload.get("state")
         not in (
             JournalState.OPEN.value,
@@ -580,7 +585,16 @@ def _read_journal(path: Path) -> dict[str, Any]:
                         raise OSError(f"unexpected prior publication identity: {path}")
                 else:
                     try:
-                        DurableFileIdentity.from_payload(identity)
+                        if legacy and not recover_legacy:
+                            if (
+                                not isinstance(identity, list)
+                                or len(identity) != 2
+                                or any(type(n) is not int or n < 0 for n in identity)
+                                or identity[1] == 0
+                            ):
+                                raise ValueError("invalid legacy file witness")
+                        else:
+                            DurableFileIdentity.from_payload(identity)
                     except ValueError as exc:
                         raise OSError(
                             f"invalid publication file identity: {path}"
@@ -657,7 +671,9 @@ def _journal_parent_closure(
         residue = _publication_directory_residue(parent)
         residue_by_parent[parent] = residue
         for journal in residue.journals:
-            payload = _load_journal(journal)
+            # Discovery reads only structure while extending the lock set.
+            # Capture legacy physical witnesses only after every parent is held.
+            payload = _load_journal(journal, recover_legacy=False)
             expanded.update(
                 Path(value).parent.resolve() for value in payload["journals"]
             )
