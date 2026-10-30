@@ -10017,7 +10017,8 @@ def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
         "tests/tools/test_import_file.py",
     }
     # The dependency graph adds the tests that read each source; a test or
-    # helper edit adds only tests that name it.
+    # helper edit adds only tests that name it. These known readers must run;
+    # a new reader is the graph's fact, not this test's.
     readers = {
         "tools/nightly_runtime_bundle.py": {
             "tests/test_proof_plan.py",
@@ -10028,19 +10029,17 @@ def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
         },
         "tests/cli/native_toolchain_test_support.py": {"tests/test_proof_plan.py"},
     }
+    # Nothing outside the rule's owners and the graph's readers runs.
+    graph = molt_dev_policy.GateConfig.load(PLAN.path).graph_selection([path])
+    assert owners | readers.get(path, set()) <= selected <= owners | set(graph.run)
     if path == "src/molt/cli/native_toolchain_transfer.py":
-        # Its importers span the CLI, release and proof tooling; all must run,
-        # and nothing outside the rule's owners and the graph's readers does.
-        graph = molt_dev_policy.GateConfig.load(PLAN.path).graph_selection([path])
-        assert owners < selected <= owners | set(graph.run)
+        # Its importers span the CLI, release and proof tooling; all must run.
         assert {
             "tests/cli/test_installed_compiler.py",
             "tests/cli/test_compiler_identity.py",
             "tests/test_ci_workflow_topology.py",
             "tests/tools/test_release_installed_distribution.py",
         } <= selected
-    else:
-        assert selected == owners | readers.get(path, set())
 
 
 @pytest.mark.parametrize(

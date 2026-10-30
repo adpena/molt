@@ -11,7 +11,10 @@ structured merge driver merges a lock file by package rather than by line:
 - a row that one side changed (text or section) takes that side's version;
 - a row that one side added goes after the row that precedes it there;
 - a row that one side deleted and the other left alone is deleted;
-- a row that both sides changed differently is a conflict.
+- a row that both sides changed differently is a conflict, except a family
+  row of the dependency order (``| C. Name | cause | keys |``, keyed by its
+  letter): its name and cause merge cell by cell and its key list merges as a
+  set, since every lane that opens or closes a row edits one.
 
 Every other line (headings, prose, table headers) merges as text: when one
 side alone changed it, that side's text frames the result; when both changed
@@ -32,6 +35,8 @@ from pathlib import Path
 
 # A findings row: ``| HF-73 |``, ``| HF-F170 (was HF-112) |``, ``| V1-28 |``.
 _ROW = re.compile(r"^\| (?P<key>[A-Z][A-Z0-9]*-[A-Z]?\d+(?: [^|]*?)?) \|")
+# A family row of the dependency order: ``| C. Proof cells ... | cause | keys |``.
+_FAMILY = re.compile(r"^\| (?P<letter>[A-Z])\. [^|]*\|")
 _SECTION = re.compile(r"^#{1,6} ")
 _TABLE_RULE = re.compile(r"^\|-")
 
@@ -60,6 +65,65 @@ class _Unmergeable(Exception):
     """The rows cannot be keyed; merge the file as text."""
 
 
+def _row_key(line: str) -> str | None:
+    """The merge key of a findings row or a family row, else None."""
+    match = _ROW.match(line)
+    if match is not None:
+        return match.group("key").strip()
+    family = _FAMILY.match(line)
+    if family is not None:
+        return f"family {family.group('letter')}"
+    return None
+
+
+def _merged_list(base: list[str], ours: list[str], theirs: list[str]) -> list[str]:
+    """Three-way merge of ordered, duplicate-free lists, as sets.
+
+    Each side's removals hold; theirs' additions follow their predecessor in
+    theirs, so two lists sorted by one key stay sorted.
+    """
+    removed = {item for item in base if item not in ours or item not in theirs}
+    result = [item for item in ours if item not in removed]
+    for index, item in enumerate(theirs):
+        if item in base or item in result:
+            continue
+        position = 0
+        for previous in reversed(theirs[:index]):
+            if previous in result:
+                position = result.index(previous) + 1
+                break
+        result.insert(position, item)
+    return result
+
+
+def _cells(line: str) -> tuple[list[str], str]:
+    body = line.rstrip("\r\n")
+    ending = line[len(body) :]
+    if not (body.startswith("| ") and body.endswith(" |")):
+        raise _Unmergeable("a family row is not a table row")
+    return body[2:-2].split(" | "), ending
+
+
+def _merged_family_row(base: _Row | None, ours: _Row, theirs: _Row) -> _Row | None:
+    """A family row both sides changed: cells three-way, keys as a set."""
+    if base is None or ours.section != theirs.section:
+        return None
+    (b, _), (o, ending), (t, _) = (_cells(r.line) for r in (base, ours, theirs))
+    if not len(b) == len(o) == len(t) == 3:
+        return None
+    merged: list[str] = []
+    for base_cell, ours_cell, theirs_cell in zip(b[:2], o[:2], t[:2], strict=True):
+        if ours_cell == theirs_cell or theirs_cell == base_cell:
+            merged.append(ours_cell)
+        elif ours_cell == base_cell:
+            merged.append(theirs_cell)
+        else:
+            return None
+    keys = _merged_list(*(cell[2].split(", ") for cell in (b, o, t)))
+    merged.append(", ".join(keys))
+    return _Row("| " + " | ".join(merged) + " |" + ending, ours.section)
+
+
 def _parse(text: str) -> _Document:
     lines = tuple(text.splitlines(keepends=True))
     keys: dict[int, str] = {}
@@ -69,10 +133,9 @@ def _parse(text: str) -> _Document:
         if _SECTION.match(line):
             section = line.strip()
             continue
-        match = _ROW.match(line)
-        if match is None:
+        key = _row_key(line)
+        if key is None:
             continue
-        key = match.group("key").strip()
         if key in rows:
             raise _Unmergeable(f"row {key} appears twice")
         keys[index] = key
@@ -100,6 +163,13 @@ def _merged_rows(
             result[key] = (t, "theirs")
         elif t == b:
             result[key] = (o, "ours")
+        elif (
+            key.startswith("family ")
+            and o is not None
+            and t is not None
+            and (merged := _merged_family_row(b, o, t)) is not None
+        ):
+            result[key] = (merged, "both")
         else:
             conflicts.append(key)
     return result, conflicts
@@ -170,8 +240,7 @@ def _insertion_point(output: list[str], side: _Document, index: int) -> int:
             # The preceding row's merged line may differ; find it by key.
             key = side.keys[previous]
             for position, out_line in enumerate(output):
-                match = _ROW.match(out_line)
-                if match is not None and match.group("key").strip() == key:
+                if _row_key(out_line) == key:
                     return position + 1
             continue
         if _TABLE_RULE.match(line) or _SECTION.match(line):

@@ -15,6 +15,7 @@ __all__ = [
     "EVIDENCE_REVIEW",
     "GIT_CUSTODY",
     "GROUNDED_PROGRESS",
+    "HANDOFF_PRECHECK",
     "KEY_PHRASES",
     "LANDING_CONTRACT",
     "MECHANIZES",
@@ -79,6 +80,16 @@ NO_FAKES = (
     "More tests cannot substitute for a coherent design."
 )
 
+HANDOFF_PRECHECK = (
+    "HANDOFF PRECHECK: before reporting a commit ready, run `python -B tools/molt_dev.py land "
+    "--repo <your checkout> --precheck-only` with the slot image. It runs the landing's static "
+    "gates through main's controller and queues nothing. Run it and your changed tests from the "
+    "landing runner's plain environment (`env -u CARGO_TARGET_DIR -u UV_PROJECT_ENVIRONMENT "
+    "TMPDIR=<data-volume dir>`), never under a sourced lane env.sh: its exported selectors hide "
+    "failures the runner sees. Fix every failure. Commit each green slice at once with exact "
+    "paths; uncommitted work dies with the worker."
+)
+
 GIT_CUSTODY = (
     "GIT CUSTODY: use the assigned managed checkout and exact owned paths; preserve other work. "
     "NEVER `git add -A` or broadly stage, reset, clean or overwrite. Reuse existing WIP and "
@@ -131,6 +142,7 @@ CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "MODEL_TIER",
     "TRIALITY_WIRING",
     "PREMISE_VERIFICATION",
+    "HANDOFF_PRECHECK",
 )
 
 MECHANIZES: dict[str, str] = {
@@ -147,6 +159,7 @@ MECHANIZES: dict[str, str] = {
     "MODEL_TIER": "M70",
     "TRIALITY_WIRING": "M63",
     "PREMISE_VERIFICATION": "M22/M24",
+    "HANDOFF_PRECHECK": "M05/M12",
 }
 
 KEY_PHRASES: dict[str, str] = {
@@ -163,6 +176,7 @@ KEY_PHRASES: dict[str, str] = {
     "MODEL_TIER": "Respect operator concurrency limits",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
+    "HANDOFF_PRECHECK": "--precheck-only",
 }
 
 
