@@ -22,6 +22,7 @@ def _execution(tmp_path: Path):
     log = tmp_path / "run.log"
     log.write_text("proof_queue running\n", encoding="utf-8")
     request_path, result_path = command_identity.execution_record_paths(log)
+    request_path.parent.mkdir(parents=True)
     command = ["owned-python", "owned-test.py"]
     envelope = {"schema": command_admission.ENVELOPE_SCHEMA, "purpose": "fixture"}
     row = {
