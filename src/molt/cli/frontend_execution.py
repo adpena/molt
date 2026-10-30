@@ -559,7 +559,7 @@ def _run_frontend_parallel_layer_batches(
                 result = future.result()
                 received_ns = time.time_ns()
                 # Persist THE MOMENT this module's lowering succeeds, not at the
-                # end of the layer (build-dedup doctrine 74 law 2: a killed /
+                # end of the layer (observed_inputs.md invariant 4: a killed /
                 # failed build must not forfeit completed steps). The parent used
                 # to defer every parallel persist to the post-layer consume loop,
                 # so a mid-layer kill (memory_guard SIGTERM / OOM / timeout) or a
@@ -730,7 +730,7 @@ def _consume_frontend_parallel_layer_result(
         return fail(result_error, json_output, command="build")
     result_timings = _frontend_parallel._frontend_result_timings(result)
     # Persistence now happens eagerly in _run_frontend_parallel_layer_batches the
-    # moment each worker's future resolves (build-dedup doctrine 74 law 2), so the
+    # moment each worker's future resolves (observed_inputs.md invariant 4), so the
     # consume loop only records timing and integrates -- it no longer defers the
     # per-module cache write to end-of-layer. cache-hit results were persisted
     # when first produced, and serial-fallback results persist in-worker
