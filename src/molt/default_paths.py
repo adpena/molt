@@ -1,4 +1,9 @@
-"""Shared stdlib-only user-state paths, including verified bundle bootstrap."""
+"""Shared user-state paths, including verified bundle bootstrap.
+
+packaging/bootstrap.py admits this module with its complete source closure,
+`RELEASE_SOURCE_MODULES`, before any `molt` package is importable. A module
+import outside the standard library joins that closure in the same change.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,12 @@ from dataclasses import replace
 from typing import Literal
 
 from .process_environment import ProcessEnvironment
-from .custody_layout import Regenerable, StorageLocation, storage_rule
+from .custody_layout import (
+    Regenerable,
+    StorageLocation,
+    enclosing_checkouts,
+    storage_rule,
+)
 
 
 def executable_environment_value(
@@ -149,10 +159,8 @@ def _default_user_state_cached(
         )
         if external is None and kind == "compile-cache":
             # The family binding is DX's authority, including its identity and
-            # missing-volume checks. Keep the bootstrap leaf independent of DX
-            # until selection is actually needed at runtime.
-            from .custody_layout import enclosing_checkouts
-
+            # missing-volume checks. DX is outside the bootstrap closure; import
+            # it only when selection is actually needed at runtime.
             checkouts = enclosing_checkouts(operation_cwd)
             if checkouts:
                 from .dx import configured_artifact_root
@@ -217,7 +225,7 @@ def user_state_location(
         sys.platform,
         _default_home_str(environ),
     )
-    # Bootstrap keeps this leaf stdlib-only. An active DX write check already
+    # DX is outside the bootstrap closure. An active DX write check already
     # loaded its observer; expose the typed selection without importing DX
     # merely for optional development instrumentation.
     observer = getattr(sys.modules.get("molt.dx"), "_storage_projection", None)

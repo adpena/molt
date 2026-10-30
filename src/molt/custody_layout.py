@@ -26,7 +26,9 @@ from functools import cache
 from pathlib import Path
 from collections.abc import Mapping
 
-from molt.path_custody import host_path_is_within, resolved_host_path_key
+# Relative: the release bootstrap admits this module in memory before any
+# `molt` package is importable (packaging/bootstrap.py).
+from .path_custody import host_path_is_within, resolved_host_path_key
 
 MAIN_CHECKOUT_DIRNAME = "molt-src"
 WORKTREES_DIRNAME = "worktrees"

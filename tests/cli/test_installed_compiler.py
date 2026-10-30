@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import sys
 
@@ -15,6 +16,12 @@ from molt import compiler_distribution as distribution
 from molt.cli import backend_binary, backend_execution, cargo_profiles
 from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+
+# The bootstrap's own declaration selects the source modules a test bundle
+# ships. Isolated execution, not this projection, proves the closure complete.
+BOOTSTRAP_SOURCE_MODULES: tuple[str, ...] = runpy.run_path(
+    str(Path(__file__).resolve().parents[2] / "packaging/bootstrap.py")
+)["RELEASE_SOURCE_MODULES"]
 
 
 @pytest.fixture
@@ -400,10 +407,8 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         "sys.exit(23)\n",
         encoding="utf-8",
     )
-    default_paths = package / "default_paths.py"
-    shutil.copyfile(repository / "src/molt/default_paths.py", default_paths)
-    process_environment = package / "process_environment.py"
-    shutil.copyfile(repository / "src/molt/process_environment.py", process_environment)
+    for module in BOOTSTRAP_SOURCE_MODULES:
+        shutil.copyfile(repository / f"src/molt/{module}.py", package / f"{module}.py")
 
     def identity(path):
         return {
@@ -425,8 +430,10 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
                     for name in (
                         "pyproject.toml",
                         "uv.lock",
-                        "src/molt/default_paths.py",
-                        "src/molt/process_environment.py",
+                        *(
+                            f"src/molt/{module}.py"
+                            for module in BOOTSTRAP_SOURCE_MODULES
+                        ),
                     )
                 ],
             }
@@ -574,7 +581,11 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
     assert not nested.exists()
 
     # Tampering must fail before uv can repair or execute the altered inputs.
-    for path in (launcher, default_paths, process_environment, source / "uv.lock"):
+    for path in (
+        launcher,
+        *(package / f"{module}.py" for module in BOOTSTRAP_SOURCE_MODULES),
+        source / "uv.lock",
+    ):
         original = path.read_bytes()
         path.write_bytes(original + b"corruption")
         try:
@@ -860,7 +871,7 @@ raise AssertionError('the molt process entry returned to its caller')
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("tamper", [None, "default_paths", "process_environment"])
+@pytest.mark.parametrize("tamper", [None, *BOOTSTRAP_SOURCE_MODULES])
 def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path, tamper):
     # Execute the real bootstrap boundary before any Molt environment exists.
     # Its source dependencies must be verified and loaded together in memory.
@@ -877,8 +888,7 @@ def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path, tam
     names = (
         "pyproject.toml",
         "uv.lock",
-        "src/molt/default_paths.py",
-        "src/molt/process_environment.py",
+        *(f"src/molt/{module}.py" for module in BOOTSTRAP_SOURCE_MODULES),
     )
     marker = tmp_path / "executed-before-admission"
     records = []
@@ -887,8 +897,8 @@ def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path, tam
         path.parent.mkdir(parents=True, exist_ok=True)
         content = (root / name).read_bytes()
         if tamper and path.suffix == ".py":
-            # Both declared modules have an observable execution effect. A
-            # mismatched peer must be refused before either effect can run.
+            # Every declared module has an observable execution effect. A
+            # mismatched peer must be refused before any effect can run.
             content += f"\n__import__('pathlib').Path({str(marker)!r}).write_text('executed')\n".encode()
         path.write_bytes(content)
         records.append(
