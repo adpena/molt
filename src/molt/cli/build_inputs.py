@@ -167,14 +167,30 @@ def _resolve_entry_module(
     return None
 
 
-def _entry_search_root(*, script_path: Path | None, source_cwd: Path) -> Path:
-    """CPython's sys.path[0]: resolved script directory, or cwd for ``-m``.
+def _entry_search_root(
+    *,
+    script_path: Path | None,
+    source_cwd: Path,
+    target: Target,
+    safe_path: bool,
+) -> Path | None:
+    """CPython's sys.path[0], selected by the declared target's platform.
 
     Python/pathconfig.c:_PyPathConfig_ComputeSysPath0 does not walk packages;
     Lib/runpy.py:_run_module_as_main does not add the selected module's parent.
-    ``script_path`` is the topology-custodied, resolved file selector.
+    The lexical selector is essential: Windows does not resolve script links.
+    POSIX readlink then realpath is equivalent to resolving the whole selector.
+    Modules use the invocation cwd; safe_path suppresses either addition.
     """
-    return script_path.parent if script_path is not None else source_cwd.resolve()
+    if safe_path:
+        return None
+    if script_path is None:
+        return source_cwd.resolve()
+    selector = source_cwd / script_path
+    if _target_sys_platform(target) == "win32":
+        return Path(os.path.abspath(selector)).parent
+    # Resolving must precede lexical '..' normalization on POSIX.
+    return selector.resolve().parent
 
 
 def _entry_package_root(
@@ -422,6 +438,8 @@ def _resolve_build_entry(
     build_config: Mapping[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     source_cwd: Path | None = None,
+    target: Target = TargetKind.NATIVE,
+    safe_path: bool = False,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
     import_topology = PythonImportTopology()
     selector, selector_error = _resolve_build_entry_selector(
@@ -437,6 +455,7 @@ def _resolve_build_entry(
     module = selector.module
     request_cwd = Path.cwd() if source_cwd is None else source_cwd
     source_path: Path | None = None
+    selector_path: Path | None = None
     entry_module: str | None = None
     if file_path:
         selector_path = request_cwd / Path(file_path)
@@ -447,7 +466,10 @@ def _resolve_build_entry(
             )
         source_path = selected_source.path
     entry_search_root = _entry_search_root(
-        script_path=source_path, source_cwd=request_cwd
+        script_path=selector_path,
+        source_cwd=request_cwd,
+        target=target,
+        safe_path=safe_path,
     )
     module_root_resolution = _resolve_module_root_resolution(
         project_root,
@@ -537,7 +559,7 @@ def _resolve_build_entry(
     return _ResolvedBuildEntry(
         source_path=source_path,
         entry_module=entry_module,
-        module_roots=list(dict.fromkeys(root.resolve() for root in module_roots)),
+        module_roots=module_roots,
         entry_source=entry_source,
         entry_tree=entry_tree,
         entry_snapshot=entry_snapshot,
@@ -960,6 +982,7 @@ def _prepare_build_inputs(
     audit_log: str | None = None,
     io_mode: str | None = None,
     respect_pythonpath: bool = False,
+    safe_path: bool = False,
     lib_paths: list[str] | None = None,
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
@@ -1030,6 +1053,8 @@ def _prepare_build_inputs(
         lib_paths=lib_paths or [],
         target_python=prepared_build_config.target_python,
         build_config=build_config,
+        target=target,
+        safe_path=safe_path,
     )
     if resolved_build_entry_error is not None:
         return None, resolved_build_entry_error
@@ -1047,7 +1072,7 @@ def _resolve_module_root_resolution(
     project_root: Path,
     cwd_root: Path,
     *,
-    entry_search_root: Path,
+    entry_search_root: Path | None,
     respect_pythonpath: bool,
     lib_paths: list[str] | None = None,
     env: Mapping[str, str] | None = None,
@@ -1073,7 +1098,12 @@ def _resolve_module_root_resolution(
     # Search order starts with the entry's sys.path[0], independently of
     # program ownership. Project/cwd roots still own program sources below,
     # but must not make an enclosing package importable from a script.
-    add_root(entry_search_root, external=False)
+    if entry_search_root is not None:
+        # The entry authority already chose physical POSIX or lexical Windows
+        # semantics. Observe custody without canonicalizing that choice again.
+        topology.probe(entry_search_root)
+        module_roots.append(entry_search_root)
+        internal_roots.add(entry_search_root)
     hermetic_module_roots = request_env.get(
         "MOLT_HERMETIC_MODULE_ROOTS", ""
     ).lower() in {
@@ -1164,7 +1194,7 @@ def _resolve_module_roots(
     project_root: Path,
     cwd_root: Path,
     *,
-    entry_search_root: Path,
+    entry_search_root: Path | None,
     respect_pythonpath: bool,
     lib_paths: list[str] | None = None,
 ) -> list[Path]:
@@ -1244,6 +1274,8 @@ def _resolve_request_entry(
         build_config=request.build_config,
         env=env,
         source_cwd=source_cwd,
+        target=request.target,
+        safe_path=request.safe_path,
     )
 
 

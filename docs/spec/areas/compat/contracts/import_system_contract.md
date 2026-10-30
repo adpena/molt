@@ -431,7 +431,7 @@ Metadata construction and native-provider publication use that same cleanup path
 - Runtime mutation of `sys.path` is allowed only when explicitly enabled.
 - Resolution order is stable and documented in build metadata.
 - The entry search root is CPython's `sys.path[0]`: a file entry uses the
-  resolved script's own directory, including when it lies inside a package;
+  script's own directory, including when it lies inside a package;
   `--module pkg` and `--module pkg.sub` use the invocation cwd. Module
   selection never adds the package directory or changes cwd to its parent.
   Outside the package parent, module selection requires an additional search
@@ -444,6 +444,18 @@ Metadata construction and native-provider publication use that same cleanup path
   See CPython [pathconfig.c](https://github.com/python/cpython/blob/v3.12.11/Python/pathconfig.c#L394-L518),
   [main.c](https://github.com/python/cpython/blob/v3.12.11/Modules/main.c#L584-L637),
   and [runpy.py](https://github.com/python/cpython/blob/v3.12.11/Lib/runpy.py#L173-L200).
+  `_PyPathConfig_ComputeSysPath0` (`Python/pathconfig.c:394`) is unchanged from
+  CPython 3.12 through 3.15 development: `-m` uses the absolute invocation cwd;
+  POSIX scripts take `readlink` then `realpath`, while Windows uses
+  `GetFullPathNameW` without resolving script links. Molt chooses this branch
+  from the declared compilation target, not the compiler host, and retains
+  the lexical script selector until that choice. `molt build -P`/`--safe-path`
+  and nonempty `PYTHONSAFEPATH` suppress the implicit entry root, as
+  `pymain_run_python` (`Modules/main.c:588`) does for `config->safe_path`.
+  Explicit search roots remain available. This is build-time import admission;
+  it does not claim runtime startup-flag qualification. CPython's `-c` empty
+  path and directory/zip `main_importer_path` are separate entry forms, outside
+  Molt's file/module build selector contract.
 
 ### 3.2 Allowed Forms
 - `import x`, `import x as y`

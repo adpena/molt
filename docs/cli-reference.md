@@ -89,6 +89,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--diagnostics-file PATH` | Path for diagnostics JSON output. |
 | `--diagnostics-verbosity {summary,default,full}` | Stderr diagnostics detail level. |
 | `--respect-pythonpath / --no-respect-pythonpath` | Include PYTHONPATH entries as module roots. |
+| `-P / --safe-path` | Omit the implicit script-directory or invocation-cwd import root. Nonempty `PYTHONSAFEPATH` also selects this build-time policy; explicit roots remain available. |
 | `--runtime-feedback PATH` | Path to runtime feedback artifact for hot-function hints. |
 
 Diagnostics JSON includes `binary_image_closure`, the same closure plan used by
