@@ -424,9 +424,7 @@ class CommandExecutor:
     repo_root: Path
 
     @classmethod
-    def for_file(
-        cls, source_file: str | Path, *, stem: GuardStem
-    ) -> "CommandExecutor":
+    def for_file(cls, source_file: str | Path, *, stem: GuardStem) -> "CommandExecutor":
         root = bind_repository_imports(source_file)
         return cls(prefix=stem, repo_root=root)
 
