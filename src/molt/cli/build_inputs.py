@@ -109,6 +109,8 @@ class _BuildEntrySelector:
 class _ModuleRootResolution:
     roots: tuple[Path, ...]
     external_roots: tuple[Path, ...]
+    # Project, cwd, src and vendor roots: the program's own source.
+    program_roots: tuple[Path, ...]
     # MOLT_MODULE_ROOTS entries whose paths do not exist. Explicit env roots
     # are operator intent; dropping one silently turns a one-line config error
     # into an unattributable downstream custody failure, so callers fail
@@ -164,6 +166,28 @@ def _resolve_entry_module(
     if mod_path is not None:
         return stripped, mod_path
     return None
+
+
+def _entry_package_root(source_path: Path, entry_module: str) -> Path | None:
+    """The directory of the entry's top-level package, or None for a module.
+
+    ``python -m probe_pkg`` runs the package it names (Lib/runpy.py:
+    _run_module_as_main), so that package is the program even when its root
+    is an external root. The walk follows the dotted name up from the entry
+    file; an aliased root (MOLT_MODULE_ROOTS ``prefix=path``) whose directory
+    name differs ends the walk at the directory the alias names.
+    """
+    package_parts = entry_module.split(".")
+    if source_path.name != "__init__.py":
+        package_parts = package_parts[:-1]
+    if not package_parts:
+        return None
+    directory = source_path.parent
+    for name in reversed(package_parts[1:]):
+        if directory.name != name:
+            return directory
+        directory = directory.parent
+    return directory
 
 
 def _build_config_entry_value(
@@ -402,6 +426,7 @@ def _resolve_build_entry(
         )
     module_roots = list(module_root_resolution.roots)
     external_module_roots = tuple(module_root_resolution.external_roots)
+    program_module_roots = list(module_root_resolution.program_roots)
     source_path: Path | None = None
     entry_module: str | None = None
     if file_path:
@@ -412,9 +437,14 @@ def _resolve_build_entry(
                 f"File not found: {selector_path}", json_output, command=command
             )
         source_path = selected_source.path
-        module_roots.append(
-            _entry_module_root_for_path(source_path, import_topology=import_topology)
-        )
+        # The root a script adds is the program's own directory: its
+        # sys.path[0] (Python/pathconfig.c:_PyPathConfig_ComputeSysPath0)
+        # when the script is not inside a package.
+        script_root = _entry_module_root_for_path(
+            source_path, import_topology=import_topology
+        ).resolve()
+        module_roots.append(script_root)
+        program_module_roots.append(script_root)
         module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     if module:
         resolved = _resolve_entry_module(
@@ -445,6 +475,9 @@ def _resolve_build_entry(
             json_output,
             command=command,
         )
+    entry_package_root = _entry_package_root(source_path, entry_module)
+    if entry_package_root is not None:
+        program_module_roots.append(entry_package_root.resolve())
     try:
         entry_snapshot = PythonSourceSnapshot.capture(source_path)
         entry_source = entry_snapshot.text
@@ -483,6 +516,7 @@ def _resolve_build_entry(
         module_root_aliases=module_root_resolution.module_root_aliases,
         target_python=target_python,
         external_module_roots=external_module_roots,
+        program_module_roots=tuple(dict.fromkeys(program_module_roots)),
         image_scope=_BinaryImageScope.from_entry(
             kind=_binary_image_kind(
                 selector=selector,
@@ -1085,6 +1119,7 @@ def _resolve_module_root_resolution(
     return _ModuleRootResolution(
         roots=roots,
         external_roots=external,
+        program_roots=tuple(root for root in roots if root in internal_roots),
         missing_env_roots=tuple(missing_env_roots),
         module_root_aliases=tuple(dict.fromkeys(module_root_aliases)),
     )

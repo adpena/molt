@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.wasm_linked_runner import (
+    ModuleEntry,
     build_wasm_linked,
     require_wasm_toolchain,
+    run_cpython_reference,
     run_wasm_linked,
 )
 
@@ -49,11 +51,7 @@ def test_wasm_importlib_import_forms_and_os_sys_bootstrap_smoke(
     ]
 
 
-def test_wasm_importlib_package_main_alias_identity_smoke(
-    tmp_path: Path,
-) -> None:
-    require_wasm_toolchain()
-    root = Path(__file__).resolve().parents[1]
+def _write_package_main_probe(tmp_path: Path) -> Path:
     pkg = tmp_path / "probe_pkg"
     (pkg / "subpkg").mkdir(parents=True)
     (pkg / "__init__.py").write_text("", encoding="utf-8")
@@ -96,12 +94,27 @@ def test_wasm_importlib_package_main_alias_identity_smoke(
         "print(os_alias.__name__)\n",
         encoding="utf-8",
     )
+    return src
 
-    output_wasm = build_wasm_linked(root, src, tmp_path)
-    run = run_wasm_linked(root, output_wasm)
 
-    assert run.returncode == 0, run.stderr
-    assert run.stdout.splitlines() == [
+def test_wasm_importlib_package_main_alias_identity_smoke(
+    tmp_path: Path,
+) -> None:
+    """``python -m probe_pkg``: the package is the program.
+
+    Lib/runpy.py:_run_module_as_main imports the package, runs
+    ``probe_pkg.__main__`` as ``__main__`` with ``__package__ == "probe_pkg"``,
+    and the entry's submodules import their siblings (helper imports
+    .sibling). The package root is an explicit module root, so the build must
+    still compile the package's whole closure. CPython is the oracle.
+    """
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    _write_package_main_probe(tmp_path / "src")
+    entry = ModuleEntry("probe_pkg", tmp_path / "src")
+
+    expected = run_cpython_reference(entry)
+    assert expected.stdout.splitlines() == [
         "__main__",
         "probe_pkg",
         "True",
@@ -114,6 +127,46 @@ def test_wasm_importlib_package_main_alias_identity_smoke(
         "sys",
         "os",
     ]
+    output_wasm = build_wasm_linked(root, entry, tmp_path / "out")
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout == expected.stdout
+
+
+def test_wasm_importlib_package_main_as_script_rejects_relative_import(
+    tmp_path: Path,
+) -> None:
+    """``python probe_pkg/__main__.py`` runs a script, not the package.
+
+    A script has no parent package, so its first relative import raises
+    ImportError (Python/import.c:resolve_name). Molt builds a file entry as a
+    script and must fail the same way. CPython is the oracle.
+    """
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    pkg = tmp_path / "src" / "probe_pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "helper.py").write_text("VALUE = 'helper-ok'\n", encoding="utf-8")
+    src = pkg / "__main__.py"
+    src.write_text(
+        "print('script-start')\nfrom . import helper\nprint(helper.VALUE)\n",
+        encoding="utf-8",
+    )
+
+    expected = run_cpython_reference(src, check=False)
+    assert expected.stdout == "script-start\n"
+    assert expected.returncode == 1
+    assert expected.stderr.splitlines()[-1] == (
+        "ImportError: attempted relative import with no known parent package"
+    )
+    output_wasm = build_wasm_linked(root, src, tmp_path / "out")
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == expected.returncode, run.stdout + run.stderr
+    assert run.stdout == expected.stdout
+    assert run.stderr.splitlines()[-1] == expected.stderr.splitlines()[-1]
 
 
 def test_wasm_importlib_top_level_import_runs_module_body(tmp_path: Path) -> None:

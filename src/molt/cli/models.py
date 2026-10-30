@@ -1497,7 +1497,20 @@ class _StagedExternalPackageNativeArtifact:
 
 @dataclass(frozen=True)
 class _ImportAdmissionPolicy:
+    """Which discovered sources the build compiles.
+
+    A source belongs to the deepest root that contains it. It is external when
+    that root is an external root (MOLT_MODULE_ROOTS, --lib-path, PYTHONPATH,
+    site-packages), and then only direct entry imports and admitted packages
+    are compiled. Program roots hold the program's own source: the project,
+    cwd, src and vendor roots, the root a script entry adds and the entry's
+    top-level package (``_resolve_build_entry``). A program root wins over an
+    external root that equals or contains it, so the entry's own package is
+    never third-party code, wherever its root came from.
+    """
+
     external_roots: tuple[Path, ...] = ()
+    program_roots: tuple[Path, ...] = ()
     admitted_external_packages: frozenset[str] = frozenset()
     native_artifact_source_packages: frozenset[str] = frozenset()
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = field(
@@ -1510,8 +1523,13 @@ class _ImportAdmissionPolicy:
     )
 
     def __post_init__(self) -> None:
+        program_roots = tuple(
+            dict.fromkeys(root.resolve() for root in self.program_roots)
+        )
         external_roots = tuple(
-            dict.fromkeys(root.resolve() for root in self.external_roots)
+            root
+            for root in dict.fromkeys(root.resolve() for root in self.external_roots)
+            if root not in program_roots
         )
         admitted = frozenset(
             name.strip()
@@ -1524,6 +1542,7 @@ class _ImportAdmissionPolicy:
             if name and name.strip()
         )
         object.__setattr__(self, "external_roots", external_roots)
+        object.__setattr__(self, "program_roots", program_roots)
         object.__setattr__(self, "admitted_external_packages", admitted)
         object.__setattr__(
             self,
@@ -1539,13 +1558,22 @@ class _ImportAdmissionPolicy:
         except KeyError:
             pass
         resolved_path = path.resolve()
-        found = next(
-            (
-                root
-                for root in self.external_roots
-                if resolved_path == root or resolved_path.is_relative_to(root)
-            ),
-            None,
+
+        def deepest(roots: tuple[Path, ...]) -> Path | None:
+            containing = [root for root in roots if resolved_path.is_relative_to(root)]
+            return (
+                max(containing, key=lambda root: len(root.parts))
+                if containing
+                else None
+            )
+
+        external = deepest(self.external_roots)
+        program = deepest(self.program_roots)
+        found = (
+            external
+            if external is not None
+            and (program is None or len(external.parts) > len(program.parts))
+            else None
         )
         self._roots_by_path[path] = found
         return found
@@ -1612,6 +1640,7 @@ class _ImportAdmissionPolicy:
     def digest_payload(self) -> dict[str, Any]:
         return {
             "external_roots": [str(root) for root in self.external_roots],
+            "program_roots": [str(root) for root in self.program_roots],
             "admitted_external_packages": sorted(self.admitted_external_packages),
             "native_artifact_source_packages": sorted(
                 self.native_artifact_source_packages
@@ -1654,6 +1683,7 @@ class _ResolvedBuildEntry:
     import_topology: PythonImportTopology = field(default_factory=PythonImportTopology)
     module_root_aliases: tuple[tuple[str, Path], ...] = ()
     external_module_roots: tuple[Path, ...] = ()
+    program_module_roots: tuple[Path, ...] = ()
     image_scope: _BinaryImageScope | None = None
 
     def __post_init__(self) -> None:
