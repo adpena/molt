@@ -2654,9 +2654,7 @@ def test_metadata_deadline_preserves_primary_guard_error_and_receipt(
     def allocate(**kwargs):
         allocation = original_allocation(dir=tmp_path, **kwargs)
         path = Path(allocation.name)
-        allocations.append(
-            (path, temporary_artifacts._identity(path), weakref.ref(allocation))
-        )
+        allocations.append((path, allocation._identity, weakref.ref(allocation)))
         return allocation
 
     monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)
