@@ -748,10 +748,10 @@ sourced prior art and cheapest confirming experiment are in
 | --- | --- | --- |
 | A. Typed op and runtime-call ABI | Backends restate op kinds, runtime symbols, ownership and target legality by hand | HF-197, HF-485, HF-384, HF-553, HF-560, HF-262, HF-202, V1-26, HF-501, HF-124, HF-125, HF-211, HF-279, HF-287, HF-288, HF-596 |
 | B. Binding-flow resolution | Worst-case rebinding and spelling-matched names in `python_binding_flow` | HF-203, HF-226, HF-181, HF-140, HF-126, HF-79 |
-| C. Proof cells from the dependency graph | Hand-written selection globs restate the import, Cargo and generator graphs; HF-63, HF-66, HF-186 and HF-484 are defects a running cell exposes, and HF-87, HF-178 and HF-533 are lint-mask debt | HF-73, HF-99, HF-565, HF-314, HF-433, HF-210, HF-509, HF-37, HF-42, HF-56, HF-63, HF-66, HF-186, HF-484, HF-87, HF-178, HF-533, HF-585, HF-594, HF-601, HF-605 |
+| C. Proof coverage | Proof cells are named by hand, so whole trees, feature-gated targets, Lean modules and masked code run in no cell and their failures go unseen | HF-73, HF-99, HF-565, HF-314, HF-210, HF-509, HF-37, HF-42, HF-56, HF-63, HF-66, HF-186, HF-484, HF-87, HF-178, HF-533, HF-594 |
 | D. Verdict truth (executable ledger) | Expected failures and failure classes live in snapshots and prose | HF-563, HF-106, HF-295, HF-215, HF-488, HF-95, HF-530, V1-03, V1-04, HF-388, HF-422, HF-545, HF-577 |
 | E. Performance verdict truth | No armed baseline or deterministic axis | V1-07, HF-222, HF-459, HF-460, HF-245 |
-| F. Artifact and execution identity | Identities keyed by path, name or environment instead of content | V1-01, V1-08, V1-09, V1-15, HF-372, HF-473, HF-244, HF-300, HF-78, HF-385, HF-491, HF-439, HF-522, HF-434, HF-363, HF-238, HF-50, HF-469, HF-586, HF-587, HF-590, HF-604 |
+| F. Observed inputs and content identity | What a build, test or proof reads, and that content's identity, are restated in about ten places (static whole-module reachability, hand-written closure lists, path-, environment- and device-keyed identities), so keys split, selection is near-total and nothing is reused | V1-01, V1-08, V1-09, V1-15, HF-372, HF-473, HF-244, HF-300, HF-78, HF-385, HF-491, HF-439, HF-522, HF-434, HF-363, HF-238, HF-50, HF-469, HF-586, HF-587, HF-590, HF-604, HF-605, HF-601, HF-585, HF-433, HF-591, HF-334, HF-35 |
 | G. Fabricated support surfaces | Surfaces link and claim success where a build-time refusal belongs | HF-273, HF-195, HF-123, HF-268, HF-282, V1-11, V1-17, HF-574, HF-351, HF-120 |
 | H. Import system and stdlib surface | Import-machinery and stdlib API gaps CPython's own tests reach | HF-558, HF-559, HF-383, HF-539, HF-276, HF-297, HF-247, HF-483, HF-569, HF-578, HF-579, HF-597, HF-598 |
 | I. Frame, exception and coroutine model | One frame/exception/suspension model per backend | HF-442, HF-451, HF-452, HF-213, HF-492, HF-548, HF-261, HF-561, HF-229, HF-235, HF-02, HF-156, HF-157, HF-158, HF-589, HF-593 |
@@ -763,8 +763,8 @@ sourced prior art and cheapest confirming experiment are in
 | O. Versioned target facts | Facts read from the build host instead of the declared version and target | V1-16, V1-22, V1-23, V1-35, HF-65, HF-122, HF-568, HF-554, HF-567 |
 | P. Mid-end fact soundness and pass firing | Unchecked rewrites, inert passes and a stdlib skip with no stated exit | HF-201, HF-204, HF-214, HF-555, HF-572, HF-573 |
 | Q. User compile and edit latency | No early cutoff on unchanged inputs; HF-26, HF-371 and HF-172 (first-link cost), HF-517 (guard overhead), HF-458 (PGO) and HF-225 (daemon admission) are first-build costs | HF-250, HF-252, HF-254, HF-266, HF-285, HF-357, HF-516, HF-173, HF-517, HF-26, HF-371, HF-172, HF-263, HF-458, HF-225 |
-| R. Development custody apparatus | Custody records that guess ownership | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370, HF-582, HF-583, HF-591, HF-602 |
-| S. Molt self-build and CI throughput | Cost of building and checking Molt itself | HF-10, HF-22, HF-27, HF-190, HF-35, HF-334, HF-373, HF-291, HF-53, HF-93, HF-68, HF-170, HF-96, HF-599, HF-600, HF-603 |
+| R. Development state ownership and reconciliation | Molt-created processes and state have no declared-state reconciler: ownership is guessed, liveness has four implementations, and a crash or reboot leaves state nobody owns | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370, HF-582, HF-583, HF-602 |
+| S. Landing pipeline and self-build cost | The merge gate tries to be complete and serial instead of a fast presubmit plus a continuous postsubmit farm, and building Molt repeats links, targets and toolchain work | HF-10, HF-22, HF-27, HF-190, HF-373, HF-291, HF-53, HF-93, HF-68, HF-170, HF-96, HF-599, HF-600, HF-603 |
 | T. Installed delivery and witnesses | The installed product and its end-to-end witnesses | V1-02, V1-06, V1-24, V1-28, HF-62, HF-64, HF-454, HF-576, HF-386, HF-04, HF-380, HF-510, HF-575 |
 
 Edges: A -> P (TypeGuard semantics before HF-573), A -> J (inline fast paths
@@ -775,10 +775,15 @@ bindings shrink closures, enable direct calls and drive admission); D -> G
 F -> Q, F -> E, F -> T (early cutoff, the metric receiver and installed delivery
 need content identity); E -> J and E -> P (an armed baseline removes silent
 performance regressions); K -> M (codec callbacks need reentrant ownership);
-J -> S (HF-206 before the HF-490 split); C -> S and C -> every landing.
+J -> S (HF-206 before the HF-490 split); F -> S, F -> C and F -> every landing
+(observed input closures and result reuse make the merge gate small, and
+coverage cells select through the same graph); F -> R (reconciled records
+keep durable identity); C -> S (coverage moves heavy cells post-commit).
 
-Levels: 0 = A, B, C, D, F (multipliers) and I, K, L, N, O, R (no
-prerequisites); 1 = E, G, Q, M; 2 = J, P, H; 3 = S, T.
+Levels: 0 = A, B, C, D, F (multipliers) and I, K, L, N, O (no
+prerequisites); 1 = E, G, Q, M, R; 2 = J, P, H; 3 = S, T. Re-cut on
+2026-10-30: C, F, R and S were cut by symptom area; F now holds the one
+missing authority they shared (observed inputs and content identity).
 
 Verification has a decision boundary. Before dispatch, name the changed
 invariant, the defect an independent oracle would detect, and the result needed
