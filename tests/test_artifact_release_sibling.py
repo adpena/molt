@@ -345,3 +345,72 @@ def test_legacy_journal_recovery_reports_current_residue(tmp_path, monkeypatch):
     with publication.publication_locks([final]):
         assert final.read_bytes() == b"old generation"
     assert not current.exists()
+
+
+def test_legacy_witness_capture_waits_for_the_complete_lock_set(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    parents = [tmp_path / "one", tmp_path / "two"]
+    transaction = "c" * 32
+    journals = [
+        parent / f".molt-artifact-publication-{transaction}.json" for parent in parents
+    ]
+    replacements = []
+    for parent in parents:
+        parent.mkdir()
+        final = parent / "output"
+        final.write_bytes(b"old")
+        staged = publication.staged_output_path(final)
+        staged.write_bytes(b"new")
+        backup = publication.staged_output_path(final, purpose="backup", suffix=".old")
+        replacements.append(
+            {
+                "final": str(final),
+                "staged": str(staged),
+                "backup": str(backup),
+                "had_final": True,
+                "prior_identity": [final.stat().st_dev, final.stat().st_ino],
+                "installed_identity": [staged.stat().st_dev, staged.stat().st_ino],
+            }
+        )
+        final.replace(backup)
+        staged.replace(final)
+    payload = {
+        "schema": "molt.artifact-publication.v2",
+        "transaction_id": transaction,
+        "state": "prepared",
+        "journals": list(map(str, journals)),
+        "replacements": replacements,
+        "removals": [],
+    }
+    for journal in journals:
+        journal.write_text(json.dumps(payload), encoding="utf-8")
+    held = {}
+    acquire, release = publication._acquire_file_lock, publication._release_file_lock
+    upgrade = publication._upgrade_publication_journal
+    captures = []
+
+    def acquire_parent(path, **kwargs):
+        handle = acquire(path, **kwargs)
+        held[id(handle)] = path.parent
+        return handle
+
+    def release_parent(handle):
+        release(handle)
+        del held[id(handle)]
+
+    def capture_witnesses(value):
+        assert set(parents).issubset(held.values())
+        captures.append(set(held.values()))
+        return upgrade(value)
+
+    monkeypatch.setattr(publication, "_acquire_file_lock", acquire_parent)
+    monkeypatch.setattr(publication, "_release_file_lock", release_parent)
+    monkeypatch.setattr(publication, "_upgrade_publication_journal", capture_witnesses)
+    with publication.publication_locks([Path(replacements[0]["final"])]):
+        assert all(
+            Path(entry["final"]).read_bytes() == b"old" for entry in replacements
+        )
+    assert captures and not held
+    assert all(not journal.exists() for journal in journals)
