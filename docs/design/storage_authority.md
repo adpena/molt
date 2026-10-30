@@ -115,7 +115,11 @@ an account's global history. Old temp names select signal for preservation,
 not disposable data. Full recursive metadata observes payload reads and writes;
 held native locks, guards, sockets and recent use retain the source. Raw bytes
 are collected only after lossless archive verification. Source indices remain
-durable. Custom historical temp roots must be supplied explicitly.
+durable in surviving Git custody, allowing even empty legacy temp directories
+to leave the host temp namespace. Empty directories are not mistaken for
+already-indexed evidence. Native daemon fixture `moltd-*` paths share this
+legacy class; unknown producer prefixes and links are reported and retained.
+Custom historical temp roots must be supplied explicitly.
 
 A superseded registered queue sandbox must be detached, clean of source changes,
 idle for a day, and free of runner/integration and lifetime locks. Its complete
