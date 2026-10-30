@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import tempfile
 import time
 from collections.abc import Callable, Sequence
@@ -47,7 +46,7 @@ from tools.molt_dev_controller import (
 from tools.detached_execution import launch_detached, python_command
 from tools.venv_exec import venv_python
 from molt.path_custody import host_path_is_within
-from molt.custody_layout import landing_sandbox_path
+from molt.dx import storage_path
 from molt import process_model
 from molt.file_locks import FileLockTimeout
 from tools.driver_errors import (
@@ -128,12 +127,16 @@ class LandingRequest:
 class QueuePaths:
     root: Path
     sandbox: Path
+    evidence: Path
 
     @classmethod
     def of(cls, common_dir: Path, *, primary_checkout: Path) -> "QueuePaths":
         return cls(
             common_dir / "molt" / "landing-queue",
-            landing_sandbox_path(primary_checkout, common_dir),
+            storage_path(primary_checkout, "landing-sandbox", common_dir=common_dir),
+            storage_path(
+                primary_checkout, "integration-receipts", common_dir=common_dir
+            ),
         )
 
     @property
@@ -471,13 +474,12 @@ def retire_old_records(paths: QueuePaths, *, now: float) -> None:
             reverse=True,
         )
         for entry in finished[RUNNER_LOGS_KEPT:]:
-            shutil.rmtree(entry)
-    if paths.results.is_dir():
-        for result in paths.results.glob("*.json"):
-            if now - result.stat().st_mtime > RESULT_DAYS * 86400:
-                record = json.loads(result.read_text(encoding="utf-8"))
-                if record.get("status") != LandingStatus.LANDED_RETIREMENT_FAILED:
-                    result.unlink()
+            from molt.checkout_state import compact_evidence
+
+            compact_evidence(
+                entry, paths.evidence / "queue", kind="integration-receipts"
+            )
+    # Results are small coordination records and retain the landing signal.
 
 
 # --------------------------------------------------------------------------
@@ -635,7 +637,11 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
             # The caller may be an editable image whose site startup imports
             # its checkout even under -I. Use the controller's existing locked,
             # non-editable dependency environment while its source is retained.
-            molt_dev_controller._sync_environment(controller.root)
+            from molt.dx import RunContext
+
+            molt_dev_controller._sync_environment(
+                controller.root, environment=RunContext(repo).canonical_env(os.environ)
+            )
             runner_prefix = python_command(str(controller.driver))
             runner_prefix[0] = str(venv_python(controller.root / ENVIRONMENT_NAME))
             if "-I" not in runner_prefix:

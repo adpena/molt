@@ -432,11 +432,19 @@ def test_reached_windows_locale_provider_resolves_implicit_native_host(
         return host_triple
 
     monkeypatch.setattr(native_target, "_host_target_triple", host_target)
-    message = _refusal_for_reached_symbols(
-        "molt_locale_getdefaultlocale", profile="full", target_triple=None
-    )
+    # `target_triple=None` means the host, and the profile ladder caches its
+    # unsupported features under that key per process. Resolve this test's host
+    # from a cold cache and leave no patched host behind for later tests.
+    unsupported = RUNTIME_FEATURES.runtime_features_unsupported_on_target
+    unsupported.cache_clear()
+    try:
+        message = _refusal_for_reached_symbols(
+            "molt_locale_getdefaultlocale", profile="full", target_triple=None
+        )
+    finally:
+        unsupported.cache_clear()
     assert (message is None) is available
-    assert calls == [host_triple]
+    assert calls and set(calls) == {host_triple}
 
 
 def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
@@ -449,6 +457,9 @@ def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
             "unrestricted/rejected dead functions must not resolve a host target"
         )
 
+    # The profile's own features may resolve the host; only the refusal check
+    # below must not, so compute them before the resolver is forbidden.
+    profile_features = _full_features()
     monkeypatch.setattr(
         native_target, "resolve_native_target_spec", unexpected_resolution
     )
@@ -464,7 +475,7 @@ def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
         RF.reachability_profile_feature_refusal(
             RF.reached_intrinsic_symbols(functions),
             profile_name="full",
-            profile_features=_full_features(),
+            profile_features=profile_features,
         )
         is None
     )

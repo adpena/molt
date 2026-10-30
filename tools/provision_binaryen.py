@@ -345,58 +345,66 @@ def _verify_installation(root: Path, asset: BinaryenHostAsset) -> Path:
 
 
 def provision_binaryen(output: Path) -> Path:
-    lexical_output = output.expanduser().absolute()
-    if lexical_output.exists() or lexical_output.is_symlink():
-        return _verify_installation(lexical_output, binaryen_host_asset(ROOT))
-    lexical_output.parent.mkdir(parents=True, exist_ok=True)
-    output = lexical_output.parent.resolve(strict=True) / lexical_output.name
-    if output.exists() or output.is_symlink():
-        return _verify_installation(output, binaryen_host_asset(ROOT))
 
-    asset = binaryen_host_asset(ROOT)
-    with tempfile.TemporaryDirectory(prefix="molt-binaryen-", dir=output.parent) as raw:
-        temporary = Path(raw)
-        archive_path = temporary / f"{asset.archive_root}.tar.gz"
-        _download(asset.url, archive_path, size=asset.size, sha256=asset.sha256)
-        extracted = temporary / "extract"
-        extracted.mkdir()
-        _extract_archive_once(archive_path, extracted, asset)
+    from molt.checkout_state import toolchain_state_use
 
-        installation = extracted / asset.archive_root
-        wasm_opt = _wasm_opt_path(installation, asset)
-        if not wasm_opt.is_file():
-            raise ValueError(
-                f"Binaryen archive is missing required executable: {asset.executable}"
-            )
-        if not asset.id.startswith("windows-") and not os.access(wasm_opt, os.X_OK):
-            raise ValueError(
-                f"Binaryen archive executable is not executable: {asset.executable}"
-            )
-        observed = _installation_identity(installation, asset)
-        observed_version = _read_wasm_opt_version(
-            wasm_opt, expected_sha256=asset.executable_sha256
-        )
-        if observed_version != asset.version:
-            raise ValueError(
-                "Binaryen executable identity differs from the exact host asset: "
-                f"expected {asset.version!r}, found {observed_version!r}"
-            )
+    with toolchain_state_use((output,), create=True):
+        lexical_output = output.expanduser().absolute()
+        if lexical_output.exists() or lexical_output.is_symlink():
+            return _verify_installation(lexical_output, binaryen_host_asset(ROOT))
+        lexical_output.parent.mkdir(parents=True, exist_ok=True)
+        output = lexical_output.parent.resolve(strict=True) / lexical_output.name
+        if output.exists() or output.is_symlink():
+            return _verify_installation(output, binaryen_host_asset(ROOT))
 
-        receipt = validate_binaryen_install_receipt(
-            {
-                "schema": INSTALL_RECEIPT_SCHEMA,
-                "asset": asdict(asset),
-                "tree": observed.tree.as_record(),
-            }
-        )
-        (installation / INSTALL_RECEIPT_FILENAME).write_text(
-            json.dumps(receipt, allow_nan=False, separators=(",", ":"), sort_keys=True)
-            + "\n",
-            encoding="utf-8",
-            newline="",
-        )
-        durable_publish_directory_exclusive(installation, output)
-    return output
+        asset = binaryen_host_asset(ROOT)
+        with tempfile.TemporaryDirectory(
+            prefix="molt-binaryen-", dir=output.parent
+        ) as raw:
+            temporary = Path(raw)
+            archive_path = temporary / f"{asset.archive_root}.tar.gz"
+            _download(asset.url, archive_path, size=asset.size, sha256=asset.sha256)
+            extracted = temporary / "extract"
+            extracted.mkdir()
+            _extract_archive_once(archive_path, extracted, asset)
+
+            installation = extracted / asset.archive_root
+            wasm_opt = _wasm_opt_path(installation, asset)
+            if not wasm_opt.is_file():
+                raise ValueError(
+                    f"Binaryen archive is missing required executable: {asset.executable}"
+                )
+            if not asset.id.startswith("windows-") and not os.access(wasm_opt, os.X_OK):
+                raise ValueError(
+                    f"Binaryen archive executable is not executable: {asset.executable}"
+                )
+            observed = _installation_identity(installation, asset)
+            observed_version = _read_wasm_opt_version(
+                wasm_opt, expected_sha256=asset.executable_sha256
+            )
+            if observed_version != asset.version:
+                raise ValueError(
+                    "Binaryen executable identity differs from the exact host asset: "
+                    f"expected {asset.version!r}, found {observed_version!r}"
+                )
+
+            receipt = validate_binaryen_install_receipt(
+                {
+                    "schema": INSTALL_RECEIPT_SCHEMA,
+                    "asset": asdict(asset),
+                    "tree": observed.tree.as_record(),
+                }
+            )
+            (installation / INSTALL_RECEIPT_FILENAME).write_text(
+                json.dumps(
+                    receipt, allow_nan=False, separators=(",", ":"), sort_keys=True
+                )
+                + "\n",
+                encoding="utf-8",
+                newline="",
+            )
+            durable_publish_directory_exclusive(installation, output)
+        return output
 
 
 def _write_github_outputs(path: Path, outputs: dict[str, Path]) -> None:

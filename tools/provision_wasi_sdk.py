@@ -281,28 +281,39 @@ def provision_wasi_sdk(
     tree matches its receipt; it is never repaired or replaced in place.
     """
 
-    asset = llvm_toolchain.wasi_sdk_host_asset(root)
-    prefix = llvm_toolchain.wasi_sdk_install_prefix(
-        toolchain_root.expanduser().absolute(), asset
-    )
-    if prefix.exists() or prefix.is_symlink():
-        return _admit_existing(root, prefix)
-    archive = cached_archive(
-        asset,
-        prefix.parent / DOWNLOADS_DIRNAME if downloads is None else downloads,
-    )
-    prefix.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".molt-wasi-sdk-", dir=prefix.parent
-    ) as raw:
-        staged = Path(raw) / prefix.name
-        _stage_installation(archive, asset, staged)
-        try:
-            durable_publish_directory_exclusive(staged, prefix)
-        except FileExistsError:
-            # A concurrent provisioner published the same identity first.
+    from molt.checkout_state import toolchain_state_use
+
+    with toolchain_state_use(
+        (
+            llvm_toolchain.wasi_sdk_install_prefix(
+                toolchain_root.expanduser().absolute(),
+                llvm_toolchain.wasi_sdk_host_asset(root),
+            ),
+        ),
+        create=True,
+    ):
+        asset = llvm_toolchain.wasi_sdk_host_asset(root)
+        prefix = llvm_toolchain.wasi_sdk_install_prefix(
+            toolchain_root.expanduser().absolute(), asset
+        )
+        if prefix.exists() or prefix.is_symlink():
             return _admit_existing(root, prefix)
-    return prefix.resolve(strict=True)
+        archive = cached_archive(
+            asset,
+            prefix.parent / DOWNLOADS_DIRNAME if downloads is None else downloads,
+        )
+        prefix.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".molt-wasi-sdk-", dir=prefix.parent
+        ) as raw:
+            staged = Path(raw) / prefix.name
+            _stage_installation(archive, asset, staged)
+            try:
+                durable_publish_directory_exclusive(staged, prefix)
+            except FileExistsError:
+                # A concurrent provisioner published the same identity first.
+                return _admit_existing(root, prefix)
+        return prefix.resolve(strict=True)
 
 
 def main(argv: list[str] | None = None) -> int:

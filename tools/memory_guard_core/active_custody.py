@@ -3,8 +3,8 @@
 ``active/`` holds the markers of unresolved custody: a guard that may still
 run, a child or process group that may still live, or a scratch lease whose
 payload a process may still use. A marker leaves ``active/`` only after its
-whole custody is resolved. It then moves to ``retired/``, which keeps a
-bounded history. So every reader of ``active/`` costs O(live custody), not
+whole custody is resolved. It then moves to durable ``retired/`` history.
+Every reader of ``active/`` costs O(live custody), not
 O(history).
 
 This module observes custody evidence; it has no process actuation
@@ -90,10 +90,6 @@ _LAUNCH_STATES = ("not_started", "pending", "recorded", "failed")
 _MARKER_NAME = re.compile(r"guard-([1-9][0-9]*)-([0-9a-f]{32})\.json")
 _LOCK_NAME = re.compile(r"guard-[1-9][0-9]*-[0-9a-f]{32}\.lock")
 _MAX_MARKER_BYTES = 16 * 1024 * 1024
-# The retired history keeps this many resolved markers. Pruning starts only
-# at the slack above it, so one retirement costs O(1) amortized.
-RETIRED_GUARD_MARKER_KEEP = 256
-_RETIRED_PRUNE_SLACK = 64
 # An exiting guard sweeps active/ when it holds this many more markers than
 # twice what the previous sweep left there. The gate grows with the records
 # that stay (live guards), so a session's sweeps cost O(records) in total.
@@ -205,6 +201,7 @@ def command_artifact_scope(
         "MOLT_GUARD_SCRATCH_ROOT",
         "MOLT_MEMORY_GUARD_STATE_ROOT",
         "CARGO_BUILD_BUILD_DIR",
+        "MOLT_TARGET_ROOT",
     ):
         if raw := environment.get(key, "").strip():
             paths.append(cwd / Path(raw).expanduser())
@@ -1139,23 +1136,6 @@ def _discard_marker_lock(lock: Path) -> bool:
     return True
 
 
-def _prune_retired(retired: Path) -> None:
-    try:
-        entries = [
-            entry for entry in os.scandir(retired) if _MARKER_NAME.fullmatch(entry.name)
-        ]
-    except FileNotFoundError:
-        return
-    if len(entries) <= RETIRED_GUARD_MARKER_KEEP + _RETIRED_PRUNE_SLACK:
-        return
-    # A retired marker keeps its last-write time, which orders the history.
-    entries.sort(
-        key=lambda entry: (entry.stat(follow_symlinks=False).st_mtime_ns, entry.name)
-    )
-    for entry in entries[: len(entries) - RETIRED_GUARD_MARKER_KEEP]:
-        Path(entry.path).unlink(missing_ok=True)
-
-
 def _retire(
     path: Path,
     accepts: Callable[[MarkerRecord], bool],
@@ -1188,7 +1168,6 @@ def _retire(
             decision, scratch=scratch, retirement=f"marker_retirement_failed: {exc}"
         )
     _discard_marker_lock(canonical.with_suffix(".lock"))
-    _prune_retired(destination.parent)
     return replace(decision, scratch=scratch, retired_to=str(destination))
 
 
@@ -1274,7 +1253,6 @@ def _release_invalid(
     except (OSError, ValueError, RuntimeError) as exc:
         return replace(decision, retirement=f"marker_retirement_failed: {exc}")
     _discard_marker_lock(canonical.with_suffix(".lock"))
-    _prune_retired(destination.parent)
     return replace(decision, applied=True, retired_to=str(destination))
 
 

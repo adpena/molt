@@ -164,7 +164,10 @@ def test_guarded_exec_signal_metrics_drive_executor_failure_scope(
         payload = json.loads(metrics.read_text(encoding="utf-8"))
         assert (
             proof_plan._guarded_failure_scope(
-                payload, metrics_valid=True, returncode=returncode, cancelled=False
+                payload,
+                metrics_valid=True,
+                returncode=returncode,
+                cancel_requested=False,
             )[0]
             == expected
         )

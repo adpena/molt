@@ -102,10 +102,26 @@ class GateOutcome:
 
 
 def _classify_gate(
-    outcome: GateOutcome, policies: tuple[ToolchainPolicy, ...]
+    outcome: GateOutcome,
+    policies: tuple[ToolchainPolicy, ...],
+    *,
+    cancel_requested: bool,
+    cargo_target_access: CargoTargetAccess,
 ) -> dict[str, Any]:
-    """Project the actual guard result through the shared failure authority."""
-    from tools.proof_plan import _admitted_linker_helpers, _guarded_failure_scope
+    """Project the actual guard result through the shared failure authority.
+
+    ``cancel_requested`` is whether the executor had asked to stop the gate
+    when its outcome arrived. The guard alone knows whether that request
+    reached the running gate, so the request counts only with the guard's
+    cancellation; a guard cancellation without a request stays inconsistent.
+    A gate without Cargo target access makes no claim on the shared target:
+    the guard's Cargo recovery there is not this gate's verdict (HF-605).
+    """
+    from tools.proof_plan import (
+        _admitted_linker_helpers,
+        _guard_closure_failure,
+        _guarded_failure_scope,
+    )
 
     if not isinstance(outcome, GateOutcome) or not isinstance(
         outcome.guard_result, harness_memory_guard.GuardedCompletedProcess
@@ -145,25 +161,35 @@ def _classify_gate(
         ),
         "temporary_artifacts": guard.temporary_artifacts,
     }
+    verdict = (
+        {**metrics, "cargo_incremental_quarantine": None}
+        if cargo_target_access is CargoTargetAccess.NONE
+        else metrics
+    )
+    helpers = _admitted_linker_helpers(policies)
     scope, reason = _guarded_failure_scope(
-        metrics,
+        verdict,
         metrics_valid=True,
         returncode=guard.returncode,
-        cancelled=guard.cancelled,
-        admitted_linker_helpers=_admitted_linker_helpers(policies),
+        cancel_requested=cancel_requested and guard.cancelled,
+        admitted_linker_helpers=helpers,
     )
     if reason == "command failed":
         reason = f"exit {guard.returncode}"
+    cancelled = reason == "executor cancellation"
     return {
         "status": (
             "cancelled"
-            if reason == "executor cancellation"
+            if cancelled
             else "failure"
             if scope == "global" or guard.returncode != 0
             else "success"
         ),
         "failure_scope": scope,
         "failure_reason": reason,
+        "cancellation_cleanup": (
+            _guard_closure_failure(verdict, helpers) if cancelled else None
+        ),
         "guard_outcome": metrics,
     }
 
@@ -496,6 +522,7 @@ def _run_serial_gate(
 ) -> None:
     cmd = gate.collection_command if collection else gate.command
     assert cmd is not None
+    assert isinstance(gate.cargo_target_access, CargoTargetAccess)
     phase = "collection" if collection else "gate"
     shown = display(cmd)
     runtime.check_source()
@@ -533,7 +560,12 @@ def _run_serial_gate(
             lambda: False,
             streams,
         )
-        classified = _classify_gate(outcome, runtime.toolchain_policies)
+        classified = _classify_gate(
+            outcome,
+            runtime.toolchain_policies,
+            cancel_requested=False,
+            cargo_target_access=gate.cargo_target_access,
+        )
         rc = outcome.returncode
     finally:
         elapsed = time.monotonic() - started
@@ -747,7 +779,12 @@ def _run_executor_block(
                 cancel.is_set,
                 streams,
             )
-            classified = _classify_gate(outcome, runtime.toolchain_policies)
+            classified = _classify_gate(
+                outcome,
+                runtime.toolchain_policies,
+                cancel_requested=cancel.is_set(),
+                cargo_target_access=command.gate.cargo_target_access,
+            )
             if paths:
                 runtime.observe_capacity(
                     paths,
@@ -820,7 +857,12 @@ def _run_executor_block(
             outcome, BaseException
         ):
             # Only a stop caused elsewhere cancels a gate; it never passed.
-            runtime.say(f"    gate {status}: {shown}")
+            # Its guard's closure verdict is evidence, never the block's.
+            cleanup = record.get("cancellation_cleanup")
+            runtime.say(
+                f"    gate {status}: {shown}"
+                + (f" (guard cleanup: {cleanup})" if cleanup else "")
+            )
             continue
         if outcome is None:
             control_failures.append(f"before {shown}")
@@ -860,6 +902,34 @@ def _run_executor_block(
             )
             continue
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
+    # The executor names the first gate that failed for its own reason. A
+    # partition-scope trigger is the candidate's failure, which the landing
+    # queue bisects; a runner or guard fault seen after it is evidence on
+    # that failure, never a stop in its place (HF-605).
+    trigger = receipt.get("execution", {}).get("failure_trigger")
+    if trigger is not None and trigger.get("failure_scope") == "partition":
+        command = next(
+            command for command in commands if command.id == trigger["command_id"]
+        )
+        outcome = outcomes[command.id]
+        record = records[command.id]
+        assert isinstance(outcome, GateOutcome)
+        failure = gate_failure(
+            outcome.returncode,
+            float(record.get("duration_seconds") or 0.0),
+            display(command.gate.command),
+            gate_seconds,
+            record,
+        )
+        for evidence in (
+            *(f"gate block also stopped {control}" for control in control_failures),
+            *(f"gate runner also failed: {error!r}" for error in runner_errors),
+        ):
+            runtime.say(f"    {evidence}")
+            failure.add_note(evidence)
+        if runner_errors:
+            failure.guard_errors = tuple(runner_errors)
+        raise failure
     if runner_errors:
         error = runner_errors[0]
         if len(runner_errors) > 1:
@@ -868,21 +938,6 @@ def _run_executor_block(
         raise error
     if control_failures:
         raise stopped("; ".join(control_failures))
-    trigger = receipt.get("execution", {}).get("failure_trigger")
-    if trigger is not None:
-        command = next(
-            command for command in commands if command.id == trigger["command_id"]
-        )
-        outcome = outcomes[command.id]
-        record = records[command.id]
-        assert isinstance(outcome, GateOutcome)
-        raise gate_failure(
-            outcome.returncode,
-            float(record.get("duration_seconds") or 0.0),
-            display(command.gate.command),
-            gate_seconds,
-            record,
-        )
     if receipt.get("status") != "success":
         raise stopped("without a classified gate failure")
     runtime.say(

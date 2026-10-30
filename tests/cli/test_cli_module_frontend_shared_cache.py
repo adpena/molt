@@ -37,7 +37,7 @@ def _clear_path_caches() -> None:
     from molt.cli import runtime_paths
     from molt.cli import module_source
 
-    default_paths._default_molt_cache_cached.cache_clear()
+    default_paths._default_user_state_cached.cache_clear()
     runtime_paths._build_state_root_cached.cache_clear()
     module_source._source_content_sha256_cached.cache_clear()
 
@@ -389,7 +389,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 
 
 # --------------------------------------------------------------------------
-# mtime-decoupling (build-dedup doctrine 74, law 1): a re-checkout / copy /
+# mtime-decoupling (observed_inputs.md invariant 1): a re-checkout / copy /
 # reinstall that resets file mtime WITHOUT changing bytes must still reuse the
 # shared entry. mtime is content-invariant metadata; gating on it made the
 # "content-addressed" cache metadata-addressed and cold-started every session.

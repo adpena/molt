@@ -3533,13 +3533,17 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     monkeypatch,
     tmp_path: Path,
     wrapper_env: str,
+    short_cargo_cache: Path,
 ) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
     for name in (*CARGO_WRAPPER_ENV_NAMES, *SCCACHE_SERVER_ENDPOINT_ENV_NAMES):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(wrapper_env, "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     # A run's scratch TMPDIR must not reach the shared sccache server (HF-105).
-    monkeypatch.setenv("SCCACHE_DIR", str(tmp_path / "artifacts" / ".sccache"))
+    monkeypatch.setenv("SCCACHE_DIR", str(short_cargo_cache))
     for name in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.setenv(name, str(tmp_path / "run-scratch"))
     from molt.cargo_execution_policy import sccache_server_temp_dir
@@ -7376,7 +7380,7 @@ def test_executor_failure_scope_uses_guard_and_quarantine_authority(
         {"descendants_closed": True, **metrics},
         metrics_valid=True,
         returncode=returncode,
-        cancelled=False,
+        cancel_requested=False,
     )
     assert scope == expected
     assert reason
@@ -7411,7 +7415,7 @@ def test_job_closure_admits_only_declared_helpers_beside_their_linker(
             _job_cleanup_with_survivor(image),
             metrics_valid=True,
             returncode=0,
-            cancelled=False,
+            cancel_requested=False,
             admitted_linker_helpers=helpers,
         )
 
@@ -7429,9 +7433,72 @@ def test_job_closure_admits_only_declared_helpers_beside_their_linker(
 def test_executor_missing_guard_outcome_is_a_global_stop() -> None:
     assert (
         proof_plan._guarded_failure_scope(
-            {}, metrics_valid=False, returncode=7, cancelled=False
+            {}, metrics_valid=False, returncode=7, cancel_requested=False
         )[0]
         == "global"
+    )
+
+
+@pytest.mark.parametrize(
+    ("closure", "evidence"),
+    [
+        ({}, None),
+        (
+            {"infrastructure_failure": {"phase": "temporary_artifact_custody"}},
+            "guard infrastructure or ownership failure",
+        ),
+        ({"descendants_closed": False}, "guard descendant closure is uncertain"),
+        (
+            {
+                "cargo_incremental_quarantine": {
+                    "ownership_status": "deferred",
+                    "errors": ["recovery deferred"],
+                    "interruption_inventory_complete": False,
+                    "interruption_inventory_error": "inventory unavailable",
+                }
+            },
+            "Cargo quarantine ownership or recovery is unresolved",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("cancel_requested", "guard_cancelled", "returncode", "expected"),
+    [
+        # The executor's request, confirmed by the guard's terminal outcome.
+        (True, True, 137, ("none", "executor cancellation")),
+        # A guard cancellation nobody requested, or one without the guard's
+        # code, or a request the guard never confirmed, is inconsistent.
+        (False, True, 137, ("global", None)),
+        (True, True, 0, ("global", None)),
+        (True, False, 137, ("global", None)),
+    ],
+)
+def test_guard_closure_verdict_never_turns_a_cancellation_global(
+    closure, evidence, cancel_requested, guard_cancelled, returncode, expected
+) -> None:
+    metrics = {"descendants_closed": True, "cancelled": guard_cancelled, **closure}
+    scope, reason = proof_plan._guarded_failure_scope(
+        metrics,
+        metrics_valid=True,
+        returncode=returncode,
+        cancel_requested=cancel_requested,
+    )
+    assert scope == expected[0]
+    if expected[1] is not None:
+        assert reason == expected[1]
+    else:
+        assert reason == "executor cancellation lacks matching terminal outcome"
+    # The closure verdict is the same evidence whether or not it is the scope.
+    assert proof_plan._guard_closure_failure(metrics) == evidence
+    # Without any cancellation, the same closure verdict is a global stop.
+    uncancelled = proof_plan._guarded_failure_scope(
+        {**metrics, "cancelled": False},
+        metrics_valid=True,
+        returncode=1,
+        cancel_requested=False,
+    )
+    assert uncancelled == (
+        ("global", evidence) if evidence else ("partition", "command failed")
     )
 
 
@@ -8397,9 +8464,25 @@ def test_executor_cancellation_requires_exact_terminal_closure(
             plan, command, event, environment=dict(os.environ), memory_share=None
         )
     assert record["guard_returncode"] == (130 if defect == "noncanonical-code" else 137)
-    assert record["failure_scope"] == "global"
-    assert record["status"] == ("cancelled" if defect is None else "failure")
-    assert record["returncode"] == (130 if defect is None else 2)
+    # A cancellation the guard confirms is never a global failure: its closure
+    # verdict stays evidence on the cancelled record (HF-605). A missing,
+    # unconfirmed or mismatched terminal outcome stays inconsistent.
+    confirmed = {
+        None: None,
+        "infrastructure": "guard infrastructure or ownership failure",
+        "refusal": "guard descendant closure is uncertain",
+    }
+    if defect in confirmed:
+        assert record["status"] == "cancelled"
+        assert record["returncode"] == 130
+        assert record["failure_scope"] == "none"
+        assert record["failure_reason"] == "executor cancellation"
+        assert record["cancellation_cleanup"] == confirmed[defect]
+    else:
+        assert record["status"] == "failure"
+        assert record["returncode"] == 2
+        assert record["failure_scope"] == "global"
+        assert record["cancellation_cleanup"] is None
     assert record["guard_custody"]["launch_id"] == owned.launch_id
     assert record["guard_custody"]["summary_path"] == str(summary_path)
     assert owned.cancellation_path.exists()

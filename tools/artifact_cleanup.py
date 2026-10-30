@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Sequence
+from collections.abc import Mapping
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -19,18 +20,12 @@ bind_repository_imports(__file__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+from molt.custody_layout import CHECKOUT_EVIDENCE_PATHS  # noqa: E402
+
 from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
 DEFAULT_PATHS: tuple[str, ...] = (
-    ".hypothesis/",
-    ".pytest_cache/",
-    ".ruff_cache/",
-    ".uv-cache/",
-    ".uv-cache-*/",
-    ".mypy_cache/",
-    "bench/results/",
     "bench/friends/repos/",
-    "bench/scoreboard/host_calibration/",
     "bin/",
     "build/",
     "deploy/browser/simd-ops-rs/target/",
@@ -39,7 +34,6 @@ DEFAULT_PATHS: tuple[str, ...] = (
     "examples/cloudflare-demo/dist/",
     "formal/lean/.lake/build/",
     "hello_molt",
-    "logs/",
     "main_stub.c",
     "models/paddleocr/korean_rec/.cache/",
     "models/paddleocr/unified_mobile_rec/.cache/",
@@ -60,9 +54,7 @@ DEFAULT_PATHS: tuple[str, ...] = (
     "target/",
     "target-*",
     "tests/__pycache__/",
-    "tests/harness/reports/",
     "tests/tools/__pycache__/",
-    "tmp/",
     "tools/__pycache__/",
     "type_facts.json",
     "wasm/molt_runtime.wasm",
@@ -80,6 +72,13 @@ CACHE_PATHS: tuple[str, ...] = (
 )
 
 STATEFUL_PATHS: tuple[str, ...] = (
+    *("/".join(relative) + "/" for _kind, relative in CHECKOUT_EVIDENCE_PATHS),
+    ".hypothesis/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    ".uv-cache/",
+    ".uv-cache-*/",
+    ".mypy_cache/",
     ".omx/",
     ".venv/",
     "runtime/molt-backend/fuzz/corpus/",
@@ -140,6 +139,10 @@ def _literal_pathspec_key(pathspec: str) -> str:
         raise ValueError(
             f"extra cleanup pathspec must stay inside the repo: {pathspec!r}"
         )
+    if not parts:
+        raise ValueError(
+            "extra cleanup pathspec must select a child, not the checkout root"
+        )
     return "/".join(parts)
 
 
@@ -168,6 +171,35 @@ def validate_extra_pathspecs(pathspecs: Sequence[str]) -> None:
                 "the cache pruner evicts cache entries and keeps locks and the "
                 "Molt home"
             )
+        if not any(_overlaps(key, output) for output in default_pathspecs()):
+            raise ValueError(
+                f"extra cleanup pathspec is outside declared build outputs: {pathspec!r}"
+            )
+
+
+def cleanup_pathspecs(
+    repo: Path, extra: Sequence[str], environment: Mapping[str, str]
+) -> list[str]:
+    """Generic build-output cleanup cannot reach a selected user installation."""
+    from molt.default_paths import _default_molt_home, _default_molt_bin
+
+    protected = []
+    for path in (
+        _default_molt_home(environ=environment, cwd=repo),
+        _default_molt_bin(environ=environment, cwd=repo),
+    ):
+        if path.is_relative_to(repo):
+            protected.append(path.relative_to(repo).as_posix())
+    for path in extra:
+        if any(_overlaps(_literal_pathspec_key(path), item) for item in protected):
+            raise ValueError(
+                f"extra cleanup pathspec contains user installation: {path!r}"
+            )
+    return [
+        path
+        for path in (*default_pathspecs(), *extra)
+        if not any(_overlaps(item, path) for item in protected)
+    ]
 
 
 def build_git_clean_command(*, apply: bool, pathspecs: Sequence[str]) -> list[str]:
@@ -347,10 +379,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         validate_repo_root(repo_root)
         validate_extra_pathspecs(args.extra_path)
+        pathspecs = cleanup_pathspecs(repo_root, args.extra_path, os.environ)
     except ValueError as exc:
         print(f"artifact_cleanup: {exc}", file=sys.stderr)
         return 2
-    pathspecs = [*default_pathspecs(), *args.extra_path]
 
     if args.list_paths:
         if args.json:

@@ -179,11 +179,12 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    After node admission, the always gates run as one block through the proof executor
    (`tools/molt_dev_gates.py`). The plan's `executor_max_workers`, its
    `repository-policy` resource class and `molt.host_capacity` at one GiB per
-   gate bound the block. Each gate reports in declared order, and the first
-   failure in declared order is the one reported; gates declared
-   after it are skipped or cancelled. A gate's nonzero exit raises
-   `GateFailure` (a `CandidateFailure`); a source refusal or a stop of the
-   executor itself stays a plain `DriverError`. The block leaves an executor receipt with
+   gate bound the block. Each gate reports in declared order. The first
+   observed failure is the block's trigger, and the executor skips or cancels
+   the rest. A trigger that failed for its own reason (partition scope) raises
+   `GateFailure` (a `CandidateFailure`), even when a cancelled sibling's guard
+   reports unresolved cleanup. A source refusal, or a runner or guard stop with
+   no such trigger, stays a plain `DriverError`. The block leaves an executor receipt with
    each gate's duration, peak RSS and outcome at
    `<git common dir>/molt-integrate/receipts/<commit>.gates.json`. Remaining
    read-only rule checks run in declared order before the heavy gate block.
