@@ -9986,6 +9986,100 @@ class TestStorageAuthority:
                 link.write_bytes(b"must be refused")
         assert external.read_bytes() == b"host interpreter stand-in"
 
+    def test_relative_open_admits_its_dir_fd_base_while_the_checkout_is_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        from molt.dx import StorageWriteClaim
+
+        if os.open not in os.supports_dir_fd:
+            pytest.skip("os.open takes no dir_fd on this platform")
+        repo, artifact = tmp_path / "source", tmp_path / "data"
+        admitted, outside = tmp_path / "admitted", tmp_path / "outside"
+        for directory in (repo, artifact, admitted, outside):
+            directory.mkdir()
+        environment = {"MOLT_EXT_ROOT": str(artifact)}
+        claim = StorageWriteClaim("scratch", admitted)
+        create = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY
+        # The open audit event reports only the relative name. The checkout as
+        # cwd must not be mistaken for the descriptor's directory.
+        monkeypatch.chdir(REPO_ROOT)
+        base = os.open(admitted, directory_flags)
+        try:
+            with storage_write_check(
+                repo, environment, molt_only=False, outputs=(claim,)
+            ):
+                os.close(os.open("00", create, 0o644, dir_fd=base))
+                with open(
+                    "01",
+                    "w",
+                    encoding="utf-8",
+                    opener=lambda name, flags: os.open(name, flags, dir_fd=base),
+                ) as stream:
+                    stream.write("admitted")
+        finally:
+            os.close(base)
+        assert sorted(path.name for path in admitted.iterdir()) == ["00", "01"]
+        assert not (REPO_ROOT / "00").exists() and not (REPO_ROOT / "01").exists()
+
+        # A descriptor into an unadmitted directory places the name outside
+        # every possible base: refused before the file exists.
+        foreign = os.open(outside, directory_flags)
+        try:
+            with pytest.raises(
+                StorageWriteError, match="outside the storage authority"
+            ):
+                with storage_write_check(
+                    repo, environment, molt_only=False, outputs=(claim,)
+                ):
+                    os.close(os.open("00", create, 0o644, dir_fd=foreign))
+            # Events that report their dir_fd keep exact attribution, even
+            # while an admitted directory is open as a possible base.
+            base = os.open(admitted, directory_flags)
+            try:
+                with pytest.raises(
+                    StorageWriteError, match="outside the storage authority"
+                ):
+                    with storage_write_check(
+                        repo, environment, molt_only=False, outputs=(claim,)
+                    ):
+                        os.mkdir("made", dir_fd=foreign)
+            finally:
+                os.close(base)
+        finally:
+            os.close(foreign)
+        assert list(outside.iterdir()) == []
+
+        # A cwd-relative write stays attributed to the cwd.
+        monkeypatch.chdir(outside)
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, environment, molt_only=False, outputs=(claim,)
+            ):
+                Path("stray").write_text("refused", encoding="utf-8")
+        assert list(outside.iterdir()) == []
+
+    def test_a_grant_extends_the_active_check_for_its_scope_only(self, tmp_path):
+        from molt.dx import StorageWriteClaim, grant_storage_writes
+
+        repo, artifact, fixture = (
+            tmp_path / "source",
+            tmp_path / "data",
+            tmp_path / "fixture",
+        )
+        for directory in (repo, artifact, fixture):
+            directory.mkdir()
+        environment = {"MOLT_EXT_ROOT": str(artifact)}
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(repo, environment, molt_only=False):
+                with grant_storage_writes(StorageWriteClaim("temporary", fixture)):
+                    (fixture / "granted").write_text("ok", encoding="utf-8")
+                    with pytest.raises(StorageWriteError):
+                        (tmp_path / "beside").write_text("x", encoding="utf-8")
+                (fixture / "after-scope").write_text("x", encoding="utf-8")
+        assert sorted(path.name for path in fixture.iterdir()) == ["granted"]
+        assert not (tmp_path / "beside").exists()
+
     def test_heavy_repository_state_projects_to_artifact_volume(self, tmp_path):
         repo, artifact = tmp_path / "molt-src", tmp_path / "data"
         repo.mkdir()

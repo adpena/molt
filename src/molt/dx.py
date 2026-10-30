@@ -1780,6 +1780,72 @@ def _storage_projection(kind: custody_layout.StorageClass, path: Path) -> Path:
     return path
 
 
+# An ``open`` audit event names no base directory for a relative path.
+# CPython's os.open audits ``("open", path, None, flags)`` and then calls
+# ``openat(dir_fd, path)`` (Modules/posixmodule.c os_open_impl); FileIO audits
+# ``("open", name, mode, flags)`` before an ``opener`` may open that name
+# relative to any descriptor (Modules/_io/fileio.c _io_FileIO___init___impl).
+# The namespace events report their ``dir_fd`` (-1 when absent), so those
+# stay exactly attributed. openat ignores dir_fd for an absolute path.
+_UNREPORTED_DIRECTORY = object()
+
+_NAMESPACE_EVENTS = frozenset(
+    {"os.remove", "os.rmdir", "os.rename", "os.symlink", "os.link", "os.mkdir"}
+)
+
+
+def _descriptor_directory(descriptor: int) -> Path:
+    """The current path of an open directory descriptor."""
+    if sys.platform == "darwin":
+        import fcntl
+
+        return Path(
+            os.fsdecode(
+                fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0]
+            )
+        )
+    if sys.platform.startswith("linux"):
+        return Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+    raise StorageWriteError(
+        f"storage write check cannot resolve directory fd on {sys.platform}"
+    )
+
+
+def _open_directory_bases() -> list[Path]:
+    """Every directory this process holds open: the possible dir_fd bases."""
+    if sys.platform == "darwin":
+        listing = "/dev/fd"
+    elif sys.platform.startswith("linux"):
+        listing = "/proc/self/fd"
+    else:
+        raise StorageWriteError(
+            f"storage write check cannot list open descriptors on {sys.platform}"
+        )
+    bases = []
+    for name in os.listdir(listing):
+        try:
+            descriptor = int(name)
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                bases.append(_descriptor_directory(descriptor))
+        except OSError:
+            continue  # Closed since the listing, like the listing's own fd.
+    return bases
+
+
+def _storage_write_target(event: str, path: Path) -> Path:
+    if event in _NAMESPACE_EVENTS:
+        # Namespace mutations act on the entry, not a symlink target.
+        return path.parent.resolve(strict=False) / path.name
+    return path.resolve(strict=False)
+
+
+def _storage_write_admitted(check: _StorageWriteCheck, path: Path) -> bool:
+    return path == Path(os.devnull) or any(
+        path == claim.path or (not claim.exact and claim.path in path.parents)
+        for claim in check.claims
+    )
+
+
 def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
     if not _STORAGE_WRITE_CHECKS:
         return
@@ -1795,7 +1861,7 @@ def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
         )
         if not writes:
             return
-        paths = ((args[0], None),)
+        paths = ((args[0], _UNREPORTED_DIRECTORY),)
     elif event in (
         "os.mkdir",
         "os.remove",
@@ -1820,6 +1886,7 @@ def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
         paths = ((args[1], args[2]),)
     else:
         return
+    checks = []
     for check in tuple(_STORAGE_WRITE_CHECKS):
         if check.molt_only:
             frame = sys._getframe(1)
@@ -1832,56 +1899,47 @@ def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
                 frame = frame.f_back
             if frame is None:
                 continue
-        for raw, directory in paths:
-            if isinstance(raw, int):
-                continue  # An already-open fd carries its original admission.
-            if not isinstance(raw, (str, bytes, os.PathLike)):
+        checks.append(check)
+    for raw, directory in paths:
+        if isinstance(raw, int):
+            continue  # An already-open fd carries its original admission.
+        if not isinstance(raw, (str, bytes, os.PathLike)):
+            continue
+        spelling = os.fsdecode(raw)
+        if os.path.normcase(spelling) == os.path.normcase(os.devnull) or (
+            os.name == "posix" and spelling == os.ctermid()
+        ):
+            continue  # OS stdio endpoint; it stores no Molt state.
+        named = Path(spelling)
+        # A relative name in an ``open`` event may be relative to the cwd or
+        # to any directory descriptor this process holds open; the true target
+        # is one of them. Refuse only when none of them admits it: a dir_fd
+        # write into an admitted directory passes, while a cwd write and a
+        # dir_fd write that every possible base places outside are refused.
+        ambiguous = (
+            not named.is_absolute()
+            and directory is _UNREPORTED_DIRECTORY
+            and os.open in os.supports_dir_fd
+        )
+        if not named.is_absolute() and isinstance(directory, int) and directory >= 0:
+            named = _descriptor_directory(directory) / named
+        target = _storage_write_target(event, named.absolute())
+        others: list[Path] | None = None
+        for check in checks:
+            if _storage_write_admitted(check, target):
                 continue
-            spelling = os.fsdecode(raw)
-            if os.path.normcase(spelling) == os.path.normcase(os.devnull) or (
-                os.name == "posix" and spelling == os.ctermid()
-            ):
-                continue  # OS stdio endpoint; it stores no Molt state.
-            path = Path(spelling)
-            if not path.is_absolute() and isinstance(directory, int) and directory >= 0:
-                if sys.platform == "darwin":
-                    import fcntl
-
-                    base = os.fsdecode(
-                        fcntl.fcntl(directory, fcntl.F_GETPATH, bytes(1024)).split(
-                            b"\0", 1
-                        )[0]
-                    )
-                elif sys.platform.startswith("linux"):
-                    base = os.readlink(f"/proc/self/fd/{directory}")
-                else:
-                    raise StorageWriteError(
-                        f"storage write check cannot resolve directory fd on {sys.platform}"
-                    )
-                path = Path(base) / path
-            path = path.absolute()
-            if event in {
-                "os.remove",
-                "os.rmdir",
-                "os.rename",
-                "os.symlink",
-                "os.link",
-                "os.mkdir",
-            }:
-                # Namespace mutations act on the entry, not a symlink target.
-                path = path.parent.resolve(strict=False) / path.name
-            else:
-                path = path.resolve(strict=False)
-            if path == Path(os.devnull):
-                continue  # OS sink, not persistent Molt state.
-            if not any(
-                path == claim.path or (not claim.exact and claim.path in path.parents)
-                for claim in check.claims
-            ):
-                message = f"{event} writes state outside the storage authority: {path}; select a StorageClass through molt.dx"
-                if not check.violations:
-                    check.violations.append(message)
-                raise StorageWriteError(message)
+            if ambiguous:
+                if others is None:
+                    others = [
+                        _storage_write_target(event, base / named)
+                        for base in _open_directory_bases()
+                    ]
+                if any(_storage_write_admitted(check, other) for other in others):
+                    continue
+            message = f"{event} writes state outside the storage authority: {target}; select a StorageClass through molt.dx"
+            if not check.violations:
+                check.violations.append(message)
+            raise StorageWriteError(message)
 
 
 @contextlib.contextmanager
@@ -1973,6 +2031,35 @@ def storage_write_check(
         ]
         if check.violations and error is None:
             raise StorageWriteError(check.violations[0])
+
+
+@contextlib.contextmanager
+def grant_storage_writes(*claims: StorageWriteClaim):
+    """Extend every active write check with explicit typed claims for a scope.
+
+    A proof may need a fixture root where no class's default volume lies, for
+    example on a second filesystem. Like ``storage_write_check(outputs=...)``,
+    each claim keeps its closed class; the grant ends with the scope, and
+    every other path stays refused. Outside an active check it grants nothing.
+    """
+    granted = [
+        StorageWriteClaim(claim.kind, claim.path.resolve(strict=False), claim.exact)
+        for claim in claims
+    ]
+    active = tuple(_STORAGE_WRITE_CHECKS)
+    for check in active:
+        check.claims.extend(granted)
+    try:
+        yield
+    finally:
+        for check in active:
+            # Remove this grant's own objects in place; an equal claim held by
+            # the check or another grant stays, and so do concurrent appends.
+            for claim in granted:
+                for index, held in enumerate(check.claims):
+                    if held is claim:
+                        del check.claims[index]
+                        break
 
 
 def project_cargo_target_dir(
