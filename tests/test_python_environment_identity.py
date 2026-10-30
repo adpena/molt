@@ -3132,6 +3132,43 @@ def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     )
 
 
+def test_capture_authority_holds_the_reader_import_closure():
+    # 2026-10-30: the reader began importing molt.guard_stems_generated while
+    # the hand-written authority omitted it, so a stem edit left captured
+    # identities valid and cross-checkout probes could not import the reader.
+    import ast
+
+    package = Path(identity.__file__).parent
+    declared = {path.resolve() for path in identity.python_capture_authority_paths()}
+    pending, seen = [Path(identity.__file__).resolve()], set()
+    while pending:
+        source = pending.pop()
+        if source in seen:
+            continue
+        seen.add(source)
+        parts = source.relative_to(package.parent).with_suffix("").parts
+        for node in ast.walk(ast.parse(source.read_bytes())):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    base = ".".join(
+                        [*parts[: len(parts) - node.level], *([base] if base else [])]
+                    )
+                names = [base, *(f"{base}.{alias.name}" for alias in node.names)]
+            for name in names:
+                if name != "molt" and not name.startswith("molt."):
+                    continue
+                stem = package.parent.joinpath(*name.split("."))
+                for candidate in (stem.with_suffix(".py"), stem / "__init__.py"):
+                    if candidate.is_file():
+                        pending.append(candidate.resolve())
+                        break
+    assert seen <= declared, sorted(str(path) for path in seen - declared)
+
+
 @pytest.mark.parametrize("fault", ["none", "missing", "populated", "symlink"])
 def test_managed_source_only_prefix_refuses_executable_caches(tmp_path, fault):
     root = tmp_path / "image"
