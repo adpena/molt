@@ -57,7 +57,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 154 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 155 |
 
 ## Scheduled families
 
@@ -383,7 +383,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `checkout-output-custody` | 14 | 0 |
 | `fresh-guard-observer` | 2 | 0 |
 | `host-entrypoint-imports` | 13 | 0 |
-| `host-capacity` | 15 | 0 |
+| `host-capacity` | 16 | 0 |
 | `guard-marker-custody` | 10 | 0 |
 | `process-environment-consumers` | 9 | 0 |
 | `repository-scan-records` | 4 | 0 |

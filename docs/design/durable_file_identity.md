@@ -12,7 +12,12 @@ queried vnode and resolves its mount root internally for volume attributes.
 Named capture fences device/inode, mode, size and both change clocks around the
 query. It requires read-attributes access, preserving observations of directories
 without read/search permission; it never opens their contents. The file id is
-the observed inode. Linux maps the live file's device to a **block node's rdev**
+the observed inode. A combined non-root file ID/volume UUID query is unavailable:
+XNU's [`ATTR_CMN_VOL_INVALID` mask](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_attrlist.c)
+rejects `ATTR_CMN_FILEID` when volume attributes are requested, and volume
+queries substitute the mount root. Molt therefore keeps the fenced file stat
+and UUID query separate, rather than treating a root's file ID as the leaf's.
+Linux maps the live file's device to a **block node's rdev**
 in `/dev/disk/by-uuid`; absent or ambiguous mappings on non-volatile filesystems
 refuse durable custody with a remedy to provide a unique filesystem UUID mapping.
 Linux first queries the held descriptor's filesystem type. For tmpfs and ramfs,
@@ -53,6 +58,11 @@ Captured regular-file versions memoize their durable projection only when a
 persisted token is requested; existing operation-only captures acquire no new
 filesystem capability requirement.
 
+The internal `StatToken` carries `DurableFileIdentity` and named mutation
+fields. Persisted tokens decode at their IO boundary before comparison; wire
+labels never decide physical equality. Volume-kind validation and equality
+match the closed enum exhaustively and finish with `typing.assert_never`.
+
 ## Migration and interruption
 
 Only explicit canonical migrators read a legacy identity. Both recorded stat
@@ -84,6 +94,19 @@ namespaces. HF-582's storage authority owns their retirement by last use and
 held-lock exclusion; this module adds no namespace sweeper or retirement owner.
 The preserved v1 scratch implementation under tests is only a provenance-pinned
 oracle for concurrent version isolation.
+
+`dx.ARTIFACT_BINDING_TRANSITIONS` owns binding events: absent binding,
+exactly witnessed legacy binding, stable identity replay, and substitution.
+`artifact_publication.JOURNAL_TRANSITIONS` owns open, committed, rolled-back,
+recovered and refused journal outcomes. Illegal events refuse. An older journal
+that cannot recover reports its exact path and a restoration/retry remedy.
+
+[The state-machine proof](../../tests/test_durable_identity_state_machine.py)
+drives reboot renumbering, substituted volumes, unique-mount remounts, concurrent
+v1 scratch publication and interrupted older journals in real temporary roots.
+Native stat/volume/statx answers are its substituted inputs. After every event,
+the model checks refusal of substituted volumes, other-version byte custody,
+and discoverable recovery or a named refusal for every older journal.
 
 Publication journals re-key all still-witnessed members before recovery and
 refuse an unverifiable member. Mixed old/new journal copies after an interrupted
