@@ -2070,7 +2070,9 @@ def test_reactivated_task_cannot_be_harvested_from_a_stale_snapshot(
     )
 
 
-def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path, monkeypatch):
+def test_active_reference_in_another_checkout_protects_task_evidence(
+    tmp_path, monkeypatch
+):
     from tools import disk_guard
     from tests.tools.test_disk_guard import _registered_worktree_scope
 
