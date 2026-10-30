@@ -405,7 +405,11 @@ def test_prepare_molt_binary_defaults_to_cache_reuse(
             "",
         )
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(
         bench_tool,
         "_prune_backend_daemons",
@@ -424,7 +428,7 @@ def test_prepare_molt_binary_defaults_to_cache_reuse(
         command = commands[0]
         assert "--cache" in command
         assert "--rebuild" not in command
-        assert pruned_envs == [{"BASE": "1"}]
+        assert pruned_envs == [{"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)}]
     finally:
         binary.temp_dir.cleanup()
 
@@ -449,7 +453,11 @@ def test_prepare_molt_binary_can_force_cold_rebuild(
             "",
         )
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     monkeypatch.setattr(
         bench_tool.harness_memory_guard,
@@ -567,7 +575,9 @@ def test_prepare_molt_binary_classifies_infrastructure_without_retry(
         completed.orphaned_process_groups = ()
         return completed
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     monkeypatch.setattr(
         bench_tool.harness_memory_guard, "guarded_completed_process", fake_guard
@@ -1152,7 +1162,9 @@ def _bench_results_with_mocked_native_outputs(
     cpython_iter = iter(cpython_outputs)
     molt_iter = iter(molt_outputs)
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
     monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
     monkeypatch.setattr(
         bench_tool,
@@ -1364,7 +1376,7 @@ def test_prepare_molt_binary_uses_batch_build_server(
                 "stderr": "",
             }
 
-    environment = {"BASE": "1"}
+    environment = {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)}
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: environment)
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
 
@@ -1433,7 +1445,11 @@ def test_prepare_molt_binary_passes_cache_policy_to_batch_build_server(
                 "stderr": "",
             }
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
 
     binary = bench_tool.prepare_molt_binary(
@@ -1468,7 +1484,11 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
             del params, timeout_s
             raise TimeoutError("batch compile server response timed out")
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     install_module_view(
         monkeypatch,
@@ -1533,7 +1553,11 @@ def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
         def restart(self, source_cwd: Path | None = None) -> None:
             restarts.append(True)
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     install_module_view(
         monkeypatch,
@@ -1603,7 +1627,11 @@ def test_prepare_molt_binary_logs_and_restarts_after_classified_retry(
         def restart(self, source_cwd: Path | None = None) -> None:
             restarts.append(source_cwd)
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     install_module_view(
         monkeypatch,
@@ -1666,7 +1694,11 @@ def test_prepare_molt_binary_classifies_backend_daemon_empty_response(
                 ),
             }
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     install_module_view(
         monkeypatch,
@@ -1738,7 +1770,11 @@ def test_prepare_molt_binary_preserves_native_runtime_failure_without_retry(
                 "stderr": "",
             }
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
+    )
     monkeypatch.setattr(
         bench_tool,
         "_prune_backend_daemons",
@@ -1871,7 +1907,9 @@ def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmar
 ) -> None:
     script = REPO_ROOT / "tests" / "benchmarks" / "bench_channel_throughput.py"
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
     monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
     monkeypatch.setattr(
         bench_tool,
@@ -1938,7 +1976,9 @@ def test_bench_results_custom_same_basename_keeps_external_reference(
     script = tmp_path / "bench_channel_throughput.py"
     script.write_text("print('custom')\n", encoding="utf-8")
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
     monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
     monkeypatch.setattr(
         bench_tool,
@@ -1999,7 +2039,9 @@ def test_bench_results_records_molt_build_failure_contract(
         message="Backend daemon compile failed: backend daemon returned empty response",
     )
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
     monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
     monkeypatch.setattr(
         bench_tool, "prepare_molt_binary", lambda *args, **kwargs: failure
@@ -2049,7 +2091,9 @@ def test_bench_results_records_molt_runtime_failure_contract(
         message="molt fatal: invalid object header before dec_ref",
     )
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
     monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
     monkeypatch.setattr(
         bench_tool,
@@ -3352,7 +3396,9 @@ def test_regular_benchmark_source_drift_blocks_the_first_sample(
     )
     sibling = tmp_path / "sibling.py"
     sibling.write_text("VALUE = 1\n", encoding="utf-8")
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
     monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
     builds = []
 
