@@ -112,6 +112,26 @@ def test_trunk_windows_launcher_uses_cim_and_preserves_literal_arguments():
     assert trunk_loop.ps("x'\ny") == "'x''\ny'"
 
 
+def test_windows_sftp_source_and_destination_use_forward_slashes(tmp_path, monkeypatch):
+    host = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "bat00", ["portability.queue.windows"]
+    )
+    transport = cross_run.SSHTransport(host)
+    transport.execution_dir = r"C:\Molt\scratch\owned"
+    commands = []
+
+    def execute(argv, **_kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cross_run, "_guarded_run", execute)
+    transport.pull("results.zip", tmp_path / "results.zip")
+    transport.push([tmp_path / "source.bundle"])
+    assert commands[0][-2] == "adpena@bat00:C:/Molt/scratch/owned/results.zip"
+    assert commands[1][-1] == "adpena@bat00:C:/Molt/scratch/owned/"
+    assert transport.remote_path("results.zip") == r"C:\Molt\scratch\owned\results.zip"
+
+
 @pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX launcher contract")
 def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
     import json

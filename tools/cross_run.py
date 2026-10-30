@@ -676,9 +676,7 @@ class SSHTransport(Transport):
             "..",
         }:
             raise ValueError("collection requires one literal stage filename")
-        source = (
-            f"{self.host.user}@{self.host.hostname}:{self.remote_path(remote_name)}"
-        )
+        source = f"{self.host.user}@{self.host.hostname}:{self._scp_remote_path(self.remote_path(remote_name))}"
         result = _guarded_run(
             self._scp_base() + [source, str(destination)], timeout=180
         )
@@ -686,6 +684,15 @@ class SSHTransport(Transport):
             raise RuntimeError(
                 f"{self.host.name}: collect {remote_name}: {result.stderr[-1000:]}"
             )
+
+    def _scp_remote_path(self, path: str) -> str:
+        """SFTP path syntax is distinct from a Windows shell argument.
+
+        Backslashes in an scp source are glob escapes, not DOS separators.
+        Keep native paths in execution/custody records; serialize forward
+        slashes only at the shared SCP boundary.
+        """
+        return path.replace("\\", "/") if self.host.is_windows else path
 
     def prepare(self) -> None:
         marker = self.remote_path(".molt-owner")
@@ -733,7 +740,7 @@ class SSHTransport(Transport):
         # scp each file individually so a single bad path doesn't sink the
         # whole batch; this keeps error reporting per-file.
         for src in local_files:
-            dest = f"{self.host.user}@{self.host.hostname}:{self.execution_dir}/"
+            dest = f"{self.host.user}@{self.host.hostname}:{self._scp_remote_path(self.execution_dir)}/"
             cmd = self._scp_base() + [str(src), dest]
             proc = _guarded_run(cmd, capture_output=True, text=True, timeout=180)
             if proc.returncode != 0:
