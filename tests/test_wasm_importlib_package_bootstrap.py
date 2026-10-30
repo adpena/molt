@@ -8,21 +8,24 @@ from pathlib import Path
 
 import pytest
 
-from molt.dx import scratch_root
+from molt.dx import ARTIFACT_ROOT_ENV, scratch_root
 from molt.process_guard import timeout_from_env
 from tests.wasm_linked_runner import (
+    ModuleEntry,
+    _linked_test_artifact_root,
     _run_wasm_test_process,
     build_wasm_linked,
     require_wasm_toolchain,
+    run_cpython_reference,
     run_wasm_linked,
     wasm_test_build_env,
 )
 from tests.test_wasm_split_runtime import _run_split_worker_live
 
 
-def _build_file_wasm(
+def _build_entry_wasm(
     root: Path,
-    source_file: Path,
+    entry: Path | ModuleEntry,
     out_dir: Path,
     *,
     split_runtime: bool,
@@ -35,16 +38,26 @@ def _build_file_wasm(
     diff_target_dir.mkdir(parents=True, exist_ok=True)
     env["CARGO_TARGET_DIR"] = str(target_dir)
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
+    if isinstance(entry, ModuleEntry):
+        entry_args = ["--module", entry.name]
+        session_name = entry.name
+        env["MOLT_MODULE_ROOTS"] = str(entry.root)
+    else:
+        entry_args = [str(entry)]
+        session_name = entry.parent.name
     env.setdefault(
         "MOLT_SESSION_ID",
-        f"test-wasm-importlib-package-bootstrap-{source_file.parent.name}",
+        f"test-wasm-importlib-package-bootstrap-{session_name}",
     )
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
-    env["MOLT_HOME"] = str(root)
-    env["MOLT_CACHE"] = str(root / ".molt_cache")
-    env["MOLT_WASM_RUNTIME_DIR"] = str(root / "wasm")
-    env["MOLT_EXT_ROOT"] = str(root)
+    # Runtime, cache and artifact state stay beside the test outputs, as the
+    # linked runner keeps them, never in the checkout's wasm root.
+    test_artifact_root = _linked_test_artifact_root(root, out_dir)
+    env["MOLT_HOME"] = str(test_artifact_root)
+    env["MOLT_CACHE"] = str(test_artifact_root / ".molt_cache")
+    env["MOLT_WASM_RUNTIME_DIR"] = str(test_artifact_root / "wasm")
+    env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
     tmp_root = scratch_root(root, env)
     tmp_root.mkdir(parents=True, exist_ok=True)
     env["TMPDIR"] = str(tmp_root)
@@ -54,7 +67,7 @@ def _build_file_wasm(
         "-m",
         "molt.cli",
         "build",
-        str(source_file),
+        *entry_args,
         "--build-profile",
         "dev",
         "--target",
@@ -86,7 +99,7 @@ def _build_file_wasm(
         stdout = exc.stdout or ""
         raise AssertionError(
             "WASM module build timed out "
-            f"after {build_timeout:.1f}s for {source_file}; "
+            f"after {build_timeout:.1f}s for {entry}; "
             f"CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}\n"
             f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
         ) from exc
@@ -140,7 +153,7 @@ def test_wasm_importlib_package_bootstrap_target_dir_defaults_to_repo_pytest_tar
     assert diff_target_dir == target_dir
 
 
-def test_build_file_wasm_uses_wasm_test_memory_guard(
+def test_build_entry_wasm_uses_wasm_test_memory_guard(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = tmp_path / "pkg_main.py"
@@ -160,7 +173,7 @@ def test_build_file_wasm_uses_wasm_test_memory_guard(
         fake_run,
     )
 
-    result = _build_file_wasm(tmp_path, source, out_dir, split_runtime=True)
+    result = _build_entry_wasm(tmp_path, source, out_dir, split_runtime=True)
 
     assert result.returncode == 0
     cmd = captured["cmd"]
@@ -175,7 +188,8 @@ def test_build_file_wasm_uses_wasm_test_memory_guard(
     )
 
 
-def _write_probe_package(root: Path) -> Path:
+def _write_probe_package(root: Path) -> ModuleEntry:
+    """``python -m probe_pkg`` over a package whose entry imports relatively."""
     pkg = root / "probe_pkg"
     (pkg / "subpkg").mkdir(parents=True)
     (pkg / "__init__.py").write_text("PACKAGE = 'probe_pkg'\n", encoding="utf-8")
@@ -219,7 +233,15 @@ def _write_probe_package(root: Path) -> Path:
         ),
         encoding="utf-8",
     )
-    return pkg / "__main__.py"
+    return ModuleEntry("probe_pkg", root)
+
+
+# CPython runs the probe as ``python -m probe_pkg`` (Lib/runpy.py:
+# _run_module_as_main); every build form must print what it prints.
+def _cpython_probe_lines(entry: ModuleEntry) -> list[str]:
+    lines = run_cpython_reference(entry).stdout.splitlines()
+    assert lines == ["probe_pkg", "sibling:leaf", "leaf", "True", "True"]
+    return lines
 
 
 @pytest.mark.slow
@@ -228,21 +250,16 @@ def test_wasm_module_entrypoint_package_relative_imports_linked(
 ) -> None:
     require_wasm_toolchain()
     root = Path(__file__).resolve().parents[1]
-    source_file = _write_probe_package(tmp_path)
+    entry = _write_probe_package(tmp_path / "src")
+    expected = _cpython_probe_lines(entry)
 
     out_dir = tmp_path / "linked_out"
     out_dir.mkdir()
-    output_wasm = build_wasm_linked(root, source_file, out_dir)
+    output_wasm = build_wasm_linked(root, entry, out_dir)
 
     run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr
-    assert run.stdout.splitlines() == [
-        "probe_pkg",
-        "sibling:leaf",
-        "leaf",
-        "True",
-        "True",
-    ]
+    assert run.stdout.splitlines() == expected
 
 
 @pytest.mark.slow
@@ -251,11 +268,12 @@ def test_wasm_module_entrypoint_package_relative_imports_split_direct(
 ) -> None:
     require_wasm_toolchain()
     root = Path(__file__).resolve().parents[1]
-    source_file = _write_probe_package(tmp_path)
+    entry = _write_probe_package(tmp_path / "src")
+    expected = _cpython_probe_lines(entry)
 
     out_dir = tmp_path / "split_out"
     out_dir.mkdir()
-    build = _build_file_wasm(root, source_file, out_dir, split_runtime=True)
+    build = _build_entry_wasm(root, entry, out_dir, split_runtime=True)
     assert build.returncode == 0, (
         f"split module build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -264,13 +282,7 @@ def test_wasm_module_entrypoint_package_relative_imports_split_direct(
 
     run = run_wasm_linked(root, out_dir / "app.wasm")
     assert run.returncode == 0, run.stderr
-    assert run.stdout.splitlines() == [
-        "probe_pkg",
-        "sibling:leaf",
-        "leaf",
-        "True",
-        "True",
-    ]
+    assert run.stdout.splitlines() == expected
 
 
 @pytest.mark.slow
@@ -279,11 +291,12 @@ def test_wasm_module_entrypoint_package_relative_imports_split_worker_host(
 ) -> None:
     require_wasm_toolchain()
     root = Path(__file__).resolve().parents[1]
-    source_file = _write_probe_package(tmp_path)
+    entry = _write_probe_package(tmp_path / "src")
+    expected = _cpython_probe_lines(entry)
 
     out_dir = tmp_path / "worker_out"
     out_dir.mkdir()
-    build = _build_file_wasm(root, source_file, out_dir, split_runtime=True)
+    build = _build_entry_wasm(root, entry, out_dir, split_runtime=True)
     assert build.returncode == 0, (
         f"linked module build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -296,10 +309,4 @@ def test_wasm_module_entrypoint_package_relative_imports_split_worker_host(
         f"body:\n{body[-2000:]}\n"
         f"logs:\n{logs[-4000:]}"
     )
-    assert body.splitlines() == [
-        "probe_pkg",
-        "sibling:leaf",
-        "leaf",
-        "True",
-        "True",
-    ]
+    assert body.splitlines() == expected

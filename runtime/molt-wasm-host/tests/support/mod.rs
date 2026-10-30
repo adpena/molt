@@ -2,6 +2,9 @@
 
 use std::process::Command;
 
+#[path = "launch.rs"]
+pub mod launch;
+
 /// Start an isolated host child without inheriting execution selectors.
 ///
 /// Tests retain compile/performance/determinism knobs from the caller, then

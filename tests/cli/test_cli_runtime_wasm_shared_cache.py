@@ -581,11 +581,13 @@ def test_memory_bounded_cargo_jobs_capped_by_cpu(
 
 
 def test_cargo_build_env_defaults_jobs_but_respects_override(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, developer_host_context: None
 ) -> None:
+    # developer_host_context: no run context, so _cargo_build_env does not
+    # materialize the real checkout's roots (a plain clone's toolchain root
+    # lies inside the checkout).
     monkeypatch.setattr(CARGO_EXEC, "_memory_bounded_cargo_jobs", lambda: 3)
     monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     env = CARGO_EXEC._cargo_build_env()
     assert env["CARGO_BUILD_JOBS"] == "3"
 

@@ -14,6 +14,11 @@ use std::sync::{Arc, Mutex};
 use wasmtime::{Engine, Func, Linker, Module, Store, Val, ValType};
 use wasmtime_wasi::{I32Exit, WasiCtxBuilder, p1};
 
+// The one launch fixture every host test manifest carries.
+#[path = "../tests/support/launch.rs"]
+mod launch_fixture;
+use launch_fixture::{deny_launch, deny_launch_environment};
+
 pub(super) fn test_host_state() -> HostState {
     test_host_state_with_wasi(WasiCtxBuilder::new().build_p1())
 }
@@ -104,20 +109,12 @@ fn runtime_manifest_fixture(label: &str, module_bytes: &[u8], digest: &str) -> t
             "modules": {"linked": {
                 "path": "program.wasm", "size": module_bytes.len(), "sha256": digest
             }},
-            "launch": {"environment": fixture_launch_environment()},
+            "launch": deny_launch(),
         }))
         .unwrap(),
     )
     .expect("write manifest fixture");
     root
-}
-
-fn fixture_launch_environment() -> serde_json::Value {
-    serde_json::json!({
-        "MOLT_CAPABILITIES": "",
-        "MOLT_CAPABILITY_TIER": "none",
-        "MOLT_CAPABILITY_POLICY_DIGEST": format!("sha256:{}", "1".repeat(64)),
-    })
 }
 
 #[test]
@@ -160,7 +157,7 @@ fn runtime_manifest_resolves_and_verifies_split_modules() {
                 "app": {"path": "program.wasm", "size": app_bytes.len(), "sha256": app_digest},
                 "runtime": {"path": "runtime.wasm", "size": runtime_bytes.len(), "sha256": runtime_digest},
             },
-            "launch": {"environment": fixture_launch_environment()},
+            "launch": deny_launch(),
         })).unwrap(),
     )
     .expect("write split manifest");
@@ -290,18 +287,18 @@ fn runtime_manifest_rejects_invalid_launch_before_reading_module() {
         None,
         Some(serde_json::Value::Null),
         Some(serde_json::json!([])),
-        Some(serde_json::json!([fixture_launch_environment()])),
+        Some(serde_json::json!([deny_launch_environment()])),
         Some(serde_json::json!({})),
         Some(serde_json::json!({"environment": null})),
         Some(serde_json::json!({"environment": []})),
-        Some(serde_json::json!({"environment": fixture_launch_environment(), "fallback": {}})),
+        Some(serde_json::json!({"environment": deny_launch_environment(), "fallback": {}})),
     ];
     for name in [
         "MOLT_CAPABILITIES",
         "MOLT_CAPABILITY_TIER",
         "MOLT_CAPABILITY_POLICY_DIGEST",
     ] {
-        let mut environment = fixture_launch_environment();
+        let mut environment = deny_launch_environment();
         environment.as_object_mut().unwrap().remove(name);
         invalid.push(Some(serde_json::json!({"environment": environment})));
     }
@@ -314,7 +311,7 @@ fn runtime_manifest_rejects_invalid_launch_before_reading_module() {
         ("EXTRA", serde_json::json!(1)),
         ("EXTRA", serde_json::Value::Null),
     ] {
-        let mut environment = fixture_launch_environment();
+        let mut environment = deny_launch_environment();
         environment[name] = value;
         invalid.push(Some(serde_json::json!({"environment": environment})));
     }

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tools import cross_run
+from tools import trunk_loop
 
 
 def test_guarded_run_translates_timeout_return_code(monkeypatch) -> None:
@@ -34,6 +35,376 @@ def test_guarded_run_translates_timeout_return_code(monkeypatch) -> None:
     assert exc_info.value.cmd == ["sleep", "10"]
     assert exc_info.value.output == "partial"
     assert exc_info.value.stderr == "timeout"
+
+
+def test_trunk_inventory_admits_only_declared_commands(tmp_path):
+    host = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "bat00", ["portability.queue.windows"]
+    )
+    assert host.os == cross_run.HostOS.WINDOWS
+    assert host.launcher == cross_run.DetachedLauncher.WINDOWS_CIM
+    assert host.checkout == r"C:\Molt\molt-src"
+    with pytest.raises(ValueError, match="select unique commands"):
+        trunk_loop.selected_host(
+            cross_run.DEFAULT_INVENTORY, "bat00", ["portability.guard.windows"]
+        )
+    with pytest.raises(ValueError, match="no admitted"):
+        trunk_loop.selected_host(
+            cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
+        )
+    text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
+    inventory = tmp_path / "hosts.toml"
+    inventory.write_text(
+        text.replace('launcher = "windows-cim"', 'launcher = "posix-session"'),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="launcher, OS and shell disagree"):
+        cross_run.parse_inventory(inventory)
+
+
+@pytest.mark.parametrize(
+    "root,checkout,stage",
+    [
+        (r"E:\Molt", r"E:\Molt\molt-src", r"E:\Molt\scratch"),
+        (r"C:\Molt", r"C:\Users\elsewhere", r"C:\Molt\scratch"),
+        (r"C:\Molt", r"C:\Molt\molt-src", r"C:\Other\scratch"),
+    ],
+)
+def test_trunk_refuses_noncanonical_source_custody(root, checkout, stage):
+    from dataclasses import replace
+
+    host = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "bat00", ["portability.queue.windows"]
+    )
+    with pytest.raises(ValueError, match="custody|requires C:"):
+        trunk_loop.host_paths(
+            replace(host, custody_root=root, checkout=checkout, remote_dir=stage), "abc"
+        )
+
+
+def test_trunk_windows_launcher_uses_cim_and_preserves_literal_arguments():
+    import json
+
+    host = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "bat00", ["portability.queue.windows"]
+    )
+    script = trunk_loop.detached_script(
+        host,
+        [r"C:\Molt\Python\python.exe", "-c", 'print("hello world")'],
+        r"C:\Molt\scratch\owned",
+    )
+    assert "Invoke-CimMethod -ClassName Win32_Process -MethodName Create" in script
+    assert (
+        'CommandLine=\'C:\\Molt\\Python\\python.exe -c "print(\\"hello world\\")"\''
+        in script
+    )
+    assert "CurrentDirectory='C:\\Molt\\scratch\\owned'" in script
+    assert "Start-Process" not in script
+    assert (
+        trunk_loop.acknowledge(json.dumps({"ReturnValue": 0, "ProcessId": 212})) == 212
+    )
+    for response in (
+        {"ReturnValue": 9, "ProcessId": 0},
+        {"ReturnValue": 0, "ProcessId": 0},
+        {"ReturnValue": 0, "ProcessId": True},
+    ):
+        with pytest.raises(ValueError, match="acknowledge"):
+            trunk_loop.acknowledge(json.dumps(response))
+    assert trunk_loop.ps("x'\ny") == "'x''\ny'"
+
+
+def test_windows_sftp_source_and_destination_use_forward_slashes(tmp_path, monkeypatch):
+    host = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "bat00", ["portability.queue.windows"]
+    )
+    transport = cross_run.SSHTransport(host)
+    transport.execution_dir = r"C:\Molt\scratch\owned"
+    commands = []
+
+    def execute(argv, **_kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(cross_run, "_guarded_run", execute)
+    transport.pull("results.zip", tmp_path / "results.zip")
+    transport.push([tmp_path / "source.bundle"])
+    assert commands[0][-2] == "adpena@bat00:C:/Molt/scratch/owned/results.zip"
+    assert commands[1][-1] == "adpena@bat00:C:/Molt/scratch/owned/"
+    assert transport.remote_path("results.zip") == r"C:\Molt\scratch\owned\results.zip"
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX launcher contract")
+def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
+    import json
+    import os
+    import sys
+    import time
+
+    host = cross_run.Host(
+        name="local",
+        target="aarch64-apple-darwin",
+        transport="ssh",
+        python=sys.executable,
+        os=cross_run.HostOS.MACOS,
+        launcher=cross_run.DetachedLauncher.POSIX_SESSION,
+    )
+    ready, release, complete = [
+        tmp_path / name for name in ("ready", "release", "complete")
+    ]
+    child = """import json,os,pathlib,sys,time
+r,g,c=map(pathlib.Path,sys.argv[1:])
+r.write_text(json.dumps({'pid':os.getpid(),'session':os.getsid(0)}))
+deadline=time.monotonic()+15
+while not g.exists() and time.monotonic()<deadline:time.sleep(.01)
+if g.exists():c.write_text('completed after launcher exit')
+"""
+    script = trunk_loop.detached_script(
+        host,
+        [sys.executable, "-B", "-c", child, str(ready), str(release), str(complete)],
+        str(tmp_path),
+    )
+    launcher = subprocess.run(
+        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8", timeout=10
+    )
+    assert launcher.returncode == 0, launcher.stderr
+    pid = trunk_loop.acknowledge(launcher.stdout)
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        assert json.loads(ready.read_text(encoding="utf-8")) == {
+            "pid": pid,
+            "session": pid,
+        }
+        assert pid != os.getsid(0)
+    finally:
+        release.write_text("parent already exited", encoding="utf-8")
+    while not complete.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert complete.read_text(encoding="utf-8") == "completed after launcher exit"
+
+
+def test_trunk_seed_inputs_reuses_content_addressed_archives(tmp_path, monkeypatch):
+    import hashlib
+    from molt import dx, tool_releases
+
+    payload = b"independent pinned bytes"
+    seed = tmp_path / "source"
+    seed.write_bytes(payload)
+    sha = hashlib.sha256(payload).hexdigest()
+    asset = {
+        "url": "https://github.com/example/tool/releases/download/v1/tool.zip",
+        "size": len(payload),
+        "sha256": sha,
+    }
+    monkeypatch.setattr(
+        dx, "canonical_toolchain_root", lambda *_a, **_k: tmp_path / "cache"
+    )
+    actual = tool_releases.provision_archive
+    monkeypatch.setattr(
+        tool_releases, "provision_archive", lambda **args: actual(**args, source=seed)
+    )
+    monkeypatch.setattr(
+        tool_releases.urllib.request,
+        "build_opener",
+        lambda *_: pytest.fail("seed path opened network"),
+    )
+    copied = []
+
+    class Transfer:
+        def push(self, paths):
+            copied.extend((path.name, path.read_bytes()) for path in paths)
+
+    local = tmp_path / "stage"
+    local.mkdir()
+    seeds = trunk_loop.seed_inputs(
+        {"releases": {"first": {"asset": asset}, "second": {"asset": asset}}},
+        Transfer(),
+        local,
+    )
+    assert copied == [(sha + ".archive", payload)]
+    assert len(seeds) == 2
+    assert (
+        tmp_path
+        / "cache/toolchains/downloads/sha256"
+        / sha
+        / str(len(payload))
+        / "tool.zip"
+    ).read_bytes() == payload
+
+
+@pytest.mark.parametrize("interruption", ["transport", "publication"])
+def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
+    tmp_path, monkeypatch, interruption
+):
+    import hashlib
+    import io
+    import json
+    import zipfile
+
+    commit, run_id = "1" * 40, "owned-run"
+    record_path = tmp_path / commit / "host/runs" / run_id / "run.json"
+    record_path.parent.mkdir(parents=True)
+    record = {
+        "schema": trunk_loop.SCHEMA,
+        "commit": commit,
+        "run_id": run_id,
+        "cells": ["cell"],
+        "state": "launched",
+    }
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(
+            "cell/receipt.json",
+            json.dumps({"source_commit": commit, "source_tree_state": "clean"}),
+        )
+        archive.writestr("cell/run.log", b"retained original bytes\r\n")
+    payload = output.getvalue()
+    terminal = {
+        "commit": commit,
+        "run_id": run_id,
+        "status": "failure",
+        "cells": [{"id": "cell", "receipt": True}],
+        "archive_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+    class Transport:
+        calls = 0
+
+        def remote_path(self, name):
+            return "/owned/" + name
+
+        def shell_command(self, _script):
+            return json.dumps(terminal)
+
+        def pull(self, name, target):
+            assert name == "results.zip"
+            self.calls += 1
+            target.write_bytes(
+                payload[:10]
+                if self.calls == 1 and interruption == "transport"
+                else payload
+            )
+            if self.calls == 1 and interruption == "transport":
+                raise OSError("connection interrupted")
+
+    transport = Transport()
+    host = cross_run.Host(name="host", target="aarch64-apple-darwin", transport="ssh")
+    monkeypatch.setattr(
+        trunk_loop, "transfer_for_record", lambda _record: (host, transport)
+    )
+    from molt import file_publication
+
+    actual_publish = file_publication.atomic_write_bytes
+    publication_failed = False
+
+    def publish(path, payload, **kwargs):
+        nonlocal publication_failed
+        if (
+            interruption == "publication"
+            and path.name == "run.log"
+            and not publication_failed
+        ):
+            publication_failed = True
+            raise OSError("publication interrupted")
+        return actual_publish(path, payload, **kwargs)
+
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", publish)
+    with pytest.raises(OSError, match="interrupted"):
+        trunk_loop.collect(record_path, wait=False)
+    assert (record_path.parent / "results.zip").exists() == (
+        interruption == "publication"
+    )
+    assert not (tmp_path / commit / "host/cell" / run_id / "run.log").exists()
+    assert trunk_loop.collect(record_path, wait=False) == 1
+    evidence = tmp_path / commit / "host/cell" / run_id / "run.log"
+    assert evidence.read_bytes() == b"retained original bytes\r\n"
+    assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == "collected"
+    assert transport.calls == (2 if interruption == "transport" else 1)
+
+
+def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    plugin = {}
+    exec(compile(trunk_loop.TIMINGS_PLUGIN, "trunk_timings.py", "exec"), plugin)
+
+    def config(worker=False):
+        c = SimpleNamespace(
+            getoption=lambda _: str(tmp_path), option=SimpleNamespace(numprocesses=4)
+        )
+        if worker:
+            c.workerinput = {"workerid": "gw0"}
+        return c
+
+    report = SimpleNamespace(nodeid="file.py::test_contract", when="call", duration=2.5)
+    plugin["pytest_configure"](config())
+    plugin["pytest_runtest_logreport"](report)
+    assert not list(tmp_path.iterdir())
+    plugin["pytest_configure"](config(worker=True))
+    plugin["pytest_runtest_logreport"](report)
+    paths = list(tmp_path.iterdir())
+    assert len(paths) == 1
+    assert json.loads(paths[0].read_text(encoding="utf-8")) == {
+        "nodeid": "file.py::test_contract",
+        "phase": "call",
+        "duration_seconds": 2.5,
+    }
+
+
+def test_trunk_fixture_roots_are_explicit_disjoint_and_physically_admitted(tmp_path):
+    import json
+
+    nonce = "abcde12345" * 3 + "ab"
+    record = {
+        "nonce": nonce,
+        "run_id": "owned-run",
+        "host": {
+            "proof_cargo_output_root": str(tmp_path / "cargo"),
+            "proof_metadata_root": str(tmp_path / "metadata"),
+        },
+    }
+    env = {
+        "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT": "/foreign",
+        "MOLT_PROOF_TEST_METADATA_ROOT": "/foreign",
+    }
+    declarations = trunk_loop.fixture_roots(record, env)
+    assert set(declarations) == {"proof_cargo_output_root", "proof_metadata_root"}
+    for field, variable in (
+        ("proof_cargo_output_root", "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT"),
+        ("proof_metadata_root", "MOLT_PROOF_TEST_METADATA_ROOT"),
+    ):
+        path = Path(env[variable])
+        assert path == Path(record["host"][field]) / nonce[:16]
+        declaration = declarations[field]
+        metadata = path.stat()
+        assert declaration["device"] == metadata.st_dev
+        assert declaration["inode"] == metadata.st_ino
+        owner = json.loads((path / "trunk-owner.json").read_text(encoding="utf-8"))
+        assert owner["run_id"] == "owned-run"
+        assert owner["nonce"] == nonce
+        assert owner["root"] == declaration
+    with pytest.raises(FileExistsError):
+        trunk_loop.fixture_roots(record, env)
+
+
+@pytest.mark.parametrize(
+    "replacement", ["", r"E:\Molt\fixtures", r"C:\Molt\trunk-cargo"]
+)
+def test_trunk_refuses_missing_escaped_or_overlapping_fixture_roots(
+    tmp_path, replacement
+):
+    inventory = tmp_path / "hosts.toml"
+    text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
+    text = text.replace(
+        "proof_metadata_root = 'C:\\Molt\\trunk-metadata'",
+        "proof_metadata_root = '" + replacement + "'",
+    )
+    inventory.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="fixture roots"):
+        trunk_loop.selected_host(inventory, "bat00", ["portability.queue.windows"])
 
 
 def test_local_expected_uses_memory_guard(monkeypatch) -> None:
@@ -1291,3 +1662,149 @@ def test_sealed_compilation_cannot_replace_readonly_installed_tmp_inputs(change)
                 _compilation_execution_record()
             ),
         )
+
+
+@pytest.fixture
+def pinned_archive_seed(tmp_path, monkeypatch):
+    import hashlib
+    from molt import tool_releases
+
+    data = b"controller-pinned artifact\n"
+    source = tmp_path / "transferred-seed"
+    source.write_bytes(data)
+    monkeypatch.setattr(
+        tool_releases.urllib.request,
+        "build_opener",
+        lambda *_: pytest.fail("explicit archive seed opened the network"),
+    )
+    return {
+        "url": "https://github.com/example/tool/releases/download/v1/archive.zip",
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "downloads": tmp_path / "downloads",
+        "source": source,
+    }
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_pinned_archive_seed_imports_exact_bytes_without_network(
+    pinned_archive_seed, cached
+):
+    from molt import tool_releases
+
+    args = pinned_archive_seed
+    data = b"controller-pinned artifact\n"
+    cache = args["downloads"]
+    cache.mkdir()
+    destination = cache / "archive.zip"
+    if cached:
+        destination.write_bytes(data)
+    result = tool_releases.provision_archive(**args)
+    assert result == destination
+    assert result.read_bytes() == data
+    assert args["source"].read_bytes() == data
+    assert not any(child.is_dir() for child in cache.iterdir())
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("defect", ["short", "long", "digest", "absent"])
+def test_pinned_archive_seed_refuses_invalid_source_even_with_valid_cache(
+    pinned_archive_seed, cached, defect
+):
+    from molt import tool_releases
+
+    args = pinned_archive_seed
+    source = args["source"]
+    data = b"controller-pinned artifact\n"
+    cache = args["downloads"]
+    cache.mkdir()
+    destination = cache / "archive.zip"
+    previous = data if cached else b"retain the previous cache generation"
+    destination.write_bytes(previous)
+    if defect == "absent":
+        source.unlink()
+    else:
+        source.write_bytes(
+            {
+                "short": data[:-1],
+                "long": data + b"x",
+                "digest": b"x" * len(data),
+            }[defect]
+        )
+    with pytest.raises(tool_releases.ToolReleaseError, match="pinned archive"):
+        tool_releases.provision_archive(**args)
+    assert destination.read_bytes() == previous
+    assert not any(child.is_dir() for child in cache.iterdir())
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_pinned_archive_seed_publication_failure_preserves_cache(
+    pinned_archive_seed, monkeypatch, existing
+):
+    from molt import tool_releases
+
+    args = pinned_archive_seed
+    cache = args["downloads"]
+    cache.mkdir()
+    destination = cache / "archive.zip"
+    if existing:
+        destination.write_bytes(b"previous generation")
+
+    def failed_publication(*_):
+        raise OSError("independent publication interruption")
+
+    monkeypatch.setattr(
+        tool_releases,
+        "durable_replace" if existing else "durable_publish_exclusive",
+        failed_publication,
+    )
+    with pytest.raises(
+        tool_releases.ToolReleaseError, match="independent publication interruption"
+    ):
+        tool_releases.provision_archive(**args)
+    if existing:
+        assert destination.read_bytes() == b"previous generation"
+    else:
+        assert not destination.exists()
+    assert args["source"].read_bytes() == b"controller-pinned artifact\n"
+    assert not any(child.is_dir() for child in cache.iterdir())
+
+
+@pytest.mark.parametrize("mutation", ["replace", "rewrite"])
+def test_pinned_archive_seed_closes_source_fence_before_publication(
+    pinned_archive_seed, monkeypatch, mutation, tmp_path
+):
+    from molt import tool_releases
+
+    args = pinned_archive_seed
+    source = args["source"]
+    cache = args["downloads"]
+    cache.mkdir()
+    destination = cache / "archive.zip"
+    destination.write_bytes(b"previous generation")
+    actual_identity = tool_releases.stable_regular_file_handle_identity
+    mutated = False
+
+    def mutate_after_pin(opened, **kwargs):
+        nonlocal mutated
+        identity = actual_identity(opened, **kwargs)
+        if opened.path == source:
+            mutated = True
+            # Identical bytes make the closing identity fence the oracle;
+            # hashing the copied bytes alone would admit this substitution.
+            if mutation == "replace":
+                replacement = tmp_path / "replacement"
+                replacement.write_bytes(b"controller-pinned artifact\n")
+                os.replace(replacement, source)
+            else:
+                source.write_bytes(b"controller-pinned artifact\n")
+        return identity
+
+    monkeypatch.setattr(
+        tool_releases, "stable_regular_file_handle_identity", mutate_after_pin
+    )
+    with pytest.raises(tool_releases.ToolReleaseError, match="changed"):
+        tool_releases.provision_archive(**args)
+    assert mutated
+    assert destination.read_bytes() == b"previous generation"
+    assert not any(child.is_dir() for child in cache.iterdir())

@@ -7,7 +7,8 @@ custody digests remain real. These inputs are never product/native proof receipt
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from functools import partial, wraps
 import inspect
 import hashlib
@@ -50,7 +51,7 @@ from tools.proof_queue_pkg import (
 )
 
 
-class _VerifiedSupervisorRefusal(BaseException):
+class _VerifiedPrelaunchRefusal(BaseException):
     """The ineligible branch has proved its complete prelaunch contract.
 
     A ``BaseException`` so that no ``except Exception`` in a test body can
@@ -58,14 +59,23 @@ class _VerifiedSupervisorRefusal(BaseException):
     """
 
     def __init__(
-        self, refusals: tuple[supervisor_custody.SupervisorPrelaunchRefused, ...]
+        self,
+        refusals: tuple[
+            supervisor_custody.SupervisorPrelaunchRefused
+            | execution_custody.LiveCustodyUnavailable,
+            ...,
+        ],
     ) -> None:
         super().__init__(refusals)
         self.refusals = refusals
 
 
 def report_refused_cell(
-    refusals: tuple[supervisor_custody.SupervisorPrelaunchRefused, ...],
+    refusals: tuple[
+        supervisor_custody.SupervisorPrelaunchRefused
+        | execution_custody.LiveCustodyUnavailable,
+        ...,
+    ],
 ) -> NoReturn:
     """End a refused real-execution test as skipped or failed, never passed.
 
@@ -76,9 +86,13 @@ def report_refused_cell(
     every authority is the host refusing a qualified cell, and fails.
     """
     assert refusals, "a refused cell needs a verified refusal"
-    qualified = [
-        str(refusal) for refusal in refusals if not refusal.missing_authorities
-    ]
+    qualified = []
+    for refusal in refusals:
+        if isinstance(refusal, supervisor_custody.SupervisorPrelaunchRefused):
+            if not refusal.missing_authorities:
+                qualified.append(str(refusal))
+        elif not isinstance(refusal, execution_custody.LiveCustodyUnavailable):
+            raise TypeError("unknown prelaunch refusal type")
     if qualified:
         pytest.fail(
             "qualified native process-closure backend refused before launch: "
@@ -88,35 +102,52 @@ def report_refused_cell(
     pytest.skip("; ".join(dict.fromkeys(str(refusal) for refusal in refusals)))
 
 
-def assert_supervisor_refusal(
+def assert_prelaunch_refusal(
     returncode: int, result_path: Path, *, queue_terminal: bool = False
-) -> supervisor_custody.SupervisorPrelaunchRefused | None:
-    """Recognize only a typed native refusal, never unrelated launch failures."""
+) -> (
+    supervisor_custody.SupervisorPrelaunchRefused
+    | execution_custody.LiveCustodyUnavailable
+    | None
+):
+    """Validate the exact input-custody or native-process prelaunch refusal."""
     record = json.loads(result_path.read_text(encoding="utf-8"))
-    capability = record.get("supervisor_capability")
-    if capability is None:
-        return None
-    envelope = record["envelope"]
-    mode = (
-        "leaf"
-        if envelope["process_closure"]["descendants"] == "forbidden"
-        else "declared-tree"
-    )
-    with pytest.raises(supervisor_custody.SupervisorPrelaunchRefused) as refusal:
-        supervisor_custody.decode_supervisor_capability(
-            capability,
-            mode=mode,
-            context="prelaunch",
-            expected_platform={"win32": "windows", "darwin": "macos"}.get(
-                sys.platform, sys.platform
-            ),
+    if "live_custody_capability" in record:
+        capability = record["live_custody_capability"]
+        # The closed decoder rejects an unknown reason code, a foreign or
+        # supported platform and any other shape.
+        try:
+            refusal = execution_custody.LiveCustodyUnavailable.decode(
+                capability, expected_platform=sys.platform
+            )
+        except ValueError as exc:
+            raise AssertionError(f"not a live custody refusal: {exc}") from exc
+        assert "supervisor_capability" not in record
+    else:
+        capability = record.get("supervisor_capability")
+        if capability is None:
+            return None
+        envelope = record["envelope"]
+        mode = (
+            "leaf"
+            if envelope["process_closure"]["descendants"] == "forbidden"
+            else "declared-tree"
         )
+        with pytest.raises(supervisor_custody.SupervisorPrelaunchRefused) as caught:
+            supervisor_custody.decode_supervisor_capability(
+                capability,
+                mode=mode,
+                context="prelaunch",
+                expected_platform={"win32": "windows", "darwin": "macos"}.get(
+                    sys.platform, sys.platform
+                ),
+            )
+        refusal = caught.value
     assert returncode == 2
     assert record["phase"] == "failed"
     assert record["command_started"] is False
-    refusal_type = supervisor_custody.SupervisorPrelaunchRefused
+    refusal_type = type(refusal)
     assert record["error"] == (
-        f"{refusal_type.__module__}.{refusal_type.__qualname__}: {refusal.value}"
+        f"{refusal_type.__module__}.{refusal_type.__qualname__}: {refusal}"
     )
     assert capability["admission"]["state"] == "ineligible"
     assert capability["admission"]["reason"]
@@ -143,7 +174,33 @@ def assert_supervisor_refusal(
     ):
         assert not path.exists(), path
     assert not list(result_path.parent.glob("*.events.*.jsonl"))
-    return refusal.value
+    return refusal
+
+
+@contextmanager
+def admitted_live_custody(
+    monitor: execution_custody.LiveCustodyMonitor,
+) -> Iterator[execution_custody.LiveCustodyMonitor]:
+    """Arm ``monitor`` for a real-watcher test, or end it as a refused cell.
+
+    On a platform without an admitted watcher the monitor must refuse with
+    the typed reason before any watcher thread or fence directory exists;
+    the test then skips with that reason and never passes (HF-552).
+    """
+    try:
+        monitor.__enter__()
+    except execution_custody.LiveCustodyUnavailable as refusal:
+        assert not execution_custody.live_custody_platform_supported(sys.platform)
+        assert refusal.reason in execution_custody.LIVE_CUSTODY_REFUSAL_REASONS
+        assert monitor._thread is None
+        assert monitor._cookie_root is None
+        receipt = monitor.receipt()
+        assert receipt["state"] == "CREATED" and receipt["stable"] is False
+        report_refused_cell((refusal,))
+    try:
+        yield monitor
+    finally:
+        monitor.__exit__(None, None, None)
 
 
 @pytest.fixture
@@ -163,11 +220,9 @@ def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
         returncode = execute(request_path)
         if queue_depth == 0:
             request = json.loads(request_path.read_text(encoding="utf-8"))
-            refusal = assert_supervisor_refusal(
-                returncode, Path(request["result_path"])
-            )
+            refusal = assert_prelaunch_refusal(returncode, Path(request["result_path"]))
             if refusal is not None:
-                raise _VerifiedSupervisorRefusal((refusal,))
+                raise _VerifiedPrelaunchRefusal((refusal,))
         return returncode
 
     def queue_call(argv: list[str]) -> int:
@@ -185,14 +240,17 @@ def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
         with sqlite3.connect(database) as connection:
             connection.row_factory = sqlite3.Row
             rows = list(connection.execute("SELECT * FROM proof_runs"))
-        refusals: list[supervisor_custody.SupervisorPrelaunchRefused] = []
+        refusals: list[
+            supervisor_custody.SupervisorPrelaunchRefused
+            | execution_custody.LiveCustodyUnavailable
+        ] = []
         for row in rows:
             _, result_path = command_identity.execution_record_paths(
                 Path(row["log_path"])
             )
             if not result_path.exists():
                 continue
-            refusal = assert_supervisor_refusal(
+            refusal = assert_prelaunch_refusal(
                 row["returncode"], result_path, queue_terminal=True
             )
             if refusal is not None:
@@ -204,7 +262,7 @@ def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
                 refusals.append(refusal)
         if refusals:
             assert all(row["status"] != "passed" for row in rows)
-            raise _VerifiedSupervisorRefusal(tuple(refusals))
+            raise _VerifiedPrelaunchRefusal(tuple(refusals))
         return returncode
 
     monkeypatch.setattr(guarded_execution, "execute_guarded_request", execute_request)
@@ -219,7 +277,7 @@ def capability_aware_proof_execution(test: Callable) -> Callable:
         kwargs.pop("proof_queue_execution_capability")
         try:
             test(*args, **kwargs)
-        except _VerifiedSupervisorRefusal as verified:
+        except _VerifiedPrelaunchRefusal as verified:
             report_refused_cell(verified.refusals)
 
     signature = inspect.signature(test)
