@@ -8,7 +8,7 @@ schema = "molt-perf-methodology-v1"
 # explicit application compiler arguments change diagnostic verdicts. Earlier
 # reports retain their recorded class.
 version = 17
-content_sha256 = "9b3dac84c4db32526dde477ca9c6020440e118753f202eefefa55a96cb083434"
+content_sha256 = "94cb688c59d799a1e0d719749843d60ebb6d9439881d011a6ce15ca95ccbcc28"
 
 [[methodology]]
 path = "tools/safe_run.py"
