@@ -524,10 +524,11 @@ def _backend_fingerprint(
         _backend_source_paths(project_root, backend_features, product=product),
         product=product,
     )
-    admitted = admitted_source_files(source_paths)
+    admitted: tuple[Path, ...] | None = None
     if _input_report.active():
         # Enumerate every backend source for the build record, whichever
         # shortcut this fingerprint takes below.
+        admitted = admitted_source_files(source_paths)
         for directory in source_directories(admitted, source_paths):
             _input_report.report_directory(directory)
         for path in (*admitted, project_root / "Cargo.lock"):
@@ -559,6 +560,8 @@ def _backend_fingerprint(
             "meta_digest": meta_digest,
             "source_state": source_state,
         }
+    if admitted is None:
+        admitted = admitted_source_files(source_paths)
     inputs_meta = _hash_source_tree_metadata(admitted, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
     if _stored_fingerprint_matches_source_metadata(
