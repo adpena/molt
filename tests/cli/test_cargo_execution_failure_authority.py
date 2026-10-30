@@ -146,6 +146,13 @@ def test_epoch_c_selection_uses_child_cwd_exact_file(
     assert dict(env) == before
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sccache(monkeypatch, tmp_path):
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+
+
 def _cargo_env(target_root: Path, **values: str) -> dict[str, str]:
     return {"CARGO_TARGET_DIR": str(target_root), **values}
 

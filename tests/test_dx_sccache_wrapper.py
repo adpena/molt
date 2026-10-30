@@ -104,6 +104,13 @@ def test_explicit_other_wrapper_shadows_forced_automatic_cache(monkeypatch, cons
         assert dict(env) == original
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sccache(monkeypatch, tmp_path):
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+
+
 def test_wires_rustc_wrapper_when_sccache_available(monkeypatch):
     monkeypatch.setattr(dx, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
@@ -466,11 +473,13 @@ def test_lld_link_respects_explicit_override(monkeypatch):
     assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"] == "custom-linker"
 
 
-def test_dx_sccache_provisioner_receives_the_selected_tool_root(tmp_path, monkeypatch):
+def test_dx_sccache_provisioner_receives_the_selected_tool_root(
+    tmp_path, monkeypatch, short_cargo_cache
+):
     project = tmp_path / "project"
     project.mkdir()
     tools = tmp_path / "tools"
-    artifacts = tmp_path / "artifacts"
+    artifacts = short_cargo_cache.parent / "artifacts"
     seen = []
     monkeypatch.setattr(
         dx,
@@ -597,5 +606,11 @@ def test_the_server_temp_dir_keeps_the_startup_socket_within_sun_path(tmp_path):
         {**environ, "SCCACHE_DIR": str(other)}
     )
 
-    with pytest.raises(ValueError, match="socket path limit"):
-        policy.sccache_server_temp_dir({**environ, "MOLT_EXT_ROOT": "/" + "h" * 100})
+    unfittable = {**environ, "MOLT_EXT_ROOT": "/" + "h" * 100}
+    projected = policy.sccache_server_temp_dir(unfittable)
+    assert (
+        projected is not None
+        and len(os.fsencode(projected / "sccacheXXXXXX" / "sock")) > 103
+    )
+    with pytest.raises(policy.SccacheSocketPathError, match="socket path limit"):
+        policy.sccache_server_temp_dir(unfittable, create=True)
