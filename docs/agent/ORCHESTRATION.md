@@ -27,6 +27,15 @@ configured SSH route. Dispatch independent development work and Windows
 qualification there with exact source, toolchain and target custody while
 other host lanes proceed.
 
+`tools/cross_hosts.toml` is the shared host inventory for smoke execution and
+the trunk proof runner. Its proof-command allow-set is host capability, not a
+second proof policy. The selected commit's proof plan owns prerequisites and
+execution arguments. See [farm proof operations](../OPERATIONS.md#farm-proofs-at-an-exact-commit)
+and [the Stage 1 design](../design/trunk_loop.md) for exact-source detached
+execution, archive seeding, receipt collection and recovery. The integrator owns
+landing, findings-ledger proposals and retirement; Stage 1 does not install a
+continuous service.
+
 Both hosts use the same checkout-family layout. `src/molt/custody_layout.py` is
 the one rule: a checkout at `<root>/molt-src` and every worktree at
 `<root>/worktrees/<name>` resolve to the custody root `<root>`, which owns

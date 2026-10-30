@@ -8,6 +8,8 @@ asset into ``<toolchain root>/toolchains/<name>-<version>/bin`` before a lane th
 declares the tool runs. A download is accepted only when its byte size and
 SHA-256 match the manifest exactly; the installed executable carries an
 attestation that discovery re-verifies by content hash on every use.
+Explicit controller-seeded archives use that same pin and publication boundary
+without opening the network; an invalid seed never falls back to a download.
 
 A runtime tool, such as npm, is a package that another pinned tool runs: one
 host-independent (``any``) asset whose ``archive_tree`` is extracted whole,
@@ -589,12 +591,63 @@ class _ArchiveRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def provision_archive(*, url: str, size: int, sha256: str, downloads: Path) -> Path:
+@contextmanager
+def _archive_input(
+    *,
+    url: str,
+    size: int,
+    sha256: str,
+    redirects: _ArchiveRedirects,
+    source: Path | None,
+):
+    """Read one explicit seed or HTTPS body; never retry one through the other."""
+    if source is not None:
+        with open_pinned_archive(source, size=size, sha256=sha256) as opened:
+            yield opened.stream
+        return
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "molt-pinned-archive/1",
+            "Accept-Encoding": "identity",
+        },
+    )
+    opener = urllib.request.build_opener(redirects)
+    with opener.open(request, timeout=180) as response:
+        redirects.admit(response.geturl())
+        if (
+            response.status != 200
+            or response.headers.get("Content-Encoding", "identity") != "identity"
+        ):
+            raise ToolReleaseError(
+                "pinned archive response must be an unencoded HTTP 200 body"
+            )
+        declared = response.headers.get("Content-Length")
+        if declared is not None and (
+            not re.fullmatch(r"[0-9]+", declared) or int(declared) != size
+        ):
+            raise ToolReleaseError(
+                "pinned archive response length disagrees with its pinned identity"
+            )
+        yield response
+
+
+def provision_archive(
+    *,
+    url: str,
+    size: int,
+    sha256: str,
+    downloads: Path,
+    source: Path | None = None,
+) -> Path:
     """Cache one exact archive through the shared pinned-tool transfer owner.
 
     This is explicit development provisioning. It never extracts or executes
     payloads. Cache readers still retain their own stable descriptor while
     consuming bytes. Invalid old entries survive any pre-publication failure.
+    An explicit local ``source`` is verified and copied through the same pin
+    and publication boundary without opening the network. Even a cache hit
+    validates an explicit seed; invalid seeds are never silently ignored.
     """
     try:
         redirects = _ArchiveRedirects(url)
@@ -643,6 +696,9 @@ def provision_archive(*, url: str, size: int, sha256: str, downloads: Path) -> P
                             opened, label="pinned archive cache", max_bytes=size
                         )
                     if identity.sha256 == sha256:
+                        if source is not None:
+                            with open_pinned_archive(source, size=size, sha256=sha256):
+                                pass
                         return archive
                 with OwnedTemporaryDirectory(
                     prefix="molt-archive-", dir=archive.parent
@@ -650,35 +706,16 @@ def provision_archive(*, url: str, size: int, sha256: str, downloads: Path) -> P
                     staged = Path(raw) / filename.name
                     digest = hashlib.sha256()
                     received = 0
-                    request = urllib.request.Request(
-                        url,
-                        headers={
-                            "User-Agent": "molt-pinned-archive/1",
-                            "Accept-Encoding": "identity",
-                        },
-                    )
-                    opener = urllib.request.build_opener(redirects)
                     with (
-                        opener.open(request, timeout=180) as response,
+                        _archive_input(
+                            url=url,
+                            size=size,
+                            sha256=sha256,
+                            redirects=redirects,
+                            source=source,
+                        ) as response,
                         staged.open("xb") as stream,
                     ):
-                        redirects.admit(response.geturl())
-                        if (
-                            response.status != 200
-                            or response.headers.get("Content-Encoding", "identity")
-                            != "identity"
-                        ):
-                            raise ToolReleaseError(
-                                "pinned archive response must be an unencoded HTTP 200 body"
-                            )
-                        declared = response.headers.get("Content-Length")
-                        if declared is not None and (
-                            not re.fullmatch(r"[0-9]+", declared)
-                            or int(declared) != size
-                        ):
-                            raise ToolReleaseError(
-                                "pinned archive response length disagrees with its pinned identity"
-                            )
                         while chunk := response.read(
                             min(1024 * 1024, size - received + 1)
                         ):

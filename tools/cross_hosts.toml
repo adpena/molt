@@ -1,4 +1,4 @@
-# cross_hosts.toml — inventory for tools/cross_run.py
+# cross_hosts.toml — shared inventory for cross_run.py and trunk_loop.py
 #
 # Lists each remote machine reachable from this build host (LAN, VPN, or
 # Docker) along with the rust target triple it expects. The runner reads
@@ -84,7 +84,9 @@
 # adpena LAN inventory (verified 2026-04-27)
 # molt   = Raspberry Pi (Debian 13 trixie, aarch64) at 192.168.1.213
 # macmini = Intel Mac mini (macOS 15.7.5, x86_64) at 192.168.1.112
-# bat00  = Windows machine at 192.168.1.216 (no ssh:22 listener — needs OpenSSH-Server enabled)
+# Proof hosts additionally declare os, custody_root, checkout, bootstrap python,
+# launcher and proof_cells (proof-plan command ids). An empty proof_cells list
+# admits no trunk workload. OS/launcher facts are validated together.
 
 [[host]]
 name = "macmini"
@@ -92,6 +94,12 @@ hostname = "192.168.1.112"
 user = "adpena"
 target = "x86_64-apple-darwin"
 remote_dir = "/tmp/molt_test"
+os = "macos"
+shell = "bash"
+custody_root = "/Users/adpena/Molt"
+checkout = "/Users/adpena/Molt/molt-src"
+launcher = "posix-session"
+proof_cells = []
 
 # Pi disabled until disk is freed (was 100% full at audit time).
 # Re-enable after pruning ~/PycharmProjects (9.4G) or installing a USB SSD.
@@ -102,12 +110,17 @@ remote_dir = "/tmp/molt_test"
 # target = "aarch64-unknown-linux-gnu"
 # remote_dir = "/tmp/molt_test"
 
-# Windows disabled until OpenSSH Server feature is enabled in Settings →
-# Apps → Optional features. Then add:
-# [[host]]
-# name = "bat00"
-# hostname = "192.168.1.216"
-# user = "adpena"
-# target = "x86_64-pc-windows-msvc"
-# remote_dir = "C:\\Users\\adpena\\AppData\\Local\\molt_test"
-# shell = "powershell"
+# Verified over the configured SSH route on 2026-10-29. No system changes.
+[[host]]
+name = "bat00"
+hostname = "bat00"
+user = "adpena"
+target = "x86_64-pc-windows-msvc"
+os = "windows"
+shell = "powershell"
+custody_root = 'C:\Molt'
+checkout = 'C:\Molt\molt-src'
+remote_dir = 'C:\Molt\scratch\trunk-loop'
+python = 'C:\Molt\envs\molt-dx-py312\Scripts\python.exe'
+launcher = "windows-cim"
+proof_cells = ["portability.cargo-custody.windows", "portability.queue.windows"]
