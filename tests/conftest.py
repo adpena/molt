@@ -53,33 +53,11 @@ def _storage_write_authority(
     API unnoticed when the producer's test runs.
     """
     from molt.dx import StorageWriteClaim, storage_write_check
-    from molt.checkout_state import (
-        LAST_USE_STAMP,
-        _state_metadata_root,
-        checkout_state_lock_paths,
-    )
-
-    # A lane-private artifact root can differ from the selected slot image's
-    # placement. Guarded fixture children retain that real interpreter through
-    # its existing external locks and use stamp, never its payload or siblings.
-    image = Path(sys.prefix)
-    image_controls = (
-        *checkout_state_lock_paths(image),
-        _state_metadata_root(image) / LAST_USE_STAMP,
-    )
-    image_claims = tuple(
-        StorageWriteClaim("python-environment", path, exact=True)
-        for control in image_controls
-        for path in (control, control.parent)
-    )
 
     with storage_write_check(
         ROOT,
         os.environ,
-        outputs=(
-            StorageWriteClaim("temporary", tmp_path_factory.getbasetemp()),
-            *image_claims,
-        ),
+        outputs=(StorageWriteClaim("temporary", tmp_path_factory.getbasetemp()),),
     ):
         yield
 

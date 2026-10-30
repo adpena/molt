@@ -25,6 +25,9 @@ from molt.checkout_state import (
     checkout_state_retirement,
     compact_evidence,
     PROTECTION_WINDOW_S,
+    NamespaceState,
+    NamespaceEvent,
+    apply_namespace_event,
 )
 from molt.custody_layout import (
     DurableEvidence,
@@ -245,9 +248,9 @@ def inventory(repo: Path, environment: Mapping[str, str]) -> list[dict[str, obje
             providers = external_providers(repo, environment)
             row["providers"] = providers
             row["bytes"] = sum(
-                member["bytes"]
+                size
                 for member in providers
-                if isinstance(member.get("bytes"), int)
+                if isinstance(size := member.get("bytes"), int)
             )
         if kind == "sccache":
             from molt.cargo_execution_policy import sccache_server_temp_dir
@@ -332,7 +335,7 @@ def retire_idle_controllers(
     from tools.molt_dev_common import _warn
 
     entries = []
-    rows = []
+    rows: list[dict[str, object]] = []
     for entry in directory.iterdir():
         if entry == current:
             rows.append(
@@ -364,7 +367,7 @@ def retire_idle_controllers(
         ]
     )
     for last_use, entry, _published in entries:
-        row = {
+        row: dict[str, object] = {
             "class": "controllers",
             "path": str(entry),
             "last_use": last_use,
@@ -423,7 +426,7 @@ def trim(
     from tools import controller_source
     from tools.disk_guard import _guard_protection
 
-    result = []
+    result: list[dict[str, object]] = []
     source = repo if policy_source is None else policy_source
     directory = storage_path(repo, "controllers", environment)
     if directory.is_dir():
@@ -604,7 +607,7 @@ def retire_regenerable(
     )
     total = sum(size for _, _, size in entries)
     kept = current | frozenset(root for _, root, _ in entries[: policy.keep_recent])
-    rows = []
+    rows: list[dict[str, object]] = []
     for last_use, root, size in reversed(entries):
         from molt.checkout_state import _managed_coordinate, read_checkout_owner
 
@@ -876,6 +879,24 @@ def _legacy_activity(path: Path, *, read_access: bool = True) -> tuple[float, bo
     return newest, held
 
 
+def _namespace_journal(root: Path) -> Path | None:
+    # Use the publication owner's grammar, including interrupted journal
+    # stages. Collection must never turn recovery state into a cold cache.
+    from molt.artifact_publication import _publication_directory_residue
+
+    if not root.is_dir():
+        residue = _publication_directory_residue(root.parent)
+        return root if root in (*residue.journals, *residue.journal_stages) else None
+    for parent in (
+        root,
+        *(p for p in root.rglob("*") if p.is_dir() and not p.is_symlink()),
+    ):
+        residue = _publication_directory_residue(parent)
+        if records := (*residue.journals, *residue.journal_stages):
+            return records[0]
+    return None
+
+
 def _moved_payload(task: Path, artifact: Path) -> tuple[Path | None, str]:
     """Accept the integrator's finite human MOVED.txt protocol, fail closed."""
     index = task / "MOVED.txt"
@@ -1036,7 +1057,7 @@ def migration_plan(
             )
             return
         if source.exists() and source != target:
-            if kind != "replaced-compile-cache":
+            if kind not in {"replaced-compile-cache", "replaced-identity-state"}:
                 _safe_source(source, allowed=allowed)
             last_use, held = _legacy_activity(
                 source, read_access=action != "retire-worktree"
@@ -1051,6 +1072,15 @@ def migration_plan(
                     action, reason = "keep", "native lock, guard or special file in use"
                 elif now - last_use < max(PROTECTION_WINDOW_S, policy.compact_after_s):
                     action, reason = "keep", "within last-use retention window"
+                elif kind == "replaced-identity-state":
+                    apply_namespace_event(
+                        NamespaceState.ACTIVE,
+                        NamespaceEvent.LAST_USE_EXPIRED,
+                        now=now,
+                        last_use=last_use,
+                        idle_window=policy.compact_after_s,
+                        lock_held=held,
+                    )
             rows.append(
                 Migration(
                     kind,
@@ -1175,6 +1205,39 @@ def migration_plan(
                     else "terminal evidence above checkout budget",
                     (common / "molt" / "lane-start" / "slots.lock",),
                 )
+    # Version changes start caches cold. Only finite former producer paths
+    # enter this existing lossless executor; current versions, bindings and
+    # recovery journals never enter the inventory. Native locks and guard
+    # protection are the same authorities used for every other old layout.
+    namespace_rule = storage_rule("replaced-identity-state")
+    seen_namespaces: set[Path] = set()
+    for base_kind, pattern in namespace_rule.replaced_namespaces:
+        base = storage_path(primary, base_kind, environment)
+        if not base.is_dir() or base.is_symlink():
+            continue
+        for source in sorted(base.glob(pattern)):
+            if source in seen_namespaces or indexed_payload(source):
+                continue
+            seen_namespaces.add(source)
+            if source.is_symlink() or resolve_owned_path(source) != source.absolute():
+                continue  # Former names never grant custody through a link.
+            _safe_source(source, allowed=(base,))
+            from molt.checkout_state import checkout_state_lock_paths
+
+            owner = (
+                base / source.relative_to(base).parts[0]
+                if base_kind == "build-control"
+                else base
+            )
+            add(
+                "replaced-identity-state",
+                source,
+                storage_path(primary, "diagnostics", environment)
+                / "replaced-identity-state",
+                "compact",
+                "superseded identity namespace; preserve signal before retirement",
+                checkout_state_lock_paths(owner),
+            )
     # Old cache may contain diagnostic material: archive, never infer that all
     # unregistered preimage files are safe to delete.
     old_cache = storage_path(primary, "replaced-compile-cache", environment)
@@ -1287,6 +1350,10 @@ def migrate(
             locks=[str(path) for path in item.locks],
         )
         row["status"] = "planned"
+        if item.kind == "replaced-identity-state":
+            row["namespace_state"] = (
+                NamespaceState.ACTIVE if item.action == "keep" else NamespaceState.IDLE
+            ).name
         with ExitStack() as stack:
             handles = []
             for path in item.locks:
@@ -1334,6 +1401,36 @@ def migrate(
                         if archive is not None:
                             row["archive"] = str(archive)
                     elif item.action == "compact":
+                        if item.kind == "replaced-identity-state":
+                            if journal := _namespace_journal(item.source):
+                                from molt.artifact_publication import (
+                                    JournalRecoveryRefused,
+                                )
+
+                                refusal = JournalRecoveryRefused(
+                                    journal,
+                                    "namespace retirement requires recovery first",
+                                )
+                                row.update(
+                                    status="journal-recovery-required",
+                                    remedy=refusal.remedy,
+                                )
+                                result.append(row)
+                                continue
+                            policy = storage_rule(item.kind).retention
+                            assert isinstance(policy, DurableEvidence)
+                            assert (
+                                policy.compact_after_s is not None
+                                and item.last_use is not None
+                            )
+                            retired = apply_namespace_event(
+                                NamespaceState.IDLE,
+                                NamespaceEvent.RETIRE,
+                                now=time.time(),
+                                last_use=item.last_use,
+                                idle_window=policy.compact_after_s,
+                                lock_held=False,
+                            )
                         keep = []
                         if item.kind == "replaced-lane-evidence":
                             from tools.disk_guard import registered_worktree_roots
@@ -1404,7 +1501,10 @@ def migrate(
                             )
                         )
                         row["status"] = "compacted"
-                        if item.kind == "replaced-temporary":
+                        if item.kind in {
+                            "replaced-temporary",
+                            "replaced-identity-state",
+                        }:
                             directories = git_directories(repo)
                             assert directories is not None
                             row["index"] = str(
@@ -1413,6 +1513,8 @@ def migrate(
                                     directories[1] / "molt" / "retired-evidence",
                                 )
                             )
+                            if item.kind == "replaced-identity-state":
+                                row["namespace_state"] = retired.name
                     elif item.action == "move-worktree":
                         from tools.disk_guard import _guard_protection
 

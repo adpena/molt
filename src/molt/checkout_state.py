@@ -17,6 +17,8 @@ shorter idle limit (`is_session_target`).
 
 from __future__ import annotations
 
+from enum import Enum, auto
+
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager, ExitStack, suppress
 from dataclasses import dataclass
@@ -79,6 +81,49 @@ USE_RESOLUTION_S = 3600.0
 # No root used within this window is retired by the GC or by disk pressure;
 # it exceeds the stamp's resolution, so a live user's stamp is always newer.
 PROTECTION_WINDOW_S = 2 * USE_RESOLUTION_S
+
+
+class NamespaceState(Enum):
+    ACTIVE = auto()
+    IDLE = auto()
+    RETIRED = auto()
+
+
+class NamespaceEvent(Enum):
+    LAST_USE_EXPIRED = auto()
+    RETIRE = auto()
+
+
+NAMESPACE_TRANSITIONS: Mapping[
+    tuple[NamespaceState, NamespaceEvent], NamespaceState
+] = MappingProxyType(
+    {
+        (NamespaceState.ACTIVE, NamespaceEvent.LAST_USE_EXPIRED): NamespaceState.IDLE,
+        (NamespaceState.IDLE, NamespaceEvent.RETIRE): NamespaceState.RETIRED,
+    }
+)
+
+
+def apply_namespace_event(
+    state: NamespaceState,
+    event: NamespaceEvent,
+    *,
+    now: float,
+    last_use: float,
+    idle_window: float,
+    lock_held: bool,
+) -> NamespaceState:
+    """A retirement decision requires the executor's fresh use/lock evidence."""
+    if lock_held or not now - last_use >= max(PROTECTION_WINDOW_S, idle_window):
+        raise ValueError("namespace is still active: last use or held lock")
+    try:
+        return NAMESPACE_TRANSITIONS[state, event]
+    except KeyError:
+        raise ValueError(
+            f"illegal namespace transition: {state.name} + {event.name}"
+        ) from None
+
+
 MAX_AGE_ENV = "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS"
 # Cargo's default for data it can recreate locally.
 _CHECKOUT_RETENTION = storage_rule("cargo-target").retention

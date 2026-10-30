@@ -2140,6 +2140,7 @@ def storage_write_check(
         )
         for kind in custody_layout.storage_classes()
         if custody_layout.storage_rule(kind).volume == "artifact"
+        and kind not in get_args(custody_layout.ReplacedStorageClass)
         and kind not in {"scratch", "temporary", "landing-sandbox"}
     )
     claims.append(StorageWriteClaim("cargo-target", artifact / "target"))
@@ -2162,6 +2163,29 @@ def storage_write_check(
             for path in checkout_state_lock_paths(repo / "logs/agents")
         )
     claims.extend(outputs)
+    from molt.checkout_state import (
+        LAST_USE_STAMP,
+        OWNER_RECORD,
+        _state_metadata_root,
+        checkout_state_environment_roots,
+        checkout_state_lock_paths,
+    )
+
+    # Explicit provider/cache selections and the running image can have a
+    # different artifact placement. Their existing use protocol writes only
+    # these external control files; admitting the selected payload must not
+    # grant its entire containing volume.
+    for resource, _owner in checkout_state_environment_roots(repo, environment):
+        locks = checkout_state_lock_paths(resource)
+        if not locks:
+            continue
+        metadata = _state_metadata_root(resource)
+        for control in (*locks, metadata / LAST_USE_STAMP, metadata / OWNER_RECORD):
+            claims.extend(
+                StorageWriteClaim("coordination", path, exact=True)
+                for path in (control, *control.parents)
+                if path != Path(path.anchor)
+            )
     for claim in tuple(claims):
         claims.extend(
             StorageWriteClaim(claim.kind, parent, exact=True)
