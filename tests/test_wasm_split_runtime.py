@@ -46,6 +46,7 @@ from tests.wasm_linked_runner import (
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
 from molt._runtime_profile_schema import validate_process_profile
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 from molt._runtime_profile_schema_generated import RSS_SOURCE_BY_TARGET
 
 # Measured transfer-size ratchet for the split runtime; see test_runtime_wasm_size.
@@ -1942,7 +1943,9 @@ class TestManifestJson:
 
     def test_version(self, split_build_a):
         data = self._read_manifest(split_build_a)
-        assert data["version"] == 3
+        assert data["version"] == WASM_EXECUTION_MANIFEST_VERSION
+        # The version owns the launch transport: every host admits both.
+        wasm_artifact.require_current_wasm_execution_manifest(data)
 
     def test_mode(self, split_build_a):
         data = self._read_manifest(split_build_a)

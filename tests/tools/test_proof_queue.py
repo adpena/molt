@@ -6649,6 +6649,10 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
 def test_guarded_execution_rejects_frozen_file_outside_armed_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Isolate this admission control after supported input custody.
+    install_module_view(
+        monkeypatch, "sys", execution_custody.sys, execution_custody, platform="linux"
+    )
     repo = tmp_path / "source"
     repo.mkdir()
     outside = tmp_path / "unwatched-input.py"
@@ -6805,6 +6809,10 @@ def test_guarded_execution_rejects_frozen_file_outside_armed_roots(
 def test_guarded_failure_retains_bounded_exception_notes(
     tmp_path, monkeypatch, capsys, oversized
 ):
+    # Isolate this admission control after supported input custody.
+    install_module_view(
+        monkeypatch, "sys", execution_custody.sys, execution_custody, platform="linux"
+    )
     repo = tmp_path / "noted-failure-repo"
     repo.mkdir()
     result = tmp_path / "noted-failure.execution.json"
@@ -6867,6 +6875,10 @@ def test_guarded_failure_retains_bounded_exception_notes(
 def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_details(
     tmp_path, monkeypatch, capsys, publication_fails
 ):
+    # Isolate this admission control after supported input custody.
+    install_module_view(
+        monkeypatch, "sys", execution_custody.sys, execution_custody, platform="linux"
+    )
     repo = tmp_path / "capture-failure-repo"
     repo.mkdir()
     result = tmp_path / "capture-failure.execution.json"
@@ -11337,6 +11349,10 @@ def test_proof_queue_wasm_preflight_fails_before_command(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
+    # Isolate this admission control after supported input custody.
+    install_module_view(
+        monkeypatch, "sys", execution_custody.sys, execution_custody, platform="linux"
+    )
     repo = tmp_path / "wasm-preflight-fail-repo"
     _initialize_clean_git_repo(repo)
     marker = tmp_path / "should-not-run"

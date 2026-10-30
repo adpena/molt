@@ -2272,6 +2272,7 @@ def _wasm_external_package_native_source_errors(
 def _resolve_import_admission_policy(
     *,
     external_module_roots: Sequence[Path],
+    program_module_roots: Sequence[Path],
     json_output: bool,
     defer_native_artifacts: bool = False,
     target: Target | None = None,
@@ -2337,6 +2338,7 @@ def _resolve_import_admission_policy(
         assert native_plan is not None
     return _ImportAdmissionPolicy(
         external_roots=tuple(external_module_roots),
+        program_roots=tuple(program_module_roots),
         admitted_external_packages=packages,
         native_artifact_source_packages=(
             _native_artifact_source_packages_for_admission(packages)

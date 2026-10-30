@@ -843,9 +843,12 @@ seatbelt+ptrace lacks pre_entry_exec_authority, ...`. Every macOS mode is such a
 cell (HF-07).
 
 The shared test adapter in `tests/proof_queue_custody_test_support.py` proves
-this exact refusal branch, then ends the test through `report_refused_cell`. A
+this exact refusal branch, or the typed live input custody refusal that comes
+before it, then ends the test through `report_refused_cell`. A
 refused test never passes, because its payload never ran (HF-552). An unsupported
-cell is a skip that carries the native reason. A refusal from a backend that
+cell is a skip that carries the native or typed reason; an unknown refusal type
+fails. Tests that arm a real watcher enter it through `admitted_live_custody`,
+which proves the refusal left no watcher thread or fence directory. A refusal from a backend that
 holds every authority, such as Linux Yama `ptrace_scope=3`, fails the test.
 Eligible launch failures cannot bypass the original execution assertions. The
 native capability selects the outcome; no host-name check, skip condition or
@@ -1620,13 +1623,49 @@ inventory. `--directory` and `--project` may not escape the admitted source
 root.
 
 Endpoint hashes are backed by live kernel mutation custody during the command.
-Windows `ReadDirectoryChangesW` and Linux inotify watch the admitted Git files,
-runtime roots, package trees, executables, and configuration bytes;
-queue overflow or watcher failure is fail-closed. A write, replacement, rename,
-delete, or metadata change remains an event even if the command restores the
-original bytes before completion, so mutate-execute-restore cannot produce
+Windows `ReadDirectoryChangesW` and Linux inotify watch the
+admitted Git files, runtime roots, package trees, executables, and configuration
+bytes; queue overflow or watcher failure is fail-closed. A write, replacement,
+rename, delete, or metadata change remains an event even if the command restores
+the original bytes before completion, so mutate-execute-restore cannot produce
 eligible evidence. Platforms without a lossless implemented watcher reject
 execution rather than falling back to sampling.
+
+Every other platform refuses live input custody before supervisor
+provisioning, monitor workers or payload execution:
+`execution_custody.LiveCustodyUnavailable` carries a closed typed reason
+(`LiveCustodyRefusalReason`, today only `platform-unsupported`), and the failed
+execution record keeps it as `live_custody_capability`. The refusal is an
+unsupported cell (HF-552): `report_refused_cell` ends its consumers as skips
+that carry the reason, `assert_prelaunch_refusal` decodes the record exactly,
+and an unknown refusal type or reason code fails. macOS is such a platform, as
+it is for process closure (HF-07). XNU posts FSEvents content modification only
+in `vn_close`: on 2026-10-30 a write held open across a fence stayed unreported
+1 s after a later cookie and appeared only at close, so no cookie can fence
+FSEvents, and Watchman's cookie sync documents FSEvents as
+[unsupported](https://github.com/facebook/watchman/blob/182b779c88ca2b64de1f5ddeb55a597df7d90253/website/docs/cookies.md#limitation-macos-fsevents).
+The former FSEvents watcher and its two-cookie fence are deleted. A future
+macOS watcher belongs with HF-07: kqueue reports `NOTE_WRITE` at write time,
+but needs one descriptor per watched vnode. On slot-05 (3,681 directories,
+20,392 files) directory knotes took 3,681 descriptors in 0.034 s and directory
+plus file knotes 24,068 in 0.375 s; the main checkout's 341,296 files exceed
+`kern.maxfilesperproc` (245,760), so it would watch directories and finite file
+selectors and close the window with an `lstat` census under Git's racy-clean
+rule, behind typed descriptor-budget and APFS preconditions.
+
+The Linux receipt covers exactly the window between an arm fence and a drain
+fence, as Watchman's [cookie sync](https://facebook.github.io/watchman/docs/cookies.html)
+does. inotify posts `IN_MODIFY` at write time and one descriptor queues every
+watch in order, so one cookie fences. A fence writes a unique cookie into the
+monitor's own directory under `TMPDIR`, which the same inotify descriptor
+watches, and waits up to 60 s for the watcher to deliver it. A cookie that never
+arrives is an error, so a stalled watcher cannot certify a quiet window.
+Cookies never go into a root's existing directories: roots include unwritable
+system directories, and proofs that share a root would read a foreign cookie as
+an input mutation.
+Windows watches each root through its own handle, which no single cookie
+orders; after the stop fence each handle is read until a fresh read no longer
+completes at once from the change buffer, as inotify is read to `EAGAIN`.
 
 Python's startup selection owns each lexical/resolved location and whether its
 role admits a directory tree. Only actual import and standard-library

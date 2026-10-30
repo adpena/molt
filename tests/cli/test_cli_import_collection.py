@@ -1034,6 +1034,7 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     assert policy_error is None
@@ -1094,6 +1095,7 @@ def test_materialize_import_plan_keeps_runtime_dispatch_native_artifact(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     assert policy_error is None
@@ -1305,6 +1307,7 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -1441,6 +1444,7 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
         target_python=selected_target,
@@ -1641,6 +1645,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -1781,6 +1786,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "numpy scipy")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -1897,6 +1903,7 @@ def test_materialize_import_plan_preserves_source_and_lowers_selected_native_sup
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -2168,6 +2175,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -2315,6 +2323,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -2419,6 +2428,7 @@ def test_entry_native_package_import_compiles_package_init_closure(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -2503,6 +2513,7 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -2609,6 +2620,7 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -2764,6 +2776,7 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -2859,6 +2872,7 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -3002,6 +3016,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -4544,6 +4559,162 @@ def test_external_root_direct_import_does_not_admit_transitive_children(
     assert "hugepkg.heavy" in explicit_imports
 
 
+def _entry_build_graph(
+    tmp_path: Path,
+    *,
+    module: str | None = None,
+    file_path: Path | None = None,
+    module_roots_env: Path,
+) -> dict[str, Path]:
+    """Resolve an entry as `molt build` does and return its module graph."""
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    resolved, failure = cli_build_inputs._resolve_build_entry(
+        file_path=None if file_path is None else str(file_path),
+        module=module,
+        project_root=project,
+        cwd_root=project,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        respect_pythonpath=False,
+        json_output=False,
+        env={"MOLT_MODULE_ROOTS": str(module_roots_env)},
+        source_cwd=project,
+    )
+    assert failure is None
+    assert resolved is not None
+    policy, policy_error = cli_external_native._resolve_import_admission_policy(
+        external_module_roots=resolved.external_module_roots,
+        program_module_roots=resolved.program_module_roots,
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    prepared, error = cli_module_graph._prepare_entry_module_graph(
+        source_path=resolved.source_path,
+        entry_module=resolved.entry_module,
+        module_roots=list(resolved.module_roots),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=project,
+        entry_tree=resolved.entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target=admit_target("native"),
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    return prepared.module_graph
+
+
+def _write_entry_package_with_external_neighbor(root: Path) -> None:
+    package = root / "probe_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__main__.py").write_text(
+        "from . import helper\nprint(helper.ping())\n", encoding="utf-8"
+    )
+    (package / "helper.py").write_text(
+        "from .sibling import SIBLING\n"
+        "from probe_pkg.absolute_sibling import VALUE\n"
+        "import neighbor\n"
+        "def ping():\n"
+        "    return SIBLING + VALUE\n",
+        encoding="utf-8",
+    )
+    (package / "sibling.py").write_text("SIBLING = 'sib'\n", encoding="utf-8")
+    (package / "absolute_sibling.py").write_text("VALUE = '-abs'\n", encoding="utf-8")
+    neighbor = root / "neighbor"
+    neighbor.mkdir()
+    (neighbor / "__init__.py").write_text("import neighbor.heavy\n", encoding="utf-8")
+    (neighbor / "heavy.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+
+def test_module_entry_package_under_external_root_compiles_its_closure(
+    tmp_path: Path,
+) -> None:
+    """``python -m probe_pkg`` runs the package it names
+    (Lib/runpy.py:_run_module_as_main), so the package is the program even
+    when its root is an explicit module root. Its submodules' imports of
+    their siblings join the build; another package in the same external root
+    stays third-party under the external-root contract.
+    """
+    roots = tmp_path / "roots"
+    _write_entry_package_with_external_neighbor(roots)
+
+    graph = _entry_build_graph(tmp_path, module="probe_pkg", module_roots_env=roots)
+
+    assert {
+        "probe_pkg",
+        "probe_pkg.__main__",
+        "probe_pkg.helper",
+        "probe_pkg.sibling",
+        "probe_pkg.absolute_sibling",
+    } <= set(graph)
+    assert "neighbor" not in graph
+    assert "neighbor.heavy" not in graph
+
+
+def test_script_entry_root_named_as_module_root_stays_program_source(
+    tmp_path: Path,
+) -> None:
+    """A script's root is its program directory whether or not
+    MOLT_MODULE_ROOTS also names it, so the reachable set does not depend on
+    the redundant listing.
+    """
+    roots = tmp_path / "roots"
+    _write_entry_package_with_external_neighbor(roots)
+    entry = roots / "main.py"
+    entry.write_text(
+        "import probe_pkg.helper as helper\nprint(helper.ping())\n", encoding="utf-8"
+    )
+
+    graph = _entry_build_graph(tmp_path, file_path=entry, module_roots_env=roots)
+
+    assert {
+        "main",
+        "probe_pkg",
+        "probe_pkg.helper",
+        "probe_pkg.sibling",
+        "probe_pkg.absolute_sibling",
+        "neighbor",
+        "neighbor.heavy",
+    } <= set(graph)
+
+
+def test_import_admission_source_belongs_to_its_deepest_root(tmp_path: Path) -> None:
+    site = (tmp_path / "site").resolve()
+    program = site / "app"
+    project = (tmp_path / "project").resolve()
+    vendored_site = project / ".venv" / "site-packages"
+    for directory in (program, vendored_site):
+        directory.mkdir(parents=True)
+    policy = cli_models._ImportAdmissionPolicy(
+        external_roots=(site, vendored_site),
+        program_roots=(program, project),
+    )
+
+    # A program root inside an external root owns its own tree.
+    assert policy.admits_import("app.x", program / "x.py", from_entry_path=False)
+    # The rest of the external root stays third-party.
+    assert not policy.admits_import(
+        "lib.y", site / "lib" / "y.py", from_entry_path=False
+    )
+    # An external root inside a program root stays external.
+    assert not policy.admits_import(
+        "dep.z", vendored_site / "dep" / "z.py", from_entry_path=False
+    )
+    assert policy.admits_import(
+        "pkg.w", project / "pkg" / "w.py", from_entry_path=False
+    )
+    # A root named both ways is program source.
+    tied = cli_models._ImportAdmissionPolicy(
+        external_roots=(site,), program_roots=(site,)
+    )
+    assert tied.external_roots == ()
+    assert tied.admits_import("lib.y", site / "lib" / "y.py", from_entry_path=False)
+
+
 def test_external_static_package_admission_closes_transitive_children(
     tmp_path: Path,
 ) -> None:
@@ -5161,6 +5332,7 @@ def test_external_static_package_native_artifact_plan_validates_manifest(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
 
@@ -5633,6 +5805,7 @@ def test_external_static_package_wasm_artifact_plan_is_manifest_led(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -5678,6 +5851,7 @@ def test_external_static_package_wasm_support_archives_require_typed_link_custod
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -5737,6 +5911,7 @@ def test_external_static_package_manifest_support_python_source_is_staged_not_li
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         target=admit_target("wasm"),
     )
@@ -7582,6 +7757,7 @@ def test_source_recompiled_static_package_requires_native_artifact_candidate_pre
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
     )
@@ -7609,6 +7785,7 @@ def test_source_recompiled_static_subpackage_requires_native_artifact_candidate(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(tmp_path / "site",),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
     )
@@ -7664,6 +7841,7 @@ def test_admitted_external_native_package_does_not_close_source_only_ndimage_ini
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "scipy")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
         target=admit_target("wasm"),
@@ -7726,6 +7904,7 @@ def test_pure_python_external_static_package_can_defer_without_native_artifacts(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
     )
@@ -7772,6 +7951,7 @@ def test_external_static_package_native_artifact_requires_sidecar_manifest(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
 
@@ -7798,6 +7978,7 @@ def test_external_static_package_native_artifact_requires_matching_checksum(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
 
@@ -7821,6 +8002,7 @@ def test_external_static_package_native_artifact_rejects_module_mismatch(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
 
@@ -7872,6 +8054,7 @@ def test_external_static_package_native_artifact_rejects_extension_path_mismatch
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
 
@@ -7896,6 +8079,7 @@ def test_external_static_package_native_artifact_rejects_invalid_manifest_json(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
 
@@ -8052,11 +8236,13 @@ def test_external_static_package_admission_can_defer_native_artifact_validation(
 
     eager_policy, eager_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     deferred_policy, deferred_error = (
         cli_external_native._resolve_import_admission_policy(
             external_module_roots=(external_root,),
+            program_module_roots=(),
             json_output=False,
             defer_native_artifacts=True,
         )
@@ -8089,6 +8275,7 @@ def test_wasm_external_static_package_with_native_source_requires_static_artifac
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
         target=admit_target(target),
@@ -8131,6 +8318,7 @@ def test_wasm_source_recompiled_static_package_requires_export_custody(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
         target=admit_target(target),
@@ -8213,6 +8401,7 @@ def test_wasm_external_static_package_accepts_merged_source_and_artifact_roots(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(source_root, artifact_root),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
         target=admit_target("wasm"),
@@ -8239,6 +8428,7 @@ def test_wasm_external_static_package_allows_pure_python_source_closure(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
         target=admit_target(target),
@@ -8275,6 +8465,7 @@ def test_wasm_external_static_package_allows_deferred_static_link_artifact(
 
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
         target=admit_target("wasm"),
@@ -9988,6 +10179,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
         defer_native_artifacts=True,
         target=admit_target("wasm"),
@@ -10926,6 +11118,7 @@ def test_external_native_artifact_output_custody_accepts_native_binary(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     assert error is None
@@ -10968,6 +11161,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     assert error is None
@@ -12753,6 +12947,7 @@ def test_stage_external_native_artifacts_prunes_extension_shim_candidates(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     assert error is None
@@ -12794,6 +12989,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     assert policy_error is None
@@ -12974,6 +13170,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli_external_native._resolve_import_admission_policy(
         external_module_roots=(external_root,),
+        program_module_roots=(),
         json_output=False,
     )
     assert policy_error is None
@@ -23090,12 +23287,24 @@ def _install_fake_wasm_link_runner(
     monkeypatch: pytest.MonkeyPatch,
     *,
     fixture_root: RuntimeFixtureRoot,
+    molt_root: Path,
     app_input_paths: tuple[Path, ...],
     link_calls: list[list[str]] | None = None,
     linked_bytes: bytes = b"\0asm\x01\0\0\0",
     app_bytes: bytes | None = None,
 ) -> dict[Path, SourceExtensionLinkRequirements]:
     plans: dict[Path, SourceExtensionLinkRequirements] = {}
+    # wasm-ld reads the link tool's import allowlist directly, so the parent
+    # binds it as a producer input. The fixture root carries the real file.
+    allowlist = molt_root / "tools" / "wasm_allowed_imports.txt"
+    allowlist_bytes = (
+        Path(__file__).resolve().parents[2] / "tools" / "wasm_allowed_imports.txt"
+    ).read_bytes()
+    # A second runner over the same root (an interleaving rival) must not
+    # replace the file a deployment already admitted.
+    if not allowlist.is_file() or allowlist.read_bytes() != allowlist_bytes:
+        allowlist.parent.mkdir(parents=True, exist_ok=True)
+        allowlist.write_bytes(allowlist_bytes)
 
     # These deployment/link-plan tests replace external tool execution. Admit
     # only their declared, independently valid empty module inputs; this fixture
@@ -23154,6 +23363,7 @@ def _install_fake_wasm_link_runner(
         ]
         assert scanner.resolve() in {path for path, _digest in expected_inputs}
         assert (linker.resolve(), linker_identity.sha256) in expected_inputs
+        assert allowlist.resolve() in {path for path, _digest in expected_inputs}
         for path, digest in expected_inputs:
             assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
         if link_calls is not None:
@@ -23303,6 +23513,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     linked_bytes = b"\0asm\x01\0\0\0\x00\x03\x01xA"
     _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         linked_bytes=linked_bytes,
@@ -23564,6 +23775,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
     payload_b = output.read_bytes() + b"\x00\x03\x01xB"
     _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         linked_bytes=payload_a,
         app_bytes=payload_a,
@@ -23609,6 +23821,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
                 rival.setenv("MOLT_CACHE", str(tmp_path / "rival-molt-cache"))
                 _install_fake_wasm_link_runner(
                     rival,
+                    molt_root=tmp_path,
                     fixture_root=runtime_fixture_root,
                     linked_bytes=payload_b,
                     app_bytes=payload_b,
@@ -23711,7 +23924,10 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     pair_required: list[frozenset[str]] = []
 
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output_wasm,),
     )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
@@ -23889,6 +24105,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
 
     native_plans = _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -24249,6 +24466,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
 
     _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -24459,6 +24677,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     pair_required: list[set[str]] = []
     native_plans = _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -24620,6 +24839,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     pair_required: list[set[str]] = []
     native_plans = _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -24871,7 +25091,10 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
     missing_symbol = "molt_nativepkg_missing"
 
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output_wasm,),
     )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
@@ -24958,7 +25181,10 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     _write_split_runtime_vfs_support(tmp_path)
 
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output_wasm,),
     )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
@@ -34953,7 +35179,10 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     reloc.write_bytes(output.read_bytes())
     _write_split_runtime_vfs_support(tmp_path)
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output,),
     )
     original_runner = cli_non_native_output._run_completed_command
     linked = output.with_name("output_linked.wasm")

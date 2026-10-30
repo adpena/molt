@@ -16,7 +16,9 @@ _HELPERS = importlib.util.module_from_spec(_HELPER_SPEC)
 sys.modules[_HELPER_SPEC.name] = _HELPERS
 _HELPER_SPEC.loader.exec_module(_HELPERS)
 
-ROOT = _HELPERS.ROOT
+# Build caches belong to the run context's artifact root, as the helper
+# module's own cases place them, never in the checkout.
+ARTIFACT_ROOT = _HELPERS.ARTIFACT_ROOT
 _build_and_run_with_env = _HELPERS._build_and_run_with_env
 
 
@@ -33,7 +35,7 @@ def test_native_from_import_star_all_auto_imports_package_child(tmp_path: Path) 
         ),
         "package_star_all_child",
         session_id="pytest-native-bootstrap-star-all-child",
-        cache_dir=ROOT / ".molt_cache-package-star-all-child",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-star-all-child",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={
@@ -67,7 +69,7 @@ def test_native_from_import_star_all_missing_child_raises_attribute_error(
         ),
         "package_star_all_missing_child",
         session_id="pytest-native-bootstrap-star-all-missing-child",
-        cache_dir=ROOT / ".molt_cache-package-star-all-missing-child",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-star-all-missing-child",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={"pkg/__init__.py": "__all__ = ['missing']\n"},

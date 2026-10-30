@@ -317,8 +317,17 @@ HEAVY_WASM_WITNESSES = (
         "split",
         ("--build-profile", "dev", "--no-trusted"),
     ),
-    HeavyWasmWitness("zipimport", zipimport_source),
-    HeavyWasmWitness("smtplib", smtplib_source),
+    # Deployment manifest v4 makes the build's launch policy authoritative:
+    # a host overwrites run-time MOLT_CAPABILITIES with it, so grants are
+    # build arguments, shared with compiled preparation.
+    HeavyWasmWitness(
+        "zipimport",
+        zipimport_source,
+        extra_args=("--capabilities", "fs.read,fs.write,env.read"),
+    ),
+    HeavyWasmWitness(
+        "smtplib", smtplib_source, extra_args=("--capabilities", "net,env.read")
+    ),
     HeavyWasmWitness("missing-grants", missing_grants_source, slow=True),
 )
 
