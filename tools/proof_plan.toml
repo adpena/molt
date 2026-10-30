@@ -245,6 +245,7 @@ authority_inputs = [
   "src/molt/rust_toolchain.py",
   "src/molt/llvm_linker_roles.py",
   "src/molt/file_hashing.py",
+  "src/molt/source_admission.py",
   "src/molt/exact_json.py",
   "src/molt/file_publication.py",
   "src/molt/artifact_publication.py",
@@ -5259,6 +5260,7 @@ name = "runtime-cargo-input-custody"
 toolchains = ["python", "cargo"]
 description = "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody."
 globs = [
+  "src/molt/source_admission.py",
   "src/molt/cli/cargo_build_reads.py",
   "src/molt/cli/cargo_capabilities.py",
   "src/molt/cli/cargo_environment_inputs.py",
