@@ -1541,10 +1541,12 @@ def _storage_path_selection(
         )
         if kind == "replaced-family-landing-sandbox":
             primary = common.parent
-            return (
-                custody_layout.custody_root(primary)
-                / "worktrees"
-                / f"landing-sandbox-{custody_layout.repository_storage_key(common)}"
+            old_root = custody_layout.custody_root(primary)
+            if old_root == primary:
+                old_root = primary.parent
+            return old_root.joinpath(
+                *rule.relative,
+                f"landing-sandbox-{custody_layout.repository_storage_key(common)}",
             )
         if kind == "replaced-lane-evidence":
             return repo_root / "logs" / "agents"
@@ -1754,8 +1756,12 @@ _STORAGE_AUDIT_INSTALLED = False
 
 def _storage_projection(kind: custody_layout.StorageClass, path: Path) -> Path:
     """Observe an admitted typed selector, including captured child overrides."""
-    if kind == "external-provider":
-        return path  # Observing a provider home grants no Molt write custody.
+    if kind == "external-provider" or kind in get_args(
+        custody_layout.ReplacedStorageClass
+    ):
+        # External owners and replaced producer coordinates are observations,
+        # never new write admission (including a pointer into a provider home).
+        return path
     if _STORAGE_WRITE_CHECKS:
         raw = path.absolute()
         if all(

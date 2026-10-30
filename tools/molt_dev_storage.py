@@ -33,8 +33,6 @@ from molt.custody_layout import (
     Regenerable,
     StorageClass,
     git_directories,
-    custody_root,
-    repository_storage_key,
     storage_classes,
     storage_rule,
     PackageEnvironmentKind,
@@ -928,7 +926,6 @@ def migration_plan(
     from tools.coordination_records import (
         load_records,
         active_task_references,
-        LOG_ROOT,
     )
     from tools.disk_guard import registered_worktree_roots
 
@@ -994,19 +991,12 @@ def migration_plan(
                 )
             )
 
-    old_custody = custody_root(primary)
-    old_external = old_custody.parent if old_custody == primary else old_custody
-    for sandbox in (
-        common / "molt" / "landing-sandbox",
-        old_external
-        / "worktrees"
-        / f"landing-sandbox-{repository_storage_key(common)}",
-    ):
-        kind = (
-            "replaced-git-landing-sandbox"
-            if sandbox == common / "molt" / "landing-sandbox"
-            else "replaced-family-landing-sandbox"
-        )
+    sandbox_kinds: tuple[StorageClass, ...] = (
+        "replaced-git-landing-sandbox",
+        "replaced-family-landing-sandbox",
+    )
+    for kind in sandbox_kinds:
+        sandbox = storage_path(primary, kind, environment, common_dir=common)
         add(
             kind,
             sandbox,
@@ -1016,7 +1006,9 @@ def migration_plan(
             "archive stale detached checkout and release Git registration under runner/integration locks",
             (runner, integration),
         )
-    controllers = common / "molt" / "controllers"
+    controllers = storage_path(
+        primary, "replaced-controllers", environment, common_dir=common
+    )
     if controllers.is_dir() and not controllers.is_symlink():
         for source in sorted(controllers.iterdir()):
             marker = source / controller_source.RECORD_NAME
@@ -1049,7 +1041,9 @@ def migration_plan(
             )
     add(
         "replaced-integration-receipts",
-        common / "molt-integrate",
+        storage_path(
+            primary, "replaced-integration-receipts", environment, common_dir=common
+        ),
         storage_path(primary, "integration-receipts", environment),
         "compact",
         "durable receipt archive",
@@ -1062,7 +1056,7 @@ def migration_plan(
     evidence_policy = storage_rule("lane-evidence").retention
     assert isinstance(evidence_policy, DurableEvidence)
     for checkout in checkouts:
-        registry = checkout / LOG_ROOT
+        registry = storage_path(checkout, "replaced-lane-evidence", environment)
         if not registry.is_dir() or registry.is_symlink():
             continue
         for task in sorted(registry.iterdir()):
@@ -1110,9 +1104,7 @@ def migration_plan(
                 )
     # Old cache may contain diagnostic material: archive, never infer that all
     # unregistered preimage files are safe to delete.
-    from molt.default_paths import expand_user_path
-
-    old_cache = expand_user_path("~/.cache/molt", environment=environment)
+    old_cache = storage_path(primary, "replaced-compile-cache", environment)
     if not repository_only and old_cache.exists():
         # Preserve even unknown legacy signal losslessly. Locks and last use
         # still fence removal; external provider homes never enter this plan.
