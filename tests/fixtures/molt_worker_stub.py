@@ -97,6 +97,11 @@ def main() -> None:
             except Exception as exc:
                 status = "InvalidInput"
                 error = str(exc)
+        elif entry == "db_query":
+            # The WASM DB host tests: any request is answered with the msgpack
+            # positive fixint 127 (one byte, 0x7f), a fixed independent value.
+            response_payload = b"\x7f"
+            response_codec = "msgpack"
         elif entry == "db_exec":
             try:
                 decode_payload(payload, codec)
