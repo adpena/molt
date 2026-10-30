@@ -16,12 +16,26 @@ the observed inode. Linux maps the live file's device to a **block node's rdev**
 in `/dev/disk/by-uuid`; absent or ambiguous mappings on non-volatile filesystems
 refuse durable custody with a remedy to provide a unique filesystem UUID mapping.
 Linux first queries the held descriptor's filesystem type. For tmpfs and ramfs,
-the typed `boot-scoped` volume is the kernel boot ID from
-`/proc/sys/kernel/random/boot_id` plus the filesystem's `st_dev`. Its wire value
-is the normalized 32-hex boot ID, a dot, and 16 hex device digits. It is valid
-for one boot, matching volatile content's lifetime; the same device and inode
-on a different boot cannot admit an old record. This is an explicit volatile
-volume authority, never a fallback for an unidentified persistent filesystem.
+`boot-scoped` contains the kernel boot ID plus the mount's **unique** ID from
+`statx(fd, "", AT_EMPTY_PATH, STATX_MNT_ID_UNIQUE, ...)`. The ctypes layout and
+mask follow [Linux v6.8's UAPI stat.h](https://github.com/torvalds/linux/blob/v6.8/include/uapi/linux/stat.h)
+(256 bytes, mount ID at 0x90, mask 0x4000); flags follow that revision's
+[fcntl.h](https://github.com/torvalds/linux/blob/v6.8/include/uapi/linux/fcntl.h).
+The wire value is `<32-hex boot ID>.mnt-<16-hex unique mount ID>`. The old device
+form is invalid. [statx(2)](https://man7.org/linux/man-pages/man2/statx.2.html)
+guarantees that the unique ID, available since Linux 6.8, is not reused during
+the running system's lifetime. A bind mount of the same tmpfs has a different
+mount ID, so identity comparison conservatively refuses it.
+
+Boot ID plus device is unsound: [Linux v6.8 fs/super.c](https://github.com/torvalds/linux/blob/v6.8/fs/super.c)
+allocates anonymous devices with `ida_alloc_range` in `get_anon_bdev` and frees
+them with `ida_free` in `free_anon_bdev`, called on unmount. A replacement tmpfs
+within one boot can reuse its device and inode. No such pair is an authority.
+Memory scratch is an opt-in consumer. Before allocation it requires the unique
+mount-ID capability. Missing libc support, an older kernel, an unset returned
+mask, or a zero mount ID raises typed `UniqueMountIdentityUnavailable`, reason
+`unique-mount-id-unavailable`, with remedy `MOLT_SCRATCH_STORAGE=disk`. There is
+no retry with reusable `STATX_MNT_ID`, a device number or another identity kind.
 Windows uses `GetFileInformationByHandleEx(FileIdInfo)`, retaining the 64-bit
 volume serial and all 128 file-id bits; directory opens use backup semantics
 and reparse-point opens do not traverse the leaf. Unknown capabilities refuse.

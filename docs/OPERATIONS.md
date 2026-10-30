@@ -815,7 +815,9 @@ standing policy; `CLAUDE.md` imports it.
   retain their state-root sibling scratch default. Set
   `disk:<absolute-existing-directory>` to place scratch on a chosen disk,
   such as an existing directory on a local SSD. `memory` selects Linux
-  `/dev/shm`; a bare absolute path selects a memory-backed directory you
+  `/dev/shm`, subject to the capability and refusal in the
+  [durable identity contract](design/durable_file_identity.md); use
+  `MOLT_SCRATCH_STORAGE=disk` when unavailable. A bare absolute path selects a memory-backed directory you
   mounted, such as a macOS RAM disk. Explicit disk and memory roots override
   state-root sibling placement for data scratch only. Molt never creates
   or mounts a RAM disk. Locks, guard markers, build control, products and
