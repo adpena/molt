@@ -5,10 +5,14 @@
 Operation-local stat fences continue to use device/inode while the handles or
 operation are alive. Persistent volume identities contain no device number.
 
-macOS obtains `ATTR_VOL_UUID` through `fgetattrlist` on the held node. Returned
-attribute masks and length must report a supported, nonzero UUID. XNU resolves
-the held node's mount root internally for volume attributes. The file id is the
-held node's inode. Linux maps the live file's device to a **block node's rdev**
+macOS obtains `ATTR_VOL_UUID` through `fgetattrlist` for an existing handle or
+`getattrlist(FSOPT_NOFOLLOW)` for a metadata-only named observation. Returned
+attribute masks and length must report a supported, nonzero UUID. XNU holds the
+queried vnode and resolves its mount root internally for volume attributes.
+Named capture fences device/inode, mode, size and both change clocks around the
+query. It requires read-attributes access, preserving observations of directories
+without read/search permission; it never opens their contents. The file id is
+the observed inode. Linux maps the live file's device to a **block node's rdev**
 in `/dev/disk/by-uuid`; absent or ambiguous mappings on non-volatile filesystems
 refuse durable custody with a remedy to provide a unique filesystem UUID mapping.
 Linux first queries the held descriptor's filesystem type. For tmpfs and ramfs,
@@ -25,8 +29,8 @@ There is no path-, volume-label-, device-, or inode-only fallback.
 
 Queried volume strings are interned per process. Device-to-volume answers are
 not cached: device numbers can be reused without a process restart. Each
-capture opens the direct node, observes its held stat, queries the current
-volume authority, and fences its name against the descriptor before closing.
+capture queries the current volume authority and fences the direct node's
+metadata; handle-based capture also fences the held descriptor.
 macOS therefore issues one UUID query per capture; Linux enumerates the UUID
 links per capture, with one followed stat per entry; Windows issues one
 FileIdInfo query. This favors live mount correctness over a stale device-keyed

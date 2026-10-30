@@ -273,7 +273,7 @@ def is_backend_cache_artifact_name(name: str) -> bool:
 
 def backend_cache_sync_receipt_path(artifact: Path) -> Path:
     """Origin/byte generation receipt owned by the immutable artifact publisher."""
-    return artifact.with_name(artifact.name + ".sync.json")
+    return artifact.with_name(artifact.name + ".sync.v4.json")
 
 
 def backend_cache_publication_lock_name(artifact: Path) -> str:

@@ -453,8 +453,8 @@ def restore_backend_cache_artifact(
     )
     receipt = backend_cache_sync_receipt_path(source)
     origin = None
+    state = _read_artifact_sync_state(receipt, artifact=source)
     if receipt.exists():
-        state = _read_artifact_sync_state(receipt, artifact=source)
         if (
             state is None
             or state["source_key"] != source.name

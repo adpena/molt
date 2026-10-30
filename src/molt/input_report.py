@@ -23,6 +23,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol, assert_never
 
+from molt.durable_file_identity import file_identity
+
 # (typed volume, file id, mode, size, mtime_ns, content-change ns)
 StatToken = tuple[str, str, int, int, int, int]
 # A lookup's resolved target and file type; an empty target carries the errno
@@ -69,8 +71,6 @@ def stat_token(
             return None
     else:
         change = metadata.st_ctime_ns
-    from molt.durable_file_identity import file_identity
-
     try:
         identity = file_identity(Path(os.path.realpath(path)), expected=metadata)
     except (OSError, ValueError):
@@ -192,6 +192,10 @@ _O_TMPFILE = getattr(os, "O_TMPFILE", 0)
 
 
 def _reads_existing_content(flags: int) -> bool:
+    # These handles grant metadata access only. Identity capture must not turn
+    # a proven semantic read into an additional unbound content observation.
+    if flags & (getattr(os, "O_PATH", 0) | getattr(os, "O_EVTONLY", 0)):
+        return False
     # An open that creates a new file (O_CREAT|O_EXCL, or Linux's unnamed
     # O_TMPFILE) or truncates one with write access reads nothing that
     # existed before it: `tempfile` opens both ways (HF-250).
