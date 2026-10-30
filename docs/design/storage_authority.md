@@ -87,6 +87,15 @@ clients read that same assignment even when their run context changes.
 Unassigned existing cache/temp payload and live or uncertain native endpoints
 block assignment; the operator reconciles those preimages explicitly. This
 record assigns placement and never authorizes deleting native provider data.
+Path projection and inventory do not refuse a path for startup socket capacity.
+`cargo_execution_policy.sccache_auto_selection_allowed` owns that decision: an
+unfittable generated cache under `auto` declines with one diagnostic and exports
+neither `SCCACHE_DIR`, a wrapper nor an endpoint. Omitting that default preserves
+caller intent when the environment is normalized again or enters a daemon digest.
+An explicit `MOLT_USE_SCCACHE=1`, explicit cache or sccache wrapper instead raises
+`SccacheSocketPathError` before launch; server preparation (`create=True`) checks
+the same capacity before writing placement state. A shorter artifact root or an
+explicit short `SCCACHE_DIR` restores caching without moving provider data to root.
 
 ## Toolchain volume decision
 

@@ -1647,10 +1647,6 @@ def sccache_server_temp_path(
     def selection() -> tuple[Path, Path, bool]:
         if not os.path.lexists(binding):
             root = artifact_root(repo, environment)
-            if not root.is_dir():
-                raise DxConfigError(
-                    f"sccache's selected artifact root is unavailable: {root}"
-                )
             temporary, bound = (
                 root.joinpath(
                     *custody_layout.storage_rule("sccache-server-evidence").relative,
@@ -1684,19 +1680,13 @@ def sccache_server_temp_path(
             )
             if not root.is_absolute() or record["temporary"] != str(temporary):
                 raise DxConfigError(f"invalid sccache temp placement: {binding}")
-            if not root.is_dir():
-                raise DxConfigError(
-                    f"sccache's assigned artifact root is unavailable: {root}"
-                )
-        if len(os.fsencode(temporary)) > maximum_path_bytes:
-            raise ValueError(
-                f"sccache startup under {temporary} exceeds its socket path limit; "
-                "select a shorter DX artifact root or SCCACHE_DIR before starting the server"
-            )
         return root, _storage_projection("sccache-server-evidence", temporary), bound
 
     if not create:
         return selection()[1]
+    from molt.cargo_execution_policy import validate_sccache_server_temp_path
+
+    validate_sccache_server_temp_path(selection()[1], maximum_path_bytes)
     from molt.file_locks import (
         _acquire_file_lock,
         _file_lock_owned_operation,
@@ -1711,6 +1701,11 @@ def sccache_server_temp_path(
     try:
         with _file_lock_owned_operation(handle, expected_lock_path=lock):
             root, temporary, bound = selection()
+            validate_sccache_server_temp_path(temporary, maximum_path_bytes)
+            if not root.is_dir():
+                raise DxConfigError(
+                    f"sccache's assigned artifact root is unavailable: {root}"
+                )
             if not bound:
                 if (
                     cache.exists()
@@ -2305,16 +2300,18 @@ def _install_dx_defaults(repo_root: Path, env: MutableMapping[str, str]) -> None
     # MOLT_USE_SCCACHE=1; cargo_execution also treats "auto" as off-on-Windows.
     env.setdefault("MOLT_USE_SCCACHE", "0" if os.name == "nt" else "auto")
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
-    env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
-    env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
-    # Shell clients and statistics requests use the same selected endpoint
-    # as the CLI's compiler clients.
-    endpoint = sccache_server_endpoint(env)
-    if endpoint is not None:
-        env.setdefault(*endpoint)
+    default_cache = (ext_root / ".sccache").resolve()
+    if sccache_auto_selection_allowed(env, default_cache_dir=default_cache):
+        env.setdefault("SCCACHE_DIR", str(default_cache))
+        env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
+        _ensure_sccache_wrapper(env)
+        # Shell clients and statistics requests use the same selected endpoint
+        # as the CLI's compiler clients. A declined default selects neither.
+        endpoint = sccache_server_endpoint(env)
+        if endpoint is not None:
+            env.setdefault(*endpoint)
     env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
     env.setdefault("MOLT_CACHE_MAX_AGE_DAYS", DEFAULT_MOLT_CACHE_MAX_AGE_DAYS)
-    _ensure_sccache_wrapper(env)
     if _artifact_root_is_windows_exfat(ext_root):
         env.setdefault("UV_LINK_MODE", "copy")
 

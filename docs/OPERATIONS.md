@@ -614,7 +614,12 @@ The shared sccache server keeps stable provider temp beside its cache. When
 that path exceeds the startup socket limit, DX records an artifact-root
 assignment for a new cache under a cache-adjacent lock; every later client
 uses the same assignment. Existing unassigned cache/temp payload or a live
-server blocks that assignment for explicit operator reconciliation.
+server blocks that assignment for explicit operator reconciliation. Projection
+and inventory still compute an unfittable path. Under `MOLT_USE_SCCACHE=auto`,
+startup socket overflow declines the generated cache with one warning, leaving
+no `SCCACHE_DIR`, wrapper or endpoint default. Explicit enablement or an explicit
+unfittable `SCCACHE_DIR` raises `SccacheSocketPathError` before launch. Select a
+shorter artifact root or an explicit short `SCCACHE_DIR` to enable caching.
 Coordination records and recovery indices stay in the checkout. Evidence never
 expires into deletion: compaction verifies an archive, publishes its external
 manifest and source index, then removes only represented raw payloads.
