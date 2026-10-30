@@ -3952,3 +3952,25 @@ def test_deployment_launch_declaration_rejects_invalid_required_names(names):
     raw["deployment_manifest"]["launch_environment_required_names"] = names
     with pytest.raises(manifest.WasmAbiManifestError, match="launch environment names"):
         manifest.validate_loaded_manifest(raw)
+
+
+def test_host_test_deny_launch_is_projected_from_the_python_authority():
+    # The Rust host tests' launch fixture is generated, never a hand copy: the
+    # committed bytes are the generator's, and the generator's environment is
+    # the deny-policy launch the Python fixtures build independently.
+    from tests.wasm_execution_manifest import wasm_execution_launch
+    from tools import gen_wasm_host_test_launch
+
+    outputs = gen_wasm_host_test_launch.generated_outputs()
+    assert list(outputs) == [gen_wasm_host_test_launch.OUTPUT]
+    assert (
+        gen_wasm_host_test_launch.OUTPUT.read_text(encoding="utf-8")
+        == (outputs[gen_wasm_host_test_launch.OUTPUT])
+    )
+    expected = wasm_execution_launch()["environment"]
+    assert gen_wasm_host_test_launch._deny_launch_environment() == expected
+    for name, value in expected.items():
+        assert (
+            f"{json.dumps(name)}: {json.dumps(value)},"
+            in (outputs[gen_wasm_host_test_launch.OUTPUT])
+        )
