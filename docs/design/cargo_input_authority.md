@@ -49,24 +49,15 @@ recursive walks were wrong in both directions:
   [build scripts](https://doc.rust-lang.org/cargo/reference/build-scripts.html#rerun-if-changed))
 - **Ninja** reads the depfile the compiler wrote during the previous build into
   its deps log and decides by stat alone.
-- **Bazel** keys each action by the digests of its inputs, caches file digests
-  by (path, size, mtime, inode, ctime), and rejects an undeclared inclusion that
-  the compiler's `.d` output reveals.
-- **Git** keeps a stat cache in its index; a file changed within one timestamp
-  tick of the index write is rehashed (the racy-git rule).
 - **rustc** incremental verification (`-Zincremental-verify-ich`) recomputes a
   reused result and fails on a mismatch.
   Its [red-green query algorithm](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html#improving-accuracy-the-red-green-algorithm)
   separates an input change from an observable result change, preserving
   downstream results when recomputation gives the same fingerprint.
-- **Bazel Skyframe** records dependencies through its evaluation API. Its
-  [hermeticity and invalidation rules](https://bazel.build/reference/skyframe)
-  explain why an unrecorded read invalidates incremental correctness, and why
-  change pruning needs equal recomputed values.
 
-The useful common rule is explicit dependencies and conservative reuse when
-those dependencies cannot be established. Molt must preserve the distinction
-between input observations, a reusable result and authenticated release evidence.
+[Observed inputs and content identity](observed_inputs.md) owns the content
+identity, observed-input, two-level key and reuse rules. This document owns what
+a Cargo build reads and how its receipts carry it.
 
 ## Design
 
@@ -311,9 +302,8 @@ Installed admission requires the signed cell and
 actual members, without consulting a consumer's ambient variables or requiring
 Cargo. An installed product can never authorize source-cache reuse.
 
-This separation follows [rustc's red-green result comparison](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html#improving-accuracy-the-red-green-algorithm)
-and [Skyframe's explicit dependencies and change pruning](https://bazel.build/reference/skyframe).
-The Molt product/envelope schemas are our application of those principles.
+This separation follows [rustc's red-green result comparison](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html#improving-accuracy-the-red-green-algorithm).
+The Molt product/envelope schemas apply it.
 Cargo build scripts may read `CARGO_ENCODED_RUSTFLAGS` as data, including physical
 remap paths. Equal canonical flags do not establish equal script output. A raw
 observation change therefore still refuses source reuse even when independently
@@ -359,10 +349,9 @@ artifact:
   package's manifest and at least one dep-info file per local unit. An empty
   record is refused.
 
-A stored generation is current when its plan identity equals the current one
-and every recorded input re-verifies now, through the host's stat-keyed digest
-cache (`toolchain_identity.FileDigestCache`). The receipt names which files and
-variables to check; it never vouches for their bytes. This is a proposed cost
+The plan identity is the record's first key level and these inputs are its
+second. The receipt names which files and variables to check; it never vouches
+for their bytes. This is a proposed cost
 reduction, not a measured implementation win. Windows must retain content
 verification where its metadata does not support the existing cache contract.
 
@@ -378,8 +367,8 @@ The migration must establish these prerequisites before replacing tree identitie
   succeeds cannot attest bytes consumed by a Fresh artifact. A prior trusted
   per-unit content record must match the current inputs and output; without one,
   bootstrap reuse refuses or needs proven rebuilding. A change-time predating
-  the build does not close that gap. Cargo's mtime freshness is distinct from a
-  content proof; see [racy Git](https://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.html).
+  the build does not close that gap. Cargo's mtime freshness is not a content
+  proof.
   `MOLT_CARGO_INPUT_*` currently forces the proof supervisor and artifact publisher,
   not every runtime, backend and transitive unit. It cannot be assumed to force
   arbitrary Fresh units. Nightly checksum freshness is not a stable toolchain
@@ -388,8 +377,8 @@ The migration must establish these prerequisites before replacing tree identitie
   authenticated immutable source custody; Cargo.lock alone does not attest a
   modified unpacked cache. Preserve watched empty directories and recursive
   listings. Apply lexical alias fences before resolving paths, since `realpath`
-  erases the evidence. Retain stable-file handle and host-specific digest-cache
-  protections rather than adding a second registry or a weak Windows stat cache.
+  erases the evidence. Retain stable-file handle protections and the one content
+  identity; add no second digest registry.
 - **A stable build interval.** A post-build Git inventory proves current source
   bytes, not which bytes a previously Fresh unit consumed. A frozen checkpoint
   or equivalent proven input-stability boundary must cover compilation and

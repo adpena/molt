@@ -39,12 +39,6 @@ content today, but nothing would have caught one that did.
   ([`rustc_incremental` file format](https://github.com/rust-lang/rust/blob/master/compiler/rustc_incremental/src/persist/file_format.rs))
   and discards state from another rustc. Query results are fingerprinted by
   stable hashing ([incremental compilation in detail](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)).
-- [Bazel remote caching](https://bazel.build/remote/caching): an action key
-  digests the command line, the environment and the digests of the declared
-  inputs, tool binaries included. The rule code that computed the command line
-  is not in the key; its effect is the command line.
-  [Sandboxing](https://bazel.build/docs/sandboxing) makes an undeclared read
-  fail instead of producing a wrong cache entry.
 - [ccache](https://ccache.dev/manual/latest.html): the direct-mode hash covers
   the compiler identity (`compiler_check`: mtime, content or a command), the
   arguments, the source and the include files its manifest recorded.
@@ -57,10 +51,12 @@ content today, but nothing would have caught one that did.
   every module; development builds append the Git revision, so every commit
   does.
 
-Molt follows rustc and Bazel: a typed, declared input set whose completeness a
-check enforces, and per-record keys that carry the values computed outside it.
-It rejects the rustc/mypy whole-compiler version key for development checkouts,
-because that is the HF-254 cost.
+Molt follows rustc: a typed, declared input set whose completeness a check
+enforces, and per-record keys that carry the values computed outside it. It
+rejects the rustc/mypy whole-compiler version key for development checkouts,
+because that is the HF-254 cost. [Observed inputs and content
+identity](observed_inputs.md) owns the input-set and key rules; this document
+owns the classification of the compiler's own sources.
 
 ## Design
 
@@ -132,9 +128,9 @@ checks that make the declaration sound:
   escape the walk. It also rejects missing entries and non-keyed entries that no
   producer imports.
 - A fresh process lowers a fixed program with `builtins.__import__` and the
-  `open` audit event recorded per importing module (Bazel's sandbox, applied to
-  imports). Every module a producer imports must be declared, and every data
-  file a producer reads must lie inside a keyed entry.
+  `open` audit event recorded per importing module. Every module a producer
+  imports must be declared, and every data file a producer reads must lie
+  inside a keyed entry.
 - A differential test edits every entry of a tree built from the declaration:
   non-keyed edits keep the key, keyed edits change it.
 - An independent oracle copies the compiler, lowers a fixed program, and edits

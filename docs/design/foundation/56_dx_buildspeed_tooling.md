@@ -285,18 +285,10 @@ a fully replayed run writes nothing. Parser `SyntaxWarning`s stay silent, so a
 replayed run prints exactly what a computed run prints.
 
 This follows [Ruff's per-file cache](https://docs.astral.sh/ruff/settings/#cache-dir),
-[Go's content-addressed build and test cache](https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching),
-[Bazel's action cache](https://bazel.build/remote/caching) and
-[Cargo's fingerprints](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html).
-Two measured choices differ. Ruff keys a file by its metadata; records key by
-content. Reading and hashing the 57 MB of tracked Python costs about 0.3 s of CPU
-on this host, and a content key is safe to share across worktrees and cannot
-miss a same-size rewrite inside one timestamp tick. The stat-keyed
-`file-digests` store could later skip reading unchanged files. Go's test cache
-traces the files and environment a test reads; records cover only pure per-file
-operations, whose inputs are their arguments. Whole-gate tracing would repeat the
-soundness gaps (environment reads, stat probes) that rejected the HF-263
-test-result cache.
+keyed by content where Ruff keys by metadata: reading and hashing the 57 MB of
+tracked Python costs about 0.3 s of CPU on this host. Records cover only pure
+per-file operations, whose inputs are their arguments. Content identity, observed
+inputs and result reuse follow [observed_inputs.md](../observed_inputs.md).
 
 The shared pruned walker retains `os.scandir()` entries for one directory,
 closes that enumeration before descent and sorts names deterministically. It
@@ -383,7 +375,12 @@ order. Integration explicitly selects the executor's `CANCEL_REMAINING` failure
 policy: the first observed failure stops scheduling and cancels active siblings
 through their existing guards, regardless of declared order. The receipt keeps
 that immutable trigger and every actual outcome; cancellation cannot erase a
-racing failure or uncertain guard closure. Generic proofs retain the default
+racing failure. A gate the executor cancelled is `cancelled`, never a global
+failure: its guard's closure verdict stays on the record as
+`cancellation_cleanup`, and a gate without Cargo target access makes no claim on
+the shared target's recovery. The driver decides by the trigger first: a
+partition-scope trigger raises `GateFailure`, and the queue bisects (HF-605).
+Generic proofs retain the default
 `COLLECT_INDEPENDENT` policy, including dependency blocking and global safety stops.
 This follows the explicit collection choice in
 [Cargo's `--keep-going`](https://doc.rust-lang.org/cargo/commands/cargo-build.html#miscellaneous-options)
@@ -1101,17 +1098,16 @@ runtime (about 103 s) and the backend (about 153 s), against 18.8 s warm. Two
 checkouts of one commit compute the same runtime identity and the same backend
 identity; only their target paths differ.
 
-Leading tools share builds across checkouts through one store keyed by inputs:
+Leading tools share builds across checkouts through one store keyed by inputs
+(the key rules are in the observed-input design):
 
 - Go keeps one build cache per user (`os.UserCacheDir()/go-build`), shared by
-  every checkout. An action ID hashes the command, environment, input contents
-  and tool contents; main-module packages also hash their directory unless
+  every checkout; main-module packages also hash their directory unless
   `-trimpath` is set
   ([exec.go](https://github.com/golang/go/blob/go1.27.3/src/cmd/go/internal/work/exec.go),
   [cache.go](https://github.com/golang/go/blob/go1.27.3/src/cmd/go/internal/cache/cache.go)).
   It renews an entry's mtime at most hourly and trims entries unused for 5 days.
-- Bazel keeps an action cache (action key to result) beside a content-addressed
-  store; its disk cache serves "multiple workspaces of the same project, such
+- Bazel's disk cache serves "multiple workspaces of the same project, such
   as multiple checkouts" ([remote caching](https://bazel.build/remote/caching),
   [command line](https://bazel.build/reference/command-line-reference)).
   `--incompatible_strict_action_env`, the default since Bazel 9.0, gives every

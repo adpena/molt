@@ -1,4 +1,4 @@
-"""Failure-resilience (build-dedup doctrine 74, law 2) for frontend lowering.
+"""Failure keeps progress (observed_inputs.md invariant 4) for frontend lowering.
 
 A killed / failed build must NOT forfeit the modules it already lowered: each
 module's lowering is persisted THE MOMENT it succeeds, so a retry pays only for

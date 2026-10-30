@@ -163,7 +163,7 @@ _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
 
 
 def _phase_label(args: list[str]) -> str:
-    """Short human label for a subprocess phase (doctrine 74 law 4: attested walls)."""
+    """Short human label for a subprocess phase (attested walls, observed_inputs.md)."""
     for token in args:
         name = Path(token).name.lower()
         if name.endswith((".py", ".js")):

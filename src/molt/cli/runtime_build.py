@@ -234,7 +234,7 @@ def _emit_runtime_wasm_build_timings(*, json_output: bool) -> None:
     build-diagnostics payload).  ``MOLT_BUILD_DIAGNOSTICS`` gates a compact,
     machine-readable JSON line on stderr and an optional JSON file at
     ``MOLT_BUILD_DIAGNOSTICS_FILE`` so the ``--kind both`` single-compile
-    acceptance is a measured number (doctrine 74 law 4).
+    acceptance is a measured number (observed_inputs.md invariant 6).
     """
     if os.environ.get("MOLT_BUILD_DIAGNOSTICS", "").strip().lower() not in {
         "1",
