@@ -40,7 +40,7 @@ def short_cargo_cache() -> Iterator[Path]:
     # socket. This is an explicit temporary fixture output, not a provider's
     # production placement fallback or another lane's storage.
     parent = (
-        Path("/tmp")
+        Path("/tmp").resolve()
         if os.name == "posix"
         else storage_path(ROOT, "run-control", os.environ)
     )
