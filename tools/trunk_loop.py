@@ -515,8 +515,9 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
                 if target.read_bytes() != content:
                     raise ValueError(f"retained evidence changed: {target}")
             else:
-                with target.open("xb") as stream:
-                    stream.write(content)
+                from molt.file_publication import atomic_write_bytes
+
+                atomic_write_bytes(target, content, exclusive=True)
     record.update(state="collected", terminal=terminal)
     write_json(record_path, record)
     print(f"trunk-loop: collected {root}; status={terminal['status']}", flush=True)

@@ -229,8 +229,9 @@ def test_trunk_seed_inputs_reuses_content_addressed_archives(tmp_path, monkeypat
     ).read_bytes() == payload
 
 
+@pytest.mark.parametrize("interruption", ["transport", "publication"])
 def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, interruption
 ):
     import hashlib
     import io
@@ -276,8 +277,12 @@ def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
         def pull(self, name, target):
             assert name == "results.zip"
             self.calls += 1
-            target.write_bytes(payload[:10] if self.calls == 1 else payload)
-            if self.calls == 1:
+            target.write_bytes(
+                payload[:10]
+                if self.calls == 1 and interruption == "transport"
+                else payload
+            )
+            if self.calls == 1 and interruption == "transport":
                 raise OSError("connection interrupted")
 
     transport = Transport()
@@ -285,14 +290,34 @@ def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
     monkeypatch.setattr(
         trunk_loop, "transfer_for_record", lambda _record: (host, transport)
     )
-    with pytest.raises(OSError, match="connection interrupted"):
+    from molt import file_publication
+
+    actual_publish = file_publication.atomic_write_bytes
+    publication_failed = False
+
+    def publish(path, payload, **kwargs):
+        nonlocal publication_failed
+        if (
+            interruption == "publication"
+            and path.name == "run.log"
+            and not publication_failed
+        ):
+            publication_failed = True
+            raise OSError("publication interrupted")
+        return actual_publish(path, payload, **kwargs)
+
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", publish)
+    with pytest.raises(OSError, match="interrupted"):
         trunk_loop.collect(record_path, wait=False)
-    assert not (record_path.parent / "results.zip").exists()
+    assert (record_path.parent / "results.zip").exists() == (
+        interruption == "publication"
+    )
+    assert not (tmp_path / commit / "host/cell" / run_id / "run.log").exists()
     assert trunk_loop.collect(record_path, wait=False) == 1
     evidence = tmp_path / commit / "host/cell" / run_id / "run.log"
     assert evidence.read_bytes() == b"retained original bytes\r\n"
     assert json.loads(record_path.read_text())["state"] == "collected"
-    assert transport.calls == 2
+    assert transport.calls == (2 if interruption == "transport" else 1)
 
 
 def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):
