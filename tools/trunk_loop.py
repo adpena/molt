@@ -439,7 +439,7 @@ def transfer_for_record(record: dict):
 
 
 def collect(record_path: Path, *, wait: bool = True) -> int:
-    record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text(encoding="utf-8"))
     host, transport = transfer_for_record(record)
     marker = transport.remote_path("terminal.json")
     while True:
@@ -685,14 +685,16 @@ def worker(record_path: Path) -> int:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
     authorities()
-    record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text(encoding="utf-8"))
     transfer_for_record(record)
     status = "infrastructure"
     cells = []
     lock = None
     unresolved_child = False
     try:
-        if (stage / ".molt-owner").read_text().strip() != record["nonce"]:
+        if (stage / ".molt-owner").read_text(encoding="utf-8").strip() != record[
+            "nonce"
+        ]:
             raise ValueError("remote staging ownership changed")
         from molt.file_locks import _acquire_file_lock
 
@@ -761,7 +763,9 @@ def worker(record_path: Path) -> int:
             ):
                 returncode = _exec_wait_rc(argv, child, log)
             (directory / "rc").write_text(str(returncode) + "\n", encoding="ascii")
-            receipt = json.loads((directory / "receipt.json").read_text())
+            receipt = json.loads(
+                (directory / "receipt.json").read_text(encoding="utf-8")
+            )
             if (
                 receipt.get("source_commit") != record["commit"]
                 or receipt.get("source_tree_state") != "clean"
