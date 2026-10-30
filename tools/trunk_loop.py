@@ -9,6 +9,8 @@ identities: an older main is never modified to install this runner.
 from __future__ import annotations
 
 import argparse
+import atexit
+from contextlib import chdir
 from dataclasses import asdict
 from datetime import UTC, datetime
 import hashlib
@@ -687,6 +689,7 @@ def worker(record_path: Path) -> int:
     status = "infrastructure"
     cells = []
     lock = None
+    unresolved_child = False
     try:
         if (stage / ".molt-owner").read_text().strip() != record["nonce"]:
             raise ValueError("remote staging ownership changed")
@@ -697,6 +700,14 @@ def worker(record_path: Path) -> int:
             timeout_s=0,
             timeout_message="another trunk worker owns this host",
         )
+        from molt.file_locks import _release_file_lock
+
+        def release_host_lock():
+            _release_file_lock(lock)
+
+        # The canonical waiter registers its wait later: on shutdown the
+        # child closes before its source use and then this host lease.
+        atexit.register(release_host_lock)
         for path, commit in (
             (Path(record["checkout"]), record["commit"]),
             (ROOT, record["controller_commit"]),
@@ -741,17 +752,14 @@ def worker(record_path: Path) -> int:
                 + " --durations=0 -p trunk_timings --trunk-durations="
                 + shlex.quote(str(directory))
             )
-            with (directory / "run.log").open("wb") as log:
-                result = subprocess.run(
-                    argv,
-                    cwd=record["checkout"],
-                    env=child,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                )
-            (directory / "rc").write_text(
-                str(result.returncode) + "\n", encoding="ascii"
-            )
+            from tools.detached_execution import _exec_wait_rc
+
+            with (
+                chdir(record["checkout"]),
+                (directory / "run.log").open("w", encoding="utf-8", buffering=1) as log,
+            ):
+                returncode = _exec_wait_rc(argv, child, log)
+            (directory / "rc").write_text(str(returncode) + "\n", encoding="ascii")
             receipt = json.loads((directory / "receipt.json").read_text())
             if (
                 receipt.get("source_commit") != record["commit"]
@@ -761,52 +769,63 @@ def worker(record_path: Path) -> int:
                 raise ValueError(
                     "proof receipt does not bind the selected clean source and cell"
                 )
-            cells.append({"id": cell, "returncode": result.returncode, "receipt": True})
+            cells.append({"id": cell, "returncode": returncode, "receipt": True})
             if receipt.get("execution", {}).get("global_stop_triggered"):
                 status = "infrastructure"
                 break
-            if result.returncode:
+            if returncode:
                 status = "failure"
                 # Cells are independent selections; preserve this failure and
                 # continue the next cell, never a dependent command batch.
-    except BaseException:
+    except Exception as exc:
         traceback.print_exc()
         status = "infrastructure"
+        unresolved_child = getattr(exc, "owned_process", None) is not None
+    except BaseException:
+        # Resume control interruption after the canonical waiter's atexit
+        # closure; an interrupt cannot authorize a terminal completion.
+        unresolved_child = True
+        raise
     finally:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        for cell in record["cells"]:
-            directory = stage / cell
-            directory.mkdir(exist_ok=True)
-            for name in ("worker.log", "admission.log", "provision.json"):
-                source = stage / name
-                if source.exists():
-                    import shutil
-
-                    shutil.copyfile(source, directory / name)
-        archive = stage / "results.zip"
-        with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as output:
-            for cell in record["cells"]:
-                for item in sorted((stage / cell).iterdir()):
-                    if item.is_file():
-                        output.write(item, cell + "/" + item.name)
-        write_json(
-            stage / "terminal.json",
-            {
-                "schema": SCHEMA,
-                "commit": record["commit"],
-                "run_id": record["run_id"],
-                "status": status,
-                "cells": cells,
-                "archive_sha256": digest(archive),
-                "finished_at": datetime.now(UTC).isoformat(),
-            },
-        )
-        if lock is not None:
-            from molt.file_locks import _release_file_lock
-
-            _release_file_lock(lock)
+        if not unresolved_child:
+            publish_worker_result(record, stage, cells, status)
+            if lock is not None:
+                atexit.unregister(release_host_lock)
+                release_host_lock()
     return 0 if status == "success" else 1
+
+
+def publish_worker_result(record: dict, stage: Path, cells: list, status: str) -> None:
+    """Publish completion only after the existing detached owner closed."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    for cell in record["cells"]:
+        directory = stage / cell
+        directory.mkdir(exist_ok=True)
+        for name in ("worker.log", "admission.log", "provision.json"):
+            source = stage / name
+            if source.exists():
+                import shutil
+
+                shutil.copyfile(source, directory / name)
+    archive = stage / "results.zip"
+    with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as output:
+        for cell in record["cells"]:
+            for item in sorted((stage / cell).iterdir()):
+                if item.is_file():
+                    output.write(item, cell + "/" + item.name)
+    write_json(
+        stage / "terminal.json",
+        {
+            "schema": SCHEMA,
+            "commit": record["commit"],
+            "run_id": record["run_id"],
+            "status": status,
+            "cells": cells,
+            "archive_sha256": digest(archive),
+            "finished_at": datetime.now(UTC).isoformat(),
+        },
+    )
 
 
 # Diagnostic duration stream survives an interrupted pytest session that never
