@@ -2070,7 +2070,7 @@ def test_reactivated_task_cannot_be_harvested_from_a_stale_snapshot(
     )
 
 
-def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path):
+def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path, monkeypatch):
     from tools import disk_guard
     from tests.tools.test_disk_guard import _registered_worktree_scope
 
@@ -2099,6 +2099,13 @@ def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path):
     )
     from tools import molt_dev_storage
     from molt.checkout_state import checkout_state_use
+    from tests.process_guard_common import ModuleView
+
+    # The fixture's aged metadata and disk_guard already use this clock;
+    # migration's last-use policy must observe that same instant.
+    monkeypatch.setattr(
+        molt_dev_storage, "time", ModuleView(molt_dev_storage.time, time=lambda: now)
+    )
 
     artifact = tmp_path / "data"
     artifact.mkdir()
