@@ -602,6 +602,7 @@ def test_a_cached_launch_misses_when_an_input_of_its_tier_changes(
         entry_module="main",
         target_python=_parse_target_python_version("3.12"),
         external_module_roots=(),
+        program_module_roots=(),
     )
     aot = resolve_build_arguments(
         [], file_path=str(program), module=None, project_root=app, env={}

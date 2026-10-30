@@ -17,6 +17,7 @@ use std::time::Instant;
 mod support;
 
 use support::host;
+use support::launch::deny_launch;
 
 // This retained-artifact owner also exposes external-compiler utilities.
 #[allow(dead_code)]
@@ -89,6 +90,7 @@ fn run_actual_wasi_cases(label: &str, cases: &[&str]) {
         "mode": "linked",
         "modules": {"linked": {"path": "lifecycle.wasm", "size": bytes.len(), "sha256": actual}},
         "entry": {"module": "linked", "function": "_start"},
+        "launch": deny_launch(),
     });
     molt_artifact_publish::write_bytes_atomically(
         &manifest,

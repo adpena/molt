@@ -8,22 +8,25 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
+import typing
 
 import pytest
 
 from molt.process_environment import NameRule, ProcessEnvironment
 from tests import proof_queue_custody_test_support, proof_queue_owned_roots
+from tests.process_guard_common import install_module_view
 from tools.proof_queue_pkg import (
     cargo_output_layout,
     command_admission,
     command_identity,
     execution_environment,
+    execution_custody,
     guarded_execution,
     supervisor_custody,
     supervisor_generation,
 )
 from tests.proof_queue_custody_test_support import (
-    assert_supervisor_refusal,
+    assert_prelaunch_refusal,
     capability_aware_proof_execution,
     proof_queue_execution_capability as proof_queue_execution_capability,
 )
@@ -205,7 +208,7 @@ def test_ineligible_plan_refuses_before_execution(
         tmp_path, monkeypatch, case
     )
     returncode = guarded_execution.execute_guarded_request(request_path)
-    assert assert_supervisor_refusal(returncode, result_path)
+    assert assert_prelaunch_refusal(returncode, result_path)
     assert not marker.exists()
     assert (
         json.loads(result_path.read_text(encoding="utf-8"))["supervisor_capability"]
@@ -243,6 +246,8 @@ def _refused_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> tuple[Path, Path, Path, dict[str, object]]:
     """Build one guarded request whose native plan is the real refusal."""
+    # This cell isolates native process capability after supported input custody.
+    monkeypatch.setattr(execution_custody, "sys", SimpleNamespace(platform="linux"))
     # No compiler starts in this fixture. Ambient cache/wrapper choices must
     # not reject its output plan before the native refusal under test.
     monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
@@ -364,7 +369,7 @@ def test_refusal_assertions_reject_partial_or_dishonest_execution(
     }
     result_path = tmp_path / "execution.json"
     result_path.write_text(json.dumps(record), encoding="utf-8")
-    assert assert_supervisor_refusal(2, result_path)
+    assert assert_prelaunch_refusal(2, result_path)
     if mutation == "started":
         record["command_started"] = True
     elif mutation == "reason":
@@ -383,7 +388,7 @@ def test_refusal_assertions_reject_partial_or_dishonest_execution(
         record["error"] = f"{refusal_type.__name__}: {message}"
     result_path.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises((AssertionError, ValueError)):
-        assert_supervisor_refusal(2, result_path)
+        assert_prelaunch_refusal(2, result_path)
 
 
 def test_capability_adapter_does_not_hide_eligible_host_assertions() -> None:
@@ -1042,3 +1047,157 @@ def test_process_projection_binds_retained_origin_to_unique_kernel_generation(
         assert observed.producing_process(7) == ("linux:7:1", compiler)
     with pytest.raises(ValueError, match="unique observed process generation"):
         observed.producing_process(999)
+
+
+def test_darwin_input_custody_refuses_before_provision_or_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "must-not-start"
+    command = [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"]
+    result_path = tmp_path / "refused.execution.json"
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema": command_admission.EXECUTION_SCHEMA,
+                "run_id": "input-custody-refusal",
+                "execution_nonce": "a" * 64,
+                "command": command,
+                "envelope": command_admission.envelope_for_command(command),
+                "cwd": str(repo),
+                "resource_family": "python-tests",
+                "result_path": str(result_path),
+                "timeout_seconds": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(execution_custody, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(
+        proof_queue_custody_test_support, "sys", SimpleNamespace(platform="darwin")
+    )
+
+    def forbidden(*args: object, **kwargs: object):
+        pytest.fail("unsupported input custody must refuse before any worker")
+
+    monkeypatch.setattr(supervisor_generation, "provision", forbidden)
+    monkeypatch.setattr(
+        guarded_execution, "_run_supervisor_with_transcripts", forbidden
+    )
+    install_module_view(
+        monkeypatch,
+        "threading",
+        execution_custody.threading,
+        execution_custody,
+        Thread=forbidden,
+    )
+    returncode = guarded_execution.execute_guarded_request(request_path)
+    assert assert_prelaunch_refusal(returncode, result_path)
+    record = json.loads(result_path.read_text(encoding="utf-8"))
+    assert record["live_custody_capability"] == {
+        "platform": "darwin",
+        "admission": {"state": "ineligible", "reason": "platform-unsupported"},
+    }
+    assert not marker.exists()
+    monitor = execution_custody.LiveCustodyMonitor([execution_custody.WatchSpec(repo)])
+    session = execution_custody.ExecutionCustodySession(monitor=monitor)
+    with pytest.raises(execution_custody.LiveCustodyUnavailable) as refused:
+        with session:
+            pytest.fail("a direct consumer must not enter an unsupported session")
+    assert refused.value.reason == "platform-unsupported"
+    assert session.state == "CREATED"
+    assert monitor._thread is None
+    assert monitor._cookie_root is None
+    assert monitor.receipt()["stable"] is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["started", "reason", "platform", "stdout", "unknown-code", "extra-field"],
+)
+def test_live_custody_refusal_rejects_fabricated_or_partial_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    monkeypatch.setattr(
+        proof_queue_custody_test_support, "sys", SimpleNamespace(platform="darwin")
+    )
+    refusal = execution_custody.LiveCustodyUnavailable("darwin")
+    record = {
+        "phase": "failed",
+        "command_started": False,
+        "live_custody_capability": refusal.capability,
+        "error": f"{type(refusal).__module__}.{type(refusal).__qualname__}: {refusal}",
+    }
+    result_path = tmp_path / "execution.json"
+    result_path.write_text(json.dumps(record), encoding="utf-8")
+    assert assert_prelaunch_refusal(2, result_path)
+    if mutation == "started":
+        record["command_started"] = True
+    elif mutation == "reason":
+        record["error"] = "an unrelated launch failure"
+    elif mutation == "platform":
+        record["live_custody_capability"]["platform"] = "linux"
+    elif mutation == "unknown-code":
+        record["live_custody_capability"]["admission"]["reason"] = (
+            "FSEvents could not guarantee observation"
+        )
+    elif mutation == "extra-field":
+        record["live_custody_capability"]["detail"] = "prose"
+    else:
+        result_path.with_suffix(".stdout.bin").write_bytes(b"partial execution")
+    result_path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(AssertionError):
+        assert_prelaunch_refusal(2, result_path)
+
+
+def test_input_custody_refusal_is_an_unsupported_cell() -> None:
+    refusal = execution_custody.LiveCustodyUnavailable("darwin")
+    with pytest.raises(pytest.skip.Exception, match="darwin: platform-unsupported"):
+        proof_queue_custody_test_support.report_refused_cell((refusal,))
+
+
+def test_live_custody_refusal_reason_is_a_closed_code() -> None:
+    assert execution_custody.LIVE_CUSTODY_REFUSAL_REASONS == frozenset(
+        typing.get_args(execution_custody.LiveCustodyRefusalReason)
+    )
+    with pytest.raises(ValueError, match="unknown live custody refusal reason"):
+        execution_custody.LiveCustodyUnavailable(
+            "darwin",
+            "FSEvents cannot guarantee observation",  # type: ignore[arg-type]
+        )
+    refusal = execution_custody.LiveCustodyUnavailable("darwin")
+    decoded = execution_custody.LiveCustodyUnavailable.decode(
+        refusal.capability, expected_platform="darwin"
+    )
+    assert decoded.capability == refusal.capability
+    for capability, platform in (
+        ({**refusal.capability, "platform": "freebsd14"}, "darwin"),
+        (execution_custody.LiveCustodyUnavailable("linux").capability, "linux"),
+        (execution_custody.LiveCustodyUnavailable("win32").capability, "win32"),
+        (
+            {
+                "platform": "darwin",
+                "admission": {"state": "eligible", "reason": "platform-unsupported"},
+            },
+            "darwin",
+        ),
+        (
+            {"platform": "darwin", "admission": {"state": "ineligible", "reason": ""}},
+            "darwin",
+        ),
+        ({"platform": "darwin"}, "darwin"),
+        ("platform-unsupported", "darwin"),
+    ):
+        with pytest.raises(ValueError):
+            execution_custody.LiveCustodyUnavailable.decode(
+                capability, expected_platform=platform
+            )
+
+
+def test_refused_cell_rejects_unknown_refusal() -> None:
+    with pytest.raises(TypeError, match="unknown prelaunch refusal type"):
+        proof_queue_custody_test_support.report_refused_cell(
+            (RuntimeError("unrelated launch failure"),)
+        )
