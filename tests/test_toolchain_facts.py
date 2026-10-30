@@ -983,6 +983,7 @@ def test_store_answers_what_real_rustup_answers(
         "RUSTUP_AUTO_INSTALL": "0",
         "PATH": "/usr/bin:/bin",
         "RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS": os.fspath(tmp_path / "none.toml"),
+        "MOLT_EXT_ROOT": os.fspath(tmp_path),
     }
 
     def toolchain_file(path: Path, name: str, *, legacy: bool = False) -> None:
@@ -1313,6 +1314,7 @@ def test_a_warm_toolchain_resolves_a_cargo_plan_without_probe_processes(
         if name in os.environ
     }
     env["CARGO_TARGET_DIR"] = os.fspath(tmp_path / "target")
+    env["MOLT_EXT_ROOT"] = os.fspath(tmp_path)
     real = process_guard.run_completed_command
     probes: list[list[str]] = []
 
