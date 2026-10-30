@@ -107,7 +107,10 @@ selectors. It never enumerates other projects, Codex worktrees, VM disks or
 snapshots. A locked landing stays. Unregistered temp/cache preimages require
 custody reconciliation; names alone do not prove they are safe to retire.
 Each replaced layout has its own `ReplacedStorageClass` in the same closed
-storage enumeration. The daily collector uses the same finite inventory and
+storage enumeration. Migration consumes those typed source selectors; it has
+no second table of former locations. A standalone clone's former sandbox stays
+outside the source checkout, just as the original producer placed it. Selecting
+a replaced coordinate grants no new write custody. The daily collector uses the same finite inventory and
 last-use policy for repository-owned preimages. Historical user-cache and
 host-temp preimages require an explicit operator scope (`storage migrate`, or
 `storage trim --legacy-temp-root`); an arbitrary SDK/test checkout cannot adopt

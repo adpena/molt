@@ -10633,3 +10633,33 @@ class TestStorageAuthority:
         assert old_cache.is_symlink()
         assert credential.read_bytes() == b"provider input"
         assert set(provider.iterdir()) == {credential}
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(repo, os.environ, molt_only=False):
+                storage_path(repo, "replaced-compile-cache", os.environ)
+                (provider / "unadmitted-output").write_bytes(b"not a cache grant")
+
+    @pytest.mark.parametrize("family", [False, True])
+    def test_replaced_family_sandbox_inventory_and_migration_share_the_old_producer(
+        self, tmp_path, monkeypatch, family
+    ):
+        from molt.custody_layout import repository_storage_key
+
+        repo = tmp_path / "family/molt-src" if family else tmp_path / "plain-clone"
+        repo.mkdir(parents=True)
+        artifact = tmp_path / "data"
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        # The former producer kept a sandbox outside a standalone clone as
+        # well as outside a family's molt-src checkout. Build that real input.
+        old = (
+            repo.parent
+            / "worktrees"
+            / f"landing-sandbox-{repository_storage_key(repo / '.git')}"
+        )
+        old.mkdir(parents=True)
+        assert storage_path(repo, "replaced-family-landing-sandbox", os.environ) == old
+        rows = molt_dev_storage.migration_plan(repo, os.environ)
+        row = next(row for row in rows if row.kind == "replaced-family-landing-sandbox")
+        assert row.source == old
+        assert row.action == "keep" and row.reason == "within last-use retention window"
