@@ -136,7 +136,7 @@ def test_transcript_admission_rejects_path_file_and_command_substitution(
             tmp_path / "other.bin"
         )
     elif substitution == "inode":
-        result["live_command_transcript"]["stderr"]["inode"] += 1
+        result["live_command_transcript"]["stderr"]["identity"]["file_id"] = "f" * 32
     elif substitution == "missing":
         result.pop("live_command_transcript")
     elif substitution == "command":

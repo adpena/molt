@@ -1684,7 +1684,7 @@ def test_source_namespace_reclamation_failure_cannot_mix_wal_generations(
     first = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
     assert first["entries_failed"] == 1 and not root.exists()
     residue = [
-        p for p in root.parent.iterdir() if p.name.startswith(".molt-retired-v1-")
+        p for p in root.parent.iterdir() if p.name.startswith(".molt-retired-v2-")
     ]
     assert len(residue) == 1
     lease = _try_acquire_file_lock(lock, shared=True)
@@ -1837,7 +1837,7 @@ def test_malformed_source_retirement_preserves_evidence_and_continues_sweep(tmp_
     namespace.mkdir(parents=True)
     (namespace / "records.sqlite").write_bytes(b"idle older namespace")
     prefix = hashlib.sha256(records.SOURCE_RECORD_RETIREMENT_SCOPE.encode()).hexdigest()
-    malformed = namespace.parent / f".molt-retired-v1-{prefix}-junk"
+    malformed = namespace.parent / f".molt-retired-v2-{prefix}-junk"
     malformed.write_bytes(b"unqualified retirement evidence")
     artifact = cache / f"{_cache_key('program')}.artifact-{_cache_key('contract')}.o"
     artifact.write_bytes(b"unrelated evictable object")

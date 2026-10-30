@@ -511,7 +511,7 @@ def test_promotion_real_recovery_reclaims_partially_deleted_committed_transactio
         # Nested temporary cleanups remain real. Interrupt only the retired
         # completed promotion whose package-store holds its publication journal.
         if (
-            path.name.startswith(".molt-retired-v1-")
+            path.name.startswith(".molt-retired-v2-")
             and (path / "package-store").exists()
         ):
             journals = list((path / "package-store" / "commits").glob("*.json"))

@@ -557,11 +557,16 @@ def test_historical_envelope_validation_is_offline_but_live_custody_is_not(
 
 def test_remounted_or_forged_root_identity_is_not_current_custody(tmp_path):
     declaration = layout.declare_root(str(_root(tmp_path)))
-    forged = {**declaration, "inode": declaration["inode"] + 1}
+    forged = {
+        **declaration,
+        "identity": {**declaration["identity"], "file_id": "f" * 32},
+    }
     with pytest.raises(ValueError, match="replaced or remounted"):
         layout.validate_root(forged)
-    with pytest.raises(ValueError, match="identity is malformed"):
-        layout.declared_root({**declaration, "device": True})
+    with pytest.raises(ValueError, match="invalid durable"):
+        layout.declared_root(
+            {**declaration, "identity": {**declaration["identity"], "file_id": True}}
+        )
 
 
 @pytest.mark.parametrize("error", [PermissionError("denied"), OSError("I/O failure")])
@@ -1243,7 +1248,10 @@ def test_cache_payload_capacity_and_roles_follow_root_but_identity_and_metadata_
             bound = outputs.bind({}, target=lease.target)
             assert all(bound[name] == str(lease.target) for name in outputs.names)
             identities.append(lease.provenance["input_sha256"])
-            other_root = {**declaration, "inode": declaration["inode"] + 1}
+            other_root = {
+                **declaration,
+                "identity": {**declaration["identity"], "file_id": "f" * 32},
+            }
             with pytest.raises(ValueError, match="differs from admitted envelope"):
                 cache.validate_prelaunch(
                     lease.provenance,
@@ -1604,3 +1612,32 @@ def test_runtime_cargo_intermediate_base_is_owned_by_the_payload_lease(tmp_path)
     outputs.validate(bound, target=target)
     with pytest.raises(ValueError, match="differs"):
         outputs.validate({**bound, **inherited}, target=target)
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_cargo_root_rekeys_only_a_proven_mount_session(tmp_path, renumbered):
+    root = _root(tmp_path)
+    metadata = root.stat()
+    legacy = {
+        "schema": "molt.proof-cargo-output-root.v1",
+        "path": str(root),
+        "device": metadata.st_dev + int(renumbered),
+        "inode": metadata.st_ino,
+    }
+    if renumbered:
+        with pytest.raises(ValueError, match="identity-unverifiable"):
+            layout.validate_root(legacy)
+    else:
+        current = layout.validate_root(legacy)
+        assert current == layout.declare_root(str(root))
+        assert current["schema"] == "molt.proof-cargo-output-root.v2"
+        assert set(current) == {"schema", "path", "identity"}
+
+
+def test_current_cargo_root_survives_device_renumbering(tmp_path, monkeypatch):
+    from tests.test_dx_run_context import _renumber_stat_devices
+
+    root = _root(tmp_path)
+    declaration = layout.declare_root(str(root))
+    _renumber_stat_devices(monkeypatch)
+    assert layout.validate_root(declaration) == declaration

@@ -2309,3 +2309,33 @@ def test_paths_inside_an_output_stage_directory_are_publication_custody(
         assert os.fspath(custody) not in ledger.directories
     assert os.fspath(foreign_inner) in ledger.probes, "a foreign stage is no product"
     assert ledger.directories.keys() == {os.fspath(out)}
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_build_record_rekeys_only_live_matching_generations(
+    tmp_path, renumbered
+):
+    _source, _tool, output, record = _fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+
+    def old_token(name, token):
+        metadata = Path(name).stat()
+        return [metadata.st_dev + int(renumbered), metadata.st_ino, *token[2:]]
+
+    for row in payload["files"]:
+        if row[1] is not None:
+            row[1] = old_token(row[0], row[1])
+    for row in payload["directories"]:
+        row[1] = old_token(row[0], row[1])
+    payload["output"]["token"] = old_token(output, payload["output"]["token"])
+    payload["schema"] = "molt-build-record-v10"
+    legacy = record.parent.parent.parent / record.parent.name / record.name
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps(payload), encoding="utf-8")
+    record.unlink()
+    assert _current(record, output) is (not renumbered)
+    if not renumbered:
+        assert (
+            json.loads(record.read_text(encoding="utf-8"))["schema"]
+            == "molt-build-record-v11"
+        )

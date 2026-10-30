@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 from io import BufferedReader
 import os
@@ -17,6 +17,11 @@ import subprocess
 import time
 from typing import BinaryIO
 
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    file_identity,
+    upgrade_legacy,
+)
 from molt.default_paths import executable_environment_value, expand_user_path
 from molt.process_environment import ProcessEnvironment
 
@@ -67,11 +72,26 @@ class StableRegularFileVersion:
     size: int
     _stat_identity: tuple[int, int, int, int, int, int]
     _content_change_time_ns: int
+    _durable_identity: DurableFileIdentity | None = field(
+        default=None, kw_only=True, compare=False, repr=False
+    )
 
-    def stat_token(self) -> tuple[int, int, int, int, int, int]:
-        """This observation as a build-record token: (device, inode, mode,
-        size, mtime, content-change time), as `molt.input_report` takes it."""
-        return (*self._stat_identity[:5], self._content_change_time_ns)
+    def stat_token(self) -> tuple[str, str, int, int, int, int]:
+        """Durable projection; the captured local fence remains independent."""
+        identity = self._durable_identity
+        if identity is None:
+            metadata = self.path.lstat()
+            if _stat_identity(metadata) != self._stat_identity:
+                raise StableRegularFileChangedError(
+                    f"file changed before token capture: {self.path}"
+                )
+            identity = file_identity(self.path, expected=metadata)
+            object.__setattr__(self, "_durable_identity", identity)
+        return (
+            *identity.stat_prefix(),
+            *self._stat_identity[2:5],
+            self._content_change_time_ns,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -825,7 +845,7 @@ def stable_regular_file_identity(
 class FileDigestCache:
     """Stat-keyed SHA-256 digests that processes on one host reuse.
 
-    A recorded digest is reused only for a file whose (device, inode, mode,
+    A recorded digest is reused only for a file whose (volume, file id, mode,
     size, mtime_ns, ctime_ns) equals the observation it was recorded with, and
     only digests of files whose timestamps were already older than the racy
     window are recorded. POSIX kernels update ctime on every write and callers
@@ -838,16 +858,22 @@ class FileDigestCache:
         self.store = store
         self._max_age_ns = max_age_ns
         self._started_ns = time.time_ns()
-        self._recorded: dict[str, tuple[_StatToken, str, int]] | None = None
-        self._pending: dict[str, tuple[_StatToken, str]] = {}
+        self._recorded: (
+            dict[str, tuple[tuple[str, str, int, int, int, int], str, int]] | None
+        ) = None
+        self._pending: dict[str, tuple[tuple[str, str, int, int, int, int], str]] = {}
 
     def _connect(self) -> sqlite3.Connection:
         self.store.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.store, timeout=60)
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(digests)")]
+        if "dev" in columns:
+            connection.close()
+            raise ValueError("legacy digest namespace requires the canonical v2 store")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute(
             "CREATE TABLE IF NOT EXISTS digests (path TEXT PRIMARY KEY,"
-            " dev INTEGER NOT NULL, ino INTEGER NOT NULL, mode INTEGER NOT NULL,"
+            " volume TEXT NOT NULL, file_id TEXT NOT NULL, mode INTEGER NOT NULL,"
             " size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,"
             " ctime_ns INTEGER NOT NULL, sha256 TEXT NOT NULL,"
             " recorded_ns INTEGER NOT NULL)"
@@ -855,9 +881,64 @@ class FileDigestCache:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS digests_recorded ON digests (recorded_ns)"
         )
+        if self.store.name == "v2.sqlite":
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS identity_migration (completed INTEGER PRIMARY KEY CHECK(completed=1))"
+            )
+            if (
+                connection.execute(
+                    "SELECT completed FROM identity_migration"
+                ).fetchone()
+                is None
+            ):
+                legacy = self.store.with_name("v1.sqlite")
+                with connection:
+                    if legacy.exists():
+                        with closing(
+                            sqlite3.connect(legacy.as_uri() + "?mode=ro", uri=True)
+                        ) as old:
+                            columns = [
+                                row[1]
+                                for row in old.execute("PRAGMA table_info(digests)")
+                            ]
+                            if "dev" in columns:
+                                self._rekey_rows(
+                                    connection, old.execute("SELECT * FROM digests")
+                                )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO identity_migration VALUES (1)"
+                    )
+        connection.execute("PRAGMA user_version=2")
         return connection
 
-    def _rows(self) -> dict[str, tuple[_StatToken, str, int]]:
+    @staticmethod
+    def _rekey_rows(connection: sqlite3.Connection, rows) -> None:
+        for row in rows:
+            path, device, inode, mode, size, mtime, ctime, digest, recorded = row
+            try:
+                metadata = Path(path).lstat()
+                identity = upgrade_legacy(
+                    Path(path), {"device": device, "inode": inode}
+                )
+                if _stat_identity(metadata)[2:] != (mode, size, mtime, ctime):
+                    continue
+            except (OSError, ValueError):
+                continue
+            connection.execute(
+                "INSERT OR IGNORE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    path,
+                    *identity.stat_prefix(),
+                    mode,
+                    size,
+                    mtime,
+                    ctime,
+                    digest,
+                    recorded,
+                ),
+            )
+
+    def _rows(self) -> dict[str, tuple[tuple[str, str, int, int, int, int], str, int]]:
         if self._recorded is None:
             with closing(self._connect()) as connection:
                 self._recorded = {
@@ -867,7 +948,7 @@ class FileDigestCache:
                         row[8],
                     )
                     for row in connection.execute(
-                        "SELECT path, dev, ino, mode, size, mtime_ns, ctime_ns,"
+                        "SELECT path, volume, file_id, mode, size, mtime_ns, ctime_ns,"
                         " sha256, recorded_ns FROM digests"
                     )
                 }
@@ -910,7 +991,10 @@ class FileDigestCache:
                 f"{label} is not one stable regular file: {path}"
             )
         key = os.fspath(path)
-        token = _stat_identity(expected_path_stat)
+        token = (
+            *file_identity(path, expected=expected_path_stat).stat_prefix(),
+            *_stat_identity(expected_path_stat)[2:],
+        )
         recorded = self._rows().get(key)
         if recorded is not None and recorded[0] == token:
             if recorded[2] < self._started_ns - self._max_age_ns // 2:
@@ -927,7 +1011,7 @@ class FileDigestCache:
             < self._started_ns - DIGEST_RACY_WINDOW_NS
         ):
             self._pending[os.fspath(identity.path)] = (
-                identity._stat_identity,
+                identity.stat_token(),
                 identity.sha256,
             )
 

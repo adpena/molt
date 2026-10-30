@@ -207,7 +207,7 @@ def unbound_checkout_family(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve this checkout's family as unbound inside the test process.
 
     A developer host may bind the family's artifact root
-    (`.git/molt/artifact-root.json`); hosted CI never does. A test whose subject
+    (`.git/molt/artifact-root.v2.json`); hosted CI never does. A test whose subject
     is unbound selection for the real checkout uses this. Only this process
     stops seeing the binding: a child process still reads it from disk, so a
     test whose children resolve roots runs them on an unbound scratch clone.

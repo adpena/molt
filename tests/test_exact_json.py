@@ -399,7 +399,7 @@ def test_retirement_reclaims_hardlink_without_mutating_external_source(
         patch.setattr(Path, "chmod", forbidden_chmod)
         file_publication.durable_remove_path(owned, retirement_scope="hardlink")
     assert not owned.exists()
-    assert not list(tmp_path.glob(".molt-retired-v1-*"))
+    assert not list(tmp_path.glob(".molt-retired-v2-*"))
     assert attributes() == before
     assert source.read_bytes() == b"external source must survive cleanup"
 
@@ -497,7 +497,7 @@ def test_reclaimed_file_barrier_failure_is_explicit_and_retryable(
 
     def fail_after_delete(parent):
         nonlocal seen_retirement
-        if list(parent.glob(".molt-retired-v1-*")):
+        if list(parent.glob(".molt-retired-v2-*")):
             seen_retirement = True
         elif seen_retirement:
             raise OSError("injected reclamation barrier")
@@ -554,7 +554,7 @@ def test_retirement_rejects_unavailable_identity_without_renaming(
     with pytest.raises(ValueError, match="stable filesystem file identity"):
         file_publication.durable_remove_path(source, retirement_scope="owned")
     assert source.read_bytes() == b"preserve"
-    assert not list(tmp_path.glob(".molt-retired-v1-*"))
+    assert not list(tmp_path.glob(".molt-retired-v2-*"))
 
 
 def test_retirement_recovery_preserves_malformed_owned_name(tmp_path: Path) -> None:
@@ -590,7 +590,7 @@ def test_retirement_rejects_windows_reparse_attribute_before_rename(
     monkeypatch.setattr(Path, "lstat", reparse_metadata)
     with pytest.raises(ValueError, match="link or junction"):
         file_publication.durable_remove_path(source, retirement_scope="owned")
-    assert not list(tmp_path.glob(".molt-retired-v1-*"))
+    assert not list(tmp_path.glob(".molt-retired-v2-*"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows directory junction consumer")
@@ -616,3 +616,30 @@ def test_retirement_refuses_root_junction_and_preserves_nested_junction_target(
         file_publication.durable_remove_path(junction, retirement_scope="owned")
     file_publication.durable_remove_path(source, retirement_scope="owned")
     assert (outside / "payload").read_bytes() == b"preserve"
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_retired_name_rekeys_only_a_proven_node(tmp_path, renumbered):
+    import hashlib
+    from molt import file_publication
+
+    scope = "legacy-custody"
+    leaf = tmp_path / "payload"
+    leaf.write_bytes(b"retired content")
+    metadata = leaf.stat()
+    prefix = ".molt-retired-v1-" + hashlib.sha256(scope.encode()).hexdigest() + "-"
+    retired = (
+        tmp_path
+        / f"{prefix}f-{metadata.st_dev + int(renumbered):x}-{metadata.st_ino:x}-{'a' * 16}"
+    )
+    leaf.rename(retired)
+    if renumbered:
+        with pytest.raises(ValueError, match="identity-unverifiable"):
+            file_publication.reclaim_retired_paths(tmp_path, retirement_scope=scope)
+        assert retired.read_bytes() == b"retired content"
+    else:
+        reclaimed = file_publication.reclaim_retired_paths(
+            tmp_path, retirement_scope=scope
+        )
+        assert len(reclaimed) == 1 and reclaimed[0].name.startswith(".molt-retired-v2-")
+        assert not retired.exists()

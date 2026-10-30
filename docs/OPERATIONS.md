@@ -830,7 +830,7 @@ standing policy; `CLAUDE.md` imports it.
   The root must already exist, be writable, lie outside source checkouts and
   pass `MOLT_EXTERNAL_MIN_FREE_GB` (default 20 GiB). The command never creates
   it. Every linked worktree reads the same
-  `<git common dir>/molt/artifact-root.json` record without shell startup files.
+  `<git common dir>/molt/artifact-root.v2.json` record without shell startup files.
   Explicit `MOLT_EXT_ROOT` takes precedence; preference flags cannot disable
   the binding. Without a binding, existing plain-clone defaults and candidate
   preferences remain. This is a maintainer storage choice, not a public CLI
@@ -1239,7 +1239,7 @@ fail closed; the inventory itself makes no claim about current file bytes.
 - Toolchain provenance is reused, not re-proved: a process captures each root set
   (Rust sysroot, LLVM SDK, C search paths such as the macOS SDK) once, and later
   fences verify it by directory and file stat tokens. File digests persist in a
-  stat-keyed store under the Molt cache (`file-digests/v1.sqlite`) with the
+  stat-keyed store under the Molt cache (`file-digests/v2.sqlite`) with the
   racy-git rule; Windows always hashes, because its ChangeTime can repeat within
   one clock tick.
 
@@ -1408,3 +1408,6 @@ lanes must follow that protocol first.
 ### Merge discipline
 - Merge only after tests pass and conflicts are resolved.
 - If two agents touch the same area, rebase and re-validate.
+
+Artifact-root provisioning and retained-scratch migration follow the
+[durable filesystem identity contract](design/durable_file_identity.md).

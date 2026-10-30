@@ -1,3 +1,4 @@
+from molt.durable_file_identity import DurableFileIdentity, VolumeKind
 import ast
 from dataclasses import asdict, dataclass
 import hashlib
@@ -421,6 +422,9 @@ def _wasm_optimizer_identity(
 
     return wasm_link_optimizer_policy.WasmOptimizerExecutableIdentity(
         executable=StableRegularFileIdentity(
+            _durable_identity=DurableFileIdentity(
+                VolumeKind.APPLE_UUID, "1" * 32, "2" * 32
+            ),
             path=Path(path),
             size=0,
             sha256=sha256,

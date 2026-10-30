@@ -126,7 +126,8 @@ the same facts. Binding requires an existing, writable, identifiable directory
 outside source checkouts with the existing external-root capacity headroom
 (`MOLT_EXTERNAL_MIN_FREE_GB`, default 20 GiB). It never creates the target.
 
-The record is `<git common dir>/molt/artifact-root.json`, alongside the existing
+The [durable identity contract](../durable_file_identity.md) owns the record
+and migration. Its record is `<git common dir>/molt/artifact-root.v2.json`, alongside the existing
 repository control records. Linked worktrees share it even outside the conventional
 family directory names. Source trees without Git metadata cannot write a family
 binding and retain their existing defaults. Publication uses exact JSON and the
@@ -149,7 +150,8 @@ bootstrap instead of silently acquiring a sibling output directory.
 
 The queue resolves that control-plane choice once in the parent, including
 requested environment overrides, and carries an existing directory declaration
-(path/device/inode) in execution request version 5. The guarded child and receipt
+under the [durable identity contract](../durable_file_identity.md) in the
+versioned execution request. The guarded child and receipt
 verifier use that captured root; they never reselect from a scrubbed child
 environment. A missing declaration refuses instead of falling back to DX.
 The declaration is separate from payload argv/environment authority and enters
@@ -157,14 +159,11 @@ the nonce-bound receipt context. This preserves CI's environment-only selection
 without granting new environment names to proof commands. Direct local layout
 users and the parent share the same root/store selector and overlap checks.
 
-A binding records the resolved root and its directory device/inode identity.
-Every use checks that directory before probing capacity; absence, replacement,
-an unmounted volume exposing another directory, unwritability or failed/low
-capacity produces one diagnostic naming the root, observation and bind/clear
-remedy. It never probes an ancestor of a missing bound directory or falls back
-to the source/root volume. A remount that changes identity requires an explicit
-rebind after inspection. Selection reserves no space and cannot prevent media
-removal or concurrent disk growth after admission.
+Binding identity, migration and media validation are owned by the
+[durable identity contract](../durable_file_identity.md). DX checks the bound
+root before probing capacity and reports the root, observation and bind/clear
+remedy. Selection reserves no space and cannot prevent media removal or
+concurrent disk growth after admission.
 
 Research checked 2026-10-28, using upstream documentation and implementation:
 

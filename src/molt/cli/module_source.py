@@ -370,22 +370,18 @@ class _ModuleSourceCatalog:
         return self.lease_for(module_name, module_path).worker_payload()
 
 
-def _stat_device(stat: os.stat_result) -> int:
-    return int(getattr(stat, "st_dev", 0) or 0)
-
-
-_SOURCE_HASH_CACHE_SCHEMA_VERSION = 1
+_SOURCE_HASH_CACHE_SCHEMA_VERSION = 2
 
 
 def _source_hash_stat_identity_is_strong(
     *,
     ctime_ns: int,
-    inode: int,
-    device: int,
+    file_id: str,
+    volume: str,
 ) -> bool:
     if sys.platform.startswith("win"):
         return False
-    return ctime_ns > 0 and inode > 0 and device >= 0
+    return ctime_ns > 0 and bool(file_id) and bool(volume)
 
 
 @functools.lru_cache(maxsize=16384)
@@ -395,22 +391,28 @@ def _source_hash_cache_path_cached(
     size: int,
     mtime_ns: int,
     ctime_ns: int,
-    inode: int,
-    device: int,
+    file_id: str,
+    volume: str,
 ) -> Path:
     identity = {
         "path": path_str,
         "size": size,
         "mtime_ns": mtime_ns,
         "ctime_ns": ctime_ns,
-        "inode": inode,
-        "device": device,
+        "file_id": file_id,
+        "volume": volume,
     }
     encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
     )
     digest = hashlib.sha256(encoded).hexdigest()
-    return Path(cache_root_str) / "source_hash_cache" / digest[:2] / f"{digest}.json"
+    return (
+        Path(cache_root_str)
+        / "source_hash_cache"
+        / "v2"
+        / digest[:2]
+        / f"{digest}.json"
+    )
 
 
 def _source_hash_cache_path(
@@ -420,8 +422,8 @@ def _source_hash_cache_path(
     size: int,
     mtime_ns: int,
     ctime_ns: int,
-    inode: int,
-    device: int,
+    file_id: str,
+    volume: str,
 ) -> Path:
     return _source_hash_cache_path_cached(
         os.fspath(cache_root),
@@ -429,8 +431,8 @@ def _source_hash_cache_path(
         size,
         mtime_ns,
         ctime_ns,
-        inode,
-        device,
+        file_id,
+        volume,
     )
 
 
@@ -467,11 +469,11 @@ def _read_persistent_source_hash(
     size: int,
     mtime_ns: int,
     ctime_ns: int,
-    inode: int,
-    device: int,
+    file_id: str,
+    volume: str,
 ) -> str | None:
     if not _source_hash_stat_identity_is_strong(
-        ctime_ns=ctime_ns, inode=inode, device=device
+        ctime_ns=ctime_ns, file_id=file_id, volume=volume
     ):
         return None
     cache_path = _source_hash_cache_path(
@@ -480,10 +482,12 @@ def _read_persistent_source_hash(
         size=size,
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
-        inode=inode,
-        device=device,
+        file_id=file_id,
+        volume=volume,
     )
     payload = _read_source_hash_cache_payload(cache_path)
+    if payload is None:
+        payload = _migrate_source_hash(cache_root, Path(path_str), volume, file_id)
     if (
         not isinstance(payload, dict)
         or payload.get("version") != _SOURCE_HASH_CACHE_SCHEMA_VERSION
@@ -491,8 +495,8 @@ def _read_persistent_source_hash(
         or payload.get("size") != size
         or payload.get("mtime_ns") != mtime_ns
         or payload.get("ctime_ns") != ctime_ns
-        or payload.get("inode") != inode
-        or payload.get("device") != device
+        or payload.get("file_id") != file_id
+        or payload.get("volume") != volume
     ):
         return None
     source_hash = payload.get("source_sha256")
@@ -506,12 +510,12 @@ def _write_persistent_source_hash(
     size: int,
     mtime_ns: int,
     ctime_ns: int,
-    inode: int,
-    device: int,
+    file_id: str,
+    volume: str,
     source_hash: str,
 ) -> None:
     if not _source_hash_stat_identity_is_strong(
-        ctime_ns=ctime_ns, inode=inode, device=device
+        ctime_ns=ctime_ns, file_id=file_id, volume=volume
     ):
         return
     cache_path = _source_hash_cache_path(
@@ -520,8 +524,8 @@ def _write_persistent_source_hash(
         size=size,
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
-        inode=inode,
-        device=device,
+        file_id=file_id,
+        volume=volume,
     )
     payload = {
         "version": _SOURCE_HASH_CACHE_SCHEMA_VERSION,
@@ -529,11 +533,75 @@ def _write_persistent_source_hash(
         "size": size,
         "mtime_ns": mtime_ns,
         "ctime_ns": ctime_ns,
-        "inode": inode,
-        "device": device,
+        "file_id": file_id,
+        "volume": volume,
         "source_sha256": source_hash,
     }
     _write_source_hash_cache_payload(cache_path, payload)
+
+
+def _migrate_source_hash(
+    cache_root: Path, path: Path, volume: str, file_id: str
+) -> dict | None:
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    lock = _acquire_file_lock(
+        cache_root / "source_hash_cache" / "v2" / "identity-migration.lock",
+        timeout_s=10,
+        timeout_message="source hash migration is busy",
+    )
+    try:
+        metadata = path.stat()
+        legacy = {
+            "path": str(path),
+            "size": metadata.st_size,
+            "mtime_ns": metadata.st_mtime_ns,
+            "ctime_ns": metadata.st_ctime_ns,
+            "inode": metadata.st_ino,
+            "device": metadata.st_dev,
+        }
+        encoded = json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
+        digest = hashlib.sha256(encoded).hexdigest()
+        old_path = cache_root / "source_hash_cache" / digest[:2] / (digest + ".json")
+        old = _read_source_hash_cache_payload(old_path)
+        if (
+            not isinstance(old, dict)
+            or old.get("version") != 1
+            or any(old.get(k) != v for k, v in legacy.items())
+        ):
+            return None
+        source_hash = old.get("source_sha256")
+        if not isinstance(source_hash, str) or not source_hash:
+            return None
+        from molt.durable_file_identity import upgrade_legacy
+
+        identity = upgrade_legacy(
+            path, {"device": old["device"], "inode": old["inode"]}
+        )
+        if identity.stat_prefix() != (volume, file_id):
+            return None
+        _write_persistent_source_hash(
+            cache_root,
+            path_str=str(path),
+            size=metadata.st_size,
+            mtime_ns=metadata.st_mtime_ns,
+            ctime_ns=metadata.st_ctime_ns,
+            volume=volume,
+            file_id=file_id,
+            source_hash=source_hash,
+        )
+        return {
+            "version": 2,
+            "path": str(path),
+            "size": metadata.st_size,
+            "mtime_ns": metadata.st_mtime_ns,
+            "ctime_ns": metadata.st_ctime_ns,
+            "volume": volume,
+            "file_id": file_id,
+            "source_sha256": source_hash,
+        }
+    finally:
+        _release_file_lock(lock)
 
 
 @functools.lru_cache(maxsize=16384)
@@ -542,8 +610,8 @@ def _source_content_sha256_cached(
     size: int,
     mtime_ns: int,
     ctime_ns: int,
-    inode: int,
-    device: int,
+    file_id: str,
+    volume: str,
     cache_root_str: str,
 ) -> str | None:
     cache_root = Path(cache_root_str)
@@ -553,8 +621,8 @@ def _source_content_sha256_cached(
         size=size,
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
-        inode=inode,
-        device=device,
+        file_id=file_id,
+        volume=volume,
     )
     if cached_hash is not None:
         return cached_hash
@@ -568,8 +636,8 @@ def _source_content_sha256_cached(
         size=size,
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
-        inode=inode,
-        device=device,
+        file_id=file_id,
+        volume=volume,
         source_hash=source_hash,
     )
     return source_hash
@@ -596,10 +664,11 @@ def _source_content_sha256(
     except OSError:
         path_str = os.fspath(path)
     ctime_ns = path_stat.st_ctime_ns
-    inode = int(getattr(path_stat, "st_ino", 0) or 0)
-    device = _stat_device(path_stat)
+    from molt.durable_file_identity import file_identity
+
+    volume, file_id = file_identity(Path(path_str), expected=path_stat).stat_prefix()
     if not _source_hash_stat_identity_is_strong(
-        ctime_ns=ctime_ns, inode=inode, device=device
+        ctime_ns=ctime_ns, file_id=file_id, volume=volume
     ):
         try:
             return _sha256_file(Path(path_str))
@@ -610,8 +679,8 @@ def _source_content_sha256(
         path_stat.st_size,
         path_stat.st_mtime_ns,
         ctime_ns,
-        inode,
-        device,
+        file_id,
+        volume,
         os.fspath(_default_molt_cache()),
     )
 

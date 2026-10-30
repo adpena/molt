@@ -1645,7 +1645,7 @@ def _run_crash_state(
         "target": root / "tmp" / _MODEL_TARGET,
         "payload": generation / "payload",
     }
-    identity = {"device": 0, "inode": 1}
+    identity = {"kind": "apple-uuid", "volume": "1" * 32, "file_id": "1" * 32}
     if payload != "gone":
         directory = locations[payload.removesuffix("-partial")]
         _model_payload(directory, partial=payload.endswith("-partial"))
@@ -2019,3 +2019,188 @@ def test_scratch_release_timing_adds_sequential_attempts_without_hiding_failure(
         "retention_sweep": None,
         "lease_release": 5.0,
     }
+
+
+def _legacy_retained_scratch(tmp_path, *, renumbered=False):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "keep").write_bytes(b"retained payload")
+    _finish(lease, success=False)
+    current = lease.generation
+    lease.release()
+    generation = current.parent.parent / current.name
+    old_index = scratch._index_path(current)
+    legacy_index = scratch._index_path(generation)
+    legacy_index.parent.mkdir(parents=True, exist_ok=True)
+    old_index.rename(legacy_index)
+    current.rename(generation)
+    owner = _read(generation / "owner.json")
+    target = generation / "payload"
+    owner.update(generation=str(generation), target=str(target))
+    metadata = target.stat()
+    pair = {"device": metadata.st_dev + int(renumbered), "inode": metadata.st_ino}
+    terminal = _read(generation / "terminal.json")
+    terminal.update(
+        schema="molt.guard-scratch.v1",
+        target_identity=pair,
+        generation=str(generation),
+        target=str(target),
+    )
+    owner.update(
+        schema="molt.guard-scratch.v1",
+        target_identity=pair,
+        terminal_digest=canonical_json_sha256(terminal),
+    )
+    write_exact(
+        target / scratch._TARGET_RECEIPT,
+        {"schema": "molt.guard-scratch.v1", "nonce": owner["target_receipt"]},
+    )
+    write_exact(generation / "terminal.json", terminal)
+    write_exact(generation / "owner.json", owner)
+    write_exact(
+        scratch._index_path(generation),
+        {
+            "schema": "molt.guard-scratch.v1",
+            "terminal_digest": owner["terminal_digest"],
+        },
+    )
+    return generation, target
+
+
+def test_matching_legacy_pending_scratch_rekeys_complete_grant(tmp_path):
+    generation, target = _legacy_retained_scratch(tmp_path)
+    outcome = scratch.reclaim_terminal_scratch(generation.parent / "v2")
+    assert outcome["errors"] == []
+    assert outcome["retained_count"] == 1
+    generation = generation.parent / "v2" / generation.name
+    target = generation / "payload"
+    owner = _read(generation / "owner.json")
+    terminal = _read(generation / "terminal.json")
+    assert owner["schema"] == terminal["schema"] == "molt.guard-scratch.v2"
+    assert set(owner["target_identity"]) == {"kind", "volume", "file_id"}
+    assert owner["terminal_digest"] == canonical_json_sha256(terminal)
+    assert _read(scratch._index_path(generation)) == {
+        "schema": scratch.SCHEMA,
+        "terminal_digest": owner["terminal_digest"],
+    }
+    assert (target / "keep").read_bytes() == b"retained payload"
+
+
+def test_unprovable_legacy_pending_is_retired_without_touching_payload(tmp_path):
+    generation, target = _legacy_retained_scratch(tmp_path, renumbered=True)
+    payload = {p.name: p.read_bytes() for p in target.iterdir()}
+    original_owner = (generation / "owner.json").read_bytes()
+    outcome = scratch.reclaim_terminal_scratch(generation.parent / "v2")
+    assert outcome["errors"] == []
+    assert outcome["reclaimed"] == []
+    assert outcome["retained_count"] == 0
+    assert {p.name: p.read_bytes() for p in target.iterdir()} == payload
+    assert (generation / "owner.json").read_bytes() == original_owner
+    assert not scratch._index_path(generation).exists()
+    retired = _read(
+        generation.parent / "v2" / "identity-unverifiable" / (generation.name + ".json")
+    )
+    assert retired["outcome"] == "identity-unverifiable"
+    assert retired["target"] == str(target)
+    assert scratch.reclaim_terminal_scratch(generation.parent / "v2")["errors"] == []
+
+
+def test_v2_pending_survives_simulated_renumbering(tmp_path, monkeypatch):
+    from tests.test_dx_run_context import _renumber_stat_devices
+
+    lease, _ = _lease(tmp_path)
+    (lease.target / "keep").write_bytes(b"payload")
+    _finish(lease, success=False)
+    generation = lease.generation
+    lease.release()
+    owner = _read(generation / "owner.json")
+    _renumber_stat_devices(monkeypatch)
+    outcome = scratch.reclaim_terminal_scratch(generation.parent)
+    assert outcome["errors"] == []
+    assert outcome["retained_count"] == 1
+    assert _read(generation / "owner.json") == owner
+    assert (generation / "payload" / "keep").read_bytes() == b"payload"
+
+
+@pytest.mark.parametrize("stop_after", [1, 2, 3, 4])
+def test_scratch_rekey_recovers_interrupted_bundle(tmp_path, monkeypatch, stop_after):
+    generation, target = _legacy_retained_scratch(tmp_path)
+    original = scratch.write_exact
+    writes = 0
+
+    def interrupted(path, value, **kwargs):
+        nonlocal writes
+        original(path, value, **kwargs)
+        writes += 1
+        if writes == stop_after:
+            raise OSError("interrupted rekey")
+
+    monkeypatch.setattr(scratch, "write_exact", interrupted)
+    first = scratch.reclaim_terminal_scratch(generation.parent / "v2")
+    assert first["errors"]
+    moved = generation.parent / "v2" / generation.name
+    surviving = moved / "payload" if moved.exists() else target
+    assert (surviving / "keep").read_bytes() == b"retained payload"
+    monkeypatch.setattr(scratch, "write_exact", original)
+    outcome = scratch.reclaim_terminal_scratch(generation.parent / "v2")
+    assert outcome["errors"] == []
+    assert outcome["retained_count"] == 1
+    assert _read(moved / "owner.json")["schema"] == scratch.SCHEMA
+
+
+def test_unprovable_pending_does_not_fail_the_guarded_command(tmp_path):
+    import sys
+    from tests.process_guard_common import run_guarded_test_process
+
+    generation, target = _legacy_retained_scratch(tmp_path, renumbered=True)
+    environment = dict(os.environ)
+    environment["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "tmp" / "memory_guard")
+    for key in (
+        "MOLT_MEMORY_GUARD_TOKEN",
+        "MOLT_MEMORY_GUARD_MARKER",
+        scratch.SCRATCH_ENV,
+    ):
+        environment.pop(key, None)
+    result = run_guarded_test_process(
+        [sys.executable, "-B", "-c", "print('command passed')"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "command passed\n"
+    assert (target / "keep").read_bytes() == b"retained payload"
+    retired = _read(
+        generation.parent / "v2" / "identity-unverifiable" / (generation.name + ".json")
+    )
+    assert retired["outcome"] == "identity-unverifiable"
+
+
+def test_v1_sweeper_reclaims_its_own_records_without_observing_v2(tmp_path):
+    from tools.import_file import load_module_from_path
+
+    # Execute the frozen production reader, including its schema validation,
+    # locks and deletion protocol, against one shared host root.
+    old = load_module_from_path(
+        "guard_scratch_v1_oracle",
+        Path(__file__).parent / "fixtures" / "guard_scratch_v1.py",
+    )
+    legacy, _ = _legacy_retained_scratch(tmp_path)
+    lease, _ = _lease(tmp_path, number=2)
+    _finish(lease, success=False)
+    lease.release()
+    root = lease.generation.parent
+    before = {
+        str(p.relative_to(root)): (p.stat().st_ino, p.read_bytes())
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    outcome = old.reclaim_terminal_scratch(
+        legacy.parent, retention=old.ScratchRetention(count=0, bytes=0)
+    )
+    assert outcome["errors"] == []
+    assert outcome["reclaimed"] == [str(legacy)]
+    assert not legacy.exists()
+    assert {
+        str(p.relative_to(root)): (p.stat().st_ino, p.read_bytes())
+        for p in root.rglob("*")
+        if p.is_file()
+    } == before

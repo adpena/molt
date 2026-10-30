@@ -26,6 +26,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, assert_never
 
 from molt import file_publication, input_report
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    file_identity,
+    upgrade_legacy,
+    upgrade_stat_token,
+)
 from molt.build_output_selection import BuildOutputSelection
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import (
@@ -38,7 +44,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v10"
+_SCHEMA = "molt-build-record-v11"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -127,7 +133,7 @@ class RecordedBuildClaim:
     kind: BuildClaimKind
     root: Path
     resolved_root: Path
-    directory_identity: tuple[int, int]
+    directory_identity: DurableFileIdentity
     cargo_target: Path | None = None
     product_identity: str | None = None
 
@@ -149,7 +155,7 @@ class RecordedBuildClaim:
             kind,
             root,
             resolved,
-            (metadata.st_dev, metadata.st_ino),
+            file_identity(resolved, expected=metadata),
             None if cargo_target is None else cargo_target.absolute(),
             product_identity,
         )
@@ -171,7 +177,7 @@ class RecordedBuildClaim:
             "kind": self.kind.value,
             "root": str(self.root),
             "resolved_root": str(self.resolved_root),
-            "directory_identity": list(self.directory_identity),
+            "directory_identity": self.directory_identity.payload(),
             "cargo_target": None
             if self.cargo_target is None
             else str(self.cargo_target),
@@ -190,13 +196,7 @@ class RecordedBuildClaim:
         }:
             raise ValueError("invalid build claim")
         kind = BuildClaimKind(value["kind"])
-        identity = value["directory_identity"]
-        if (
-            not isinstance(identity, list)
-            or len(identity) != 2
-            or any(type(part) is not int or part < 0 for part in identity)
-        ):
-            raise ValueError("invalid build claim directory identity")
+        identity = DurableFileIdentity.from_payload(value["directory_identity"])
         cargo_target = (
             None
             if value["cargo_target"] is None
@@ -213,7 +213,7 @@ class RecordedBuildClaim:
             kind,
             _record_path(value["root"]),
             _record_path(value["resolved_root"]),
-            (identity[0], identity[1]),
+            identity,
             cargo_target,
             product,
         )
@@ -303,9 +303,10 @@ class RecordedArtifact:
         if (
             not isinstance(token, list)
             or len(token) != 6
-            or any(type(item) is not int for item in token)
+            or any(type(item) is not int for item in token[2:])
         ):
             raise ValueError("invalid build result artifact token")
+        DurableFileIdentity.from_stat_prefix(token[0], token[1])
         if not stat.S_ISREG(token[2]) or token[3] < 0:
             raise ValueError("build result artifact is not a regular file")
         return cls(
@@ -800,7 +801,7 @@ def request_key(
         load_registry() if any(key.startswith("MOLT_") for key in environment) else None
     )
     material = {
-        "schema": _SCHEMA,
+        "schema": "molt-build-record-v10",
         "arguments": dict(arguments),
         "cwd": cwd,
         "interpreter": interpreter,
@@ -827,7 +828,7 @@ def request_key(
 
 
 def record_path(state_root: Path, key: str) -> Path:
-    return state_root / "build_records" / key[:2] / f"{key}.json"
+    return state_root / "build_records" / "v11" / key[:2] / f"{key}.json"
 
 
 def _publication_custody(paths: set[str], outputs: tuple[Path, ...]) -> set[str]:
@@ -1141,6 +1142,73 @@ class BuildRecordHit:
     consumer: Path | None = None
 
 
+def _upgrade_build_record(payload: dict) -> dict:
+    import copy
+
+    value = copy.deepcopy(payload)
+    for row in value["files"]:
+        if row[1] is not None:
+            row[1] = upgrade_stat_token(Path(row[0]).resolve(strict=True), row[1])
+    for row in value["directories"]:
+        row[1] = upgrade_stat_token(Path(row[0]).resolve(strict=True), row[1])
+    output = value["output"]
+    selection = BuildOutputSelection.from_dict(output["selection"])
+    output["token"] = upgrade_stat_token(selection.path, output["token"])
+    for row in output["products"]:
+        row[2] = upgrade_stat_token(Path(row[1]), row[2])
+    if value["result"] is not None:
+        for name in ("binary", "archive", "stub", "runtime", "compiler"):
+            artifact = value["result"][name]
+            artifact["token"] = upgrade_stat_token(
+                Path(artifact["path"]), artifact["token"]
+            )
+    for claim in value["claims"]:
+        pair = claim["directory_identity"]
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise ValueError("identity-unverifiable: malformed legacy build claim")
+        claim["directory_identity"] = upgrade_legacy(
+            Path(claim["resolved_root"]), {"device": pair[0], "inode": pair[1]}
+        ).payload()
+    value["schema"] = _SCHEMA
+    return value
+
+
+def _migrate_build_record(path: Path, key: str) -> None:
+    # Only the canonical v11 location can import the legacy namespace.
+    if path.exists() or path.parent.parent.name != "v11":
+        return
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    legacy = path.parent.parent.parent / path.parent.name / path.name
+    if not legacy.exists():
+        return
+    lock = _acquire_file_lock(
+        path.with_suffix(".identity-migration.lock"),
+        timeout_s=10,
+        timeout_message="build record migration is busy",
+    )
+    try:
+        if path.exists():
+            return
+        with legacy.open("rb") as stream:
+            payload = json.load(stream)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema") != "molt-build-record-v10"
+            or payload.get("key") != key
+        ):
+            return
+        payload = _upgrade_build_record(payload)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_publication.atomic_write_bytes(
+            path,
+            json.dumps(payload, separators=(",", ":")).encode(),
+            durability=file_publication.PublicationDurability.RECONSTRUCTIBLE,
+        )
+    finally:
+        _release_file_lock(lock)
+
+
 def check(
     path: Path,
     key: str,
@@ -1154,6 +1222,7 @@ def check(
     binary that build published. Never raises.
     """
     try:
+        _migrate_build_record(path, key)
         metadata = os.stat(path)
         with open(path, "rb") as handle:
             payload = json.loads(handle.read())

@@ -229,3 +229,58 @@ def test_invalid_journal_diagnostic_retains_cause(monkeypatch, tmp_path):
     with pytest.raises(OSError, match="BrokenDiagnosticError") as caught:
         publication._load_journal(path)
     assert caught.value.__cause__ is failure
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_publication_journal_migrates_only_witnessed_members(
+    tmp_path, renumbered
+):
+    import json
+
+    final = tmp_path / "output"
+    final.write_bytes(b"previous generation")
+    staged = publication.staged_output_path(final)
+    staged.write_bytes(b"new generation")
+    backup = publication.staged_output_path(final, purpose="backup", suffix=".old")
+    transaction = "a" * 32
+    journal = publication._journal_path(tmp_path, transaction)
+
+    def old_identity(path):
+        metadata = path.stat()
+        return [metadata.st_dev + int(renumbered), metadata.st_ino]
+
+    payload = {
+        "schema": "molt.artifact-publication.v2",
+        "transaction_id": transaction,
+        "state": "prepared",
+        "journals": [str(journal)],
+        "removals": [],
+        "replacements": [
+            {
+                "staged": str(staged),
+                "final": str(final),
+                "backup": str(backup),
+                "had_final": True,
+                "prior_identity": old_identity(final),
+                "installed_identity": old_identity(staged),
+            }
+        ],
+    }
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+    if renumbered:
+        with pytest.raises(ValueError, match="identity-unverifiable"):
+            publication._load_journal(journal, migrate=True)
+        assert json.loads(journal.read_text(encoding="utf-8")) == payload
+    else:
+        loaded = publication._load_journal(journal, migrate=True)
+        assert loaded["schema"] == "molt.artifact-publication.v3"
+        assert set(loaded["replacements"][0]["prior_identity"]) == {
+            "kind",
+            "volume",
+            "file_id",
+        }
+        # The real recovery reader consumes the upgraded journal and performs
+        # the prepared transaction's rollback without touching its prior final.
+        recovered = publication._recover_transaction((journal,))
+        assert recovered.committed is False and recovered.retained == ()
+    assert final.read_bytes() == b"previous generation"

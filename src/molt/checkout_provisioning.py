@@ -903,6 +903,9 @@ def ensure_input(spec: CheckoutInput, *, refresh_runtime: bool = False) -> Ensur
             raise ProvisioningError(
                 "runtime refresh cannot replace explicit UV_PROJECT_ENVIRONMENT"
             )
+    from molt.dx import provision_artifact_root_binding
+
+    provision_artifact_root_binding(spec.checkout, spec.environment)
     started = time.monotonic()
     if isinstance(spec, DevelopmentEnvironment):
         from molt.python_interpreter import is_python_version_selector
@@ -1068,6 +1071,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             artifact_root_binding_path,
             artifact_root_selection,
             prefers_external_artifacts,
+            provision_artifact_root_binding,
             set_artifact_root_binding,
         )
 
@@ -1075,6 +1079,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.bind is not None or args.clear:
                 record = set_artifact_root_binding(args.checkout, args.bind)
             else:
+                provision_artifact_root_binding(args.checkout)
                 record = artifact_root_binding_path(args.checkout)
             selection = artifact_root_selection(
                 args.checkout,
