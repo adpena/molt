@@ -809,7 +809,11 @@ _JIT_BUILD_FAILURE_STATUS = 1
 
 
 def _run_wasm_with_guest_stderr(
-    command: list[str], *, env: ProcessEnvironment, cwd: Path, memory_guard_prefix: GuardStem
+    command: list[str],
+    *,
+    env: ProcessEnvironment,
+    cwd: Path,
+    memory_guard_prefix: GuardStem,
 ) -> tuple[_TimedResult, str]:
     """Capture the guest stream through the existing runner, after guard closure."""
     owner = OwnedTemporaryDirectory(prefix="molt-run-wasm-")

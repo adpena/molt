@@ -337,8 +337,6 @@ class HarnessMemoryLimitDefaults:
     child_rlimit_gb: float | None = None
 
 
-
-
 def _label_from_prefix(prefix: str) -> str:
     normalized = require_guard_stem(prefix).lower() or "molt"
     return "".join(ch if ch.isalnum() else "_" for ch in normalized)
