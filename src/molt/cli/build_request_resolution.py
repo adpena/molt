@@ -280,6 +280,7 @@ def resolve_build_request(
         linked_output=linked_output_path,
         require_linked=require_linked,
         respect_pythonpath=respect_pythonpath,
+        safe_path=bool(args.safe_path or env.get("PYTHONSAFEPATH")),
         module=args.module,
         diagnostics=diagnostics,
         capture_link_inputs=args.capture_link_inputs,
