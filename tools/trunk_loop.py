@@ -25,16 +25,18 @@ import time
 import traceback
 import zipfile
 
-ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 SCHEMA = "molt.trunk-run.v1"
 
 
 def authorities():
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
-    from tools.import_file import bind_repository_imports
-
-    bind_repository_imports(__file__)
     from tools import cross_run
 
     return cross_run
@@ -115,7 +117,7 @@ def acknowledge(raw: str) -> int:
     return result["ProcessId"]
 
 
-def checked(argv: list[str], *, cwd: Path = ROOT, timeout: int = 180) -> str:
+def checked(argv: list[str], *, cwd: Path = _REPO_ROOT, timeout: int = 180) -> str:
     result = authorities()._guarded_run(argv, cwd=cwd, timeout=timeout)
     if result.returncode:
         raise RuntimeError(
@@ -127,7 +129,7 @@ def checked(argv: list[str], *, cwd: Path = ROOT, timeout: int = 180) -> str:
 def exact_commit(revision: str) -> str:
     # Resolve before crossing a shell or using the value as an evidence path.
     commit = checked(
-        ["git", "-C", str(ROOT), "rev-parse", "--verify", revision + "^{commit}"]
+        ["git", "-C", str(_REPO_ROOT), "rev-parse", "--verify", revision + "^{commit}"]
     )
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("expected one full Git commit")
@@ -234,7 +236,7 @@ def seed_inputs(descriptor: dict, transport, local: Path) -> list[dict]:
     from molt.tool_releases import provision_archive
 
     cache = (
-        canonical_toolchain_root(ROOT, require_exists=False)
+        canonical_toolchain_root(_REPO_ROOT, require_exists=False)
         / "toolchains"
         / "downloads"
         / "sha256"
@@ -320,11 +322,19 @@ def start(args) -> Path:
     # The controller must be committed: copying dirty source would make the
     # worker identity fictional. Test the clean named controller, not a tar overlay.
     if checked(
-        ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"]
+        ["git", "-C", str(_REPO_ROOT), "status", "--porcelain", "--untracked-files=no"]
     ):
         raise ValueError("commit controller changes before a farm run")
     checked(
-        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", subject, controller]
+        [
+            "git",
+            "-C",
+            str(_REPO_ROOT),
+            "merge-base",
+            "--is-ancestor",
+            subject,
+            controller,
+        ]
     )
     transport = cross.SSHTransport(host)
     checkout, control = host_paths(host, transport._nonce)
@@ -332,7 +342,7 @@ def start(args) -> Path:
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + transport._nonce
     run_root = (
-        artifact_root(ROOT)
+        artifact_root(_REPO_ROOT)
         / "evidence"
         / "trunk-loop"
         / subject
@@ -367,13 +377,13 @@ def start(args) -> Path:
     )
     if not re.fullmatch(r"[0-9a-f]{40}", remote_head):
         raise ValueError("cannot bind canonical checkout donor")
-    checked(["git", "-C", str(ROOT), "cat-file", "-e", remote_head + "^{commit}"])
+    checked(["git", "-C", str(_REPO_ROOT), "cat-file", "-e", remote_head + "^{commit}"])
     bundle = run_root / "source.bundle"
     checked(
         [
             "git",
             "-C",
-            str(ROOT),
+            str(_REPO_ROOT),
             "bundle",
             "create",
             str(bundle),
@@ -635,7 +645,7 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
                 str(installed.executable.parent) + os.pathsep + env.get("PATH", "")
             )
     ensured = checkout_provisioning.ensure(
-        "uv-environment", checkout, env, guard_source_root=ROOT
+        "uv-environment", checkout, env, guard_source_root=_REPO_ROOT
     )
     if ensured.environment_root is None:
         raise ValueError("provisioning published no development image")
@@ -713,7 +723,7 @@ def worker(record_path: Path) -> int:
         atexit.register(release_host_lock)
         for path, commit in (
             (Path(record["checkout"]), record["commit"]),
-            (ROOT, record["controller_commit"]),
+            (_REPO_ROOT, record["controller_commit"]),
         ):
             if checked(["git", "-C", str(path), "rev-parse", "HEAD"]) != commit:
                 raise ValueError("remote source identity changed")
@@ -857,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="action", required=True)
     run = sub.add_parser("run")
     run.add_argument(
-        "--inventory", type=Path, default=ROOT / "tools" / "cross_hosts.toml"
+        "--inventory", type=Path, default=_REPO_ROOT / "tools" / "cross_hosts.toml"
     )
     run.add_argument("--host", required=True)
     run.add_argument("--commit", required=True)
