@@ -8,7 +8,7 @@ schema = "molt-perf-methodology-v1"
 # explicit application compiler arguments change diagnostic verdicts. Earlier
 # reports retain their recorded class.
 version = 17
-content_sha256 = "9b3dac84c4db32526dde477ca9c6020440e118753f202eefefa55a96cb083434"
+content_sha256 = "fc2e4f3eae3a8739241e2bacbf23f405e835870473b0b27fc12a630089f2a375"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -192,10 +192,6 @@ reason = "build and oracle environment custody; selected source and oracle have 
 [[mechanics]]
 path = "src/molt/path_custody.py"
 reason = "rejects escaped scratch paths before build or sampling"
-
-[[mechanics]]
-path = "src/molt/durable_file_identity.py"
-reason = "identifies captured host files and scratch generations; never measures a sample"
 
 [[mechanics]]
 path = "src/molt/temporary_artifacts.py"
