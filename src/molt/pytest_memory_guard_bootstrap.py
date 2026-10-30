@@ -338,11 +338,16 @@ def run_context_test_env(
     A test builds where a developer run does: the Cargo target, build state
     and compile cache resolve through `molt.dx.RunContext`, never to the
     CLI's `<checkout>/target` default (HF-114). Every guarded test handoff
-    and every pytest process applies it; explicit values stay.
+    and every pytest process applies it. Explicit Molt roots stay; host temp
+    variables are replaced by canonical scratch, including tempfile's cache.
     """
-    from molt.dx import RunContext
+    from molt.dx import MOLT_ROOT_ENV_KEYS, RunContext
 
-    return RunContext(repo_root, session_prefix="pytest").root_env(environ)
+    keys = (*MOLT_ROOT_ENV_KEYS, "TMPDIR", "TMP", "TEMP")
+    selected = RunContext(repo_root, session_prefix="pytest").canonical_env(
+        environ, create_dirs=False, force_default_keys=("TMPDIR", "TMP", "TEMP")
+    )
+    return ProcessEnvironment(environ).updated({key: selected[key] for key in keys})
 
 
 def install_pytest_run_context() -> None:
@@ -353,6 +358,10 @@ def install_pytest_run_context() -> None:
     """
 
     os.environ.update(run_context_test_env(os.environ))
+    import tempfile
+    from molt.dx import scratch_root
+
+    tempfile.tempdir = str(scratch_root(ROOT, os.environ, create=True))
 
 
 def install_pytest_custody_roots() -> bool:

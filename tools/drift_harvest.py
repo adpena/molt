@@ -447,29 +447,29 @@ def main() -> int:
             prunable = False
         if not prunable:
             continue
-        finish_retirement = prepare_checkout_retirement(Path(r["path"]))
-        rm = _git(["worktree", "remove", r["path"]], cwd=root)
-        if rm.returncode == 0:
-            finish_retirement()
-            removed += 1
-            lane_maturity.complete_worktree_lanes_fail_open(
-                repo_root=root, worktree=Path(r["path"])
-            )
-            if r["branch"]:
-                # Force-delete the branch ONLY if we can PROVE its work is safe: the
-                # tip is an ancestor of origin/main (truly landed — immune to a
-                # git-cherry merge-commit miscount), OR its commits were captured in
-                # this run's bundle. Otherwise fall back to `-d` (refuses unmerged).
-                on_main = (
-                    _git(
-                        ["merge-base", "--is-ancestor", r["branch"], "origin/main"],
-                        cwd=root,
-                    ).returncode
-                    == 0
+        with prepare_checkout_retirement(Path(r["path"])) as finish_retirement:
+            rm = _git(["worktree", "remove", r["path"]], cwd=root)
+            if rm.returncode == 0:
+                finish_retirement()
+                removed += 1
+                lane_maturity.complete_worktree_lanes_fail_open(
+                    repo_root=root, worktree=Path(r["path"])
                 )
-                flag = "-D" if (on_main or r["path"] in captured) else "-d"
-                if _git(["branch", flag, r["branch"]], cwd=root).returncode == 0:
-                    deleted += 1
+                if r["branch"]:
+                    # Force-delete the branch ONLY if we can PROVE its work is safe: the
+                    # tip is an ancestor of origin/main (truly landed — immune to a
+                    # git-cherry merge-commit miscount), OR its commits were captured in
+                    # this run's bundle. Otherwise fall back to `-d` (refuses unmerged).
+                    on_main = (
+                        _git(
+                            ["merge-base", "--is-ancestor", r["branch"], "origin/main"],
+                            cwd=root,
+                        ).returncode
+                        == 0
+                    )
+                    flag = "-D" if (on_main or r["path"] in captured) else "-d"
+                    if _git(["branch", flag, r["branch"]], cwd=root).returncode == 0:
+                        deleted += 1
     _git(["worktree", "prune"], cwd=root)
     swept = _sweep_empty_orphan_worktree_dirs(root)
     # Delete any remaining fully-merged branches (not checked out anywhere).

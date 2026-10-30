@@ -1645,3 +1645,60 @@ def test_library_primary_does_not_require_cargo_auxiliary_output_rules(
     )
     assert record is not None
     assert record.path == expected
+
+
+def test_gitignored_include_is_refused_using_real_rustc_dep_info(tmp_path):
+    from tests.process_guard_common import run_guarded_test_process
+    from tests.cli.test_cli_file_hashing import _git
+    import shutil
+
+    root = tmp_path.resolve()
+    _git(root, "init", "-q")
+    crate = root / "runtime/crate"
+    source = _write(crate / "src/lib.rs", 'include!("ignored.rs");\n')
+    ignored = _write(crate / "src/ignored.rs", "pub fn included() -> u32 { 42 }\n")
+    _write(crate / "Cargo.toml", '[package]\nname="crate"\nversion="0.1.0"\n')
+    _write(root / ".gitignore", "ignored.rs\nproducts/\n")
+    _git(root, "add", ".")
+    target = root / "products"
+    deps = target / "deps"
+    deps.mkdir(parents=True)
+    rustc = shutil.which("rustc")
+    assert rustc is not None, "the Cargo identity proof cell requires rustc"
+    result = run_guarded_test_process(
+        [
+            rustc,
+            str(source),
+            "--crate-type=lib",
+            "--crate-name=crate",
+            "--emit=metadata,dep-info",
+            "-C",
+            "extra-filename=-0123456789abcdef",
+            "--out-dir",
+            str(deps),
+        ],
+        cwd=root,
+    )
+    assert result.returncode == 0, result.stderr
+    output = deps / "libcrate-0123456789abcdef.rmeta"
+    assert output.is_file()
+    message = json.dumps(
+        {
+            "reason": "compiler-artifact",
+            "package_id": f"path+{crate.as_uri()}#crate@0.1.0",
+            "manifest_path": str(crate / "Cargo.toml"),
+            "target": {"kind": ["lib"], "name": "crate"},
+            "filenames": [str(output)],
+        }
+    )
+    observed = _read((root, crate, target), message)
+    assert ignored in observed.files
+    detail = reads.uncovered_build_inputs(observed, root, (crate,), identity="runtime")
+    assert detail is not None and "src/ignored.rs" in detail
+    # An explicit declaration closes the hole and hashes those bytes too.
+    assert (
+        reads.uncovered_build_inputs(
+            observed, root, (crate, ignored), identity="runtime"
+        )
+        is None
+    )

@@ -258,6 +258,7 @@ def wasm_linked_build_command(
     out_dir: Path,
     *,
     extra_args: list[str] | None = None,
+    cwd: Path | None = None,
 ) -> WasmTestBuildCommand:
     out_dir = _select_out_dir(out_dir, root)
     test_artifact_root = _linked_test_artifact_root(root, out_dir)
@@ -299,7 +300,9 @@ def wasm_linked_build_command(
     ]
     if extra_args:
         args.extend(extra_args)
-    return WasmTestBuildCommand(tuple(args), root, env, out_dir / "output_linked.wasm")
+    return WasmTestBuildCommand(
+        tuple(args), root if cwd is None else cwd, env, out_dir / "output_linked.wasm"
+    )
 
 
 def build_wasm_linked(
@@ -308,8 +311,11 @@ def build_wasm_linked(
     out_dir: Path,
     *,
     extra_args: list[str] | None = None,
+    cwd: Path | None = None,
 ) -> Path:
-    command = wasm_linked_build_command(root, src, out_dir, extra_args=extra_args)
+    command = wasm_linked_build_command(
+        root, src, out_dir, extra_args=extra_args, cwd=cwd
+    )
     try:
         build = _run_wasm_test_process(
             list(command.argv),
@@ -349,25 +355,26 @@ def molt_worker_stub_env(root: Path) -> dict[str, str]:
 
 
 def run_cpython_reference(
-    src: Path | ModuleEntry, *, check: bool = True
+    src: Path | ModuleEntry, *, check: bool = True, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run ``src`` under this CPython: the parity tests' oracle.
 
-    A path runs as ``python script.py``; ``-I`` keeps the reference
-    independent of the checkout's Molt sources and of the caller's
-    environment. A ModuleEntry runs as ``python -m name`` from its root:
+    A path runs as ``python script.py``. A ModuleEntry runs as
+    ``python -m name`` from its root (or the supplied cwd):
     sys.path[0] is the cwd (Python/pathconfig.c:_PyPathConfig_ComputeSysPath0)
     and Lib/runpy.py:_run_module_as_main runs the module as ``__main__``.
     ``-E -s`` keep the environment and user site out; ``-I`` would also drop
-    the cwd that ``-m`` needs.
+    both the script directory and the cwd that these entry forms need.
     """
     if isinstance(src, ModuleEntry):
         argv = [sys.executable, "-E", "-s", "-B", "-m", src.name]
-        cwd = src.root
+        entry_cwd = src.root
     else:
-        argv = [sys.executable, "-I", "-B", str(src)]
-        cwd = src.parent
-    return _run_wasm_test_process(argv, role="tool", cwd=cwd, check=check)
+        argv = [sys.executable, "-E", "-s", "-B", str(src)]
+        entry_cwd = src.parent
+    return _run_wasm_test_process(
+        argv, role="tool", cwd=entry_cwd if cwd is None else cwd, check=check
+    )
 
 
 def run_wasm_linked(

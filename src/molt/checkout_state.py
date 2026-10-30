@@ -35,8 +35,37 @@ if TYPE_CHECKING:
     from .file_locks import _FileLockHandle
     from .process_launch import NativeLaunchResource
 
-from .custody_layout import SCRATCH_DIRNAME
+from .custody_layout import (
+    SCRATCH_DIRNAME,
+    CheckoutStateKind,
+    StorageClass,
+    EvidenceClass,
+    OwnedStateKind,
+    Regenerable,
+    DurableEvidence,
+    PackageEnvironmentKind,
+    git_directories,
+    storage_rule,
+)
 from .exact_json import ExactJsonError, read_exact, write_exact
+
+EVIDENCE_INDEX_NAME = "storage-index.json"
+
+
+def is_evidence_index(path: Path) -> bool:
+    """Reserved recovery coordinates are durable control, never raw payload."""
+    return path.name == EVIDENCE_INDEX_NAME or path.name.endswith(
+        "." + EVIDENCE_INDEX_NAME
+    )
+
+
+def evidence_index_path(root: Path) -> Path:
+    return (
+        root / EVIDENCE_INDEX_NAME
+        if not root.is_symlink() and not root.is_junction() and root.is_dir()
+        else root.with_name(root.name + "." + EVIDENCE_INDEX_NAME)
+    )
+
 
 OWNER_RECORD = ".molt-state-owner.json"
 SCHEMA = "molt.state-root-owner.v1"
@@ -52,20 +81,27 @@ USE_RESOLUTION_S = 3600.0
 PROTECTION_WINDOW_S = 2 * USE_RESOLUTION_S
 MAX_AGE_ENV = "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS"
 # Cargo's default for data it can recreate locally.
-DEFAULT_MAX_AGE_DAYS = 30.0
+_CHECKOUT_RETENTION = storage_rule("cargo-target").retention
+assert isinstance(_CHECKOUT_RETENTION, Regenerable)
+DEFAULT_MAX_AGE_DAYS = _CHECKOUT_RETENTION.max_idle_s / 86400
 # A pinned session's target holds isolated work (a benchmark, a test shard),
 # not a checkout's lasting build, so it retires after a short idle time: the
 # 6 hours that the disk guard's lane registry applied.
 SESSION_IDLE_ENV = "MOLT_SESSION_TARGET_IDLE_HOURS"
 DEFAULT_SESSION_IDLE_HOURS = 6.0
 AGENT_EVIDENCE_IDLE_ENV = "MOLT_AGENT_EVIDENCE_IDLE_DAYS"
-DEFAULT_AGENT_EVIDENCE_IDLE_DAYS = 3
+_EVIDENCE_RETENTION = storage_rule("lane-evidence").retention
+assert isinstance(_EVIDENCE_RETENTION, DurableEvidence)
+assert _EVIDENCE_RETENTION.compact_after_s is not None
+DEFAULT_AGENT_EVIDENCE_IDLE_DAYS = _EVIDENCE_RETENTION.compact_after_s / 86400
 SCRATCH_IDLE_ENV = "MOLT_SCRATCH_IDLE_DAYS"
-DEFAULT_SCRATCH_IDLE_DAYS = 3
+_SCRATCH_RETENTION = storage_rule("scratch").retention
+assert isinstance(_SCRATCH_RETENTION, Regenerable)
+DEFAULT_SCRATCH_IDLE_DAYS = _SCRATCH_RETENTION.max_idle_s / 86400
 RETIRED_DIR = "retired"
 RETIREMENT_RECORD_SUFFIX = ".retirement.json"
 RETIREMENT_WINDOW_S = 7 * 86400.0
-_RETIREMENT_SCHEMA = "molt.soft-retirement.v1"
+_RETIREMENT_SCHEMA = "molt.soft-retirement.v2"
 # The automatic GC runs at most once per interval per artifact root.
 GC_INTERVAL_S = 24 * 3600.0
 GC_STAMP = ("target", ".molt-checkout-state-gc")
@@ -108,16 +144,7 @@ PROTECTED_TARGET_NAMES = frozenset(
 )
 
 
-CheckoutStateKind = Literal[
-    "cargo-target",
-    "uv-environment",
-    "python-environment",
-    "pytest-cache",
-    "hypothesis-home",
-    "build-control",
-    "scratch",
-]
-_KINDS: frozenset[str] = frozenset(get_args(CheckoutStateKind))
+_KINDS: frozenset[str] = frozenset(get_args(OwnedStateKind))
 
 # Each kind's container, relative to an artifact root. The selectors in
 # molt.dx, molt.build_state_layout and the pytest bootstrap place the state;
@@ -126,15 +153,7 @@ _KINDS: frozenset[str] = frozenset(get_args(CheckoutStateKind))
 # and every other root is named by the component itself.
 CHECKOUT_STATE_CONTAINERS: Mapping[CheckoutStateKind, tuple[str, ...]] = (
     MappingProxyType(
-        {
-            "cargo-target": ("target", "checkouts"),
-            "uv-environment": ("uv-project-envs",),
-            "python-environment": ("build-environments", "development"),
-            "pytest-cache": (SCRATCH_DIRNAME, "pytest-cache"),
-            "hypothesis-home": (SCRATCH_DIRNAME, "hypothesis"),
-            "build-control": (SCRATCH_DIRNAME, "build-control"),
-            "scratch": (SCRATCH_DIRNAME,),
-        }
+        {kind: storage_rule(kind).relative for kind in get_args(CheckoutStateKind)}
     )
 )
 
@@ -145,7 +164,7 @@ class CheckoutOwner:
     Cargo target."""
 
     path: Path
-    kind: CheckoutStateKind
+    kind: OwnedStateKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +218,28 @@ def _root_key(kind: CheckoutStateKind, root: Path) -> str | None:
     return _name_key(kind, root.name)
 
 
-def _binds(kind: CheckoutStateKind, root: Path, owner: Path) -> bool:
+def _toolchain_owner_root(root: Path) -> Path | None:
+    if root.parent.name == "toolchains" and root.name not in {
+        "sources",
+        "downloads",
+        "build",
+    }:
+        return root.parent.parent
+    if (
+        root.parent.name in {"sources", "downloads", "build"}
+        and root.parent.parent.name == "toolchains"
+    ):
+        return root.parents[2]
+    return None
+
+
+def _binds(kind: OwnedStateKind, root: Path, owner: Path) -> bool:
+    if kind == "toolchains":
+        return _toolchain_owner_root(root) == owner
+    if kind in {"pip-cache", "ruff-cache"}:
+        return root == owner.joinpath(*storage_rule(kind).relative)
+    if kind in {"browser-environment", "edgebox-environment"}:
+        return root == owner.joinpath(*storage_rule(kind).relative)
     key = _root_key(kind, root)
     if key is None:
         return False
@@ -213,7 +253,49 @@ def _binds(kind: CheckoutStateKind, root: Path, owner: Path) -> bool:
 class _ManagedStateRoot:
     root: Path
     artifact: Path
-    kind: CheckoutStateKind | Literal["agent-evidence"]
+    kind: StorageClass | Literal["agent-evidence"]
+
+
+def package_environment_coordinate(
+    root: Path,
+) -> tuple[PackageEnvironmentKind, Path, Path] | None:
+    """Closed package input coordinates, independent of ambient volume choices."""
+    for kind in get_args(PackageEnvironmentKind):
+        relative = storage_rule(kind).relative
+        if len(root.parts) > len(relative) and root.parts[-len(relative) :] == relative:
+            checkout = root.parents[len(relative) - 1]
+            try:
+                directories = git_directories(checkout)
+            except (OSError, ValueError, RuntimeError):
+                continue  # Optional resource claims do not replace native diagnostics.
+            if directories is not None:
+                return kind, checkout, directories[1]
+    return None
+
+
+def _global_storage_coordinate(root: Path) -> _ManagedStateRoot | None:
+    """Finite authority placements; no owner or preimage adoption."""
+    from .file_publication import resolve_owned_path
+
+    if package := package_environment_coordinate(root):
+        kind, _checkout, common = package
+        return _ManagedStateRoot(resolve_owned_path(root), common / "molt", kind)
+    for kind in ("compile-cache", "uv-cache", "pip-cache", "ruff-cache", "sccache"):
+        if root.name == storage_rule(kind).relative[0]:
+            physical = resolve_owned_path(root)
+            return _ManagedStateRoot(physical, physical.parent, kind)
+    for candidate in (root, *root.parents):
+        if _toolchain_owner_root(candidate) is None:
+            continue
+        owner = read_checkout_owner(candidate)
+        if (
+            owner is not None
+            and owner.kind == "toolchains"
+            and _binds(owner.kind, candidate, owner.path)
+        ):
+            physical = resolve_owned_path(candidate)
+            return _ManagedStateRoot(physical, owner.path, "toolchains")
+    return None
 
 
 def target_use_artifact_root(root: Path) -> Path | None:
@@ -249,18 +331,24 @@ def legacy_target_kind_of(
 def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
     """Bind existing placement with the canonical no-link custody identity."""
     root = root.expanduser().absolute()
+    if global_state := _global_storage_coordinate(root):
+        return global_state
     if root.name == "agents" and root.parent.name == "logs":
-        from .custody_layout import custody_root
+        from .custody_layout import coordination_state_root
         from .file_publication import resolve_owned_path
 
         root = resolve_owned_path(root)
-        return _ManagedStateRoot(root, custody_root(root.parents[1]), "agent-evidence")
+        return _ManagedStateRoot(
+            root, coordination_state_root(root.parents[1]), "agent-evidence"
+        )
     if root.parent.name == "agents" and root.parent.parent.name == "logs":
-        from .custody_layout import custody_root
+        from .custody_layout import coordination_state_root
         from .file_publication import resolve_owned_path
 
         root = resolve_owned_path(root)
-        return _ManagedStateRoot(root, custody_root(root.parents[2]), "agent-evidence")
+        return _ManagedStateRoot(
+            root, coordination_state_root(root.parents[2]), "agent-evidence"
+        )
     names = tuple(os.path.normcase(part) for part in root.parts)
     containers = (
         *(
@@ -319,6 +407,27 @@ _STATE_LOCK_NAME = re.compile(r"[0-9a-f]{64}\.lock")
 
 def _state_metadata_root(root: Path) -> Path:
     """Mutable use metadata stays outside a published Python generation."""
+    if (toolchain_root := _toolchain_owner_root(root)) is not None:
+        from .build_state_layout import build_state_address
+
+        return (
+            toolchain_root
+            / "target"
+            / ".disk_guard"
+            / "storage-use"
+            / build_state_address(root)
+        )
+    global_state = _global_storage_coordinate(root)
+    if global_state is not None:
+        from .build_state_layout import build_state_address
+
+        return (
+            global_state.artifact
+            / "target"
+            / ".disk_guard"
+            / "storage-use"
+            / build_state_address(root)
+        )
     container = CHECKOUT_STATE_CONTAINERS["python-environment"]
     depth = len(container) + 1
     if (
@@ -376,7 +485,14 @@ def _state_lock_plan(
 
     for selected, owner in selections:
         coordinate = (
-            selected if isinstance(selected, _ManagedStateRoot) else qualify(selected)
+            _ManagedStateRoot(selected, owner.path, "toolchains")
+            if isinstance(selected, Path)
+            and owner is not None
+            and owner.kind == "toolchains"
+            and _binds(owner.kind, selected, owner.path)
+            else selected
+            if isinstance(selected, _ManagedStateRoot)
+            else qualify(selected)
         )
         if coordinate is None:
             continue
@@ -469,7 +585,13 @@ def checkout_state_use(
 
         def publish_use() -> None:
             for coordinate, owner in selections:
-                if _managed_coordinate(coordinate.root) != coordinate:
+                known = _managed_coordinate(coordinate.root)
+                if known != coordinate and not (
+                    known is None
+                    and owner is not None
+                    and owner.kind == "toolchains"
+                    and _binds(owner.kind, coordinate.root, owner.path)
+                ):
                     raise ValueError(
                         f"checkout state coordinate changed: {coordinate.root}"
                     )
@@ -576,6 +698,11 @@ def checkout_state_environment_roots(
         "MOLT_DIFF_CARGO_TARGET_DIR",
         "UV_PROJECT_ENVIRONMENT",
         "MOLT_BUILD_STATE_DIR",
+        "MOLT_CACHE",
+        "UV_CACHE_DIR",
+        "PIP_CACHE_DIR",
+        "RUFF_CACHE_DIR",
+        "SCCACHE_DIR",
     ):
         raw = environment.get(key, "").strip()
         if raw:
@@ -665,7 +792,8 @@ def checkout_state_command_roots(
     Candidate directories conservatively retain a published environment even
     when another PATH entry wins. This does not select or admit an executable.
     Ordinary unmanaged coordinates receive no filesystem probe; only a bounded
-    enclosing published-image coordinate enters the existing custody authority.
+    enclosing published-image coordinate, or a launch that addresses a
+    provisioned package directory, enters the existing custody authority.
     """
     from .process_launch import command_resources
 
@@ -681,7 +809,55 @@ def checkout_state_command_roots(
     _retain_python_resources(
         roots, command_resources(command, environment, cwd=working)
     )
+    # Executing a provisioned tool retains the exact version, rather than
+    # pinning every old toolchain merely because MOLT_TARGET_ROOT is set.
+    for resource in command_resources(command, environment, cwd=working):
+        for candidate in (resource.path, *resource.path.parents):
+            if _toolchain_owner_root(candidate) is not None:
+                coordinate = _managed_coordinate(candidate)
+                if coordinate is not None and coordinate.kind == "toolchains":
+                    roots.setdefault(candidate, None)
+                break
+    _retain_package_environments(roots, command, working)
     return tuple(roots.items())
+
+
+def _retain_package_environments(
+    roots: dict[Path, CheckoutOwner | None],
+    command: Sequence[str],
+    working: Path,
+) -> None:
+    """A launch that addresses a package directory retains its environment.
+
+    Node resolves packages from a script's directory and npm from its cwd, so
+    a launch uses ``<checkout>/<package>/node_modules`` only when its cwd or an
+    argv element names a path under ``<checkout>/<package>``. Matching is
+    lexical, like the published-image prefixes of Python resources: only a
+    match reads the environment's owner record, and only an owner that binds
+    that checkout is retained. Any other launch, from any directory, retains
+    no package environment and receives no filesystem probe.
+    """
+    packages = [
+        (
+            kind,
+            storage_rule(kind).relative,
+            tuple(os.path.normcase(part) for part in storage_rule(kind).relative[:-1]),
+        )
+        for kind in get_args(PackageEnvironmentKind)
+    ]
+    for coordinate in (working, *(working / argument for argument in command)):
+        parts = Path(os.path.normpath(coordinate)).parts
+        names = tuple(os.path.normcase(part) for part in parts)
+        for kind, relative, package in packages:
+            for start in range(1, len(names) - len(package) + 1):
+                if names[start : start + len(package)] != package:
+                    continue
+                checkout = Path(*parts[:start])
+                path = checkout.joinpath(*relative)
+                if path not in roots:
+                    owner = read_checkout_owner(path)
+                    if owner == CheckoutOwner(checkout, kind):
+                        roots[path] = owner
 
 
 def _retain_python_resources(
@@ -1086,7 +1262,9 @@ def _record_checkout_state_use(
         if moment - stamp.stat().st_mtime < USE_RESOLUTION_S:
             return
     except FileNotFoundError:
-        if not root.is_dir():
+        if not (
+            root.exists() if _toolchain_owner_root(root) is not None else root.is_dir()
+        ):
             if required:
                 raise FileNotFoundError(root)
             return
@@ -1321,6 +1499,97 @@ def record_build_control_use(control: Path, *, cargo_target: Path) -> None:
             pass
 
 
+def record_toolchain_use(prefix: Path) -> None:
+    """Record use only after the owning provider has admitted this generation.
+
+    The owner and stamp stay outside the sealed payload. A directory census
+    never adopts an unproven toolchain preimage as disposable state.
+    """
+    from .file_publication import resolve_owned_path
+
+    toolchain_root = _toolchain_owner_root(prefix)
+    if toolchain_root is None:
+        return  # System SDKs are not Molt-managed installations.
+    prefix = resolve_owned_path(prefix)
+    owner = CheckoutOwner(toolchain_root, "toolchains")
+    with checkout_state_use(((prefix, owner),)):
+        pass
+
+
+def record_package_environment_use(root: Path) -> None:
+    """The lock-file provisioner calls this only after admitting its stamp."""
+    package = package_environment_coordinate(root)
+    if package is not None:
+        kind, checkout, _common = package
+        with checkout_state_use(((root, CheckoutOwner(checkout, kind)),)):
+            pass
+
+
+def materialize_provider_cache(
+    root: Path, *, kind: Literal["pip-cache", "ruff-cache"]
+) -> None:
+    """Bind only a freshly created cache, never adopt existing preimage data.
+
+    Use metadata stays outside the provider's format. Custom cache selectors
+    still work, but an unbound placement cannot be retired wholesale by Molt.
+    """
+    from .file_publication import resolve_owned_path
+
+    root = resolve_owned_path(root)
+    with checkout_state_use(((root, None),), publish=False):
+        fresh = not root.exists()
+        root.mkdir(parents=True, exist_ok=True)
+        owner = CheckoutOwner(root.parent, kind)
+        if fresh and _binds(kind, root, owner.path):
+            _record_checkout_owner(root, owner=owner.path, kind=kind)
+        if read_checkout_owner(root) == owner:
+            _record_checkout_state_use(root)
+
+
+@contextmanager
+def toolchain_state_use(
+    paths: Iterable[Path], *, create: bool = False
+) -> Generator[None, None, None]:
+    """Retain a provider's declared paths before publication through closure.
+
+    Holding a lock never adopts a preimage. Only the successful provider's
+    `record_toolchain_use` publishes provenance; an absent/unproven payload
+    stays ineligible for GC. Existing admitted payload records completion use
+    even when an operation fails.
+    """
+    from .file_publication import resolve_owned_path
+
+    selections = []
+    for path in paths:
+        path = path.expanduser().absolute()
+        if not create:
+            known = _global_storage_coordinate(path)
+            if known is None or known.kind != "toolchains":
+                continue
+            selections.append((known.root, CheckoutOwner(known.artifact, "toolchains")))
+            continue
+        toolchain_root = _toolchain_owner_root(path)
+        if toolchain_root is None:
+            known = _global_storage_coordinate(path)
+            if known is None or known.kind != "toolchains":
+                continue
+            path, toolchain_root = known.root, known.artifact
+        path = resolve_owned_path(path)
+        selections.append((path, CheckoutOwner(toolchain_root, "toolchains")))
+    with checkout_state_use(selections, publish=False):
+
+        def used() -> None:
+            for path, owner in selections:
+                if read_checkout_owner(path) == owner:
+                    _record_checkout_state_use(path)
+
+        used()
+        try:
+            yield
+        finally:
+            used()
+
+
 @dataclass(frozen=True, slots=True)
 class RetentionLimits:
     """How long a root may stay unused before the GC retires it."""
@@ -1386,6 +1655,7 @@ class SoftRetirement:
     reason: str
     retired_at: float
     owner: str
+    kind: StorageClass
 
     @property
     def record_path(self) -> Path:
@@ -1399,12 +1669,243 @@ def _retirement_name(root: Path, now: float) -> str:
     return f"{digest}-{int(now * 1_000_000_000)}"
 
 
+def compact_evidence(
+    root: Path,
+    archive_root: Path,
+    *,
+    kind: EvidenceClass,
+    keep: Iterable[Path] = (),
+    companions: Sequence[Path] = (),
+    remove_source: bool = True,
+    index_retained_source: bool = False,
+    preserve_leaf_link: bool = False,
+) -> Path:
+    """Losslessly compact evidence, publishing its recovery index before removal.
+
+    The caller holds exclusive producer custody. Every archived regular file
+    is independently hashed from the archive before any source is removed.
+    A crash can leave duplicate bytes, never unindexed lost evidence. This is
+    deliberately separate from regenerable-state retirement. Retained snapshots
+    opt into a source recovery index with index_retained_source; checkout
+    retirement snapshots otherwise publish only the external recovery index.
+    preserve_leaf_link is namespace custody: archive/unlink the leaf itself,
+    without reading or granting custody over its target.
+    """
+    import tarfile
+    import uuid
+
+    from .file_publication import resolve_owned_path
+
+    # A lane may own an ignored namespace entry while its target belongs to a
+    # provider. Preserve that link itself, never traverse or adopt its target.
+    root = (
+        resolve_owned_path(root.parent) / root.name
+        if preserve_leaf_link and root.is_symlink()
+        else resolve_owned_path(root)
+    )
+    archive_root = resolve_owned_path(archive_root)
+    if archive_root == root or root in archive_root.parents:
+        raise ValueError("evidence archive must be outside its source")
+    kept = {str(path) for path in keep}
+    root_metadata = root.lstat()
+    is_directory = stat.S_ISDIR(root_metadata.st_mode)
+    if not is_directory and is_evidence_index(root):
+        raise ValueError("durable recovery index cannot be compacted as raw payload")
+    index = evidence_index_path(root)
+    previous_index = None
+    if index.exists():
+        previous = read_exact(
+            index, max_bytes=64 * 1024, label="evidence recovery index"
+        )
+        if (
+            not isinstance(previous, dict)
+            or previous.get("schema") != "molt.evidence-index.v1"
+            or previous.get("source") != str(root)
+            or previous.get("class") != kind
+            or not isinstance(previous.get("archive"), str)
+        ):
+            raise ValueError(
+                f"unrecognized evidence index; preserve and reconcile {index}"
+            )
+        old_archive = Path(previous["archive"])
+        if old_archive.parent != archive_root or not old_archive.name.endswith(
+            ".tar.gz"
+        ):
+            raise ValueError(
+                f"previous archive is outside its evidence authority: {old_archive}"
+            )
+        previous_index = str(old_archive.with_suffix(".index.json"))
+        if not Path(previous_index).is_file():
+            raise ValueError(f"missing previous evidence manifest: {previous_index}")
+    paths = (
+        [path for path in sorted(root.rglob("*")) if path != index]
+        if is_directory
+        else [root]
+    )
+    base = root if is_directory else root.parent
+    for companion in companions:
+        companion = resolve_owned_path(companion)
+        if is_directory or companion.parent != root.parent:
+            raise ValueError("evidence companions must share the file's parent")
+        if companion.exists():
+            paths.extend(
+                [companion, *sorted(companion.rglob("*"))]
+                if companion.is_dir()
+                else [companion]
+            )
+    # rglob does not descend directory symlinks. Reject non-file payloads;
+    # neither devices nor sockets are durable portable evidence.
+    manifest = {}
+    signatures = {}
+    if is_directory:
+        signatures[root] = (
+            root_metadata.st_dev,
+            root_metadata.st_ino,
+            root_metadata.st_size,
+            root_metadata.st_mtime_ns,
+        )
+    for path in paths:
+        metadata = path.lstat()
+        relative = path.relative_to(base).as_posix()
+        if stat.S_ISLNK(metadata.st_mode):
+            manifest[relative] = {"link": os.readlink(path)}
+        elif stat.S_ISREG(metadata.st_mode):
+            manifest[relative] = {"sha256": "", "bytes": metadata.st_size}
+        elif not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"nonportable evidence: {path}")
+        signatures[path] = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        )
+    from .disk_capacity import require_storage_capacity
+
+    require_storage_capacity(
+        (archive_root,),
+        kind=kind,
+        additional_bytes=sum(entry[2] for entry in signatures.values())
+        + 2048 * len(signatures),
+    )
+    archive_root.mkdir(parents=True, exist_ok=True)
+    archive = (
+        archive_root
+        / f"{hashlib.sha256(os.fsencode(root)).hexdigest()[:16]}-{uuid.uuid4().hex}.tar.gz"
+    )
+    staging = archive.with_suffix(".pending")
+    try:
+        with (
+            os.fdopen(
+                os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+            ) as archive_output,
+            tarfile.open(
+                fileobj=archive_output, mode="w:gz", dereference=False
+            ) as stream,
+        ):
+            for path in paths:
+                relative = path.relative_to(base).as_posix()
+                if "sha256" in manifest.get(relative, {}):
+
+                    class HashingReader:
+                        def read(self, size: int = -1) -> bytes:
+                            data = source.read(size)
+                            digest.update(data)
+                            return data
+
+                    with path.open("rb") as source:
+                        digest = hashlib.sha256()
+                        info = stream.gettarinfo(str(path), arcname=relative)
+                        info.type, info.linkname = tarfile.REGTYPE, ""
+                        info.size = signatures[path][2]
+                        stream.addfile(info, HashingReader())
+                        manifest[relative]["sha256"] = digest.hexdigest()
+                else:
+                    stream.add(path, arcname=relative, recursive=False)
+        with tarfile.open(staging, "r:gz") as stream:
+            observed = {}
+            for member in stream:
+                if member.isfile():
+                    payload = stream.extractfile(member)
+                    assert payload is not None
+                    with payload:
+                        archived_digest = hashlib.sha256()
+                        while block := payload.read(1024 * 1024):
+                            archived_digest.update(block)
+                    observed[member.name] = {
+                        "sha256": archived_digest.hexdigest(),
+                        "bytes": member.size,
+                    }
+                elif member.issym():
+                    observed[member.name] = {"link": member.linkname}
+            if observed != manifest:
+                raise ValueError("evidence changed during compaction")
+        for path, expected in signatures.items():
+            metadata = path.lstat()
+            if (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+            ) != expected:
+                raise ValueError(f"evidence changed during compaction: {path}")
+        with staging.open("rb") as source:
+            os.fsync(source.fileno())
+        from .file_publication import durable_namespace_replace
+
+        durable_namespace_replace(staging, archive)
+        with archive.open("rb") as stream:
+            archive_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        record = {
+            "schema": "molt.evidence-index.v1",
+            "class": kind,
+            "source": str(root),
+            "archive": str(archive),
+            "archive_sha256": archive_digest,
+            "files": manifest,
+        }
+        if previous_index is not None:
+            record["previous_index"] = previous_index
+        # External sidecar survives even a failed checkout-index publication.
+        external_index = archive.with_suffix(".index.json")
+        write_exact(external_index, record)
+        if not remove_source and not index_retained_source:
+            return archive
+        write_exact(
+            index, {key: value for key, value in record.items() if key != "files"}
+        )
+        if not remove_source:
+            return archive
+        from .file_deletion import delete_path
+
+        # Remove maximal represented subtrees through the canonical sealed-tree
+        # boundary. Never chmod files or follow links to external images.
+        preserved = {base / relative for relative in kept}
+        preserved.update(
+            parent
+            for path in tuple(preserved)
+            for parent in path.parents
+            if parent.is_relative_to(base)
+        )
+        removals: set[Path] = set()
+        for path in paths:
+            if path in preserved or any(parent in removals for parent in path.parents):
+                continue
+            removals.add(path)
+            removed, error = delete_path(path, owning_root=base)
+            if not removed:
+                raise OSError(f"archived source removal deferred: {path}: {error}")
+        return archive
+    finally:
+        staging.unlink(missing_ok=True)
+
+
 def soft_retire(
     root: Path,
     owning_root: Path,
     *,
     reason: str,
     owner: str,
+    kind: StorageClass,
     now: float | None = None,
 ) -> SoftRetirement:
     """Retire a root with one same-filesystem rename and one small record.
@@ -1418,6 +1919,11 @@ def soft_retire(
     any replacement at the original coordinate.
     """
     from .file_publication import resolve_owned_path
+
+    from .custody_layout import Regenerable
+
+    if not isinstance(storage_rule(kind).retention, Regenerable):
+        raise ValueError(f"durable evidence requires indexed compaction: {kind}")
 
     root, owning_root = resolve_owned_path(root), resolve_owned_path(owning_root)
     if root == owning_root or owning_root not in root.parents:
@@ -1442,7 +1948,7 @@ def soft_retire(
             errno.EXDEV, "soft retirement requires the same filesystem", str(root)
         )
     retirement = SoftRetirement(
-        parent / _retirement_name(root, moment), root, reason, moment, owner
+        parent / _retirement_name(root, moment), root, reason, moment, owner, kind
     )
     if os.path.lexists(retirement.path):
         raise FileExistsError(str(retirement.path))
@@ -1454,6 +1960,7 @@ def soft_retire(
             "reason": reason,
             "retired_at": moment,
             "owner": owner,
+            "kind": kind,
         },
         exclusive=True,
     )
@@ -1481,6 +1988,7 @@ def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | No
             "reason",
             "retired_at",
             "owner",
+            "kind",
         }:
             return None
         original, reason, moment, owner = (
@@ -1491,6 +1999,7 @@ def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | No
         )
         if (
             value["schema"] != _RETIREMENT_SCHEMA
+            or value["kind"] not in get_args(StorageClass)
             or not isinstance(original, str)
             or not Path(original).is_absolute()
             or not isinstance(reason, str)
@@ -1512,7 +2021,9 @@ def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | No
             / datetime.fromtimestamp(moment, UTC).strftime("%Y-%m-%d")
             / _retirement_name(original_path, moment)
         )
-        retirement = SoftRetirement(expected, original_path, reason, moment, owner)
+        retirement = SoftRetirement(
+            expected, original_path, reason, moment, owner, value["kind"]
+        )
         if retirement.record_path != record or resolve_owned_path(expected) != expected:
             return None
         return retirement if os.path.lexists(expected) else None
@@ -1829,18 +2340,18 @@ def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
         _release_file_lock(handle)
 
 
-def record_checkout_owner(root: Path, *, owner: Path, kind: CheckoutStateKind) -> None:
+def record_checkout_owner(root: Path, *, owner: Path, kind: OwnedStateKind) -> None:
     with checkout_state_use(((root, CheckoutOwner(owner, kind)),), publish=False):
         _record_checkout_owner(root, owner=owner, kind=kind)
 
 
-def _record_checkout_owner(root: Path, *, owner: Path, kind: CheckoutStateKind) -> None:
+def _record_checkout_owner(root: Path, *, owner: Path, kind: OwnedStateKind) -> None:
     """Publish ``root``'s owner once; an existing record stays unchanged.
 
     A record that would not bind to ``root``'s name is never written.
     """
     record = _state_metadata_root(root) / OWNER_RECORD
-    if record.is_file() or not root.is_dir():
+    if record.is_file() or not root.exists():
         return
     owner = owner.expanduser().resolve()
     if not _binds(kind, root, owner):
@@ -1910,6 +2421,13 @@ def bound_checkout_owner(root: Path, artifact_root: Path) -> CheckoutOwner | Non
     The record's kind must be the kind of ``root``'s place under
     ``artifact_root``, and the record's owner must give ``root``'s name.
     """
+    owner = read_checkout_owner(root)
+    if owner is not None and owner.kind == "toolchains":
+        return (
+            owner
+            if owner.path == artifact_root and _binds(owner.kind, root, owner.path)
+            else None
+        )
     try:
         parts = root.relative_to(artifact_root).parts
     except ValueError:

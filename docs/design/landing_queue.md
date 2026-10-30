@@ -148,7 +148,7 @@ The code that decides whether a change lands is never the change.
   `config` (the data
   the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
   and `.python-version` extracts into
-  `<git-common-dir>/molt/controllers/<key>`, where the key is the digest of
+  `<artifact-root>/molt-state/controllers/<repository>/<key>`, where the key is the digest of
   those tree and blob ids. `uv sync --frozen --no-dev` builds the
   controller's environment from main's lock, and the driver runs there as
   `python -I`, so no module, dependency version or `PYTHON*` setting comes
@@ -351,7 +351,9 @@ One runner owns main. Agents enqueue and continue.
   so a lint, format, generator or policy failure costs that lane alone instead
   of a batch bisection; GitHub's merge queue likewise admits only changes whose
   required checks passed, and Zuul runs its check pipeline before its gate
-  pipeline. `--no-precheck` skips it; the batch still runs every gate. It
+  pipeline. `--no-precheck` skips it; the batch still runs every gate.
+  `--precheck-only` runs it and stops: nothing is queued and no runner
+  starts, so a worker proves its handoff on the landing path itself. It
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
@@ -409,8 +411,15 @@ One runner owns main. Agents enqueue and continue.
   each findings row by its first cell: a row one side changed or moved takes
   that side's version, a row one side added goes after its predecessor there,
   a row one side deleted stays deleted, and a row both sides changed is a
-  conflict. Prose that both sides changed falls back to `git merge-file`, as
-  does a checkout without the driver.
+  conflict. A family row of the dependency order is keyed by its letter:
+  since every lane that opens or closes a row edits one, its name and cause
+  merge cell by cell and its key list merges as a set; on 2026-10-29 one such
+  edit on each side rejected the graph-selection lane. Generated projections
+  (`tests/findings/finding_ids.py`, `docs/agent/PROOF_PLAN.generated.md`) are
+  not merged here: the driver stays stdlib-only, and the runner should
+  regenerate projections after it merges a batch (open under HF-334). Prose
+  that both sides changed falls back to `git merge-file`, as does a checkout
+  without the driver.
 - **Cost.** One parse of the three 1.1 MB versions per merged ledger: 70 to
   80 ms through `uv run --no-project --offline`, measured 2026-10-21.
 

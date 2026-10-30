@@ -60,6 +60,7 @@ class BuildRequest:
     linked_output: str | None = None
     require_linked: bool = False
     respect_pythonpath: bool = False
+    safe_path: bool = False
     module: str | None = None
     diagnostics: bool | None = None
     capture_link_inputs: bool = False

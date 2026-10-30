@@ -47,6 +47,7 @@ def full_payload():
         "linked_output": "linked.wasm",
         "require_linked": True,
         "respect_pythonpath": True,
+        "safe_path": True,
         "module": "example.main",
         "diagnostics": True,
         "diagnostics_file": "diagnostics.json",
@@ -110,6 +111,7 @@ def test_capability_forms(capabilities):
     [
         ("cache", 1),
         ("verbose", "false"),
+        ("safe_path", 1),
         ("diagnostics", 0),
         ("target", False),
         ("file_path", 1),

@@ -7,7 +7,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 69
-- `operational-tooling` files: 65
+- `operational-tooling` files: 66
 - `scattered-assumption` files: 350
 
 ## Files
@@ -428,6 +428,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/check_table_drift.py` | 10 | authority-routed | `3.12` |
 | `tools/check_tinygrad_pin.py` | 2 | scattered-assumption | `3.11` |
 | `tools/ci_resource_env.py` | 1 | scattered-assumption | `3.06` |
+| `tools/ci_triage.py` | 1 | operational-tooling | `3.12` |
 | `tools/cold_start_decompose.py` | 1 | scattered-assumption | `3.45` |
 | `tools/command_execution.py` | 1 | scattered-assumption | `3.12` |
 | `tools/compatibility_error_protocol.py` | 14 | authority-routed | `3.12` |

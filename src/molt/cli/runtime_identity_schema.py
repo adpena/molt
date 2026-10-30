@@ -26,9 +26,9 @@ from molt.exact_json import (
 )
 from molt.python_identity_common import _valid_sha256
 
-_SCHEMA = "molt.runtime-build-member-identity.v5"
+_SCHEMA = "molt.runtime-build-member-identity.v6"
 RUNTIME_ARTIFACT_METADATA_MAX_BYTES = 16 * 1024 * 1024
-_FAMILY_SCHEMA = "molt.runtime-build-family.v5"
+_FAMILY_SCHEMA = "molt.runtime-build-family.v6"
 _TOOLCHAIN_MANIFEST_SCHEMA = "molt.runtime-toolchain-content.v4"
 _RUNTIME_BUILD_OUTER_FIELDS = {
     "schema",

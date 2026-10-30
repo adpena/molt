@@ -104,6 +104,13 @@ def test_explicit_other_wrapper_shadows_forced_automatic_cache(monkeypatch, cons
         assert dict(env) == original
 
 
+@pytest.fixture(autouse=True)
+def _isolated_sccache(monkeypatch, tmp_path):
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
+
+
 def test_wires_rustc_wrapper_when_sccache_available(monkeypatch):
     monkeypatch.setattr(dx, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
@@ -267,7 +274,7 @@ def test_cargo_build_env_leaves_incremental_to_the_profile_with_sccache(
 
 
 def test_maybe_enable_sccache_leaves_incremental_to_the_profile(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, short_cargo_cache
 ):
     import molt.cli.cargo_execution as ce
 
@@ -279,7 +286,7 @@ def test_maybe_enable_sccache_leaves_incremental_to_the_profile(
     env = ProcessEnvironmentBuilder(
         {
             "MOLT_USE_SCCACHE": "1",  # forced on
-            "SCCACHE_DIR": str(tmp_path / ".sccache"),
+            "SCCACHE_DIR": str(short_cargo_cache),
         }
     )
     ce._maybe_enable_sccache(env)
@@ -306,7 +313,9 @@ def _scratch_cargo_env(tmp_path: Path, **extra: str) -> dict[str, str]:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell fakes stand in for tools")
-def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(tmp_path):
+def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(
+    tmp_path, short_cargo_cache
+):
     from molt import process_guard
 
     bin_dir = tmp_path / "bin"
@@ -326,7 +335,7 @@ def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(tmp_path):
         script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
         script.chmod(0o755)
     env = _scratch_cargo_env(
-        tmp_path,
+        short_cargo_cache.parent,
         PATH=f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
         RUSTC_WRAPPER=str(bin_dir / "sccache"),
         CLIENT_RECORD=str(record),
@@ -350,7 +359,9 @@ def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(tmp_path):
     assert server_temp.is_dir()
 
 
-def test_cli_sccache_selection_does_not_probe_or_start_a_server(tmp_path, monkeypatch):
+def test_cli_sccache_selection_does_not_probe_or_start_a_server(
+    tmp_path, monkeypatch, short_cargo_cache
+):
     import molt.cli.cargo_execution as ce
     from molt.cargo_execution_policy import sccache_server_temp_dir
 
@@ -362,9 +373,9 @@ def test_cli_sccache_selection_does_not_probe_or_start_a_server(tmp_path, monkey
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
     env = ProcessEnvironmentBuilder(
         _scratch_cargo_env(
-            tmp_path,
+            short_cargo_cache.parent,
             MOLT_USE_SCCACHE="1",
-            MOLT_EXT_ROOT=str(tmp_path / "artifacts"),
+            MOLT_EXT_ROOT=str(short_cargo_cache.parent / "artifacts"),
         )
     )
     del env["SCCACHE_DIR"]  # the CLI selects the cache beside its artifacts
@@ -372,13 +383,17 @@ def test_cli_sccache_selection_does_not_probe_or_start_a_server(tmp_path, monkey
     ce._maybe_enable_sccache(env)
 
     assert env["RUSTC_WRAPPER"] == "/opt/sccache"
-    assert env["SCCACHE_DIR"] == str((tmp_path / "artifacts").resolve() / ".sccache")
+    assert env["SCCACHE_DIR"] == str(
+        (short_cargo_cache.parent / "artifacts").resolve() / ".sccache"
+    )
     server_temp = sccache_server_temp_dir(env)
     assert server_temp is not None and server_temp.is_dir()
     assert {env[name] for name in ("TMPDIR", "TMP", "TEMP")} == {str(server_temp)}
 
 
-def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
+def test_cargo_environment_pins_only_a_configured_sccache_cache(
+    tmp_path, short_cargo_cache
+):
     from molt.cargo_execution_policy import (
         SCCACHE_INCREMENTAL_POLICY,
         SCCACHE_SERVER_ENDPOINT_POLICY,
@@ -388,7 +403,9 @@ def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
 
     from molt.cargo_execution_policy import sccache_server_temp_dir
 
-    scratch_env = _scratch_cargo_env(tmp_path, RUSTC_WRAPPER="/opt/sccache")
+    scratch_env = _scratch_cargo_env(
+        short_cargo_cache.parent, RUSTC_WRAPPER="/opt/sccache"
+    )
     scratch = scratch_env["TMPDIR"]
     server_temp = sccache_server_temp_dir(scratch_env)
     assert server_temp is not None and str(server_temp) != scratch
@@ -466,11 +483,13 @@ def test_lld_link_respects_explicit_override(monkeypatch):
     assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"] == "custom-linker"
 
 
-def test_dx_sccache_provisioner_receives_the_selected_tool_root(tmp_path, monkeypatch):
+def test_dx_sccache_provisioner_receives_the_selected_tool_root(
+    tmp_path, monkeypatch, short_cargo_cache
+):
     project = tmp_path / "project"
     project.mkdir()
     tools = tmp_path / "tools"
-    artifacts = tmp_path / "artifacts"
+    artifacts = short_cargo_cache.parent / "artifacts"
     seen = []
     monkeypatch.setattr(
         dx,
@@ -527,7 +546,9 @@ def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
         cargo_execution.pinned_sccache({"MOLT_TARGET_ROOT": str(invalid)})
 
 
-def test_sccache_clients_reach_only_their_cache_private_server(tmp_path, monkeypatch):
+def test_sccache_clients_reach_only_their_cache_private_server(
+    tmp_path, monkeypatch, short_cargo_cache
+):
     from molt import cargo_execution_policy as policy
 
     endpoint = policy.sccache_server_endpoint({"SCCACHE_DIR": "/c/.sccache"})
@@ -540,7 +561,7 @@ def test_sccache_clients_reach_only_their_cache_private_server(tmp_path, monkeyp
             "SCCACHE_SERVER_UDS",
             "/c/.sccache-server.sock",
         ), "a socket beside the cache when its path fits"
-    cache = tmp_path / "artifacts" / ".sccache"
+    cache = short_cargo_cache
     env = {"SCCACHE_DIR": str(cache), "RUSTC_WRAPPER": "/opt/sccache"}
     pinned, _ = policy.sccache_client_environment(env)
     # Never the shared default port another server (a VM's forward) may hold.
@@ -578,12 +599,16 @@ def test_the_server_temp_dir_keeps_the_startup_socket_within_sun_path(tmp_path):
     home = Path("/h")  # the policy names the directory; it creates nothing
     deep = tmp_path / ("d" * 120) / ".sccache"
     other = tmp_path / ("e" * 120) / ".sccache"
-    environ = {"SCCACHE_DIR": str(deep), "HOME": str(home)}
+    environ = {
+        "SCCACHE_DIR": str(deep),
+        "HOME": "/unrelated-home",
+        "MOLT_EXT_ROOT": str(home),
+    }
     temp = policy.sccache_server_temp_dir(environ)
     if os.name == "nt":
         assert temp == deep.with_name(".sccache-tmp"), "no Unix socket on Windows"
         return
-    assert temp is not None and temp.is_relative_to(home / ".cache" / "molt")
+    assert temp is not None and temp.is_relative_to(home / "sct")
     socket = os.fsencode(temp / "sccacheXXXXXX" / "sock")
     assert len(socket) <= 103
     assert temp == policy.sccache_server_temp_dir(environ), "stable for its cache"
@@ -591,5 +616,11 @@ def test_the_server_temp_dir_keeps_the_startup_socket_within_sun_path(tmp_path):
         {**environ, "SCCACHE_DIR": str(other)}
     )
 
-    with pytest.raises(ValueError, match="socket path limit"):
-        policy.sccache_server_temp_dir({**environ, "HOME": "/" + "h" * 100})
+    unfittable = {**environ, "MOLT_EXT_ROOT": "/" + "h" * 100}
+    projected = policy.sccache_server_temp_dir(unfittable)
+    assert (
+        projected is not None
+        and len(os.fsencode(projected / "sccacheXXXXXX" / "sock")) > 103
+    )
+    with pytest.raises(policy.SccacheSocketPathError, match="socket path limit"):
+        policy.sccache_server_temp_dir(unfittable, create=True)

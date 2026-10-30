@@ -3533,13 +3533,17 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     monkeypatch,
     tmp_path: Path,
     wrapper_env: str,
+    short_cargo_cache: Path,
 ) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
     for name in (*CARGO_WRAPPER_ENV_NAMES, *SCCACHE_SERVER_ENDPOINT_ENV_NAMES):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(wrapper_env, "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     # A run's scratch TMPDIR must not reach the shared sccache server (HF-105).
-    monkeypatch.setenv("SCCACHE_DIR", str(tmp_path / "artifacts" / ".sccache"))
+    monkeypatch.setenv("SCCACHE_DIR", str(short_cargo_cache))
     for name in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.setenv(name, str(tmp_path / "run-scratch"))
     from molt.cargo_execution_policy import sccache_server_temp_dir
@@ -10013,7 +10017,8 @@ def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
         "tests/tools/test_import_file.py",
     }
     # The dependency graph adds the tests that read each source; a test or
-    # helper edit adds only tests that name it.
+    # helper edit adds only tests that name it. These known readers must run;
+    # a new reader is the graph's fact, not this test's.
     readers = {
         "tools/nightly_runtime_bundle.py": {
             "tests/test_proof_plan.py",
@@ -10024,19 +10029,17 @@ def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
         },
         "tests/cli/native_toolchain_test_support.py": {"tests/test_proof_plan.py"},
     }
+    # Nothing outside the rule's owners and the graph's readers runs.
+    graph = molt_dev_policy.GateConfig.load(PLAN.path).graph_selection([path])
+    assert owners | readers.get(path, set()) <= selected <= owners | set(graph.run)
     if path == "src/molt/cli/native_toolchain_transfer.py":
-        # Its importers span the CLI, release and proof tooling; all must run,
-        # and nothing outside the rule's owners and the graph's readers does.
-        graph = molt_dev_policy.GateConfig.load(PLAN.path).graph_selection([path])
-        assert owners < selected <= owners | set(graph.run)
+        # Its importers span the CLI, release and proof tooling; all must run.
         assert {
             "tests/cli/test_installed_compiler.py",
             "tests/cli/test_compiler_identity.py",
             "tests/test_ci_workflow_topology.py",
             "tests/tools/test_release_installed_distribution.py",
         } <= selected
-    else:
-        assert selected == owners | readers.get(path, set())
 
 
 @pytest.mark.parametrize(

@@ -41,6 +41,7 @@ _DEPENDENCY_FAMILY_RE = re.compile(r"^(?P<letter>[A-Z])\. (?P<name>\S.*)$")
 # The subsection whose table maps every open row to one root-cause family.
 DEPENDENCY_ORDER_SUBSECTION = "Family dependency order"
 _CELL_SEPARATOR_RE = re.compile(r"(?<!\\)\|")
+_DELIMITER_ROW_RE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$")
 _KEY_RE = re.compile(r"(?P<prefix>HF-F?|V1-)(?P<number>\d+)(?P<rest>(?: \([^)|]*\))?)")
 
 
@@ -110,11 +111,17 @@ def _row_key(finding_id: str, note: str | None) -> str:
     return f"{finding_id} ({note})"
 
 
-def _cells(line: str) -> list[str]:
+def cells(line: str) -> list[str]:
+    """The stripped cells of one Markdown table row, or [] for any other line."""
     stripped = line.strip()
     if not stripped.endswith("|") or stripped.endswith("\\|"):
         return []
     return [cell.strip() for cell in _CELL_SEPARATOR_RE.split(stripped)[1:-1]]
+
+
+def has_unescaped_bar(cell: str) -> bool:
+    """Whether a cell's text would split its row (a ``|`` not written ``\\|``)."""
+    return _CELL_SEPARATOR_RE.search(cell) is not None
 
 
 def project(text: str) -> FindingStatus:
@@ -124,7 +131,17 @@ def project(text: str) -> FindingStatus:
     families: list[DependencyFamily] = []
     section = ""
     subsection = ""
+    # The column count of the table the current line belongs to, from its
+    # header row; a literal | inside a cell silently splits the row otherwise.
+    table_width: int | None = None
+    previous = ""
     for line_number, line in enumerate(text.splitlines(), start=1):
+        header, previous = previous, line
+        if _DELIMITER_ROW_RE.match(line.strip()):
+            table_width = len(cells(header))
+            continue
+        if not line.lstrip().startswith("|"):
+            table_width = None
         heading = _SECTION_RE.match(line)
         if heading is not None:
             section = heading["title"]
@@ -135,15 +152,17 @@ def project(text: str) -> FindingStatus:
             subsection = subheading["title"]
             continue
         if subsection.startswith(DEPENDENCY_ORDER_SUBSECTION):
-            cells = _cells(line)
-            family = _DEPENDENCY_FAMILY_RE.match(cells[0]) if cells else None
-            if family is not None and len(cells) == 3:
+            row_cells = cells(line)
+            family = _DEPENDENCY_FAMILY_RE.match(row_cells[0]) if row_cells else None
+            if family is not None and len(row_cells) == 3:
                 families.append(
                     DependencyFamily(
                         letter=family["letter"],
                         name=family["name"],
                         keys=tuple(
-                            key.strip() for key in cells[2].split(",") if key.strip()
+                            key.strip()
+                            for key in row_cells[2].split(",")
+                            if key.strip()
                         ),
                         line=line_number,
                     )
@@ -156,14 +175,19 @@ def project(text: str) -> FindingStatus:
         key = _row_key(match["id"], note)
         renamed = _RENAMED_FROM_RE.fullmatch(note) if note is not None else None
         state = STATE_FIXED if section.startswith(FIXED_SECTION_PREFIX) else STATE_OPEN
-        cells = _cells(line)
-        if len(cells) < 3:
+        row_cells = cells(line)
+        if len(row_cells) < 3:
             problems.append(
                 f"row {key} (line {line_number}) needs an ID cell, a finding cell "
                 "and an evidence cell"
             )
-        evidence = cells[-1] if len(cells) >= 3 else ""
-        if state == STATE_FIXED and len(cells) >= 3 and not evidence:
+        elif table_width is not None and len(row_cells) != table_width:
+            problems.append(
+                f"row {key} (line {line_number}) has {len(row_cells)} cells but its "
+                f"table has {table_width}; escape a literal | inside a cell as \\|"
+            )
+        evidence = row_cells[-1] if len(row_cells) >= 3 else ""
+        if state == STATE_FIXED and len(row_cells) >= 3 and not evidence:
             problems.append(
                 f"fixed row {key} (line {line_number}) records no fix or "
                 "verification evidence"

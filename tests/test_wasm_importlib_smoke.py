@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+
+import pytest
 
 from tests.wasm_linked_runner import (
     ModuleEntry,
+    _run_wasm_test_process,
     build_wasm_linked,
+    require_node_binary,
+    require_wasm_build_toolchain,
     require_wasm_toolchain,
     run_cpython_reference,
     run_wasm_linked,
 )
+from molt.wasm_artifact import wasm_runtime_manifest_path
 
 
 def test_wasm_runtime_resolved_intrinsics_return_boxed_none(tmp_path: Path) -> None:
@@ -167,6 +174,44 @@ def test_wasm_importlib_package_main_as_script_rejects_relative_import(
     assert run.returncode == expected.returncode, run.stdout + run.stderr
     assert run.stdout == expected.stdout
     assert run.stderr.splitlines()[-1] == expected.stderr.splitlines()[-1]
+
+
+@pytest.mark.parametrize("module", [True, False], ids=["module", "package-script"])
+def test_wasm_entry_search_path_matches_cpython(tmp_path: Path, module: bool) -> None:
+    # Select the existing Node host explicitly; this cell does not require
+    # a prebuilt Rust host or infer support from a failed host launch.
+    require_wasm_build_toolchain()
+    node = require_node_binary()
+    root = Path(__file__).resolve().parents[1]
+    source_root = tmp_path / "program"
+    shutil.copytree(root / "tests/fixtures/entry_search_path", source_root)
+    # Make project discovery see the enclosing package's parent as well.
+    (source_root / "pyproject.toml").write_text("", encoding="utf-8")
+    entry = (
+        ModuleEntry("probe_pkg", source_root)
+        if module
+        else source_root / "probe_pkg/script.py"
+    )
+    expected = run_cpython_reference(entry, cwd=source_root, check=False)
+    assert expected.returncode == 1
+    assert expected.stdout.splitlines() == (
+        ["self-import-ok self-import-ok", "before-missing-helper"]
+        if module
+        else ["self-import-ok", "before-missing-package"]
+    )
+    missing = "helper" if module else "probe_pkg"
+    assert f"ModuleNotFoundError: No module named '{missing}'" in expected.stderr
+
+    output = build_wasm_linked(root, entry, tmp_path / "out", cwd=source_root)
+    run = _run_wasm_test_process(
+        [node, str(root / "wasm/run_wasm.js"), str(wasm_runtime_manifest_path(output))],
+        role="guest-host",
+        cwd=source_root,
+    )
+    # HF-595 may change the predicate error during the unresolved runtime
+    # import. Prove the import failed after the successful imports above.
+    assert run.returncode == expected.returncode, run.stdout + run.stderr
+    assert run.stdout == expected.stdout
 
 
 def test_wasm_importlib_top_level_import_runs_module_body(tmp_path: Path) -> None:

@@ -26,6 +26,17 @@ codes are `0` for completed successful CI, `1` for failures, `2` for unavailable
 verification, and `3` for unfinished CI. Ordinary triage does not establish
 proof coverage.
 
+A local or farm pytest run reads through the same classifier:
+
+```bash
+uv run --python 3.12 python tools/ci_triage.py --junit junit.xml
+```
+
+It groups the failures by cause (the child's most specific error line, with
+paths and numbers removed), names the open findings that own each cause's tests
+or files, and counts the files that no proof-plan command runs. `--json` gives
+the same report to tools.
+
 From the exact clean committed checkout that CI tested, retrieve and verify
 the complete selected proof coverage:
 

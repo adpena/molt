@@ -23,7 +23,7 @@ from markdown_it import MarkdownIt  # noqa: E402
 
 from tools import finding_status  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.git_identity import repository_source_paths  # noqa: E402
+from molt.source_admission import repository_source_paths  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

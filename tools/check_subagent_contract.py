@@ -55,6 +55,7 @@ REQUIRED_CONSTANTS: tuple[str, ...] = (
     "MODEL_TIER",
     "TRIALITY_WIRING",
     "PREMISE_VERIFICATION",
+    "HANDOFF_PRECHECK",
 )
 
 #: The verbatim-grade fragment each required constant must still contain.
@@ -72,6 +73,7 @@ REQUIRED_KEY_PHRASES: dict[str, str] = {
     "MODEL_TIER": "Respect operator concurrency limits",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
+    "HANDOFF_PRECHECK": "--precheck-only",
 }
 
 

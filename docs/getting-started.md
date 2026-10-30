@@ -84,6 +84,12 @@ use the output path reported by the build; do not assume a binary beside the
 source file. Standalone means no host Python interpreter is required, not that
 every binary is statically linked or independent of platform libraries.
 
+File builds search the script directory first; `molt build --module pkg` starts
+from the invocation directory. `molt build -P` (or nonempty `PYTHONSAFEPATH`)
+omits that implicit search root; explicit `--lib-path` roots still apply.
+See the [import contract](spec/areas/compat/contracts/import_system_contract.md#3-import-resolution)
+for target-platform symlink rules and source ownership.
+
 ## Build And Run Profiles
 
 `molt run` defaults to **`dev`** for iteration; `molt build` defaults to the

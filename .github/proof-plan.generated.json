@@ -57,6 +57,8 @@
     "tools/coordination_records.py",
     "tools/disk_guard.py",
     "tools/checkout_maintenance.py",
+    "tools/molt_dev_storage.py",
+    "tools/molt_dev_common.py",
     "tools/controller_source.py",
     "tools/detached_execution.py",
     "tools/driver_errors.py",
@@ -238,6 +240,7 @@
     "src/molt/rust_toolchain.py",
     "src/molt/llvm_linker_roles.py",
     "src/molt/file_hashing.py",
+    "src/molt/source_admission.py",
     "src/molt/exact_json.py",
     "src/molt/file_publication.py",
     "src/molt/artifact_publication.py",
@@ -713,6 +716,7 @@
         "tests/tools/test_hooks_fail_open.py/**",
         "tests/tools/test_hooks_session_digest.py/**",
         "tests/tools/test_install_git_hooks.py/**",
+        "tests/tools/test_ledger_edit.py/**",
         "tests/tools/test_ledger_merge.py/**",
         "tests/tools/test_subagent_contract.py/**"
       ],
@@ -3883,6 +3887,7 @@
         "tests/tools/test_hooks_fail_open.py",
         "tests/tools/test_hooks_session_digest.py",
         "tests/tools/test_install_git_hooks.py",
+        "tests/tools/test_ledger_edit.py",
         "tests/tools/test_ledger_merge.py",
         "tests/tools/test_subagent_contract.py"
       ],
@@ -11253,6 +11258,7 @@
         "description": "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody.",
         "gates": [],
         "globs": [
+          "src/molt/source_admission.py",
           "src/molt/cli/cargo_build_reads.py",
           "src/molt/cli/cargo_capabilities.py",
           "src/molt/cli/cargo_environment_inputs.py",

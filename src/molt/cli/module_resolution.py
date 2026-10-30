@@ -210,22 +210,6 @@ def _module_name_from_path(
     )
 
 
-def _entry_module_root_for_path(
-    path: Path, *, import_topology: PythonImportTopology | None = None
-) -> Path:
-    topology = import_topology or PythonImportTopology()
-    selected = topology.probe(path)
-    resolved = selected.path if selected is not None else path.resolve()
-    package_dir = resolved.parent
-    topmost_package_parent = package_dir
-    while topology.is_file(package_dir / "__init__.py"):
-        topmost_package_parent = package_dir.parent
-        if topmost_package_parent == package_dir:
-            break
-        package_dir = topmost_package_parent
-    return topmost_package_parent
-
-
 def _module_name_from_resolved_path(
     resolved: Path,
     *,

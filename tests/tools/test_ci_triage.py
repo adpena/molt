@@ -474,3 +474,129 @@ def test_main_baseline_skips_the_selected_completed_run(
         "tests/x.py::known": False,
         "tests/x.py::new": True,
     }
+
+
+# A pytest JUnit report in the exact shape `--junit-xml` writes: two refusals
+# that differ only in a temporary path and an op index, a child traceback
+# wrapped in pytest's AssertionError, a child stderr tail with no error word,
+# a timeout, a plain assertion and one passing test.
+JUNIT_XML = """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="pytest" tests="7" failures="6" errors="0">
+<testcase classname="tests.rust.test_rust_target" name="test_abs" time="1">
+<failure message="Failed: Compilation failed (exit 1): molt: Preparing build">E   Failed: Compilation failed (exit 1): molt: Preparing build
+E   molt: Compiling Python
+E   Error: Custom { kind: InvalidData, error: "rejected at /tmp/a1/x.rs op#5 `const`" }
+E   Backend compilation failed (exit code 1).</failure></testcase>
+<testcase classname="tests.rust.test_rust_target.TestLoops" name="test_while" time="1">
+<failure message="Failed: Compilation failed (exit 1)">E   Failed: Compilation failed (exit 1)
+E   Error: Custom { kind: InvalidData, error: "rejected at /tmp/b22/y.rs op#17 `const`" }
+E   Backend compilation failed (exit code 1).</failure></testcase>
+<testcase classname="tests.test_child" name="test_slots" time="1">
+<failure message="AssertionError: Traceback (most recent call last):">E       AssertionError: Traceback (most recent call last):
+E           File "/tmp/p/child.py", line 25, in &lt;module&gt;
+E         TypeError: nonempty __slots__ not supported for subtype of 'int'
+E
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(returncode=1, stderr='TypeError: x')</failure></testcase>
+<testcase classname="tests.test_child" name="test_wasm" time="1">
+<failure message="AssertionError: molt: Preparing build">E       AssertionError: molt: Preparing build
+E         molt: Generating and linking output
+E         wasm-tools 1.262.0 is required from attested toolchain custody
+E       assert 2 == 0</failure></testcase>
+<testcase classname="tests.cli.test_cli_smoke" name="test_run_json" time="301">
+<failure message="Failed: Timeout &gt;300.0s">+++ Timeout +++</failure></testcase>
+<testcase classname="tests.cli.test_cli_smoke" name="test_plain[a-1]" time="0">
+<failure message="assert 2 is None">E       assert 2 is None</failure></testcase>
+<testcase classname="tests.cli.test_cli_smoke" name="test_ok" time="0"/>
+</testsuite></testsuites>
+"""
+
+JUNIT_LEDGER = """
+## Open: CI, harness and release engineering
+
+| ID | Finding | Evidence | Next step |
+|----|---------|----------|-----------|
+| HF-287 | `tests/rust/test_rust_target.py` fails every case. | x | y |
+| HF-586 | Cold CLI sessions time out in `test_run_json`. | x | y |
+"""
+
+
+def test_junit_failures_name_the_child_cause_not_pytest_wrappers() -> None:
+    report, total = ci_triage.parse_junit("junit.xml", JUNIT_XML)
+
+    assert total == 7
+    assert report.tests == {
+        "tests/rust/test_rust_target.py::test_abs": (
+            'Error: Custom { kind: InvalidData, error: "rejected at /tmp/a1/x.rs op#5 `const`" }'
+        ),
+        "tests/rust/test_rust_target.py::TestLoops::test_while": (
+            'Error: Custom { kind: InvalidData, error: "rejected at /tmp/b22/y.rs op#17 `const`" }'
+        ),
+        "tests/test_child.py::test_slots": (
+            "TypeError: nonempty __slots__ not supported for subtype of 'int'"
+        ),
+        "tests/test_child.py::test_wasm": (
+            "wasm-tools 1.262.0 is required from attested toolchain custody"
+        ),
+        "tests/cli/test_cli_smoke.py::test_run_json": "Failed: Timeout >300.0s",
+        "tests/cli/test_cli_smoke.py::test_plain[a-1]": "assert 2 is None",
+    }
+
+
+def test_junit_causes_group_across_paths_and_numbers_with_file_owners() -> None:
+    report, _ = ci_triage.parse_junit("junit.xml", JUNIT_XML)
+    rows = ci_triage.open_ledger_rows(JUNIT_LEDGER)
+    items = ci_triage.classify([report], None, rows)
+    causes = ci_triage.group_causes(
+        items, rows, {"tests/rust/test_rust_target.py", "tests/test_child.py"}
+    )
+
+    by_cause = {cause.cause: cause for cause in causes}
+    rust = by_cause[
+        'Error: Custom { kind: InvalidData, error: "rejected at <path> op#N `const`" }'
+    ]
+    assert causes[0] is rust
+    assert rust.tests == [
+        "tests/rust/test_rust_target.py::TestLoops::test_while",
+        "tests/rust/test_rust_target.py::test_abs",
+    ]
+    # The row names the file, not the tests.
+    assert rust.owners == ["HF-287"]
+    assert rust.files_without_proof_cell == 1
+    assert by_cause["Failed: Timeout >Ns"].owners == ["HF-586"]
+    assert by_cause["assert N is None"].files_without_proof_cell == 0
+    assert len(causes) == 5
+
+    text = ci_triage.render_causes("junit.xml", 7, causes)
+    assert text.splitlines()[:4] == [
+        "junit.xml: 6 failing of 7 tests, 5 causes",
+        '  2 Error: Custom { kind: InvalidData, error: "rejected at <path> op#N `const`" } (HF-287)',
+        "    files: tests/rust/test_rust_target.py; 1 without a proof cell",
+        "    e.g. tests/rust/test_rust_target.py::TestLoops::test_while",
+    ]
+
+
+def test_junit_mode_refuses_run_selection_and_exits_on_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(JUNIT_XML, encoding="utf-8")
+    passing = tmp_path / "passing.xml"
+    passing.write_text(
+        '<testsuites><testsuite><testcase classname="tests.test_a" name="test_ok"/>'
+        "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ci_triage, "expectation_owners", dict)
+    with pytest.raises(SystemExit):
+        ci_triage.main(["41", "--junit", str(report)])
+    capsys.readouterr()
+
+    assert ci_triage.main(["--junit", str(report), "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == 7
+    assert sum(len(cause["tests"]) for cause in payload["causes"]) == 6
+    assert ci_triage.main(["--junit", str(passing)]) == 0
+    assert capsys.readouterr().out.startswith(f"{passing}: 0 failing of 1 tests")

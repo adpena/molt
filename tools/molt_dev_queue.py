@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import tempfile
 import time
 from collections.abc import Callable, Sequence
@@ -47,7 +46,7 @@ from tools.molt_dev_controller import (
 from tools.detached_execution import launch_detached, python_command
 from tools.venv_exec import venv_python
 from molt.path_custody import host_path_is_within
-from molt.custody_layout import landing_sandbox_path
+from molt.dx import storage_path
 from molt import process_model
 from molt.file_locks import FileLockTimeout
 from tools.driver_errors import (
@@ -128,12 +127,16 @@ class LandingRequest:
 class QueuePaths:
     root: Path
     sandbox: Path
+    evidence: Path
 
     @classmethod
     def of(cls, common_dir: Path, *, primary_checkout: Path) -> "QueuePaths":
         return cls(
             common_dir / "molt" / "landing-queue",
-            landing_sandbox_path(primary_checkout, common_dir),
+            storage_path(primary_checkout, "landing-sandbox", common_dir=common_dir),
+            storage_path(
+                primary_checkout, "integration-receipts", common_dir=common_dir
+            ),
         )
 
     @property
@@ -471,13 +474,12 @@ def retire_old_records(paths: QueuePaths, *, now: float) -> None:
             reverse=True,
         )
         for entry in finished[RUNNER_LOGS_KEPT:]:
-            shutil.rmtree(entry)
-    if paths.results.is_dir():
-        for result in paths.results.glob("*.json"):
-            if now - result.stat().st_mtime > RESULT_DAYS * 86400:
-                record = json.loads(result.read_text(encoding="utf-8"))
-                if record.get("status") != LandingStatus.LANDED_RETIREMENT_FAILED:
-                    result.unlink()
+            from molt.checkout_state import compact_evidence
+
+            compact_evidence(
+                entry, paths.evidence / "queue", kind="integration-receipts"
+            )
+    # Results are small coordination records and retain the landing signal.
 
 
 # --------------------------------------------------------------------------
@@ -534,6 +536,15 @@ def cmd_land(args: argparse.Namespace) -> int:
             upstream=upstream,
             session_id=os.environ.get("MOLT_SESSION_ID", "devtool"),
         )
+    if args.precheck_only:
+        # A worker's handoff check: the same controller, selection and gate
+        # environment as a landing, and no queue state or runner.
+        _ok(
+            f"{git.short(head)} is already on {args.remote}/{args.branch}; nothing to check"
+            if already_landed
+            else f"precheck passed for {git.short(head)}; nothing queued"
+        )
+        return EXIT_OK
     request = enqueue(paths, head=head, worktree=repo, branch=branch)
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
@@ -626,7 +637,11 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
             # The caller may be an editable image whose site startup imports
             # its checkout even under -I. Use the controller's existing locked,
             # non-editable dependency environment while its source is retained.
-            molt_dev_controller._sync_environment(controller.root)
+            from molt.dx import RunContext
+
+            molt_dev_controller._sync_environment(
+                controller.root, environment=RunContext(repo).canonical_env(os.environ)
+            )
             runner_prefix = python_command(str(controller.driver))
             runner_prefix[0] = str(venv_python(controller.root / ENVIRONMENT_NAME))
             if "-I" not in runner_prefix:
@@ -1071,11 +1086,18 @@ def add_queue_arguments(
         help="run this checkout's driver and runner instead of main's pinned "
         "controller (repairs a broken controller)",
     )
-    p_land.add_argument(
+    precheck = p_land.add_mutually_exclusive_group()
+    precheck.add_argument(
         "--no-precheck",
         action="store_true",
         help="queue without first running the lane's static gates in the lane "
         "(the batch still runs every gate)",
+    )
+    precheck.add_argument(
+        "--precheck-only",
+        action="store_true",
+        help="run the lane's static gates exactly as land does, then stop: "
+        "nothing is queued and no runner starts (a worker's handoff check)",
     )
     add_pinned_controller_arguments(p_land)
     p_land.set_defaults(func=cmd_land)
