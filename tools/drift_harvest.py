@@ -64,7 +64,7 @@ from tools.molt_dev_retire import prepare_checkout_retirement  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
 # The SPRAWL threshold (`molt.custody_layout.LIVE_WORKTREE_LIMIT`).
 MAX_LIVE_WORKTREES = LIVE_WORKTREE_LIMIT

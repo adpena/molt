@@ -8560,7 +8560,7 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         f"raise SystemExit(p.main(['--run-family','synthetic','--receipt',{str(receipt)!r}]))\n",
         encoding="utf-8",
     )
-    executor = CommandExecutor(prefix="MOLT_TEST_CLI_EXIT", repo_root=root)
+    executor = CommandExecutor(prefix="MOLT_PYTEST", repo_root=root)
     with (tmp_path / "cli.log").open("wb") as output:
         process = executor.start_owned(
             [sys.executable, str(cli)],

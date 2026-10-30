@@ -182,7 +182,7 @@ def test_browser_metadata_stops_at_its_root_inside_an_enclosing_workspace(
         encoding="utf-8",
         timeout=30,
         check=False,
-        memory_guard_prefix="MOLT_TEST_CARGO_WORKSPACE",
+        memory_guard_prefix="MOLT_PYTEST",
     )
     assert {path: path.read_bytes() for path in before} == before
     if not boundary:

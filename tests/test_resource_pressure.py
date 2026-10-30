@@ -91,3 +91,16 @@ def test_diff_scheduler_helpers_share_policy_with_plan() -> None:
         )
         == 14
     )
+
+
+def test_root_scope_plan_reads_root_memory_variables_without_a_stem() -> None:
+    # The root scope has no registered stem. Its "MOLT" label once flowed back
+    # into stem validation and refused every root-scope plan (HF-587 migration).
+    plan = resource_pressure.plan_resource_pressure(
+        prefix="",
+        environ={"MOLT_MEMORY_TOTAL_GB": "64", "MOLT_MEMORY_AVAILABLE_GB": "48"},
+        cpu_count=8,
+    )
+
+    assert plan.to_json_dict()["prefix"] == "MOLT"
+    assert plan.to_json_dict()["memory"]["available_gb"] == 48.0

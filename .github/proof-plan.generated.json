@@ -86,6 +86,8 @@
     "tests/tools/test_memory_guard_windows_sampling.py",
     "tools/memory_guard_core/cargo_quarantine.py",
     "src/molt/process_model.py",
+    "src/molt/guard_scope.py",
+    "src/molt/guard_stems_generated.py",
     "src/molt/windows_process_snapshot.py",
     "runtime/molt-backend-luau/src/luau/tests/repr_collections/type_hints_truthiness.rs",
     "runtime/molt-backend-luau/src/luau/tests/repr_collections/string_methods.rs",
