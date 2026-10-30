@@ -484,6 +484,8 @@ def python_capture_authority_paths(
         "source_build_environment_schema",
         "source_build_requirements",
         "process_guard",
+        "guard_scope",
+        "guard_stems_generated",
         "toolchain_identity",
         "toolchain_facts",
         "input_report",
