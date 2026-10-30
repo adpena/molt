@@ -206,7 +206,6 @@ def main(argv: list[str] | None = None) -> int:
                 common.parent,
                 ProcessEnvironment(os.environ),
                 apply=True,
-                include_compile_cache=False,
                 policy_source=_REPO_ROOT,
             )
         )
