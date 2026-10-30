@@ -59,6 +59,9 @@ admitted dependency before bootstrap and does not provide offline input custody.
 One launcher interface uses a new session on POSIX and
 `Invoke-CimMethod Win32_Process.Create` on Windows. CIM starts outside the SSH
 session's job, so closing or killing the SSH client cannot terminate the worker.
+The farm worker reuses `tools.detached_execution._exec_wait_rc` for proof-driver
+waits and managed-state leases. Its unresolved-child outcome retains the host
+lease and publishes no terminal completion, matching that authority.
 The worker redirects binary stdout/stderr directly to `run.log`, writes `cmd`,
 per-cell `rc`, JUnit and the canonical proof receipt, then publishes terminal
 status last. The controller records launcher acknowledgement separately from

@@ -39,6 +39,9 @@ evidence; operator shell exports are unnecessary.
 
 Windows launch uses CIM `Win32_Process.Create`; POSIX launch creates a new
 session. A host-wide OS file lock excludes competing trunk workers. The worker
+uses the existing detached-execution waiter for proof-driver lifetime and
+managed-state leases; an unresolved child retains custody without a terminal
+completion record. The worker
 runs the proof plan's arguments, deadlines and workers unchanged, and stops host
 work on the executor's global custody failure. Independent partition failures
 retain evidence and allow the next selected cell. No system settings or existing
