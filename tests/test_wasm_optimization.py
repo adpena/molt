@@ -34,7 +34,6 @@ from molt.wasm_optimizer_identity import (
     wasm_optimizer_pipeline_authority_sha256,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
-from tests.process_guard_common import current_thread_only, install_module_view
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -241,14 +240,11 @@ class TestWasmOptReduction:
     ) -> None:
         hostile = tmp_path / ("wasm-opt.exe" if sys.platform == "win32" else "wasm-opt")
         hostile.write_bytes(b"hostile ambient optimizer")
+        hostile.chmod(0o755)
         monkeypatch.setenv("MOLT_WASM_OPT", str(tmp_path / "missing-explicit-pin"))
-        # A tripwire must catch this call from any module, so it stays process-wide.
-        # Only this thread meets the fake; other threads reach the real function.
-        monkeypatch.setattr(
-            shutil,
-            "which",
-            current_thread_only(lambda _name: str(hostile), shutil.which),
-        )
+        # The only PATH directory holds an executable optimizer: an unusable
+        # pin must stop discovery instead of reaching it.
+        monkeypatch.setenv("PATH", str(tmp_path))
 
         assert find_wasm_opt() is None
 
@@ -270,9 +266,10 @@ class TestWasmOptReduction:
         expected.write_bytes(b"manifest-owned-binaryen")
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
-        install_module_view(
-            monkeypatch, "shutil", shutil, identity, which=lambda _name, **_kwargs: None
-        )
+        # No PATH optimizer: discovery reaches the managed release.
+        empty_path = tmp_path / "empty-path"
+        empty_path.mkdir(exist_ok=True)
+        monkeypatch.setenv("PATH", str(empty_path))
         asset = SimpleNamespace(
             archive_root="binaryen-version_130",
             executable=f"bin/{executable_name}",
@@ -306,9 +303,10 @@ class TestWasmOptReduction:
         )
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
-        install_module_view(
-            monkeypatch, "shutil", shutil, identity, which=lambda _name, **_kwargs: None
-        )
+        # No PATH optimizer: discovery reaches the managed release.
+        empty_path = tmp_path / "empty-path"
+        empty_path.mkdir(exist_ok=True)
+        monkeypatch.setenv("PATH", str(empty_path))
         monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
 
         assert identity.find_wasm_opt() is None
@@ -1142,9 +1140,10 @@ def test_installed_binaryen_discovery_uses_shared_home_without_writes(
     monkeypatch.setenv("MOLT_HOME", str(home))
     monkeypatch.setattr(identity, "compiler_source_root", lambda: source)
     monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
-    install_module_view(
-        monkeypatch, "shutil", shutil, identity, which=lambda _name, **_kwargs: None
-    )
+    # No PATH optimizer: discovery reaches the managed release.
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir(exist_ok=True)
+    monkeypatch.setenv("PATH", str(empty_path))
     before = {
         str(p.relative_to(tmp_path)): p.read_bytes()
         for p in tmp_path.rglob("*")
@@ -1281,3 +1280,40 @@ def test_optimizer_selection_uses_explicit_proof_environment(tmp_path, monkeypat
         identity.find_wasm_opt(environment={"MOLT_WASM_OPT": str(tmp_path / "missing")})
         is None
     )
+
+
+def test_optimizer_path_search_reports_every_searched_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recording build depends on the PATH search that selected wasm-opt.
+
+    An optimizer added to an earlier directory selects another tool, so each
+    searched directory and the selected entry are inputs of the record.
+    """
+    import os
+    import time
+
+    from molt import build_record, input_report
+    import molt.wasm_optimizer_identity as identity
+
+    earlier = tmp_path / "earlier"
+    selected_dir = tmp_path / "selected"
+    later = tmp_path / "later"
+    for directory in (earlier, selected_dir, later):
+        directory.mkdir()
+    name = "wasm-opt.exe" if sys.platform == "win32" else "wasm-opt"
+    selected = selected_dir / name
+    selected.write_bytes(b"optimizer")
+    selected.chmod(0o755)
+    monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
+    environment = {"PATH": os.pathsep.join(map(str, (earlier, selected_dir, later)))}
+    ledger = build_record.InputLedger(time.time_ns())
+    input_report.install_sink(ledger, os.fspath(tmp_path / "workers"))
+    try:
+        assert identity.find_wasm_opt(environment=environment) == str(selected)
+    finally:
+        input_report.remove_sink()
+    assert os.fspath(earlier) in ledger.directories
+    assert os.fspath(selected_dir) in ledger.directories
+    assert os.fspath(selected) in ledger.files
+    assert os.fspath(later) not in ledger.directories, "the search stops at a hit"

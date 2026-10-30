@@ -731,3 +731,224 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
     build_record._BUILDS_ENTERED = 0
     assert build(request) == 0
     assert len(calls) == 2, "a missing promised stub must run the producer"
+
+
+def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
+    """Publish the linked WASM family through the real layout and result owner."""
+
+    def build(request: BuildRequest) -> int:
+        from molt.cli import build_results
+        from molt.cli.build_output_layout import (
+            _resolve_build_output_layout,
+            _resolve_out_dir,
+        )
+        from molt.cli.project_roots import _find_project_root
+
+        file_path = request.file_path
+        assert file_path is not None
+        calls.append(file_path)
+        source_path = Path(file_path).resolve()
+        source = source_path.read_text(encoding="utf-8")
+        root = _find_project_root(source_path)
+        out_dir = _resolve_out_dir(root, request.out_dir)
+        layout = _resolve_build_output_layout(
+            target=request.target,
+            trusted=request.trusted,
+            require_linked=request.require_linked,
+            linked=request.linked,
+            linked_output=request.linked_output,
+            emit=request.emit,
+            output=request.output,
+            emit_ir=request.emit_ir,
+            artifacts_root=root / ".test-build",
+            bin_root=out_dir or root / "bin",
+            output_root=out_dir or root / "dist",
+            output_base=source_path.stem,
+            out_dir_path=out_dir,
+            project_root=root,
+        )
+        module = layout.output_artifact
+        linked = layout.linked_output_path
+        assert linked is not None
+        manifest = module.with_name("manifest.json")
+        attestation = linked.with_name(linked.name + ".wasm-opt.json")
+        module.write_text(f"module of {source}", encoding="utf-8")
+        linked.write_text(f"linked {source}", encoding="utf-8")
+        manifest.write_text(f"manifest of {source}", encoding="utf-8")
+        attestation.write_text(f"optimizer for {source}", encoding="utf-8")
+        if report_products:
+            build_results._report_non_native_products(
+                module,
+                linked,
+                {
+                    "wasm": str(module),
+                    "linked_wasm": str(linked),
+                    "wasm_optimizer_attestation": str(attestation),
+                    "manifest": str(manifest),
+                },
+            )
+        return 0
+
+    return build
+
+
+def _wasm_request(project: Path, out_dir: Path, **options: Any) -> BuildRequest:
+    from molt.compilation_target import TargetKind
+
+    return BuildRequest(
+        file_path=os.fspath(project / "app.py"),
+        target=TargetKind.WASM,
+        linked=True,
+        require_linked=True,
+        out_dir=os.fspath(out_dir),
+        verbose=True,
+        **options,
+    )
+
+
+def _run_wasm(build, request: BuildRequest) -> None:
+    build_record._BUILDS_ENTERED = 0
+    assert build(request) == 0
+
+
+def test_an_unchanged_linked_wasm_build_reuses_its_product_family(
+    project: Path, tmp_path: Path, capsys
+) -> None:
+    calls: list[str] = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_wasm_build(calls))
+    )
+    out_dir = tmp_path / "web"
+    request = _wasm_request(project, out_dir)
+    _run_wasm(build, request)
+    capsys.readouterr()
+    _run_wasm(build, request)
+    assert len(calls) == 1, "the recorded WASM family was current"
+    assert (
+        f"Successfully built {out_dir / 'output_linked.wasm'} (inputs unchanged)"
+        in capsys.readouterr().err
+    ), "a hit names the module a user runs"
+    (project / "app.py").write_text("print(2)\n", encoding="utf-8")
+    _run_wasm(build, request)
+    assert len(calls) == 2, "an edited input rebuilds"
+    assert (out_dir / "output_linked.wasm").read_text(encoding="utf-8") == (
+        "linked print(2)\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "product",
+    [
+        "output.wasm",
+        "output_linked.wasm",
+        "manifest.json",
+        "output_linked.wasm.wasm-opt.json",
+    ],
+)
+@pytest.mark.parametrize("change", ["tamper", "remove"])
+def test_each_published_wasm_product_must_still_hold_what_the_build_made(
+    project: Path, tmp_path: Path, product: str, change: str
+) -> None:
+    calls: list[str] = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_wasm_build(calls))
+    )
+    out_dir = tmp_path / "web"
+    request = _wasm_request(project, out_dir)
+    _run_wasm(build, request)
+    _run_wasm(build, request)
+    assert len(calls) == 1
+    target = out_dir / product
+    if change == "tamper":
+        target.write_text("tampered", encoding="utf-8")
+    else:
+        target.unlink()
+    _run_wasm(build, request)
+    assert len(calls) == 2, f"a {change}d {product} must run the producer"
+    assert target.read_text(encoding="utf-8") != "tampered"
+
+
+def test_a_wasm_build_that_reports_no_products_never_records(
+    project: Path, tmp_path: Path, capsys
+) -> None:
+    calls: list[str] = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_wasm_build(calls, report_products=False))
+    )
+    request = _wasm_request(project, tmp_path / "web")
+    _run_wasm(build, request)
+    assert "Build record not written: WASM products were not reported" in (
+        capsys.readouterr().err
+    )
+    _run_wasm(build, request)
+    assert len(calls) == 2, "an unverified family is never reused"
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"json_output": True},
+        {"split_runtime": True},
+        {"precompile": True},
+        {"linked_output": "named_linked.wasm"},
+    ],
+)
+def test_wasm_requests_beyond_the_verified_family_never_cut_off(
+    project: Path, tmp_path: Path, options: dict[str, Any]
+) -> None:
+    request = _wasm_request(project, tmp_path / "web", **options)
+    assert build_command._early_cutoff_request(request) is None
+
+
+@pytest.mark.parametrize(
+    "target", ["wasm-freestanding", "wasm32-wasip1", "wasm32-unknown-unknown"]
+)
+def test_only_the_default_wasm_target_is_a_verified_cutoff_cell(
+    project: Path, tmp_path: Path, target: str
+) -> None:
+    from molt.compilation_target import TargetKind
+
+    request = BuildRequest(
+        file_path=os.fspath(project / "app.py"),
+        target=TargetKind(target),
+        linked=True,
+        out_dir=os.fspath(tmp_path / "web"),
+    )
+    assert build_command._early_cutoff_request(request) is None
+    default = _wasm_request(project, tmp_path / "web")
+    assert build_command._early_cutoff_request(default) is not None
+
+
+def test_another_checkouts_store_renewal_leaves_the_record_current(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every checkout of one artifact root shares the product store, and any
+    of them rewrites its retention ledger when it renews an entry. A build
+    reads that ledger while admitting its compiler and runtime, but the
+    ledger selects nothing the output depends on."""
+    from molt import dx
+
+    artifact_root = tmp_path / "ext"
+    monkeypatch.setenv("MOLT_EXT_ROOT", os.fspath(artifact_root))
+    monkeypatch.setenv(
+        "CARGO_TARGET_DIR", os.fspath(artifact_root / "target" / "checkouts" / "lane")
+    )
+    ledger = dx.product_store_dir(project, os.environ) / "v1" / "host-tool"
+    ledger.mkdir(parents=True)
+    ledger = ledger / ".product-store.json"
+    ledger.write_text('{"last_used": {}}\n', encoding="utf-8")
+    calls: list[str] = []
+    emit = _fake_build(calls)
+
+    def build_reading_the_store(request: BuildRequest) -> int:
+        ledger.read_text(encoding="utf-8")
+        return emit(request)
+
+    build = build_command._with_early_cutoff(build_reading_the_store)
+    output = tmp_path / "app"
+    _run(build, project, output)
+    _run(build, project, output)
+    assert len(calls) == 1
+    ledger.write_text('{"last_used": {"rival": 1}}\n', encoding="utf-8")
+    _run(build, project, output)
+    assert len(calls) == 1, "a rival checkout's renewal is no input of this build"
