@@ -1072,7 +1072,9 @@ def gate_environment(
     # Gates receive the same caches, scratch and toolchain selection as every
     # DX child, including shells without a lane env.sh.
     env = ProcessEnvironmentBuilder(
-        RunContext(repo).canonical_env(env, create_dirs=create_dirs)
+        RunContext(repo).canonical_env(
+            env, create_dirs=create_dirs, force_default_keys=("TMPDIR", "TMP", "TEMP")
+        )
     )
     # Gates are proof executions: bytecode a gate writes under src/ changes the
     # checkout's import topology while later gates read it (a fresh worktree's

@@ -29,6 +29,7 @@ from molt.checkout_state import (
 )
 from molt.custody_layout import (
     DurableEvidence,
+    ExternalProviderRetention,
     Regenerable,
     StorageClass,
     git_directories,
@@ -62,6 +63,150 @@ def allocated_bytes(root: Path) -> int:
     return total
 
 
+def indexed_payload(path: Path) -> bool:
+    """A retired raw directory holds only a durable, externally backed index."""
+    from molt.checkout_state import EVIDENCE_INDEX_NAME
+    from molt.exact_json import read_exact
+
+    if path.is_symlink():
+        return False
+    if path.is_dir():
+        return all(indexed_payload(child) for child in path.iterdir())
+    if path.name != EVIDENCE_INDEX_NAME and not path.name.endswith(
+        "." + EVIDENCE_INDEX_NAME
+    ):
+        return False
+    try:
+        record = read_exact(path, max_bytes=64 * 1024, label="payload index")
+        if (
+            not isinstance(record, dict)
+            or record.get("schema") != "molt.evidence-index.v1"
+            or record.get("class")
+            not in {"lane-evidence", "diagnostics", "integration-receipts"}
+        ):
+            return False
+        source = Path(record["source"])
+        if path != (
+            source / EVIDENCE_INDEX_NAME
+            if source.is_dir()
+            else source.with_name(source.name + "." + EVIDENCE_INDEX_NAME)
+        ):
+            return False
+        archive = Path(record["archive"])
+        manifest = read_exact(
+            archive.with_suffix(".index.json"),
+            max_bytes=64 * 1024 * 1024,
+            label="payload manifest",
+        )
+        return (
+            archive.is_file()
+            and isinstance(manifest, dict)
+            and all(manifest.get(key) == value for key, value in record.items())
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def harvest_lane_payload(
+    repo: Path, task: str, paths: list[str], environment: Mapping[str, str]
+) -> list[dict[str, str]]:
+    """Preserve unknown ignored signal through the canonical verified compactor.
+
+    Callers own the lane lifecycle lock. Each source also takes its existing
+    storage lifetime lock; active guards and native locks preserve live writers.
+    Recovery indices remain in source and the surviving common Git directory.
+    """
+    from tools.coordination_records import task_artifacts_dir
+    from tools.disk_guard import _guard_protection, _scratch_inventory, _region_locked
+    from molt.exact_json import write_exact
+
+    directories = git_directories(repo)
+    if directories is None:
+        raise DriverError("payload harvest needs the lane's Git custody")
+    destination = task_artifacts_dir(repo, task, environment).parent / "ignored"
+    guards = _guard_protection((repo, artifact_root(repo, environment)))
+    result = []
+    with ExitStack() as custody:
+        # Acquire the whole batch before moving anything: no partial harvest
+        # when a second root is held by another cooperating writer.
+        sources = []
+        for relative in sorted(
+            set(paths), key=lambda value: (len(Path(value).parts), value)
+        ):
+            source = repo / relative.rstrip("/")
+            if any(parent == source or parent in source.parents for parent in sources):
+                continue  # Git can name an ignored child and its whole directory.
+            if (
+                source.is_symlink()
+                or source.is_junction()
+                or not source.absolute().is_relative_to(repo.absolute())
+                or ".." in Path(relative).parts
+            ):
+                raise DriverError(
+                    f"payload namespace needs custody reconciliation: {source}"
+                )
+            if not custody.enter_context(checkout_state_retirement(source)):
+                raise DriverError(f"payload state is in use: {source}")
+            if guards.protects(
+                source, artifact_root(repo, environment), recorded_owner=repo
+            ):
+                raise DriverError(f"payload guard is in use: {source}")
+            if source.is_dir():
+                observation = _scratch_inventory(source, time.monotonic() + 60)
+                if observation.lock_held or observation.guards:
+                    raise DriverError(f"payload native writer is in use: {source}")
+            elif source.name.endswith(".lock") or source.name in {
+                "lock",
+                ".cargo-lock",
+                ".cargo-build-lock",
+            }:
+                if source.stat().st_size or _region_locked(source):
+                    raise DriverError(
+                        f"payload lock needs custody reconciliation: {source}"
+                    )
+            sources.append(source)
+        for source in sources:
+            from molt.checkout_state import evidence_index_path
+            from molt.file_publication import durable_namespace_replace
+            import uuid
+
+            archive = compact_evidence(source, destination, kind="lane-evidence")
+            # A sidecar of an ignored file need not itself be ignored. Move
+            # every source index to surviving Git custody, preserving its
+            # contents and avoiding new untracked files in the lane.
+            index = (
+                directories[1]
+                / "molt"
+                / "lane-payload-index"
+                / f"{uuid.uuid4().hex}.source.json"
+            )
+            index.parent.mkdir(parents=True, exist_ok=True)
+            durable_namespace_replace(evidence_index_path(source), index)
+            result.append(
+                {
+                    "source": str(source),
+                    "archive": str(archive),
+                    "index": str(index),
+                }
+            )
+        if result:
+            import uuid
+
+            write_exact(
+                directories[1]
+                / "molt"
+                / "lane-payload-index"
+                / f"{uuid.uuid4().hex}.json",
+                {
+                    "schema": "molt.lane-payload.v1",
+                    "task": task,
+                    "checkout": str(repo),
+                    "payloads": result,
+                },
+            )
+    return result
+
+
 def inventory(repo: Path, environment: Mapping[str, str]) -> list[dict[str, object]]:
     rows = []
     for kind in storage_classes():
@@ -75,11 +220,85 @@ def inventory(repo: Path, environment: Mapping[str, str]) -> list[dict[str, obje
             "retention": asdict(rule.retention),
             "durable": isinstance(rule.retention, DurableEvidence),
         }
+        if isinstance(rule.retention, ExternalProviderRetention):
+            providers = external_providers(repo, environment)
+            row["providers"] = providers
+            row["bytes"] = sum(
+                member["bytes"]
+                for member in providers
+                if isinstance(member.get("bytes"), int)
+            )
         if kind == "sccache":
             from molt.cargo_execution_policy import sccache_server_temp_dir
 
             temporary = sccache_server_temp_dir(environment)
             row["server_temp"] = None if temporary is None else str(temporary)
+        rows.append(row)
+    return rows
+
+
+def external_providers(
+    repo: Path, environment: Mapping[str, str]
+) -> list[dict[str, object]]:
+    """Observe native providers, without changing their configuration or custody."""
+    from molt.rust_toolchain import cargo_home_path, rustup_home
+    from molt.process_environment import ProcessEnvironment
+    from tools.molt_dev_common import _run_fast_captured_command
+
+    policy = storage_rule("external-provider").retention
+    assert isinstance(policy, ExternalProviderRetention)
+    paths = [
+        ("cargo", cargo_home_path(repo, environment), policy.cargo),
+        ("rustup", rustup_home(environment, repo), policy.rustup),
+    ]
+    rows: list[dict[str, object]] = []
+    npm = shutil.which("npm", path=environment.get("PATH", os.defpath))
+    if npm is None:
+        rows.append(
+            {
+                "provider": "npm",
+                "status": "provider-unavailable",
+                "retention": policy.npm,
+            }
+        )
+    else:
+        # npm owns npmrc, environment and platform precedence. Do not parse a
+        # second configuration authority or invent a home after a failed probe.
+        proc = _run_fast_captured_command(
+            [npm, "config", "get", "cache", "--offline", "--logs-max=0"],
+            cwd=repo,
+            env=ProcessEnvironment(environment),
+            timeout=30,
+        )
+        if (
+            proc.returncode
+            or not proc.stdout.strip()
+            or not Path(proc.stdout.strip()).is_absolute()
+        ):
+            rows.append(
+                {
+                    "provider": "npm",
+                    "status": "configuration-unknown",
+                    "retention": policy.npm,
+                    "detail": proc.stderr,
+                }
+            )
+        else:
+            paths.append(("npm", Path(proc.stdout.strip()), policy.npm))
+    for provider, path, retention in paths:
+        row: dict[str, object] = {
+            "provider": provider,
+            "owner": provider,
+            "path": None if path is None else str(path),
+            "retention": retention,
+            "status": "observed" if path is not None else "home-unknown",
+        }
+        if path is not None:
+            try:
+                row["bytes"] = allocated_bytes(path)
+            except OSError as exc:
+                row["status"] = "size-unknown"
+                row["detail"] = str(exc)
         rows.append(row)
     return rows
 
@@ -91,6 +310,8 @@ def trim(
     apply: bool,
     include_compile_cache: bool = True,
     policy_source: Path | None = None,
+    legacy_temp: Path | None = None,
+    include_shared_preimages: bool = False,
 ) -> list[dict[str, object]]:
     """Run existing provider GC and version retention, never sweep evidence."""
     from molt.cache_eviction import _prune
@@ -256,6 +477,18 @@ def trim(
             result.extend(
                 retire_regenerable([cache], kind=kind, now=time.time(), apply=apply)
             )
+    # Repository preimages have one Git custody owner. Historical user-cache
+    # and host-temp preimages require the operator's explicit inventory scope;
+    # a test/SDK checkout never takes custody of the account's global history.
+    result.extend(
+        migrate(
+            repo,
+            environment,
+            apply=apply,
+            legacy_temp=legacy_temp,
+            repository_only=not include_shared_preimages,
+        )
+    )
     return result
 
 
@@ -359,7 +592,9 @@ def retire_regenerable(
     return rows
 
 
-MigrationAction = Literal["compact", "move-worktree", "keep"]
+MigrationAction = Literal[
+    "compact", "move-worktree", "retire-worktree", "already-moved", "keep"
+]
 
 
 def _tree_identity(root: Path) -> dict[str, object]:
@@ -511,6 +746,144 @@ class Migration:
     bytes: int
     reason: str
     locks: tuple[Path, ...] = ()
+    last_use: float | None = None
+
+
+def _legacy_activity(path: Path, *, read_access: bool = True) -> tuple[float, bool]:
+    """Full metadata observation; old creation time never proves idleness.
+
+    Legacy writers have no use stamp. Read access to regular payload counts;
+    directory atime does not, since an inventory itself reads directories.
+    Native locks, nonterminal guards and special files keep the whole root.
+    """
+    from tools.disk_guard import _scratch_inventory, _region_locked
+
+    if path.is_dir():
+        observed = _scratch_inventory(path, time.monotonic() + 60)
+        newest, held = observed.mtime, observed.lock_held or bool(observed.guards)
+        entries = path.rglob("*")
+    else:
+        newest, held = path.lstat().st_mtime, False
+        entries = (path,)
+    for child in entries:
+        info = child.lstat()
+        newest = max(newest, info.st_mtime)
+        if stat.S_ISREG(info.st_mode):
+            if (
+                read_access
+                and child.name
+                not in {
+                    "coordination.json",
+                    "MOVED.txt",
+                    "storage-index.json",
+                    ".molt-controller.json",
+                }
+                and not child.name.endswith(".lock")
+            ):
+                newest = max(newest, info.st_atime)
+            if child.name.endswith(".lock") or child.name in {
+                "lock",
+                ".cargo-lock",
+                ".cargo-build-lock",
+            }:
+                held |= _region_locked(child)
+        elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            held = True
+    return newest, held
+
+
+def _moved_payload(task: Path, artifact: Path) -> tuple[Path | None, str]:
+    """Accept the integrator's finite human MOVED.txt protocol, fail closed."""
+    index = task / "MOVED.txt"
+    try:
+        lines = index.read_text(encoding="utf-8").splitlines()
+        expected = artifact / "evidence" / "lanes" / "molt-src" / task.name
+        targets = [Path(line.strip()) for line in lines if line.startswith("/")]
+        if (
+            len(targets) != 1
+            or targets[0] != expected
+            or resolve_owned_path(expected) != expected.absolute()
+            or not expected.is_dir()
+        ):
+            return None, "unknown MOVED.txt destination"
+        entries = [line.strip() for line in lines if line.startswith("  ")]
+        if not entries or any(
+            Path(entry).name != entry
+            or entry in {".", ".."}
+            or not (expected / entry).exists()
+            for entry in entries
+        ):
+            return None, "incomplete MOVED.txt payload"
+        return expected, "integrator payload retained at MOVED.txt destination"
+    except (OSError, ValueError):
+        return None, "unreadable MOVED.txt index"
+
+
+def _retire_replaced_sandbox(
+    repo: Path, source: Path, destination: Path, *, apply: bool
+) -> tuple[str, Path | None]:
+    """Archive a superseded queue checkout before releasing its Git registration."""
+    from tools.molt_dev_common import _COMMANDS
+    from molt.exact_json import write_exact
+
+    actual, expected = git_directories(source), git_directories(repo)
+    if (
+        actual is None
+        or expected is None
+        or actual[1] != expected[1]
+        or not (source / ".git").is_file()
+    ):
+        return "unregistered-source", None
+    if (actual[0] / "locked").exists():
+        return "worktree-locked", None
+    branch = _COMMANDS.run(
+        ["git", "-C", str(source), "symbolic-ref", "--quiet", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if branch.returncode != 1:
+        return "source-holds-branch-or-unknown", None
+    status = _COMMANDS.run(
+        [
+            "git",
+            "--no-optional-locks",
+            "-C",
+            str(source),
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if status.returncode or status.stdout.strip():
+        return "dirty-source", None
+    if not apply:
+        return "ready-archive-and-retire-worktree", None
+    archive = compact_evidence(
+        source, destination, kind="integration-receipts", remove_source=False
+    )
+    # The index survives Git removal and is published before it; a failed Git
+    # removal leaves both source and archive for recovery.
+    write_exact(
+        expected[1] / "molt" / "retired-evidence" / (archive.stem + ".json"),
+        {
+            "schema": "molt.replaced-sandbox.v1",
+            "source": str(source),
+            "archive_index": str(archive.with_suffix(".index.json")),
+        },
+    )
+    removed = _COMMANDS.run(
+        ["git", "-C", str(repo), "worktree", "remove", "--force", str(source)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if removed.returncode:
+        raise DriverError(f"archived sandbox removal deferred: {removed.stderr}")
+    return "archived-and-retired-worktree", archive
 
 
 def _safe_source(path: Path, *, allowed: tuple[Path, ...]) -> Path:
@@ -523,7 +896,11 @@ def _safe_source(path: Path, *, allowed: tuple[Path, ...]) -> Path:
 
 
 def migration_plan(
-    repo: Path, environment: Mapping[str, str], *, legacy_temp: Path | None = None
+    repo: Path,
+    environment: Mapping[str, str],
+    *,
+    legacy_temp: Path | None = None,
+    repository_only: bool = False,
 ) -> list[Migration]:
     """Finite old producers only; never enumerate sibling projects or VM disks."""
     from tools import controller_source
@@ -542,6 +919,7 @@ def migration_plan(
     artifact = artifact_root(repo, environment)
     allowed = (primary, primary.parent / "worktrees")
     rows = []
+    now = time.time()
     runner = common / "molt" / "landing-queue" / "runner.lock"
     integration = common / "molt-integrate.lock"
 
@@ -554,10 +932,31 @@ def migration_plan(
         locks: tuple[Path, ...] = (),
     ) -> None:
         if source.exists() and source != target:
-            _safe_source(source, allowed=allowed)
+            if kind != "replaced-compile-cache":
+                _safe_source(source, allowed=allowed)
+            last_use, held = _legacy_activity(
+                source, read_access=action != "retire-worktree"
+            )
+            policy = storage_rule(kind).retention
+            if (
+                action != "keep"
+                and isinstance(policy, DurableEvidence)
+                and policy.compact_after_s is not None
+            ):
+                if held:
+                    action, reason = "keep", "native lock, guard or special file in use"
+                elif now - last_use < max(PROTECTION_WINDOW_S, policy.compact_after_s):
+                    action, reason = "keep", "within last-use retention window"
             rows.append(
                 Migration(
-                    kind, source, target, action, allocated_bytes(source), reason, locks
+                    kind,
+                    source,
+                    target,
+                    action,
+                    allocated_bytes(source),
+                    reason,
+                    locks,
+                    last_use,
                 )
             )
 
@@ -569,17 +968,18 @@ def migration_plan(
         / "worktrees"
         / f"landing-sandbox-{repository_storage_key(common)}",
     ):
-        target = storage_path(
-            primary, "landing-sandbox", environment, common_dir=common
+        kind = (
+            "replaced-git-landing-sandbox"
+            if sandbox == common / "molt" / "landing-sandbox"
+            else "replaced-family-landing-sandbox"
         )
-        if sandbox == common / "molt" / "landing-sandbox":
-            target = artifact / "worktrees" / (target.name + "-legacy")
         add(
-            "landing-sandbox",
+            kind,
             sandbox,
-            target,
-            "move-worktree",
-            "registered clean source only; runner/integration locks required",
+            storage_path(primary, "integration-receipts", environment)
+            / "replaced-sandbox",
+            "retire-worktree",
+            "archive stale detached checkout and release Git registration under runner/integration locks",
             (runner, integration),
         )
     controllers = common / "molt" / "controllers"
@@ -600,8 +1000,10 @@ def migration_plan(
                 )
             except (OSError, ValueError, KeyError, TypeError):
                 admitted = False
+            if indexed_payload(source):
+                continue
             add(
-                "controllers",
+                "replaced-controllers",
                 source,
                 storage_path(primary, "diagnostics", environment)
                 / "legacy-controllers",
@@ -612,7 +1014,7 @@ def migration_plan(
                 (controller_source.source_lock_path(source),),
             )
     add(
-        "integration-receipts",
+        "replaced-integration-receipts",
         common / "molt-integrate",
         storage_path(primary, "integration-receipts", environment),
         "compact",
@@ -632,6 +1034,21 @@ def migration_plan(
         for task in sorted(registry.iterdir()):
             if not task.is_dir() or task.is_symlink():
                 continue
+            if (task / "MOVED.txt").exists():
+                moved, reason = _moved_payload(task, artifact)
+                rows.append(
+                    Migration(
+                        "replaced-lane-evidence",
+                        task,
+                        moved or task,
+                        "already-moved" if moved is not None else "keep",
+                        allocated_bytes(moved or task),
+                        reason,
+                    )
+                )
+                continue
+            if indexed_payload(task):
+                continue
             record = by_directory.get(task)
             size = allocated_bytes(task)
             active = (
@@ -642,7 +1059,7 @@ def migration_plan(
             )
             if size > evidence_policy.checkout_bytes:
                 add(
-                    "lane-evidence",
+                    "replaced-lane-evidence",
                     task,
                     storage_path(primary, "lane-evidence", environment) / "archive",
                     "keep" if active else "compact",
@@ -656,49 +1073,71 @@ def migration_plan(
     from molt.default_paths import expand_user_path
 
     old_cache = expand_user_path("~/.cache/molt", environment=environment)
-    if old_cache.exists():
+    if not repository_only and old_cache.exists():
+        # Preserve even unknown legacy signal losslessly. Locks and last use
+        # still fence removal; external provider homes never enter this plan.
+        add(
+            "replaced-compile-cache",
+            old_cache,
+            artifact / "evidence" / "legacy-cache",
+            "compact",
+            "lossless legacy Molt cache retention",
+        )
+    if not repository_only:
+        tools = storage_path(primary, "toolchains", environment)
         rows.append(
             Migration(
-                "compile-cache",
-                old_cache,
-                artifact / "evidence" / "legacy-cache",
+                "toolchains",
+                tools,
+                tools,
                 "keep",
-                allocated_bytes(old_cache),
-                "legacy cache needs its producer locks; new writes use canonical MOLT_CACHE",
+                allocated_bytes(tools),
+                "execution placement retained by measured root/data comparison; version retention is separate",
             )
         )
-    tools = storage_path(primary, "toolchains", environment)
-    rows.append(
-        Migration(
-            "toolchains",
-            tools,
-            tools,
-            "keep",
-            allocated_bytes(tools),
-            "execution placement retained by measured root/data comparison; version retention is separate",
-        )
-    )
     if legacy_temp is not None:
-        legacy_temp = resolve_owned_path(legacy_temp)
-        if ".codex" in legacy_temp.parts:
-            raise DriverError("legacy temp inspection cannot enter Codex custody")
-        # These names alone prove neither ownership nor liveness. Preserve the
-        # payload and report the decision; canonical new temp uses run scratch.
-        for path in sorted(legacy_temp.iterdir()):
-            if (
-                path.name.startswith(("molt-", "linker-crash-"))
-                and not path.is_symlink()
-            ):
-                rows.append(
-                    Migration(
-                        "temporary",
-                        path,
-                        storage_path(primary, "temporary", environment) / "legacy",
-                        "keep",
-                        allocated_bytes(path),
-                        "legacy temp has no lock custody; integrator must reconcile active writers",
-                    )
-                )
+        rows.extend(_legacy_temp_plan(primary, environment, legacy_temp))
+    return rows
+
+
+def _legacy_temp_plan(
+    primary: Path, environment: Mapping[str, str], legacy_temp: Path
+) -> list[Migration]:
+    from molt.checkout_state import is_evidence_index
+
+    rows = []
+    legacy_temp = resolve_owned_path(legacy_temp)
+    if ".codex" in legacy_temp.parts:
+        raise DriverError("legacy temp inspection cannot enter Codex custody")
+    # Names select Molt signal, never a disposable class. The same verified
+    # archive and index boundary preserves unknown legacy bytes before removal.
+    for path in sorted(legacy_temp.iterdir()):
+        if not path.name.startswith(("molt-", "molt_", "linker-crash-")):
+            continue
+        if path.is_symlink() or is_evidence_index(path) or indexed_payload(path):
+            continue
+        last_use, held = _legacy_activity(path)
+        policy = storage_rule("replaced-temporary").retention
+        assert (
+            isinstance(policy, DurableEvidence) and policy.compact_after_s is not None
+        )
+        eligible = not held and time.time() - last_use >= max(
+            PROTECTION_WINDOW_S, policy.compact_after_s
+        )
+        rows.append(
+            Migration(
+                "replaced-temporary",
+                path,
+                storage_path(primary, "scratch-evidence", environment) / "legacy",
+                "compact" if eligible else "keep",
+                allocated_bytes(path),
+                "idle legacy temp; lossless archival before raw retirement"
+                if eligible
+                else "native writer or recent last use",
+                (),
+                last_use,
+            )
+        )
     return rows
 
 
@@ -708,11 +1147,18 @@ def migrate(
     *,
     apply: bool,
     legacy_temp: Path | None = None,
+    repository_only: bool = False,
 ) -> list[dict[str, object]]:
     from tools.coordination_records import load_records, active_task_references
 
+    from tools.disk_guard import _guard_protection
+
+    guards = _guard_protection((repo, artifact_root(repo, environment)))
     result = []
-    for item in migration_plan(repo, environment, legacy_temp=legacy_temp):
+    plan = migration_plan(
+        repo, environment, legacy_temp=legacy_temp, repository_only=repository_only
+    )
+    for item in plan:
         row = asdict(item)
         row.update(
             source=str(item.source),
@@ -736,8 +1182,18 @@ def migrate(
                 for handle, path in zip(handles, item.locks)
             ):
                 row["status"] = "live-lock"
+            elif item.action == "already-moved":
+                row["status"] = "already-moved"
             elif item.action == "keep":
                 row["status"] = "kept"
+            elif guards.protects(
+                item.source, artifact_root(repo, environment), recorded_owner=repo
+            ):
+                row["status"] = "guard-in-use"
+            elif not apply and item.action == "retire-worktree":
+                row["status"], _ = _retire_replaced_sandbox(
+                    repo, item.source, item.destination, apply=False
+                )
             elif not apply and item.action == "move-worktree":
                 row["status"] = _move_sandbox(
                     repo, item.source, item.destination, apply=False
@@ -746,9 +1202,19 @@ def migrate(
                 with checkout_state_retirement(item.source) as exclusive:
                     if not exclusive:
                         row["status"] = "state-in-use"
+                    elif item.last_use is not None and _legacy_activity(
+                        item.source, read_access=item.action != "retire-worktree"
+                    ) != (item.last_use, False):
+                        row["status"] = "use-changed-or-native-writer"
+                    elif item.action == "retire-worktree":
+                        row["status"], archive = _retire_replaced_sandbox(
+                            repo, item.source, item.destination, apply=True
+                        )
+                        if archive is not None:
+                            row["archive"] = str(archive)
                     elif item.action == "compact":
                         keep = []
-                        if item.kind == "lane-evidence":
+                        if item.kind == "replaced-lane-evidence":
                             from tools.disk_guard import registered_worktree_roots
                             from tools.coordination_records import LOG_ROOT
 
@@ -809,9 +1275,9 @@ def migrate(
                                 item.source,
                                 item.destination,
                                 kind="lane-evidence"
-                                if item.kind == "lane-evidence"
+                                if item.kind == "replaced-lane-evidence"
                                 else "integration-receipts"
-                                if item.kind == "integration-receipts"
+                                if item.kind == "replaced-integration-receipts"
                                 else "diagnostics",
                                 keep=keep,
                             )
@@ -842,7 +1308,13 @@ def cmd_storage(args: argparse.Namespace) -> int:
     if args.storage_command == "inventory":
         result = inventory(repo, os.environ)
     elif args.storage_command == "trim":
-        result = trim(repo, os.environ, apply=args.apply)
+        result = trim(
+            repo,
+            os.environ,
+            apply=args.apply,
+            legacy_temp=args.legacy_temp_root,
+            include_shared_preimages=True,
+        )
     else:
         result = migrate(
             repo, os.environ, apply=args.apply, legacy_temp=args.legacy_temp_root

@@ -19,10 +19,12 @@ import os
 import re
 import stat
 import tempfile
+import sys
 from dataclasses import dataclass
 from typing import Literal, assert_never, get_args
 from functools import cache
 from pathlib import Path
+from collections.abc import Mapping
 
 from molt.path_custody import host_path_is_within, resolved_host_path_key
 
@@ -61,6 +63,15 @@ PackageEnvironmentKind = Literal["browser-environment", "edgebox-environment"]
 OwnedStateKind = Literal[
     CheckoutStateKind, ToolchainStateKind, ProviderCacheKind, PackageEnvironmentKind
 ]
+ReplacedStorageClass = Literal[
+    "replaced-controllers",
+    "replaced-git-landing-sandbox",
+    "replaced-family-landing-sandbox",
+    "replaced-integration-receipts",
+    "replaced-lane-evidence",
+    "replaced-compile-cache",
+    "replaced-temporary",
+]
 StorageClass = Literal[
     CheckoutStateKind,
     EvidenceClass,
@@ -78,8 +89,29 @@ StorageClass = Literal[
     "installation",
     "run-control",
     "backend-sockets",
+    "external-provider",
+    ReplacedStorageClass,
 ]
-StorageVolume = Literal["artifact", "checkout"]
+StorageVolume = Literal["artifact", "checkout", "user-home", "host-temp"]
+
+
+def legacy_host_temp_roots(environment: Mapping[str, str]) -> tuple[Path, ...]:
+    """Host defaults replaced by DX scratch, independent of rebound TMPDIR.
+
+    Arbitrary historical operator overrides require --legacy-temp-root. These
+    are host storage coordinates; they never describe a compilation target.
+    """
+    if sys.platform == "darwin":
+        # Darwin's public <unistd.h> _CS_DARWIN_USER_TEMP_DIR. CPython does
+        # not expose its name in confstr_names, but accepts the ABI constant.
+        selected = os.confstr(65537)
+        if selected is None:
+            raise ValueError("Darwin did not supply its user temp authority")
+        return (Path(selected).resolve(),)
+    if os.name == "nt":
+        local = environment.get("LOCALAPPDATA")
+        return () if not local else (Path(local) / "Temp",)
+    return (Path("/tmp"), Path("/var/tmp"))
 
 
 @dataclass(frozen=True)
@@ -100,11 +132,22 @@ class DurableEvidence:
 
 
 @dataclass(frozen=True)
+class ExternalProviderRetention:
+    """Provider policy is descriptive; it never grants Molt collection custody."""
+
+    cargo: str = "Cargo global-cache GC: 3 months downloaded, 1 month regenerable; disabled offline"
+    npm: str = "provider/user invokes npm cache verify; no automatic age collector"
+    rustup: str = (
+        "provider/user manages installed toolchains; rustup toolchain uninstall"
+    )
+
+
+@dataclass(frozen=True)
 class StorageRule:
     volume: StorageVolume
     owner: str
     relative: tuple[str, ...]
-    retention: Regenerable | DurableEvidence
+    retention: Regenerable | DurableEvidence | ExternalProviderRetention
 
 
 @dataclass(frozen=True)
@@ -126,6 +169,57 @@ def storage_rule(kind: StorageClass) -> StorageRule:
     gib = 1024**3
     month = 30 * 86400.0
     match kind:
+        case "external-provider":
+            return StorageRule("user-home", "provider", (), ExternalProviderRetention())
+        case "replaced-controllers":
+            return StorageRule(
+                "checkout",
+                "controller-source",
+                (".git", "molt", "controllers"),
+                DurableEvidence(compact_after_s=86400.0),
+            )
+        case "replaced-git-landing-sandbox":
+            return StorageRule(
+                "checkout",
+                "landing-queue",
+                (".git", "molt", "landing-sandbox"),
+                DurableEvidence(compact_after_s=86400.0),
+            )
+        case "replaced-family-landing-sandbox":
+            return StorageRule(
+                "checkout",
+                "landing-queue",
+                ("worktrees",),
+                DurableEvidence(compact_after_s=86400.0),
+            )
+        case "replaced-integration-receipts":
+            return StorageRule(
+                "checkout",
+                "landing-gates",
+                (".git", "molt-integrate"),
+                DurableEvidence(compact_after_s=3 * 86400.0),
+            )
+        case "replaced-lane-evidence":
+            return StorageRule(
+                "checkout",
+                "coordination-records",
+                ("logs", "agents"),
+                DurableEvidence(compact_after_s=3 * 86400.0),
+            )
+        case "replaced-compile-cache":
+            return StorageRule(
+                "user-home",
+                "cache-eviction",
+                (".cache", "molt"),
+                DurableEvidence(compact_after_s=month),
+            )
+        case "replaced-temporary":
+            return StorageRule(
+                "host-temp",
+                "legacy Molt writers",
+                (),
+                DurableEvidence(compact_after_s=6 * 3600.0),
+            )
         case "cargo-target":
             return StorageRule(
                 "artifact",
