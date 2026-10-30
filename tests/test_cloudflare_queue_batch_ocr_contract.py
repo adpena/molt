@@ -17,7 +17,7 @@ def _run_queue_script(script: str) -> dict[str, object]:
         pytest.skip("node is required for Cloudflare queue OCR contract tests")
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

@@ -36,7 +36,7 @@ from .release_model import (
 )
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 
 
 def verify_provenance(

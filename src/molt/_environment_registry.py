@@ -691,6 +691,11 @@ _REGISTRY_JSON = r"""{
       "summary": "Guard scope for proof-plan command execution."
     },
     {
+      "name": "MOLT_PROOF_QUEUE",
+      "owner": "tools/proof_queue_pkg/custody.py",
+      "summary": "Guard scope for the proof queue's supervised command runs (docs/agent/PROOF_QUEUE.md)."
+    },
+    {
       "name": "MOLT_PROPERTY",
       "owner": "tests/property/conftest.py",
       "summary": "Guard scope for the property test suite's subprocesses."
@@ -699,6 +704,11 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_PYTEST",
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "Guard scope for pytest sessions re-executed under the memory guard."
+    },
+    {
+      "name": "MOLT_PYTHON_IDENTITY",
+      "owner": "src/molt/python_interpreter.py",
+      "summary": "Guard scope for the probes that run a candidate Python interpreter to verify its identity."
     },
     {
       "name": "MOLT_REGRTEST",

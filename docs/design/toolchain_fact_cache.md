@@ -78,9 +78,9 @@ miscompile or a wrong link.
 One authority, `molt.toolchain_facts`:
 
 - `ProbeTool`: an executable the probe runs, by invoked path, resolved
-  content path, size, SHA-256 and stat token `(dev, ino, mode, size,
-  mtime_ns, ctime_ns)`. Identities come from the existing executable
-  authority: `toolchain_identity._capture_executable_content` for rustc and
+  content path, size, SHA-256 and the cache token defined in
+  [durable filesystem identity](durable_file_identity.md). Identities come from
+  the existing executable authority: `toolchain_identity._capture_executable_content` for rustc and
   its wrappers, the plan's `CargoExecutableCustody` for cargo, and the host
   `FileDigestCache` for the selectors and the C driver, so an unchanged tool
   costs one `lstat` there.
@@ -95,9 +95,9 @@ One authority, `molt.toolchain_facts`:
   time.
 - `ToolchainFactStore`: one JSON file,
   `default_paths.toolchain_fact_store_path(cache_root)` =
-  `<cache>/toolchain-facts/v2.json`, beside the digest cache in the host
-  cache namespace. The file is read once per process under the shared cache
-  lock; a missing, corrupt or foreign file, or a record whose key does not
+  the [current version namespace](durable_file_identity.md), beside the digest
+  cache in the host cache namespace. The file is read once per process under
+  the shared cache lock; a missing, corrupt or foreign file, or a record whose key does not
   hash to its digest, reads as absent and is replaced by the next write.
   Each write merges over the current host generation under the lock, drops
   records older than the cache age budget (`MOLT_CACHE_MAX_AGE_DAYS`, 30 by
@@ -126,9 +126,8 @@ Standalone runtime and environment capture probes also use the host
 environment's admission. `lookup` accepts the inventory's exact observed
 generation. A miss hashes through the existing no-follow handle against that
 same observation. A hit still passes current-path verification, including every
-hardlink alias, and the final file and directory-membership fences. A changed
-ctime invalidates a same-size rewrite even when its mtime is restored. Windows
-continues to hash fresh content and query handle ChangeTime.
+hardlink alias, and the final file and directory-membership fences. The content
+identity rules are in [observed_inputs.md](observed_inputs.md).
 
 The capture coordinator alone reads the cache and stages completed identities;
 hash workers never touch SQLite. New digests reach the shared cache only after
@@ -152,10 +151,6 @@ inventory identity; metadata consumers still read and verify required bytes.
 It writes no digest rows until new captures or age renewal make the cache dirty.
 Cold capture additionally reads the selected bytes and commits one batch of new
 digests. The existing age budget and racy-window policy remain authoritative.
-This follows the incremental-input approach used by
-[Cargo](https://doc.rust-lang.org/cargo/reference/build-cache.html) and
-[uv](https://docs.astral.sh/uv/concepts/cache/), while retaining Molt's stronger
-ctime and closing-snapshot checks.
 
 ### Keys per probe class
 
@@ -269,6 +264,6 @@ ownership use `toolchain_fact_store(root)` or `ToolchainFactStore(root)` with a
 private root; child-process integrations use `isolated_molt_cache` to pass that
 private namespace in their environment.
 
-Host fact and digest identity and their migration are owned by the
+Host fact and digest token classes and namespace lifetime are owned by the
 [durable filesystem identity contract](durable_file_identity.md). Digest reuse
-retains the existing racy-time policy.
+follows [observed inputs and content identity](observed_inputs.md).

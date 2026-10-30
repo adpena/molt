@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import json
 import subprocess
 from pathlib import Path
@@ -12,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def _run_check(*args: str) -> subprocess.CompletedProcess[str]:
     return run_native_test_process(
-        ["python3", "tools/check_compile_throughput.py", *args],
+        [sys.executable, "tools/check_compile_throughput.py", *args],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,

@@ -204,7 +204,7 @@ def test_process_liveness_native_self_absent_exit259_and_query_failure(
         "assert p.exists(); sys.exit(259)",
         str(release),
     ]
-    proc = CommandExecutor.for_file(__file__).start_owned(command)
+    proc = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").start_owned(command)
     try:
         assert windows_process_api.process_is_alive(proc.pid) is True
         release.touch()

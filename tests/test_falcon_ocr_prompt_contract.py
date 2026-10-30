@@ -54,7 +54,7 @@ def _cloudflare_prompt_ids() -> dict[str, list[int]]:
     """
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -140,7 +140,7 @@ def test_browser_loader_defaults_point_at_worker_artifacts() -> None:
     """
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -178,7 +178,7 @@ def test_browser_tokenizer_decoder_uses_byte_level_bpe() -> None:
     """
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -244,7 +244,7 @@ def test_cloudflare_worker_routes_browser_artifacts_through_r2_keys() -> None:
     """
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -321,7 +321,7 @@ def test_gpu_proxy_requires_supported_https_provider() -> None:
     """
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -387,7 +387,7 @@ def test_cloudflare_worker_gpu_backend_route_uses_proxy_contract() -> None:
     """
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -439,7 +439,7 @@ def test_cloudflare_worker_gpu_backend_rejects_unconfigured_proxy() -> None:
     """
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

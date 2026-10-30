@@ -34,7 +34,7 @@ from tools.wasm_link_format import (
 )
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_WASM_LINK")
 
 
 def _run_external_tool(

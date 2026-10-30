@@ -116,7 +116,7 @@ def test_cargo_artifact_inventory_retains_early_artifact_outside_tail(
             return 0
 
     process = Process()
-    executor = CommandExecutor(prefix="MOLT_TEST", repo_root=truth.ROOT)
+    executor = CommandExecutor(prefix="MOLT_PYTEST", repo_root=truth.ROOT)
     monkeypatch.setattr(
         truth,
         "_COMMANDS",

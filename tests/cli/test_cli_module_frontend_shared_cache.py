@@ -389,7 +389,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 
 
 # --------------------------------------------------------------------------
-# mtime-decoupling (build-dedup doctrine 74, law 1): a re-checkout / copy /
+# mtime-decoupling (observed_inputs.md invariant 1): a re-checkout / copy /
 # reinstall that resets file mtime WITHOUT changing bytes must still reuse the
 # shared entry. mtime is content-invariant metadata; gating on it made the
 # "content-addressed" cache metadata-addressed and cold-started every session.

@@ -42,7 +42,7 @@ from tools import pact_witness_receipt  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_WITNESS_ITER")
 
 # Defensive UTF-8 stdio (recurring Windows cp1252 encoding bug class): this tool
 # relays captured subprocess output via print(); if that capture contains a
@@ -163,7 +163,7 @@ _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
 
 
 def _phase_label(args: list[str]) -> str:
-    """Short human label for a subprocess phase (doctrine 74 law 4: attested walls)."""
+    """Short human label for a subprocess phase (attested walls, observed_inputs.md)."""
     for token in args:
         name = Path(token).name.lower()
         if name.endswith((".py", ".js")):
