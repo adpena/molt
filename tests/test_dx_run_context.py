@@ -2968,6 +2968,8 @@ def test_linux_volatile_identity_expires_with_the_kernel_boot(
 
     install_module_view(monkeypatch, "sys", sys, durable, platform="linux")
     monkeypatch.setattr(durable, "_linux_filesystem_type", lambda fd: filesystem_type)
+    mount = 101
+    monkeypatch.setattr(durable, "_linux_unique_mount_id", lambda fd: mount)
     boot = "12345678-1234-4567-8123-123456789abc"
     original = Path.read_text
     monkeypatch.setattr(
@@ -2988,11 +2990,14 @@ def test_linux_volatile_identity_expires_with_the_kernel_boot(
     first = durable.identity_from_fd(-1, metadata=metadata)
     assert first.payload() == {
         "kind": "boot-scoped",
-        "volume": "12345678123445678123123456789abc.000000000000005b",
+        "volume": "12345678123445678123123456789abc.mnt-0000000000000065",
         "file_id": "00000000000000000000000000000011",
     }
     assert durable.DurableFileIdentity.from_payload(first.payload()) == first
     assert durable.identity_from_fd(-1, metadata=metadata) == first
+    # Same boot, device and inode; a replacement mount has a unique ID.
+    mount = 102
+    assert durable.identity_from_fd(-1, metadata=metadata) != first
     boot = "87654321-1234-4567-8123-123456789abc"
     assert durable.identity_from_fd(-1, metadata=metadata) != first
     boot = "bad-boot-id"
@@ -3019,3 +3024,61 @@ def test_linux_persistent_filesystem_cannot_use_boot_identity(tmp_path, monkeypa
         durable.IdentityUnavailable, match="provide a unique filesystem UUID mapping"
     ):
         durable.identity_from_fd(-1, metadata=SimpleNamespace(st_dev=91, st_ino=17))
+
+
+@pytest.mark.parametrize(
+    "returned_mask,mount,expected",
+    [
+        (0x4000, 0xFEDCBA9876543210, 0xFEDCBA9876543210),
+        (0x1000, 100, None),
+        (0, 0, None),
+    ],
+)
+def test_statx_unique_mount_uses_the_linux_68_abi(
+    monkeypatch, returned_mask, mount, expected
+):
+    import ctypes
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    seen = []
+
+    class Query:
+        def __call__(self, fd, path, flags, requested, output):
+            seen.append((fd, path, flags, requested))
+            # Independent UAPI byte offsets, not the implementation's fields.
+            raw = bytearray(256)
+            struct.pack_into("=I", raw, 0, returned_mask)
+            struct.pack_into("=Q", raw, 0x90, mount)
+            ctypes.memmove(output, bytes(raw), len(raw))
+            return 0
+
+    install_module_view(
+        monkeypatch,
+        "ctypes",
+        ctypes,
+        durable,
+        CDLL=lambda *a, **kw: SimpleNamespace(statx=Query()),
+    )
+    if expected is None:
+        with pytest.raises(durable.UniqueMountIdentityUnavailable) as error:
+            durable._linux_unique_mount_id(42)
+        assert error.value.reason == "unique-mount-id-unavailable"
+        assert error.value.remedy == "MOLT_SCRATCH_STORAGE=disk"
+    else:
+        assert durable._linux_unique_mount_id(42) == expected
+    assert seen == [(42, b"", 0x1000, 0x4000)]
+
+
+def test_statx_missing_from_libc_has_the_disk_remedy(monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    install_module_view(
+        monkeypatch, "ctypes", ctypes, durable, CDLL=lambda *a, **kw: SimpleNamespace()
+    )
+    with pytest.raises(
+        durable.UniqueMountIdentityUnavailable, match="MOLT_SCRATCH_STORAGE=disk"
+    ):
+        durable._linux_unique_mount_id(42)

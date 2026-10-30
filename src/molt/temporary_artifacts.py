@@ -199,10 +199,12 @@ def scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
     # A short root preserves Windows compiler/linker path budget. A
     # A queue-issued state root supplies default data placement. An explicit
     # storage root selects data independently; control state stays unchanged.
-    if (
-        environ.get(STATE_ROOT_ENV, "").strip()
-        and scratch_storage(environ).root is None
-    ):
+    storage = scratch_storage(environ)
+    if storage.mode == "memory":
+        assert storage.root is not None
+        # Refuse missing unique-mount capability before allocating a generation.
+        file_identity(storage.root)
+    if environ.get(STATE_ROOT_ENV, "").strip() and storage.root is None:
         return resolve_owned_path(
             memory_guard_state_root(repo_root, environ).parent / _ROOT_DIRNAME / "v2"
         )

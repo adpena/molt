@@ -15,6 +15,7 @@ import re
 import stat
 import struct
 import sys
+from typing import Literal
 
 
 class IdentityUnavailable(ValueError):
@@ -23,6 +24,14 @@ class IdentityUnavailable(ValueError):
 
 class IdentityUnverifiable(IdentityUnavailable):
     """A legacy record no longer proves its original filesystem object."""
+
+
+class UniqueMountIdentityUnavailable(IdentityUnavailable):
+    reason: Literal["unique-mount-id-unavailable"] = "unique-mount-id-unavailable"
+    remedy: Literal["MOLT_SCRATCH_STORAGE=disk"] = "MOLT_SCRATCH_STORAGE=disk"
+
+    def __init__(self, detail: str):
+        super().__init__(f"{self.reason}: {detail}; use {self.remedy}")
 
 
 class VolumeKind(StrEnum):
@@ -76,7 +85,7 @@ class DurableFileIdentity:
             )
             or (
                 kind is VolumeKind.BOOT_SCOPED
-                and re.fullmatch(r"[0-9a-f]{32}\.[0-9a-f]{16}", volume) is None
+                and re.fullmatch(r"[0-9a-f]{32}\.mnt-[0-9a-f]{16}", volume) is None
             )
         ):
             raise IdentityUnavailable("invalid durable volume or file id")
@@ -177,7 +186,79 @@ def _linux_filesystem_type(fd: int) -> int:
     return ctypes.c_long.from_buffer(buffer).value & 0xFFFFFFFF
 
 
-def _linux_boot_volume(device: int) -> str:
+# ABI: Linux v6.8, include/uapi/linux/stat.h and include/uapi/linux/fcntl.h.
+# These UAPI layouts carry the Linux-syscall-note; no kernel implementation is copied.
+STATX_MNT_ID_UNIQUE = 0x00004000
+_AT_EMPTY_PATH = 0x1000
+
+
+class _StatxTimestamp(ctypes.Structure):
+    _fields_ = [
+        ("seconds", ctypes.c_int64),
+        ("nanoseconds", ctypes.c_uint32),
+        ("reserved", ctypes.c_int32),
+    ]
+
+
+class _Statx(ctypes.Structure):
+    _fields_ = [
+        ("mask", ctypes.c_uint32),
+        ("blksize", ctypes.c_uint32),
+        ("attributes", ctypes.c_uint64),
+        ("nlink", ctypes.c_uint32),
+        ("uid", ctypes.c_uint32),
+        ("gid", ctypes.c_uint32),
+        ("mode", ctypes.c_uint16),
+        ("spare0", ctypes.c_uint16),
+        ("ino", ctypes.c_uint64),
+        ("size", ctypes.c_uint64),
+        ("blocks", ctypes.c_uint64),
+        ("attributes_mask", ctypes.c_uint64),
+        ("atime", _StatxTimestamp),
+        ("btime", _StatxTimestamp),
+        ("ctime", _StatxTimestamp),
+        ("mtime", _StatxTimestamp),
+        ("rdev_major", ctypes.c_uint32),
+        ("rdev_minor", ctypes.c_uint32),
+        ("dev_major", ctypes.c_uint32),
+        ("dev_minor", ctypes.c_uint32),
+        ("mnt_id", ctypes.c_uint64),
+        ("dio_mem_align", ctypes.c_uint32),
+        ("dio_offset_align", ctypes.c_uint32),
+        ("spare3", ctypes.c_uint64 * 12),
+    ]
+
+
+def _linux_unique_mount_id(fd: int) -> int:
+    if ctypes.sizeof(_Statx) != 256 or _Statx.mnt_id.offset != 0x90:
+        raise UniqueMountIdentityUnavailable("unsupported statx ABI")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        query = libc.statx
+    except AttributeError as exc:
+        raise UniqueMountIdentityUnavailable("libc has no statx") from exc
+    query.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_uint,
+        ctypes.POINTER(_Statx),
+    ]
+    query.restype = ctypes.c_int
+    result = _Statx()
+    if query(fd, b"", _AT_EMPTY_PATH, STATX_MNT_ID_UNIQUE, ctypes.byref(result)):
+        raise UniqueMountIdentityUnavailable(
+            f"statx unique mount ID failed: {os.strerror(ctypes.get_errno())}"
+        )
+    if not result.mask & STATX_MNT_ID_UNIQUE or not result.mnt_id:
+        raise UniqueMountIdentityUnavailable(
+            "kernel did not return STATX_MNT_ID_UNIQUE (Linux 6.8+ required)"
+        )
+    return result.mnt_id
+
+
+def _linux_boot_volume(fd: int) -> str:
+    mount = _linux_unique_mount_id(fd)
     try:
         boot = (
             Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
@@ -187,9 +268,9 @@ def _linux_boot_volume(device: int) -> str:
     if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot) is None:
         raise IdentityUnavailable("kernel boot ID is invalid")
     boot = boot.replace("-", "")
-    if not int(boot, 16) or not 0 <= device < 2**64:
+    if not int(boot, 16):
         raise IdentityUnavailable("invalid boot-scoped volume identity")
-    return f"{boot}.{device:016x}"
+    return f"{boot}.mnt-{mount:016x}"
 
 
 def _windows_file_id_info(data: bytes) -> DurableFileIdentity:
@@ -233,7 +314,7 @@ def identity_from_fd(
             if _linux_filesystem_type(fd) in {0x01021994, 0x858458F6}:  # tmpfs, ramfs
                 kind, volume = (
                     VolumeKind.BOOT_SCOPED,
-                    _linux_boot_volume(metadata.st_dev),
+                    _linux_boot_volume(fd),
                 )
             else:
                 kind, volume = VolumeKind.LINUX_UUID, _linux_volume(metadata.st_dev)

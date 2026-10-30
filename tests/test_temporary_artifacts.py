@@ -2130,3 +2130,27 @@ def test_current_sweep_never_reads_or_rekeys_legacy_scratch(tmp_path, renumbered
         str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()
     } == before
     assert (target / "keep").read_bytes() == b"retained payload"
+
+
+def test_memory_scratch_refuses_missing_unique_mount_before_allocation(
+    tmp_path, monkeypatch
+):
+    from molt.durable_file_identity import UniqueMountIdentityUnavailable
+    from molt.dx import ScratchStorage
+
+    root = tmp_path / "memory"
+    root.mkdir()
+    monkeypatch.setattr(
+        scratch, "scratch_storage", lambda env: ScratchStorage(mode="memory", root=root)
+    )
+
+    def unavailable(path):
+        raise UniqueMountIdentityUnavailable("kernel did not return the unique bit")
+
+    monkeypatch.setattr(scratch, "file_identity", unavailable)
+    with pytest.raises(
+        UniqueMountIdentityUnavailable, match="MOLT_SCRATCH_STORAGE=disk"
+    ):
+        _lease(tmp_path, storage="memory")
+    assert list(root.iterdir()) == []
+    assert not (tmp_path / "tmp" / "gs").exists()
