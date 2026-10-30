@@ -138,6 +138,10 @@ path = "src/molt/process_guard.py"
 reason = "Node version-probe custody outside measured sample intervals"
 
 [[mechanics]]
+path = "src/molt/guard_stems_generated.py"
+reason = "registered guard-scope types for Node version-probe custody; no sample metrics or verdict policy"
+
+[[mechanics]]
 path = "src/molt/source_root.py"
 reason = "locates the source-owned Node selection policy"
 
