@@ -1331,6 +1331,7 @@
         "docs/agent/AGENTS.full.md",
         "tests/proof_queue_owned_roots.py",
         "tests/cli/test_cli_smoke.py/**",
+        "tests/test_durable_identity_state_machine.py/**",
         "tests/test_dx_run_context.py/**",
         "tests/test_molt_queue_cli.py/**",
         "tests/tools/test_proof_queue.py/**",
@@ -2098,6 +2099,7 @@
       "family": "platform_portability",
       "id": "portability.queue.linux",
       "pytest": [
+        "tests/test_durable_identity_state_machine.py",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -2170,6 +2172,7 @@
       "family": "platform_portability",
       "id": "portability.queue.macos",
       "pytest": [
+        "tests/test_durable_identity_state_machine.py",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -2242,6 +2245,7 @@
       "family": "platform_portability",
       "id": "portability.queue.windows",
       "pytest": [
+        "tests/test_durable_identity_state_machine.py",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -9794,7 +9798,7 @@
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.guard-wiring-source-observation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_check_memory_guard_wiring.py tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
       "local.host-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
-      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py tests/test_temporary_artifacts.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
+      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py tests/test_temporary_artifacts.py tests/test_durable_identity_state_machine.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_import_file.py",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.installed-compiler-distribution.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_installed_compiler.py tests/cli/test_installed_runtime.py tests/cli/test_installed_toolchain_rules.py tests/tools/test_release_installed_distribution.py tests/tools/test_release_native_build.py tests/tools/test_release_supply_chain.py",
@@ -11011,6 +11015,7 @@
           "src/molt/temporary_artifacts.py",
           "tools/memory_guard_core/memory_limits.py",
           "tests/test_temporary_artifacts.py",
+          "tests/test_durable_identity_state_machine.py",
           "tests/test_memory_guard_tool.py",
           "tools/ci_resource_env.py",
           "tests/test_host_capacity.py",
@@ -11028,6 +11033,7 @@
           "tests/tools/test_ci_resource_env.py",
           "tests/test_memory_guard_tool.py",
           "tests/test_temporary_artifacts.py",
+          "tests/test_durable_identity_state_machine.py",
           "tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup"
         ],
         "toolchains": [
