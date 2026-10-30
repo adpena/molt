@@ -2660,7 +2660,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     source.mkdir()
     if development:
         from tests.integration_driver_fixture import clone_file
-        from tools.git_identity import repository_source_paths
+        from molt.source_admission import repository_source_paths
 
         # Real command admission validates the complete proof registry: test
         # paths, workflow topology, setup evidence and tool metadata as well as

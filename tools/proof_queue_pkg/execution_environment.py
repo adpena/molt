@@ -35,7 +35,7 @@ from molt.python_environment_identity import (
 )
 from molt.python_runtime_identity import python_runtime_selection_locations
 from tools import proof_plan
-from tools.git_identity import repository_source_paths
+from molt.source_admission import repository_source_paths
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import cargo_output_environment
 from tools.proof_queue_pkg import command_identity
