@@ -410,6 +410,10 @@ def _unharvested_ignored_paths(git: Any) -> tuple[list[str], list[str]]:
             continue
         if _regenerable_output(named):
             continue
+        from tools.molt_dev_storage import indexed_payload
+
+        if indexed_payload(named):
+            continue
         unknown.append(path)
     return sorted(set(stale)), unknown
 
@@ -513,10 +517,13 @@ def validate_lane_handoff(
             f"ensure --checkout {worktree} {' '.join(stale)}"
         )
     if unknown:
-        raise DriverError(
-            f"{worktree} holds unharvested ignored signal; reconcile and preserve it "
-            "outside the lane before retirement: " + ", ".join(unknown)
+        from tools.molt_dev_storage import harvest_lane_payload
+
+        harvested = harvest_lane_payload(
+            worktree, lane_task(slug), unknown, lane_environment(os.environ)
         )
+        for item in harvested:
+            _ok(f"preserved lane payload {item['source']} at {item['index']}")
     return done
 
 

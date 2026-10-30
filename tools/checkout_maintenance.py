@@ -68,7 +68,6 @@ def _schedule(
         _git_bytes,
         controller_source,
         controller_for_source,
-        controllers_root,
     )
     from tools.detached_execution import launch_detached
     from tools.git_identity import require_git_object_id
@@ -111,12 +110,20 @@ def _schedule(
             source = controller_for_source(repository)
             if source is None or len(source.root.parents) < 3:
                 raise RuntimeError("automatic maintenance needs published Git source")
-            common_dir = source.root.parents[2]
-            if controllers_root(common_dir) / source.key != source.root:
-                raise RuntimeError("maintenance controller has no common Git binding")
+            from tools.controller_source import controller_common_dir
+
+            common_dir = controller_common_dir(source.root)
             repository = common_dir
         else:
             _, common_dir = directories
+        if operation == "checkout":
+            from molt.dx import RunContext
+
+            # Capture selectors while their original source/cwd custody exists.
+            # The retained controller supplies policy, never new storage roots.
+            captured = RunContext(common_dir.parent).canonical_env(
+                captured, create_dirs=False
+            )
         published = require_git_object_id(
             os.fsdecode(
                 _git_bytes(
@@ -182,7 +189,30 @@ def main(argv: list[str] | None = None) -> int:
     args = maintenance_arguments(argv)
     from tools.disk_guard import collect_due
 
-    results = collect_due(root=args.root, env=ProcessEnvironment(os.environ))
+    auxiliary_results = []
+
+    def auxiliary() -> None:
+        from tools.controller_source import controller_common_dir
+        from tools.molt_dev_storage import trim
+
+        directories = git_directories(_REPO_ROOT)
+        common = (
+            directories[1]
+            if directories is not None
+            else controller_common_dir(_REPO_ROOT)
+        )
+        auxiliary_results.extend(
+            trim(
+                common.parent,
+                ProcessEnvironment(os.environ),
+                apply=True,
+                policy_source=_REPO_ROOT,
+            )
+        )
+
+    results = collect_due(
+        root=args.root, env=ProcessEnvironment(os.environ), auxiliary=auxiliary
+    )
     print(
         json.dumps(
             {
@@ -190,11 +220,15 @@ def main(argv: list[str] | None = None) -> int:
                 "root": str(args.root),
                 "policy_cwd": str(args.policy_cwd),
                 "results": [result.to_dict() for result in results],
+                "storage": auxiliary_results,
             }
         ),
         flush=True,
     )
-    return int(any(result.errors for result in results))
+    return int(
+        any(result.errors for result in results)
+        or any(row.get("error") for row in auxiliary_results)
+    )
 
 
 if __name__ == "__main__":

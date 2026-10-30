@@ -149,7 +149,7 @@ self-commits or invents an external scheduling authority.
   Never probe with `os.kill(pid, 0)`: on Windows signal 0 is `CTRL_C_EVENT`.
 - `tools/memory_guard_custody.py --json` — inspect guard-marker custody; dry-run
   by default. `--apply` reconciles records whose processes are proven gone and
-  retires resolved records into the bounded `retired/` history; `--release
+  retires resolved records into durable `retired/` history; `--release
   MARKER --apply` resolves an inconclusive record after operator review.
   `tools/memory_guard_core/active_custody.py` owns parsing, locked publication,
   reconciliation, retirement and terminal projection for the producer, disk
