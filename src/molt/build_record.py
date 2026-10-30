@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, assert_never
 from molt import file_publication, input_report
 from molt.durable_file_identity import (
     DurableFileIdentity,
+    StatToken,
     file_identity,
 )
 from molt.build_output_selection import BuildOutputSelection
@@ -36,7 +37,6 @@ from molt.input_report import (
     FileEvidence,
     ProbeOutcome,
     ReadReceiptId,
-    StatToken,
     resolved_probe,
     stat_token,
 )

@@ -21,9 +21,10 @@ import threading
 from enum import IntFlag, StrEnum
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol, assert_never
+from typing import TYPE_CHECKING, Any, Protocol, assert_never
 
-from molt.durable_file_identity import StatToken
+if TYPE_CHECKING:
+    from molt.durable_file_identity import StatToken
 
 # A lookup's resolved target and file type; an empty target carries the errno
 # of a lookup that failed for a reason other than absence; None is absent.
@@ -71,6 +72,8 @@ def stat_token(
         change = metadata.st_ctime_ns
     if metadata.st_ino <= 0:
         return None
+    from molt.durable_file_identity import StatToken
+
     return StatToken(
         metadata.st_ino,
         metadata.st_mode,
@@ -209,6 +212,8 @@ def _reads_existing_content(flags: int) -> bool:
 
 
 def _worker_json_value(value: object) -> object:
+    from molt.durable_file_identity import StatToken
+
     if isinstance(value, StatToken):
         return value.payload()
     raise TypeError(f"unsupported worker fact: {type(value).__name__}")
@@ -347,6 +352,10 @@ def _install_hook() -> None:
     if not _HOOK_INSTALLED:
         import sys
 
+        # Worker codecs must be initialized before the audit hook can observe
+        # their imports; a spawned worker otherwise reenters a partial module.
+        from molt import durable_file_identity  # noqa: F401
+
         if os.name == "nt":
             from molt.file_hashing import _windows_file_api
 
@@ -421,6 +430,8 @@ def merge_worker_logs(sink: FactSink, log_dir: str) -> None:
 
 
 def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
+    from molt.durable_file_identity import StatToken
+
     kind = WorkerFactKind(entry[0])
     if kind is WorkerFactKind.OBSERVED:
         _, observed_kind, name = entry

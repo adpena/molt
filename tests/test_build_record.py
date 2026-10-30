@@ -1970,7 +1970,9 @@ def test_checksum_validation_survives_aging_and_equal_metadata(
     # Present an old, unchanged metadata generation. Replay must retain its
     # checksum obligation even when both timestamp clocks are long past.
     row[1][3] = row[1][4] = 1
-    frozen_token = input_report.StatToken.from_payload(row[1])
+    from molt.durable_file_identity import StatToken
+
+    frozen_token = StatToken.from_payload(row[1])
     record.write_text(json.dumps(payload), encoding="utf-8")
     real_stat_token = build_record.stat_token
 
