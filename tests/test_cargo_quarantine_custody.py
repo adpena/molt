@@ -273,7 +273,7 @@ def test_completed_cache_retention_requires_complete_interruption_inventory(
     }
     assert (
         proof_plan._guarded_failure_scope(
-            metrics, metrics_valid=True, returncode=124, cancelled=False
+            metrics, metrics_valid=True, returncode=124, cancel_requested=False
         )[0]
         == expected_scope
     )
