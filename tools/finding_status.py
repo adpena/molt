@@ -41,6 +41,7 @@ _DEPENDENCY_FAMILY_RE = re.compile(r"^(?P<letter>[A-Z])\. (?P<name>\S.*)$")
 # The subsection whose table maps every open row to one root-cause family.
 DEPENDENCY_ORDER_SUBSECTION = "Family dependency order"
 _CELL_SEPARATOR_RE = re.compile(r"(?<!\\)\|")
+_DELIMITER_ROW_RE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$")
 _KEY_RE = re.compile(r"(?P<prefix>HF-F?|V1-)(?P<number>\d+)(?P<rest>(?: \([^)|]*\))?)")
 
 
@@ -130,7 +131,17 @@ def project(text: str) -> FindingStatus:
     families: list[DependencyFamily] = []
     section = ""
     subsection = ""
+    # The column count of the table the current line belongs to, from its
+    # header row; a literal | inside a cell silently splits the row otherwise.
+    table_width: int | None = None
+    previous = ""
     for line_number, line in enumerate(text.splitlines(), start=1):
+        header, previous = previous, line
+        if _DELIMITER_ROW_RE.match(line.strip()):
+            table_width = len(cells(header))
+            continue
+        if not line.lstrip().startswith("|"):
+            table_width = None
         heading = _SECTION_RE.match(line)
         if heading is not None:
             section = heading["title"]
@@ -169,6 +180,11 @@ def project(text: str) -> FindingStatus:
             problems.append(
                 f"row {key} (line {line_number}) needs an ID cell, a finding cell "
                 "and an evidence cell"
+            )
+        elif table_width is not None and len(row_cells) != table_width:
+            problems.append(
+                f"row {key} (line {line_number}) has {len(row_cells)} cells but its "
+                f"table has {table_width}; escape a literal | inside a cell as \\|"
             )
         evidence = row_cells[-1] if len(row_cells) >= 3 else ""
         if state == STATE_FIXED and len(row_cells) >= 3 and not evidence:
