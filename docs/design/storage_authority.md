@@ -24,7 +24,7 @@ when a capacity-selected output volume changes.
 | Gate receipts and streams | Artifact root `evidence/integration/<repository>` | Durable; archival compaction retains an index |
 | Coordination | Existing checkout `logs/agents` and Git control records | Durable, small records; no age-based evidence deletion |
 | Scratch/temp | Existing per-checkout run scratch root | Existing last-use/shared-use protocol for regenerable scratch |
-| Provisioned executable toolchains | Canonical `MOLT_TARGET_ROOT` | Current pinned versions and live users stay; attested old versions retire by last use |
+| Provisioned executable toolchains | Canonical `MOLT_TARGET_ROOT`: the repository's custody (a linked worktree's main checkout, `custody_layout.repository_custody_root`), never the volume that holds the worktree | Current pinned versions and live users stay; attested old versions retire by last use |
 | Guard/pytest run control | Existing artifact-root temp control namespaces | Durable diagnostics under existing guard custody |
 | Benchmark reports | Artifact root `bench/results` | Durable; source baselines remain source inputs |
 | Backend sockets | Existing short host socket selector when required by OS path limits | Existing daemon liveness; no payload-cache exception |
