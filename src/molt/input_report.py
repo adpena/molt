@@ -23,10 +23,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol, assert_never
 
-from molt.durable_file_identity import file_identity
+from molt.durable_file_identity import StatToken, file_identity
 
-# (typed volume, file id, mode, size, mtime_ns, content-change ns)
-StatToken = tuple[str, str, int, int, int, int]
 # A lookup's resolved target and file type; an empty target carries the errno
 # of a lookup that failed for a reason other than absence; None is absent.
 ProbeOutcome = tuple[str, int] | None
@@ -75,8 +73,8 @@ def stat_token(
         identity = file_identity(Path(os.path.realpath(path)), expected=metadata)
     except (OSError, ValueError):
         return None
-    return (
-        *identity.stat_prefix(),
+    return StatToken(
+        identity,
         metadata.st_mode,
         # Windows by-name and handle metadata can report 4096 and 0 for
         # the same unchanged directory. Its allocation length is not a
@@ -209,6 +207,12 @@ def _reads_existing_content(flags: int) -> bool:
     return access != os.O_WRONLY or bool(flags & os.O_APPEND)
 
 
+def _worker_json_value(value: object) -> object:
+    if isinstance(value, StatToken):
+        return value.payload()
+    raise TypeError(f"unsupported worker fact: {type(value).__name__}")
+
+
 def _worker_log(entry: list[Any]) -> None:
     """Append one fact to this worker's log; a lost fact marks the log failed."""
     global _WORKER_LOG
@@ -222,7 +226,7 @@ def _worker_log(entry: list[Any]) -> None:
         try:
             if _WORKER_LOG is None:
                 _WORKER_LOG = open(name, "a", encoding="utf-8")  # noqa: SIM115
-            _WORKER_LOG.write(json.dumps(entry) + "\n")
+            _WORKER_LOG.write(json.dumps(entry, default=_worker_json_value) + "\n")
             _WORKER_LOG.flush()
         except (OSError, TypeError, ValueError):
             try:
@@ -422,10 +426,12 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
         sink.observe((observed_kind, name))
     elif kind is WorkerFactKind.FILE:
         _, name, token, sha256 = entry
-        sink.file(name, None if token is None else tuple(token), sha256)
+        sink.file(
+            name, None if token is None else StatToken.from_payload(token), sha256
+        )
     elif kind is WorkerFactKind.DIRECTORY:
         _, name, token = entry
-        sink.directory(name, None if token is None else tuple(token))
+        sink.directory(name, None if token is None else StatToken.from_payload(token))
     elif kind is WorkerFactKind.PROBE:
         _, name, outcome = entry
         sink.probe(name, None if outcome is None else (outcome[0], outcome[1]))
@@ -442,7 +448,9 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
         sink.build_result(entry[1])
     elif kind is WorkerFactKind.CONSUMED_FILE:
         _, name, token, sha256 = entry
-        sink.consumed_file(name, None if token is None else tuple(token), sha256)
+        sink.consumed_file(
+            name, None if token is None else StatToken.from_payload(token), sha256
+        )
     elif kind is WorkerFactKind.READ_STARTED or kind is WorkerFactKind.READ_FINISHED:
         identity = entry[1]
         if (
@@ -458,7 +466,10 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
         else:
             _, _, name, token, sha256 = entry
             sink.read_finished(
-                receipt, name, None if token is None else tuple(token), sha256
+                receipt,
+                name,
+                None if token is None else StatToken.from_payload(token),
+                sha256,
             )
     else:
         assert_never(kind)

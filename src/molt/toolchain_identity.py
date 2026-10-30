@@ -19,6 +19,7 @@ from typing import BinaryIO
 
 from molt.durable_file_identity import (
     DurableFileIdentity,
+    StatToken,
     file_identity,
 )
 from molt.default_paths import executable_environment_value, expand_user_path
@@ -75,7 +76,7 @@ class StableRegularFileVersion:
         default=None, kw_only=True, compare=False, repr=False
     )
 
-    def stat_token(self) -> tuple[str, str, int, int, int, int]:
+    def stat_token(self) -> StatToken:
         """Durable projection; the captured local fence remains independent."""
         identity = self._durable_identity
         if identity is None:
@@ -86,8 +87,8 @@ class StableRegularFileVersion:
                 )
             identity = file_identity(self.path, expected=metadata)
             object.__setattr__(self, "_durable_identity", identity)
-        return (
-            *identity.stat_prefix(),
+        return StatToken(
+            identity,
             *self._stat_identity[2:5],
             self._content_change_time_ns,
         )
@@ -742,7 +743,12 @@ def _stable_regular_file_snapshot(
 
 
 def _regular_file_identity(
-    path: Path, metadata: os.stat_result, change_time_ns: int, digest: str
+    path: Path,
+    metadata: os.stat_result,
+    change_time_ns: int,
+    digest: str,
+    *,
+    durable_identity: DurableFileIdentity | None = None,
 ) -> StableRegularFileIdentity:
     return StableRegularFileIdentity(
         path=path,
@@ -750,6 +756,7 @@ def _regular_file_identity(
         sha256=digest,
         _stat_identity=_stat_identity(metadata),
         _content_change_time_ns=change_time_ns,
+        _durable_identity=durable_identity,
     )
 
 
@@ -857,10 +864,8 @@ class FileDigestCache:
         self.store = store
         self._max_age_ns = max_age_ns
         self._started_ns = time.time_ns()
-        self._recorded: (
-            dict[str, tuple[tuple[str, str, int, int, int, int], str, int]] | None
-        ) = None
-        self._pending: dict[str, tuple[tuple[str, str, int, int, int, int], str]] = {}
+        self._recorded: dict[str, tuple[StatToken, str, int]] | None = None
+        self._pending: dict[str, tuple[StatToken, str]] = {}
 
     def _connect(self) -> sqlite3.Connection:
         self.store.parent.mkdir(parents=True, exist_ok=True)
@@ -883,12 +888,12 @@ class FileDigestCache:
         connection.execute("PRAGMA user_version=2")
         return connection
 
-    def _rows(self) -> dict[str, tuple[tuple[str, str, int, int, int, int], str, int]]:
+    def _rows(self) -> dict[str, tuple[StatToken, str, int]]:
         if self._recorded is None:
             with closing(self._connect()) as connection:
                 self._recorded = {
                     row[0]: (
-                        (row[1], row[2], row[3], row[4], row[5], row[6]),
+                        StatToken.from_payload(list(row[1:7])),
                         row[7],
                         row[8],
                     )
@@ -936,8 +941,8 @@ class FileDigestCache:
                 f"{label} is not one stable regular file: {path}"
             )
         key = os.fspath(path)
-        token = (
-            *file_identity(path, expected=expected_path_stat).stat_prefix(),
+        token = StatToken(
+            file_identity(path, expected=expected_path_stat),
             *_stat_identity(expected_path_stat)[2:],
         )
         recorded = self._rows().get(key)
@@ -945,7 +950,11 @@ class FileDigestCache:
             if recorded[2] < self._started_ns - self._max_age_ns // 2:
                 self._pending[key] = (token, recorded[1])
             return _regular_file_identity(
-                path, expected_path_stat, expected_path_stat.st_ctime_ns, recorded[1]
+                path,
+                expected_path_stat,
+                expected_path_stat.st_ctime_ns,
+                recorded[1],
+                durable_identity=token.identity,
             )
         return None
 
@@ -965,7 +974,7 @@ class FileDigestCache:
         if not self._pending:
             return
         rows = [
-            (path, *token, sha256, self._started_ns)
+            (path, *token.payload(), sha256, self._started_ns)
             for path, (token, sha256) in self._pending.items()
         ]
         with closing(self._connect()) as connection, connection:

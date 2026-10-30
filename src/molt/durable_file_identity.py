@@ -15,7 +15,7 @@ import re
 import stat
 import struct
 import sys
-from typing import Literal
+from typing import Literal, assert_never
 
 
 class IdentityUnavailable(ValueError):
@@ -41,11 +41,33 @@ class VolumeKind(StrEnum):
     BOOT_SCOPED = "boot-scoped"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class DurableFileIdentity:
     kind: VolumeKind
     volume: str
     file_id: str
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DurableFileIdentity):
+            return NotImplemented
+        kind = self.kind
+        match kind:
+            case (
+                VolumeKind.APPLE_UUID
+                | VolumeKind.LINUX_UUID
+                | VolumeKind.WINDOWS_SERIAL
+                | VolumeKind.BOOT_SCOPED
+            ):
+                return (
+                    kind is other.kind
+                    and self.volume == other.volume
+                    and self.file_id == other.file_id
+                )
+            case _:
+                assert_never(kind)
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.volume, self.file_id))
 
     def payload(self) -> dict[str, str]:
         return {"kind": self.kind.value, "volume": self.volume, "file_id": self.file_id}
@@ -75,21 +97,54 @@ class DurableFileIdentity:
             or not isinstance(file_id, str)
             or re.fullmatch(r"[0-9a-f]{32}", file_id) is None
             or int(file_id, 16) == 0
-            or (
-                kind is VolumeKind.APPLE_UUID
-                and re.fullmatch(r"[0-9a-f]{32}", volume) is None
-            )
-            or (
-                kind is VolumeKind.WINDOWS_SERIAL
-                and re.fullmatch(r"[0-9a-f]{16}", volume) is None
-            )
-            or (
-                kind is VolumeKind.BOOT_SCOPED
-                and re.fullmatch(r"[0-9a-f]{32}\.mnt-[0-9a-f]{16}", volume) is None
-            )
         ):
             raise IdentityUnavailable("invalid durable volume or file id")
+        match kind:
+            case VolumeKind.APPLE_UUID:
+                valid = re.fullmatch(r"[0-9a-f]{32}", volume) is not None
+            case VolumeKind.WINDOWS_SERIAL:
+                valid = re.fullmatch(r"[0-9a-f]{16}", volume) is not None
+            case VolumeKind.BOOT_SCOPED:
+                valid = (
+                    re.fullmatch(r"[0-9a-f]{32}\.mnt-[0-9a-f]{16}", volume) is not None
+                )
+            case VolumeKind.LINUX_UUID:
+                valid = True
+            case _:
+                assert_never(kind)
+        if not valid:
+            raise IdentityUnavailable("invalid durable volume identity")
         return cls(kind, volume, file_id)
+
+
+@dataclass(frozen=True, slots=True)
+class StatToken:
+    """A typed durable identity plus mutation clocks; wire strings stay at IO."""
+
+    identity: DurableFileIdentity
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+    def payload(self) -> list[str | int]:
+        return [
+            *self.identity.stat_prefix(),
+            self.mode,
+            self.size,
+            self.mtime_ns,
+            self.ctime_ns,
+        ]
+
+    @classmethod
+    def from_payload(cls, value: object) -> StatToken:
+        if (
+            not isinstance(value, list)
+            or len(value) != 6
+            or any(type(n) is not int for n in value[2:])
+        ):
+            raise IdentityUnavailable("invalid durable stat token")
+        return cls(DurableFileIdentity.from_stat_prefix(value[0], value[1]), *value[2:])
 
 
 # Intern queried volume facts only. In particular, never cache st_dev -> UUID:
@@ -287,6 +342,8 @@ def _windows_file_id_info(data: bytes) -> DurableFileIdentity:
 
 
 def _windows_identity(fd: int) -> DurableFileIdentity:
+    if sys.platform != "win32":
+        raise IdentityUnavailable("Windows file identity requires Windows")
     import msvcrt
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)

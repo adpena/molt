@@ -401,7 +401,7 @@ finally:
     os.close(fd)
 token = input_report.stat_token(subject)
 assert token is not None and before <= change <= time.time_ns(), (token, change)
-assert token[5] == change
+assert token.ctime_ns == change
 digest = hashlib.sha256(data).hexdigest()
 input_report.report_captured_file(subject, token, digest)
 input_report.remove_sink()
@@ -439,9 +439,9 @@ def test_windows_tokens_distinguish_file_length_from_directory_allocation(
     assert first is not None and second is not None
     assert (first == second) is (kind == "directory")
     if kind == "directory":
-        assert first[3] == 0
+        assert first.size == 0
     else:
-        assert first[3] == len(b"payload")
+        assert first.size == len(b"payload")
 
 
 def test_a_rustup_candidate_becoming_the_selected_proxy_invalidates_output(
@@ -1321,11 +1321,11 @@ def test_removed_nested_input_keeps_a_racy_boundary_even_with_explicit_probes(
     # The start/racy threshold admits the ancestor generation before removal,
     # and must reject the actual generation produced by the subtree removal.
     ledger = build_record.InputLedger(
-        before[5] + build_record.DIGEST_RACY_WINDOW_NS + 1
+        before.ctime_ns + build_record.DIGEST_RACY_WINDOW_NS + 1
     )
     shutil.rmtree(tmp_path / "existing")
     after = input_report.stat_token(tmp_path)
-    assert after is not None and after[5] > before[5]
+    assert after is not None and after.ctime_ns > before.ctime_ns
     ledger.probe(failed, None)
     ledger.probe(failed.parent, None)
     ledger.observed.add(("file", os.fspath(failed)))
@@ -1887,7 +1887,7 @@ def test_read_receipts_require_complete_matching_publication(
                     "read_finished",
                     list(identity),
                     str(path),
-                    captured_token,
+                    None if captured_token is None else captured_token.payload(),
                     captured_digest,
                 ],
             )
@@ -1941,7 +1941,7 @@ def test_checksum_validation_survives_aging_and_equal_metadata(
     # Present an old, unchanged metadata generation. Replay must retain its
     # checksum obligation even when both timestamp clocks are long past.
     row[1][4] = row[1][5] = 1
-    frozen_token = tuple(row[1])
+    frozen_token = input_report.StatToken.from_payload(row[1])
     record.write_text(json.dumps(payload), encoding="utf-8")
     real_stat_token = build_record.stat_token
 
@@ -1992,7 +1992,7 @@ def test_fresh_consumed_source_reuses_without_a_future_process_clock(
         token = input_report.stat_token(source)
         assert (
             token is not None
-            and token[5] >= started - build_record.DIGEST_RACY_WINDOW_NS
+            and token.ctime_ns >= started - build_record.DIGEST_RACY_WINDOW_NS
         )
         if value == 2:
             assert record is not None
@@ -2318,7 +2318,11 @@ def test_legacy_build_record_is_a_cold_miss_without_rewriting_it(tmp_path, renum
 
     def old_token(name, token):
         metadata = Path(name).stat()
-        return [metadata.st_dev + int(renumbered), metadata.st_ino, *token[2:]]
+        return [
+            metadata.st_dev + int(renumbered),
+            metadata.st_ino,
+            *token[2:],
+        ]
 
     for row in payload["files"]:
         if row[1] is not None:

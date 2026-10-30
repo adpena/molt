@@ -3054,10 +3054,11 @@ def retire_cargo_incremental(
             root_entry = next(row for row in inventory["entries"] if row[0] == ".")
             from molt.durable_file_identity import file_identity
 
-            if [
-                metadata.st_mode,
-                *file_identity(path, expected=metadata).stat_prefix(),
-            ] != root_entry[1:4]:
+            from molt.durable_file_identity import DurableFileIdentity
+
+            if metadata.st_mode != root_entry[1] or file_identity(
+                path, expected=metadata
+            ) != DurableFileIdentity.from_stat_prefix(*root_entry[2:4]):
                 raise ValueError("incremental root identity changed before retirement")
             retirement = soft_retire(
                 path, root, reason="cargo-incremental:" + digest, owner=str(owner)

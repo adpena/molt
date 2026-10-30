@@ -113,7 +113,7 @@ def _write_artifact_sync_state(
         "tier": tier,
         "size": identity.size,
         "sha256": identity.sha256,
-        "generation": list(identity.stat_token()[:2]),
+        "generation": list(identity.stat_token().identity.stat_prefix()),
         "emission_origin": (
             emission_origin.payload() if emission_origin is not None else None
         ),
@@ -155,7 +155,8 @@ def _artifact_sync_state_matches(
     return (
         state["size"] == identity.size
         and state["sha256"] == identity.sha256
-        and state["generation"] == list(identity.stat_token()[:2])
+        and DurableFileIdentity.from_stat_prefix(*state["generation"])
+        == identity.stat_token().identity
     )
 
 
@@ -175,7 +176,8 @@ def _artifact_sync_emission_origin(
         or not _artifact_sync_payload_shape(state)
         or state.get("sha256") != identity.sha256
         or state.get("size") != identity.size
-        or state.get("generation") != list(identity.stat_token()[:2])
+        or DurableFileIdentity.from_stat_prefix(*state["generation"])
+        != identity.stat_token().identity
         or state.get("emission_origin") is None
     ):
         return None
