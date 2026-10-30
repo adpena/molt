@@ -58,6 +58,7 @@ def guarded_cli_test_popen(
     stderr: int | None = subprocess.PIPE,
     text: bool = True,
 ) -> subprocess.Popen[str]:
+    process_guard_common.refuse_bare_interpreter(args)
     run_env = harness_memory_guard.canonical_harness_env(env, repo_root=ROOT)
     limits = harness_memory_guard.limits_from_env("MOLT_CLI_TEST", run_env)
     summary_dir = control_state_dir(ROOT, "cli-test-memory-guard", run_env)

@@ -115,7 +115,7 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
     )
     result = run(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={"MOLT_GUARD_PROFILE_LOG": str(profile)},
     )
     assert result.returncode == final_returncode
@@ -262,7 +262,7 @@ def test_guarded_command_incident_writes_outside_armed_source(
     )
     result = harness_memory_guard.guarded_completed_process(
         command,
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         cwd=repo,
         env=env,
         limits=limits,
@@ -624,7 +624,7 @@ def test_serial_nested_guard_budget_preserves_the_admitted_tree(
     admitted = outer.current_memory_limits(env)
     assert admitted.max_total_rss_gb == pytest.approx(5.82, abs=1 / 1024**2)
     prefixes = (
-        ("MOLT_WASM_TEST", "MOLT_WASM_LINK", "MOLT_BACKEND")
+        ("MOLT_WASM_TEST", "MOLT_WASM_LINK", "MOLT_BUILD")
         if rotate_prefix
         else ("MOLT_WASM_TEST",)
     )
@@ -799,10 +799,10 @@ def test_current_child_rlimit_refreshes_dynamic_adaptive_budget(monkeypatch) -> 
 
 
 def test_limits_from_env_uses_fast_default_poll(monkeypatch) -> None:
-    monkeypatch.delenv("MOLT_TEST_MEMORY_GUARD_POLL_SEC", raising=False)
+    monkeypatch.delenv("MOLT_PYTEST_MEMORY_GUARD_POLL_SEC", raising=False)
     monkeypatch.delenv("MOLT_MEMORY_GUARD_POLL_SEC", raising=False)
 
-    limits = harness_memory_guard.limits_from_env("MOLT_TEST", {})
+    limits = harness_memory_guard.limits_from_env("MOLT_PYTEST", {})
 
     assert limits.poll_interval == harness_memory_guard.DEFAULT_POLL_INTERVAL_SEC
     assert limits.poll_interval == 0.10
@@ -1002,7 +1002,7 @@ for name in ('TMPDIR', 'TMP', 'TEMP'):
         stream.write(name.encode('ascii'))
 """
     if route == "executor":
-        run = CommandExecutor.for_file(__file__).run
+        run = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").run
         kwargs = {"text": True, "capture_output": True}
     else:
         run = (
@@ -1010,7 +1010,7 @@ for name in ('TMPDIR', 'TMP', 'TEMP'):
             if route == "tempfiles-relative"
             else harness_memory_guard.guarded_completed_process
         )
-        kwargs = {"prefix": "MOLT_TEST"}
+        kwargs = {"prefix": "MOLT_PYTEST"}
         if route != "tempfiles-relative":
             kwargs["capture_output"] = True
         if route == "regular-logical":
@@ -1041,7 +1041,7 @@ def test_selected_temporary_root_error_prevents_child_birth(tmp_path: Path) -> N
     child_marker = tmp_path / "child-born"
     state_root = tmp_path / "guard-state"
     context = harness_memory_guard.HarnessExecutionContext.from_env(
-        "MOLT_TEST",
+        "MOLT_PYTEST",
         {
             "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root),
             "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
@@ -1103,7 +1103,7 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -1153,7 +1153,7 @@ def test_guarded_completed_process_preallocates_pytest_current_test_env(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-m", "pytest", "tests/test_one.py"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")},
         limits=limits,
     )
@@ -1253,7 +1253,7 @@ def test_guarded_completed_process_writes_command_profile(
     options = {} if tempfiles else {"operation_role": "build"}
     result = run(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={
             **guard_custody_env(),
             "MOLT_GUARD_PROFILE_LOG": str(profile_log),
@@ -1274,7 +1274,7 @@ def test_guarded_completed_process_writes_command_profile(
     assert len(payload) == 1
     event = payload[0]
     assert event["event"] == "guarded_command_profile"
-    assert event["prefix"] == "MOLT_TEST"
+    assert event["prefix"] == "MOLT_PYTEST"
     if not tempfiles:
         assert event["operation_role"] == "build"
     assert event["session_id"] == "unit"
@@ -1351,7 +1351,7 @@ def test_guarded_completed_process_skips_success_profile_by_default(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -1407,7 +1407,7 @@ def test_guarded_completed_process_profiles_incident_by_default(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={
             **guard_custody_env(),
             "PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)",
@@ -1484,7 +1484,7 @@ def test_unrecorded_incident_keeps_its_whole_repro_context_inline(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={
             **guard_custody_env(),
             "MOLT_GUARD_PROFILE": "off",
@@ -1557,7 +1557,7 @@ def test_unwritable_incident_record_keeps_the_context_inline(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={
             **guard_custody_env(),
             "PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)",
@@ -1605,7 +1605,7 @@ def test_a_plain_nonzero_exit_writes_no_incident_record(monkeypatch, tmp_path):
     )
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "raise SystemExit(3)"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env=guard_custody_env(),
         limits=harness_memory_guard.HarnessMemoryLimits(
             enabled=True,
@@ -1676,7 +1676,7 @@ def test_guarded_completed_process_profiles_cargo_incremental_quarantine(
 
     result = harness_memory_guard.guarded_completed_process(
         ["cargo", "test"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -1724,7 +1724,7 @@ def test_guarded_completed_process_rotates_command_profile(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={
             **guard_custody_env(),
             "MOLT_GUARD_PROFILE_LOG": str(profile_log),
@@ -1965,11 +1965,11 @@ def test_guarded_completed_process_honors_external_repo_sentinel_env(
         max_global_rss_gb=4,
         poll_interval=0.1,
     )
-    env = {harness_memory_guard.repo_sentinel_active_env_key("MOLT_TEST"): "1"}
+    env = {harness_memory_guard.repo_sentinel_active_env_key("MOLT_PYTEST"): "1"}
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env=env,
         limits=limits,
     )
@@ -1982,11 +1982,11 @@ def test_nested_command_keeps_its_scratch_custody_under_suite_sentinel(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv(
-        harness_memory_guard.repo_sentinel_active_env_key("MOLT_TEST"), "1"
+        harness_memory_guard.repo_sentinel_active_env_key("MOLT_PYTEST"), "1"
     )
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('nested-owned-tree')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
@@ -2016,8 +2016,8 @@ def test_execution_context_start_repo_sentinel_honors_external_marker(
         poll_interval=0.1,
     )
     context = harness_memory_guard.HarnessExecutionContext.from_env(
-        "MOLT_TEST",
-        {harness_memory_guard.repo_sentinel_active_env_key("MOLT_TEST"): "1"},
+        "MOLT_PYTEST",
+        {harness_memory_guard.repo_sentinel_active_env_key("MOLT_PYTEST"): "1"},
         repo_root=tmp_path,
         limits=limits,
     )
@@ -2066,7 +2066,7 @@ def test_guarded_completed_process_refreshes_dynamic_child_rlimit(monkeypatch) -
         max_total_rss_gb=3,
         max_global_rss_gb=4,
         poll_interval=0.1,
-        adaptive_prefix="MOLT_TEST",
+        adaptive_prefix="MOLT_PYTEST",
         dynamic_process_rss=True,
         dynamic_total_rss=True,
         dynamic_global_rss=True,
@@ -2075,7 +2075,7 @@ def test_guarded_completed_process_refreshes_dynamic_child_rlimit(monkeypatch) -
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('ok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -2123,7 +2123,7 @@ def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> N
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -2186,7 +2186,7 @@ def test_guarded_completed_process_reports_guard_parent_signal(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         limits=limits,
     )
@@ -2247,7 +2247,7 @@ def test_guarded_completed_process_profiles_secondary_guard_signal(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         env={**guard_custody_env(), "MOLT_GUARD_PROFILE_LOG": str(profile_log)},
         limits=limits,
     )
@@ -2311,7 +2311,7 @@ def test_guarded_completed_process_reports_actionable_violation(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -2321,7 +2321,9 @@ def test_guarded_completed_process_reports_actionable_violation(
     assert "elapsed=2.50s" in result.stderr
     assert "scope=process_tree" in result.stderr
     assert "limit=3.00GB" in result.stderr
-    assert "MOLT_TEST_MAX_PROCESS_RSS_GB/MOLT_TEST_MAX_TOTAL_RSS_GB" in result.stderr
+    assert (
+        "MOLT_PYTEST_MAX_PROCESS_RSS_GB/MOLT_PYTEST_MAX_TOTAL_RSS_GB" in result.stderr
+    )
 
 
 def test_guarded_completed_process_reports_actionable_timeout(
@@ -2356,7 +2358,7 @@ def test_guarded_completed_process_reports_actionable_timeout(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
         timeout=7,
     )
@@ -2367,7 +2369,7 @@ def test_guarded_completed_process_reports_actionable_timeout(
     assert "killed_at=2026-05-21T12:00:00Z" in result.stderr
     assert "elapsed=7.01s" in result.stderr
     assert "timeout=7.00s" in result.stderr
-    assert "MOLT_TEST_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC" in result.stderr
+    assert "MOLT_PYTEST_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC" in result.stderr
 
 
 def test_repro_snapshot_failure_cannot_replace_primary_guard_outcome(
@@ -2406,13 +2408,13 @@ def test_repro_snapshot_failure_cannot_replace_primary_guard_outcome(
 
     text_result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
         timeout=7,
     )
     bytes_result = harness_memory_guard.guarded_completed_process_to_tempfiles(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
         timeout=7,
     )
@@ -2458,12 +2460,12 @@ def test_repro_payload_preserves_profile_effective_env_and_violation_limit(
         env={"MOLT_SESSION_ID": "raw-env"},
         limits=limits,
         timeout=5,
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         environ=effective_env,
         max_global_rss_kb=123_456,
     )
 
-    assert payload["prefix"] == "MOLT_TEST"
+    assert payload["prefix"] == "MOLT_PYTEST"
     assert captured["environ"] is effective_env
     assert captured["max_global_rss_kb"] == 123_456
 
@@ -2509,7 +2511,7 @@ def test_command_profile_routes_effective_env_and_violation_limit_to_repro(
 
     _path, error, _record = harness_memory_guard._append_guarded_command_profile(
         command=[sys.executable, "hungry.py"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         cwd=tmp_path,
         env=env,
         limits=limits,
@@ -2574,7 +2576,7 @@ def test_guarded_completed_process_reports_orphan_cleanup(
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -2619,7 +2621,7 @@ def test_guarded_completed_process_closes_owned_tree_under_active_sentinel(
 
     harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         limits=limits,
     )
 
@@ -2739,7 +2741,7 @@ def test_guarded_completed_process_ignores_legacy_disable_env(monkeypatch) -> No
 
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "print('plain')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
     )
 
     assert isinstance(result, subprocess.CompletedProcess)
@@ -4107,7 +4109,7 @@ def test_relative_executable_resolved_against_parent_cwd_under_guard(
 
     result = harness_memory_guard.guarded_completed_process(
         ["relbin/python3", "-c", "print('relok')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(other_cwd),
         limits=limits,
     )
@@ -4140,7 +4142,7 @@ def test_relative_executable_resolved_when_explicit_disable_is_ignored(
 
     result = harness_memory_guard.guarded_completed_process(
         ["relbin/python3", "-c", "print('relok-disabled')"],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(other_cwd),
         limits=limits,
     )
@@ -4239,7 +4241,7 @@ def test_harness_forwards_cancellation_and_projects_closure(tmp_path, monkeypatc
     )
     profile = tmp_path / "profile.jsonl"
     context = harness_memory_guard.HarnessExecutionContext.from_env(
-        "MOLT_TEST", {"MOLT_GUARD_PROFILE_LOG": str(profile)}
+        "MOLT_PYTEST", {"MOLT_GUARD_PROFILE_LOG": str(profile)}
     )
     completed = context.run(
         [sys.executable, "-c", "pass"],
@@ -4289,7 +4291,7 @@ def test_actual_guard_paths_keep_raw_child_streams_separate(
     options = {} if tempfiles else {"text": False}
     result = run(
         command,
-        prefix="MOLT_TEST_RAW_CAPTURE",
+        prefix="MOLT_PYTEST",
         env=env,
         timeout=2.0 if termination == "timeout" else 10.0,
         **options,
@@ -4340,7 +4342,7 @@ def test_actual_uncaptured_child_stderr_is_absent(tmp_path: Path, text: bool) ->
     env["MOLT_EXT_ROOT"] = str(tmp_path)
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST_RAW_CAPTURE",
+        prefix="MOLT_PYTEST",
         env=env,
         timeout=10.0,
         capture_output=False,
@@ -4376,7 +4378,7 @@ def test_absent_raw_capture_is_not_reconstructed_from_diagnostics(
         if tempfiles
         else harness_memory_guard.guarded_completed_process
     )
-    observed = run([sys.executable, "-c", "pass"], prefix="MOLT_TEST")
+    observed = run([sys.executable, "-c", "pass"], prefix="MOLT_PYTEST")
     assert observed.child_stderr is None
     assert "guard-only" in (observed.stderr.decode() if tempfiles else observed.stderr)
 

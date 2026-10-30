@@ -607,7 +607,7 @@ def test_retirement_refuses_root_junction_and_preserves_nested_junction_target(
     junction = source / "junction"
     run_guarded_test_process(
         ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
-        prefix="MOLT_TEST_FILE_PUBLICATION",
+        prefix="MOLT_PYTEST",
         check=True,
         capture_output=True,
     )

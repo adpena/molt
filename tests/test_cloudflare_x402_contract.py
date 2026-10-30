@@ -75,7 +75,7 @@ def _run(cases: str) -> tuple[dict, list]:
     )
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

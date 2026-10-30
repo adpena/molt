@@ -2248,7 +2248,7 @@ def test_suite_rss_transport_matches_captured_process_instance(
         monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", launch)
         result = compat_backends._guarded_run(
             ["fixture"],
-            prefix="MOLT_" + adapter.upper(),
+            prefix=f"MOLT_COMPAT_{adapter.upper()}_RUN",
             env=env,
             budget=compat_backends.ItemBudget(
                 compat_backends.TimeoutPolicy.from_environment(

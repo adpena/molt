@@ -371,7 +371,7 @@ def test_release_consumer_selects_native_launcher(tmp_path):
 def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_home):
     from tools.command_execution import CommandExecutor
 
-    commands = CommandExecutor.for_file(__file__)
+    commands = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
     # Real uv synchronization of a minimal source bundle proves transport and
     # source-only execution, not compiler semantics. No network or build.

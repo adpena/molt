@@ -305,7 +305,7 @@ def capture_observations(target: str, executable: Path) -> dict[str, object]:
         raise SchemaError("numeric observation requires a canonical CPython source pin")
     pinned_snapshots((target,))
     contexts = load_policy()
-    completed = CommandExecutor.for_file(__file__).run(
+    completed = CommandExecutor.for_file(__file__, stem="MOLT_GENERATOR").run(
         [
             str(executable),
             *environment_bytecode_arguments(Path(sys.prefix)),

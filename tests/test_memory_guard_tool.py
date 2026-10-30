@@ -4294,7 +4294,7 @@ def test_adaptive_budget_samples_host_once(monkeypatch) -> None:
         return 12 * 1024**3, 11 * 1024**3
 
     monkeypatch.setattr(host_capacity, "_probe_memory_bytes", probe)
-    budget = memory_guard.adaptive_memory_budget("MOLT_TEST", {})
+    budget = memory_guard.adaptive_memory_budget("MOLT_PYTEST", {})
     assert observations == [None]
     assert budget.physical_gb == 12
     assert budget.available_gb == 11
@@ -4307,7 +4307,7 @@ def test_unobserved_host_still_obeys_the_delegated_tree(
 ) -> None:
     monkeypatch.setattr(host_capacity, "_probe_memory_bytes", lambda: (None, None))
     env = {host_capacity.MEMORY_SLICE_ENV: str(tree_gb * 1024**3)}
-    budget = memory_guard.adaptive_memory_budget("MOLT_TEST", env)
+    budget = memory_guard.adaptive_memory_budget("MOLT_PYTEST", env)
     assert budget.source == "fallback"
     assert budget.max_total_rss_gb == tree_gb
     assert budget.max_process_rss_gb == pytest.approx(process_gb)
@@ -4316,7 +4316,7 @@ def test_unobserved_host_still_obeys_the_delegated_tree(
 
 def test_zero_available_memory_remains_observed_pressure(monkeypatch) -> None:
     monkeypatch.setattr(host_capacity, "_probe_memory_bytes", lambda: (12 * 1024**3, 0))
-    budget = memory_guard.adaptive_memory_budget("MOLT_TEST", {})
+    budget = memory_guard.adaptive_memory_budget("MOLT_PYTEST", {})
     assert budget.available_gb == 0
     assert budget.source == "available"
     assert budget.max_global_rss_gb == 0.25

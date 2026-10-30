@@ -132,7 +132,7 @@ def run_test(
 def main() -> int:
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
 
-    runner = ["python3"]
+    runner = [sys.executable]
     if "--runner" in sys.argv:
         idx = sys.argv.index("--runner")
         if idx + 1 < len(sys.argv):

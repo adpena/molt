@@ -61,7 +61,7 @@ def _run() -> dict:
         pytest.skip("node is required for the monitoring contract test")
     run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", _SCRIPT],
-        prefix="MOLT_NODE_TEST",
+        prefix="MOLT_PYTEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
