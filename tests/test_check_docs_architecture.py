@@ -591,6 +591,30 @@ def test_checker_rejects_a_fixed_row_without_evidence(
     ]
 
 
+def test_checker_rejects_a_row_split_by_a_literal_pipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-10-30: seven ledger rows held `O_CREAT|O_EXCL`-style pipes, so their
+    # cells shifted and ledger_edit refused to note them.
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/agent/V1_HANDOFF_FINDINGS.md",
+        "# Ledger\n\n## Fixed after the handoff\n\n"
+        "| ID | Defect | Integrated fix and verification boundary |\n"
+        "|----|--------|------------------------------------------|\n"
+        "| HF-F12 | Opens with `O_CREAT|O_EXCL`. | Fixed at 1234567. |\n"
+        "| HF-F13 | Opens with `O_CREAT\\|O_EXCL`. | Fixed at 1234567. |\n",
+    )
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+
+    errors = [error for error in module.check_repo() if "V1_HANDOFF" in error]
+
+    assert errors == [
+        "docs/agent/V1_HANDOFF_FINDINGS.md: row HF-F12 (line 7) has 4 cells but "
+        "its table has 3; escape a literal | inside a cell as \\|",
+    ]
+
+
 LEDGER_TEXT = """# Ledger
 
 | V1-2 | Before any section, a row is open. | Acceptance. |

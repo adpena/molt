@@ -2538,6 +2538,12 @@ def receive_compilation_outputs(
     )
     from molt.cli.static_archive_identity import artifact_content_identity
     from molt.artifact_publication import publication_receipt_path
+    from molt.file_publication import resolve_owned_path
+
+    # One custody spelling: receipts found under ``output`` and the anchors
+    # `publication_receipt_path` canonicalizes must name the same directory,
+    # also when the caller's path crosses an OS link such as macOS's /var.
+    output = resolve_owned_path(output)
 
     if projection.mode != "compilation" or target not in {"native", "wasm"}:
         raise ValueError("compile export has no applicable execution projection")

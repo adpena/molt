@@ -1752,7 +1752,7 @@ def test_run_context_fallback_preserves_checkout_family_artifact_custody(
     )
 
 
-def test_toolchain_root_is_child_of_canonical_custody_root(tmp_path: Path) -> None:
+def test_plain_tree_toolchain_root_is_child_of_its_custody_root(tmp_path: Path) -> None:
     custody = tmp_path / "custody"
     worktree = custody / "worktrees" / "lane"
     worktree.mkdir(parents=True)

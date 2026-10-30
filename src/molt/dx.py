@@ -1216,6 +1216,24 @@ def canonical_molt_root(repo_root: str | Path, *, require_exists: bool = True) -
     return root
 
 
+def repository_toolchain_root(
+    repo_root: str | Path, *, require_exists: bool = True
+) -> Path:
+    """Return the provisioned-toolchain store of the checkout's repository.
+
+    Toolchain custody follows the repository, never the volume that holds a
+    linked worktree's source (docs/design/storage_authority.md), so every
+    worktree of one repository admits the same pinned toolchains.
+    """
+    try:
+        root = custody_layout.repository_custody_root(repo_root)
+    except ValueError as exc:
+        raise DxConfigError(str(exc)) from exc
+    if require_exists and not root.is_dir():
+        raise DxConfigError(f"repository Molt custody root does not exist: {root}")
+    return root / DEFAULT_TARGET_ROOT_DIRNAME
+
+
 def _host_scratch_roots() -> tuple[Path, ...]:
     """Return scratch roots issued by this host process, not child env input.
 
@@ -1269,7 +1287,9 @@ def checkout_custody(
     return CheckoutCustody(
         source_root=source_root,
         custody_root=durable_root,
-        toolchain_root=durable_root / DEFAULT_TARGET_ROOT_DIRNAME,
+        toolchain_root=repository_toolchain_root(
+            source_root, require_exists=require_exists
+        ),
         kind="durable",
     )
 
