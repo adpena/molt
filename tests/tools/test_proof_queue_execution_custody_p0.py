@@ -17,6 +17,7 @@ from tests.process_guard_common import (
     install_module_view,
     run_custody_subject_process,
 )
+from tests.proof_queue_custody_test_support import admitted_live_custody
 
 from tools.proof_queue_pkg import (
     execution_custody,
@@ -2174,7 +2175,8 @@ def test_source_watch_records_create_execute_delete_transient(
     assert specs == [execution_custody.WatchSpec(source.resolve(), None)]
     monitor = execution_custody.LiveCustodyMonitor(specs)
 
-    with monitor:
+    # macOS refuses here, before any watcher, and the test skips (HF-552).
+    with admitted_live_custody(monitor):
         transient = source / "transient.py"
         transient.write_text("EXECUTED = True\n", encoding="utf-8")
         namespace = runpy.run_path(str(transient))
@@ -2205,7 +2207,7 @@ def test_fence_cookies_never_enter_the_receipt(
         [execution_custody.WatchSpec(source, None)]
     )
 
-    with monitor:
+    with admitted_live_custody(monitor):
         cookie_root = monitor._cookie_root
 
     receipt = monitor.receipt()
@@ -2215,8 +2217,8 @@ def test_fence_cookies_never_enter_the_receipt(
         assert cookie_root is None
         return
     assert cookie_root is not None and cookie_root.parent == source
-    # Arm and drain each wrote cookies the watcher had to deliver.
-    assert len(monitor._cookies) == 2 * monitor._fence_rounds
+    # Arm and drain each wrote one cookie the watcher had to deliver.
+    assert len(monitor._cookies) == 2
     assert not any(
         Path(str(event["path"])).is_relative_to(cookie_root)
         for event in (*receipt["events"], *receipt["apparatus_events"])

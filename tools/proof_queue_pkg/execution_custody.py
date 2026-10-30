@@ -26,7 +26,7 @@ import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import BinaryIO, Literal, cast, get_args
 
 from molt import python_environment_contract as _contract  # noqa: E402
 from molt import process_launch
@@ -133,11 +133,26 @@ LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v3"
 
 # How long the arm and drain fences wait for the watcher to deliver their
 # cookie. Watchman's `sync_timeout` default is 60 s for the same protocol
-# (https://facebook.github.io/watchman/docs/cookies.html). On 2026-10-29 a
-# lagging fseventsd delivered most cookies within 3 s and stalled past 240 s in
-# 3 of 15 trials. A cookie that never arrives means the watcher cannot vouch
-# for the window, so the receipt fails closed.
+# (https://facebook.github.io/watchman/docs/cookies.html). A cookie that never
+# arrives means the watcher cannot vouch for the window, so the receipt fails
+# closed.
 LIVE_CUSTODY_COOKIE_TIMEOUT_S = 60.0
+
+# Why live input custody refuses before any watcher, worker, provisioning or
+# payload. The code is the identity; the detail is its prose projection.
+# ``platform-unsupported``: the platform has no admitted lossless watcher.
+# macOS is such a platform: XNU posts FSEvents content modification only in
+# vn_close, so a write held open across a fence reaches no cookie-ordered
+# stream, and Watchman's cookie sync documents FSEvents as unsupported
+# (https://github.com/facebook/watchman/blob/182b779c88ca2b64de1f5ddeb55a597df7d90253/website/docs/cookies.md#limitation-macos-fsevents).
+# A future kqueue backend belongs with the macOS process-closure cell (HF-07).
+LiveCustodyRefusalReason = Literal["platform-unsupported"]
+LIVE_CUSTODY_REFUSAL_REASONS: frozenset[str] = frozenset(
+    get_args(LiveCustodyRefusalReason)
+)
+_LIVE_CUSTODY_REFUSAL_DETAIL: Mapping[LiveCustodyRefusalReason, str] = {
+    "platform-unsupported": "no lossless input-mutation watcher is admitted",
+}
 
 # Filesystem events that the proof apparatus itself causes inside a watched
 # root. They carry no information about the proof's inputs and are recorded
@@ -341,12 +356,6 @@ def _git_refresh_candidate(
         except ValueError:
             return None
         safe_directory_change = bool(mask & 0x6) and not (mask & ~0x40000006)
-    elif action.startswith("fsevents:"):
-        try:
-            flags = int(action.partition(":")[2], 16)
-        except ValueError:
-            return None
-        safe_directory_change = bool(flags & 0x1400) and not (flags & ~0x21400)
     return (directory, False) if safe_directory_change else None
 
 
@@ -416,26 +425,89 @@ def live_custody_identity_sha256(
     ).hexdigest()
 
 
+class LiveCustodyUnavailable(RuntimeError):
+    """Live input custody refuses this platform before any watcher or payload.
+
+    The refusal is an unsupported cell (HF-552): its consumers skip with the
+    typed reason and never pass, as for the native process-closure refusal.
+    """
+
+    def __init__(
+        self,
+        platform: str,
+        reason: LiveCustodyRefusalReason = "platform-unsupported",
+    ) -> None:
+        if reason not in LIVE_CUSTODY_REFUSAL_REASONS:
+            raise ValueError(f"unknown live custody refusal reason {reason!r}")
+        self.platform = platform
+        self.reason: LiveCustodyRefusalReason = reason
+        self.capability: dict[str, object] = {
+            "platform": platform,
+            "admission": {"state": "ineligible", "reason": reason},
+        }
+        super().__init__(
+            f"live input custody prelaunch refused on {platform}: {reason} "
+            f"({_LIVE_CUSTODY_REFUSAL_DETAIL[reason]})"
+        )
+
+    @classmethod
+    def decode(
+        cls, capability: object, *, expected_platform: str
+    ) -> LiveCustodyUnavailable:
+        """Decode one recorded refusal exactly; any other shape is not one."""
+        if not isinstance(capability, dict) or set(capability) != {
+            "platform",
+            "admission",
+        }:
+            raise ValueError("live custody refusal capability has the wrong shape")
+        admission = capability["admission"]
+        if not isinstance(admission, dict) or set(admission) != {"state", "reason"}:
+            raise ValueError("live custody refusal admission has the wrong shape")
+        reason = admission["reason"]
+        if admission["state"] != "ineligible" or reason not in (
+            LIVE_CUSTODY_REFUSAL_REASONS
+        ):
+            raise ValueError(f"unknown live custody refusal {admission!r}")
+        platform = capability["platform"]
+        if platform != expected_platform or live_custody_platform_supported(
+            str(platform)
+        ):
+            raise ValueError(
+                f"live custody refusal names platform {platform!r} on "
+                f"{expected_platform!r}"
+            )
+        return cls(expected_platform, cast(LiveCustodyRefusalReason, reason))
+
+
+def live_custody_platform_supported(platform: str) -> bool:
+    """Whether ``platform`` has an admitted lossless input-mutation watcher."""
+    return platform == "win32" or platform.startswith("linux")
+
+
 class LiveCustodyMonitor:
     """Fail-closed kernel event monitor for immutable execution inputs.
 
-    The receipt covers the window between two cookie fences, as Watchman's
-    cookie sync does (https://facebook.github.io/watchman/docs/cookies.html).
-    Kernel notification is asynchronous to its consumer: fseventsd delivers
-    FSEvents seconds late under load, so a stop flag and a final
-    ``FSEventStreamFlushSync`` alone lose a transient create/delete that the
-    daemon has not yet read. Each fence writes a unique cookie into a private
-    directory watched by the same queue as every root (the one FSEvents
-    stream, the one inotify descriptor) and waits until the watcher delivers
-    it; every earlier event has then arrived (FSEvents needs a second cookie,
-    see ``__enter__``). Events delivered before the arm fence precede the
-    window (the prelaunch snapshot follows ARMED), events after the drain fence
-    follow it, and cookie events are never inputs. A cookie that does not
-    arrive within ``LIVE_CUSTODY_COOKIE_TIMEOUT_S`` is an error, so a stalled
-    watcher cannot certify a quiet window. The fence directory is the
-    monitor's own, under ``TMPDIR``; cookies never go into a root's existing
-    directories: roots include unwritable system directories, and roots that
-    concurrent proofs share would see a foreign cookie as an input mutation.
+    Linux inotify and Windows ``ReadDirectoryChangesW`` are the admitted
+    watchers; every other platform refuses before a watcher thread starts
+    (``LiveCustodyUnavailable``, ``platform-unsupported``). macOS refuses:
+    XNU posts FSEvents content modification only when the writer closes the
+    file, so no fence can order a write that is still open.
+
+    On Linux the receipt covers the window between two cookie fences, as
+    Watchman's cookie sync does
+    (https://facebook.github.io/watchman/docs/cookies.html). inotify posts
+    ``IN_MODIFY`` at write time and one descriptor queues every watch in order,
+    so one cookie fences: each fence writes a unique cookie into a private
+    directory watched by the same descriptor as every root and waits until the
+    watcher delivers it; every earlier event has then arrived. Events delivered
+    before the arm fence precede the window (the prelaunch snapshot follows
+    ARMED), events after the drain fence follow it, and cookie events are never
+    inputs. A cookie that does not arrive within
+    ``LIVE_CUSTODY_COOKIE_TIMEOUT_S`` is an error, so a stalled watcher cannot
+    certify a quiet window. The fence directory is the monitor's own, under
+    ``TMPDIR``; cookies never go into a root's existing directories: roots
+    include unwritable system directories, and roots that concurrent proofs
+    share would see a foreign cookie as an input mutation.
 
     Windows watches each root through its own handle, so no single cookie can
     order them. Its file systems report a change while the changing operation
@@ -463,8 +535,7 @@ class LiveCustodyMonitor:
         # watcher reports. A watcher driven without fences records everything
         # it delivers; ``__enter__`` closes the window until the arm cookie.
         self._cookie_root: Path | None = None
-        self._cookies: dict[str, tuple[str | None, threading.Event]] = {}
-        self._fence_rounds = 0
+        self._cookies: dict[str, tuple[str, threading.Event]] = {}
         self._window = "open"
 
     def admit_uv_environment_locks(
@@ -513,26 +584,17 @@ class LiveCustodyMonitor:
             self._state = next_state
             self._lifecycle.append(next_state)
 
+    @staticmethod
+    def require_supported_platform() -> None:
+        """Refuse before any watcher, worker, provisioning or payload."""
+        if not live_custody_platform_supported(sys.platform):
+            raise LiveCustodyUnavailable(sys.platform)
+
     def __enter__(self) -> LiveCustodyMonitor:
-        # Cookie rounds per fence. inotify queues every watch in order, so
-        # one cookie fences. fseventsd hands a stream its events in batches,
-        # in order, but orders records inside a batch arbitrarily: on
-        # 2026-10-29 a deleted file's coalesced record arrived after a later
-        # cookie of the same batch. A second cookie, written once the first
-        # arrives, lands in a later batch, so its arrival proves that the
-        # first cookie's batch, and every event before it, has arrived.
-        if sys.platform == "win32":
-            target, rounds = self._run_windows, 0
-        elif sys.platform.startswith("linux"):
-            target, rounds = self._run_linux, 1
-        elif sys.platform == "darwin":
-            target, rounds = self._run_darwin, 2
-        else:
-            raise RuntimeError(
-                f"proof live custody has no lossless kernel watcher on {sys.platform}"
-            )
-        self._fence_rounds = rounds
-        if rounds:
+        self.require_supported_platform()
+        fenced = sys.platform != "win32"
+        target = self._run_linux if fenced else self._run_windows
+        if fenced:
             # The watcher arms this directory beside the roots; it must exist
             # first. It is new and private to this monitor.
             self._cookie_root = Path(
@@ -546,8 +608,8 @@ class LiveCustodyMonitor:
         self._thread.start()
         if not self._ready.wait(timeout=10.0):
             self._record_error("proof live custody watcher did not become ready")
-        elif not self._errors and rounds:
-            self._fence("arm", "open")
+        elif not self._errors and fenced:
+            self._sync_cookie("arm", "open")
         if self._errors:
             self._transition("ARMING", "ARMED")
             self.drain()
@@ -559,15 +621,8 @@ class LiveCustodyMonitor:
         del exc_type, exc, traceback
         self.drain()
 
-    def _fence(self, role: str, window: str) -> None:
-        """Move the receipt window once the watcher has delivered the fence."""
-        for round_index in range(1, self._fence_rounds + 1):
-            last = round_index == self._fence_rounds
-            if not self._sync_cookie(f"{role}-{round_index}", window if last else None):
-                return
-
-    def _sync_cookie(self, name: str, window: str | None) -> bool:
-        """Write one cookie and wait until the watcher delivers its event."""
+    def _sync_cookie(self, name: str, window: str) -> None:
+        """Write one cookie; move the receipt window once the watcher delivers it."""
         assert self._cookie_root is not None
         cookie = self._cookie_root / f"{name}-{secrets.token_hex(16)}"
         delivered = threading.Event()
@@ -579,14 +634,12 @@ class LiveCustodyMonitor:
             self._record_error(
                 f"proof live custody cannot write its {name} cookie: {exc}"
             )
-            return False
+            return
         if not delivered.wait(timeout=LIVE_CUSTODY_COOKIE_TIMEOUT_S):
             self._record_error(
                 f"proof live custody watcher did not deliver its {name} cookie "
                 f"within {LIVE_CUSTODY_COOKIE_TIMEOUT_S:g} s"
             )
-            return False
-        return True
 
     def _observe_cookie(self, path: Path) -> bool:
         """Consume a fence event: one of this monitor's cookies or their directory."""
@@ -600,8 +653,7 @@ class LiveCustodyMonitor:
             if not delivered.is_set():
                 # Set on the watcher thread, in delivery order: every event
                 # delivered before this one stays on the earlier side.
-                if window is not None:
-                    self._window = window
+                self._window = window
                 delivered.set()
         return True
 
@@ -625,7 +677,7 @@ class LiveCustodyMonitor:
             fenced = self._cookie_root is not None and self._window == "open"
         self._transition("ARMED", "DRAINING")
         if fenced:
-            self._fence("drain", "closed")
+            self._sync_cookie("drain", "closed")
         self._stop.set()
         if sys.platform == "win32":
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -1061,171 +1113,13 @@ class LiveCustodyMonitor:
             self._record_error(f"{type(exc).__name__}: {exc}")
             self._ready.set()
 
-    def _run_darwin(self) -> None:
-        """Watch complete path trees through the native FSEvents journal."""
-        core_services = ctypes.CDLL(
-            "/System/Library/Frameworks/CoreServices.framework/CoreServices"
-        )
-        core_foundation = ctypes.CDLL(
-            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
-        )
-        callback_type = ctypes.CFUNCTYPE(
-            None,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_char_p),
-            ctypes.POINTER(ctypes.c_uint32),
-            ctypes.POINTER(ctypes.c_uint64),
-        )
-        cf_strings: list[ctypes.c_void_p] = []
-        stream = ctypes.c_void_p()
-        paths = ctypes.c_void_p()
-
-        def callback(
-            _stream: object,
-            _context: object,
-            count: int,
-            event_paths: object,
-            event_flags: object,
-            _event_ids: object,
-        ) -> None:
-            del _stream, _context, _event_ids
-            for index in range(count):
-                flags = int(event_flags[index])
-                if flags & 0x00000010:
-                    # HistoryDone marks the end of the replay since the start
-                    # ID; it names no change.
-                    continue
-                path = Path(os.fsdecode(event_paths[index]))
-                if flags & (
-                    0x00000001 | 0x00000002 | 0x00000004 | 0x00000008 | 0x00000020
-                ):
-                    self._record_error(
-                        f"FSEvents history was incomplete for {path}: flags={flags:#x}"
-                    )
-                if self._observe_cookie(path):
-                    continue
-                for spec in self.specs:
-                    if self._record_event(spec, f"fsevents:{flags:#x}", path):
-                        break
-
-        callback_ref = callback_type(callback)
-        try:
-            create_string = core_foundation.CFStringCreateWithCString
-            create_string.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_char_p,
-                ctypes.c_uint32,
-            ]
-            create_string.restype = ctypes.c_void_p
-            # The fence directory joins the one stream, which delivers its
-            # batches in order across every path it watches (see __enter__).
-            stream_roots = [spec.root for spec in self.specs]
-            if self._cookie_root is not None:
-                stream_roots.append(self._cookie_root)
-            for root in stream_roots:
-                value = create_string(None, os.fsencode(root), 0x08000100)
-                if not value:
-                    raise RuntimeError(f"cannot encode FSEvents root {root}")
-                cf_strings.append(ctypes.c_void_p(value))
-            values = (ctypes.c_void_p * len(cf_strings))(
-                *(value.value for value in cf_strings)
-            )
-            create_array = core_foundation.CFArrayCreate
-            create_array.argtypes = [
-                ctypes.c_void_p,
-                ctypes.POINTER(ctypes.c_void_p),
-                ctypes.c_long,
-                ctypes.c_void_p,
-            ]
-            create_array.restype = ctypes.c_void_p
-            paths = ctypes.c_void_p(create_array(None, values, len(values), None))
-            if not paths:
-                raise RuntimeError("cannot create FSEvents root array")
-
-            create_stream = core_services.FSEventStreamCreate
-            create_stream.argtypes = [
-                ctypes.c_void_p,
-                callback_type,
-                ctypes.c_void_p,
-                ctypes.c_void_p,
-                ctypes.c_uint64,
-                ctypes.c_double,
-                ctypes.c_uint32,
-            ]
-            create_stream.restype = ctypes.c_void_p
-            current_event_id = core_services.FSEventsGetCurrentEventId
-            current_event_id.restype = ctypes.c_uint64
-            # Start from the newest assigned ID, not SinceNow, which fseventsd
-            # resolves only when it reaches the registration. Under load on
-            # 2026-10-29, SinceNow streams received records from before their
-            # arm fence after it in 4 of 30 trials; streams started from the
-            # ID did so in none of 30. The daemon replays every record after
-            # this ID, as Watchman's resync streams do.
-            stream = ctypes.c_void_p(
-                create_stream(
-                    None,
-                    callback_ref,
-                    None,
-                    paths,
-                    current_event_id(),
-                    0.05,
-                    0x00000002 | 0x00000004 | 0x00000010,
-                )
-            )
-            if not stream:
-                raise RuntimeError("FSEventStreamCreate failed")
-            core_foundation.CFRunLoopGetCurrent.restype = ctypes.c_void_p
-            run_in_mode = core_foundation.CFRunLoopRunInMode
-            run_in_mode.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_bool]
-            run_in_mode.restype = ctypes.c_int32
-            schedule = core_services.FSEventStreamScheduleWithRunLoop
-            schedule.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-            start = core_services.FSEventStreamStart
-            start.argtypes = [ctypes.c_void_p]
-            start.restype = ctypes.c_bool
-            core_services.FSEventStreamFlushSync.argtypes = [ctypes.c_void_p]
-            core_services.FSEventStreamStop.argtypes = [ctypes.c_void_p]
-            core_services.FSEventStreamInvalidate.argtypes = [ctypes.c_void_p]
-            core_services.FSEventStreamRelease.argtypes = [ctypes.c_void_p]
-            core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
-            run_loop = core_foundation.CFRunLoopGetCurrent()
-            default_mode = ctypes.c_void_p.in_dll(
-                core_foundation, "kCFRunLoopDefaultMode"
-            )
-            schedule(stream, run_loop, default_mode)
-            if not start(stream):
-                raise RuntimeError("FSEventStreamStart failed")
-            # FlushSync delivers what fseventsd already holds; it cannot reach
-            # kernel records the daemon has not read, which the arm and drain
-            # cookies order. Both watermarks stay: neither fence may end on a
-            # record held back by the stream's latency.
-            core_services.FSEventStreamFlushSync(stream)
-            self._ready.set()
-            while not self._stop.is_set():
-                run_in_mode(default_mode, 0.10, True)
-            core_services.FSEventStreamFlushSync(stream)
-        except BaseException as exc:
-            self._record_error(f"{type(exc).__name__}: {exc}")
-            self._ready.set()
-        finally:
-            if stream:
-                core_services.FSEventStreamStop(stream)
-                core_services.FSEventStreamInvalidate(stream)
-                core_services.FSEventStreamRelease(stream)
-            if paths:
-                core_foundation.CFRelease(paths)
-            for value in cf_strings:
-                core_foundation.CFRelease(value)
-
 
 class WatchCoordinates:
     """Project lexical paths onto the canonical entries that live watches own.
 
     Watch roots are canonical directories, and every watcher reports events
-    beneath them: inotify and ReadDirectoryChangesW under the registered root,
-    FSEvents under real paths. A lexical spelling through a symlink or
+    beneath them: inotify and ReadDirectoryChangesW under the registered root.
+    A lexical spelling through a symlink or
     junction, such as uv's minor-version installation link (the
     ``cpython-<major>.<minor>-<platform>`` entry that points at its patch
     release directory), lies beneath no root. It selects its input through entries named inside their

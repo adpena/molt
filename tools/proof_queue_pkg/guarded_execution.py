@@ -347,6 +347,7 @@ def execute_guarded_request(request_path: Path) -> int:
     custody_session: execution_custody.ExecutionCustodySession | None = None
     cargo_cache: cargo_cache_custody.CargoCacheLease | None = None
     try:
+        execution_custody.LiveCustodyMonitor.require_supported_platform()
         inherited_env = ProcessEnvironmentBuilder(
             environment._wrapper_execution_environment(envelope, os.environ)
         )
@@ -1523,6 +1524,8 @@ def execute_guarded_request(request_path: Path) -> int:
                     + str(result["rust_link_capture_failure"]["publication_error"]),
                     file=sys.stderr,
                 )
+        if isinstance(exc, execution_custody.LiveCustodyUnavailable):
+            result["live_custody_capability"] = exc.capability
         if isinstance(exc, supervisor.SupervisorPrelaunchRefused):
             result["supervisor_capability"] = exc.capability
         if isinstance(exc, disk_capacity.DiskCapacityError):
