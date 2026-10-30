@@ -670,6 +670,52 @@ def _original_emission_payload(
     }
 
 
+@pytest.mark.parametrize("replace", [False, True])
+def test_origin_observation_rehashes_after_recency_refresh_but_refuses_replacement(
+    tmp_path, replace
+):
+    from molt.cache_eviction import (
+        AUTOMATIC_PRUNE_INTERVAL_SECONDS,
+        refresh_cache_entry_recency,
+    )
+    import time
+
+    artifact, receipt = tmp_path / "artifact.rs", tmp_path / "receipt.json"
+    content = b"fn original() {}\n"
+    artifact.write_bytes(content)
+    old = time.time_ns() - int(2 * AUTOMATIC_PRUNE_INTERVAL_SECONDS * 1e9)
+    os.utime(artifact, ns=(old, old))
+    expected = _original_emission_payload(content, process_id=101, scope="a" * 64)
+    original = BackendEmissionOrigin.from_payload(expected)
+    sync._write_artifact_sync_state(
+        receipt,
+        source_key=artifact.name,
+        tier="immutable",
+        artifact=artifact,
+        emission_origin=original,
+    )
+    state = sync._read_artifact_sync_state(receipt)
+    saved = receipt.read_bytes()
+    before = stable_regular_file_identity(artifact, label="before recency refresh")
+    assert sync._artifact_sync_emission_origin(state, identity=before) == original
+    refresh_cache_entry_recency(artifact)
+    if replace:
+        replacement = artifact.with_suffix(".replacement")
+        replacement.write_bytes(content)
+        replacement.replace(artifact)
+    after = stable_regular_file_identity(artifact, label="after recency refresh")
+    assert after.sha256 == before.sha256
+    assert after.stat_token().mtime_ns != before.stat_token().mtime_ns
+    assert (after.stat_token().inode != before.stat_token().inode) is replace
+    # Every cache-key field still participates in the fast-path decision.
+    assert not sync._artifact_sync_state_matches(
+        state, source_key=artifact.name, tier="immutable", artifact=artifact
+    )
+    observed = sync._artifact_sync_emission_origin(state, identity=after)
+    assert observed == (None if replace else original)
+    assert receipt.read_bytes() == saved  # Reading an observation never retags it.
+
+
 @pytest.mark.parametrize("tier", ["module", "function"])
 def test_original_emitter_survives_publication_winner_promotion_and_output_reuse(
     tmp_path, tier
