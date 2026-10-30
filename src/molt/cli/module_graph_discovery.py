@@ -643,6 +643,8 @@ def _discover_module_graph_from_paths(
             source_context.stdlib_root,
             source_context.stdlib_allowlist,
         )
+        # Premises are computed only once the demand queue below exists.
+        assert demands is not None
         opaque = demands.opaque_activation_sources(module_name)
         if source_context.admission_policy.owns_source_closure_with_native_artifact_plan(
             module_name, path

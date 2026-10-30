@@ -2065,7 +2065,8 @@ def _collect_imports(
             # The same object may also be a hashing/equality operand. Preserve
             # that incidence even when another operand only stores it.
             keys = []
-            if isinstance(node, ast.Call):
+            # Held values come only from the dictionary-method branch above.
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 if node.func.attr in {
                     "get",
                     "__getitem__",
