@@ -133,25 +133,6 @@ impl RustBackend {
         // Initialization is handled in the loop preamble above; skip here.
     }
 
-    pub(super) fn emit_op_iter(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let src = arg0(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("molt_iter(&{src})"),
-            &self.hoisted_vars.clone(),
-        ));
-    }
-
     pub(super) fn emit_op_iter_next(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {

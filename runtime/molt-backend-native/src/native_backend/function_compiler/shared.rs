@@ -555,6 +555,56 @@ impl<'op> NativeOperandTransaction<'op> {
     }
 }
 
+/// Staged operations accept only the closed call identity at the backend boundary.
+/// The generated contract selects the function and ABI; no caller supplies a symbol.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
+    op: &OpIR,
+    call: molt_ir::runtime_calls::RuntimeCall,
+    module: &mut dyn Module,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    vars: &BTreeMap<String, Variable>,
+    representation_plan: &ScalarRepresentationPlan,
+    nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
+) {
+    use molt_ir::runtime_calls::RuntimeCall;
+    let function = match call {
+        RuntimeCall::Iter => call.function(),
+        RuntimeCall::DictSet => call.function(),
+    };
+    assert_eq!(
+        molt_ir::runtime_calls::RuntimeCall::from_op(op.kind),
+        Some(call)
+    );
+    let args = op.args.as_deref().unwrap_or(&[]);
+    assert_eq!(
+        args.len(),
+        function.boxed_abi().arity,
+        "{} contract arity",
+        op.kind
+    );
+    emit_operand_transaction_call(
+        op,
+        args,
+        function.symbol(),
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        vars,
+        representation_plan,
+        nbc,
+        block_tracked_obj,
+        block_tracked_ptr,
+    );
+}
+
 /// Call `symbol` with exactly the operation's `args`, borrowed through one
 /// operand transaction, and publish its return under the generated boxed ABI.
 /// A bound borrowed return may alias a minted operand, so it acquires its own
@@ -1174,3 +1224,13 @@ pub(in crate::native_backend::function_compiler) fn is_cold_module_chunk_functio
 ) -> bool {
     name.contains("__molt_module_chunk_")
 }
+
+// Declared legality is a compile-time fact. Native Cranelift, and the JIT that
+// shares its target plan, lower every staged call through its generic entrypoint.
+#[cfg(feature = "native-backend")]
+const _: () = assert!(
+    molt_ir::runtime_calls::RuntimeCall::all_runtime_realized(
+        molt_ir::tir::target_info::TargetKind::NativeCranelift
+    ),
+    "a staged runtime call is not runtime-realized on native Cranelift"
+);
