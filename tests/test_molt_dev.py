@@ -10565,3 +10565,71 @@ class TestStorageAuthority:
                 archive.extractfile("proof-receipts/proof.bin").read()
                 == b"preserved landing proof"
             )
+
+    @pytest.mark.parametrize("directory_target", [False, True])
+    def test_ignored_provider_link_is_archived_as_a_namespace_entry(
+        self, tmp_path, monkeypatch, directory_target
+    ):
+        from tools import molt_dev_lanes
+
+        repo, artifact, provider = (
+            tmp_path / "molt-src",
+            tmp_path / "data",
+            tmp_path / "shared-provider",
+        )
+        for path in (repo, artifact, provider):
+            path.mkdir()
+        _storage_git(repo, "init", "-q")
+        (repo / ".git/info/exclude").write_text("provider-alias\n", encoding="utf-8")
+        credential = provider / "credential"
+        credential.write_bytes(b"provider owned secret")
+        target = provider if directory_target else credential
+        link = repo / "provider-alias"
+        try:
+            link.symlink_to(target, target_is_directory=directory_target)
+        except OSError as exc:
+            pytest.skip(f"host cannot create the selected symlink: {exc}")
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        with pytest.raises(ValueError, match="link or junction"):
+            compact_evidence(link, artifact / "must-not-adopt", kind="lane-evidence")
+        rows = molt_dev_storage.harvest_lane_payload(
+            repo, "lane-storage", ["provider-alias"], os.environ
+        )
+        assert len(rows) == 1
+        with tarfile.open(rows[0]["archive"]) as archive:
+            member = archive.getmember("provider-alias")
+            assert member.issym() and member.linkname == str(target)
+        assert not os.path.lexists(link)
+        assert credential.read_bytes() == b"provider owned secret"
+        assert set(provider.iterdir()) == {credential}
+        index = json.loads(Path(rows[0]["index"]).read_text(encoding="utf-8"))
+        assert index["source"] == str(link)
+        assert not molt_dev_lanes._unharvested_ignored_paths(molt_dev.Git(repo))[1]
+        assert _storage_git(repo, "status", "--porcelain") == ""
+
+    def test_migration_keeps_a_provider_link_at_an_old_molt_cache_coordinate(
+        self, tmp_path, monkeypatch
+    ):
+        repo, artifact, provider = (
+            tmp_path / "molt-src",
+            tmp_path / "data",
+            tmp_path / "home/.cargo",
+        )
+        for path in (repo, artifact, provider):
+            path.mkdir(parents=True)
+        _storage_git(repo, "init", "-q")
+        credential = provider / "credential"
+        credential.write_bytes(b"provider input")
+        old_cache = tmp_path / "home/.cache/molt"
+        old_cache.parent.mkdir()
+        old_cache.symlink_to(provider, target_is_directory=True)
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+        rows = molt_dev_storage.migrate(repo, os.environ, apply=True)
+        row = next(row for row in rows if row["source"] == str(old_cache))
+        assert (
+            row["status"] == "kept"
+            and row["reason"] == "indirect preimage; target custody preserved"
+        )
+        assert old_cache.is_symlink()
+        assert credential.read_bytes() == b"provider input"
+        assert set(provider.iterdir()) == {credential}
