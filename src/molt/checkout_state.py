@@ -792,7 +792,8 @@ def checkout_state_command_roots(
     Candidate directories conservatively retain a published environment even
     when another PATH entry wins. This does not select or admit an executable.
     Ordinary unmanaged coordinates receive no filesystem probe; only a bounded
-    enclosing published-image coordinate enters the existing custody authority.
+    enclosing published-image coordinate, or a launch that addresses a
+    provisioned package directory, enters the existing custody authority.
     """
     from .process_launch import command_resources
 
@@ -817,19 +818,46 @@ def checkout_state_command_roots(
                 if coordinate is not None and coordinate.kind == "toolchains":
                     roots.setdefault(candidate, None)
                 break
-    from .custody_layout import enclosing_checkouts
-
-    try:
-        checkouts = enclosing_checkouts(working)
-    except (OSError, ValueError, RuntimeError):
-        checkouts = ()  # The unchanged native launch decides invalid cwd/Git inputs.
-    for checkout in dict.fromkeys((source_root, *checkouts)):
-        for kind in get_args(PackageEnvironmentKind):
-            path = checkout.joinpath(*storage_rule(kind).relative)
-            owner = read_checkout_owner(path)
-            if owner == CheckoutOwner(checkout, kind):
-                roots.setdefault(path, owner)
+    _retain_package_environments(roots, command, working)
     return tuple(roots.items())
+
+
+def _retain_package_environments(
+    roots: dict[Path, CheckoutOwner | None],
+    command: Sequence[str],
+    working: Path,
+) -> None:
+    """A launch that addresses a package directory retains its environment.
+
+    Node resolves packages from a script's directory and npm from its cwd, so
+    a launch uses ``<checkout>/<package>/node_modules`` only when its cwd or an
+    argv element names a path under ``<checkout>/<package>``. Matching is
+    lexical, like the published-image prefixes of Python resources: only a
+    match reads the environment's owner record, and only an owner that binds
+    that checkout is retained. Any other launch, from any directory, retains
+    no package environment and receives no filesystem probe.
+    """
+    packages = [
+        (
+            kind,
+            storage_rule(kind).relative,
+            tuple(os.path.normcase(part) for part in storage_rule(kind).relative[:-1]),
+        )
+        for kind in get_args(PackageEnvironmentKind)
+    ]
+    for coordinate in (working, *(working / argument for argument in command)):
+        parts = Path(os.path.normpath(coordinate)).parts
+        names = tuple(os.path.normcase(part) for part in parts)
+        for kind, relative, package in packages:
+            for start in range(1, len(names) - len(package) + 1):
+                if names[start : start + len(package)] != package:
+                    continue
+                checkout = Path(*parts[:start])
+                path = checkout.joinpath(*relative)
+                if path not in roots:
+                    owner = read_checkout_owner(path)
+                    if owner == CheckoutOwner(checkout, kind):
+                        roots[path] = owner
 
 
 def _retain_python_resources(

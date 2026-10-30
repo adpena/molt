@@ -313,7 +313,22 @@ def test_package_environment_use_is_published_by_the_real_locked_producer(
         and owner.path == checkout
         and owner.kind == "browser-environment"
     )
-    roots = checkout_state_command_roots(checkout, {}, (sys.executable,), cwd=checkout)
+    # A launch that addresses no package directory retains none, although the
+    # owned environment exists in its source checkout and cwd.
+    unrelated = checkout_state_command_roots(
+        checkout, {}, (sys.executable,), cwd=checkout
+    )
+    assert all(root != tree for root, _owner in unrelated)
+    # Node resolves packages from the script's directory: the scanner launch,
+    # by its cwd or by its script path alone, retains the environment.
+    scanner = tree.parent / "scan.mjs"
+    by_cwd = checkout_state_command_roots(
+        checkout, {}, ("node", scanner.name), cwd=tree.parent
+    )
+    assert (tree, owner) in by_cwd
+    roots = checkout_state_command_roots(
+        checkout, {}, ("node", str(scanner)), cwd=checkout
+    )
     assert (tree, owner) in roots
     with checkout_state_use(roots):
         with checkout_state_retirement(tree) as admitted:
