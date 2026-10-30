@@ -148,6 +148,7 @@ from molt.cli.source_extension_candidate_transaction import (
 from molt.file_publication import RetirementError
 from molt.exact_json import write_exact
 from molt.cli.source_extension_publication import (
+    SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
     SourceExtensionPublicationCustody,
     complete_source_extension_publication_transaction,
     _source_extension_publication_custody,
@@ -2383,7 +2384,7 @@ def _build_source_extension_set(
         lock_path = destination.parent / f".{destination.name}.{lock_role}.lock"
         producer_lock = _acquire_file_lock(
             lock_path,
-            timeout_s=300.0,
+            timeout_s=SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
             timeout_message=(
                 f"timed out waiting for the extension-set {lock_role} lock "
                 f"{lock_path}; another producer owns {destination}"

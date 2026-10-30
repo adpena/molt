@@ -64,6 +64,7 @@ from molt.cli.source_extension_set_identity import (
     _source_extension_reproduction_comparison,
 )
 from molt.cli.source_extension_publication import (
+    SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
     _source_extension_publication_custody,
     publish_source_extension_candidate,
     recover_source_extension_publication,
@@ -203,9 +204,11 @@ def test_published_object_closure_rejects_payload_escape(
 @contextmanager
 def _held_publication_custody(destination: Path):
     lock_path = destination.parent / f".{destination.name}.producer.lock"
+    # Wait as a production publisher does: the holder's work orders the
+    # waiter, not a fixture's guess at how fast a loaded host runs it.
     handle = _acquire_file_lock(
         lock_path,
-        timeout_s=1.0,
+        timeout_s=SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
         timeout_message=f"cannot acquire fixture publication lock {lock_path}",
     )
     try:
@@ -1736,7 +1739,9 @@ def test_destination_scoped_custody_serializes_competing_cas_publishers(
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(timeout=10.0)
+        # Bounded past the losing publisher's own lock deadline, whose
+        # diagnostic must win over a bare join timeout.
+        thread.join(timeout=2 * SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S)
         assert not thread.is_alive()
 
     assert len(results) == 1

@@ -85,6 +85,9 @@ def deterministic_drain_clock(monkeypatch):
     # This checks metadata authority, not filesystem throughput. Real seal and
     # durable publication costs are measured separately; keep this deadline
     # deterministic so corruption cannot vacuously skip known-scope cleanup.
+    # Every test that shrinks _DRAIN_BUDGET_S takes it: on host time a loaded
+    # worker spent the whole budget before the first pass evaluated a record,
+    # and the drain then reported no unresolved group (trunk sweep, -n 6).
     from types import SimpleNamespace
 
     elapsed = 0.0
@@ -834,6 +837,7 @@ def test_transient_snapshot_error_retries_and_writes_receipt(
 def test_persistent_snapshot_failure_is_bounded_and_fail_closed(lease, monkeypatch):
     path, _, _ = lease
     monkeypatch.setattr(suite, "_DRAIN_BUDGET_S", 0.2)
+    deterministic_drain_clock(monkeypatch)
 
     def sampler():
         raise memory_guard.ProcessSnapshotError("unavailable snapshot")
@@ -856,6 +860,7 @@ def test_dead_leader_never_claims_unobserved_worker_custody(
         Path(record["daemon_root"]) / "owned.identity.json", owned
     )
     monkeypatch.setattr(suite, "_DRAIN_BUDGET_S", 0.2)
+    deterministic_drain_clock(monkeypatch)
     samples = {
         os.getpid(): sample(os.getpid(), 10, os.getpid(), 200),
         31: sample(31, 1, 30, 310),
@@ -1357,6 +1362,7 @@ def test_interrupted_index_publication_never_exports(lease, tmp_path, monkeypatc
     assert suite.registered_groups(path, lease=record, samples=samples) == ()
     assert not suite._adoption_path(path, owned).exists()
     monkeypatch.setattr(suite, "_DRAIN_BUDGET_S", 0.2)
+    deterministic_drain_clock(monkeypatch)
     calls = mocked_drain(monkeypatch, samples)
     assert not suite.drain_lease(path)
     assert calls and all(call[1]["watched"] == {30} for call in calls)
@@ -1981,6 +1987,7 @@ def test_transient_closing_seal_failure_retries_within_drain_budget(lease, monke
     monkeypatch.setattr(suite, "_seal_adoption_index", seal)
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: lease_samples(record))
     monkeypatch.setattr(suite, "_DRAIN_BUDGET_S", 0.5)
+    deterministic_drain_clock(monkeypatch)
     assert suite.drain_lease(path)
     assert calls[:2] == ["closing", "closing"] and calls[-1] == "closed"
 
@@ -2057,6 +2064,7 @@ def test_unknown_moved_descendant_remains_unresolved_after_parent_drains(
     samples[31] = sample(31, 1, 31, 310)
     samples[32] = sample(32, 31, 32, None)
     monkeypatch.setattr(suite, "_DRAIN_BUDGET_S", 1.0)
+    deterministic_drain_clock(monkeypatch)
     calls = mocked_drain(monkeypatch, samples)
     assert not suite.drain_lease(path)
     assert {call[0] for call in calls} == {31}

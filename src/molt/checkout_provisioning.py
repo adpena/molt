@@ -503,7 +503,6 @@ def selected_development_environment(
     )
     if not declares(spec):
         return None
-    intent = _development_intent(spec)
     explicit = environ.get("UV_PROJECT_ENVIRONMENT", "").strip()
     if explicit:
         selected = Path(explicit).expanduser()
@@ -512,6 +511,11 @@ def selected_development_environment(
         return selected.absolute()
     if git_directories(checkout) is None:
         return None
+    # Only a recorded selection needs the intent. An explicit environment and
+    # a root that is no Git checkout (an installed bundle's source) select
+    # without it, so neither reads `.python-version` nor resolves the
+    # artifact root; operation boundaries still validate the selected recipe.
+    intent = _development_intent(spec)
     path = _development_selection_path(spec, intent)
     try:
         record = read_exact(

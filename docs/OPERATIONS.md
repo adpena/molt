@@ -3,6 +3,61 @@
 This document consolidates remote access, logging, progress reporting, and
 multi-agent workflow rules.
 
+## Farm proofs at an exact commit
+
+`tools/cross_hosts.toml` owns host addresses, custody layout, bootstrap Python,
+detached launchers and admitted proof commands. The Stage 1 runner uses that same
+inventory and SSH staging owner as `cross_run.py`. From a clean, committed
+controller checkout and its managed Python image:
+
+```sh
+python -B tools/trunk_loop.py run --host bat00 --commit 06d37eafd2 \
+  --cell portability.cargo-custody.windows --cell portability.queue.windows
+```
+
+The command prints a durable `run.json` recovery path before allocating remote
+resources. `--no-wait` returns after detached launch; resume collection with
+`python -B tools/trunk_loop.py collect --record /absolute/path/to/run.json`.
+Collection's `--no-wait` reports unfinished work with exit 3. Exit 0 means all
+selected cells succeeded, 1 means collected red/infrastructure evidence, and 2
+means the controller refused or could not finish an operation. A launch PID is
+not completion proof. Preserve the printed record after an SSH/controller error.
+
+The canonical host checkout donates Git objects; the runner never moves its
+branch. Separate nonce-owned worktrees bind the committed controller and tested
+source. Pinned host archives are downloaded on the controller into SHA-256/size
+cache namespaces, transferred and imported by `molt.tool_releases` with the same
+pin checks and failure-atomic publication as online provisioning. Locked Python
+environment publication remains owned by `molt.checkout_provisioning` and uv.
+The entire selected toolchain closure is admitted before any test starts.
+Prerequisite failure returns infrastructure evidence without launching tests.
+The inventory selects short, disjoint Cargo-output and metadata fixture roots
+for Windows portability tests, matching the explicit roles supplied by hosted
+CI. Each run admits its exclusive child directories through the existing queue
+output-layout authority and records their physical identities in provisioning
+evidence; operator shell exports are unnecessary.
+
+Windows launch uses CIM `Win32_Process.Create`; POSIX launch creates a new
+session. A host-wide OS file lock excludes competing trunk workers. The worker
+uses the existing detached-execution waiter for proof-driver lifetime and
+managed-state leases; an unresolved child retains custody without a terminal
+completion record. The worker
+runs the proof plan's arguments, deadlines and workers unchanged, and stops host
+work on the executor's global custody failure. Independent partition failures
+retain evidence and allow the next selected cell. No system settings or existing
+host processes are changed.
+
+Evidence is collected under
+`<artifact-root>/evidence/trunk-loop/<full-commit>/<host>/<cell>/<run-id>/`.
+It includes `cmd.json`, `rc`, `run.log`, the canonical `receipt.json`, provisioning
+records and pytest JUnit when finalized. A diagnostic `durations-<pid>.jsonl`
+stream retains completed setup/call/teardown timings even if the deadline stops
+pytest before it can finalize JUnit. The timing stream is not a failure parser.
+Remote staging and worktrees remain indexed by the recovery record for the
+integrator's reconciliation/retirement; failed or unknown closure never permits
+deletion. This stage does not schedule continuous runs, classify regressions or
+write the findings ledger. See [the owning design](design/trunk_loop.md).
+
 ## Version Policy
 The [versioned Python contract](spec/areas/compat/contracts/verified_subset_contract.md)
 owns supported versions and Python 3.15 release obligations. Target-version
