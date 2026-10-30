@@ -21,6 +21,7 @@ import select
 import socket
 import struct
 import sys
+import tempfile
 import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -129,6 +130,14 @@ def node_bootstrap_options() -> str:
 # v3: every apparatus class is validated; selected empty uv-lock closes carry
 # captured Python/uv owner identities. Older permissive receivers cannot admit it.
 LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v3"
+
+# How long the arm and drain fences wait for the watcher to deliver their
+# cookie. Watchman's `sync_timeout` default is 60 s for the same protocol
+# (https://facebook.github.io/watchman/docs/cookies.html). On 2026-10-29 a
+# lagging fseventsd delivered most cookies within 3 s and stalled past 240 s in
+# 3 of 15 trials. A cookie that never arrives means the watcher cannot vouch
+# for the window, so the receipt fails closed.
+LIVE_CUSTODY_COOKIE_TIMEOUT_S = 60.0
 
 # Filesystem events that the proof apparatus itself causes inside a watched
 # root. They carry no information about the proof's inputs and are recorded
@@ -408,7 +417,32 @@ def live_custody_identity_sha256(
 
 
 class LiveCustodyMonitor:
-    """Fail-closed kernel event monitor for immutable execution inputs."""
+    """Fail-closed kernel event monitor for immutable execution inputs.
+
+    The receipt covers the window between two cookie fences, as Watchman's
+    cookie sync does (https://facebook.github.io/watchman/docs/cookies.html).
+    Kernel notification is asynchronous to its consumer: fseventsd delivers
+    FSEvents seconds late under load, so a stop flag and a final
+    ``FSEventStreamFlushSync`` alone lose a transient create/delete that the
+    daemon has not yet read. Each fence writes a unique cookie into a private
+    directory watched by the same queue as every root (the one FSEvents
+    stream, the one inotify descriptor) and waits until the watcher delivers
+    it; every earlier event has then arrived (FSEvents needs a second cookie,
+    see ``__enter__``). Events delivered before the arm fence precede the
+    window (the prelaunch snapshot follows ARMED), events after the drain fence
+    follow it, and cookie events are never inputs. A cookie that does not
+    arrive within ``LIVE_CUSTODY_COOKIE_TIMEOUT_S`` is an error, so a stalled
+    watcher cannot certify a quiet window. The fence directory is the
+    monitor's own, under ``TMPDIR``; cookies never go into a root's existing
+    directories: roots include unwritable system directories, and roots that
+    concurrent proofs share would see a foreign cookie as an input mutation.
+
+    Windows watches each root through its own handle, so no single cookie can
+    order them. Its file systems report a change while the changing operation
+    runs and buffer it until the next read, so draining every handle until a
+    fresh read no longer completes at once is its terminal watermark, as
+    reading inotify to ``EAGAIN`` is on Linux.
+    """
 
     def __init__(self, specs: Sequence[WatchSpec]) -> None:
         self.specs = _compact_specs(specs)
@@ -425,6 +459,13 @@ class LiveCustodyMonitor:
         self._uv_lock_records: dict[str, dict[str, str]] = {}
         self._uv_lock_versions: list[StableRegularFileVersion] = []
         self._uv_locks_admitted = False
+        # The private fence directory and its cookies, keyed by the path the
+        # watcher reports. A watcher driven without fences records everything
+        # it delivers; ``__enter__`` closes the window until the arm cookie.
+        self._cookie_root: Path | None = None
+        self._cookies: dict[str, tuple[str | None, threading.Event]] = {}
+        self._fence_rounds = 0
+        self._window = "open"
 
     def admit_uv_environment_locks(
         self, captures: Sequence[CapturedUvEnvironmentLocks]
@@ -473,16 +514,31 @@ class LiveCustodyMonitor:
             self._lifecycle.append(next_state)
 
     def __enter__(self) -> LiveCustodyMonitor:
+        # Cookie rounds per fence. inotify queues every watch in order, so
+        # one cookie fences. fseventsd hands a stream its events in batches,
+        # in order, but orders records inside a batch arbitrarily: on
+        # 2026-10-29 a deleted file's coalesced record arrived after a later
+        # cookie of the same batch. A second cookie, written once the first
+        # arrives, lands in a later batch, so its arrival proves that the
+        # first cookie's batch, and every event before it, has arrived.
         if sys.platform == "win32":
-            target = self._run_windows
+            target, rounds = self._run_windows, 0
         elif sys.platform.startswith("linux"):
-            target = self._run_linux
+            target, rounds = self._run_linux, 1
         elif sys.platform == "darwin":
-            target = self._run_darwin
+            target, rounds = self._run_darwin, 2
         else:
             raise RuntimeError(
                 f"proof live custody has no lossless kernel watcher on {sys.platform}"
             )
+        self._fence_rounds = rounds
+        if rounds:
+            # The watcher arms this directory beside the roots; it must exist
+            # first. It is new and private to this monitor.
+            self._cookie_root = Path(
+                tempfile.mkdtemp(prefix="molt-live-custody-")
+            ).resolve(strict=True)
+            self._window = "awaiting-arm-cookie"
         self._transition("CREATED", "ARMING")
         self._thread = threading.Thread(
             target=target, name="proof-live-custody", daemon=True
@@ -490,9 +546,8 @@ class LiveCustodyMonitor:
         self._thread.start()
         if not self._ready.wait(timeout=10.0):
             self._record_error("proof live custody watcher did not become ready")
-            self._transition("ARMING", "ARMED")
-            self.drain()
-            raise RuntimeError(self._errors[0])
+        elif not self._errors and rounds:
+            self._fence("arm", "open")
         if self._errors:
             self._transition("ARMING", "ARMED")
             self.drain()
@@ -504,12 +559,73 @@ class LiveCustodyMonitor:
         del exc_type, exc, traceback
         self.drain()
 
+    def _fence(self, role: str, window: str) -> None:
+        """Move the receipt window once the watcher has delivered the fence."""
+        for round_index in range(1, self._fence_rounds + 1):
+            last = round_index == self._fence_rounds
+            if not self._sync_cookie(f"{role}-{round_index}", window if last else None):
+                return
+
+    def _sync_cookie(self, name: str, window: str | None) -> bool:
+        """Write one cookie and wait until the watcher delivers its event."""
+        assert self._cookie_root is not None
+        cookie = self._cookie_root / f"{name}-{secrets.token_hex(16)}"
+        delivered = threading.Event()
+        with self._lock:
+            self._cookies[str(cookie)] = (window, delivered)
+        try:
+            os.close(os.open(cookie, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except OSError as exc:
+            self._record_error(
+                f"proof live custody cannot write its {name} cookie: {exc}"
+            )
+            return False
+        if not delivered.wait(timeout=LIVE_CUSTODY_COOKIE_TIMEOUT_S):
+            self._record_error(
+                f"proof live custody watcher did not deliver its {name} cookie "
+                f"within {LIVE_CUSTODY_COOKIE_TIMEOUT_S:g} s"
+            )
+            return False
+        return True
+
+    def _observe_cookie(self, path: Path) -> bool:
+        """Consume a fence event: one of this monitor's cookies or their directory."""
+        if path == self._cookie_root:
+            return True
+        with self._lock:
+            cookie = self._cookies.get(str(path))
+            if cookie is None:
+                return False
+            window, delivered = cookie
+            if not delivered.is_set():
+                # Set on the watcher thread, in delivery order: every event
+                # delivered before this one stays on the earlier side.
+                if window is not None:
+                    self._window = window
+                delivered.set()
+        return True
+
+    def _remove_cookie_root(self) -> None:
+        if self._cookie_root is None:
+            return
+        try:
+            for raw_cookie in self._cookies:
+                Path(raw_cookie).unlink(missing_ok=True)
+            self._cookie_root.rmdir()
+        except OSError as exc:
+            # Only this monitor writes there; anything else breaks the fence.
+            self._record_error(f"proof live custody cookie directory changed: {exc}")
+
     def drain(self) -> None:
         """Fence and consume the platform event stream exactly once."""
         with self._lock:
             if self._state == "DRAINED":
                 return
+            # Only an armed fence can close; a failed arm already recorded why.
+            fenced = self._cookie_root is not None and self._window == "open"
         self._transition("ARMED", "DRAINING")
+        if fenced:
+            self._fence("drain", "closed")
         self._stop.set()
         if sys.platform == "win32":
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -539,6 +655,7 @@ class LiveCustodyMonitor:
             except OSError:
                 pass
         self._handles.clear()
+        self._remove_cookie_root()
         self._transition("DRAINING", "DRAINED")
 
     def receipt(self) -> dict[str, object]:
@@ -588,6 +705,10 @@ class LiveCustodyMonitor:
             return False
         event = {"action": action, "path": str(path)}
         with self._lock:
+            if self._window != "open":
+                # Owned, but outside the fenced window: before the prelaunch
+                # snapshot, or after the payload's quiescent fence.
+                return True
             if uv_key is not None:
                 uv_lock = self._uv_lock_records.get(uv_key)
                 if uv_lock is not None:
@@ -717,6 +838,9 @@ class LiveCustodyMonitor:
             wintypes.BOOL,
         ]
         get_result.restype = wintypes.BOOL
+        cancel_io = kernel32.CancelIoEx
+        cancel_io.argtypes = [wintypes.HANDLE, ctypes.POINTER(Overlapped)]
+        cancel_io.restype = wintypes.BOOL
         event = create_event(None, True, False, None)
         if not event:
             self._record_error(
@@ -737,6 +861,13 @@ class LiveCustodyMonitor:
         )
         try:
             first_read = True
+            # After the stop fence the handle is read until a fresh read finds
+            # nothing buffered. The file system buffers each change between
+            # reads and completes the next read from that buffer before it
+            # returns, so a read still pending holds no change from before the
+            # fence: the terminal watermark. Stopping at the first batch after
+            # the fence lost every change buffered behind it.
+            draining = False
             while True:
                 buffer = ctypes.create_string_buffer(64 * 1024)
                 returned = wintypes.DWORD()
@@ -760,6 +891,8 @@ class LiveCustodyMonitor:
                 if first_read:
                     first_read = False
                     armed.set()
+                if draining and wait_for_single(event, 0) != 0:
+                    cancel_io(handle, ctypes.byref(overlapped))
                 wait_result = wait_for_single(event, 0xFFFFFFFF)
                 if wait_result != 0:
                     raise OSError(
@@ -771,7 +904,10 @@ class LiveCustodyMonitor:
                 ):
                     error = ctypes.get_last_error()
                     if self._stop.is_set() and error == 995:
-                        return
+                        if draining:
+                            return
+                        draining = True
+                        continue
                     raise OSError(
                         error,
                         f"ReadDirectoryChangesW completion failed for {spec.root}",
@@ -796,8 +932,7 @@ class LiveCustodyMonitor:
                         if next_offset == 0:
                             break
                         offset += next_offset
-                if self._stop.is_set():
-                    return
+                draining = draining or self._stop.is_set()
         except BaseException as exc:
             self._record_error(f"{type(exc).__name__}: {exc}")
             armed.set()
@@ -858,6 +993,12 @@ class LiveCustodyMonitor:
                     continue
                 spec, directory = owner
                 candidate = directory / name if name else directory
+                if self._observe_cookie(candidate) or directory == self._cookie_root:
+                    # The private fence directory holds no input. Its watch
+                    # replaces a root's watch of the same inode (inotify keeps
+                    # one per inode); anything else written there fails the
+                    # directory's removal at drain.
+                    continue
                 owned = self._record_event(spec, f"inotify:{event_mask:#x}", candidate)
                 if (
                     event_mask & 0x40000000
@@ -898,6 +1039,12 @@ class LiveCustodyMonitor:
                     ):
                         if directory.is_dir():
                             add_directory(spec, directory)
+            if self._cookie_root is not None:
+                # Last, so this watch owns the inode even inside a root. One
+                # descriptor queues every watch in order: the fence cookie.
+                add_directory(
+                    WatchSpec(self._cookie_root, frozenset()), self._cookie_root
+                )
             self._ready.set()
             while not self._stop.is_set():
                 readable, _, _ = select.select([fd], [], [], 0.25)
@@ -946,6 +1093,10 @@ class LiveCustodyMonitor:
             del _stream, _context, _event_ids
             for index in range(count):
                 flags = int(event_flags[index])
+                if flags & 0x00000010:
+                    # HistoryDone marks the end of the replay since the start
+                    # ID; it names no change.
+                    continue
                 path = Path(os.fsdecode(event_paths[index]))
                 if flags & (
                     0x00000001 | 0x00000002 | 0x00000004 | 0x00000008 | 0x00000020
@@ -953,6 +1104,8 @@ class LiveCustodyMonitor:
                     self._record_error(
                         f"FSEvents history was incomplete for {path}: flags={flags:#x}"
                     )
+                if self._observe_cookie(path):
+                    continue
                 for spec in self.specs:
                     if self._record_event(spec, f"fsevents:{flags:#x}", path):
                         break
@@ -966,10 +1119,15 @@ class LiveCustodyMonitor:
                 ctypes.c_uint32,
             ]
             create_string.restype = ctypes.c_void_p
-            for spec in self.specs:
-                value = create_string(None, os.fsencode(spec.root), 0x08000100)
+            # The fence directory joins the one stream, which delivers its
+            # batches in order across every path it watches (see __enter__).
+            stream_roots = [spec.root for spec in self.specs]
+            if self._cookie_root is not None:
+                stream_roots.append(self._cookie_root)
+            for root in stream_roots:
+                value = create_string(None, os.fsencode(root), 0x08000100)
                 if not value:
-                    raise RuntimeError(f"cannot encode FSEvents root {spec.root}")
+                    raise RuntimeError(f"cannot encode FSEvents root {root}")
                 cf_strings.append(ctypes.c_void_p(value))
             values = (ctypes.c_void_p * len(cf_strings))(
                 *(value.value for value in cf_strings)
@@ -997,13 +1155,21 @@ class LiveCustodyMonitor:
                 ctypes.c_uint32,
             ]
             create_stream.restype = ctypes.c_void_p
+            current_event_id = core_services.FSEventsGetCurrentEventId
+            current_event_id.restype = ctypes.c_uint64
+            # Start from the newest assigned ID, not SinceNow, which fseventsd
+            # resolves only when it reaches the registration. Under load on
+            # 2026-10-29, SinceNow streams received records from before their
+            # arm fence after it in 4 of 30 trials; streams started from the
+            # ID did so in none of 30. The daemon replays every record after
+            # this ID, as Watchman's resync streams do.
             stream = ctypes.c_void_p(
                 create_stream(
                     None,
                     callback_ref,
                     None,
                     paths,
-                    0xFFFFFFFFFFFFFFFF,
+                    current_event_id(),
                     0.05,
                     0x00000002 | 0x00000004 | 0x00000010,
                 )
@@ -1031,15 +1197,14 @@ class LiveCustodyMonitor:
             schedule(stream, run_loop, default_mode)
             if not start(stream):
                 raise RuntimeError("FSEventStreamStart failed")
-            # Flush after Start is the arm fence: any pre-existing journal
-            # records have been delivered before the parent captures its
-            # authoritative prelaunch snapshot.
+            # FlushSync delivers what fseventsd already holds; it cannot reach
+            # kernel records the daemon has not read, which the arm and drain
+            # cookies order. Both watermarks stay: neither fence may end on a
+            # record held back by the stream's latency.
             core_services.FSEventStreamFlushSync(stream)
             self._ready.set()
             while not self._stop.is_set():
                 run_in_mode(default_mode, 0.10, True)
-            # FlushSync is the terminal watermark.  The parent cannot consume
-            # a DRAINED receipt until every event through this call returned.
             core_services.FSEventStreamFlushSync(stream)
         except BaseException as exc:
             self._record_error(f"{type(exc).__name__}: {exc}")
