@@ -10492,8 +10492,9 @@ class TestStorageAuthority:
             Path(row["source"]).name == "molt-cache-test-idle" for row in again
         )
 
+    @pytest.mark.parametrize("late_signal", [False, True])
     def test_replaced_sandbox_retires_registration_only_after_recoverable_archive(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, late_signal
     ):
         repo, artifact = tmp_path / "molt-src", tmp_path / "data"
         repo.mkdir()
@@ -10520,6 +10521,26 @@ class TestStorageAuthority:
         old = time.time() - 2 * 86400
         for path in [*source.rglob("*"), source]:
             os.utime(path, (old, old))
+        if late_signal:
+            compact = molt_dev_storage.compact_evidence
+
+            def write_after_archival(*args, **kwargs):
+                archive = compact(*args, **kwargs)
+                (source / "proof-receipts/late.bin").write_bytes(
+                    b"new signal after archive"
+                )
+                return archive
+
+            monkeypatch.setattr(
+                molt_dev_storage, "compact_evidence", write_after_archival
+            )
+            with pytest.raises(DriverError, match="sandbox changed after archival"):
+                molt_dev_storage.migrate(repo, os.environ, apply=True)
+            assert (
+                source / "proof-receipts/late.bin"
+            ).read_bytes() == b"new signal after archive"
+            assert str(source) in _storage_git(repo, "worktree", "list", "--porcelain")
+            return
         rows = molt_dev_storage.migrate(repo, os.environ, apply=True)
         row = next(row for row in rows if row["source"] == str(source))
         assert (
@@ -10530,7 +10551,9 @@ class TestStorageAuthority:
         assert str(source) not in _storage_git(repo, "worktree", "list", "--porcelain")
         index = next((repo / ".git/molt/retired-evidence").glob("*.json"))
         manifest = json.loads(
-            Path(json.loads(index.read_text())["archive_index"]).read_text()
+            Path(
+                json.loads(index.read_text(encoding="utf-8"))["archive_index"]
+            ).read_text(encoding="utf-8")
         )
         with tarfile.open(manifest["archive"]) as archive:
             assert (
