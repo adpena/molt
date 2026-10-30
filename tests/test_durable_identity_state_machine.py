@@ -17,6 +17,7 @@ import stat
 import struct
 import sys
 import tempfile
+import time
 from threading import Event
 from types import SimpleNamespace
 
@@ -28,8 +29,10 @@ from molt import artifact_publication as publication
 from molt import durable_file_identity as durable
 from molt import dx
 from molt import temporary_artifacts as scratch
+from molt import checkout_state as lifetime
 from tests.process_guard_common import install_module_view
 from tools.import_file import load_module_from_path
+from tools import molt_dev_storage as storage
 
 
 def _files(root: Path, *, exclude: Path | None = None) -> dict[Path, bytes]:
@@ -282,6 +285,55 @@ class DurableIdentityMachine(RuleBasedStateMachine):
             retention=module.ScratchRetention(count=1000, bytes=1024**2),
         )
 
+    @rule(idle=st.booleans(), held=st.booleans())
+    def namespace_last_use(self, idle, held):
+        from contextlib import nullcontext
+        from tests.test_dx_run_context import _git
+
+        self.serial += 1
+        repo = self.root / "namespace-repo"
+        artifact = self.root / f"namespace-artifact-{self.serial}"
+        artifact.mkdir()
+        with dx.grant_storage_writes(dx.StorageWriteClaim("temporary", self.root)):
+            if not repo.exists():
+                repo.mkdir()
+                _git(repo, "init", "-q")
+            cache = artifact / ".molt_cache"
+            legacy = cache / "file-digests/v1.sqlite"
+            current = cache / "file-digests/v3.sqlite"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_bytes(b"older cache: never migrated")
+            current.write_bytes(b"current schema must stay byte-for-byte")
+            environment = {"MOLT_EXT_ROOT": str(artifact), "MOLT_CACHE": str(cache)}
+            when = time.time() - (40 * 86400 if idle else 0)
+            os.utime(legacy, (when, when))
+            model = lifetime.NamespaceState.ACTIVE
+            if idle:
+                model = lifetime.NAMESPACE_TRANSITIONS[
+                    model, lifetime.NamespaceEvent.LAST_USE_EXPIRED
+                ]
+            context = (
+                lifetime.checkout_state_use(((cache, None),), publish=False)
+                if held
+                else nullcontext()
+            )
+            with context:
+                rows = storage.migrate(
+                    repo, environment, apply=True, repository_only=True
+                )
+            row = next(row for row in rows if row["source"] == str(legacy))
+            if idle and not held:
+                model = lifetime.NAMESPACE_TRANSITIONS[
+                    model, lifetime.NamespaceEvent.RETIRE
+                ]
+                assert not legacy.exists() and row["status"] == "compacted"
+                assert Path(row["index"]).is_file()
+            else:
+                assert legacy.read_bytes() == b"older cache: never migrated"
+                assert row["status"] in {"kept", "live-lock"}
+            assert row["namespace_state"] == model.name
+            self.foreign[current] = b"current schema must stay byte-for-byte"
+
     @rule()
     def concurrent_v1_writer(self):
         self.serial += 2
@@ -456,3 +508,145 @@ TestDurableIdentityModel.settings = settings(
     stateful_step_count=20,
     deadline=None,
 )
+
+
+@pytest.mark.parametrize(
+    "previous,current,retired",
+    [
+        (
+            ".molt_cache/file-digests/v1.sqlite",
+            ".molt_cache/file-digests/v3.sqlite",
+            ".molt_cache/file-digests/v1.sqlite",
+        ),
+        (
+            ".molt_cache/toolchain-facts/v2.json",
+            ".molt_cache/toolchain-facts/v3.json",
+            ".molt_cache/toolchain-facts/v2.json",
+        ),
+        (
+            ".molt_cache/source_hash_cache/ab/entry.json",
+            ".molt_cache/source_hash_cache/v3/ab/entry.json",
+            ".molt_cache/source_hash_cache/ab",
+        ),
+        (
+            "tmp/build-control/" + "a" * 64 + "/build_records/ab/entry.json",
+            "tmp/build-control/" + "a" * 64 + "/build_records/v12/ab/entry.json",
+            "tmp/build-control/" + "a" * 64 + "/build_records/ab",
+        ),
+        (
+            "tmp/build-control/" + "a" * 64 + "/artifact_sync/entry.json",
+            "tmp/build-control/" + "a" * 64 + "/artifact_sync/v5/entry.json",
+            "tmp/build-control/" + "a" * 64 + "/artifact_sync/entry.json",
+        ),
+        (
+            "tmp/build-control/"
+            + "a" * 64
+            + "/backend_daemon/suite-leases/"
+            + "b" * 32
+            + "/lease.json",
+            "tmp/build-control/"
+            + "a" * 64
+            + "/backend_daemon/suite-leases/v3/"
+            + "b" * 32
+            + "/lease.json",
+            "tmp/build-control/"
+            + "a" * 64
+            + "/backend_daemon/suite-leases/"
+            + "b" * 32,
+        ),
+        (
+            "tmp/gs/pending/" + "b" * 32 + "/payload",
+            "tmp/gs/v2/pending/" + "b" * 32 + "/payload",
+            "tmp/gs/pending/" + "b" * 32,
+        ),
+        (
+            "logs/runtime_wasm_final_preflight/old.json",
+            "logs/runtime_wasm_final_preflight/v5/new.json",
+            "logs/runtime_wasm_final_preflight/old.json",
+        ),
+        (
+            ".molt_cache/old.o.sync.json",
+            ".molt_cache/old.o.sync.v5.json",
+            ".molt_cache/old.o.sync.json",
+        ),
+    ],
+)
+def test_namespace_retention_preserves_current_versions(
+    tmp_path, previous, current, retired
+):
+    from tests.test_dx_run_context import _git
+
+    repo, artifact = tmp_path / "repo", tmp_path / "artifact"
+    repo.mkdir()
+    artifact.mkdir()
+    _git(repo, "init", "-q")
+    old, new, source = artifact / previous, artifact / current, artifact / retired
+    for path in (old, new):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"preserve this version's signal")
+    stale = time.time() - 40 * 86400
+    for path in (source, *(source.rglob("*") if source.is_dir() else ())):
+        os.utime(path, (stale, stale))
+    environment = {
+        "MOLT_EXT_ROOT": str(artifact),
+        "MOLT_CACHE": str(artifact / ".molt_cache"),
+    }
+    rows = storage.migrate(repo, environment, apply=True, repository_only=True)
+    row = next(row for row in rows if row["source"] == str(source))
+    assert row["namespace_state"] == lifetime.NamespaceState.RETIRED.name
+    assert row["status"] == "compacted" and Path(row["index"]).is_file()
+    assert not source.exists()
+    assert new.read_bytes() == b"preserve this version's signal"
+
+
+def test_namespace_retirement_refuses_a_named_recovery_journal(tmp_path):
+    from tests.test_dx_run_context import _git
+
+    repo, artifact = tmp_path / "repo", tmp_path / "artifact"
+    repo.mkdir()
+    artifact.mkdir()
+    _git(repo, "init", "-q")
+    source = artifact / "tmp/build-control" / ("a" * 64) / "build_records/v11"
+    source.mkdir(parents=True)
+    journal = source / (".molt-artifact-publication-" + "b" * 32 + ".json")
+    journal.write_bytes(b"older transaction requiring canonical recovery")
+    stale = time.time() - 40 * 86400
+    for path in (source, journal):
+        os.utime(path, (stale, stale))
+    rows = storage.migrate(
+        repo, {"MOLT_EXT_ROOT": str(artifact)}, apply=True, repository_only=True
+    )
+    row = next(row for row in rows if row["source"] == str(source))
+    assert row["status"] == "journal-recovery-required"
+    assert str(journal) in row["remedy"]
+    assert journal.read_bytes() == b"older transaction requiring canonical recovery"
+
+
+def test_namespace_model_refuses_illegal_or_live_retirement():
+    arguments = dict(now=100000.0, last_use=0.0, idle_window=10000.0, lock_held=False)
+    with pytest.raises(ValueError, match="illegal namespace transition"):
+        lifetime.apply_namespace_event(
+            lifetime.NamespaceState.ACTIVE, lifetime.NamespaceEvent.RETIRE, **arguments
+        )
+    for overrides in ({"lock_held": True}, {"last_use": 99999.0}):
+        with pytest.raises(ValueError, match="still active"):
+            lifetime.apply_namespace_event(
+                lifetime.NamespaceState.IDLE,
+                lifetime.NamespaceEvent.RETIRE,
+                **(arguments | overrides),
+            )
+
+
+def test_former_namespace_selection_grants_no_new_storage_write(tmp_path):
+    repo, artifact = tmp_path / "repo", tmp_path / "artifact"
+    repo.mkdir()
+    artifact.mkdir()
+    environment = {"MOLT_EXT_ROOT": str(artifact)}
+    with pytest.raises(dx.StorageWriteError, match="outside the storage authority"):
+        with dx.storage_write_check(repo, environment, molt_only=False):
+            assert (
+                dx.storage_path(repo, "replaced-identity-state", environment)
+                == artifact
+            )
+            (artifact / "undeclared-sibling").write_bytes(b"refused")
+    assert not (artifact / "undeclared-sibling").exists()

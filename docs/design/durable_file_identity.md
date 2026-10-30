@@ -113,6 +113,14 @@ answers, source hashes, build records, sync receipts and Cargo output declaratio
 start cold in the current namespace. New readers do not inspect older
 namespaces. HF-582's storage authority owns their retirement by last use and
 held-lock exclusion; this module adds no namespace sweeper or retirement owner.
+`custody_layout.storage_rule("replaced-identity-state")` declares finite former
+coordinates to that authority. Its existing migration executor archives signal
+losslessly after thirty days since last use, excludes held native/lifetime locks
+and live guards, and retains recovery indices outside the old namespace.
+Current versions are outside that inventory. A publication journal blocks
+retirement with a remedy naming the journal. Historical transcript/Cargo
+declarations remain durable evidence under their existing storage classes;
+bindings and journals retain their canonical migration owners.
 The preserved v1 scratch implementation under tests is only a provenance-pinned
 oracle for concurrent version isolation.
 
@@ -121,6 +129,10 @@ exactly witnessed legacy binding, stable identity replay, and substitution.
 `artifact_publication.JOURNAL_TRANSITIONS` owns open, committed, rolled-back,
 recovered and refused journal outcomes. Illegal events refuse. An older journal
 that cannot recover reports its exact path and a restoration/retry remedy.
+`checkout_state.NAMESPACE_TRANSITIONS` owns `ACTIVE` → `IDLE` → `RETIRED`;
+the executor applies the last-use window and exclusive-lock checks before
+retirement. The same state-machine proof also exercises fresh, idle and locked
+old namespaces against the real executor while preserving the current version.
 
 [The state-machine proof](../../tests/test_durable_identity_state_machine.py)
 drives reboot renumbering, substituted volumes, unique-mount remounts, concurrent
