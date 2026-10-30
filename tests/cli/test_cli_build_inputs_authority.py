@@ -112,6 +112,7 @@ def test_entry_module_selection_retains_earlier_shadow_misses(tmp_path: Path) ->
         "external",
         "missing",
         "symlink",
+        "symlink-parent",
     ],
 )
 def test_entry_search_root_is_cpython_sys_path_zero(tmp_path: Path, mode: str) -> None:
@@ -146,6 +147,14 @@ def test_entry_search_root_is_cpython_sys_path_zero(tmp_path: Path, mode: str) -
             except OSError as exc:
                 pytest.skip(f"host cannot create source alias: {exc}")
             source = alias
+        elif mode == "symlink-parent":
+            (package / "deep").mkdir()
+            alias = outside / "deep"
+            try:
+                alias.symlink_to(package / "deep", target_is_directory=True)
+            except OSError as exc:
+                pytest.skip(f"host cannot create directory alias: {exc}")
+            source = alias / ".." / "sub.py"
         file = str(source)
         args = [file]
     oracle = run_guarded_test_process(
@@ -184,6 +193,84 @@ def test_entry_search_root_is_cpython_sys_path_zero(tmp_path: Path, mode: str) -
         assert project not in entry.module_roots
         # Ownership must survive even though this root cannot resolve imports.
         assert project in entry.program_module_roots
+
+
+@pytest.mark.parametrize(
+    "target_name,linked_root",
+    [("x86_64-pc-windows-msvc", True), ("x86_64-unknown-linux-gnu", False)],
+)
+@pytest.mark.parametrize("directory_alias", [False, True])
+def test_script_link_root_follows_target_platform_not_host(
+    tmp_path: Path, target_name: str, linked_root: bool, directory_alias: bool
+) -> None:
+    from molt.cli.build_request import BuildRequest
+
+    source_dir, link_dir = tmp_path / "source", tmp_path / "links"
+    source_dir.mkdir()
+    link_dir.mkdir()
+    source = source_dir / "entry.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    alias = link_dir / "entry.py"
+    try:
+        alias.symlink_to(source)
+    except OSError as exc:
+        pytest.skip(f"host cannot create source alias: {exc}")
+    if directory_alias:
+        parent_alias = tmp_path / "parent-alias"
+        try:
+            parent_alias.symlink_to(link_dir, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"host cannot create directory alias: {exc}")
+        alias = parent_alias / "entry.py"
+    entry, error = build_inputs._resolve_request_entry(
+        request=BuildRequest(file_path=str(alias), target=admit_target(target_name)),
+        project_root=source_dir,
+        json_output=False,
+        command="build",
+        env={"MOLT_HERMETIC_MODULE_ROOTS": "1"},
+        source_cwd=tmp_path,
+    )
+    assert error is None and entry is not None
+    assert entry.module_roots == [alias.parent if linked_root else source_dir]
+    assert entry.image_scope is not None
+    assert entry.image_scope.module_roots == tuple(entry.module_roots)
+
+
+@pytest.mark.parametrize("mode", ["script", "module"])
+def test_safe_path_omits_implicit_entry_search_root(tmp_path: Path, mode: str) -> None:
+    from molt.cli.build_request import BuildRequest
+
+    source = tmp_path / "entry.py"
+    source.write_text("import sys\nprint(sys.path)\n", encoding="utf-8")
+    oracle_env = dict(os.environ)
+    oracle_env.pop("PYTHONPATH", None)
+    args = [str(source)] if mode == "script" else ["-m", "entry"]
+    oracle = run_guarded_test_process(
+        [sys.executable, "-P", "-B", *args], cwd=tmp_path, env=oracle_env
+    )
+    entry, error = build_inputs._resolve_request_entry(
+        request=BuildRequest(
+            file_path=str(source) if mode == "script" else None,
+            module="entry" if mode == "module" else None,
+            safe_path=True,
+        ),
+        project_root=tmp_path,
+        json_output=False,
+        command="build",
+        env={"MOLT_HERMETIC_MODULE_ROOTS": "1"},
+        source_cwd=tmp_path,
+    )
+    if mode == "module":
+        assert oracle.returncode != 0 and "No module named entry" in oracle.stderr
+        assert entry is None and error is not None
+    else:
+        import ast
+
+        assert oracle.returncode == 0, oracle.stderr
+        assert str(tmp_path) not in ast.literal_eval(oracle.stdout)
+        assert error is None and entry is not None
+        assert entry.module_roots == []
+        assert tmp_path in entry.program_module_roots
 
 
 def test_entry_search_root_precedes_explicit_roots(tmp_path: Path) -> None:

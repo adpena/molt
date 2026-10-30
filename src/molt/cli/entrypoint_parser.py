@@ -337,6 +337,12 @@ def _add_build_parser(
         help="Include PYTHONPATH entries as module roots during compilation.",
     )
     build_parser.add_argument(
+        "-P",
+        "--safe-path",
+        action="store_true",
+        help="Do not prepend the script directory or invocation cwd to import roots.",
+    )
+    build_parser.add_argument(
         "--capabilities",
         help="Capability profiles/tokens or path to manifest (toml/json).",
     )

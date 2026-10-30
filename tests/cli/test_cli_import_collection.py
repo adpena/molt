@@ -27360,6 +27360,7 @@ def test_run_wrapper_build_manifest_caches_module_entries(
         json_output=True,
         command="run",
         build_args=[],
+        source_cwd=project,
     )
     assert error is None
     assert resolved is not None
@@ -27603,6 +27604,7 @@ def test_wrapper_cache_input_rejects_expired_source_admission(
         "json_output": True,
         "command": "run",
         "build_args": [],
+        "source_cwd": project,
     }
     admitted, error = cli_build_inputs._resolve_wrapper_build_entry(**resolve_kwargs)
     assert error is None and admitted is not None
