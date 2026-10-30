@@ -1136,6 +1136,11 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 link_tool_closure = local_python_import_closure(molt_root, (tool,))
                 linker_identity = wasm_toolchain.resolve_wasm_linker()
+                # wasm-ld reads the tool's import allowlist directly; neither
+                # the tool's Python closure nor any argument names it. As a
+                # producer-bound input it keys the final link and the build
+                # record, and the tool verifies its bytes before linking.
+                link_allowlist = tool.with_name("wasm_allowed_imports.txt")
                 admitted_link_inputs = tuple(
                     stable_regular_file_identity(
                         path.resolve(), label="WASM link input"
@@ -1146,6 +1151,7 @@ def _prepare_non_native_build_result_in_generation(
                             app_export_contract_path,
                             wasm_facts_scanner,
                             linker_identity.path,
+                            link_allowlist,
                             *external_native_fingerprint_inputs,
                         )
                     )

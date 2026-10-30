@@ -23287,12 +23287,24 @@ def _install_fake_wasm_link_runner(
     monkeypatch: pytest.MonkeyPatch,
     *,
     fixture_root: RuntimeFixtureRoot,
+    molt_root: Path,
     app_input_paths: tuple[Path, ...],
     link_calls: list[list[str]] | None = None,
     linked_bytes: bytes = b"\0asm\x01\0\0\0",
     app_bytes: bytes | None = None,
 ) -> dict[Path, SourceExtensionLinkRequirements]:
     plans: dict[Path, SourceExtensionLinkRequirements] = {}
+    # wasm-ld reads the link tool's import allowlist directly, so the parent
+    # binds it as a producer input. The fixture root carries the real file.
+    allowlist = molt_root / "tools" / "wasm_allowed_imports.txt"
+    allowlist_bytes = (
+        Path(__file__).resolve().parents[2] / "tools" / "wasm_allowed_imports.txt"
+    ).read_bytes()
+    # A second runner over the same root (an interleaving rival) must not
+    # replace the file a deployment already admitted.
+    if not allowlist.is_file() or allowlist.read_bytes() != allowlist_bytes:
+        allowlist.parent.mkdir(parents=True, exist_ok=True)
+        allowlist.write_bytes(allowlist_bytes)
 
     # These deployment/link-plan tests replace external tool execution. Admit
     # only their declared, independently valid empty module inputs; this fixture
@@ -23351,6 +23363,7 @@ def _install_fake_wasm_link_runner(
         ]
         assert scanner.resolve() in {path for path, _digest in expected_inputs}
         assert (linker.resolve(), linker_identity.sha256) in expected_inputs
+        assert allowlist.resolve() in {path for path, _digest in expected_inputs}
         for path, digest in expected_inputs:
             assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
         if link_calls is not None:
@@ -23500,6 +23513,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     linked_bytes = b"\0asm\x01\0\0\0\x00\x03\x01xA"
     _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         linked_bytes=linked_bytes,
@@ -23761,6 +23775,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
     payload_b = output.read_bytes() + b"\x00\x03\x01xB"
     _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         linked_bytes=payload_a,
         app_bytes=payload_a,
@@ -23806,6 +23821,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
                 rival.setenv("MOLT_CACHE", str(tmp_path / "rival-molt-cache"))
                 _install_fake_wasm_link_runner(
                     rival,
+                    molt_root=tmp_path,
                     fixture_root=runtime_fixture_root,
                     linked_bytes=payload_b,
                     app_bytes=payload_b,
@@ -23908,7 +23924,10 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     pair_required: list[frozenset[str]] = []
 
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output_wasm,),
     )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
@@ -24086,6 +24105,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
 
     native_plans = _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -24446,6 +24466,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
 
     _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -24656,6 +24677,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     pair_required: list[set[str]] = []
     native_plans = _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -24817,6 +24839,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     pair_required: list[set[str]] = []
     native_plans = _install_fake_wasm_link_runner(
         monkeypatch,
+        molt_root=tmp_path,
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         app_input_paths=(output_wasm,),
@@ -25068,7 +25091,10 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
     missing_symbol = "molt_nativepkg_missing"
 
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output_wasm,),
     )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
@@ -25155,7 +25181,10 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     _write_split_runtime_vfs_support(tmp_path)
 
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output_wasm,),
     )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
@@ -35150,7 +35179,10 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     reloc.write_bytes(output.read_bytes())
     _write_split_runtime_vfs_support(tmp_path)
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output,)
+        monkeypatch,
+        molt_root=tmp_path,
+        fixture_root=runtime_fixture_root,
+        app_input_paths=(output,),
     )
     original_runner = cli_non_native_output._run_completed_command
     linked = output.with_name("output_linked.wasm")

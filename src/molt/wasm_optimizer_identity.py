@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
-import shutil
 from typing import Any, TypeGuard
 
 from molt.binaryen_identity import (
@@ -27,6 +26,7 @@ from molt.exact_json import canonical_json_bytes, dumps_exact, loads_exact
 from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
+    find_executable,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
@@ -251,9 +251,14 @@ def find_wasm_opt(
     if pinned:
         pinned_path = Path(pinned).expanduser()
         return str(pinned_path) if pinned_path.is_file() else None
-    on_path = shutil.which("wasm-opt", path=environment.get("PATH", os.defpath))
+    # The shared executable search reports each searched directory and the
+    # selected entry to a recording build: a wasm-opt added to an earlier PATH
+    # directory selects another optimizer.
+    on_path = find_executable(
+        "wasm-opt", environment={"PATH": environment.get("PATH", os.defpath)}
+    )
     if on_path is not None:
-        return on_path
+        return os.fspath(on_path)
     return managed_wasm_opt(environment=environment, source_root=source_root)
 
 
