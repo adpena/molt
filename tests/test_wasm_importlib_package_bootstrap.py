@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from molt.dx import scratch_root
+from molt.dx import ARTIFACT_ROOT_ENV, scratch_root
 from molt.process_guard import timeout_from_env
 from tests.wasm_linked_runner import (
     ModuleEntry,
+    _linked_test_artifact_root,
     _run_wasm_test_process,
     build_wasm_linked,
     require_wasm_toolchain,
@@ -50,10 +51,13 @@ def _build_entry_wasm(
     )
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
-    env["MOLT_HOME"] = str(root)
-    env["MOLT_CACHE"] = str(root / ".molt_cache")
-    env["MOLT_WASM_RUNTIME_DIR"] = str(root / "wasm")
-    env["MOLT_EXT_ROOT"] = str(root)
+    # Runtime, cache and artifact state stay beside the test outputs, as the
+    # linked runner keeps them, never in the checkout's wasm root.
+    test_artifact_root = _linked_test_artifact_root(root, out_dir)
+    env["MOLT_HOME"] = str(test_artifact_root)
+    env["MOLT_CACHE"] = str(test_artifact_root / ".molt_cache")
+    env["MOLT_WASM_RUNTIME_DIR"] = str(test_artifact_root / "wasm")
+    env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
     tmp_root = scratch_root(root, env)
     tmp_root.mkdir(parents=True, exist_ok=True)
     env["TMPDIR"] = str(tmp_root)
