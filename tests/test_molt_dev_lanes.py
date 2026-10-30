@@ -1773,6 +1773,42 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
     result = queue.read_result(paths, request.id)
     assert result is not None
     assert result["schema"] == "molt.landing-result.v2"
+    if hold in {
+        "ignored",
+        "pycache-stranger",
+        "pycache-directory",
+        "legacy-bytecode",
+        "package-stranger",
+        "untagged-cache",
+        "egg-info-stranger",
+        "scratch-stranger",
+        "state-lock-with-data",
+    }:
+        import tarfile
+
+        assert result["status"] == "landed", result
+        recovered = False
+        for index in (main / ".git/molt/lane-payload-index").glob("*.json"):
+            record = json.loads(index.read_text(encoding="utf-8"))
+            if record["schema"] != "molt.lane-payload.v1":
+                continue
+            assert record["task"] == "lane-held"
+            for payload in record["payloads"]:
+                source = Path(payload["source"])
+                if source == sentinel or source in sentinel.parents:
+                    member = (
+                        sentinel.name
+                        if source == sentinel
+                        else sentinel.relative_to(source).as_posix()
+                    )
+                    with tarfile.open(payload["archive"]) as archive:
+                        assert archive.extractfile(member).read() == before
+                    recovered = True
+        assert recovered, "unknown signal has no independent recovery index"
+        assert not sentinel.exists()
+        _assert_released(main, worktree)
+        assert _ref(main, "refs/heads/lane/held") is None
+        return
     assert result["status"] == "landed_retirement_failed"
     assert result["landed"] == tip
     assert "lane retire held" in result["detail"]
@@ -2029,8 +2065,13 @@ def test_candidate_runner_launch_uses_its_immutable_committed_source(
     )
     observed = []
     synced = []
+    for cache_key in ("UV_CACHE_DIR", "PIP_CACHE_DIR", "RUFF_CACHE_DIR", "SCCACHE_DIR"):
+        monkeypatch.delenv(cache_key, raising=False)
 
-    def sync_environment(root):
+    def sync_environment(root, *, environment):
+        assert Path(environment["UV_CACHE_DIR"]).is_relative_to(
+            Path(environment["MOLT_EXT_ROOT"])
+        )
         assert (
             _try_acquire_file_lock(
                 root.parent.parent / "controller-use" / f"{root.name}.lock"

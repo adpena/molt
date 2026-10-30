@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 import tomllib
 
 from .disk_capacity import (
@@ -383,29 +384,89 @@ def validate_sccache_epoch_environment(
         )
 
 
-def sccache_auto_selection_allowed(environ: Mapping[str, str]) -> bool:
-    """Select caching only when it preserves the requested compiler environment."""
+class SccacheSocketPathError(ValueError):
+    """The selected server temporary directory cannot hold its startup socket."""
+
+    def __init__(self, path: Path, maximum_path_bytes: int) -> None:
+        self.path = path
+        self.maximum_path_bytes = maximum_path_bytes
+        super().__init__(
+            f"sccache startup under {path} exceeds its socket path limit; "
+            "select a shorter artifact root or an explicit short SCCACHE_DIR "
+            "before starting the server"
+        )
+
+
+def validate_sccache_server_temp_path(
+    path: Path, maximum_path_bytes: int | None
+) -> None:
+    """Validate launch capacity; path projection itself never refuses capacity."""
+    if maximum_path_bytes is not None and len(os.fsencode(path)) > maximum_path_bytes:
+        raise SccacheSocketPathError(path, maximum_path_bytes)
+
+
+_sccache_socket_degrade_warned = False
+
+
+def sccache_auto_selection_allowed(
+    environ: Mapping[str, str], *, default_cache_dir: Path | None = None
+) -> bool:
+    """Select caching only when compiler inputs and server startup are preserved.
+
+    ``default_cache_dir`` is a proposed DX default, never an explicit caller
+    request. Declining it must not install it into the caller's environment.
+    """
+    global _sccache_socket_degrade_warned
     env = ProcessEnvironment(environ)
     validate_sccache_epoch_environment(env, admit_c_tools=False)
-    if cargo_compiler_wrappers(env):
-        return True  # Explicit wrappers suppress automatic cache selection.
-    if "SOURCE_DATE_EPOCH" not in env:
+    wrappers = cargo_compiler_wrappers(env)
+    if wrappers and not sccache_compiler_wrappers(env):
+        return True  # Explicit other wrappers suppress automatic cache selection.
+    mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
+    forced = mode in {"1", "true", "yes", "on"}
+    if not wrappers and "SOURCE_DATE_EPOCH" in env:
+        if forced:
+            raise ValueError(
+                "MOLT_USE_SCCACHE explicitly enables the pinned sccache, which removes "
+                "SOURCE_DATE_EPOCH before invoking the compiler. Select "
+                "MOLT_USE_SCCACHE=0 or auto to preserve the requested epoch."
+            )
+        return False
+    if not wrappers and mode in {"0", "false", "no", "off"}:
         return True
-    if env.get("MOLT_USE_SCCACHE", "auto").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        raise ValueError(
-            "MOLT_USE_SCCACHE explicitly enables the pinned sccache, which removes "
-            "SOURCE_DATE_EPOCH before invoking the compiler. Select "
-            "MOLT_USE_SCCACHE=0 or auto to preserve the requested epoch."
-        )
-    return False
+    explicit_cache = bool(env.get("SCCACHE_DIR", "").strip())
+    candidate = ProcessEnvironmentBuilder(env)
+    if not explicit_cache and default_cache_dir is not None:
+        candidate["SCCACHE_DIR"] = str(default_cache_dir)
+    temporary = sccache_server_temp_dir(candidate)
+    maximum = (
+        _UNIX_SOCKET_PATH_LIMIT - _SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES
+        if _SCCACHE_SERVER_SOCKETS
+        else None
+    )
+    if (
+        temporary is not None
+        and maximum is not None
+        and len(os.fsencode(temporary)) > maximum
+    ):
+        if forced or explicit_cache or wrappers:
+            raise SccacheSocketPathError(temporary, maximum)
+        if not _sccache_socket_degrade_warned:
+            _sccache_socket_degrade_warned = True
+            print(
+                f"molt: WARNING sccache cache is OFF: startup under {temporary} "
+                "exceeds its socket path limit; using direct rustc. Select a shorter "
+                "artifact root or an explicit short SCCACHE_DIR.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return False
+    return True
 
 
-def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
+def sccache_server_temp_dir(
+    environ: Mapping[str, str], *, create: bool = False
+) -> Path | None:
     """Return the temporary directory of the sccache server for ``SCCACHE_DIR``.
 
     The pinned sccache (0.18.0) has no temporary-directory setting. Its server
@@ -424,8 +485,10 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
 
     A client that starts the server waits for it on a Unix socket inside this
     directory, so the socket path must fit ``sun_path``. When the directory
-    beside a deep cache would not, the server uses a durable directory named
-    by the cache path under the user's cache home instead.
+    beside a deep cache would not, DX assigns a short stable directory on the
+    selected artifact volume, addressed by the cache path. An artifact path
+    that cannot fit is projected without refusal; automatic selection declines it,
+    while explicit selection and server preparation refuse it before launch.
     """
 
     raw = environ.get("SCCACHE_DIR", "").strip()
@@ -434,26 +497,51 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
     cache = Path(os.path.abspath(Path(raw).expanduser()))
     if not cache.name:
         raise ValueError(f"SCCACHE_DIR must name a directory below a root: {raw!r}")
-    beside = cache.with_name(f"{cache.name}-tmp")
-    if not _SCCACHE_SERVER_SOCKETS or _startup_socket_fits(beside):
-        return beside
-    home = Path(environ.get("HOME") or os.path.expanduser("~"))
-    digest = hashlib.sha256(os.fsencode(cache)).hexdigest()[:16]
-    short = home / ".cache" / "molt" / "sccache-tmp" / digest
-    if not _startup_socket_fits(short):
-        raise ValueError(
-            "sccache cannot start a server for SCCACHE_DIR "
-            f"{cache}: its startup socket under {short} exceeds the "
-            f"{_UNIX_SOCKET_PATH_LIMIT}-byte socket path limit"
-        )
-    return short
+    from molt.dx import sccache_server_temp_path
 
-
-def _startup_socket_fits(temporary: Path) -> bool:
-    return (
-        len(os.fsencode(temporary)) + _SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES
-        <= _UNIX_SOCKET_PATH_LIMIT
+    return sccache_server_temp_path(
+        compiler_source_root(),
+        cache,
+        environ,
+        maximum_path_bytes=(
+            _UNIX_SOCKET_PATH_LIMIT - _SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES
+            if _SCCACHE_SERVER_SOCKETS
+            else None
+        ),
+        create=create,
+        server_is_live=lambda: _sccache_server_is_live(environ),
     )
+
+
+def _sccache_server_is_live(environ: Mapping[str, str]) -> bool:
+    """A live or uncertain selected endpoint blocks initial temp assignment."""
+    import errno
+    import socket
+
+    endpoint = next(
+        (
+            (key, environ[key])
+            for key in SCCACHE_SERVER_ENDPOINT_ENV_NAMES
+            if environ.get(key)
+        ),
+        None,
+    ) or sccache_server_endpoint(environ)
+    if endpoint is None:
+        raise ValueError("sccache temp assignment has no selected server endpoint")
+    key, value = endpoint
+    address = ("127.0.0.1", int(value)) if key == "SCCACHE_SERVER_PORT" else value
+    family = socket.AF_INET if key == "SCCACHE_SERVER_PORT" else socket.AF_UNIX
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.2)
+        try:
+            probe.connect(address)
+        except OSError as error:
+            if error.errno in {errno.ENOENT, errno.ECONNREFUSED}:
+                return False
+            raise ValueError(
+                f"cannot establish sccache server liveness: {error}"
+            ) from error
+    return True
 
 
 def sccache_server_endpoint(environ: Mapping[str, str]) -> tuple[str, str] | None:
@@ -500,7 +588,7 @@ def sccache_client_environment(
     """
 
     child = ProcessEnvironmentBuilder(environ)
-    temporary = sccache_server_temp_dir(child)
+    temporary = sccache_server_temp_dir(child, create=True)
     if temporary is None:
         return ProcessEnvironment(child), ()
     temporary.mkdir(parents=True, exist_ok=True)

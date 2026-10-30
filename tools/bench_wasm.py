@@ -1847,7 +1847,12 @@ def _main(workload_custody: ExitStack) -> None:
     json_out = args.json_out
     if json_out is None:
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
-        json_out = Path("bench/results") / f"bench_wasm_{timestamp}.json"
+        from molt.dx import storage_path
+
+        json_out = (
+            storage_path(REPO_ROOT, "benchmark-evidence", os.environ)
+            / f"bench_wasm_{timestamp}.json"
+        )
     write_json(json_out, payload, validate_inputs=finish_workload_custody)
     if log_file is not None:
         log_file.close()

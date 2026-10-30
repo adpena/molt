@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+from molt.custody_layout import StorageClass, storage_rule
 import re
 import shutil
 import stat
@@ -433,6 +434,32 @@ def require_scratch_capacity(
         required_bytes=scratch_budget_bytes(env),
         purpose="scratch",
         remedy=_SCRATCH_REMEDY,
+        measure_free_bytes=measure_free_bytes,
+    )
+
+
+def require_storage_capacity(
+    paths: Iterable[Path],
+    *,
+    kind: StorageClass,
+    env: Mapping[str, str] | None = None,
+    additional_bytes: int = 0,
+    measure_free_bytes: FreeSpaceMeasurement | None = None,
+) -> DiskCapacityReceipt:
+    """Admit a typed state writer on its actual destination volume.
+
+    Reuse the existing capacity floor; evidence compaction additionally needs
+    space for the complete source before it may release any source bytes.
+    This is an observation, not a reservation against concurrent allocators.
+    """
+    storage_rule(kind)  # Closed identity admission before any output mutation.
+    if additional_bytes < 0:
+        raise ValueError("storage admission requires nonnegative payload bytes")
+    return _require_capacity(
+        paths,
+        required_bytes=minimum_headroom_bytes(env) + additional_bytes,
+        purpose=f"storage:{kind}",
+        remedy=_BUILD_REMEDY,
         measure_free_bytes=measure_free_bytes,
     )
 

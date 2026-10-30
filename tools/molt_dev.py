@@ -968,10 +968,10 @@ def _gate_runtime(
             raise DriverError("integration source HEAD changed")
         return {"commit": selected_commit, "tree": tree}
 
-    # Beside the integration lock, shared by every worktree, never inside one.
+    from molt.dx import storage_path
+
     receipt_path = (
-        _integration_lock_path(repo).with_name("molt-integrate")
-        / "receipts"
+        storage_path(repo, "integration-receipts")
         / f"{selected_commit}.{receipt_kind}.json"
     )
     return GateRuntime(
@@ -1060,16 +1060,22 @@ def _restore_unpublished_citations(repo: Path, progress: _IntegrationProgress) -
     _warn(f"landing failed: restored {git.short(original)} with its change citations")
 
 
-def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilder:
+def gate_environment(
+    repo: Path, *, session_id: str, create_dirs: bool = True
+) -> ProcessEnvironmentBuilder:
     """The one baseline environment every landing gate projects from."""
     from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
 
     env = immutable_git_environment(os.environ)
-    from molt.dx import checkout_state_maintenance_environment
+    from molt.dx import RunContext
 
-    selected = checkout_state_maintenance_environment(repo, env)
-    if selected is not None:
-        env.update(selected)
+    # Gates receive the same caches, scratch and toolchain selection as every
+    # DX child, including shells without a lane env.sh.
+    env = ProcessEnvironmentBuilder(
+        RunContext(repo).canonical_env(
+            env, create_dirs=create_dirs, force_default_keys=("TMPDIR", "TMP", "TEMP")
+        )
+    )
     # Gates are proof executions: bytecode a gate writes under src/ changes the
     # checkout's import topology while later gates read it (a fresh worktree's
     # first landing failed that way). The canonical environment forbids writes;
@@ -1354,7 +1360,7 @@ def _integrate_exclusive(
             )
             for test, cells in sorted(graph_selection.deferred.items()):
                 _say(f"      {test}  ({', '.join(cells) or 'no proof cell owns it'})")
-    env = gate_environment(repo, session_id=args.session_id)
+    env = gate_environment(repo, session_id=args.session_id, create_dirs=False)
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
@@ -1379,6 +1385,12 @@ def _integrate_exclusive(
             raise DriverError(
                 f"selected output capacity failed; executed=0: {exc}"
             ) from exc
+        from molt.dx import RunContext
+
+        for context in environments.values():
+            RunContext(repo).materialize_environment(
+                context.environment, protected_python_root=context.python_root
+            )
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
     if dry:
@@ -2234,6 +2246,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cl.set_defaults(func=molt_dev_retire.cmd_cleanup)
 
     # lane: orchestrator-owned lane worktrees (tools/molt_dev_lanes.py)
+    from tools.molt_dev_storage_cli import add_arguments as add_storage_arguments
+
+    add_storage_arguments(sub)
     p_ln = sub.add_parser("lane", help="start, retire or list lane/<slug> worktrees")
     add_lane_arguments(
         p_ln, add_repo_arg=_add_repo_arg, add_remote_branch=_add_remote_branch
