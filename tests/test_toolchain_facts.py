@@ -10,6 +10,8 @@ store is discarded and rewritten.
 
 from __future__ import annotations
 
+from molt.durable_file_identity import DurableFileIdentity, VolumeKind
+
 import json
 import os
 import shutil
@@ -41,6 +43,9 @@ def _tool(name: str, content: bytes = b"MZ tool") -> facts.ProbeTool:
     from molt.toolchain_identity import StableRegularFileIdentity
 
     identity = StableRegularFileIdentity(
+        _durable_identity=DurableFileIdentity(
+            VolumeKind.APPLE_UUID, "1" * 32, "2" * 32
+        ),
         path=Path("/tools") / name,
         size=len(content),
         _stat_identity=(1, 2, stat.S_IFREG | 0o755, len(content), 3, 4),

@@ -190,6 +190,10 @@ path = "src/molt/path_custody.py"
 reason = "rejects escaped scratch paths before build or sampling"
 
 [[mechanics]]
+path = "src/molt/durable_file_identity.py"
+reason = "identifies captured host files and scratch generations; never measures a sample"
+
+[[mechanics]]
 path = "src/molt/temporary_artifacts.py"
 reason = "owns temporary artifact lifetime; cleanup is outside the timed child interval"
 

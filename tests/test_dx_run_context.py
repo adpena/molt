@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import shutil
 import sys
 from pathlib import Path
@@ -1330,7 +1331,7 @@ def test_artifact_binding_is_family_wide_without_shell_environment(
     main, lane, artifacts = bound_artifact_family
     environment = ProcessEnvironment({}, rule=name_rule)
     assert dx.artifact_root_binding_path(main) == (
-        main / ".git" / "molt" / "artifact-root.json"
+        main / ".git" / "molt" / "artifact-root.v2.json"
     )
     assert dx.artifact_root_binding_path(lane) == dx.artifact_root_binding_path(main)
     for checkout in (main, lane):
@@ -1467,7 +1468,7 @@ def test_family_binding_is_read_once_across_threads_and_checkouts(
             )
         )
     assert selected == [artifacts] * 8
-    assert reads == [main / ".git" / "molt" / "artifact-root.json"]
+    assert reads == [main / ".git" / "molt" / "artifact-root.v2.json"]
 
 
 def test_fresh_process_resolves_the_family_binding_without_root_variables(
@@ -1502,7 +1503,7 @@ def test_invalid_binding_refuses_and_can_be_cleared(tmp_path, contents):
     clone = tmp_path / "clone"
     clone.mkdir()
     _git(clone, "init", "-q", "-b", "main")
-    record = clone / ".git" / "molt" / "artifact-root.json"
+    record = clone / ".git" / "molt" / "artifact-root.v2.json"
     record.parent.mkdir()
     record.write_text(contents, encoding="utf-8")
     explicit = tmp_path / "operator-override"
@@ -2771,3 +2772,245 @@ def test_developer_host_default_cache_uses_a_per_test_user_cache_base(
     cache = _default_molt_cache()
     assert cache.is_relative_to(tmp_path_factory.getbasetemp())
     assert not cache.is_relative_to(Path.home() / ".cache")
+
+
+def _renumber_stat_devices(monkeypatch):
+    """Simulate one coherent new mount session, including held descriptors."""
+    import stat
+
+    def renumber(original):
+        def query(*args, **kwargs):
+            metadata = original(*args, **kwargs)
+            fields = list(metadata)
+            fields[stat.ST_DEV] += 1000
+            extra = {
+                name: getattr(metadata, name)
+                for name in (
+                    "st_atime_ns",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                    "st_birthtime",
+                    "st_birthtime_ns",
+                    "st_file_attributes",
+                    "st_reparse_tag",
+                )
+                if hasattr(metadata, name)
+            }
+            return os.stat_result(fields, extra)
+
+        return query
+
+    for name in ("stat", "lstat", "fstat"):
+        monkeypatch.setattr(os, name, renumber(getattr(os, name)))
+
+
+def test_matching_legacy_binding_upgrades_through_canonical_selection(
+    bound_artifact_family,
+):
+    main, _, artifacts = bound_artifact_family
+    record = dx.artifact_root_binding_path(main)
+    record.unlink()
+    legacy_path = record.with_name("artifact-root.json")
+    metadata = artifacts.stat()
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "schema": "molt.artifact-root-binding.v1",
+                "root": str(artifacts),
+                "device": metadata.st_dev,
+                "inode": metadata.st_ino,
+            }
+        ),
+        encoding="utf-8",
+    )
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    dx.provision_artifact_root_binding(main, {})
+    assert dx.artifact_root_selection(main, {}).root == artifacts
+    saved = json.loads(record.read_text(encoding="utf-8"))
+    assert set(saved) == {"schema", "root", "identity"}
+    assert saved["schema"] == "molt.artifact-root-binding.v2"
+    assert int(saved["identity"]["file_id"], 16) == metadata.st_ino
+
+
+def test_renumbered_legacy_binding_refuses_with_explicit_bind_remedy(
+    bound_artifact_family,
+):
+    main, _, artifacts = bound_artifact_family
+    record = dx.artifact_root_binding_path(main)
+    record.unlink()
+    legacy_path = record.with_name("artifact-root.json")
+    metadata = artifacts.stat()
+    legacy = {
+        "schema": "molt.artifact-root-binding.v1",
+        "root": str(artifacts),
+        "device": metadata.st_dev + 1,
+        "inode": metadata.st_ino,
+    }
+    legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    with pytest.raises(
+        dx.DxConfigError, match="identity-unverifiable.*artifact-root --bind"
+    ):
+        dx.provision_artifact_root_binding(main, {})
+    assert json.loads(legacy_path.read_text(encoding="utf-8")) == legacy
+
+
+def test_durable_binding_survives_new_device_number(bound_artifact_family, monkeypatch):
+    main, _, artifacts = bound_artifact_family
+    record = dx.artifact_root_binding_path(main)
+    saved = record.read_bytes()
+    _renumber_stat_devices(monkeypatch)
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    assert dx.artifact_root_selection(main, {}).root == artifacts
+    assert record.read_bytes() == saved
+
+
+@pytest.mark.parametrize("replacement", ["directory", "volume", "unmounted"])
+def test_durable_binding_refuses_replacement_or_unmount(
+    bound_artifact_family, monkeypatch, replacement
+):
+    from molt import durable_file_identity as durable
+
+    main, _, artifacts = bound_artifact_family
+    if replacement == "volume":
+        if sys.platform == "darwin":
+            monkeypatch.setattr(durable, "_apple_volume", lambda fd: "f" * 32)
+        elif sys.platform.startswith("linux"):
+            monkeypatch.setattr(
+                durable, "_linux_volume", lambda device: "another-filesystem"
+            )
+        else:
+            real = durable._windows_identity
+            monkeypatch.setattr(
+                durable,
+                "_windows_identity",
+                lambda fd: durable.DurableFileIdentity(
+                    durable.VolumeKind.WINDOWS_SERIAL, "f" * 16, real(fd).file_id
+                ),
+            )
+    else:
+        artifacts.rename(artifacts.with_name("original-artifacts"))
+        if replacement == "directory":
+            artifacts.mkdir()
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    with pytest.raises(dx.DxConfigError, match="artifact-root --bind"):
+        dx.artifact_root_selection(main, {})
+
+
+def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
+    tmp_path, monkeypatch
+):
+    import stat
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    by_uuid = tmp_path / "by-uuid"
+    by_uuid.mkdir()
+    (by_uuid / "ABCD-1234").touch()
+    (by_uuid / "unrelated").touch()
+    original = Path.stat
+
+    def query(path, *args, **kwargs):
+        if path.parent == by_uuid:
+            return SimpleNamespace(
+                st_mode=stat.S_IFBLK,
+                st_dev=55,
+                st_rdev=91 if path.name == "ABCD-1234" else 92,
+            )
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", query)
+    assert durable._linux_volume(91, by_uuid) == "ABCD-1234"
+    with pytest.raises(durable.IdentityUnavailable, match="absent"):
+        durable._linux_volume(55, by_uuid)
+    (by_uuid / "alias").touch()
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda path, *a, **kw: (
+            SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=91)
+            if path.parent == by_uuid
+            else original(path, *a, **kw)
+        ),
+    )
+    with pytest.raises(durable.IdentityUnavailable, match="ambiguous"):
+        durable._linux_volume(91, by_uuid)
+
+
+def test_windows_file_id_info_preserves_high_file_id_bits():
+    from molt import durable_file_identity as durable
+
+    payload = struct.pack("<Q", 0xFEDCBA9876543210) + bytes.fromhex(
+        "102030405060708090a0b0c0d0e0f001"
+    )
+    identity = durable._windows_file_id_info(payload)
+    assert identity.payload() == {
+        "kind": "windows-serial",
+        "volume": "fedcba9876543210",
+        "file_id": "102030405060708090a0b0c0d0e0f001",
+    }
+    for malformed in (payload[:16], payload + b"x", payload[:8] + b"\0" * 16):
+        with pytest.raises(durable.IdentityUnavailable):
+            durable._windows_file_id_info(malformed)
+
+
+@pytest.mark.parametrize("filesystem_type", [0x01021994, 0x858458F6])
+def test_linux_volatile_identity_expires_with_the_kernel_boot(
+    monkeypatch, filesystem_type
+):
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    install_module_view(monkeypatch, "sys", sys, durable, platform="linux")
+    monkeypatch.setattr(durable, "_linux_filesystem_type", lambda fd: filesystem_type)
+    boot = "12345678-1234-4567-8123-123456789abc"
+    original = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda path, **kw: (
+            boot
+            if str(path) == "/proc/sys/kernel/random/boot_id"
+            else original(path, **kw)
+        ),
+    )
+    monkeypatch.setattr(
+        durable,
+        "_linux_volume",
+        lambda device: pytest.fail("volatile content must use its boot authority"),
+    )
+    metadata = SimpleNamespace(st_dev=91, st_ino=17)
+    first = durable.identity_from_fd(-1, metadata=metadata)
+    assert first.payload() == {
+        "kind": "boot-scoped",
+        "volume": "12345678123445678123123456789abc.000000000000005b",
+        "file_id": "00000000000000000000000000000011",
+    }
+    assert durable.DurableFileIdentity.from_payload(first.payload()) == first
+    assert durable.identity_from_fd(-1, metadata=metadata) == first
+    boot = "87654321-1234-4567-8123-123456789abc"
+    assert durable.identity_from_fd(-1, metadata=metadata) != first
+    boot = "bad-boot-id"
+    with pytest.raises(durable.IdentityUnavailable, match="boot ID is invalid"):
+        durable.identity_from_fd(-1, metadata=metadata)
+
+
+def test_linux_persistent_filesystem_cannot_use_boot_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    install_module_view(monkeypatch, "sys", sys, durable, platform="linux")
+    monkeypatch.setattr(durable, "_linux_filesystem_type", lambda fd: 0xEF53)
+    query = durable._linux_volume
+    monkeypatch.setattr(
+        durable, "_linux_volume", lambda device: query(device, tmp_path / "absent")
+    )
+    monkeypatch.setattr(
+        durable,
+        "_linux_boot_volume",
+        lambda device: pytest.fail("unidentified persistent content must refuse"),
+    )
+    with pytest.raises(
+        durable.IdentityUnavailable, match="provide a unique filesystem UUID mapping"
+    ):
+        durable.identity_from_fd(-1, metadata=SimpleNamespace(st_dev=91, st_ino=17))

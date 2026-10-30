@@ -615,7 +615,7 @@ def test_missing_or_replaced_external_root_never_authorizes_retirement(
         if unavailable:
             raise OSError("selected volume offline")
         value = original(raw)
-        return {**value, "inode": value["inode"] + 1}
+        return {**value, "identity": {**value["identity"], "file_id": "f" * 32}}
 
     monkeypatch.setattr(cargo_output_layout, "declare_root", replaced)
     monkeypatch.setattr(
@@ -671,7 +671,11 @@ def test_external_root_is_revalidated_after_identity_lock_wait(generation, monke
 
     def root(raw):
         value = declare_root(raw)
-        return {**value, "inode": value["inode"] + 1} if locked else value
+        return (
+            {**value, "identity": {**value["identity"], "file_id": "f" * 32}}
+            if locked
+            else value
+        )
 
     monkeypatch.setattr(cache, "_acquire_file_lock", acquire)
     monkeypatch.setattr(cargo_output_layout, "declare_root", root)

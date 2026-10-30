@@ -27,6 +27,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import os
+from molt.durable_file_identity import file_identity, upgrade_stat_token
 from pathlib import Path
 import stat
 import subprocess
@@ -51,7 +52,7 @@ from molt.toolchain_identity import (
 )
 
 
-STORE_SCHEMA = "molt.toolchain-facts.v1"
+STORE_SCHEMA = "molt.toolchain-facts.v2"
 
 # The environment each probe class reads, decided from the tool's own source
 # and documented in the design. A name outside its set cannot change the
@@ -118,7 +119,7 @@ LINK_DRIVER_PROBE_ENVIRONMENT = (
 # The symlink `xcode-select` and the `/usr/bin` shims dispatch on.
 DARWIN_DEVELOPER_SELECTION_LINK = Path("/var/db/xcode_select_link")
 
-StatToken = tuple[int, int, int, int, int, int]
+StatToken = tuple[str, str, int, int, int, int]
 FileToken = tuple[object, ...]
 FileInput = tuple[str, FileToken | None]
 
@@ -208,8 +209,7 @@ def file_input(path: Path | str) -> FileInput:
     except (FileNotFoundError, NotADirectoryError):
         return name, None
     token: list[object] = [
-        metadata.st_dev,
-        metadata.st_ino,
+        *file_identity(Path(name), expected=metadata).stat_prefix(),
         metadata.st_mode,
         metadata.st_size,
         metadata.st_mtime_ns,
@@ -224,8 +224,9 @@ def file_input(path: Path | str) -> FileInput:
         else:
             token.append(
                 [
-                    target.st_dev,
-                    target.st_ino,
+                    *file_identity(
+                        Path(name).resolve(strict=True), expected=target
+                    ).stat_prefix(),
                     target.st_mode,
                     target.st_size,
                     target.st_mtime_ns,
@@ -341,7 +342,7 @@ def _record_from_json(digest: str, value: object) -> _Record | None:
     return _Record(key, ProbeAnswer(stdout, stderr), recorded_ns)
 
 
-def _read_records(path: Path) -> dict[str, _Record]:
+def _read_records(path: Path, *, migrate_legacy: bool = False) -> dict[str, _Record]:
     """The store's records; a missing, corrupt or foreign file reads as empty."""
     try:
         raw = path.read_bytes()
@@ -351,7 +352,8 @@ def _read_records(path: Path) -> dict[str, _Record]:
         document: Any = loads_exact(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return {}
-    if not isinstance(document, dict) or document.get("schema") != STORE_SCHEMA:
+    expected_schema = "molt.toolchain-facts.v1" if migrate_legacy else STORE_SCHEMA
+    if not isinstance(document, dict) or document.get("schema") != expected_schema:
         return {}
     facts = document.get("facts")
     if not isinstance(facts, dict):
@@ -360,6 +362,37 @@ def _read_records(path: Path) -> dict[str, _Record]:
     for digest, value in facts.items():
         record = _record_from_json(digest, value)
         if record is not None:
+            if document["schema"] == "molt.toolchain-facts.v1":
+                try:
+                    key = dict(record.key)
+                    tools = [dict(tool) for tool in key["tools"]]
+                    for tool in tools:
+                        tool["token"] = upgrade_stat_token(
+                            Path(tool["content_path"]), tool["token"]
+                        )
+                    key["tools"] = tools
+                    inputs = []
+                    for name, token in key["inputs"]:
+                        if token is not None:
+                            updated = upgrade_stat_token(Path(name), token[:6])
+                            if len(token) > 6:
+                                if os.readlink(name) != token[6]:
+                                    raise ValueError("legacy symlink changed")
+                                updated.append(token[6])
+                                updated.append(
+                                    None
+                                    if token[7] is None
+                                    else upgrade_stat_token(
+                                        Path(name).resolve(strict=True), token[7]
+                                    )
+                                )
+                            token = updated
+                        inputs.append([name, token])
+                    key["inputs"] = inputs
+                    digest = canonical_json_sha256(key)
+                    record = _Record(key, record.answer, record.recorded_ns)
+                except (OSError, ValueError, TypeError, KeyError, IndexError):
+                    continue
             records[digest] = record
     return records
 
@@ -415,7 +448,13 @@ class ToolchainFactStore:
     def _records(self) -> dict[str, _Record]:
         if self._persisted is None:
             with self._host_lock():
-                self._persisted = _read_records(self.path)
+                if not self.path.exists():
+                    legacy = self.path.with_name("v1.json")
+                    if legacy.exists():
+                        self._persisted = _read_records(legacy, migrate_legacy=True)
+                        _replace_records(self.path, self._persisted)
+                if self._persisted is None:
+                    self._persisted = _read_records(self.path)
         return self._persisted
 
     def lookup(self, key: ProbeKey) -> ProbeAnswer | None:

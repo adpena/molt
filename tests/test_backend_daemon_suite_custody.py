@@ -107,7 +107,7 @@ def deterministic_drain_clock(monkeypatch):
 @pytest.fixture
 def lease(tmp_path, monkeypatch):
     root = tmp_path / "daemon"
-    path = root / "suite-leases" / ("a" * 32) / "lease.json"
+    path = root / "suite-leases" / "v3" / ("a" * 32) / "lease.json"
     path.parent.mkdir(parents=True)
     record = {
         "schema": suite.SCHEMA,
@@ -236,7 +236,7 @@ def test_live_suite_lease_requires_both_births_and_os_lock(lease, tmp_path):
 
 
 def test_unheld_or_closed_lease_cannot_adopt(tmp_path):
-    path = tmp_path / "daemon" / "suite-leases" / ("a" * 32) / "lease.json"
+    path = tmp_path / "daemon" / "suite-leases" / "v3" / ("a" * 32) / "lease.json"
     path.parent.mkdir(parents=True)
     record = {
         "schema": suite.SCHEMA,
@@ -759,13 +759,24 @@ def test_fork_child_does_not_keep_suite_eof_alive(tmp_path):
         (
             "scratch",
             {
-                "target_identity": {"device": 0, "inode": True},
+                "target_identity": {
+                    "kind": "apple-uuid",
+                    "volume": "1" * 32,
+                    "file_id": True,
+                },
                 "target_receipt": "a" * 32,
             },
         ),
         (
             "scratch",
-            {"target_identity": {"device": 0, "inode": 1}, "target_receipt": ""},
+            {
+                "target_identity": {
+                    "kind": "apple-uuid",
+                    "volume": "1" * 32,
+                    "file_id": "1" * 32,
+                },
+                "target_receipt": "",
+            },
         ),
     ],
 )

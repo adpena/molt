@@ -14411,10 +14411,13 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
 
     assert second_hash == first_hash
     stat = module_path.stat()
+    from molt.durable_file_identity import file_identity
+
+    volume, file_id = file_identity(module_path).stat_prefix()
     stat_identity_is_strong = cli_module_source._source_hash_stat_identity_is_strong(
         ctime_ns=stat.st_ctime_ns,
-        inode=int(getattr(stat, "st_ino", 0) or 0),
-        device=cli_module_source._stat_device(stat),
+        file_id=file_id,
+        volume=volume,
     )
     assert hash_calls == (1 if stat_identity_is_strong else 2)
 

@@ -64,7 +64,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.proof_queue_pkg import state as proof_queue_state  # noqa: E402
 
 
-SCHEMA = "molt.runtime-wasm-final-preflight.v3"
+SCHEMA = "molt.runtime-wasm-final-preflight.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
 _GIT_TIMEOUT_SECONDS = 30.0
 _COMPILER_MUTEX = "compiler-build-resource"
@@ -522,6 +522,13 @@ def _resolve_preflight_context(
     return RuntimeWasmPreflightContext(roots=roots, claim=claim, build_env=build_env)
 
 
+def _durable_volume(path: Path) -> str:
+    from molt.durable_file_identity import file_identity
+
+    identity = file_identity(path)
+    return identity.stat_prefix()[0]
+
+
 def _disk_facts(
     paths: Sequence[Path], *, reserve_bytes: int
 ) -> list[dict[str, object]]:
@@ -534,7 +541,7 @@ def _disk_facts(
         capacity = probe_capacity(anchor, required_bytes=reserve_bytes)
         usage = shutil.disk_usage(anchor)
         by_volume[volume] = {
-            "volume": volume,
+            "volume": _durable_volume(anchor),
             "anchor": os.fspath(anchor),
             "total_bytes": usage.total,
             "used_bytes": usage.used,

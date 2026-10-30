@@ -31,6 +31,12 @@ from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.file_hashing import _sha256_file
 from molt.file_deletion import unlink_file
 from molt.exact_json import canonical_json_bytes, encode_exact, loads_exact
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    file_identity,
+    upgrade_legacy,
+    IdentityUnverifiable,
+)
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     open_stable_regular_file,
@@ -42,11 +48,12 @@ from molt.toolchain_identity import (
 
 
 _BACKUP_UNLINK_ATTEMPTS = 8
-_PUBLICATION_JOURNAL_SCHEMA = "molt.artifact-publication.v2"
+_PUBLICATION_JOURNAL_SCHEMA = "molt.artifact-publication.v3"
 _PUBLICATION_JOURNAL_KEYS = frozenset(
     {"schema", "transaction_id", "state", "journals", "replacements", "removals"}
 )
-_PUBLICATION_JOURNAL_PREFIX = ".molt-artifact-publication-"
+_PUBLICATION_JOURNAL_PREFIX = ".molt-artifact-publication-v3-"
+_LEGACY_JOURNAL_PREFIX = ".molt-artifact-publication-"
 _PUBLICATION_JOURNAL_SUFFIX = ".json"
 _PUBLICATION_LOCK_NAME = ".molt-artifact-publication.lock"
 _PUBLICATION_RECEIPT_NAME_RE = re.compile(
@@ -54,12 +61,12 @@ _PUBLICATION_RECEIPT_NAME_RE = re.compile(
 )
 _PUBLICATION_LOCK_TIMEOUT_SECONDS = 300.0
 _PUBLICATION_JOURNAL_NAME_RE = re.compile(
-    rf"^{re.escape(_PUBLICATION_JOURNAL_PREFIX)}"
+    r"^\.molt-artifact-publication-(?:v3-)?"
     rf"(?P<transaction_id>[0-9a-f]{{32}})"
     rf"{re.escape(_PUBLICATION_JOURNAL_SUFFIX)}$"
 )
 _PUBLICATION_JOURNAL_STAGE_NAME_RE = re.compile(
-    rf"^{re.escape(_PUBLICATION_JOURNAL_PREFIX)}"
+    r"^\.molt-artifact-publication-(?:v3-)?"
     rf"(?P<transaction_id>[0-9a-f]{{32}})"
     rf"{re.escape(_PUBLICATION_JOURNAL_SUFFIX)}"
     r"\.stage-(?P<nonce>[0-9a-f]{32})\.tmp$"
@@ -82,12 +89,12 @@ class _RetirementEntry(TypedDict):
     final: str
     backup: str
     had_final: bool
-    prior_identity: list[int] | None
+    prior_identity: dict[str, str] | None
 
 
 class _ReplacementEntry(_RetirementEntry):
     staged: str
-    installed_identity: list[int]
+    installed_identity: dict[str, str]
 
 
 def _unlink_backup(path: Path) -> None:
@@ -173,12 +180,12 @@ def _require_regular_or_absent(path: Path, *, role: str) -> None:
         raise ValueError(f"{role} is not a regular file: {path}")
 
 
-def _file_node_identity(path: Path) -> list[int]:
+def _file_node_identity(path: Path) -> dict[str, str]:
     _require_regular_or_absent(path, role="publication generation member")
     metadata = path.stat()
     if not metadata.st_ino:
         raise ValueError(f"publication requires stable file identity: {path}")
-    return [metadata.st_dev, metadata.st_ino]
+    return file_identity(path, expected=metadata).payload()
 
 
 def staged_output_path(
@@ -365,6 +372,51 @@ def _publication_directory_residue(parent: Path) -> _PublicationDirectoryResidue
     )
 
 
+def _upgrade_publication_journal(payload: dict) -> dict:
+    """Re-key only objects still witnessed by the old journal's exact pair.
+
+    The recovery owner loads and compares every copy before publishing v3.
+    An unverifiable member refuses the entire transaction without recovery.
+    """
+    import copy
+
+    upgraded = copy.deepcopy(payload)
+    for collection in ("replacements", "removals"):
+        for entry in upgraded.get(collection, []):
+            for field in ("prior_identity", "installed_identity"):
+                if field not in entry or entry[field] is None:
+                    continue
+                pair = entry[field]
+                if not isinstance(pair, list) or len(pair) != 2:
+                    raise IdentityUnverifiable(
+                        "identity-unverifiable: malformed legacy publication identity"
+                    )
+                roles = (
+                    ("backup", "final")
+                    if field == "prior_identity"
+                    else ("staged", "final")
+                )
+                found = None
+                for role in roles:
+                    raw = entry.get(role)
+                    if not isinstance(raw, str):
+                        continue
+                    try:
+                        found = upgrade_legacy(
+                            Path(raw), {"device": pair[0], "inode": pair[1]}
+                        )
+                    except (FileNotFoundError, IdentityUnverifiable):
+                        continue
+                    break
+                if found is None:
+                    raise IdentityUnverifiable(
+                        "identity-unverifiable: legacy publication member unavailable"
+                    )
+                entry[field] = found.payload()
+    upgraded["schema"] = _PUBLICATION_JOURNAL_SCHEMA
+    return upgraded
+
+
 def _load_journal(path: Path) -> dict[str, Any]:
     path = _canonical_leaf(
         path, role="artifact publication journal", create_parent=False
@@ -379,10 +431,12 @@ def _load_journal(path: Path) -> dict[str, Any]:
         ) from exc
     if not isinstance(payload, dict) or set(payload) != _PUBLICATION_JOURNAL_KEYS:
         raise OSError(f"invalid artifact publication journal payload: {path}")
+    legacy = payload.get("schema") == "molt.artifact-publication.v2"
+    if legacy:
+        payload = _upgrade_publication_journal(payload)
     transaction_id = payload.get("transaction_id")
-    expected_name = (
-        f"{_PUBLICATION_JOURNAL_PREFIX}{transaction_id}{_PUBLICATION_JOURNAL_SUFFIX}"
-    )
+    prefix = _LEGACY_JOURNAL_PREFIX if legacy else _PUBLICATION_JOURNAL_PREFIX
+    expected_name = f"{prefix}{transaction_id}{_PUBLICATION_JOURNAL_SUFFIX}"
     if (
         payload.get("schema") != _PUBLICATION_JOURNAL_SCHEMA
         or payload.get("state") not in {"prepared", "committed", "aborted"}
@@ -442,13 +496,13 @@ def _load_journal(path: Path) -> dict[str, Any]:
                 if key == "prior_identity" and not entry["had_final"]:
                     if identity is not None:
                         raise OSError(f"unexpected prior publication identity: {path}")
-                elif (
-                    not isinstance(identity, list)
-                    or len(identity) != 2
-                    or any(type(value) is not int or value < 0 for value in identity)
-                    or not identity[1]
-                ):
-                    raise OSError(f"invalid publication file identity: {path}")
+                else:
+                    try:
+                        DurableFileIdentity.from_payload(identity)
+                    except ValueError as exc:
+                        raise OSError(
+                            f"invalid publication file identity: {path}"
+                        ) from exc
             for key in keys - {"had_final", "prior_identity", "installed_identity"}:
                 value = entry[key]
                 if not isinstance(value, str) or not Path(value).is_absolute():
@@ -835,8 +889,29 @@ def _cleanup_paths(paths: Iterator[Path]) -> tuple[Path, ...]:
 
 
 def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
+    # Namespace migration is part of the already locked recovery owner. Publish
+    # every current copy durably, then retire all legacy copies before touching
+    # any artifact. A v2 reader never sees a v3 record under its journal name.
+    transaction_id = _PUBLICATION_JOURNAL_NAME_RE.fullmatch(journals[0].name)[
+        "transaction_id"
+    ]
+    current_paths = tuple(
+        _journal_path(path.parent, transaction_id) for path in journals
+    )
+    candidates = tuple(
+        dict.fromkeys(
+            path
+            for current in current_paths
+            for path in (
+                current,
+                current.with_name(f"{_LEGACY_JOURNAL_PREFIX}{transaction_id}.json"),
+            )
+        )
+    )
     existing_copies = tuple(
-        (path, _load_journal(path)) for path in journals if path.is_file()
+        (path, {**_load_journal(path), "journals": [str(p) for p in current_paths]})
+        for path in candidates
+        if path.is_file()
     )
     if not existing_copies:
         return _TransactionRecovery(committed=False, retained=())
@@ -852,6 +927,20 @@ def _recover_transaction(journals: tuple[Path, ...]) -> _TransactionRecovery:
     aborted = any(copy["state"] == "aborted" for copy in copies)
     if committed and aborted:
         raise OSError("artifact publication has conflicting terminal journal states")
+    legacy_paths = tuple(
+        path for path, _ in existing_copies if path not in current_paths
+    )
+    if legacy_paths:
+        payload = {
+            **payload,
+            "state": "committed" if committed else "aborted" if aborted else "prepared",
+        }
+        _write_journal_copies(payload)
+        from molt.file_publication import durable_remove_path
+
+        for legacy in legacy_paths:
+            durable_remove_path(legacy)
+        existing_copies = tuple((path, payload) for path in current_paths)
     if committed:
         # A single committed copy is the durable commit point. Before deleting
         # any backup, stage, or journal, propagate it to every surviving copy:
@@ -934,7 +1023,9 @@ def _recover_publication_journals(
     for transaction_id in sorted(by_transaction):
         payload = _load_journal(by_transaction[transaction_id][0])
         journal_paths = tuple(Path(value) for value in payload["journals"])
-        if not set(by_transaction[transaction_id]).issubset(journal_paths):
+        if not {path.parent for path in by_transaction[transaction_id]}.issubset(
+            {path.parent for path in journal_paths}
+        ):
             raise OSError(
                 "artifact publication journal copies disagree: "
                 + ", ".join(str(path) for path in by_transaction[transaction_id])

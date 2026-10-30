@@ -19,10 +19,15 @@ from typing import Mapping, Sequence
 
 from molt import custody_layout, file_publication
 from molt.dx import artifact_root
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    file_identity,
+    upgrade_legacy,
+)
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 
 
-ROOT_SCHEMA = "molt.proof-cargo-output-root.v1"
+ROOT_SCHEMA = "molt.proof-cargo-output-root.v2"
 TARGET_LAYOUT = "molt.proof-cargo-target.v2"
 _HISTORICAL_TARGET_LAYOUT = "molt.proof-cargo-target.v1"
 
@@ -90,28 +95,52 @@ def declare_root(raw: object) -> dict[str, object]:
     return {
         "schema": ROOT_SCHEMA,
         "path": str(root),
-        "device": metadata.st_dev,
-        "inode": metadata.st_ino,
+        "identity": file_identity(root, expected=metadata).payload(),
     }
+
+
+def _upgrade_root_declaration(value: Mapping) -> dict[str, object]:
+    if set(value) != {"schema", "path", "device", "inode"} or not isinstance(
+        value["path"], str
+    ):
+        raise ValueError("identity-unverifiable: malformed legacy Cargo root")
+    path = Path(value["path"])
+    if not path.is_absolute() or path == Path(path.anchor) or ".." in path.parts:
+        raise ValueError("identity-unverifiable: invalid legacy Cargo root path")
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    lock = _acquire_file_lock(
+        path / "molt-proof-output" / "v2" / "identity-migration.lock",
+        timeout_s=10,
+        timeout_message="Cargo root migration is busy",
+    )
+    try:
+        identity = upgrade_legacy(
+            path, {"device": value["device"], "inode": value["inode"]}
+        )
+        return {
+            "schema": ROOT_SCHEMA,
+            "path": str(path),
+            "identity": identity.payload(),
+        }
+    finally:
+        _release_file_lock(lock)
 
 
 def declared_root(value: object) -> dict[str, object] | None:
     """Validate immutable syntax without requiring historical media online."""
     if value is None:
         return None
-    if not isinstance(value, Mapping) or set(value) != {
-        "schema",
-        "path",
-        "device",
-        "inode",
-    }:
-        raise ValueError("Cargo output root declaration is malformed")
     if (
-        value.get("schema") != ROOT_SCHEMA
-        or type(value.get("device")) is not int
-        or type(value.get("inode")) is not int
+        isinstance(value, Mapping)
+        and value.get("schema") == "molt.proof-cargo-output-root.v1"
     ):
+        value = _upgrade_root_declaration(value)
+    if not isinstance(value, Mapping) or set(value) != {"schema", "path", "identity"}:
+        raise ValueError("Cargo output root declaration is malformed")
+    if value.get("schema") != ROOT_SCHEMA:
         raise ValueError("Cargo output root identity is malformed")
+    DurableFileIdentity.from_payload(value["identity"])
     raw = value.get("path")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Cargo output root path is malformed")
@@ -121,8 +150,6 @@ def declared_root(value: object) -> dict[str, object] | None:
         or path == Path(path.anchor)
         or ".." in path.parts
         or str(path) != raw
-        or value["inode"] <= 0
-        or value["device"] < 0
     ):
         raise ValueError("Cargo output root identity is not canonical")
     return dict(value)
@@ -144,7 +171,9 @@ def validate_root(value: object) -> dict[str, object] | None:
 
 
 def same_root(left: object, right: object) -> bool:
-    return canonical_json_bytes(left) == canonical_json_bytes(right)
+    return canonical_json_bytes(declared_root(left)) == canonical_json_bytes(
+        declared_root(right)
+    )
 
 
 def _directory_identity(path: Path) -> tuple[int, int] | None:
@@ -231,7 +260,9 @@ class CargoOutputLayout:
         namespace = hashlib.sha256(
             os.path.normcase(str(self.result_root)).encode()
         ).hexdigest()[:24]
-        return Path(str(self.declaration["path"])) / "molt-proof-output" / namespace
+        return (
+            Path(str(self.declaration["path"])) / "molt-proof-output" / "v2" / namespace
+        )
 
     def validate(self, *, protected_roots: Sequence[Path] = ()) -> None:
         declaration = validate_root(self.declaration)

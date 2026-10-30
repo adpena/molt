@@ -47,15 +47,15 @@ def test_artifact_root_command_binds_reports_and_clears(
     assert payload == {
         "root": str(artifacts.resolve()),
         "source": "family-binding",
-        "binding_record": str(checkout / ".git" / "molt" / "artifact-root.json"),
+        "binding_record": str(checkout / ".git" / "molt" / "artifact-root.v2.json"),
     }
     record = Path(payload["binding_record"])
     saved = json.loads(record.read_text(encoding="utf-8"))
     assert saved["root"] == str(artifacts.resolve())
-    assert (saved["device"], saved["inode"]) == (
-        artifacts.stat().st_dev,
-        artifacts.stat().st_ino,
-    )
+    from molt.durable_file_identity import file_identity
+
+    assert saved["schema"] == "molt.artifact-root-binding.v2"
+    assert saved["identity"] == file_identity(artifacts).payload()
     # Explicit environment selection is visible without destroying the binding.
     override = tmp_path / "override"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(override))

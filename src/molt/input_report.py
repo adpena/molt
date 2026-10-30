@@ -23,8 +23,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol, assert_never
 
-# (device, inode, mode, file size or POSIX directory size, mtime_ns, content-change ns)
-StatToken = tuple[int, int, int, int, int, int]
+# (typed volume, file id, mode, size, mtime_ns, content-change ns)
+StatToken = tuple[str, str, int, int, int, int]
 # A lookup's resolved target and file type; an empty target carries the errno
 # of a lookup that failed for a reason other than absence; None is absent.
 ProbeOutcome = tuple[str, int] | None
@@ -69,9 +69,14 @@ def stat_token(
             return None
     else:
         change = metadata.st_ctime_ns
+    from molt.durable_file_identity import file_identity
+
+    try:
+        identity = file_identity(Path(os.path.realpath(path)), expected=metadata)
+    except (OSError, ValueError):
+        return None
     return (
-        metadata.st_dev,
-        metadata.st_ino,
+        *identity.stat_prefix(),
         metadata.st_mode,
         # Windows by-name and handle metadata can report 4096 and 0 for
         # the same unchanged directory. Its allocation length is not a

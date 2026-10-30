@@ -31,7 +31,7 @@ from tests.process_guard_common import install_module_view, run_guarded_test_pro
 def _receipt_payload(source_key: str) -> dict[str, object]:
     # Literal wire shape is independent of the writer under test.
     return {
-        "version": 3,
+        "version": 4,
         "source_key": source_key,
         "tier": "module",
         "size": 9,
@@ -829,7 +829,7 @@ def test_bytes_only_or_stale_origin_refuses_capture_but_preserves_ordinary_reuse
         receipt.unlink()
     else:
         if receipt_fault == "wrong-generation":
-            payload["generation"][1] += 1
+            payload["generation"][1] = "f" * 32
         elif receipt_fault == "wrong-output":
             payload["emission_origin"]["output"]["sha256"] = "f" * 64
         elif receipt_fault == "missing-field":
@@ -1012,12 +1012,12 @@ def test_sealed_cache_transfer_republishes_generation_without_retagging(
     origin = _original_emission_payload(content, process_id=101, scope="c" * 64)
     # A transported snapshot cannot retain the source filesystem's generation.
     receipt = {
-        "version": 3,
+        "version": 4,
         "source_key": name,
         "tier": "immutable",
         "size": len(content),
         "sha256": hashlib.sha256(content).hexdigest(),
-        "generation": [987654, 876543],
+        "generation": ["apple-uuid:" + "1" * 32, "2" * 32],
         "emission_origin": origin,
     }
     if defect == "receipt":
@@ -1046,10 +1046,9 @@ def test_sealed_cache_transfer_republishes_generation_without_retagging(
             backend_cache_sync_receipt_path(destination).read_text(encoding="utf-8")
         )
         assert actual["emission_origin"] == origin
-        assert actual["generation"] == [
-            destination.stat().st_dev,
-            destination.stat().st_ino,
-        ]
+        from molt.durable_file_identity import file_identity
+
+        assert actual["generation"] == list(file_identity(destination).stat_prefix())
         assert actual["generation"] != receipt["generation"]
         assert destination.read_bytes() == content
         assert (

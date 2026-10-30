@@ -95,7 +95,7 @@ One authority, `molt.toolchain_facts`:
   time.
 - `ToolchainFactStore`: one JSON file,
   `default_paths.toolchain_fact_store_path(cache_root)` =
-  `<cache>/toolchain-facts/v1.json`, beside the digest cache in the host
+  `<cache>/toolchain-facts/v2.json`, beside the digest cache in the host
   cache namespace. The file is read once per process under the shared cache
   lock; a missing, corrupt or foreign file, or a record whose key does not
   hash to its digest, reads as absent and is replaced by the next write.
@@ -268,3 +268,7 @@ shared store or satisfy another test. This does not redirect the session's
 ownership use `toolchain_fact_store(root)` or `ToolchainFactStore(root)` with a
 private root; child-process integrations use `isolated_molt_cache` to pass that
 private namespace in their environment.
+
+Host fact and digest identity and their migration are owned by the
+[durable filesystem identity contract](durable_file_identity.md). Digest reuse
+retains the existing racy-time policy.

@@ -289,12 +289,12 @@ def cache_control_root(cache_root: Path) -> Path:
 
 def file_digest_cache_path(cache_root: Path) -> Path:
     """The host's stat-keyed file digest store within one cache namespace."""
-    return cache_root / "file-digests" / "v1.sqlite"
+    return cache_root / "file-digests" / "v2.sqlite"
 
 
 def toolchain_fact_store_path(cache_root: Path) -> Path:
     """The host's toolchain probe answers (`molt.toolchain_facts`) within one cache namespace."""
-    return cache_root / "toolchain-facts" / "v1.json"
+    return cache_root / "toolchain-facts" / "v2.json"
 
 
 def shared_cache_lock_path(cache_root: Path, name: str) -> Path:

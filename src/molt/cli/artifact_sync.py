@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from molt.durable_file_identity import DurableFileIdentity, upgrade_legacy
 from molt.backend_protocol import BackendEmissionOrigin
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.atomic_io import _atomic_write_json
@@ -19,14 +20,14 @@ from molt.toolchain_identity import (
 # artifact. Reconstructible source-analysis candidates belong to json_cache.
 
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[str, dict[str, Any] | None]] = {}
-_ARTIFACT_SYNC_STATE_VERSION = 3
+_ARTIFACT_SYNC_STATE_VERSION = 4
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
     return _artifact_state_path(
         project_root,
         artifact,
-        subdir="artifact_sync",
+        subdir="artifact_sync/v4",
         stem_suffix="",
         extension="json",
     )
@@ -49,15 +50,70 @@ def _artifact_sync_payload_shape(value: object) -> bool:
     ):
         return False
     generation = value["generation"]
+    if isinstance(generation, list) and len(generation) == 2:
+        try:
+            DurableFileIdentity.from_stat_prefix(*generation)
+        except ValueError:
+            return False
     return (
         isinstance(generation, list)
         and len(generation) == 2
-        and all(type(part) is int and part >= 0 for part in generation)
+        and all(isinstance(part, str) for part in generation)
     )
 
 
-def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
+def _migrate_artifact_sync_state(path: Path, artifact: Path) -> None:
+    if path.exists() or path.parent.name != "v4":
+        return
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    legacy = path.parent.parent / path.name
+    if not legacy.exists():
+        return
+    lock = _acquire_file_lock(
+        path.with_suffix(".identity-migration.lock"),
+        timeout_s=10,
+        timeout_message="sync receipt migration is busy",
+    )
     try:
+        if path.exists():
+            return
+        _, data = capture_stable_regular_file(
+            legacy,
+            label="legacy artifact sync payload",
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+        )
+        decoded = json.loads(data)
+        if not isinstance(decoded, dict) or decoded.get("version") != 3:
+            return
+        pair = decoded.get("generation")
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise ValueError("invalid legacy sync generation")
+        generation = upgrade_legacy(artifact, {"device": pair[0], "inode": pair[1]})
+        current = stable_regular_file_identity(artifact, label="legacy synced artifact")
+        if (decoded.get("sha256"), decoded.get("size")) != (
+            current.sha256,
+            current.size,
+        ):
+            raise ValueError("legacy sync artifact changed")
+        decoded = {
+            **decoded,
+            "version": _ARTIFACT_SYNC_STATE_VERSION,
+            "generation": list(generation.stat_prefix()),
+        }
+        if not _artifact_sync_payload_shape(decoded):
+            raise ValueError("invalid legacy sync receipt")
+        _atomic_write_json(path, decoded, indent=2)
+    finally:
+        _release_file_lock(lock)
+
+
+def _read_artifact_sync_state(
+    path: Path, *, artifact: Path | None = None
+) -> dict[str, Any] | None:
+    try:
+        if artifact is not None:
+            _migrate_artifact_sync_state(path, artifact)
         identity, data = capture_stable_regular_file(
             path,
             label="artifact sync payload",
