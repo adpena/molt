@@ -14,35 +14,20 @@ programs constantly.
 
 ## Prior art
 
+[Observed inputs and content identity](observed_inputs.md) owns the content
+identity, observed-input and reuse rules and their prior art. This document
+owns what the build record reads and checks. The prior art below is specific
+to those reads.
+
 - Cargo: per-unit fingerprints plus rustc dep-info; a no-op build costs
   0.1-0.3 s.
 - ninja: `.ninja_log` and depfiles; a no-op build stats each edge's inputs and
   outputs. `ninja -d explain` names the first changed input.
-- Go: action IDs hash every input; file hashes are cached by
-  (path, size, mtime, inode) (`cmd/go/internal/cache`).
-- Bazel, Buck and Salsa: dependencies are recorded where they are read, not
-  enumerated afterwards.
-- [Bazel Skyframe](https://bazel.build/reference/skyframe#evaluation) distinguishes
-  file content, symlink resolution and directory membership. A read without a
-  registered dependency can make an incremental result incorrect.
-- [Bazel's action cache](https://bazel.build/remote/caching) binds actions to
-  inputs, output names, commands and environment. Molt likewise records the
-  output selected by the successful action; a request spelling alone does not
-  determine the output of a directory or package-entry build.
-- [Git's racy-index rule](https://git-scm.com/docs/racy-git): a file changed
-  within one timestamp tick of the index cannot be trusted by stat alone.
-  Resolution alone is insufficient: [Linux multigrain timestamps](https://docs.kernel.org/filesystems/multigrain-ts.html)
-  distinguish clock precision from timestamp generation, and [Windows file times](https://learn.microsoft.com/en-us/windows/win32/sysinfo/file-times)
-  can remain unchanged until a writing handle closes. Molt instead binds the
-  source bytes actually consumed and checks those bytes on every replay.
 - [Cargo build directories](https://doc.rust-lang.org/cargo/reference/config.html#buildbuild-dir)
   separate intermediate graphs from final target outputs. Target rustflags
   alone cannot invalidate compiled host dependencies when `--target` is used.
 - [PyO3 environment signatures](https://pyo3.rs/v0.29.3/building-and-distribution)
   connect interpreter environment changes to Cargo build-script invalidation.
-- [rustc dependency tracking](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)
-  distinguishes changed inputs from changed results. Reuse is justified by the
-  inputs of the consuming unit, rather than a successful upstream check alone.
 - [Cargo compiler-query caching](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/util/rustc.rs.html)
   keys the process request plus an additional dependency fingerprint. Molt's
   declared tool and resource closure must also survive preserved-mtime edits;
@@ -65,6 +50,8 @@ release, machine, and the CPU model for non-portable builds, which tune for
 the host CPU), and the full environment except terminal and session
 identifiers and registry entries declared output-neutral. Guard custody and
 memory budgets supervise execution without selecting different optimizations.
+The record keeps the output the successful build selected: a request spelling
+alone does not determine the output of a directory or package-entry build.
 The output path and the output directory are keyed: building one
 program to two names, or under two output directories, produced binaries that
 differed in 49 and 48 bytes (the linker signs the binary under its file name;
@@ -88,11 +75,10 @@ finalization and after build cleanup; later observations never replace those
 expectations. Compiler and final-binary observations must agree with the
 canonical publication observation. Plain builds do not capture these identities. Detached result validation compares
 current content with the original expected SHA-256 through the existing host
-file-digest cache. Its shared policy always hashes on Windows and hashes racy
-POSIX captures; only settled unchanged POSIX observations can reuse a digest.
-Result validation batches cache publication across its artifact family. Root
-claims and product-store renewals retain selections but never substitute for
-this content check or change the expected digest.
+file-digest cache, under the one content identity. Result validation batches
+cache publication across its artifact family. Root claims and product-store
+renewals retain selections but never substitute for this content check or
+change the expected digest.
 
 The existing artifacts-root, checkout-state and product-store admission
 owners report their actual selections into the same ledger. JSON reuse reacquires

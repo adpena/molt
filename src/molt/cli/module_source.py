@@ -629,7 +629,7 @@ def _payload_source_matches(
     # deliberately NOT gated: it is content-invariant metadata that a fresh git
     # checkout / file copy / pip reinstall / OneDrive sync resets even when the
     # bytes are unchanged, so gating on it forced a cold cross-session/worktree
-    # re-lower of byte-identical source (build-dedup doctrine 74 law 1:
+    # re-lower of byte-identical source (observed_inputs.md invariant 1:
     # content-addressed, not metadata-addressed). The source-content sha256 below
     # is the sole correctness authority and already defends against the
     # coarse-mtime same-size collision the metadata gate cannot catch anyway.

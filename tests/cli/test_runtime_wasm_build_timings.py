@@ -1,4 +1,4 @@
-"""Tests for the runtime-wasm per-phase build-timing accumulator (doctrine 74 law 4)."""
+"""Tests for the runtime-wasm per-phase build-timing accumulator (attestation)."""
 
 from __future__ import annotations
 
