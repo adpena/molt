@@ -31,7 +31,10 @@ def test_wasm_db_client_shim_msgpack(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    output_wasm = build_wasm_linked(root, src, tmp_path)
+    # Deployment manifest v4: the build's launch policy owns the grant.
+    output_wasm = build_wasm_linked(
+        root, src, tmp_path, extra_args=["--capabilities", "db.read"]
+    )
     run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr
     expected = "ok\nmsgpack\nb'\\x7f'"
