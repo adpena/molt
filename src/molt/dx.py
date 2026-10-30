@@ -1759,10 +1759,10 @@ def _storage_projection(kind: custody_layout.StorageClass, path: Path) -> Path:
         return path
     if _STORAGE_WRITE_CHECKS:
         raw = path.absolute()
-        if all(
-            any(raw == claim.path for claim in check.claims)
-            for check in _STORAGE_WRITE_CHECKS
-        ):
+        if all(_storage_write_admitted(check, raw) for check in _STORAGE_WRITE_CHECKS):
+            # Selecting a path beneath an admitted root is lexical. Actual
+            # writes still resolve their target in the audit hook, so a
+            # symlink cannot use this shortcut to escape that root.
             return path
         selected = raw.resolve(strict=False)
         for check in _STORAGE_WRITE_CHECKS:
@@ -1900,6 +1900,8 @@ def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
             if frame is None:
                 continue
         checks.append(check)
+    if not checks:
+        return
     for raw, directory in paths:
         if isinstance(raw, int):
             continue  # An already-open fd carries its original admission.
