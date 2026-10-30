@@ -142,9 +142,10 @@ over stale prose or precedent.
   for load-bearing changes; recurse on new findings, not review quotas. With one proof owner, stop at
   sufficient evidence. Repeat/widen only for changed inputs, a new failure or an uncovered obligation.
   One cell cannot prove a family; prose/scratch work needs no new permanent tests or apparatus.
-- Distinguish focused development feedback from required integration/release qualification. Run
-  selected landing gates once; CI arbitrates release candidates. Review matching receipts instead of
-  reproducing every PASS; avoid duplicate prechecks, benchmarks and reflexive final rechecks.
+- Separate development feedback from integration/release qualification. Run selected landing gates
+  once; CI arbitrates release candidates. Review matching receipts; avoid duplicate prechecks and
+  reflexive rechecks. Hand off a lane only after `tools/molt_dev.py land --repo <checkout>
+  --precheck-only` and its changed tests pass in the runner's plain environment, not a lane env.sh.
 - Reuse one compiled producer for compatible profiles/features and affected selectors. Batch useful
   checks without adding unrelated suites to amortize a compile; avoid cold targets and competing
   Cargo writers. Measure the actual critical path before changing concurrency or coverage.
@@ -153,9 +154,8 @@ over stale prose or precedent.
   `docs/OPERATIONS.md`. Diagnose recurring growth; cleanup alone does not establish a durable fix.
 - Preflight selected toolchain/target/runtime prerequisites with the actual child environment before
   expensive work; parser acceptance is not readiness. Validate mutations at their canonical boundary.
-- Stop dependent command batches at the first failure. Classify product, harness, artifact drift or
-  unknown before retrying; preserve failed receipts. Reuse completed phases only when source, tool,
-  environment, workload and artifacts match; rerun only missing or invalidated obligations.
+- Stop dependent batches at the first failure and keep its receipts; classify product, harness,
+  artifact drift or unknown before retrying. Reuse phases only on matching source/tool/env/artifacts.
 - Every test file belongs to a proof cell; a test that no cell runs rots without notice.
 - Treat silent or frozen processes as unknown until logs, artifacts, guard state or live process evidence establish a result.
 - Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
