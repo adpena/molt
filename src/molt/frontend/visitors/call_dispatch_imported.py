@@ -34,8 +34,6 @@ class CallImportedAttributeDispatchMixin(GeneratorMixinBase):
                 )
                 if native_call is not None:
                     return native_call
-                if func_id == "field" and allowlist_key == "dataclasses":
-                    return self._emit_dataclasses_field_call(allowlist_key, node)
                 if self._should_attempt_runtime_module_import(
                     module_name
                 ) or self._is_internal_module(module_name):

@@ -339,7 +339,7 @@ class ClassResolutionMixin(GeneratorMixinBase):
         if binding_index is None or index is None:
             return None
         fact = binding_index.expression_fact(node)
-        if fact is None:
+        if fact is None or fact.binding_invalidated:
             return None
         origins = fact.result.source_origins
         if len(origins) != 1:

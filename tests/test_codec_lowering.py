@@ -728,7 +728,6 @@ print(order.qty)
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
     assert "dataclass_new_values" not in kinds
-    assert "dataclass_new" not in kinds
     assert "dataclass_get" not in kinds
     # The decorator callback invalidates the binding proof. The constructor
     # must call the published class, preserving its current construction policy.

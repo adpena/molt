@@ -42,6 +42,7 @@ class IntrinsicCallable:
     import_behavior: str | None = None
     argument_roles: tuple[str, ...] = ()
     acquisition: str | None = None
+    compiler_from: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class Schema:
     import_behaviors: tuple[tuple[str, str], ...]
     import_argument_roles: tuple[tuple[str, str], ...]
     import_callables: tuple[ImportCallable, ...]
+    builtin_return_captures: tuple[tuple[str, str, str, str], ...]
 
 
 def _bits(raw: object, label: str) -> tuple[tuple[str, int], ...]:
@@ -86,10 +88,17 @@ def _bits(raw: object, label: str) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(rows, key=lambda row: row[1]))
 
 
-def _rows(raw: object, label: str, keys: set[str]) -> list[dict[str, object]]:
+def _rows(
+    raw: object, label: str, keys: set[str], optional: frozenset[str] = frozenset()
+) -> list[dict[str, object]]:
     if not isinstance(raw, list) or not raw:
         raise SchemaError(f"{label} must be a nonempty array of tables")
-    if any(not isinstance(row, dict) or set(row) != keys for row in raw):
+    if any(
+        not isinstance(row, dict)
+        or not keys <= set(row)
+        or not set(row) <= keys | optional
+        for row in raw
+    ):
         raise SchemaError(f"{label} rows require exactly {sorted(keys)}")
     return cast(list[dict[str, object]], raw)
 
@@ -165,10 +174,14 @@ def load_schema(
     if not {"OTHER", "UNBOUND"} <= identity_names:
         raise SchemaError("identity sentinels OTHER and UNBOUND are required")
     builtins: list[tuple[str, str, str, bool]] = []
+    builtin_return_captures = []
     builtin_names: set[str] = set()
     shape_identities: set[str] = set()
     for row in _rows(
-        data["builtin"], "builtin", {"name", "identity", "guard", "shape"}
+        data["builtin"],
+        "builtin",
+        {"name", "identity", "guard", "shape"},
+        frozenset({"return_capture"}),
     ):
         name = _name(row["name"], "builtin name")
         if name in builtin_names:
@@ -182,6 +195,41 @@ def load_schema(
             if identity in shape_identities:
                 raise SchemaError(f"ambiguous shape identity {identity!r}")
             shape_identities.add(identity)
+        if "return_capture" in row:
+            capture = row["return_capture"]
+            if shape:
+                raise SchemaError("builtin retained wrapper must not declare a shape")
+            if not isinstance(capture, dict) or set(capture) != {
+                "producer",
+                "result",
+                "protocol",
+            }:
+                raise SchemaError(
+                    "builtin return_capture requires producer, result and protocol"
+                )
+            from molt.compiler_analysis.python_binding_facts import (
+                PythonElementProtocol,
+            )
+
+            try:
+                protocol = PythonElementProtocol(capture["protocol"])
+            except (TypeError, ValueError) as error:
+                raise SchemaError("unknown builtin retained protocol") from error
+            if protocol not in {
+                PythonElementProtocol.CLASS_METHOD,
+                PythonElementProtocol.STATIC_METHOD,
+            }:
+                raise SchemaError("builtin capture requires callable wrapper protocol")
+            builtin_return_captures.append(
+                (
+                    identity,
+                    _reference(
+                        capture["result"], identity_names, "builtin capture result"
+                    ),
+                    protocol.value,
+                    _name(capture["producer"], "builtin capture producer"),
+                )
+            )
         builtins.append(
             (
                 name,
@@ -322,6 +370,10 @@ def load_schema(
             intrinsic_manifest.read_text(encoding="utf-8")
         )
     }
+    for _identity, _result, _protocol, producer_name in builtin_return_captures:
+        if producer_name not in producers or producers[producer_name].arity != 1:
+            raise SchemaError("builtin capture requires its unary manifest producer")
+    compiler_from_names: set[str] = set()
     intrinsic_callables: list[IntrinsicCallable] = []
     intrinsic_names: set[str] = set()
     intrinsic_identities: set[str] = set()
@@ -336,11 +388,14 @@ def load_schema(
     if not isinstance(rows, list) or not rows:
         raise SchemaError("intrinsic_callable must be a nonempty array of tables")
     for row in rows:
-        if not isinstance(row, dict) or set(row) not in (
+        if not isinstance(row, dict) or set(row) - {"compiler_from"} not in (
             {"name", "identity", "target_property"},
             {"name", "identity", "import_behavior", "argument_roles"},
             {"name", "identity", "acquisition"},
+            {"name", "identity"},
         ):
+            raise SchemaError("intrinsic callable requires one explicit semantic facet")
+        if set(row) == {"name", "identity"}:
             raise SchemaError("intrinsic callable requires one explicit semantic facet")
         name = _name(row["name"], "intrinsic callable name")
         identity = _reference(row["identity"], identity_names, "intrinsic identity")
@@ -380,6 +435,26 @@ def load_schema(
             raise SchemaError(
                 "intrinsic acquisition requires its two-argument public producer"
             )
+        raw_from = row.get("compiler_from", [])
+        if not isinstance(raw_from, list) or ("compiler_from" in row and not raw_from):
+            raise SchemaError("compiler_from must be a nonempty array of member names")
+        compiler_from = tuple(_name(item, "compiler From member") for item in raw_from)
+        if len(set(compiler_from)) != len(
+            compiler_from
+        ) or compiler_from_names.intersection(compiler_from):
+            raise SchemaError("duplicate compiler From member producer")
+        for member in compiler_from:
+            acquired = next(
+                (
+                    value
+                    for owner, attr, value, _ in acquisitions
+                    if owner == "INTRINSICS_MODULE" and attr == member
+                ),
+                identity,
+            )
+            if acquired != identity:
+                raise SchemaError("compiler From producer contradicts member identity")
+        compiler_from_names.update(compiler_from)
         argument_roles = (
             _import_argument_roles(
                 row["argument_roles"], role_names, producer.parameter_names
@@ -414,6 +489,7 @@ def load_schema(
                 import_behavior,
                 argument_roles,
                 acquisition,
+                compiler_from,
             )
         )
     if used_properties != set(properties):
@@ -436,6 +512,7 @@ def load_schema(
         import_behaviors,
         import_roles,
         tuple(import_callables),
+        tuple(builtin_return_captures),
     )
 
 
@@ -548,6 +625,28 @@ def render_python(schema: Schema) -> str:
         [
             (repr(row.name), f"PythonIdentity.{row.identity}")
             for row in schema.intrinsic_callables
+        ],
+    )
+    mapping(
+        "COMPILER_INTRINSIC_CALLABLES",
+        "str",
+        "tuple[PythonIdentity, str]",
+        [
+            (repr(member), f"(PythonIdentity.{row.identity}, {row.name!r})")
+            for row in schema.intrinsic_callables
+            for member in row.compiler_from
+        ],
+    )
+    mapping(
+        "BUILTIN_RETURN_CAPTURES",
+        "IdentityMask",
+        "tuple[PythonIdentity, str]",
+        [
+            (
+                f"int(PythonIdentity.{identity})",
+                f"(PythonIdentity.{result}, {protocol!r})",
+            )
+            for identity, result, protocol, _producer in schema.builtin_return_captures
         ],
     )
     mapping(

@@ -19,7 +19,11 @@ from molt.cli.python_import_topology import ExactEntryKind, PythonImportTopology
 from molt.source_root import compiler_source_root
 from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
 from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    CANONICAL_IMPORT_IDENTITIES,
+)
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     _PythonAstDigestAdmission,
@@ -43,10 +47,12 @@ _ImportScanCacheKey = tuple[
     PythonSourceKey | None,
     tuple[str, ...],
     str,
+    str | None,
     str,
     # A runtime-import owner's scan: it defers to the catalog, any generation.
     bool,
     PythonNamespacePremise | None,
+    SourceImportPurpose,
 ]
 
 
@@ -360,11 +366,48 @@ _MODULE_AST_DIGEST_LIMIT = 4096
 
 @dataclass
 class _ModuleResolutionCache:
+    # One source-analysis operation; None denotes genuinely unknown runtime OS.
+    target_sys_platform: str | None = None
     import_topology: PythonImportTopology = field(default_factory=PythonImportTopology)
     module_root_aliases: _ModuleRootAliases | None = None
     python_resolvers: dict[tuple[Path, ...], "LocalPythonModuleResolver"] = field(
         default_factory=dict
     )
+    canonical_provider_exclusions: dict[_ResolutionContext, tuple[str, ...]] = field(
+        default_factory=dict
+    )
+
+    def noncanonical_imports(
+        self, roots: tuple[Path, ...], stdlib_root: Path, allowlist: frozenset[str]
+    ) -> tuple[str, ...]:
+        """Resolve canonical names through the operation's actual source topology."""
+        context = (roots, stdlib_root, allowlist)
+        if context not in self.canonical_provider_exclusions:
+            compiler_sources = compiler_source_root() / "src"
+            excluded = []
+            for module in CANONICAL_IMPORT_IDENTITIES:
+                resolved = self.resolve_module(
+                    module, list(roots), stdlib_root, set(allowlist)
+                )
+                if resolved is None:
+                    # Runtime-owned canonical modules need no Python body.
+                    continue
+                relative = Path(*module.split("."))
+                providers = (
+                    stdlib_root / relative.with_suffix(".py"),
+                    stdlib_root / relative / "__init__.py",
+                )
+                if module == "molt" or module.startswith("molt."):
+                    providers += (
+                        compiler_sources / relative.with_suffix(".py"),
+                        compiler_sources / relative / "__init__.py",
+                    )
+                if self.resolved_path(resolved) not in {
+                    self.resolved_path(path) for path in providers
+                }:
+                    excluded.append(module)
+            self.canonical_provider_exclusions[context] = tuple(sorted(excluded))
+        return self.canonical_provider_exclusions[context]
 
     def __post_init__(self) -> None:
         if self.module_root_aliases is None:
@@ -807,6 +850,7 @@ class _ModuleResolutionCache:
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
         ast_digest_admission: _PythonAstDigestAdmission | None = None,
         namespace_premise: PythonNamespacePremise | None = None,
+        purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
     ) -> _ImportDiscoveryProjection:
         """Cache source graph facts, never strict import acceptance or live edges."""
         ast_digest_admission = _PythonAstDigestAdmission.for_tree(
@@ -837,9 +881,11 @@ class _ModuleResolutionCache:
             source_owner,
             source_arguments,
             target_python.tag,
+            self.target_sys_platform,
             ast_digest_admission.digest,
             runtime_catalog_owner,
             namespace_premise,
+            purpose,
         )
         cached = self.graph_import_scan_cache.get(cache_key)
         if cached is not None:
@@ -853,8 +899,10 @@ class _ModuleResolutionCache:
             source_owner=source_owner,
             source_arguments=source_arguments,
             target_python=target_python,
+            target_sys_platform=self.target_sys_platform,
             ast_digest_admission=ast_digest_admission,
             namespace_premise=namespace_premise,
+            purpose=purpose,
             **owner_kwargs,
         )
         self.graph_import_scan_cache[cache_key] = result

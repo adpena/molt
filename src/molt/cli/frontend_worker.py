@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.cli.module_graph_cache import _decode_namespace_premise_cache_identity
+
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
@@ -110,6 +113,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
     module_execution_kind = cast(ModuleExecutionKind, payload["module_execution_kind"])
     module_source_role = cast(ModuleSourceRole, payload["module_source_role"])
+    namespace_premise = _decode_namespace_premise_cache_identity(
+        payload["namespace_premise"]
+    )
     enable_phi = bool(payload["enable_phi"])
     known_modules = set(cast(list[str], payload["known_modules"]))
     direct_call_modules = set(cast(list[str], payload["direct_call_modules"]))
@@ -174,6 +180,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         module_name=module_name,
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
+        namespace_premise=namespace_premise,
         enable_phi=enable_phi,
         known_modules=known_modules,
         direct_call_modules=direct_call_modules,
@@ -308,6 +315,7 @@ def _module_frontend_generator(
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
+    namespace_premise: PythonNamespacePremise | None,
     type_hint_policy: TypeHintPolicy,
     enable_phi: bool,
     stdlib_allowlist: Collection[str],
@@ -326,6 +334,7 @@ def _module_frontend_generator(
         module_name=module_name,
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
+        namespace_premise=namespace_premise,
         enable_phi=enable_phi,
         known_modules=set(scoped_inputs.known_modules_set),
         direct_call_modules=set(scoped_inputs.direct_call_modules_set),
@@ -420,6 +429,7 @@ def _lower_module_serial_with_context(
     is_package = metadata_view.is_package
     module_execution_kind = metadata_view.module_execution_kind
     module_source_role = metadata_view.module_source_role
+    namespace_premise = metadata_view.namespace_premise
     scoped_known_classes = execution_view.scoped_known_classes
     context_digest: str | None = None
     if lowering_context.project_root is not None:
@@ -430,6 +440,7 @@ def _lower_module_serial_with_context(
             logical_source_path=logical_source_path,
             module_execution_kind=module_execution_kind,
             module_source_role=module_source_role,
+            namespace_premise=namespace_premise,
             known_classes_snapshot=lowering_context.known_classes,
             type_hint_policy=lowering_context.type_hint_policy,
             type_facts=lowering_context.type_facts,
@@ -486,6 +497,7 @@ def _lower_module_serial_with_context(
         logical_source_path=logical_source_path,
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
+        namespace_premise=namespace_premise,
         type_hint_policy=lowering_context.type_hint_policy,
         enable_phi=lowering_context.enable_phi,
         stdlib_allowlist=lowering_context.stdlib_allowlist,
@@ -700,6 +712,7 @@ def _prepare_frontend_parallel_batch(
         logical_source_path = metadata_view.logical_source_path
         module_execution_kind = metadata_view.module_execution_kind
         module_source_role = metadata_view.module_source_role
+        namespace_premise = metadata_view.namespace_premise
         is_package = metadata_view.is_package
         scoped_known_classes = execution_view.scoped_known_classes
         if project_root is not None:
@@ -710,6 +723,7 @@ def _prepare_frontend_parallel_batch(
                 logical_source_path=logical_source_path,
                 module_execution_kind=module_execution_kind,
                 module_source_role=module_source_role,
+                namespace_premise=namespace_premise,
                 known_classes_snapshot=known_classes_snapshot,
                 type_hint_policy=type_hint_policy,
                 type_facts=type_facts,
@@ -749,6 +763,7 @@ def _prepare_frontend_parallel_batch(
             logical_source_path=logical_source_path,
             module_execution_kind=module_execution_kind,
             module_source_role=module_source_role,
+            namespace_premise=namespace_premise,
             is_package=is_package,
             known_classes_snapshot=known_classes_snapshot,
             type_hint_policy=type_hint_policy,
@@ -794,6 +809,7 @@ def _prepare_frontend_parallel_batch(
                     type_hint_policy=type_hint_policy,
                     module_execution_kind=module_execution_kind,
                     module_source_role=module_source_role,
+                    namespace_premise=namespace_premise,
                     type_facts=type_facts,
                     enable_phi=enable_phi,
                     known_modules=known_modules_sorted,

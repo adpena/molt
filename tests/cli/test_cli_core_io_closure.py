@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from molt.compiler_analysis.python_import_scan import _collect_imports_for_graph
+from molt.compiler_analysis.python_import_scan import (
+    SourceImportPurpose,
+    _collect_imports_for_graph,
+)
 from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.target_python import (
     _parse_target_python_version,
@@ -29,6 +32,7 @@ def test_core_io_has_no_extension_or_compiler_dependency(
         module_name=module,
         import_scan_mode="full",
         target_python=_parse_target_python_version(version),
+        purpose=SourceImportPurpose.INVENTORY,
     )
     assert not {
         name for name in projection.imports if name.split(".")[0] in {"molt", "moltlib"}

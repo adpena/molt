@@ -5,7 +5,6 @@ use molt_ir::OpKind;
 // `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
 define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
-    OpKind::DataclassNew,
     OpKind::DataclassNewValues,
     OpKind::DataclassGet,
     OpKind::DataclassSet,
@@ -13,7 +12,7 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
 );
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for dataclass instance ops: `dataclass_new`/`dataclass_new_values`/`dataclass_get`/`dataclass_set`/`dataclass_set_class`.
+/// Cranelift codegen handlers for dataclass instance ops: `dataclass_new_values`/`dataclass_get`/`dataclass_set`/`dataclass_set_class`.
 ///
 /// Constructor operands and results follow the shared fixed-constructor
 /// ownership transaction, including the first failed materialization.
@@ -60,22 +59,6 @@ pub(in crate::native_backend::function_compiler) fn handle_dataclass_op(
         )
     };
     match op.kind {
-        OpKind::DataclassNew => {
-            emit_fixed_aggregate_constructor(
-                op,
-                FixedAggregateConstructor::DataclassTuple,
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                representation_plan,
-                nbc,
-                block_tracked_obj,
-                block_tracked_ptr,
-            );
-        }
         OpKind::DataclassNewValues => {
             emit_fixed_aggregate_constructor(
                 op,

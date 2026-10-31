@@ -8,6 +8,9 @@ It must never import from molt.frontend.__init__ or any mixin (cycle break).
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+from molt.compiler_analysis.python_source_keys import PythonSourceKey
+
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendOpKind,
     WireOpKind,
@@ -51,6 +54,8 @@ _LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
 
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_binding_facts import PythonBindingFacts
+
     # _TrackedOpsList's `owner` is the assembled generator. Imported under
     # TYPE_CHECKING only: there is no runtime import cycle back into __init__.
     from molt.frontend import SimpleTIRGenerator
@@ -95,6 +100,14 @@ class SimpleIROp(TypedDict):
     type_hint: NotRequired[Any]
     value: NotRequired[Any]
     var: NotRequired[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class CallableId:
+    """One source callable definition in its owning module."""
+
+    module: str
+    definition: PythonSourceKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -644,13 +657,15 @@ IMPLICIT_STATICMETHOD_NAMES = frozenset(
 )
 
 
-def _function_is_instance_method(item: ast.AST) -> bool:
+def _function_is_instance_method(
+    item: ast.AST, bindings: PythonBindingFacts | None
+) -> bool:
     """Return True iff `item` is a regular instance method.
 
     Excludes `@classmethod`, `@staticmethod`, and the implicit-classmethod /
     implicit-staticmethod names (`__new__`, `__init_subclass__`,
     `__class_getitem__`).  Only instance methods may legitimately collect
-    field/static-attribute names from `self.X = ...` assignments — using `cls`
+    instance-field names from `self.X = ...` assignments — using `cls`
     inside a classmethod must not feed the instance-layout machinery.
     """
     if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -660,15 +675,11 @@ def _function_is_instance_method(item: ast.AST) -> bool:
     if item.name in IMPLICIT_STATICMETHOD_NAMES:
         return False
     for deco in item.decorator_list:
-        # `@classmethod`, `@staticmethod` directly applied at the bare-name level.
-        if isinstance(deco, ast.Name) and deco.id in {"classmethod", "staticmethod"}:
-            return False
-        # `@functools.classmethod` etc. — not standard, but matching attribute
-        # form keeps us conservative.
-        if isinstance(deco, ast.Attribute) and deco.attr in {
-            "classmethod",
-            "staticmethod",
-        }:
+        if bindings is None or not bindings.expression_is(
+            deco, PythonIdentity.BUILTIN_PROPERTY
+        ):
+            # Unresolved decorators can replace the method or its receiver
+            # protocol, so they cannot prove an instance field layout.
             return False
     return True
 
@@ -858,6 +869,7 @@ class ClassInfo(TypedDict, total=False):
     repr: bool
     slots: bool
     dataclass_params: dict[str, bool]
+    dataclass_init_requires_binding: bool
     methods: dict[str, MethodInfo]
     pending_methods: set[str]
     layout_version: int
@@ -865,6 +877,7 @@ class ClassInfo(TypedDict, total=False):
     custom_metaclass: bool
     class_value_name: str
     constructor_fold_safe: bool
+    constructor_binding_proven: bool
     decorated: bool
 
 

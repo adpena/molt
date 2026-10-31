@@ -38,7 +38,6 @@ define_llvm_op_kinds!(
     OpKind::TypeOf,
     OpKind::Missing,
     OpKind::GetAttrNameDefault,
-    OpKind::DataclassNew,
     OpKind::DataclassNewValues,
     OpKind::Abs,
     OpKind::ConstEllipsis,
@@ -527,7 +526,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 );
                 true
             }
-            OpKind::DataclassNew => self.emit_dataclass_new(op),
             OpKind::DataclassNewValues => self.emit_dataclass_from_values(op),
 
             // -- Preserved value-producing / side-effecting ops whose runtime

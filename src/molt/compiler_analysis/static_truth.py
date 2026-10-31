@@ -11,6 +11,7 @@ import ast
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, fields, replace
 import math
+import operator as scalar_operator
 from typing import Final, Literal, TypeAlias, TypedDict, assert_never, cast
 
 from molt.compiler_analysis.literal_identity import (
@@ -60,6 +61,7 @@ SourceDemandPhase = Literal[
     "release",
     "protocol",
     "descriptor",
+    "mutate",
     "iterate",
     "async_iterate",
     "get_iter",
@@ -1645,6 +1647,29 @@ def _comparison_truth(
         else:
             return None
         return equal if isinstance(operator, ast.Eq) else not equal
+    if isinstance(operator, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+        if not left.value_known or not right.value_known:
+            return None
+        left_type, right_type = type(left.value), type(right.value)
+        # Exact builtin numeric ordering (including NaN) and like string/bytes
+        # ordering cannot dispatch user callbacks. Complex, None and mixed
+        # incomparable types keep their real TypeError/evaluation boundary.
+        if not (
+            left_type in (bool, int, float)
+            and right_type in (bool, int, float)
+            or left_type is right_type
+            and left_type in (str, bytes)
+        ):
+            return None
+        left_value = cast("int | float | str | bytes", left.value)
+        right_value = cast("int | float | str | bytes", right.value)
+        if isinstance(operator, ast.Lt):
+            return scalar_operator.lt(left_value, right_value)
+        if isinstance(operator, ast.LtE):
+            return scalar_operator.le(left_value, right_value)
+        if isinstance(operator, ast.Gt):
+            return scalar_operator.gt(left_value, right_value)
+        return scalar_operator.ge(left_value, right_value)
     if isinstance(operator, (ast.In, ast.NotIn)) and left.value_known:
         if right.items is not None:
             # Container membership is identity-or-equality. NaN identity is

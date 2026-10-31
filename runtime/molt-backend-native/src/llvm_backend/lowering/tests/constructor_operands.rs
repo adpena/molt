@@ -35,12 +35,11 @@ enum OperandConstructor {
     PreservedSlice,
     DirectSlice,
     DataclassValues,
-    DataclassTuple,
     Class,
 }
 
 impl OperandConstructor {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 9] = [
         Self::Tuple,
         Self::List,
         Self::PreservedTuple,
@@ -49,7 +48,6 @@ impl OperandConstructor {
         Self::PreservedSlice,
         Self::DirectSlice,
         Self::DataclassValues,
-        Self::DataclassTuple,
         Self::Class,
     ];
 
@@ -59,7 +57,6 @@ impl OperandConstructor {
             Self::List | Self::PreservedList => "molt_list_from_values",
             Self::Slice | Self::PreservedSlice | Self::DirectSlice => "molt_slice_new",
             Self::DataclassValues => "molt_dataclass_new_from_values",
-            Self::DataclassTuple => "molt_dataclass_new",
             Self::Class => "molt_guarded_class_def",
         }
     }
@@ -68,7 +65,7 @@ impl OperandConstructor {
         match self {
             Self::Slice => "slice",
             Self::PreservedSlice | Self::DirectSlice => "boxed_call",
-            Self::DataclassValues | Self::DataclassTuple => "dataclass",
+            Self::DataclassValues => "dataclass",
             Self::Class => "class",
             _ => "sequence",
         }
@@ -77,18 +74,13 @@ impl OperandConstructor {
     /// Direct constructors pass their words as arguments; only range
     /// constructors own an entry-block word range.
     fn uses_range(self) -> bool {
-        !matches!(
-            self,
-            Self::Slice | Self::PreservedSlice | Self::DirectSlice | Self::DataclassTuple
-        )
+        !matches!(self, Self::Slice | Self::PreservedSlice | Self::DirectSlice)
     }
 
     /// The operation whose constructor words are `[first, first, second]`.
-    /// Header operands (the dataclass-values name, fields and flags; the
-    /// tuple-form dataclass and class names) are None. The class takes `first`
-    /// as its base and `(first, second)` as one namespace pair, and the
-    /// tuple-form dataclass takes them as its field names, values and flags:
-    /// operand roles do not change transport custody.
+    /// Header operands (the dataclass-values name, fields and flags; the class
+    /// name) are None. The class takes `first` as its base and `(first, second)`
+    /// as one namespace pair: operand roles do not change transport custody.
     fn operation(
         self,
         first: ValueId,
@@ -104,7 +96,6 @@ impl OperandConstructor {
             Self::PreservedSlice => Some(OpKind::SliceNew),
             Self::DirectSlice => Some(OpKind::Call),
             Self::DataclassValues => Some(OpKind::DataclassNewValues),
-            Self::DataclassTuple => Some(OpKind::DataclassNew),
             Self::Class => Some(OpKind::ClassDef),
         };
         let (opcode, operands, attrs) = match self {
@@ -124,7 +115,6 @@ impl OperandConstructor {
                 [vec![none; 3], words].concat(),
                 AttrDict::new(),
             ),
-            Self::DataclassTuple => (OpCode::Copy, [vec![none], words].concat(), AttrDict::new()),
             Self::Class => {
                 let mut attrs = AttrDict::new();
                 attrs.insert("s_value".into(), AttrValue::Str("1,1,16,1,0".into()));
@@ -581,11 +571,6 @@ pub unsafe extern "C" fn molt_dataclass_new_from_values(
     construct(unsafe { words(address, len) })
 }
 #[no_mangle]
-pub extern "C" fn molt_dataclass_new(name: u64, fields: u64, values: u64, flags: u64) -> u64 {
-    assert_eq!(name, NONE, "the class name is a direct argument");
-    construct(&[fields, values, flags])
-}
-#[no_mangle]
 pub unsafe extern "C" fn molt_guarded_class_def(
     name: u64,
     bases: u64,
@@ -644,7 +629,6 @@ extern "C" {
     fn fixed_slice() -> u64;
     fn fixed_preserved_slice() -> u64;
     fn fixed_direct_slice() -> u64;
-    fn fixed_dataclass_tuple() -> u64;
     fn fixed_slice_start() -> u64;
     fn fixed_slice_empty() -> u64;
     fn fixed_tuple_discard();
@@ -713,7 +697,6 @@ fn main() {
         ("slice", fixed_slice),
         ("preserved_slice", fixed_preserved_slice),
         ("direct_slice", fixed_direct_slice),
-        ("dataclass_tuple", fixed_dataclass_tuple),
     ] {
         run(name, construct, REPEATED, &EVERY_FAILURE);
     }
@@ -770,11 +753,6 @@ fn constructor_operands_execute_identity_failures_and_discarded_results() {
             true,
         ),
         ("fixed_direct_slice", OperandConstructor::DirectSlice, true),
-        (
-            "fixed_dataclass_tuple",
-            OperandConstructor::DataclassTuple,
-            true,
-        ),
         ("fixed_tuple_discard", OperandConstructor::Tuple, false),
         ("fixed_slice_discard", OperandConstructor::Slice, false),
         (
