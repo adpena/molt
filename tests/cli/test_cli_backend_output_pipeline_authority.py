@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 from molt.compilation_target import admit_target, target_name
 
 import inspect
@@ -222,6 +224,7 @@ def terminal_build(
         linked_output_path=None,
         split_runtime=False,
         emit_ir_path=None,
+        facts_target=_target(None),
     )
     backend_runtime = SimpleNamespace(
         runtime_state=runtime,

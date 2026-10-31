@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 from molt.compilation_target import admit_target
 
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
@@ -331,6 +333,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         output_binary=None,
         linked_output_path=None,
         emit_ir_path=None,
+        facts_target=_target(None),
     )
     preamble = NS(
         diagnostics_enabled=False,
