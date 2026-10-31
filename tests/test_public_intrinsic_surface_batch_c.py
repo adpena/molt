@@ -12,6 +12,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import base64 as _host_base64
 import binascii as _host_binascii
+import copy as _host_copy
 import importlib.util
 import operator as _host_operator
 import sys
@@ -118,11 +119,7 @@ install_registry({{
     "molt_binascii_b2a_uu": lambda b, backtick=False: bytes(b),
     "molt_binascii_crc32": lambda data, value=0: 123,
     "molt_binascii_crc_hqx": lambda data, value: 321,
-    "molt_copy_copy": lambda obj: obj.copy() if hasattr(obj, "copy") else obj,
-    "molt_copy_deepcopy": lambda obj, handle: (obj.copy() if hasattr(obj, "copy") else obj),
-    "molt_copy_memo_new": lambda: 1,
-    "molt_copy_memo_drop": lambda handle: None,
-    "molt_copy_error": lambda msg: None,
+    "molt_copy_deepcopy": lambda obj, memo, copier, sentinel: _host_copy._deepcopy_dispatch[type(obj)](obj, memo, copier),
     "molt_operator_truth": lambda value=True: bool(value),
 }})
 
@@ -143,7 +140,7 @@ class _Box:
 
 
 box = _Box(1)
-replaced = copy_mod.replace(box, value=9)
+replaced = copy_mod.replace(box, value=9) if sys.version_info >= (3, 13) else None
 
 checks = {{
     "math": (
@@ -173,9 +170,9 @@ checks = {{
     ),
     "copy": (
         isinstance(copy_mod.copy(box), _Box)
-        and isinstance(replaced, _Box)
-        and replaced.value == 9
-        and "molt_copy_copy" not in copy_mod.__dict__
+        and hasattr(copy_mod, "replace") == (sys.version_info >= (3, 13))
+        and (replaced is None or (isinstance(replaced, _Box) and replaced.value == 9))
+        and "molt_copy_deepcopy" not in copy_mod.__dict__
     ),
     "operator": (
         operator_mod.add(2, 3) == 5

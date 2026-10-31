@@ -1599,6 +1599,21 @@ unsafe fn dict_probe_with_hash(
     key_bits: u64,
     hash: u64,
 ) -> Result<Option<HashProbe>, ()> {
+    unsafe { dict_probe_key_with_hash(_py, dict, DictProbeKey::Object(key_bits), hash) }
+}
+
+#[derive(Clone, Copy)]
+enum DictProbeKey {
+    Object(u64),
+    HashOnly,
+}
+
+unsafe fn dict_probe_key_with_hash(
+    _py: &PyToken<'_>,
+    dict: *mut u8,
+    key: DictProbeKey,
+    hash: u64,
+) -> Result<Option<HashProbe>, ()> {
     unsafe {
         'restart: loop {
             let layout_epoch =
@@ -1634,6 +1649,12 @@ unsafe fn dict_probe_with_hash(
                         return Err(());
                     };
                     if candidate_hash == hash {
+                        let key_bits = match key {
+                            DictProbeKey::Object(bits) => bits,
+                            DictProbeKey::HashOnly => {
+                                return Ok(Some(HashProbe { row: index, slot }));
+                            }
+                        };
                         if candidate == key_bits {
                             return Ok(Some(HashProbe { row: index, slot }));
                         }
@@ -2341,6 +2362,28 @@ pub(crate) unsafe fn dict_get_with_hash_in_place(
         let index = dict_find_entry_with_hash(py, dict, key_bits, hash)?;
         Ok(index.map(|index| dict_entries(dict)[index].value))
     }
+}
+
+/// Query an i64 without allocating a boxed large integer for an absent hash.
+/// The shared probe owns the negative observation. A hash candidate requires
+/// the real Python integer and ordinary rich equality, after materialization
+/// has completed: allocation/finalizers cannot invalidate a borrowed row.
+pub(crate) unsafe fn dict_get_i64_in_place(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    integer: i64,
+) -> Result<Option<u64>, ()> {
+    let hash = hash_int(integer) as u64;
+    if unsafe { dict_probe_key_with_hash(py, dict, DictProbeKey::HashOnly, hash)? }.is_none() {
+        return Ok(None);
+    }
+    let bits = crate::builtins::numbers::int_bits_from_i64(py, integer);
+    let key =
+        unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits) };
+    if exception_pending(py) {
+        return Err(());
+    }
+    unsafe { dict_get_with_hash_in_place(py, dict, key.bits(), hash) }
 }
 
 pub(crate) unsafe fn dict_get_in_place(

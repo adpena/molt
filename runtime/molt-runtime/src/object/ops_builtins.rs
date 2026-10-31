@@ -26,7 +26,11 @@ mod dir;
 pub use dir::{molt_dir_builtin, molt_object_dir_method, molt_type_dir_method};
 
 mod reduction;
-pub use reduction::{molt_object_reduce, molt_object_reduce_ex};
+pub use reduction::{
+    molt_bytearray_reduce, molt_bytearray_reduce_ex, molt_bytes_getnewargs,
+    molt_complex_getnewargs, molt_float_getnewargs, molt_int_getnewargs, molt_object_reduce,
+    molt_object_reduce_ex, molt_set_reduce, molt_str_getnewargs, molt_tuple_getnewargs,
+};
 
 #[path = "ops_builtins_constructors.rs"]
 mod ops_builtins_constructors;
@@ -1851,6 +1855,7 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
         };
         let type_id = unsafe { object_type_id(ptr) };
         if !unsafe { crate::object::object_has_class_shape(ptr) }
+            && !unsafe { crate::object::native_instance::has_fields(ptr) }
             && type_id != crate::TYPE_ID_DATACLASS
         {
             return MoltObject::none().bits();

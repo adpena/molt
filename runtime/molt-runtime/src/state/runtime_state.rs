@@ -21,7 +21,6 @@ use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
 use crate::async_rt::sockets::SocketRuntimeState;
 use crate::builtins::attributes::AttributesRuntimeState;
 use crate::builtins::concurrent::ConcurrentRuntimeState;
-use crate::builtins::copy_mod::CopyMemoRuntimeState;
 use crate::builtins::exceptions::ExceptionsRuntimeState;
 use crate::builtins::functools::FunctoolsRuntimeState;
 use crate::builtins::io::IoRuntimeState;
@@ -441,7 +440,6 @@ pub(crate) struct RuntimeState {
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<HashMap<thread::ThreadId, AsyncGenHooks>>,
     pub(crate) concurrent: ConcurrentRuntimeState,
-    pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
     pub(crate) functools: FunctoolsRuntimeState,
     pub(crate) io: IoRuntimeState,
     pub(crate) modules: ModulesRuntimeState,
@@ -610,7 +608,6 @@ impl RuntimeState {
             task_waiting_on: Mutex::new(HashMap::new()),
             asyncgen_hooks: Mutex::new(HashMap::new()),
             concurrent: ConcurrentRuntimeState::new(),
-            copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
             functools: FunctoolsRuntimeState::new(),
             io: IoRuntimeState::new(),
             modules: ModulesRuntimeState::new(),

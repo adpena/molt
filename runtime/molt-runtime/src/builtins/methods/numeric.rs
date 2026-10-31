@@ -9,6 +9,12 @@ crate::builtins::methods::native_method_table!(int_method_bits, publish_int_meth
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Int, {
 
 }, {
+        "__getnewargs__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, "__getnewargs__"),
+            fn_addr!(crate::molt_int_getnewargs),
+            1,
+        )),
         "__add__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).int, "__add__").with_text_signature("($self, value, /)"),
             fn_addr!(crate::object::ops_arith::native_slots::int_add_slot), 2,
@@ -247,6 +253,12 @@ crate::builtins::methods::native_method_table!(float_method_bits, publish_float_
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Float, {
 
 }, {
+        "__getnewargs__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).float, "__getnewargs__"),
+            fn_addr!(crate::molt_float_getnewargs),
+            1,
+        )),
         "__neg__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).float, "__neg__").with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_arith::native_slots::float_neg_slot), 1,
@@ -424,6 +436,12 @@ crate::builtins::methods::native_method_table!(complex_method_bits, publish_comp
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Complex, {
 
 }, {
+        "__getnewargs__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).complex, "__getnewargs__"),
+            fn_addr!(crate::molt_complex_getnewargs),
+            1,
+        )),
         "__format__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).complex, "__format__").with_text_signature("($self, format_spec, /)"),

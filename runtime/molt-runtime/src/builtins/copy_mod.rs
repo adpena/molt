@@ -1,584 +1,322 @@
-use crate::ModuleExc;
-use std::collections::HashMap;
-
-use crate::state::runtime_state::{RuntimeState, runtime_state};
+//! Exact-builtin traversal for CPython 3.12 Lib/copy.py's _deepcopy_list,
+//! _deepcopy_tuple, _deepcopy_dict and _keep_alive. Python owns protocol dispatch.
 use crate::*;
+use molt_runtime_core::ProtectedRuntimeValue as Value;
 
-// --- Memo registry ----------------------------------------------------------
-// Deep copy requires a memo dict that maps id(original) -> copied_object.
-// The handle registry is runtime-owned so abandoned handles cannot outlive
-// RuntimeState teardown across compliance/regrtest loops.
-pub(crate) struct CopyMemoRuntimeState {
-    next_handle: i64,
-    registry: HashMap<i64, HashMap<u64, u64>>,
-}
-
-impl CopyMemoRuntimeState {
-    pub(crate) fn new() -> Self {
-        Self {
-            next_handle: 1,
-            registry: HashMap::new(),
-        }
-    }
-
-    fn clear(&mut self) -> bool {
-        let changed = !self.registry.is_empty();
-        self.next_handle = 1;
-        self.registry.clear();
-        changed
-    }
-
-    fn alloc(&mut self) -> i64 {
-        let id = self.next_handle;
-        self.next_handle += 1;
-        self.registry.insert(id, HashMap::new());
-        id
-    }
-
-    fn drop_handle(&mut self, handle: i64) {
-        self.registry.remove(&handle);
-    }
-
-    fn get(&self, handle: i64, obj_id: u64) -> Option<u64> {
-        self.registry
-            .get(&handle)
-            .and_then(|m| m.get(&obj_id).copied())
-    }
-
-    fn put(&mut self, handle: i64, obj_id: u64, bits: u64) {
-        if let Some(m) = self.registry.get_mut(&handle) {
-            m.insert(obj_id, bits);
-        }
-    }
-
-    #[cfg(test)]
-    fn registry_len(&self) -> usize {
-        self.registry.len()
-    }
-
-    #[cfg(test)]
-    fn next_handle(&self) -> i64 {
-        self.next_handle
+fn owned<'a>(py: &'a PyToken<'_>, bits: u64) -> Result<Value<'a>, u64> {
+    let value = unsafe { Value::from_owned_bits(py.core_token(), bits) };
+    if exception_pending(py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(value)
     }
 }
 
-pub(crate) fn copy_memo_clear_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
-    crate::gil_assert();
-    state.copy_memo.lock().unwrap().clear()
+struct DeepCopy<'a, 'py> {
+    py: &'a PyToken<'py>,
+    memo: *mut u8,
+    memo_bits: u64,
+    copier: u64,
+    sentinel: u64,
 }
 
-fn memo_alloc(_py: &PyToken<'_>) -> i64 {
-    runtime_state(_py).copy_memo.lock().unwrap().alloc()
-}
-
-fn memo_drop(_py: &PyToken<'_>, handle: i64) {
-    runtime_state(_py)
-        .copy_memo
-        .lock()
-        .unwrap()
-        .drop_handle(handle);
-}
-
-fn memo_get(_py: &PyToken<'_>, handle: i64, obj_id: u64) -> Option<u64> {
-    runtime_state(_py)
-        .copy_memo
-        .lock()
-        .unwrap()
-        .get(handle, obj_id)
-}
-
-fn memo_put(_py: &PyToken<'_>, handle: i64, obj_id: u64, bits: u64) {
-    runtime_state(_py)
-        .copy_memo
-        .lock()
-        .unwrap()
-        .put(handle, obj_id, bits);
-}
-
-// ─── Type classification ────────────────────────────────────────────────────
-
-fn is_atomic_type_id(type_id: u32) -> bool {
-    // Note: None, bool, int, float are NaN-boxed (not heap objects) so they
-    // never reach type_id checks — they're handled before as_ptr() returns.
-    matches!(
-        type_id,
-        TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_RANGE | TYPE_ID_NOT_IMPLEMENTED | TYPE_ID_ELLIPSIS
-    )
-}
-
-// ─── Shallow copy implementation ────────────────────────────────────────────
-
-fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
-    let obj = obj_from_bits(bits);
-    // None and non-ptr immediates (int, float, bool) return self.
-    let Some(ptr) = obj.as_ptr() else {
-        return bits;
-    };
-    let type_id = unsafe { object_type_id(ptr) };
-
-    // Classes are atomic even when their metaclass supplies __copy__.
-    if type_id == TYPE_ID_TYPE {
-        inc_ref_bits(_py, bits);
-        return bits;
+impl<'a> DeepCopy<'a, '_> {
+    fn memo_get(&self, key: u64) -> Result<Option<Value<'a>>, u64> {
+        unsafe { dict_get_in_place(self.py, self.memo, key) }
+            .map(|value| value.map(|bits| Value::retain(self.py.core_token(), bits)))
+            .map_err(|()| MoltObject::none().bits())
     }
 
-    // Exact builtins retain their native copy rules. Subclasses must consult
-    // their actual class before physical scalar/container storage can bypass
-    // __copy__. Ordinary class lookup observes descriptors and metaclasses;
-    // an instance attribute named __copy__ is not part of this protocol.
-    if !unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } {
-        let class_bits = type_of_bits(_py, bits);
-        inc_ref_bits(_py, class_bits);
-        let _class_owner = obj_from_bits(class_bits).as_ptr().map(PtrDropGuard::new);
-        let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__copy__") else {
-            return MoltObject::none().bits();
-        };
-        let copier = molt_getattr_builtin(class_bits, name_bits, MoltObject::none().bits());
-        dec_ref_bits(_py, name_bits);
-        if exception_pending(_py) {
-            dec_ref_bits(_py, copier);
-            return MoltObject::none().bits();
-        }
-        if !obj_from_bits(copier).is_none() {
-            // No container borrow or lock spans either Python callback.
-            let result = unsafe { call_callable1(_py, copier, bits) };
-            dec_ref_bits(_py, copier);
-            return result;
-        }
-    }
-
-    // Heap scalar results, like every other pointer result here, are owned.
-    if obj.as_float().is_some() || to_i64(obj).is_some() || is_atomic_type_id(type_id) {
-        inc_ref_bits(_py, bits);
-        return bits;
-    }
-
-    match type_id {
-        TYPE_ID_LIST if unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } => {
-            // Shallow copy: new list with same element refs
-            unsafe {
-                let new_ptr =
-                    crate::object::seq_access::with_borrowed(ptr, |src| alloc_list(_py, src));
-                if new_ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                MoltObject::from_ptr(new_ptr).bits()
-            }
-        }
-        TYPE_ID_TUPLE => {
-            // Tuples are immutable -- return self
-            inc_ref_bits(_py, bits);
-            bits
-        }
-        TYPE_ID_DICT => {
-            if unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } {
-                return crate::object::ops_dict::copy_dict(_py, bits);
-            }
-            // Subtype fallthrough retains its physical-storage path: unlike
-            // dict.copy, it must not acquire new __iter__/mapping callbacks.
-            // The class-level __copy__ protocol above still takes precedence.
-            {
-                let Some(order) = (unsafe {
-                    crate::object::ops_dict::dict_snapshot(
-                        _py,
-                        ptr,
-                        crate::object::ops_dict::DictSnapshotKind::Entries,
-                    )
-                }) else {
-                    return MoltObject::none().bits();
-                };
-                let new_ptr = alloc_dict_with_pairs(_py, &order);
-                if new_ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                MoltObject::from_ptr(new_ptr).bits()
-            }
-        }
-        TYPE_ID_SET => {
-            // Shallow copy: new set with same element refs
-            {
-                let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
-                else {
-                    return MoltObject::none().bits();
-                };
-                let new_ptr = alloc_set_with_entries(_py, &order);
-                if new_ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                MoltObject::from_ptr(new_ptr).bits()
-            }
-        }
-        TYPE_ID_FROZENSET => {
-            // Frozensets are immutable -- return self
-            inc_ref_bits(_py, bits);
-            bits
-        }
-        TYPE_ID_BYTEARRAY => {
-            // Copy bytearray data
-            unsafe {
-                let src = bytearray_vec_ref(ptr);
-                let new_ptr = alloc_bytearray(_py, src);
-                if new_ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                MoltObject::from_ptr(new_ptr).bits()
-            }
-        }
-        _ => {
-            // Default reduction is still unimplemented for these types.
-            inc_ref_bits(_py, bits);
-            bits
-        }
-    }
-}
-
-// ─── Deep copy implementation ───────────────────────────────────────────────
-
-fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
-    let obj = obj_from_bits(bits);
-
-    // None and non-ptr immediates return self
-    if obj.is_none() {
-        return bits;
-    }
-    if obj.as_float().is_some() {
-        return bits;
-    }
-    if to_i64(obj).is_some() {
-        return bits;
-    }
-
-    // Check memo for already-copied objects (cycle breaking)
-    let obj_id = bits;
-    if let Some(cached) = memo_get(_py, memo_handle, obj_id) {
-        inc_ref_bits(_py, cached);
-        return cached;
-    }
-
-    let Some(ptr) = obj.as_ptr() else {
-        return bits;
-    };
-
-    let type_id = unsafe { object_type_id(ptr) };
-
-    // Atomic types return self
-    if is_atomic_type_id(type_id) {
-        return bits;
-    }
-
-    match type_id {
-        TYPE_ID_LIST if unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } => {
-            // Deep copy: recursively copy each element.
-            // Allocate empty list first, register in memo to break cycles.
-            let new_ptr = alloc_list(_py, &[]);
-            if new_ptr.is_null() {
-                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-            }
-            let new_bits = MoltObject::from_ptr(new_ptr).bits();
-            memo_put(_py, memo_handle, obj_id, new_bits);
-
-            unsafe {
-                let mut index = 0usize;
-                while index < crate::object::seq_access::locked_len(ptr) {
-                    let Some(elem) = crate::object::seq_access::pin_item(_py, ptr, index) else {
-                        return MoltObject::none().bits();
-                    };
-                    let copied = deep_copy_bits(_py, elem.bits(), memo_handle);
-                    drop(elem);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, copied);
-                        return MoltObject::none().bits();
-                    }
-                    if !crate::object::list_mutation::extend_from_slice(
-                        _py,
-                        new_ptr,
-                        std::slice::from_ref(&copied),
-                    ) {
-                        dec_ref_bits(_py, copied);
-                        return MoltObject::none().bits();
-                    }
-                    dec_ref_bits(_py, copied);
-                    index = index.saturating_add(1);
-                }
-            }
-            new_bits
-        }
-        TYPE_ID_TUPLE => {
-            // Deep copy tuple: copy all elements, but if all are identical, return self.
-            unsafe {
-                crate::object::seq_access::with_immutable_tuple_slice(ptr, |src| {
-                    if src.is_empty() {
-                        inc_ref_bits(_py, bits);
-                        return bits;
-                    }
-                    let mut all_same = true;
-                    let mut copied_elems = Vec::with_capacity(src.len());
-                    for &elem in src.iter() {
-                        let copied = deep_copy_bits(_py, elem, memo_handle);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        if copied != elem {
-                            all_same = false;
-                        }
-                        copied_elems.push(copied);
-                    }
-                    if all_same {
-                        inc_ref_bits(_py, bits);
-                        memo_put(_py, memo_handle, obj_id, bits);
-                        return bits;
-                    }
-                    let new_ptr = alloc_tuple(_py, &copied_elems);
-                    if new_ptr.is_null() {
-                        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(
-                        );
-                    }
-                    let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                    memo_put(_py, memo_handle, obj_id, new_bits);
-                    new_bits
-                })
-                .unwrap_or_else(|| MoltObject::none().bits())
-            }
-        }
-        TYPE_ID_DICT => {
-            let Some(order) = (unsafe {
-                crate::object::ops_dict::dict_snapshot(
-                    _py,
-                    ptr,
-                    crate::object::ops_dict::DictSnapshotKind::Entries,
-                )
-            }) else {
-                return MoltObject::none().bits();
-            };
-            // Deep copy dict: recursively copy keys and values.
-            // Allocate empty dict first for cycle breaking.
-            let new_ptr = alloc_dict_with_pairs(_py, &[]);
-            if new_ptr.is_null() {
-                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-            }
-            let new_bits = MoltObject::from_ptr(new_ptr).bits();
-            memo_put(_py, memo_handle, obj_id, new_bits);
-
-            unsafe {
-                // order is [k1, v1, k2, v2, ...]
-                let mut i = 0;
-                while i + 1 < order.len() {
-                    let key_bits = order[i];
-                    let val_bits = order[i + 1];
-                    let copied_key = deep_copy_bits(_py, key_bits, memo_handle);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let copied_val = deep_copy_bits(_py, val_bits, memo_handle);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let completed = dict_set_in_place(_py, new_ptr, copied_key, copied_val);
-                    if !completed {
-                        return MoltObject::none().bits();
-                    }
-                    i += 2;
-                }
-            }
-            new_bits
-        }
-        TYPE_ID_SET => {
-            // Deep copy set
-            {
-                let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
-                else {
-                    return MoltObject::none().bits();
-                };
-                let mut copied_elems = Vec::with_capacity(order.len());
-                for &elem in order.iter() {
-                    let copied = deep_copy_bits(_py, elem, memo_handle);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    copied_elems.push(copied);
-                }
-                let new_ptr = alloc_set_with_entries(_py, &copied_elems);
-                if new_ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(_py, memo_handle, obj_id, new_bits);
-                new_bits
-            }
-        }
-        TYPE_ID_FROZENSET => {
-            // Frozensets: deep copy elements, but since frozenset is immutable,
-            // if all elements are identical return self.
-            {
-                let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
-                else {
-                    return MoltObject::none().bits();
-                };
-                if order.is_empty() {
-                    inc_ref_bits(_py, bits);
-                    return bits;
-                }
-                let mut all_same = true;
-                let mut copied_elems = Vec::with_capacity(order.len());
-                for &elem in order.iter() {
-                    let copied = deep_copy_bits(_py, elem, memo_handle);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    if copied != elem {
-                        all_same = false;
-                    }
-                    copied_elems.push(copied);
-                }
-                if all_same {
-                    inc_ref_bits(_py, bits);
-                    memo_put(_py, memo_handle, obj_id, bits);
-                    return bits;
-                }
-                let new_ptr = alloc_set_like_with_entries(_py, &copied_elems, TYPE_ID_FROZENSET);
-                if new_ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(_py, memo_handle, obj_id, new_bits);
-                new_bits
-            }
-        }
-        TYPE_ID_BYTEARRAY => {
-            // Deep copy bytearray: copy data
-            unsafe {
-                let src = bytearray_vec_ref(ptr);
-                let new_ptr = alloc_bytearray(_py, src);
-                if new_ptr.is_null() {
-                    return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-                }
-                let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(_py, memo_handle, obj_id, new_bits);
-                new_bits
-            }
-        }
-        _ => {
-            // Custom deep-copy and reduction protocols remain unimplemented
-            // for these types; the Python entrypoint delegates here directly.
-            inc_ref_bits(_py, bits);
-            bits
-        }
-    }
-}
-
-// ─── public intrinsics ──────────────────────────────────────────────────────
-
-/// Shallow copy of a Python object.
-/// Exact builtins use their native storage rules; other instances first consult
-/// their class-defined `__copy__` hook. Default reduction remains separate debt.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_copy(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { shallow_copy_bits(_py, obj_bits) })
-}
-
-/// Deep copy of a Python object with a memo dictionary.
-/// `memo_bits` should be a handle obtained from `molt_copy_memo_new`, or
-/// None/0 for a fresh memo. Recursively copies all contained objects and
-/// handles cycles via the memo registry.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_deepcopy(obj_bits: u64, memo_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let memo_obj = obj_from_bits(memo_bits);
-        let (memo_handle, owned) = if memo_obj.is_none() {
-            (memo_alloc(_py), true)
-        } else if let Some(i) = to_i64(memo_obj) {
-            (i, false)
+    fn memo_put(&self, key: u64, value: u64) -> Result<(), u64> {
+        if unsafe { dict_set_in_place(self.py, self.memo, key, value) } {
+            Ok(())
         } else {
-            (memo_alloc(_py), true)
-        };
-
-        let result = deep_copy_bits(_py, obj_bits, memo_handle);
-
-        if owned {
-            memo_drop(_py, memo_handle);
+            Err(MoltObject::none().bits())
         }
-
-        result
-    })
-}
-
-/// Allocate a new memo handle for deep copy operations.
-/// Returns an integer handle that can be passed to `molt_copy_deepcopy`
-/// and later freed with `molt_copy_memo_drop`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_memo_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = memo_alloc(_py);
-        MoltObject::from_int(handle).bits()
-    })
-}
-
-/// Free a memo handle previously allocated with `molt_copy_memo_new`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_memo_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(handle_bits);
-        if let Some(i) = to_i64(obj) {
-            memo_drop(_py, i);
-        }
-        MoltObject::none().bits()
-    })
-}
-
-/// Raise a `copy.Error` exception with the given message.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_error(msg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(msg_bits);
-        let msg = string_obj_to_owned(obj).unwrap_or_else(|| "copy.Error".to_string());
-        raise_exception::<u64>(_py, ModuleExc::CopyError, &msg)
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn copy_memo_state_is_runtime_scoped_and_clearable() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::molt_exception_clear();
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            copy_memo_clear_state(_py, state);
-
-            let first = memo_alloc(_py);
-            let second = memo_alloc(_py);
-            assert_eq!(first, 1);
-            assert_eq!(second, 2);
-
-            memo_put(_py, first, 0x101, 0x202);
-            assert_eq!(memo_get(_py, first, 0x101), Some(0x202));
-            assert_eq!(memo_get(_py, second, 0x101), None);
-
-            {
-                let guard = state.copy_memo.lock().unwrap();
-                assert_eq!(guard.next_handle(), 3);
-                assert_eq!(guard.registry_len(), 2);
-            }
-
-            memo_drop(_py, first);
-            {
-                let guard = state.copy_memo.lock().unwrap();
-                assert_eq!(guard.registry_len(), 1);
-                assert_eq!(guard.get(first, 0x101), None);
-            }
-
-            copy_memo_clear_state(_py, state);
-            {
-                let guard = state.copy_memo.lock().unwrap();
-                assert_eq!(guard.next_handle(), 1);
-                assert_eq!(guard.registry_len(), 0);
-            }
-
-            assert_eq!(memo_alloc(_py), 1);
-            copy_memo_clear_state(_py, state);
-            assert!(!exception_pending(_py));
-        });
     }
+
+    fn keep_alive(&self, obj: u64) -> Result<(), u64> {
+        let key = owned(self.py, molt_id(self.memo_bits))?;
+        if let Some(alive) = self.memo_get(key.bits())? {
+            if let Some(ptr) = obj_from_bits(alive.bits()).as_ptr()
+                && matches!(
+                    unsafe { object_type_id(ptr) },
+                    TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL
+                )
+                && unsafe { crate::object::iterable::builtin_receiver(self.py, ptr) }
+            {
+                if !unsafe { crate::object::list_mutation::extend_from_slice(self.py, ptr, &[obj]) }
+                {
+                    return Err(MoltObject::none().bits());
+                }
+            } else {
+                // A user may seed memo[id(memo)] with an arbitrary appendable.
+                let name = attr_name_bits_from_bytes(self.py, b"append")
+                    .ok_or_else(|| MoltObject::none().bits())?;
+                let name = owned(self.py, name)?;
+                let append = owned(
+                    self.py,
+                    molt_getattr_builtin(alive.bits(), name.bits(), missing_bits(self.py)),
+                )?;
+                let _result = owned(self.py, unsafe {
+                    call_callable1(self.py, append.bits(), obj)
+                })?;
+            }
+        } else {
+            let ptr = alloc_list(self.py, &[obj]);
+            if ptr.is_null() {
+                return Err(MoltObject::none().bits());
+            }
+            let alive = owned(self.py, MoltObject::from_ptr(ptr).bits())?;
+            self.memo_put(key.bits(), alive.bits())?;
+        }
+        Ok(())
+    }
+
+    fn copy(&self, obj: u64) -> Result<Value<'a>, u64> {
+        let value = obj_from_bits(obj);
+        if value.as_ptr().is_none() {
+            // molt_id uses the signed immediate word here. Its often-large
+            // Python integer need only be materialized on a hash candidate;
+            // preseeded/user-equal keys still use the shared rich lookup.
+            let cached = unsafe {
+                crate::object::ops::dict_get_i64_in_place(self.py, self.memo, obj as i64)
+            }
+            .map_err(|()| MoltObject::none().bits())?;
+            return Ok(Value::retain(
+                self.py.core_token(),
+                cached.filter(|&bits| bits != self.sentinel).unwrap_or(obj),
+            ));
+        }
+        let ptr = value.as_ptr().unwrap();
+        let kind = unsafe { object_type_id(ptr) };
+        // Do not perform a second memo lookup or builtin-class test for a
+        // child that Python's protocol must handle anyway. In particular,
+        // ordinary instances never enter native reconstruction here.
+        let native_kind = matches!(
+            kind,
+            TYPE_ID_TYPE
+                | TYPE_ID_LIST
+                | TYPE_ID_LIST_INT
+                | TYPE_ID_LIST_BOOL
+                | TYPE_ID_DICT
+                | TYPE_ID_TUPLE
+                | TYPE_ID_STRING
+                | TYPE_ID_BYTES
+                | TYPE_ID_RANGE
+                | TYPE_ID_NOT_IMPLEMENTED
+                | TYPE_ID_ELLIPSIS
+                | TYPE_ID_COMPLEX
+                | TYPE_ID_BIGINT
+                | TYPE_ID_FLOAT
+        );
+        if !native_kind {
+            return owned(self.py, unsafe {
+                call_callable2(self.py, self.copier, obj, self.memo_bits)
+            });
+        }
+        let exact = kind == TYPE_ID_TYPE
+            || unsafe { crate::object::iterable::builtin_receiver(self.py, ptr) };
+        if !exact {
+            return owned(self.py, unsafe {
+                call_callable2(self.py, self.copier, obj, self.memo_bits)
+            });
+        }
+        // Even atomic objects can have a user-supplied memo entry.
+        let key = owned(self.py, molt_id(obj))?;
+        if let Some(result) = self
+            .memo_get(key.bits())?
+            .filter(|result| result.bits() != self.sentinel)
+        {
+            return Ok(result);
+        }
+        if kind == TYPE_ID_TYPE
+            || (exact
+                && (value.as_float().is_some()
+                    || to_i64(value).is_some()
+                    || matches!(
+                        kind,
+                        TYPE_ID_STRING
+                            | TYPE_ID_BYTES
+                            | TYPE_ID_RANGE
+                            | TYPE_ID_NOT_IMPLEMENTED
+                            | TYPE_ID_ELLIPSIS
+                            | TYPE_ID_COMPLEX
+                            | TYPE_ID_BIGINT
+                    )))
+        {
+            return Ok(Value::retain(self.py.core_token(), obj));
+        }
+        let result = match kind {
+            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL if exact => {
+                self.list(obj, ptr, key.bits())?
+            }
+            TYPE_ID_DICT if exact => self.dict(obj, key.bits())?,
+            TYPE_ID_TUPLE if exact => self.tuple(obj, ptr)?,
+            // Subclasses and every other type return to the ONE Python copy
+            // protocol, including copyreg and hooks. Never return self here.
+            _ => {
+                return owned(self.py, unsafe {
+                    call_callable2(self.py, self.copier, obj, self.memo_bits)
+                });
+            }
+        };
+        if result.bits() != obj {
+            self.memo_put(key.bits(), result.bits())?;
+            self.keep_alive(obj)?;
+        }
+        Ok(result)
+    }
+
+    fn list(&self, _obj: u64, ptr: *mut u8, key: u64) -> Result<Value<'a>, u64> {
+        let result = alloc_list(self.py, &[]);
+        if result.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let result_owner = owned(self.py, MoltObject::from_ptr(result).bits())?;
+        self.memo_put(key, result_owner.bits())?;
+        let mut index = 0;
+        while index < unsafe { crate::object::seq_access::locked_len(ptr) } {
+            let item = unsafe { crate::object::seq_access::pin_item(self.py, ptr, index) }
+                .ok_or_else(|| MoltObject::none().bits())?;
+            let copied = self.copy(item.bits())?;
+            if !unsafe {
+                crate::object::list_mutation::extend_from_slice(self.py, result, &[copied.bits()])
+            } {
+                return Err(MoltObject::none().bits());
+            }
+            index += 1;
+        }
+        Ok(result_owner)
+    }
+
+    fn dict(&self, obj: u64, key: u64) -> Result<Value<'a>, u64> {
+        let result = alloc_dict_with_pairs(self.py, &[]);
+        if result.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let result_owner = owned(self.py, MoltObject::from_ptr(result).bits())?;
+        self.memo_put(key, result_owner.bits())?;
+        let items = owned(self.py, molt_dict_items(obj))?;
+        let iterator = owned(self.py, molt_iter(items.bits()))?;
+        loop {
+            let mut key = MoltObject::none().bits();
+            let mut value = MoltObject::none().bits();
+            let done = unsafe {
+                crate::object::ops_iter::molt_iter_next_dict_items(
+                    iterator.bits(),
+                    &mut key,
+                    &mut value,
+                )
+            };
+            let key = owned(self.py, key)?;
+            let value = owned(self.py, value)?;
+            if is_truthy(self.py, obj_from_bits(done)) {
+                break;
+            }
+            // Python assignment evaluates the RHS before its target subscript.
+            let copied_value = self.copy(value.bits())?;
+            let copied_key = self.copy(key.bits())?;
+            if !unsafe {
+                dict_set_in_place(self.py, result, copied_key.bits(), copied_value.bits())
+            } {
+                return Err(MoltObject::none().bits());
+            }
+        }
+        Ok(result_owner)
+    }
+
+    fn tuple(&self, obj: u64, ptr: *mut u8) -> Result<Value<'a>, u64> {
+        let items = unsafe {
+            crate::object::seq_access::snapshot(self.py, ptr, "copy tuple allocation failed")
+        }
+        .ok_or_else(|| MoltObject::none().bits())?;
+        let mut copied = Vec::with_capacity(items.len());
+        let mut same = true;
+        for &item in items.iter() {
+            let result = self.copy(item)?;
+            same &= result.bits() == item;
+            copied.push(result);
+        }
+        // A tuple may contain a mutable child that has already reconstructed
+        // this tuple during recursion. CPython checks memo AFTER the children.
+        let key = owned(self.py, molt_id(obj))?;
+        if let Some(result) = self.memo_get(key.bits())? {
+            return Ok(result);
+        }
+        if same {
+            return Ok(Value::retain(self.py.core_token(), obj));
+        }
+        let bits: Vec<_> = copied.iter().map(Value::bits).collect();
+        let result = alloc_tuple(self.py, &bits);
+        if result.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        owned(self.py, MoltObject::from_ptr(result).bits())
+    }
+}
+
+/// Traversal of exact list/tuple/dict objects with Python's actual memo. The
+/// callback handles non-builtin children under the same copy protocol.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_copy_deepcopy(obj: u64, memo: u64, copier: u64, sentinel: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(memo).as_ptr() else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "copy memo must be an exact dict",
+            );
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT
+            || !unsafe { crate::object::iterable::builtin_receiver(py, ptr) }
+        {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "copy memo must be an exact dict",
+            );
+        }
+        let _memo_owner = Value::retain(py.core_token(), memo);
+        let _copier_owner = Value::retain(py.core_token(), copier);
+        let _sentinel_owner = Value::retain(py.core_token(), sentinel);
+        (|| {
+            let context = DeepCopy {
+                py,
+                memo: ptr,
+                memo_bits: memo,
+                copier,
+                sentinel,
+            };
+            let Some(obj_ptr) = obj_from_bits(obj).as_ptr() else {
+                return Err(raise_exception::<u64>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "copy traversal requires an exact container",
+                ));
+            };
+            if !unsafe { crate::object::iterable::builtin_receiver(py, obj_ptr) } {
+                return Err(raise_exception::<u64>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "copy traversal requires an exact container",
+                ));
+            }
+            let key = owned(py, molt_id(obj))?;
+            match unsafe { object_type_id(obj_ptr) } {
+                TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
+                    context.list(obj, obj_ptr, key.bits())
+                }
+                TYPE_ID_DICT => context.dict(obj, key.bits()),
+                TYPE_ID_TUPLE => context.tuple(obj, obj_ptr),
+                _ => Err(raise_exception::<u64>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "copy traversal requires an exact container",
+                )),
+            }
+        })()
+        .map(Value::into_bits)
+        .unwrap_or_else(|error| error)
+    })
 }

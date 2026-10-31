@@ -34,6 +34,15 @@ class EmptyKwargs(Plain):
         return (self.value,), {}
 
 
+class KwargDict(dict):
+    pass
+
+
+class SubclassKwargs(Plain):
+    def __getnewargs_ex__(self):
+        return (), KwargDict(value=self.value)
+
+
 class ListSubclass(list):
     pass
 
@@ -45,6 +54,50 @@ class DictSubclass(dict):
 class Override(Plain):
     def __reduce__(self):
         return (Plain, (9,))
+
+
+class NativeInt(int):
+    pass
+
+
+class NativeFloat(float):
+    pass
+
+
+class NativeStr(str):
+    pass
+
+
+class NativeBytes(bytes):
+    pass
+
+
+class NativeTuple(tuple):
+    pass
+
+
+class NativeComplex(complex):
+    pass
+
+
+class NativeSet(set):
+    pass
+
+
+class NativeFrozen(frozenset):
+    pass
+
+
+class NativeBytearray(bytearray):
+    pass
+
+
+class NativeSlottedStr(str):
+    __slots__ = ("value",)
+
+
+class NativeSlottedSet(set):
+    __slots__ = ("value",)
 
 
 def stable(value):
@@ -60,9 +113,17 @@ def stable(value):
 
 
 objects = [Plain(), Slotted(), State(), NewArgs(3), NewArgsEx(4),
-           EmptyKwargs(5), ListSubclass([6, 7]), DictSubclass(key=8), Override()]
+           EmptyKwargs(5), ListSubclass([6, 7]), DictSubclass(key=8), Override(),
+           SubclassKwargs(10)]
 objects[6].value = "list state"
 objects[7].value = "dict state"
+native_objects = [NativeInt(7), NativeFloat(1.25), NativeStr("value"),
+                  NativeBytes(b"value"), NativeTuple((1, 2)), NativeComplex(1, 2),
+                  NativeSet([4]), NativeFrozen([4]), NativeBytearray(b"\xffx"),
+                  NativeSlottedStr("héllo"), NativeSlottedSet([4])]
+for obj in native_objects:
+    obj.value = [9]
+objects.extend(native_objects)
 for obj in objects:
     for protocol in range(6):
         try:
@@ -76,6 +137,8 @@ for obj in objects:
                 name = "_reconstructor"
             elif constructor is Plain:
                 name = "Plain"
+            elif isinstance(constructor, type):
+                name = "type:" + constructor.__name__
             else:
                 raise AssertionError("unexpected reduction constructor")
             tail = list(rv[1:3])
@@ -121,3 +184,21 @@ for obj in (BadNewArgs(), BadNewArgsEx()):
         obj.__reduce_ex__(4)
     except (TypeError, ValueError) as error:
         print("bad newargs", type(error).__name__, str(error))
+
+check_new_lookup = False
+
+
+class Meta(type):
+    def __getattribute__(cls, name):
+        if check_new_lookup and name == "__new__":
+            raise AssertionError("reduction must not look up construction")
+        return type.__getattribute__(cls, name)
+
+
+class MetadataOnly(metaclass=Meta):
+    pass
+
+
+obj = MetadataOnly()
+check_new_lookup = True
+print("construction metadata", obj.__reduce_ex__(4)[0] is copyreg.__newobj__)

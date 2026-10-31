@@ -61,10 +61,11 @@ fn copyreg<'a>(py: &'a PyToken<'_>, name: &[u8]) -> Result<Value<'a>, u64> {
 }
 
 fn require_kind(py: &PyToken<'_>, bits: u64, kind: u32, message: &str) -> Result<(), u64> {
-    if obj_from_bits(bits)
-        .as_ptr()
-        .is_some_and(|ptr| unsafe { object_type_id(ptr) == kind })
-    {
+    if obj_from_bits(bits).as_ptr().is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == kind
+            || (kind == TYPE_ID_DICT
+                && crate::object::layout::dict_subclass_storage_slot(ptr).is_some())
+    }) {
         Ok(())
     } else {
         let name = type_name(py, obj_from_bits(bits));
@@ -134,22 +135,57 @@ fn new_arguments<'a>(
 }
 
 fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
-    let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
-    // A class must supply construction. Preserve lookup errors and descriptors.
-    let _new = required(py, cls.bits(), b"__new__")?;
-    let (args, kwargs) = new_arguments(py, obj)?;
-    let (constructor, newargs) = if kwargs
-        .as_ref()
-        .is_some_and(|kw| unsafe { dict_len(obj_from_bits(kw.bits()).as_ptr().unwrap()) != 0 })
-    {
-        let args = args.as_ref().unwrap();
-        (
-            copyreg(py, b"__newobj_ex__")?,
-            tuple(
-                py,
-                &[cls.bits(), args.bits(), kwargs.as_ref().unwrap().bits()],
-            )?,
+    // Construction is class metadata, like CPython's tp_new check. Reduction
+    // must not observe a metaclass's __getattribute__ or bind __new__ here.
+    let initial_class = Value::retain(py.core_token(), type_of_bits(py, obj));
+    let name =
+        attr_name_bits_from_bytes(py, b"__new__").ok_or_else(|| MoltObject::none().bits())?;
+    let name = owned(py, name)?;
+    let constructor_present = unsafe {
+        crate::builtins::attr::class_attr_lookup_raw_mro(
+            py,
+            obj_from_bits(initial_class.bits()).as_ptr().unwrap(),
+            name.bits(),
         )
+    }
+    .map_err(|()| MoltObject::none().bits())?
+    .is_some();
+    if !constructor_present {
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::TypeError,
+            &format!(
+                "cannot pickle '{}' object",
+                type_name(py, obj_from_bits(obj))
+            ),
+        ));
+    }
+    let (args, kwargs) = new_arguments(py, obj)?;
+    let has_kwargs = if let Some(kw) = &kwargs {
+        let storage = crate::object::ops::dict_backing_bits(py, kw.bits())
+            .map_err(|()| MoltObject::none().bits())?
+            .unwrap();
+        unsafe { dict_len(obj_from_bits(storage).as_ptr().unwrap()) != 0 }
+    } else {
+        false
+    };
+    let constructor = copyreg(
+        py,
+        if has_kwargs {
+            b"__newobj_ex__"
+        } else {
+            b"__newobj__"
+        },
+    )?;
+    // __getnewargs__ may have changed the receiver's class. CPython samples
+    // Py_TYPE for the constructor args after that callback and copyreg lookup.
+    let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
+    let newargs = if has_kwargs {
+        let args = args.as_ref().unwrap();
+        tuple(
+            py,
+            &[cls.bits(), args.bits(), kwargs.as_ref().unwrap().bits()],
+        )?
     } else {
         let mut fields = vec![cls.bits()];
         if let Some(args) = &args {
@@ -164,7 +200,7 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
             .ok_or_else(|| MoltObject::none().bits())?;
             fields.extend_from_slice(&snapshot);
         }
-        (copyreg(py, b"__newobj__")?, tuple(py, &fields)?)
+        tuple(py, &fields)?
     };
     let getstate = required(py, obj, b"__getstate__")?;
     let state = owned(py, unsafe { call_callable0(py, getstate.bits()) })?;
@@ -245,5 +281,186 @@ pub extern "C" fn molt_object_reduce_ex(obj: u64, protocol: u64) -> u64 {
             common_reduce(py, obj, protocol)
         })();
         result.unwrap_or_else(|error| error)
+    })
+}
+
+// Builtin-specific producers supply only their physical constructor arguments
+// or the reduction specified by their CPython object implementation. The
+// default object reduce protocol above remains shared by every consumer.
+fn one_newarg(py: &PyToken<'_>, value: u64) -> Result<u64, u64> {
+    let value = owned(py, value)?;
+    Ok(tuple(py, &[value.bits()])?.into_bits())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_getnewargs(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        // CPython longobject.c int___getnewargs___impl: copy storage, never
+        // invoke a subtype's __int__ override.
+        one_newarg(py, molt_int_int(obj)).unwrap_or_else(|error| error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_getnewargs(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        // CPython floatobject.c float___getnewargs___impl.
+        one_newarg(py, molt_float_float(obj)).unwrap_or_else(|error| error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_getnewargs(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        one_newarg(py, crate::object::ops_format::string_str_slot(obj))
+            .unwrap_or_else(|error| error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_getnewargs(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        one_newarg(py, crate::object::ops_bytes::bytes_bytes(obj)).unwrap_or_else(|error| error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tuple_getnewargs(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let result = (|| {
+            require_kind(
+                py,
+                obj,
+                TYPE_ID_TUPLE,
+                "tuple.__getnewargs__ requires a tuple",
+            )?;
+            let base = if type_of_bits(py, obj) == builtin_classes(py).tuple {
+                Value::retain(py.core_token(), obj)
+            } else {
+                let items = unsafe {
+                    crate::object::seq_access::snapshot(
+                        py,
+                        obj_from_bits(obj).as_ptr().unwrap(),
+                        "tuple newargs allocation failed",
+                    )
+                }
+                .ok_or_else(|| MoltObject::none().bits())?;
+                tuple(py, &items)?
+            };
+            Ok(tuple(py, &[base.bits()])?.into_bits())
+        })();
+        result.unwrap_or_else(|error| error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_complex_getnewargs(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = complex_ptr_from_bits(obj) else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "complex.__getnewargs__ requires a complex object",
+            );
+        };
+        let parts = unsafe { *complex_ref(ptr) };
+        let result = (|| {
+            let real = owned(py, crate::object::ops::float_result_bits(py, parts.re))?;
+            let imag = owned(py, crate::object::ops::float_result_bits(py, parts.im))?;
+            Ok(tuple(py, &[real.bits(), imag.bits()])?.into_bits())
+        })();
+        result.unwrap_or_else(|error| error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_reduce(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        // CPython Objects/setobject.c set_reduce, shared by set/frozenset:
+        // iteration is observable before __getstate__, including on subtypes.
+        let result = (|| {
+            let keys = owned(py, molt_list_builtin(obj))?;
+            let args = tuple(py, &[keys.bits()])?;
+            let getter = required(py, obj, b"__getstate__")?;
+            let state = owned(py, unsafe { call_callable0(py, getter.bits()) })?;
+            Ok(tuple(py, &[type_of_bits(py, obj), args.bits(), state.bits()])?.into_bits())
+        })();
+        result.unwrap_or_else(|error| error)
+    })
+}
+
+fn bytearray_reduce(py: &PyToken<'_>, obj: u64, protocol: i32) -> Result<u64, u64> {
+    // CPython Objects/bytearrayobject.c _common_reduce. This is a physical
+    // descriptor: a subtype's __bytes__/__buffer__ override is not consulted.
+    require_kind(
+        py,
+        obj,
+        TYPE_ID_BYTEARRAY,
+        "bytearray reduction requires a bytearray",
+    )?;
+    let getter = required(py, obj, b"__getstate__")?;
+    let state = owned(py, unsafe { call_callable0(py, getter.bits()) })?;
+    let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
+    let ptr = obj_from_bits(obj).as_ptr().unwrap();
+    let args = if unsafe { bytearray_len(ptr) } == 0 {
+        tuple(py, &[])?
+    } else {
+        let pin = crate::object::buffer_exports::ScopedBufferExport::new(py, obj)
+            .map_err(|()| MoltObject::none().bits())?;
+        let length = unsafe { bytearray_len(ptr) };
+        let bytes = crate::object::builders::alloc_inline_bytes_with_len(
+            py,
+            length,
+            crate::object::builders::InlineBytesKind::Bytes,
+        );
+        if bytes.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        // Allocate before borrowing mutable source storage. The counted export
+        // pins its extent across allocation/GC; the canonical backing lock then
+        // covers the callback-free copy, including in-place buffer writers.
+        unsafe {
+            let backing = bytearray_vec_ptr(ptr);
+            let _lock = crate::object::backing::tracked_vec_mutation_lock(backing);
+            std::ptr::copy_nonoverlapping(
+                bytearray_data(ptr),
+                crate::object::layout::InlineBytesStorage::data(bytes),
+                length,
+            );
+        }
+        let bytes = owned(py, MoltObject::from_ptr(bytes).bits())?;
+        drop(pin);
+        if protocol < 3 {
+            let encoding = alloc_string(py, b"latin-1");
+            if encoding.is_null() {
+                return Err(MoltObject::none().bits());
+            }
+            let encoding = owned(py, MoltObject::from_ptr(encoding).bits())?;
+            let text = owned(
+                py,
+                molt_bytes_decode(bytes.bits(), encoding.bits(), missing_bits(py)),
+            )?;
+            tuple(py, &[text.bits(), encoding.bits()])?
+        } else {
+            tuple(py, &[bytes.bits()])?
+        }
+    };
+    Ok(tuple(py, &[cls.bits(), args.bits(), state.bits()])?.into_bits())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_reduce(obj: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        bytearray_reduce(py, obj, 2).unwrap_or_else(|error| error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_reduce_ex(obj: u64, protocol: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(protocol) = crate::builtins::numbers::index_c_int_from_obj(py, protocol) else {
+            return MoltObject::none().bits();
+        };
+        bytearray_reduce(py, obj, protocol).unwrap_or_else(|error| error)
     })
 }
