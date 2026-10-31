@@ -399,14 +399,16 @@ def _unharvested_ignored_paths(git: Any) -> tuple[list[str], list[str]]:
     ]
     stale: list[str] = []
     unknown: list[str] = []
-    from tools.proof_plan import verified_pinned_asset_paths
+    from tools.proof_plan import regenerable_pinned_asset_paths
 
-    verified = set(verified_pinned_asset_paths(git.repo, lane_environment(os.environ)))
+    regenerable = set(
+        regenerable_pinned_asset_paths(git.repo, lane_environment(os.environ))
+    )
 
     def signal_paths(named: Path):
-        if named in verified:
+        if named in regenerable:
             return
-        if any(named in link.parents for link in verified):
+        if any(named in link.parents for link in regenerable):
             # Git collapses ignored parents. Unknown siblings remain signal.
             for child in named.iterdir():
                 yield from signal_paths(child)

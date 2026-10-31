@@ -1295,6 +1295,8 @@ def _pinned_asset_git(environment: Mapping[str, str]):
             env=asset_environment,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
         )
         if check and result.returncode:
             raise ValueError(
@@ -1402,10 +1404,10 @@ def _link_pinned_asset(link: Path, destination: Path) -> None:
             raise ValueError(f"pinned asset path is occupied: {link}")
 
 
-def verified_pinned_asset_paths(
+def regenerable_pinned_asset_paths(
     root: Path, environment: Mapping[str, str]
 ) -> tuple[Path, ...]:
-    """Read-only admission of pinned state, including pre-migration generations."""
+    """Declared store links are projections; legacy content needs admission."""
     from molt.dx import storage_path
     from molt.file_publication import resolve_owned_path
 
@@ -1417,18 +1419,17 @@ def verified_pinned_asset_paths(
         return ()
     store = storage_path(root, "pinned-assets", environment)
     git = _pinned_asset_git(environment)
-    verified = []
+    regenerable = []
     for name, asset in assets.items():
         link = root / asset["path"]
         destination = store / name / _pinned_asset_revision(root, asset)
-        if link.is_symlink() and link.resolve() == destination and destination.is_dir():
+        if link.is_symlink() and link.resolve() == destination:
             resolve_owned_path(destination)
-            _verify_pinned_asset(destination, destination.name, git)
-            verified.append(link)
+            regenerable.append(link)
         elif link.is_dir() and not link.is_symlink():
             _verify_pinned_asset(link, destination.name, git)
-            verified.append(link)
-    return tuple(verified)
+            regenerable.append(link)
+    return tuple(regenerable)
 
 
 def provision_pinned_assets(

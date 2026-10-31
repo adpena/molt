@@ -138,13 +138,15 @@ generation per asset name and pinned commit in DX's `pinned-assets` storage
 class, under `<artifact root>/molt-state/pinned-assets`, outside all checkouts.
 Provisioning holds the canonical shared-cache lock for that key. Every lane
 and sandbox reaches the same generation through a directory symlink at the
-declared path. Lane payload discovery verifies these links and their pinned
-content before excluding them, splitting ignored parents to preserve unknown
+declared path. Lane payload discovery recognizes links to the declared store
+key as regenerable projections, splitting ignored parents to preserve unknown
 siblings. Verified regenerable assets never become lane evidence. A missing verified donor defers; an
 older verified in-checkout generation migrates into the store and becomes a link;
 changed or unpinned entries block migration and remain in their owner's custody. An
 existing destination with changed content fails. `docs/spec/tinygrad_pin.md`
 owns the tinygrad commit, rather than a version-only provisioning check.
+Execution preparation owns the single full content scan; payload discovery
+does not repeat it for a store link. A corrupt external tree still fails admission.
 
 Runs retain `prerequisites.json` in the executor receipt's `.d` directory, with runnable and
 deferred commands, atomically published through `molt.file_publication` even

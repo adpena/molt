@@ -259,11 +259,25 @@ owner = "oracle-cell"
     assert set(evidence.rglob("*")) == before
     # Git reports the ignored parent; a sibling must still be preserved.
     signal = links[0].parent / "unknown.txt"
-    signal.write_text("owner signal\n")
+    signal.write_text("owner signal\n", encoding="utf-8")
     assert lanes._unharvested_ignored_paths(molt_dev.Git(checkouts[0])) == (
         [],
         ["bench/friends/repos/unknown.txt"],
     )
+    # The link remains a regenerable projection even when the external tree
+    # drifts. Admission still rejects the drift and preserves its bytes.
+    content = links[0] / "oracle.py"
+    content.write_text("VALUE = 630\n", encoding="utf-8")
+    assert lanes._unharvested_ignored_paths(molt_dev.Git(checkouts[0])) == (
+        [],
+        ["bench/friends/repos/unknown.txt"],
+    )
+    with pytest.raises(ValueError, match="content differs"):
+        provision_pinned_assets(
+            assets, ("oracle",), root=checkouts[0], environment=os.environ
+        )
+    assert content.read_text(encoding="utf-8") == "VALUE = 630\n"
+    assert set(evidence.rglob("*")) == before
 
 
 def _ref(repo: Path, ref: str) -> str | None:

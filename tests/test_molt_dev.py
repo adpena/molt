@@ -4008,7 +4008,7 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
     with pytest.raises(GateFailure, match=r"gate failed \(exit 2\)"):
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
     receipt = molt_dev_gates.prerequisite_receipt_path(runtime.receipt_path)
-    assert json.loads(receipt.read_text())["deferred"] == []
+    assert json.loads(receipt.read_text(encoding="utf-8"))["deferred"] == []
     shown = capsys.readouterr().err
     assert "gate output not kept (" in shown and "the real reason" in shown
 
@@ -5818,7 +5818,7 @@ def test_pinned_asset_migration_preserves_a_linked_git_worktree(tmp_path, monkey
     with pytest.raises(ValueError, match="independent Git custody"):
         provision_pinned_assets(assets, ("oracle",), root=lane, environment=os.environ)
     assert (legacy / ".git").read_bytes() == before
-    assert (legacy / "value.py").read_text() == "VALUE = 629\n"
+    assert (legacy / "value.py").read_text(encoding="utf-8") == "VALUE = 629\n"
     assert _git(legacy, "rev-parse", "HEAD").stdout.strip() == pin
 
 
