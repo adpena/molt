@@ -30,7 +30,16 @@ import time
 import tomllib
 import traceback
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Collection, Iterable, Literal, Mapping, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Collection,
+    Iterable,
+    Literal,
+    Mapping,
+    Sequence,
+    NewType,
+)
 
 if TYPE_CHECKING:
     from molt.python_runtime_admission import BuildPythonAdmission
@@ -1223,6 +1232,18 @@ class LocalGateDeclaration:
     pinned_assets: tuple[str, ...] = ()
 
 
+CellId = NewType("CellId", str)
+
+
+def prerequisite_cell(data: Mapping[str, Any], identifier: str) -> CellId:
+    """An execution owner must exist and have a producer in the proof plan."""
+    if not any(row.get("id") == identifier for row in data.get("matrix_cell", ())):
+        raise ValueError(f"unknown prerequisite owner cell: {identifier}")
+    if not any(row.get("cell") == identifier for row in data.get("command", ())):
+        raise ValueError(f"prerequisite owner cell has no command: {identifier}")
+    return CellId(identifier)
+
+
 def load_pinned_assets(data: Mapping[str, Any]) -> dict[str, Mapping]:
     """Declared local upstream inputs; content identities live in their pin docs."""
     assets = {}
@@ -1238,6 +1259,9 @@ def load_pinned_assets(data: Mapping[str, Any]) -> dict[str, Mapping]:
             raise ValueError("pinned_asset fields must be nonempty strings")
         for field in ("path", "pin_document"):
             portable_relative_path(row[field])
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", row["name"]):
+            raise ValueError("pinned asset name must be a portable storage key")
+        prerequisite_cell(data, row["owner"])
         if row["name"] in assets:
             raise ValueError(f"duplicate pinned asset {row['name']!r}")
         assets[row["name"]] = row
@@ -1252,28 +1276,12 @@ def load_pinned_assets(data: Mapping[str, Any]) -> dict[str, Mapping]:
     return assets
 
 
-def provision_pinned_assets(
-    assets: Mapping[str, Mapping],
-    names: tuple[str, ...],
-    *,
-    root: Path,
-    environment: Mapping[str, str],
-) -> tuple[str, ...]:
-    """Provision ignored oracles alongside toolchain inputs, before gates start.
-
-    Read immutable Git objects from this repository's primary checkout; never
-    copy the donor's working tree. Existing destinations must already match.
-    This boundary serves precheck, integration and postsubmit alike.
-    """
-    import tempfile
+def _pinned_asset_git(environment: Mapping[str, str]):
     from tools.git_identity import add_git_config, immutable_git_environment
 
-    if not names:
-        return ()
     asset_environment = immutable_git_environment(environment)
     add_git_config(asset_environment, "core.hooksPath", os.devnull)
     add_git_config(asset_environment, "core.fsmonitor", "false")
-    object_formats = {40: "sha1", 64: "sha256"}
 
     def git(cwd, *arguments, check=True):
         result = _COMMANDS.run(
@@ -1294,153 +1302,252 @@ def provision_pinned_assets(
             )
         return result
 
-    def verify(destination: Path, revision: str) -> None:
-        if not (destination / ".git").exists():
-            raise ValueError(
-                f"pinned asset is not a verifiable Git checkout: {destination}"
-            )
-        expected_files = {}
-        for record in git(
-            destination, "ls-tree", "-r", "-l", "-z", revision
-        ).stdout.split("\0"):
-            if not record:
-                continue
-            metadata, relative = record.split("\t", 1)
-            mode, kind, expected, size = metadata.split()
-            if kind != "blob":
-                raise ValueError(f"unsupported pinned asset entry: {relative}")
-            expected_files[relative] = (mode, expected, int(size))
+    return git
 
-        def scan(directory: str | Path, prefix: str = "") -> None:
-            # One namespace walk replaces index/stat admission. DirEntry reuses
-            # file-type observations; directory symlinks are hashed, never followed.
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if not prefix and entry.name == ".git":
-                        continue
-                    relative = f"{prefix}/{entry.name}" if prefix else entry.name
-                    if entry.is_dir(follow_symlinks=False):
-                        scan(entry.path, relative)
-                        continue
-                    declared = expected_files.pop(relative, None)
-                    if declared is None:
-                        raise ValueError(
-                            f"pinned asset has an unpinned entry: {relative}"
-                        )
-                    mode, expected, size = declared
-                    mismatch = (
-                        f"pinned asset content differs from {revision}: {entry.path}"
-                    )
-                    symlink = entry.is_symlink()
-                    digest = hashlib.new(object_formats[len(revision)])
-                    digest.update(f"blob {size}\0".encode("ascii"))
-                    if symlink:
-                        content = os.fsencode(os.readlink(entry.path))
-                        if len(content) != size:
-                            raise ValueError(mismatch)
-                        digest.update(content)
-                    elif entry.is_file(follow_symlinks=False):
-                        if entry.stat(follow_symlinks=False).st_size != size:
-                            raise ValueError(mismatch)
-                        # A changed file cannot force an unbounded allocation
-                        # or read: the pin owns both length and bytes.
-                        with open(entry.path, "rb") as source:
-                            remaining = size
-                            while remaining:
-                                chunk = source.read(min(65536, remaining))
-                                if not chunk:
-                                    raise ValueError(mismatch)
-                                digest.update(chunk)
-                                remaining -= len(chunk)
-                            if source.read(1):
-                                raise ValueError(mismatch)
-                    else:
-                        raise ValueError(f"unsupported pinned asset entry: {relative}")
-                    executable = (
-                        bool(entry.stat(follow_symlinks=False).st_mode & 0o111)
-                        if os.name != "nt" and not symlink
-                        else mode == "100755"
-                    )
-                    if (
-                        digest.hexdigest() != expected
-                        or (mode == "120000") != symlink
-                        or (mode == "100755") != executable
-                    ):
+
+def _verify_pinned_asset(destination: Path, revision: str, git) -> None:
+    object_formats = {40: "sha1", 64: "sha256"}
+    if not (destination / ".git").exists():
+        raise ValueError(
+            f"pinned asset is not a verifiable Git checkout: {destination}"
+        )
+    expected_files = {}
+    for record in git(destination, "ls-tree", "-r", "-l", "-z", revision).stdout.split(
+        "\0"
+    ):
+        if not record:
+            continue
+        metadata, relative = record.split("\t", 1)
+        mode, kind, expected, size = metadata.split()
+        if kind != "blob":
+            raise ValueError(f"unsupported pinned asset entry: {relative}")
+        expected_files[relative] = (mode, expected, int(size))
+
+    def scan(directory: str | Path, prefix: str = "") -> None:
+        # One namespace walk replaces index/stat admission. DirEntry reuses
+        # file-type observations; directory symlinks are hashed, never followed.
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not prefix and entry.name == ".git":
+                    continue
+                relative = f"{prefix}/{entry.name}" if prefix else entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    scan(entry.path, relative)
+                    continue
+                declared = expected_files.pop(relative, None)
+                if declared is None:
+                    raise ValueError(f"pinned asset has an unpinned entry: {relative}")
+                mode, expected, size = declared
+                mismatch = f"pinned asset content differs from {revision}: {entry.path}"
+                symlink = entry.is_symlink()
+                digest = hashlib.new(object_formats[len(revision)])
+                digest.update(f"blob {size}\0".encode("ascii"))
+                if symlink:
+                    content = os.fsencode(os.readlink(entry.path))
+                    if len(content) != size:
                         raise ValueError(mismatch)
+                    digest.update(content)
+                elif entry.is_file(follow_symlinks=False):
+                    if entry.stat(follow_symlinks=False).st_size != size:
+                        raise ValueError(mismatch)
+                    # A changed file cannot force an unbounded allocation
+                    # or read: the pin owns both length and bytes.
+                    with open(entry.path, "rb") as source:
+                        remaining = size
+                        while remaining:
+                            chunk = source.read(min(65536, remaining))
+                            if not chunk:
+                                raise ValueError(mismatch)
+                            digest.update(chunk)
+                            remaining -= len(chunk)
+                        if source.read(1):
+                            raise ValueError(mismatch)
+                else:
+                    raise ValueError(f"unsupported pinned asset entry: {relative}")
+                executable = (
+                    bool(entry.stat(follow_symlinks=False).st_mode & 0o111)
+                    if os.name != "nt" and not symlink
+                    else mode == "100755"
+                )
+                if (
+                    digest.hexdigest() != expected
+                    or (mode == "120000") != symlink
+                    or (mode == "100755") != executable
+                ):
+                    raise ValueError(mismatch)
 
-        scan(destination)
-        if expected_files:
-            raise ValueError(f"pinned asset entries missing: {sorted(expected_files)}")
+    scan(destination)
+    if expected_files:
+        raise ValueError(f"pinned asset entries missing: {sorted(expected_files)}")
 
+
+def _pinned_asset_revision(root: Path, asset: Mapping) -> str:
+    pin = (root / asset["pin_document"]).read_text(encoding="utf-8")
+    match = re.search(
+        r"^\|\s*\*\*pinned commit\*\*\s*\|\s*`([^`]+)`\s*\|",
+        pin,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ValueError(f"{asset['pin_document']}: missing full pinned commit")
+    return require_git_object_id(match.group(1), label="pinned commit")
+
+
+def _link_pinned_asset(link: Path, destination: Path) -> None:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(destination, target_is_directory=True)
+    except FileExistsError:
+        if not link.is_symlink() or link.resolve() != destination:
+            raise ValueError(f"pinned asset path is occupied: {link}")
+
+
+def verified_pinned_asset_paths(
+    root: Path, environment: Mapping[str, str]
+) -> tuple[Path, ...]:
+    """Read-only admission of pinned state, including pre-migration generations."""
+    from molt.dx import storage_path
+    from molt.file_publication import resolve_owned_path
+
+    manifest = root / "tools/proof_plan.toml"
+    if not manifest.exists():
+        return ()
+    assets = load_pinned_assets(tomllib.loads(manifest.read_text(encoding="utf-8")))
+    if not assets:
+        return ()
+    store = storage_path(root, "pinned-assets", environment)
+    git = _pinned_asset_git(environment)
+    verified = []
+    for name, asset in assets.items():
+        link = root / asset["path"]
+        destination = store / name / _pinned_asset_revision(root, asset)
+        if link.is_symlink() and link.resolve() == destination and destination.is_dir():
+            resolve_owned_path(destination)
+            _verify_pinned_asset(destination, destination.name, git)
+            verified.append(link)
+        elif link.is_dir() and not link.is_symlink():
+            _verify_pinned_asset(link, destination.name, git)
+            verified.append(link)
+    return tuple(verified)
+
+
+def provision_pinned_assets(
+    assets: Mapping[str, Mapping],
+    names: tuple[str, ...],
+    *,
+    root: Path,
+    environment: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Provision ignored oracles alongside toolchain inputs, before gates start.
+
+    Read immutable Git objects into the host's content-addressed Molt store;
+    checkouts hold only links. Existing generations must already match.
+    This boundary serves precheck, integration and postsubmit alike.
+    """
+    import tempfile
+    import shutil
+    from molt.file_publication import resolve_owned_path
+
+    if not names:
+        return ()
+    git = _pinned_asset_git(environment)
+    object_formats = {40: "sha1", 64: "sha256"}
+
+    from molt.dx import storage_path
+
+    store = resolve_owned_path(storage_path(root, "pinned-assets", environment))
     absent = []
     primary: Path | None = None
     for name in names:
         asset = assets[name]
-        pin = (root / asset["pin_document"]).read_text(encoding="utf-8")
-        match = re.search(
-            r"^\|\s*\*\*pinned commit\*\*\s*\|\s*`([^`]+)`\s*\|",
-            pin,
-            re.MULTILINE,
-        )
-        if match is None:
-            raise ValueError(f"{asset['pin_document']}: missing full pinned commit")
-        revision = require_git_object_id(match.group(1), label="pinned commit")
-        destination = root / asset["path"]
-        if destination.exists():
-            verify(destination, revision)
-            continue
-        if primary is None:
-            primary = Path(
+        revision = _pinned_asset_revision(root, asset)
+        from molt.file_locks import _shared_cache_lock
+
+        with _shared_cache_lock(f"pinned-asset-{name}-{revision}", cache_root=store):
+            destination = store / name / revision
+            resolve_owned_path(destination)
+            link = root / asset["path"]
+            resolve_owned_path(link.parent)
+            if link.is_symlink() and link.resolve() != destination:
+                raise ValueError(f"pinned asset link has the wrong target: {link}")
+            legacy = link.exists() and not link.is_symlink()
+            if legacy:
+                metadata = link / ".git"
+                if not metadata.is_dir() or metadata.is_symlink():
+                    raise ValueError(
+                        f"pinned asset migration requires independent Git custody: {link}"
+                    )
+                _verify_pinned_asset(link, revision, git)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if (
+                    not destination.exists()
+                    and link.stat().st_dev == destination.parent.stat().st_dev
+                ):
+                    link.rename(destination)
+                    legacy = False
+            if destination.exists():
+                _verify_pinned_asset(destination, revision, git)
+                if legacy:
+                    _verify_pinned_asset(link, revision, git)
+                    shutil.rmtree(link)
+                _link_pinned_asset(link, destination)
+                continue
+            if primary is None:
+                primary = Path(
+                    git(
+                        root, "rev-parse", "--path-format=absolute", "--git-common-dir"
+                    ).stdout.rstrip("\n")
+                ).parent
+            donor = link if legacy else primary / asset["path"]
+            if (
+                not (donor / ".git").exists()
+                or git(
+                    donor, "cat-file", "-e", revision + "^{commit}", check=False
+                ).returncode
+            ):
+                absent.append(name)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix=".pinned-asset-", dir=destination.parent
+            ) as temporary:
+                staged = Path(temporary) / "tree"
+                staged.mkdir()
                 git(
-                    root, "rev-parse", "--path-format=absolute", "--git-common-dir"
-                ).stdout.rstrip("\n")
-            ).parent
-        donor = primary / asset["path"]
-        if (
-            not (donor / ".git").exists()
-            or git(
-                donor, "cat-file", "-e", revision + "^{commit}", check=False
-            ).returncode
-        ):
-            absent.append(name)
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=".pinned-asset-", dir=destination.parent
-        ) as temporary:
-            staged = Path(temporary) / "tree"
-            staged.mkdir()
-            git(
-                staged,
-                "init",
-                "--quiet",
-                "--object-format=" + object_formats[len(revision)],
-            )
-            git(
-                staged,
-                "fetch",
-                "--quiet",
-                "--depth=1",
-                "--no-tags",
-                "--no-write-fetch-head",
-                "--",
-                str(donor),
-                revision,
-            )
-            git(
-                staged,
-                "-c",
-                "advice.detachedHead=false",
-                "checkout",
-                "--quiet",
-                "--detach",
-                revision,
-            )
-            verify(staged, revision)
-            try:
-                staged.rename(destination)
-            except FileExistsError:
-                verify(destination, revision)
+                    staged,
+                    "init",
+                    "--quiet",
+                    "--object-format=" + object_formats[len(revision)],
+                )
+                git(
+                    staged,
+                    "fetch",
+                    "--quiet",
+                    "--depth=1",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    "--",
+                    str(donor),
+                    revision,
+                )
+                git(
+                    staged,
+                    "-c",
+                    "advice.detachedHead=false",
+                    "checkout",
+                    "--quiet",
+                    "--detach",
+                    revision,
+                )
+                _verify_pinned_asset(staged, revision, git)
+                try:
+                    staged.rename(destination)
+                except FileExistsError:
+                    _verify_pinned_asset(destination, revision, git)
+            if legacy:
+                _verify_pinned_asset(link, revision, git)
+                shutil.rmtree(link)
+            _link_pinned_asset(link, destination)
     return tuple(absent)
 
 

@@ -121,7 +121,9 @@ Observed-input selection and verdict reuse remain deferred stages 4-6, not imple
 Before execution, `GateConfig.prepare` resolves each selected command to the closed
 `Runnable | Deferred` outcome. A deferred command names its missing declared
 toolchain, pinned asset or foreign portability execution cell and the owning
-proof cell or provisioned farm host. Foreign cells enter this same outcome;
+proof cell id, validated against the matrix and its command producers. Diagnostic
+prose renders that id; missing tools also render their policy's `setup_value`
+and `setup_evidence`. Foreign cells enter this same outcome;
 the dependency graph no longer silently drops those commands. Toolchain admission
 retains typed absent-image evidence from its existing probes and provider projection.
 A present image with the wrong version, a raised probe, failed provisioning or
@@ -131,13 +133,23 @@ never grounds for deferral. No error-message parsing grants a deferral.
 Pinned assets are declared in `proof_plan.toml`; their pin documents alone own
 content identity. `proof_plan.provision_pinned_assets`, called at the same
 pre-execution preparation boundary as toolchain provisioning, uses immutable
-Git objects in the repository's primary checkout to provision separate detached
-oracle checkouts in the landing sandbox. A missing verified donor defers; an
+Git objects in the repository's primary checkout to provision one verified
+generation per asset name and pinned commit in DX's `pinned-assets` storage
+class, under `<artifact root>/molt-state/pinned-assets`, outside all checkouts.
+Provisioning holds the canonical shared-cache lock for that key. Every lane
+and sandbox reaches the same generation through a directory symlink at the
+declared path. Lane payload discovery verifies these links and their pinned
+content before excluding them, splitting ignored parents to preserve unknown
+siblings. Verified regenerable assets never become lane evidence. A missing verified donor defers; an
+older verified in-checkout generation migrates into the store and becomes a link;
+changed or unpinned entries block migration and remain in their owner's custody. An
 existing destination with changed content fails. `docs/spec/tinygrad_pin.md`
 owns the tinygrad commit, rather than a version-only provisioning check.
 
-Runs retain `prerequisites.json` beside their gate logs, with runnable and
-deferred commands; a deferral requires this evidence to be writable.
+Runs retain `prerequisites.json` in the executor receipt's `.d` directory, with runnable and
+deferred commands, atomically published through `molt.file_publication` even
+when nothing deferred. Its location is independent of the optional per-run
+logs; inability to retain selection evidence fails preparation before execution.
 Postsubmit's result receipt also lists the deferred commands,
 and its green summary explicitly calls them unproven here. Last green therefore
 attests the runnable host selection, not full farm or release qualification.

@@ -29,8 +29,11 @@ build on an un-regenerated bump."*
 
 The commit identifies the existing clean upstream oracle's content, including
 its `0.13.0` manifest. Landing prerequisite provisioning reads this commit's Git
-objects from the primary checkout and creates a separate detached checkout;
-the donor's working files are never copied. Existing oracle checkouts must
+objects from the primary checkout into one host-shared verified generation at
+`<artifact root>/molt-state/pinned-assets/tinygrad-oracle/<pinned commit>`.
+The declared oracle path is a directory symlink to that generation; lanes and
+landing sandboxes share its files without copying or archiving them. The
+donor's working files are never copied. Existing oracle generations must
 match this commit's tree and have no changed, untracked or ignored files. Update the
 commit with the version and generated facts under the bump protocol below.
 
@@ -62,11 +65,13 @@ Upgrading the pinned tinygrad revision is a **single atomic change**, never a pi
 edit, because every derived parity fact is a function of the pin. To bump
 `0.13.0 → <next>`:
 
-1. **Re-vendor** the new upstream tinygrad into
-   `bench/friends/repos/tinygrad_off_the_shelf/` (the read-only oracle; never hand-edit
-   it — it is the source of truth, not a molt artifact).
+1. **Provide the new upstream Git commit** in the primary checkout's oracle
+   object store. Keep shared pinned working files immutable. Remove only the
+   lane's old oracle symlink when changing pins; prerequisite preparation
+   provisions and verifies the new generation before recreating that link.
 2. **Update this pin** (`docs/spec/tinygrad_pin.md`): change the pinned version string and
-   record any new authority-file paths (e.g. if upstream relocates `code_for_op`).
+   pinned commit together, and record any new authority-file paths (e.g. if
+   upstream relocates `code_for_op`).
 3. **Regenerate every `gpu_*_contract` fact** from the new source:
    `python3 tools/gen_gpu_op_contract.py --write` (and, when they land, the API-contract
    generator). Re-run each `--check` to confirm idempotence.

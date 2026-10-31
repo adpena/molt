@@ -208,7 +208,12 @@ def gate_output_dir(receipt_path: Path) -> Path:
     """This run's gate logs, beside the receipt, named by UTC time and pid so
     a run never reuses another's."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    return receipt_path.with_suffix(".d") / f"{stamp}-{os.getpid()}"
+    return prerequisite_receipt_path(receipt_path).parent / f"{stamp}-{os.getpid()}"
+
+
+def prerequisite_receipt_path(receipt_path: Path) -> Path:
+    """Selection evidence follows the executor receipt, independently of logs."""
+    return receipt_path.with_suffix(".d") / "prerequisites.json"
 
 
 def prepare_gate_streams(
@@ -531,27 +536,26 @@ def run_selected_gates(
     """
     for item in runtime.deferred:
         runtime.say(item.diagnostic())
+    from molt.file_publication import atomic_write_bytes
+
+    prerequisites = (
+        json.dumps(
+            {
+                "schema": "molt.landing-prerequisites.v1",
+                "mode": runtime.mode.value,
+                "runnable": [gate.command for gate in gates],
+                "deferred": [item.record() for item in runtime.deferred],
+            },
+            indent=2,
+        )
+        + "\n"
+    ).encode("utf-8")
     try:
-        runtime.output_dir.mkdir(parents=True, exist_ok=True)
-        (runtime.output_dir / "prerequisites.json").write_text(
-            json.dumps(
-                {
-                    "schema": "molt.landing-prerequisites.v1",
-                    "mode": runtime.mode.value,
-                    "runnable": [gate.command for gate in gates],
-                    "deferred": [item.record() for item in runtime.deferred],
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+        atomic_write_bytes(
+            prerequisite_receipt_path(runtime.receipt_path), prerequisites
         )
     except OSError as exc:
-        if runtime.deferred:
-            raise DriverError(
-                f"cannot retain deferred prerequisite evidence: {exc}"
-            ) from exc
-        runtime.say(f"prerequisite receipt not kept ({exc})")
+        raise DriverError(f"cannot retain prerequisite evidence: {exc}") from exc
     ordered = list(enumerate(gates, start=1))
     for ordinal, gate in ordered:
         _check_cancellation(runtime)

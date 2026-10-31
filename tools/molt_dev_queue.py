@@ -309,7 +309,9 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
     deferred: list[dict] = []
 
     def read_deferred() -> list[dict]:
-        selection = output / "prerequisites.json"
+        from tools.molt_dev_gates import prerequisite_receipt_path
+
+        selection = prerequisite_receipt_path(output / "receipt.json")
         return (
             json.loads(selection.read_text(encoding="utf-8"))["deferred"]
             if selection.exists()

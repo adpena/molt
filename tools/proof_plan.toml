@@ -523,7 +523,7 @@ inventory_hash_workers = 12
 name = "tinygrad-oracle"
 path = "bench/friends/repos/tinygrad_off_the_shelf"
 pin_document = "docs/spec/tinygrad_pin.md"
-owner = "linux-x86_64-py312-repository-policy on a host providing the pinned tinygrad oracle"
+owner = "linux-x86_64-py312-repository-policy"
 
 [[resource_policy]]
 name = "compiler-build-resource"

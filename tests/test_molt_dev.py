@@ -411,14 +411,18 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         assert queue.last_green(selected) == starting_green
         output.mkdir(parents=True)
         if outcome == "deferred":
-            (output / "prerequisites.json").write_text(
+            selection = molt_dev_gates.prerequisite_receipt_path(
+                output / "receipt.json"
+            )
+            selection.parent.mkdir(parents=True)
+            selection.write_text(
                 json.dumps(
                     {
                         "deferred": [
                             {
                                 "command": "fish --version",
                                 "missing": [{"kind": "toolchain", "name": "fish"}],
-                                "owner": "linux portability cell",
+                                "owner": "linux-x86_64-py312-queue-portability",
                             }
                         ]
                     }
@@ -445,9 +449,11 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
             _git(repo, "update-ref", queue.LAST_GREEN_REF, head, base)
         return (
             tuple(
-                json.loads((output / "prerequisites.json").read_text(encoding="utf-8"))[
-                    "deferred"
-                ]
+                json.loads(
+                    molt_dev_gates.prerequisite_receipt_path(
+                        output / "receipt.json"
+                    ).read_text(encoding="utf-8")
+                )["deferred"]
             )
             if outcome == "deferred"
             else ()
@@ -508,7 +514,7 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
             {
                 "command": "fish --version",
                 "missing": [{"kind": "toolchain", "name": "fish"}],
-                "owner": "linux portability cell",
+                "owner": "linux-x86_64-py312-queue-portability",
             }
         ]
 
@@ -4001,6 +4007,8 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
     ]
     with pytest.raises(GateFailure, match=r"gate failed \(exit 2\)"):
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+    receipt = molt_dev_gates.prerequisite_receipt_path(runtime.receipt_path)
+    assert json.loads(receipt.read_text())["deferred"] == []
     shown = capsys.readouterr().err
     assert "gate output not kept (" in shown and "the real reason" in shown
 
@@ -5534,6 +5542,14 @@ def test_queue_lands_runnable_gates_with_absent_declared_toolchain(
 name = "absent-shell"
 executable = "molt-hf629-no-such-shell"
 version_pattern = ".*"
+setup_value = "absent shell package"
+setup_evidence = ["host::install absent shell"]
+[[matrix_cell]]
+id = "shell-cell"
+[[command]]
+id = "shell-command"
+cell = "shell-cell"
+toolchains = ["absent-shell"]
 [[rule]]
 name = "foreign-shell"
 globs = ["**"]
@@ -5587,6 +5603,18 @@ name = "selected-tool"
 executable = "{executable}"
 version_args = ["--version"]
 version_pattern = "{pattern}"
+setup_value = "git package"
+setup_evidence = ["host::install git"]
+[[toolchain_policy]]
+name = "unselected-package"
+node_package = "missing"
+package_lock = "unselected/missing-lock"
+[[matrix_cell]]
+id = "tool-cell"
+[[command]]
+id = "tool-command"
+cell = "tool-cell"
+toolchains = ["selected-tool"]
 ''',
         "declared provider",
         root=tmp_path,
@@ -5623,12 +5651,23 @@ version_pattern = "{pattern}"
         assert prepared.resolutions == (
             Deferred(
                 gates[0],
-                (Prerequisite(PrerequisiteKind.TOOLCHAIN, "selected-tool"),),
-                "proof-plan cell on a farm host providing selected-tool",
+                (
+                    Prerequisite(
+                        PrerequisiteKind.TOOLCHAIN,
+                        "selected-tool",
+                        "git package",
+                        ("host::install git",),
+                    ),
+                ),
+                "tool-cell",
             ),
         )
         assert prepared.runnable() == []
         assert "missing: toolchain selected-tool" in prepared.deferred[0].diagnostic()
+        assert (
+            "provide selected-tool: git package; setup: host::install git"
+            in prepared.deferred[0].diagnostic()
+        )
 
 
 @pytest.mark.parametrize("command", ["exit 37", "molt-hf629-undeclared-tool"])
@@ -5672,6 +5711,9 @@ def test_pinned_oracle_provisions_immutable_objects_and_rejects_destination_drif
     _commit_file(primary, "pin.md", f"| **pinned commit** | `{pin}` |\n", "content pin")
     lane = tmp_path / "lane"
     _git(primary, "worktree", "add", "--detach", "-q", str(lane), "HEAD")
+    store_root = tmp_path / "state"
+    store_root.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(store_root))
     assets = {"oracle": {"path": "oracle", "pin_document": "pin.md"}}
     # A mutable working tree is not the content provider: exact pinned objects
     # supply the new checkout even when the donor's working files change.
@@ -5703,9 +5745,12 @@ def test_pinned_oracle_provisions_immutable_objects_and_rejects_destination_drif
     assert target.read_text(encoding="utf-8") == "VALUE = 628\n"
 
 
-def test_absent_pinned_oracle_resolves_to_deferred_command(tmp_path):
+def test_absent_pinned_oracle_resolves_to_deferred_command(tmp_path, monkeypatch):
     from tools.molt_dev_policy import Prerequisite, PrerequisiteKind
 
+    state = tmp_path.parent / (tmp_path.name + "-state")
+    state.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(state))
     _init_repo(tmp_path)
     _commit_file(
         tmp_path,
@@ -5720,7 +5765,12 @@ always = []
 name = "oracle"
 path = "oracle"
 pin_document = "pin.md"
-owner = "oracle farm cell"
+owner = "oracle-cell"
+[[matrix_cell]]
+id = "oracle-cell"
+[[command]]
+id = "oracle-command"
+cell = "oracle-cell"
 [[rule]]
 name = "oracle-consumer"
 globs = ["source.py"]
@@ -5743,7 +5793,60 @@ pinned_assets = ["oracle"]
     assert prepared.deferred[0].missing == (
         Prerequisite(PrerequisiteKind.PINNED_ASSET, "oracle"),
     )
-    assert prepared.deferred[0].owner == "oracle farm cell"
+    assert prepared.deferred[0].owner == "oracle-cell"
+
+
+def test_pinned_asset_migration_preserves_a_linked_git_worktree(tmp_path, monkeypatch):
+    from tools.proof_plan import provision_pinned_assets
+
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    donor = primary / "oracle"
+    _init_repo(donor)
+    pin = _commit_file(donor, "value.py", "VALUE = 629\n", "oracle")
+    _commit_file(primary, ".gitignore", "oracle/\n", "oracle path")
+    _commit_file(primary, "pin.md", f"| **pinned commit** | `{pin}` |\n", "pin")
+    lane = tmp_path / "lane"
+    _git(primary, "worktree", "add", "--detach", "-q", str(lane), "HEAD")
+    legacy = lane / "oracle"
+    _git(donor, "worktree", "add", "--detach", "-q", str(legacy), pin)
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(state))
+    assets = {"oracle": {"path": "oracle", "pin_document": "pin.md"}}
+    before = (legacy / ".git").read_bytes()
+    with pytest.raises(ValueError, match="independent Git custody"):
+        provision_pinned_assets(assets, ("oracle",), root=lane, environment=os.environ)
+    assert (legacy / ".git").read_bytes() == before
+    assert (legacy / "value.py").read_text() == "VALUE = 629\n"
+    assert _git(legacy, "rev-parse", "HEAD").stdout.strip() == pin
+
+
+@pytest.mark.parametrize(
+    "owner, commands, message",
+    [
+        ("invented", [{"cell": "oracle-cell"}], "unknown prerequisite owner cell"),
+        ("oracle-cell", [], "owner cell has no command"),
+    ],
+)
+def test_pinned_asset_owner_must_be_a_produced_matrix_cell(owner, commands, message):
+    from tools.proof_plan import load_pinned_assets
+
+    with pytest.raises(ValueError, match=message):
+        load_pinned_assets(
+            {
+                "pinned_asset": [
+                    {
+                        "name": "oracle",
+                        "path": "oracle",
+                        "pin_document": "pin.md",
+                        "owner": owner,
+                    }
+                ],
+                "matrix_cell": [{"id": "oracle-cell"}],
+                "command": commands,
+            }
+        )
 
 
 def test_foreign_execution_cell_uses_the_same_deferred_outcome(tmp_path):
@@ -5756,6 +5859,9 @@ always = []
 id = "other-os"
 profile = "portability"
 os = "unavailable-os"
+[[command]]
+id = "foreign-command"
+cell = "other-os"
 """,
         "foreign cell",
         root=tmp_path,
@@ -8911,6 +9017,12 @@ version_pattern = '^ok$'
 [[toolchain_policy]]
 name = "target-pythons"
 python_versions = "supported-targets"
+[[matrix_cell]]
+id = "target-python-cell"
+[[command]]
+id = "target-python-command"
+cell = "target-python-cell"
+toolchains = ["target-pythons"]
 """,
         "selected target prerequisites",
     )

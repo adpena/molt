@@ -22,6 +22,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 
+from tools.proof_plan import CellId, prerequisite_cell
+
 from molt.process_environment import ProcessEnvironment
 from tools.dirty_tree_policy import is_ignored as _is_ignored
 from tools.git_identity import changed_paths
@@ -135,6 +137,8 @@ class PrerequisiteKind(StrEnum):
 class Prerequisite:
     kind: PrerequisiteKind
     name: str
+    setup_value: str = ""
+    setup_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -146,7 +150,7 @@ class Runnable:
 class Deferred:
     command: SelectedGate
     missing: tuple[Prerequisite, ...]
-    owner: str
+    owner: CellId
 
     def record(self) -> dict:
         return {
@@ -161,7 +165,15 @@ class Deferred:
         command = self.command.command
         display = shlex.join(command) if isinstance(command, tuple) else command
         missing = ", ".join(f"{item.kind.value} {item.name}" for item in self.missing)
-        return f"deferred (unproven here): {display}; missing: {missing}; runs in: {self.owner}"
+        hints = "; ".join(
+            f"provide {item.name}: {item.setup_value}; setup: {', '.join(item.setup_evidence)}"
+            for item in self.missing
+            if item.kind is PrerequisiteKind.TOOLCHAIN
+        )
+        return (
+            f"deferred (unproven here): {display}; missing: {missing}; "
+            f"runs in: proof cell {self.owner}" + (f"; {hints}" if hints else "")
+        )
 
 
 GateResolution = Runnable | Deferred
@@ -461,6 +473,7 @@ class GateConfig:
                 defer_absent=True,
             )
             resolutions: list[GateResolution] = []
+            tool_owners: dict[frozenset[str], CellId] = {}
             for gate in gates:
                 missing = (
                     tuple(
@@ -470,7 +483,12 @@ class GateConfig:
                     if gate.cells and set(gate.cells) <= foreign
                     else (
                         *(
-                            Prerequisite(PrerequisiteKind.TOOLCHAIN, name)
+                            Prerequisite(
+                                PrerequisiteKind.TOOLCHAIN,
+                                name,
+                                str(by_name[name].data.get("setup_value", "")),
+                                tuple(by_name[name].data.get("setup_evidence", ())),
+                            )
                             for name in closures[gate.toolchains]
                             if name in admitted.absent
                         ),
@@ -482,19 +500,45 @@ class GateConfig:
                     )
                 )
                 if missing:
-                    owner = (
-                        ", ".join(gate.cells)
-                        if gate.cells
-                        else ", ".join(
-                            dict.fromkeys(
-                                self.pinned_assets[item.name]["owner"]
-                                if item.kind is PrerequisiteKind.PINNED_ASSET
-                                else "proof-plan cell on a farm host providing "
-                                + item.name
-                                for item in missing
-                            )
+                    plan = {"matrix_cell": self.matrix_cells, "command": self.commands}
+                    candidates = list(gate.cells) or [
+                        self.pinned_assets[item.name]["owner"]
+                        for item in missing
+                        if item.kind is PrerequisiteKind.PINNED_ASSET
+                    ]
+                    if not candidates:
+                        required = frozenset(
+                            item.name
+                            for item in missing
+                            if item.kind is PrerequisiteKind.TOOLCHAIN
                         )
-                    )
+                        if required in tool_owners:
+                            candidates = [tool_owners[required]]
+                        else:
+                            candidates = [
+                                row["cell"]
+                                for row in self.commands
+                                if required
+                                <= set(
+                                    toolchain_closure(
+                                        policies,
+                                        (
+                                            name
+                                            for name in row.get("toolchains", ())
+                                            if name in by_name
+                                        ),
+                                    )
+                                )
+                            ]
+                            if candidates:
+                                tool_owners[required] = prerequisite_cell(
+                                    plan, candidates[0]
+                                )
+                    if not candidates:
+                        raise ValueError(
+                            "deferred command has no declared execution owner"
+                        )
+                    owner = prerequisite_cell(plan, candidates[0])
                     resolutions.append(Deferred(gate, missing, owner))
                 else:
                     resolutions.append(Runnable(gate))

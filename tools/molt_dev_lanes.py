@@ -399,6 +399,27 @@ def _unharvested_ignored_paths(git: Any) -> tuple[list[str], list[str]]:
     ]
     stale: list[str] = []
     unknown: list[str] = []
+    from tools.proof_plan import verified_pinned_asset_paths
+
+    verified = set(verified_pinned_asset_paths(git.repo, lane_environment(os.environ)))
+
+    def signal_paths(named: Path):
+        if named in verified:
+            return
+        if any(named in link.parents for link in verified):
+            # Git collapses ignored parents. Unknown siblings remain signal.
+            for child in named.iterdir():
+                yield from signal_paths(child)
+        else:
+            yield named.relative_to(git.repo).as_posix()
+
+    paths = list(
+        dict.fromkeys(
+            signal
+            for path in paths
+            for signal in signal_paths(git.repo / path.rstrip("/"))
+        )
+    )
     for path in paths:
         named = git.repo / path
         trees = [

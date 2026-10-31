@@ -1762,9 +1762,11 @@ def _storage_path_selection(
         view, relative_to=repo_root, common_dir=common_dir
     )
     selected = bound.root if bound is not None else artifact_root(repo_root, view)
-    if kind == "controllers" and custody_layout.enclosing_checkouts(selected):
+    if kind in {"controllers", "pinned-assets"} and custody_layout.enclosing_checkouts(
+        selected
+    ):
         raise DxConfigError(
-            "controller storage needs an artifact root outside source checkouts; bind one with the DX artifact-root selector"
+            f"{kind} storage needs an artifact root outside source checkouts; bind one with the DX artifact-root selector"
         )
     if kind in (
         "controllers",
