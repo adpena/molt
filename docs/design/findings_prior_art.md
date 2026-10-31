@@ -964,6 +964,74 @@ asynchronous waits use the suspension bridge (HF-610).
 **Experiment.** Run tinygrad's WebGPU test suite, unmodified, on macOS/Metal
 through Molt's ctypes FFI to Dawn.
 
+## V. Object reduction and serialization protocol
+
+Researched 2026-10-31.
+
+**Problem.** Molt has no general `object.__reduce_ex__`: only `slice` registers
+one. So `copy.copy` and `copy.deepcopy` return the original object for user
+classes (HF-646), and the pickle encoder keeps its own default reduce
+(`pickle_dump_default_instance`) that refuses list subclasses (HF-643). A second
+VM serves protocols 0 and 1 (HF-645). Globals are written outside
+save_global, without `__qualname__`, `fix_imports` or memo entries (HF-644), and
+the loader resolves dotted names with one lookup (HF-570).
+
+**Prior art.**
+- *One reduce authority.* [F] CPython's `object.__reduce_ex__`
+  (`object___reduce_ex___impl`) calls a class-level `__reduce__` override when
+  one exists, else `_common_reduce`. From protocol 2 that is `reduce_newobj`:
+  `copyreg.__newobj__` (or `__newobj_ex__` with keyword arguments), the
+  `object.__getstate__` state, and list and dict items iterators for list and
+  dict subclasses (`_PyObject_GetItemsIter`). Below protocol 2 it calls
+  `copyreg._reduce_ex`. Pickle's save_reduce and copy's `_reconstruct` both
+  consume it. Sources:
+  https://github.com/python/cpython/blob/v3.12.0/Objects/typeobject.c,
+  https://github.com/python/cpython/blob/v3.12.0/Lib/copy.py,
+  https://github.com/python/cpython/blob/v3.12.0/Lib/copyreg.py.
+- *One pickler, one loader.* [F] `Modules/_pickle.c` save() serves protocols
+  0-5 by `proto` and `bin`, and load() dispatches every opcode whatever the
+  header says. `Lib/pickle.py` is the pure-Python twin, used when the
+  accelerator is missing and for Python subclasses. Sources:
+  https://github.com/python/cpython/blob/v3.12.0/Modules/_pickle.c,
+  https://github.com/python/cpython/blob/v3.12.0/Lib/pickle.py.
+- *Protocol PEPs.* [F] PEP 307 (protocol 2: `__reduce_ex__`, NEWOBJ, the
+  copyreg extension registry, list and dict items). PEP 3154 (protocol 4:
+  FRAME, STACK_GLOBAL with `__qualname__`, MEMOIZE, the 8-byte opcodes). PEP
+  574 (protocol 5: `PickleBuffer`, out-of-band buffers, BYTEARRAY8). Sources:
+  https://peps.python.org/pep-0307/, https://peps.python.org/pep-3154/,
+  https://peps.python.org/pep-0574/.
+- *Python 2 names.* [F] `fix_imports` maps names through
+  `Lib/_compat_pickle.py`: `NAME_MAPPING` and `IMPORT_MAPPING` on load, the
+  `REVERSE_` tables on dump, both below protocol 3. Source:
+  https://github.com/python/cpython/blob/v3.12.0/Lib/_compat_pickle.py.
+- *Versioned surface.* [F] `pickle.DEFAULT_PROTOCOL` is 4 for Python 3.8-3.13
+  and 5 from 3.14. `copy.replace()` and `__replace__` arrived in 3.13.
+  Sources: https://docs.python.org/3.14/library/pickle.html,
+  https://docs.python.org/3.13/library/copy.html.
+- *Copy stays Python in CPython.* [F] gh-72793 (a C implementation of parts of
+  `copy.deepcopy`) is open; its PR #91610 closed unmerged on 2026-03-26.
+  Sources: https://github.com/python/cpython/issues/72793,
+  https://github.com/python/cpython/pull/91610.
+
+**Adopt.** [I] Build one `object.__reduce_ex__` and `object.__reduce__` in the
+object model, from `typeobject.c`. Copy and pickle both consume it. Pickle
+uses one dumper over protocols 0-5 and one loader over every opcode. It has one
+save_global and one find_class, with `fix_imports` through `_compat_pickle`.
+Every helper object (globals, strings, argument tuples) goes through save(), so
+memo entries match CPython. Copy follows `Lib/copy.py`. Native fast paths stay
+only for exact builtins, are measured, and share the `dict` memo that
+`__deepcopy__` sees. The oracle is CPython's output bytes for the target
+version, which also keeps content-addressed caches stable.
+
+**Refuse.** [I] A private default reduce per consumer; an arm that returns the
+original object; a second VM per protocol; a memo handle that `__deepcopy__`
+cannot see; protocol defaults fixed across target versions.
+
+**Experiment.** Compare `pickle.dumps(x, p).hex()` with CPython for p in 0-5
+over plain, `__slots__`, list-subclass and nested-class instances. Then run
+`copy.deepcopy` on a user class whose `__deepcopy__` shares the memo, and load
+a CPython-made protocol-1 pickle.
+
 ## Candidates not used
 
 Perry has only a README and blog posts, and no family needs a TypeScript
