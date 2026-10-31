@@ -147,6 +147,17 @@ def family(
     _git(main, "config", "user.name", "Molt Dev")
 
     monkeypatch.setattr(cp, "checkout_input", _fixture_checkout_input)
+    # This family's tiny repositories supply provisioning and retirement
+    # subjects, without a distributable controller or a postsubmit workload.
+    # Model those two execution boundaries; health/CAS still runs normally.
+    from tools import molt_dev_queue as queue
+
+    monkeypatch.setattr(queue, "_run_postsubmit_gates", lambda *_args: None)
+    monkeypatch.setattr(
+        queue,
+        "run_from_pinned_controller",
+        lambda args, _argv: queue.cmd_queue_run(args),
+    )
     return root
 
 
@@ -1657,6 +1668,12 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
     _git(worktree, "push", "-q", "origin", "HEAD:main")
     paths = queue.queue_paths(main)
     request = queue.enqueue(paths, head=tip, worktree=worktree, branch="lane/held")
+
+    def no_new_candidate(*_args, **_kwargs):
+        pytest.fail("already published source must not be rebuilt or published again")
+
+    monkeypatch.setattr(queue, "build_candidate", no_new_candidate)
+    monkeypatch.setattr(molt_dev, "cmd_integrate", no_new_candidate)
     sentinel = worktree / "work.txt"
     if hold == "ignored":
         _git(worktree, "config", "core.excludesFile", str(family / "ignore"))
@@ -1820,7 +1837,9 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
     assert sentinel.read_bytes() == before
     assert worktree in _registered(main)
     assert _ref(main, "refs/heads/lane/held") is not None
-    assert not paths.sandbox.exists(), "published source requires no rebuild"
+    # Postsubmit may create its sandbox; candidate construction and publication
+    # are independently forbidden above for this already published request.
+    assert queue.last_green(molt_dev.Git(main)) == tip
     if hold == "shared-branch":
         assert (sibling / "work.txt").read_bytes() == before
         assert sibling in _registered(main)
@@ -1846,6 +1865,12 @@ def test_already_published_lane_retires_and_replay_uses_closed_custody(
     _git(worktree, "config", "core.excludesFile", str(family / "ignore"))
     (family / "ignore").write_text(lock.name + "\n", encoding="utf-8")
     paths = queue.queue_paths(main)
+
+    def no_new_candidate(*_args, **_kwargs):
+        pytest.fail("already published source must not be rebuilt or published again")
+
+    monkeypatch.setattr(queue, "build_candidate", no_new_candidate)
+    monkeypatch.setattr(molt_dev, "cmd_integrate", no_new_candidate)
     started = []
     monkeypatch.setattr(
         queue, "_start_queue_runner", lambda _paths, repo, _args: started.append(repo)
@@ -1862,7 +1887,7 @@ def test_already_published_lane_retires_and_replay_uses_closed_custody(
     assert args.func(args) == EXIT_OK
     assert queue._await_landing(paths, request.id) == EXIT_OK
     _assert_released(family / "molt-src", worktree)
-    assert not paths.sandbox.exists()
+    assert queue.last_green(molt_dev.Git(main)) == tip
     # A crash after retirement but before queue-result publication is idempotent
     # only with the exact recorded tip and path, not merely a missing branch.
     assert (

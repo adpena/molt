@@ -46,6 +46,7 @@ Hazard -> proving test(s):
 from __future__ import annotations
 from molt.python_environment_location import environment_bytecode_arguments
 
+import argparse
 import json
 import tarfile
 import hashlib
@@ -370,6 +371,216 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
     _git(repo, "add", "--", rel)
     _git(repo, "commit", "-q", "--no-verify", "-m", msg)
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["green", "red", "cancelled", "cancelled-partial", "cas-race", "bootstrap"],
+)
+def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
+    tmp_path, monkeypatch, outcome
+):
+    from tools import molt_dev_queue as queue
+    from tools.molt_dev_gates import GateCancellation
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    base = _commit_file(repo, "value.py", "VALUE = 1\n", "known green")
+    head = _commit_file(repo, "value.py", "VALUE = 2\n", "pushed change")
+    starting_green = None if outcome == "bootstrap" else base
+    if starting_green is not None:
+        _git(repo, "update-ref", queue.LAST_GREEN_REF, starting_green)
+    _git(repo, "update-ref", "refs/remotes/origin/main", head)
+    git = molt_dev.Git(repo)
+    events = ["push"]
+    monkeypatch.setattr(molt_dev.Git, "fetch", lambda *_args: None)
+    monkeypatch.setattr(queue, "_sandbox_git", lambda *_args: git)
+    paths = queue.QueuePaths(tmp_path / "queue", repo, tmp_path / "evidence")
+
+    def execute(selected, commit, green, cancelled, output):
+        events.append("postsubmit")
+        assert selected.head_sha() == head == commit and green == starting_green
+        assert queue.last_green(selected) == starting_green
+        output.mkdir(parents=True)
+        if outcome == "red":
+            (output / "gate-001.junit.xml").write_text(
+                '<testsuites><testsuite><testcase file="tests/test_value.py" '
+                'classname="tests.test_value.TestValue" name="test_value[param]">'
+                '<failure message="independent assertion"/></testcase></testsuite></testsuites>'
+            )
+            raise GateFailure("test failed")
+        if outcome.startswith("cancelled"):
+            if outcome == "cancelled-partial":
+                (output / "gate-001.junit.xml").write_text("<testsuites><testcase")
+            queue.enqueue(paths, head=head, worktree=repo, branch="lane/next")
+            assert cancelled()
+            raise GateCancellation("closed cancellation for next landing")
+        if outcome == "cas-race":
+            _git(repo, "update-ref", queue.LAST_GREEN_REF, head, base)
+
+    monkeypatch.setattr(queue, "_run_postsubmit_gates", execute)
+    state = queue._postsubmit(
+        argparse.Namespace(remote="origin", branch="main", pinned_controller=None),
+        git,
+        paths,
+    )
+    assert events == ["push", "postsubmit"]
+    (record,) = queue.postsubmit_results(paths)
+    expected = (
+        "red"
+        if outcome == "cas-race"
+        else "cancelled"
+        if outcome.startswith("cancelled")
+        else "green"
+        if outcome == "bootstrap"
+        else outcome
+    )
+    assert record["status"] == state.value == expected
+    assert record["commit"] == head and record["last_green"] == starting_green
+    assert record["suspects"] == ([head, base] if starting_green is None else [head])
+    assert record["revert_commands"] == (
+        [] if starting_green is None else [f"git revert --no-edit {head}"]
+    )
+    assert git.head_sha() == head, "postsubmit never reverts main on its own"
+    assert queue.last_green(git) == (
+        head if outcome in {"green", "cas-race", "bootstrap"} else base
+    )
+    if outcome == "red":
+        assert record["failing_tests"] == [
+            "tests/test_value.py::TestValue::test_value[param]"
+        ]
+        assert queue.recent_postsubmit_failures(paths) == tuple(record["failing_tests"])
+        assert queue.recent_postsubmit_failures(paths, now=time.time() + 86401) == ()
+        # Failure history orders work, and cannot block requalification after
+        # a host/tool repair. Keep that history after a later green receipt.
+        monkeypatch.setattr(queue, "_run_postsubmit_gates", lambda *_args: None)
+        assert (
+            queue._postsubmit(
+                argparse.Namespace(
+                    remote="origin", branch="main", pinned_controller=None
+                ),
+                git,
+                paths,
+            )
+            is queue.PostsubmitStatus.GREEN
+        )
+        assert len(queue.postsubmit_results(paths)) == 2
+        assert queue.recent_postsubmit_failures(paths) == tuple(record["failing_tests"])
+    elif outcome == "cas-race":
+        assert "update-ref" in record["error"]
+
+
+@pytest.mark.parametrize("spelling", ["tests/test_value.py", r"tests\test_value.py"])
+def test_postsubmit_junit_normalizes_platform_paths_before_reselection(
+    tmp_path, spelling
+):
+    from tools import molt_dev_queue as queue
+
+    (tmp_path / "gate-001.junit.xml").write_text(
+        f'<testsuite><testcase file="{spelling}" classname="tests.test_value" '
+        'name="test_value"><error/></testcase></testsuite>'
+    )
+    assert queue._postsubmit_failures(tmp_path, tmp_path) == (
+        "tests/test_value.py::test_value",
+    )
+
+
+def test_postsubmit_revert_commands_restore_exact_green_across_a_merge(tmp_path):
+    from tools import molt_dev_queue as queue
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    base = _commit_file(repo, "original.py", "base\n", "green")
+    _git(repo, "switch", "-c", "lane/change")
+    first = _commit_file(repo, "lane.py", "one\n", "lane first")
+    second = _commit_file(repo, "lane.py", "two\n", "lane second")
+    _git(repo, "switch", "main")
+    main = _commit_file(repo, "main.py", "main\n", "main change")
+    _git(repo, "merge", "--no-ff", "-m", "landing", "lane/change")
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    suspects, commands = queue._postsubmit_reverts(molt_dev.Git(repo), head, base)
+    assert set(suspects) == {first, second, main, head}
+    assert commands == [
+        f"git revert --no-edit -m 1 {head}",
+        f"git revert --no-edit {main}",
+    ]
+    for command in commands:
+        _git(repo, *shlex.split(command)[1:])
+    assert (
+        _git(repo, "rev-parse", "HEAD^{tree}").stdout
+        == _git(repo, "rev-parse", base + "^{tree}").stdout
+    )
+
+
+def test_queue_repins_after_publication_and_prioritizes_landing_over_postsubmit(
+    tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _init_repo(tmp_path)
+    initial = _commit_file(tmp_path, "initial.py", "initial\n", "initial")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", initial)
+    paths = queue.QueuePaths(
+        tmp_path / "queue", tmp_path / "sandbox", tmp_path / "evidence"
+    )
+    requests = ["first"]
+    events = []
+    published = 0
+    monkeypatch.setattr(queue, "queue_paths", lambda _repo: paths)
+    monkeypatch.setattr(
+        queue,
+        "integration_controller",
+        lambda args: args.pinned_controller or "candidate",
+    )
+    monkeypatch.setattr(queue, "retire_old_records", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(queue, "pending", lambda _paths: list(requests))
+
+    def land(args, git, selected):
+        nonlocal published
+        assert requests and selected == paths
+        requests.clear()
+        published += 1
+        head = _commit_file(tmp_path, f"change-{published}.py", "change\n", "published")
+        _git(tmp_path, "update-ref", "refs/remotes/origin/main", head)
+        events.append(f"push-{published}")
+        return False
+
+    def postsubmit(args, git, selected):
+        assert not requests, "landing requests must drain before postsubmit"
+        assert args.pinned_controller == f"main-{published}", (
+            "old driver qualified new main"
+        )
+        events.append(f"postsubmit-{published}")
+        if published == 1:
+            requests.append("next")
+            return queue.PostsubmitStatus.CANCELLED
+        return queue.PostsubmitStatus.GREEN
+
+    def repin(args, argv):
+        assert queue._runner_lock_free(paths), "controller handoff retained runner lock"
+        events.append(f"repin-{published}")
+        return queue.cmd_queue_run(
+            argparse.Namespace(
+                **{**vars(args), "pinned_controller": f"main-{published}"}
+            )
+        )
+
+    monkeypatch.setattr(queue, "_land_one_batch", land)
+    monkeypatch.setattr(queue, "_postsubmit", postsubmit)
+    monkeypatch.setattr(queue, "run_from_pinned_controller", repin)
+    args = argparse.Namespace(
+        repo=str(tmp_path), remote="origin", branch="main", pinned_controller=None
+    )
+    assert queue.cmd_queue_run(args) == EXIT_OK
+    assert events == [
+        "push-1",
+        "repin-1",
+        "postsubmit-1",
+        "repin-1",
+        "push-2",
+        "repin-2",
+        "postsubmit-2",
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -3121,6 +3332,69 @@ def _gate_runtime_fixture(molt_dev_gates, tmp_path, outcomes, *, output_dir):
     )
 
 
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize(
+    "defect", ["none", "closure", "infrastructure", "signal", "cargo"]
+)
+@pytest.mark.parametrize("structured", [False, True])
+def test_postsubmit_pending_landing_cancels_through_guard_and_preserves_custody(
+    tmp_path, parallel, defect, structured
+):
+    from dataclasses import replace
+    from tools.molt_dev_policy import LandingMode
+
+    requested = False
+    launched = []
+
+    def run(command, repo, environment, cancelled, streams=None):
+        nonlocal requested
+        requested = True  # A landing arrives after this gate has launched.
+        assert cancelled(), "the active guard must see the pending landing"
+        launched.append(command)
+        return _gate_outcome(
+            137,
+            "",
+            "",
+            cancelled=True,
+            descendants_closed=defect != "closure",
+            infrastructure_failure=_INDETERMINATE_CUSTODY
+            if defect == "infrastructure"
+            else None,
+            guard_signal={"name": "SIGTERM", "number": 15}
+            if defect == "signal"
+            else None,
+            cargo_incremental_quarantine=_DEFERRED_CARGO_RECOVERY
+            if defect == "cargo"
+            else None,
+        )
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "logs"
+        ),
+        mode=LandingMode.POSTSUBMIT,
+        cancelled=lambda: requested,
+        run_captured_gate=run,
+    )
+    tools = ("python", "cargo") if defect == "cargo" else ("python",)
+    runtime = replace(runtime, environments={tools: runtime.environments[("python",)]})
+    gates = [
+        SelectedGate(
+            ("python", "-m", "pytest", f"test_{n}.py"), tools, pytest=structured
+        )
+        for n in range(2 if parallel else 1)
+    ]
+    expected = molt_dev_gates.GateCancellation if defect == "none" else DriverError
+    with pytest.raises(expected) as caught:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+    assert launched
+    assert all(
+        any(arg.startswith("--junitxml=") for arg in command) for command in launched
+    )
+    if defect != "none":
+        assert not isinstance(caught.value, molt_dev_gates.GateCancellation)
+
+
 def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
     tmp_path, monkeypatch
 ):
@@ -5150,10 +5424,24 @@ def _enqueue(drv, work: Path, *heads: str):
 
 
 def _run_queue(drv, work: Path) -> int:
+    from unittest.mock import patch
+    from tools import molt_dev_queue as queue
+
     args = drv.build_parser().parse_args(
         ["queue", "run", "--repo", str(work), "--candidate-controller"]
     )
-    return args.func(args)
+    # Tiny repositories model candidate/bisection behavior without a controller
+    # distribution or postsubmit workload. Keep the real health/CAS transition,
+    # and stub its executor boundary as the dedicated health controls do.
+    with (
+        patch.object(queue, "_run_postsubmit_gates", return_value=None),
+        patch.object(
+            queue,
+            "run_from_pinned_controller",
+            side_effect=lambda next_args, _argv: next_args.func(next_args),
+        ),
+    ):
+        return args.func(args)
 
 
 def _statuses(paths, requests) -> list[str]:
@@ -5948,6 +6236,20 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
         }
         for index in range(64)
     }
+    health_records = [
+        {
+            "schema": queue.POSTSUBMIT_SCHEMA,
+            "status": queue.PostsubmitStatus.GREEN.value,
+            "commit": f"{index:040x}",
+            "finished_at": records[f"{index:03d}.json"]["recorded_at"],
+        }
+        for index in range(64)
+    ]
+    paths.evidence.mkdir(parents=True)
+    for record in health_records:
+        (paths.evidence / f"{record['commit']}.postsubmit-result.json").write_text(
+            json.dumps(record)
+        )
     for index in range(64):
         name = f"{index * 17 % 64:03d}.json"
         (paths.results / name).write_text(json.dumps(records[name]), encoding="utf-8")
@@ -5964,11 +6266,15 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
     def observe_loads(value, *args, **kwargs):
         nonlocal max_live
         parsed = original_loads(value, *args, **kwargs)
-        if isinstance(parsed, dict) and set(parsed) == {
-            "result",
-            "recorded_at",
-            "request",
-        }:
+        if isinstance(parsed, dict) and (
+            set(parsed)
+            == {
+                "result",
+                "recorded_at",
+                "request",
+            }
+            or parsed.get("schema") == queue.POSTSUBMIT_SCHEMA
+        ):
             parsed = ObservedBody(parsed)
             live.add(parsed)
             max_live = max(max_live, len(live))
@@ -6013,12 +6319,17 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
         "pending": [waiting.id],
         "plan": [[waiting.id]],
         "recent": expected[-recent:] if recent else [],
+        "postsubmit": sorted(
+            health_records,
+            key=lambda row: (datetime.fromisoformat(row["finished_at"]), row["commit"]),
+            reverse=True,
+        )[:recent],
     }
     # A positive selection must read every completion timestamp exactly once.
     assert sorted(reads) == (sorted(records) if recent else [])
     assert glob_calls == (1 if recent else 0)
     # Observe actual retained bodies, rather than temporary path wrappers.
-    assert max_live <= min(recent, len(records)) + 2
+    assert max_live <= 2 * min(recent, len(records)) + 2
 
 
 @pytest.mark.parametrize("recent", ["-1", "-100"])

@@ -18,7 +18,7 @@ tail.
 
 from __future__ import annotations
 
-from tools.molt_dev_policy import GateEnvironment
+from tools.molt_dev_policy import GateEnvironment, LandingMode
 from tools.proof_plan import CargoTargetAccess
 
 from collections.abc import Callable, Mapping, Sequence
@@ -31,7 +31,7 @@ from pathlib import Path
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, assert_never
 
 from tools import harness_memory_guard, proof_executor, proof_receipts
 from tools.driver_errors import DriverError, GateFailure  # noqa: E402
@@ -53,6 +53,10 @@ LOCAL_GATE_FAMILY = "local_integration"
 # The largest always gate's process tree peaks below 1 GiB (structural_audit
 # 0.69 GB, generators 0.50 GB on the 2026-10 tree): the host-capacity unit.
 CONCURRENT_GATE_BYTES = 1 << 30
+
+
+class GateCancellation(DriverError):
+    """A higher-priority landing cancelled a closed postsubmit execution."""
 
 
 class Gate(Protocol):
@@ -289,6 +293,50 @@ class GateRuntime:
     say: Callable[[str], None]
     ok: Callable[[str], None]
     toolchain_policies: tuple[ToolchainPolicy, ...] = ()
+    mode: LandingMode = LandingMode.PRESUBMIT
+    cancelled: Callable[[], bool] = lambda: False
+
+
+def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
+    """Structured cohorts and literal rule commands share the argv authority."""
+    import shlex
+    from tools.proof_command_argv import pytest_arguments
+
+    argv = (
+        tuple(shlex.split(gate.command))
+        if isinstance(gate.command, str)
+        else gate.command
+    )
+    return gate.pytest or pytest_arguments(argv, root=repo) is not None
+
+
+def _pytest_report_command(
+    command: str | tuple[str, ...], gate: Gate, runtime: GateRuntime, ordinal: int
+) -> str | tuple[str, ...]:
+    """JUnit is pytest's own test-level failure evidence, kept with gate logs."""
+    match runtime.mode:
+        case LandingMode.PRESUBMIT:
+            return command
+        case LandingMode.POSTSUBMIT:
+            if not gate_runs_pytest(gate, repo=runtime.repo):
+                return command
+            import shlex
+
+            argv = tuple(shlex.split(command)) if isinstance(command, str) else command
+            return (
+                *argv,
+                "-o",
+                "junit_family=xunit1",
+                "--junitxml="
+                + str(runtime.output_dir / f"gate-{ordinal:03d}.junit.xml"),
+            )
+        case _:
+            assert_never(runtime.mode)
+
+
+def _check_cancellation(runtime: GateRuntime) -> None:
+    if runtime.cancelled():
+        raise GateCancellation("postsubmit cancelled for a pending landing request")
 
 
 def display(command: str | tuple[str, ...]) -> str:
@@ -482,6 +530,7 @@ def run_selected_gates(
     """
     ordered = list(enumerate(gates, start=1))
     for ordinal, gate in ordered:
+        _check_cancellation(runtime)
         if gate.collection_command is not None:
             _run_serial_gate(ordinal, gate, runtime, gate_seconds, collection=True)
     light = [
@@ -502,14 +551,18 @@ def run_selected_gates(
     else:
         block = 0
     for ordinal, gate in light[block:]:
+        _check_cancellation(runtime)
         _run_serial_gate(ordinal, gate, runtime, gate_seconds)
+    _check_cancellation(runtime)
     if len(heavy) >= 2:
         _run_executor_block(
             heavy, runtime, gate_seconds, host_limit(), receipt_kind="heavy"
         )
     else:
         for ordinal, gate in heavy:
+            _check_cancellation(runtime)
             _run_serial_gate(ordinal, gate, runtime, gate_seconds)
+    _check_cancellation(runtime)
 
 
 def _run_serial_gate(
@@ -522,6 +575,8 @@ def _run_serial_gate(
 ) -> None:
     cmd = gate.collection_command if collection else gate.command
     assert cmd is not None
+    if not collection:
+        cmd = _pytest_report_command(cmd, gate, runtime, ordinal)
     assert isinstance(gate.cargo_target_access, CargoTargetAccess)
     phase = "collection" if collection else "gate"
     shown = display(cmd)
@@ -557,13 +612,13 @@ def _run_serial_gate(
             cmd,
             runtime.repo,
             runtime.environments[gate.toolchains],
-            lambda: False,
+            runtime.cancelled,
             streams,
         )
         classified = _classify_gate(
             outcome,
             runtime.toolchain_policies,
-            cancel_requested=False,
+            cancel_requested=runtime.cancelled(),
             cargo_target_access=gate.cargo_target_access,
         )
         rc = outcome.returncode
@@ -588,6 +643,15 @@ def _run_serial_gate(
     if not collection:
         gate_seconds.append((elapsed, shown))
     runtime.check_source()
+    if classified["cancellation_cleanup"] is not None:
+        raise DriverError(
+            f"guard cancellation cleanup failed: {classified['cancellation_cleanup']}"
+        )
+    if (
+        classified["status"] in {"success", "cancelled"}
+        and classified["cancellation_cleanup"] is None
+    ):
+        _check_cancellation(runtime)
     if classified["failure_scope"] == "global":
         raise DriverError(f"gate runner stopped: {classified['failure_reason']}")
     if rc != 0:
@@ -743,7 +807,7 @@ def _run_executor_block(
             "guard_metrics_schema": None,
             "returncode": None,
         }
-        if cancel.is_set():
+        if cancel.is_set() or runtime.cancelled():
             return {
                 **record,
                 "status": "skipped",
@@ -773,16 +837,18 @@ def _run_executor_block(
                 else ()
             )
             outcome = runtime.run_captured_gate(
-                command.gate.command,
+                _pytest_report_command(
+                    command.gate.command, command.gate, runtime, command.ordinal
+                ),
                 runtime.repo,
                 environments[command.gate.toolchains],
-                cancel.is_set,
+                lambda: cancel.is_set() or runtime.cancelled(),
                 streams,
             )
             classified = _classify_gate(
                 outcome,
                 runtime.toolchain_policies,
-                cancel_requested=cancel.is_set(),
+                cancel_requested=cancel.is_set() or runtime.cancelled(),
                 cargo_target_access=command.gate.cargo_target_access,
             )
             if paths:
@@ -863,6 +929,8 @@ def _run_executor_block(
                 f"    gate {status}: {shown}"
                 + (f" (guard cleanup: {cleanup})" if cleanup else "")
             )
+            if cleanup:
+                control_failures.append(f"at {shown}: {cleanup}")
             continue
         if outcome is None:
             control_failures.append(f"before {shown}")
@@ -902,6 +970,22 @@ def _run_executor_block(
             )
             continue
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
+    if (
+        runtime.cancelled()
+        and not runner_errors
+        and not control_failures
+        and all(
+            record.get("status") in {"success", "cancelled", "skipped"}
+            and record.get("cancellation_cleanup") is None
+            for record in records.values()
+        )
+        and all(
+            isinstance(outcome, GateOutcome)
+            and outcome.guard_result.descendants_closed is True
+            for outcome in outcomes.values()
+        )
+    ):
+        _check_cancellation(runtime)
     # The executor names the first gate that failed for its own reason. A
     # partition-scope trigger is the candidate's failure, which the landing
     # queue bisects; a runner or guard fault seen after it is evidence on
