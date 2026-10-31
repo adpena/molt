@@ -139,7 +139,12 @@ def validate_root(value: object) -> dict[str, object] | None:
 
 
 def same_root(left: object, right: object) -> bool:
-    a, b = declared_root(left), declared_root(right)
+    # A malformed declaration names no root, so it matches nothing; each
+    # caller then refuses with its own binding mismatch.
+    try:
+        a, b = declared_root(left), declared_root(right)
+    except ValueError:
+        return False
     if a is None or b is None:
         return a is b
     return a["path"] == b["path"] and DurableFileIdentity.from_payload(
