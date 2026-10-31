@@ -19,6 +19,8 @@ import zipfile
 import pytest
 
 from molt.exact_json import ExactJsonError, canonical_json_sha256
+from molt.dx import ARTIFACT_ROOT_ENV
+from molt.memory_guard_paths import STATE_ROOT_ENV
 from molt.process_environment import NameRule, ProcessEnvironment
 from molt.verified_subset import current_host_coordinate, host_coordinate
 
@@ -345,7 +347,15 @@ def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
         os,
         compiler_payload,
         environ=ProcessEnvironment(
-            {"Path": "alternate", "PATH": "tools", "home": "shadow", "HOME": "real"},
+            {
+                "Path": "alternate",
+                "PATH": "tools",
+                "home": "shadow",
+                "HOME": "real",
+                ARTIFACT_ROOT_ENV: "/owned/artifacts",
+                STATE_ROOT_ENV: "/owned/guard-state",
+                "MOLT_UNRELATED_SETTING": "must not leak",
+            },
             rule=rule,
         ),
     )
@@ -357,6 +367,8 @@ def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
     )
     assert dict(env) == {
         **expected,
+        ARTIFACT_ROOT_ENV: "/owned/artifacts",
+        STATE_ROOT_ENV: "/owned/guard-state",
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_OPTIONAL_LOCKS": "0",
