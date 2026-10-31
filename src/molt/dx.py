@@ -15,6 +15,7 @@ import uuid
 import contextlib
 from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from threading import RLock
 from typing import Literal, Mapping, Sequence, cast, get_args
@@ -26,6 +27,12 @@ from molt.cargo_execution_policy import (
     cargo_compiler_wrappers,
     sccache_auto_selection_allowed,
     sccache_server_endpoint,
+)
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    IdentityUnverifiable,
+    file_identity,
+    upgrade_legacy,
 )
 from molt.disk_capacity import capacity_bytes_from_gib, probe_capacity
 from molt.default_paths import (
@@ -187,14 +194,65 @@ class ArtifactRootSelection:
     source: ArtifactRootSource
 
 
+class ArtifactBindingState(Enum):
+    ABSENT = auto()
+    LEGACY_V1 = auto()
+    BOUND = auto()
+    REFUSED = auto()
+
+
+class ArtifactBindingEvent(Enum):
+    BIND = auto()
+    LIVE_STAT_MATCHES = auto()
+    LIVE_STAT_DIFFERS = auto()
+    IDENTITY_MATCHES = auto()
+    IDENTITY_DIFFERS = auto()
+
+
+ARTIFACT_BINDING_TRANSITIONS: dict[
+    tuple[ArtifactBindingState, ArtifactBindingEvent], ArtifactBindingState
+] = {
+    (
+        ArtifactBindingState.ABSENT,
+        ArtifactBindingEvent.BIND,
+    ): ArtifactBindingState.BOUND,
+    (
+        ArtifactBindingState.LEGACY_V1,
+        ArtifactBindingEvent.LIVE_STAT_MATCHES,
+    ): ArtifactBindingState.BOUND,
+    (
+        ArtifactBindingState.LEGACY_V1,
+        ArtifactBindingEvent.LIVE_STAT_DIFFERS,
+    ): ArtifactBindingState.REFUSED,
+    (
+        ArtifactBindingState.BOUND,
+        ArtifactBindingEvent.IDENTITY_MATCHES,
+    ): ArtifactBindingState.BOUND,
+    (
+        ArtifactBindingState.BOUND,
+        ArtifactBindingEvent.IDENTITY_DIFFERS,
+    ): ArtifactBindingState.REFUSED,
+}
+
+
+def apply_artifact_binding_event(
+    state: ArtifactBindingState, event: ArtifactBindingEvent
+) -> ArtifactBindingState:
+    try:
+        return ARTIFACT_BINDING_TRANSITIONS[state, event]
+    except KeyError:
+        raise DxConfigError(
+            f"illegal artifact-root binding transition: {state.name} + {event.name}"
+        ) from None
+
+
 @dataclass(frozen=True, slots=True)
 class _ArtifactRootBinding:
     root: Path
-    device: int
-    inode: int
+    identity: DurableFileIdentity
 
 
-_ARTIFACT_BINDING_SCHEMA = "molt.artifact-root-binding.v1"
+_ARTIFACT_BINDING_SCHEMA = "molt.artifact-root-binding.v2"
 _ARTIFACT_BINDING_MAX_BYTES = 16 * 1024
 _ARTIFACT_BINDING_REMEDY = (
     "Mount/restore the bound directory or free space there; to change the binding run "
@@ -218,7 +276,7 @@ def artifact_root_binding_path(
         )
     except (OSError, ValueError, RuntimeError) as exc:
         raise DxConfigError(str(exc)) from exc
-    return None if state is None else state / "artifact-root.json"
+    return None if state is None else state / "artifact-root.v2.json"
 
 
 def _read_artifact_root_binding(
@@ -231,6 +289,92 @@ def _read_artifact_root_binding(
         return _ARTIFACT_BINDING_CACHE[record]
 
 
+def provision_artifact_root_binding(
+    repo_root: Path, env: Mapping[str, str] | None = None
+) -> None:
+    """Canonical provisioning upgrades only the binding selected by this run."""
+    source = os.environ if env is None else env
+    if source.get(ARTIFACT_ROOT_ENV, "").strip():
+        return
+    record = artifact_root_binding_path(repo_root)
+    if record is not None:
+        _provision_artifact_root_binding(record)
+        with _ARTIFACT_BINDING_CACHE_LOCK:
+            _ARTIFACT_BINDING_CACHE.pop(record, None)
+
+
+def _provision_artifact_root_binding(record: Path) -> None:
+    """One locked migration boundary; ordinary readers consume only v2."""
+    from molt.exact_json import read_exact, write_exact
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    legacy = record.with_name("artifact-root.json")
+    if record.exists() or not legacy.exists():
+        return
+    try:
+        value = read_exact(
+            legacy, max_bytes=_ARTIFACT_BINDING_MAX_BYTES, label="artifact-root binding"
+        )
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != "molt.artifact-root-binding.v1"
+        ):
+            return
+        lock = _acquire_file_lock(
+            record.parent / "checkout-provisioning" / "artifact-root.lock",
+            timeout_s=10,
+            timeout_message=f"artifact-root binding is being changed: {record}",
+        )
+        try:
+            value = read_exact(
+                legacy,
+                max_bytes=_ARTIFACT_BINDING_MAX_BYTES,
+                label="artifact-root binding",
+            )
+            if record.exists():
+                return
+            if (
+                set(value) != {"schema", "root", "device", "inode"}
+                or value.get("schema") != "molt.artifact-root-binding.v1"
+            ):
+                raise ValueError("invalid legacy binding")
+            root = Path(value["root"])
+            if (
+                not root.is_absolute()
+                or root == Path(root.anchor)
+                or ".." in root.parts
+            ):
+                raise ValueError("invalid legacy binding root")
+            try:
+                identity = upgrade_legacy(
+                    root, {"device": value["device"], "inode": value["inode"]}
+                )
+            except IdentityUnverifiable:
+                apply_artifact_binding_event(
+                    ArtifactBindingState.LEGACY_V1,
+                    ArtifactBindingEvent.LIVE_STAT_DIFFERS,
+                )
+                raise
+            apply_artifact_binding_event(
+                ArtifactBindingState.LEGACY_V1,
+                ArtifactBindingEvent.LIVE_STAT_MATCHES,
+            )
+            write_exact(
+                record,
+                {
+                    "schema": _ARTIFACT_BINDING_SCHEMA,
+                    "root": str(root),
+                    "identity": identity.payload(),
+                },
+            )
+        finally:
+            _release_file_lock(lock)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise DxConfigError(
+            f"cannot provision artifact-root binding {record}: {exc}. {_ARTIFACT_BINDING_REMEDY}"
+        ) from exc
+
+
 def _load_artifact_root_binding(
     record: Path,
 ) -> _ArtifactRootBinding | str | None:
@@ -240,26 +384,36 @@ def _load_artifact_root_binding(
         try:
             record.lstat()
         except FileNotFoundError:
+            if record.with_name("artifact-root.json").exists():
+                raise ValueError(
+                    "legacy binding requires canonical provisioning: "
+                    "`python -m molt.checkout_provisioning artifact-root`"
+                )
             return None
         value = read_exact(
             record, max_bytes=_ARTIFACT_BINDING_MAX_BYTES, label="artifact-root binding"
         )
         if (
+            isinstance(value, dict)
+            and value.get("schema") == "molt.artifact-root-binding.v1"
+        ):
+            raise ValueError(
+                "legacy binding requires canonical provisioning: `python -m molt.checkout_provisioning artifact-root`"
+            )
+        if (
             not isinstance(value, dict)
-            or set(value) != {"schema", "root", "device", "inode"}
+            or set(value) != {"schema", "root", "identity"}
             or value["schema"] != _ARTIFACT_BINDING_SCHEMA
             or not isinstance(value["root"], str)
             or not value["root"]
-            or type(value["device"]) is not int
-            or type(value["inode"]) is not int
-            or value["device"] < 0
-            or value["inode"] <= 0
         ):
             raise ValueError("invalid binding schema or directory identity")
         root = Path(value["root"])
         if not root.is_absolute() or root == Path(root.anchor) or ".." in root.parts:
             raise ValueError("bound root must be an absolute non-volume-root directory")
-        return _ArtifactRootBinding(root, value["device"], value["inode"])
+        return _ArtifactRootBinding(
+            root, DurableFileIdentity.from_payload(value["identity"])
+        )
     except (OSError, ValueError, RuntimeError) as exc:
         return (
             f"cannot read artifact-root binding {record}: {exc}. "
@@ -279,15 +433,19 @@ def _external_artifact_required_bytes(env: Mapping[str, str]) -> int:
 
 def _validate_artifact_binding(
     binding: _ArtifactRootBinding, env: Mapping[str, str]
-) -> None:
+) -> ArtifactBindingState:
     root = binding.root
     try:
         metadata = root.stat()
         if not stat.S_ISDIR(metadata.st_mode):
             raise ValueError("not a directory")
-        if metadata.st_dev < 0 or metadata.st_ino <= 0:
-            raise ValueError("directory has no stable filesystem identity")
-        if (metadata.st_dev, metadata.st_ino) != (binding.device, binding.inode):
+        state = apply_artifact_binding_event(
+            ArtifactBindingState.BOUND,
+            ArtifactBindingEvent.IDENTITY_MATCHES
+            if file_identity(root, expected=metadata) == binding.identity
+            else ArtifactBindingEvent.IDENTITY_DIFFERS,
+        )
+        if state is ArtifactBindingState.REFUSED:
             raise ValueError("directory identity changed (replaced or unmounted)")
         if not os.access(root, os.W_OK):
             raise ValueError("directory is not writable")
@@ -299,6 +457,7 @@ def _validate_artifact_binding(
                 f"capacity={capacity.available_bytes} bytes, "
                 f"required={capacity.required_bytes} bytes, error={capacity.error}"
             )
+        return state
     except (OSError, ValueError, RuntimeError) as exc:
         raise DxConfigError(
             f"bound artifact root {root} is unavailable or unhealthy: {exc}. "
@@ -328,7 +487,12 @@ def set_artifact_root_binding(
             if custody_layout.enclosing_checkouts(selected):
                 raise ValueError("target must be outside every source checkout")
             metadata = selected.stat()
-            binding = _ArtifactRootBinding(selected, metadata.st_dev, metadata.st_ino)
+            apply_artifact_binding_event(
+                ArtifactBindingState.ABSENT, ArtifactBindingEvent.BIND
+            )
+            binding = _ArtifactRootBinding(
+                selected, file_identity(selected, expected=metadata)
+            )
             _validate_artifact_binding(binding, os.environ if env is None else env)
         except (OSError, ValueError, RuntimeError) as exc:
             raise DxConfigError(f"cannot bind artifact root {root}: {exc}") from exc
@@ -348,13 +512,13 @@ def set_artifact_root_binding(
             )
         if binding is None:
             durable_remove_path(record)
+            durable_remove_path(record.with_name("artifact-root.json"))
         else:
             _validate_artifact_binding(binding, os.environ if env is None else env)
             payload = {
                 "schema": _ARTIFACT_BINDING_SCHEMA,
                 "root": str(binding.root),
-                "device": binding.device,
-                "inode": binding.inode,
+                "identity": binding.identity.payload(),
             }
             if len(encode_exact(payload)) > _ARTIFACT_BINDING_MAX_BYTES:
                 raise DxConfigError(
@@ -363,7 +527,7 @@ def set_artifact_root_binding(
             write_exact(record, payload)
     finally:
         _release_file_lock(lock)
-    # The operator is the sole mutation boundary. Other running processes keep
+    # Canonical provisioning and explicit binding own mutation. Other processes keep
     # their snapshot; the next process observes the new durable generation.
     with _ARTIFACT_BINDING_CACHE_LOCK:
         _ARTIFACT_BINDING_CACHE.pop(record, None)
@@ -1996,6 +2160,7 @@ def storage_write_check(
         )
         for kind in custody_layout.storage_classes()
         if custody_layout.storage_rule(kind).volume == "artifact"
+        and kind not in get_args(custody_layout.ReplacedStorageClass)
         and kind not in {"scratch", "temporary", "landing-sandbox"}
     )
     claims.append(StorageWriteClaim("cargo-target", artifact / "target"))
@@ -2018,6 +2183,29 @@ def storage_write_check(
             for path in checkout_state_lock_paths(repo / "logs/agents")
         )
     claims.extend(outputs)
+    from molt.checkout_state import (
+        LAST_USE_STAMP,
+        OWNER_RECORD,
+        _state_metadata_root,
+        checkout_state_environment_roots,
+        checkout_state_lock_paths,
+    )
+
+    # Explicit provider/cache selections and the running image can have a
+    # different artifact placement. Their existing use protocol writes only
+    # these external control files; admitting the selected payload must not
+    # grant its entire containing volume.
+    for resource, _owner in checkout_state_environment_roots(repo, environment):
+        locks = checkout_state_lock_paths(resource)
+        if not locks:
+            continue
+        metadata = _state_metadata_root(resource)
+        for control in (*locks, metadata / LAST_USE_STAMP, metadata / OWNER_RECORD):
+            claims.extend(
+                StorageWriteClaim("coordination", path, exact=True)
+                for path in (control, *control.parents)
+                if path != Path(path.anchor)
+            )
     for claim in tuple(claims):
         claims.extend(
             StorageWriteClaim(claim.kind, parent, exact=True)

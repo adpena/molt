@@ -712,6 +712,7 @@ _LOCK_PATTERNS = (
     "diff_run.lock",
     "build_locks/*.lock",
     "backend_daemon/suite-leases/*/owner.lock",
+    "backend_daemon/suite-leases/v3/*/owner.lock",
 )
 
 
@@ -2898,6 +2899,8 @@ def _incremental_successful_guard(
 def _incremental_inventory(path: Path) -> dict[str, object]:
     from molt.file_publication import metadata_is_link_like, resolve_owned_path
 
+    from molt.durable_file_identity import file_identity
+
     entries = []
     inodes: dict[tuple[int, int], list[int]] = {}
     root_device = path.lstat().st_dev
@@ -2948,8 +2951,7 @@ def _incremental_inventory(path: Path) -> dict[str, object]:
             [
                 str(current.relative_to(path)),
                 metadata.st_mode,
-                metadata.st_dev,
-                metadata.st_ino,
+                *file_identity(current, expected=metadata).stat_prefix(),
                 metadata.st_size,
                 metadata.st_nlink,
                 metadata.st_mtime_ns,
@@ -2958,6 +2960,7 @@ def _incremental_inventory(path: Path) -> dict[str, object]:
             ]
         )
     return {
+        "schema": "molt.cargo-incremental-inventory.v2",
         "entries": sorted(entries),
         "regular_files": sum(item[0] for item in inodes.values()),
         # Unlinking a cache hardlink never changes bytes/attributes of deps.
@@ -3086,7 +3089,13 @@ def retire_cargo_incremental(
                     raise ValueError("Cargo lock path identity changed")
             metadata = path.lstat()
             root_entry = next(row for row in inventory["entries"] if row[0] == ".")
-            if [metadata.st_mode, metadata.st_dev, metadata.st_ino] != root_entry[1:4]:
+            from molt.durable_file_identity import file_identity
+
+            from molt.durable_file_identity import DurableFileIdentity
+
+            if metadata.st_mode != root_entry[1] or file_identity(
+                path, expected=metadata
+            ) != DurableFileIdentity.from_stat_prefix(*root_entry[2:4]):
                 raise ValueError("incremental root identity changed before retirement")
             retirement = soft_retire(
                 path,

@@ -46,7 +46,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.py")
 
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v8"
-EXECUTION_SCHEMA = "molt.proof-command-execution.v5"
+EXECUTION_SCHEMA = "molt.proof-command-execution.v6"
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 

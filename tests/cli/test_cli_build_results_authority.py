@@ -381,7 +381,7 @@ def _native_record_fixture(tmp_path: Path):
         BackendEmissionProducer("daemon", 12345, None),
         BackendAddressedProgramInput("b" * 64, 17, ""),
         result.archive.sha256,
-        result.archive.token[3],
+        result.archive.token.size,
         BackendCodegenOrigin(12345, ()),
     )
     result = replace(result, emission_origin=origin)

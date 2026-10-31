@@ -2728,7 +2728,7 @@ def test_build_python_unresolved_prefix_survives_owner_collection(
         # for test teardown; no strong reference keeps the owner alive.
         cleanup = temporary_artifacts._cleanup_temporary_directory
         target = Path(allocation.name)
-        allocation_identity = dict(allocation._identity)
+        allocation_identity = allocation._identity
         with pytest.raises(admission.BuildPythonCleanupError) as raised:
             owner.close()
         assert str(target) in str(raised.value)

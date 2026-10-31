@@ -856,7 +856,7 @@ def test_selected_recipe_keeps_one_empty_prefix_through_all_probes(
     def observe(stage, prefix):
         nonlocal prefix_identity
         if prefix_identity is None:
-            prefix_identity = temporary_artifacts._identity(prefix)
+            prefix_identity = temporary_artifacts._live_identity(prefix)
         assert prefix.is_dir() and not list(prefix.iterdir())
         prefixes.append(prefix)
         stages.append(stage)
@@ -1573,7 +1573,7 @@ def test_selected_recipe_guard_failure_retains_original_whole_probe_lifetime(
     def allocate(**kwargs):
         allocation = original_allocation(dir=tmp_path, **kwargs)
         owners.append(allocation)
-        identities.append(temporary_artifacts._identity(Path(allocation.name)))
+        identities.append(allocation._identity)
         return allocation
 
     receipt = SimpleNamespace(descendants_closed=closed)

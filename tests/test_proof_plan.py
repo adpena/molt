@@ -11832,6 +11832,7 @@ def test_local_cargo_target_effect_splits_only_disjoint_requests(tmp_path):
     [
         "src/molt/build_record.py",
         "src/molt/input_report.py",
+        "src/molt/cli/module_source.py",
         "src/molt/build_output_selection.py",
         "src/molt/cli/build_command.py",
         "src/molt/cli/build_output_layout.py",
@@ -11851,11 +11852,16 @@ def test_build_early_cutoff_owns_producers_and_fixture_consumers(changed):
     assert matched == [owner]
     assert len(gates) == 1
     gate = gates[0]
-    assert gate.command[-4:] == (
+    assert gate.command[-9:] == (
         "tests/test_build_record.py",
         "tests/cli/test_build_early_cutoff.py",
         "tests/cli/test_compiler_source_root.py",
         "tests/test_tool_releases.py",
+        "tests/cli/test_cli_import_collection.py::test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear",
+        "tests/cli/test_cli_import_collection.py::test_source_content_sha256_rehashes_preserved_mtime_content_change",
+        "tests/cli/test_cli_import_collection.py::test_source_hash_cache_ignores_device_renumbering",
+        "tests/cli/test_cli_import_collection.py::test_source_hash_cache_rehashes_suspicious_or_changed_metadata",
+        "tests/cli/test_cli_import_collection.py::test_new_source_hash_namespace_starts_cold",
     )
     assert gate.toolchains == ("python",)
     assert gate.cargo_target_access is CargoTargetAccess.NONE

@@ -1479,9 +1479,7 @@ def test_release_metadata_receivers_own_guarded_namespace(
     def allocate(**kwargs):
         allocation = original_allocation(dir=tmp_path, **kwargs)
         path = Path(allocation.name).resolve(strict=True)
-        allocations.append(
-            (path, temporary_artifacts._identity(path), weakref.ref(allocation))
-        )
+        allocations.append((path, allocation._identity, weakref.ref(allocation)))
         return allocation
 
     monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)

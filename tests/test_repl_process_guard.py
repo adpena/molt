@@ -13,10 +13,15 @@ from molt import repl
 def test_run_repl_uses_memory_guard_and_canonical_tmp(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path_factory.mktemp("repl-artifacts")))
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     inputs = iter(["1 + 1", "exit()"])
     calls: list[dict[str, Any]] = []
     snippet_paths: list[Path] = []

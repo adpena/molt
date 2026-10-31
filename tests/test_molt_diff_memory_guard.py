@@ -71,7 +71,9 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
     )
     events = []
     monkeypatch.setattr(module, "_record_memory_guard_event", events.append)
-    result = module._run_subprocess(["fixture"], env={}, timeout=5)
+    result = module._run_subprocess(
+        ["fixture"], env={"MOLT_EXT_ROOT": str(tmp_path)}, timeout=5
+    )
     assert isinstance(result, module.compat_backends.BackendResult)
     assert result.child_stderr == guarded.child_stderr
     assert result.child_returncode == child_returncode
@@ -720,7 +722,7 @@ def test_native_profiling_wraps_guarded_commands_only_when_requested(
         extra_env=None,
         execution_context=None,
         output_root=tmp_path,
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -1338,7 +1340,7 @@ def test_terminal_batch_result_survives_deadline_during_cleanup(
         extra_env=None,
         execution_context=None,
         output_root=tmp_path,
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=budget,
     )
     assert actual == terminal
@@ -1420,7 +1422,7 @@ def test_native_resource_evidence_survives_build_and_run(
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -1435,7 +1437,7 @@ def test_native_resource_evidence_survives_build_and_run(
         extra_env=None,
         execution_context=context,
         output_root=tmp_path,
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -1509,7 +1511,7 @@ def test_native_timeout_preserves_guard_outcome_and_raw_streams(
         extra_env=None,
         execution_context=None,
         output_root=tmp_path,
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
         ),

@@ -2248,7 +2248,7 @@ def shell_oracle(tmp_path_factory: pytest.TempPathFactory) -> _ShellOracle:
     import sys
 
     from molt.process_environment import ProcessEnvironment
-    from tests.process_guard_common import run_guarded_test_process
+    from tests.process_guard_common import guard_custody_env, run_guarded_test_process
 
     root = tmp_path_factory.mktemp("shell-oracle")
     package = root / "src" / "molt"
@@ -2268,6 +2268,8 @@ def shell_oracle(tmp_path_factory: pytest.TempPathFactory) -> _ShellOracle:
     for name in ("python3", "python"):
         (shims / name).symlink_to(base)
     environment = {
+        **guard_custody_env(),
+        "MOLT_EXT_ROOT": str(root / "artifacts"),
         "PATH": f"{shims}:/usr/bin:/bin",
         "HOME": str(root / "home"),
         "GITHUB_WORKSPACE": str(root),

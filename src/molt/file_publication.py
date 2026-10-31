@@ -20,6 +20,7 @@ import uuid
 import warnings
 
 from molt.file_deletion import delete_path
+from molt.durable_file_identity import file_identity, upgrade_legacy
 
 
 MOVEFILE_REPLACE_EXISTING = 0x1
@@ -538,28 +539,34 @@ class RetirementError(OSError):
 def _retirement_prefix(scope: str) -> str:
     if not isinstance(scope, str) or not scope:
         raise ValueError("retirement requires a nonempty caller-owned scope")
-    return ".molt-retired-v1-" + hashlib.sha256(os.fsencode(scope)).hexdigest() + "-"
+    return ".molt-retired-v2-" + hashlib.sha256(os.fsencode(scope)).hexdigest() + "-"
 
 
-def _retirement_identity(metadata: os.stat_result) -> tuple[str, int, int]:
+def _retirement_identity(path: Path) -> tuple[str, str]:
+    metadata = path.lstat()
     if metadata_is_link_like(metadata):
         raise ValueError("retirement refuses indirect leaves")
     kind = "d" if stat.S_ISDIR(metadata.st_mode) else "f"
     if kind == "f" and not stat.S_ISREG(metadata.st_mode):
         raise ValueError("retirement refuses special entries")
-    if not metadata.st_ino:
-        raise ValueError("retirement requires a stable filesystem file identity")
-    return kind, metadata.st_dev, metadata.st_ino
+    identity = file_identity(path, expected=metadata)
+    # A digest keeps even long filesystem UUIDs inside the component budget.
+    import json
+
+    digest = hashlib.sha256(
+        json.dumps(identity.payload(), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return kind, digest
 
 
-def _reclaim_retired_leaf(retired: Path, identity: tuple[str, int, int]) -> None:
+def _reclaim_retired_leaf(retired: Path, identity: tuple[str, str]) -> None:
     # The caller owns this namespace exclusively. Recheck lexical no-follow
     # custody and identity immediately before reclamation; never adopt a rival
     # that replaced a retired name. rmtree does not follow contained symlinks
     # or Windows directory junctions.
     try:
         resolved = resolve_owned_path(retired)
-        if resolved != retired or _retirement_identity(retired.lstat()) != identity:
+        if resolved != retired or _retirement_identity(retired) != identity:
             raise ValueError(f"retired leaf identity changed: {retired}")
         removed, error = delete_path(retired)
         if not removed:
@@ -583,30 +590,48 @@ def reclaim_retired_paths(parent: Path, *, retirement_scope: str) -> tuple[Path,
     prefix = _retirement_prefix(retirement_scope)
     parent = resolve_owned_path(parent)
     try:
-        parent_metadata = parent.lstat()
+        parent.lstat()
     except FileNotFoundError:
         return ()
     _real_directory(parent, label="retirement parent")
-    parent_identity = _retirement_identity(parent_metadata)
+    parent_identity = _retirement_identity(parent)
     # Also retries a previous post-removal barrier when no residue remains.
     # More importantly, no physical deletion precedes durable retirement.
     fsync_directory(parent)
     reclaimed: list[Path] = []
+    legacy_prefix = prefix.replace(".molt-retired-v2-", ".molt-retired-v1-", 1)
     for retired in sorted(parent.iterdir()):
+        if retired.name.startswith(legacy_prefix):
+            match = re.fullmatch(
+                r"([df])-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{16})",
+                retired.name[len(legacy_prefix) :],
+            )
+            if match is None:
+                raise ValueError(f"malformed legacy retired leaf: {retired}")
+            upgrade_legacy(
+                retired, {"device": int(match[2], 16), "inode": int(match[3], 16)}
+            )
+            kind, digest = _retirement_identity(retired)
+            if kind != match[1]:
+                raise ValueError("legacy retired leaf kind changed")
+            upgraded = parent / f"{prefix}{kind}-{digest}-{match[4]}"
+            _namespace_publish_leaf_exclusive_once(retired, upgraded)
+            fsync_directory(parent)
+            retired = upgraded
         if not retired.name.startswith(prefix):
             continue
         match = re.fullmatch(
-            r"([df])-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{16})",
+            r"([df])-([0-9a-f]{64})-([0-9a-f]{16})",
             retired.name[len(prefix) :],
         )
         if match is None:
             raise ValueError(f"malformed retired leaf in owned scope: {retired}")
         if (
             resolve_owned_path(parent) != parent
-            or _retirement_identity(parent.lstat()) != parent_identity
+            or _retirement_identity(parent) != parent_identity
         ):
             raise ValueError(f"retirement parent identity changed: {parent}")
-        identity = (match[1], int(match[2], 16), int(match[3], 16))
+        identity = (match[1], match[2])
         _reclaim_retired_leaf(retired, identity)
         reclaimed.append(retired)
     return tuple(reclaimed)
@@ -639,20 +664,18 @@ def durable_remove_path(
     if reclaim_existing:
         reclaim_retired_paths(path.parent, retirement_scope=scope)
     try:
-        metadata = path.lstat()
+        path.lstat()
     except FileNotFoundError:
         return
-    identity = _retirement_identity(metadata)
-    parent_identity = _retirement_identity(
-        _real_directory(path.parent, label="retirement parent")
-    )
+    identity = _retirement_identity(path)
+    parent_identity = _retirement_identity(path.parent)
     leaf_digest = hashlib.sha256(os.fsencode(path.name)).hexdigest()[:16]
-    kind, device, inode = identity
-    retired = path.parent / f"{prefix}{kind}-{device:x}-{inode:x}-{leaf_digest}"
+    kind, digest = identity
+    retired = path.parent / f"{prefix}{kind}-{digest}-{leaf_digest}"
     if (
         resolve_owned_path(path) != path
-        or _retirement_identity(path.lstat()) != identity
-        or _retirement_identity(path.parent.lstat()) != parent_identity
+        or _retirement_identity(path) != identity
+        or _retirement_identity(path.parent) != parent_identity
     ):
         raise ValueError(f"retirement source identity changed: {path}")
     # Same-parent no-replace rename serves BOTH files and directories. Unlike
@@ -662,8 +685,8 @@ def durable_remove_path(
     try:
         if (
             resolve_owned_path(retired) != retired
-            or _retirement_identity(retired.lstat()) != identity
-            or _retirement_identity(path.parent.lstat()) != parent_identity
+            or _retirement_identity(retired) != identity
+            or _retirement_identity(path.parent) != parent_identity
         ):
             raise ValueError(f"retirement namespace identity changed: {retired}")
         fsync_directory(path.parent)

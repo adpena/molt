@@ -3431,7 +3431,7 @@ def test_verifier_owner_preserves_guard_fact_and_poisoned_namespace(
         nonlocal path, allocation_identity, allocation_ref
         with identity.PythonIdentityVerifier() as owner:
             path = owner.prefix
-            allocation_identity = temporary_artifacts._identity(path)
+            allocation_identity = owner._allocation._identity
             allocation_ref = weakref.ref(owner._allocation)
             with pytest.raises(type(failure)) as caught:
                 owner.run(
@@ -3506,7 +3506,7 @@ def test_verifier_owner_unknown_result_retains_after_swallowed_error_and_gc(
     with pytest.raises(error_type) as outer:
         with identity.PythonIdentityVerifier() as owner:
             path = owner.prefix
-            allocation_identity = temporary_artifacts._identity(path)
+            allocation_identity = owner._allocation._identity
             allocation_ref = weakref.ref(owner._allocation)
             with pytest.raises(error_type) as inner:
                 owner.run(["first"], memory_guard_prefix="MOLT_PYTHON_IDENTITY")

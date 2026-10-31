@@ -1101,8 +1101,8 @@ def test_guard_scratch_follows_the_selected_scratch_storage(tmp_path):
 
     root = scratch.scratch_root(lane, env)
 
-    assert root.parent.parent == ram.resolve()
-    assert root.name == "gs"
+    assert root.parent.parent.parent == ram.resolve()
+    assert root.parts[-2:] == ("gs", "v2")
 
 
 @pytest.mark.parametrize("prefix", ["disk:", ""])
@@ -1359,7 +1359,7 @@ def test_sweep_never_revives_a_generation_moved_away_under_it(
         )
     removing = lease.generation.parent / "removing"
     removing.mkdir()
-    identity = scratch._identity
+    identity = scratch._live_identity
     read = scratch.read_exact
     moved = []
 
@@ -1378,7 +1378,7 @@ def test_sweep_never_revives_a_generation_moved_away_under_it(
             move()
         return read(path, **kwargs)
 
-    monkeypatch.setattr(scratch, "_identity", concurrent_identity)
+    monkeypatch.setattr(scratch, "_live_identity", concurrent_identity)
     monkeypatch.setattr(scratch, "read_exact", concurrent_read)
     if reader == "sweep":
         result = scratch.reclaim_terminal_scratch(lease.generation.parent)
@@ -1636,21 +1636,21 @@ def _run_crash_state(
 ) -> list[str]:
     if root.exists():
         shutil.rmtree(root)
-    scratch_root = root / "tmp" / "gs"
+    scratch_root = root / "tmp" / "gs" / "v2"
     generation = scratch_root / f"{1:032x}"
     generation.mkdir(parents=True)
     if lock:
         file_locks._release_file_lock(
             file_locks._try_acquire_file_lock(generation / "lock")
         )
-    foreign = root / "tmp" / "pt-foreign0"
+    foreign = scratch_root / "pt-foreign0"
     foreign.mkdir()
     (foreign / "keep").write_bytes(b"keep")
     locations = {
-        "target": root / "tmp" / _MODEL_TARGET,
+        "target": scratch_root / _MODEL_TARGET,
         "payload": generation / "payload",
     }
-    identity = {"device": 0, "inode": 1}
+    identity = {"kind": "apple-uuid", "volume": "1" * 32, "file_id": "1" * 32}
     if payload != "gone":
         directory = locations[payload.removesuffix("-partial")]
         _model_payload(directory, partial=payload.endswith("-partial"))
@@ -2024,6 +2024,141 @@ def test_scratch_release_timing_adds_sequential_attempts_without_hiding_failure(
         "retention_sweep": None,
         "lease_release": 5.0,
     }
+
+
+def _legacy_retained_scratch(tmp_path, *, renumbered=False):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "keep").write_bytes(b"retained payload")
+    _finish(lease, success=False)
+    current = lease.generation
+    lease.release()
+    generation = current.parent.parent / current.name
+    old_index = scratch._index_path(current)
+    legacy_index = scratch._index_path(generation)
+    legacy_index.parent.mkdir(parents=True, exist_ok=True)
+    old_index.rename(legacy_index)
+    current.rename(generation)
+    owner = _read(generation / "owner.json")
+    target = generation / "payload"
+    owner.update(generation=str(generation), target=str(target))
+    metadata = target.stat()
+    pair = {"device": metadata.st_dev + int(renumbered), "inode": metadata.st_ino}
+    terminal = _read(generation / "terminal.json")
+    terminal.update(
+        schema="molt.guard-scratch.v1",
+        target_identity=pair,
+        generation=str(generation),
+        target=str(target),
+    )
+    owner.update(
+        schema="molt.guard-scratch.v1",
+        target_identity=pair,
+        terminal_digest=canonical_json_sha256(terminal),
+    )
+    write_exact(
+        target / scratch._TARGET_RECEIPT,
+        {"schema": "molt.guard-scratch.v1", "nonce": owner["target_receipt"]},
+    )
+    write_exact(generation / "terminal.json", terminal)
+    write_exact(generation / "owner.json", owner)
+    write_exact(
+        scratch._index_path(generation),
+        {
+            "schema": "molt.guard-scratch.v1",
+            "terminal_digest": owner["terminal_digest"],
+        },
+    )
+    return generation, target
+
+
+def test_v2_pending_survives_simulated_renumbering(tmp_path, monkeypatch):
+    from tests.test_dx_run_context import _renumber_stat_devices
+
+    lease, _ = _lease(tmp_path)
+    (lease.target / "keep").write_bytes(b"payload")
+    _finish(lease, success=False)
+    generation = lease.generation
+    lease.release()
+    owner = _read(generation / "owner.json")
+    _renumber_stat_devices(monkeypatch)
+    outcome = scratch.reclaim_terminal_scratch(generation.parent)
+    assert outcome["errors"] == []
+    assert outcome["retained_count"] == 1
+    assert _read(generation / "owner.json") == owner
+    assert (generation / "payload" / "keep").read_bytes() == b"payload"
+
+
+def test_v1_sweeper_reclaims_its_own_records_without_observing_v2(tmp_path):
+    from tools.import_file import load_module_from_path
+
+    # Execute the frozen production reader, including its schema validation,
+    # locks and deletion protocol, against one shared host root.
+    old = load_module_from_path(
+        "guard_scratch_v1_oracle",
+        Path(__file__).parent / "fixtures" / "guard_scratch_v1.py",
+    )
+    lease, _ = _lease(tmp_path, number=2)
+    _finish(lease, success=False)
+    lease.release()
+    legacy, _ = _legacy_retained_scratch(tmp_path)
+    root = lease.generation.parent
+    before = {
+        str(p.relative_to(root)): (p.stat().st_ino, p.read_bytes())
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    outcome = old.reclaim_terminal_scratch(
+        legacy.parent, retention=old.ScratchRetention(count=0, bytes=0)
+    )
+    assert outcome["errors"] == []
+    assert outcome["reclaimed"] == [str(legacy)]
+    assert not legacy.exists()
+    assert {
+        str(p.relative_to(root)): (p.stat().st_ino, p.read_bytes())
+        for p in root.rglob("*")
+        if p.is_file()
+    } == before
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_current_sweep_never_reads_or_rekeys_legacy_scratch(tmp_path, renumbered):
+    generation, target = _legacy_retained_scratch(tmp_path, renumbered=renumbered)
+    root = generation.parent
+    before = {
+        str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()
+    }
+    outcome = scratch.reclaim_terminal_scratch(
+        root / "v2", retention=scratch.ScratchRetention(count=0, bytes=0)
+    )
+    assert outcome["errors"] == [] and outcome["reclaimed"] == []
+    assert {
+        str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()
+    } == before
+    assert (target / "keep").read_bytes() == b"retained payload"
+
+
+def test_memory_scratch_refuses_missing_unique_mount_before_allocation(
+    tmp_path, monkeypatch
+):
+    from molt.durable_file_identity import UniqueMountIdentityUnavailable
+    from molt.dx import ScratchStorage
+
+    root = tmp_path / "memory"
+    root.mkdir()
+    monkeypatch.setattr(
+        scratch, "scratch_storage", lambda env: ScratchStorage(mode="memory", root=root)
+    )
+
+    def unavailable(path):
+        raise UniqueMountIdentityUnavailable("kernel did not return the unique bit")
+
+    monkeypatch.setattr(scratch, "file_identity", unavailable)
+    with pytest.raises(
+        UniqueMountIdentityUnavailable, match="MOLT_SCRATCH_STORAGE=disk"
+    ):
+        _lease(tmp_path, storage="memory")
+    assert list(root.iterdir()) == []
+    assert not (tmp_path / "tmp" / "gs").exists()
 
 
 def test_failed_scratch_reclamation_publishes_lossless_external_evidence(tmp_path):

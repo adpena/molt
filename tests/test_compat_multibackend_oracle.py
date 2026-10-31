@@ -163,7 +163,7 @@ def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=compat_backends.ItemBudget(
             compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -414,7 +414,7 @@ def test_wasm_host_warning_read_failure_cannot_pass(tmp_path, monkeypatch):
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=compat_backends.ItemBudget(
             compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -1079,7 +1079,7 @@ def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=compat_backends.ItemBudget(
             compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -1616,7 +1616,7 @@ def test_all_adapters_preserve_phase_failure(
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
-        environment={},
+        environment={"MOLT_EXT_ROOT": str(tmp_path)},
         budget=compat_backends.ItemBudget(
             compat_backends.TimeoutPolicy.from_environment({}), None
         ),
@@ -2186,7 +2186,10 @@ def test_suite_rss_transport_matches_captured_process_instance(
     from tools.memory_guard_core import harness_outcomes
 
     marker = tmp_path / "trip.json"
-    env = {harness_outcomes.SUITE_TRIP_FILE_ENV: str(marker)}
+    env = {
+        "MOLT_EXT_ROOT": str(tmp_path),
+        harness_outcomes.SUITE_TRIP_FILE_ENV: str(marker),
+    }
     monkeypatch.setattr(molt_diff, "_diff_memory_guard_trip_file", lambda: marker)
     monkeypatch.setattr(molt_diff, "_diff_root", lambda: tmp_path)
     monkeypatch.setattr(molt_diff, "_diff_memory_guard_limits", lambda *_: None)

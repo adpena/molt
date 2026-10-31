@@ -27,6 +27,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import os
+from molt.durable_file_identity import StatToken
 from pathlib import Path
 import stat
 import subprocess
@@ -51,7 +52,7 @@ from molt.toolchain_identity import (
 )
 
 
-STORE_SCHEMA = "molt.toolchain-facts.v1"
+STORE_SCHEMA = "molt.toolchain-facts.v3"
 
 # The environment each probe class reads, decided from the tool's own source
 # and documented in the design. A name outside its set cannot change the
@@ -118,8 +119,22 @@ LINK_DRIVER_PROBE_ENVIRONMENT = (
 # The symlink `xcode-select` and the `/usr/bin` shims dispatch on.
 DARWIN_DEVELOPER_SELECTION_LINK = Path("/var/db/xcode_select_link")
 
-StatToken = tuple[int, int, int, int, int, int]
-FileToken = tuple[object, ...]
+
+@dataclass(frozen=True, slots=True)
+class FileToken:
+    node: StatToken
+    link_text: str | None = None
+    target: StatToken | None = None
+
+    def payload(self) -> list[object]:
+        wire: list[object] = list(self.node.payload())
+        if self.link_text is not None:
+            wire.extend(
+                [self.link_text, None if self.target is None else self.target.payload()]
+            )
+        return wire
+
+
 FileInput = tuple[str, FileToken | None]
 
 
@@ -167,7 +182,7 @@ class ProbeTool:
             "content_path": self.content_path,
             "size": self.size,
             "sha256": self.sha256,
-            "token": list(self.token),
+            "token": self.token.payload(),
         }
 
 
@@ -207,32 +222,31 @@ def file_input(path: Path | str) -> FileInput:
         metadata = os.lstat(name)
     except (FileNotFoundError, NotADirectoryError):
         return name, None
-    token: list[object] = [
-        metadata.st_dev,
+    node = StatToken(
         metadata.st_ino,
         metadata.st_mode,
         metadata.st_size,
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
-    ]
-    if stat.S_ISLNK(metadata.st_mode):
-        token.append(os.readlink(name))
-        try:
-            target = os.stat(name)
-        except (FileNotFoundError, NotADirectoryError):
-            token.append(None)
-        else:
-            token.append(
-                [
-                    target.st_dev,
-                    target.st_ino,
-                    target.st_mode,
-                    target.st_size,
-                    target.st_mtime_ns,
-                    target.st_ctime_ns,
-                ]
-            )
-    return name, tuple(token)
+    )
+    if not stat.S_ISLNK(metadata.st_mode):
+        return name, FileToken(node)
+    link_text = os.readlink(name)
+    try:
+        target = os.stat(name)
+    except (FileNotFoundError, NotADirectoryError):
+        return name, FileToken(node, link_text)
+    return name, FileToken(
+        node,
+        link_text,
+        StatToken(
+            target.st_ino,
+            target.st_mode,
+            target.st_size,
+            target.st_mtime_ns,
+            target.st_ctime_ns,
+        ),
+    )
 
 
 _DYNAMIC_LIBRARY_SUFFIXES = frozenset({".dll", ".dylib", ".so"})
@@ -246,7 +260,7 @@ def directory_inputs(
     The listing is what a loader or a spec search sees; it never descends.
     """
     own = file_input(directory)
-    mode = None if own[1] is None else own[1][2]  # the token's st_mode
+    mode = None if own[1] is None else own[1].node.mode  # the token's st_mode
     if not isinstance(mode, int) or not stat.S_ISDIR(mode):
         return (own,)
     entries: list[FileInput] = [own]
@@ -292,7 +306,7 @@ class ProbeKey:
             "cwd": self.cwd,
             "environment": dict(self.environment),
             "inputs": [
-                [path, None if token is None else list(token)]
+                [path, None if token is None else token.payload()]
                 for path, token in self.inputs
             ],
         }

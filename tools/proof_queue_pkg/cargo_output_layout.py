@@ -19,10 +19,14 @@ from typing import Mapping, Sequence
 
 from molt import custody_layout, file_publication
 from molt.dx import artifact_root
-from molt.exact_json import canonical_json_bytes, canonical_json_sha256
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    file_identity,
+)
+from molt.exact_json import canonical_json_sha256
 
 
-ROOT_SCHEMA = "molt.proof-cargo-output-root.v1"
+ROOT_SCHEMA = "molt.proof-cargo-output-root.v2"
 TARGET_LAYOUT = "molt.proof-cargo-target.v2"
 _HISTORICAL_TARGET_LAYOUT = "molt.proof-cargo-target.v1"
 
@@ -90,8 +94,7 @@ def declare_root(raw: object) -> dict[str, object]:
     return {
         "schema": ROOT_SCHEMA,
         "path": str(root),
-        "device": metadata.st_dev,
-        "inode": metadata.st_ino,
+        "identity": file_identity(root, expected=metadata).payload(),
     }
 
 
@@ -99,19 +102,11 @@ def declared_root(value: object) -> dict[str, object] | None:
     """Validate immutable syntax without requiring historical media online."""
     if value is None:
         return None
-    if not isinstance(value, Mapping) or set(value) != {
-        "schema",
-        "path",
-        "device",
-        "inode",
-    }:
+    if not isinstance(value, Mapping) or set(value) != {"schema", "path", "identity"}:
         raise ValueError("Cargo output root declaration is malformed")
-    if (
-        value.get("schema") != ROOT_SCHEMA
-        or type(value.get("device")) is not int
-        or type(value.get("inode")) is not int
-    ):
+    if value.get("schema") != ROOT_SCHEMA:
         raise ValueError("Cargo output root identity is malformed")
+    DurableFileIdentity.from_payload(value["identity"])
     raw = value.get("path")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Cargo output root path is malformed")
@@ -121,8 +116,6 @@ def declared_root(value: object) -> dict[str, object] | None:
         or path == Path(path.anchor)
         or ".." in path.parts
         or str(path) != raw
-        or value["inode"] <= 0
-        or value["device"] < 0
     ):
         raise ValueError("Cargo output root identity is not canonical")
     return dict(value)
@@ -138,13 +131,25 @@ def validate_root(value: object) -> dict[str, object] | None:
         raise ValueError(
             "declared Cargo output root is unavailable; no fallback is permitted"
         ) from exc
-    if canonical_json_bytes(declaration) != canonical_json_bytes(current):
+    if declaration["path"] != current["path"] or DurableFileIdentity.from_payload(
+        declaration["identity"]
+    ) != DurableFileIdentity.from_payload(current["identity"]):
         raise ValueError("declared Cargo output root was replaced or remounted")
     return current
 
 
 def same_root(left: object, right: object) -> bool:
-    return canonical_json_bytes(left) == canonical_json_bytes(right)
+    # A malformed declaration names no root, so it matches nothing; each
+    # caller then refuses with its own binding mismatch.
+    try:
+        a, b = declared_root(left), declared_root(right)
+    except ValueError:
+        return False
+    if a is None or b is None:
+        return a is b
+    return a["path"] == b["path"] and DurableFileIdentity.from_payload(
+        a["identity"]
+    ) == DurableFileIdentity.from_payload(b["identity"])
 
 
 def _directory_identity(path: Path) -> tuple[int, int] | None:
@@ -231,7 +236,9 @@ class CargoOutputLayout:
         namespace = hashlib.sha256(
             os.path.normcase(str(self.result_root)).encode()
         ).hexdigest()[:24]
-        return Path(str(self.declaration["path"])) / "molt-proof-output" / namespace
+        return (
+            Path(str(self.declaration["path"])) / "molt-proof-output" / "v2" / namespace
+        )
 
     def validate(self, *, protected_roots: Sequence[Path] = ()) -> None:
         declaration = validate_root(self.declaration)
