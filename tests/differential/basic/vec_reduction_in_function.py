@@ -626,6 +626,23 @@ class Countdown:
         return iter(range(self.n, 0, -1))
 
 
+class SelfIterator:
+    # CPython calls the iterable's __iter__ once; the loop never calls the
+    # returned iterator's own __iter__ again.
+    def __init__(self, n):
+        self.n = n
+
+    def __iter__(self):
+        events.append("self iterator iter")
+        return self
+
+    def __next__(self):
+        if self.n == 0:
+            raise StopIteration
+        self.n -= 1
+        return self.n
+
+
 class LoggingList(list):
     def __iter__(self):
         events.append("list subclass iter")
@@ -639,6 +656,8 @@ print("untyped set:", sum_any({4}, 1))
 print("untyped str:", sum_any("abc", ""))
 print("untyped bytes:", sum_any(b"ab", 0))
 print("untyped custom iter:", sum_any(Countdown(4), 0), events[:])
+events.clear()
+print("untyped self iterator:", sum_any(SelfIterator(3), 0), events[:])
 events.clear()
 print("untyped list subclass iter:", sum_any(LoggingList([1, 2, 3]), 0), events[:])
 events.clear()
