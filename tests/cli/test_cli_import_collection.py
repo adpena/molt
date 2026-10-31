@@ -3387,7 +3387,7 @@ def test_prepare_entry_module_graph_full_scans_declared_static_module(
     (runtime / "__init__.py").write_text("", encoding="utf-8")
     (runtime / "ops_cpu.py").write_text("VALUE = 1\n", encoding="utf-8")
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import pkg\n", encoding="utf-8")
+    entry_path.write_text("import pkg\npkg.device.load_backend()\n", encoding="utf-8")
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -20918,7 +20918,7 @@ def test_static_import_seed_preserves_transitive_and_deferred_dependencies(
     from molt.cli import module_graph_discovery
 
     for name, text in {
-        "admitted": "import dependency\ndef deferred():\n    import lazy_dep\n",
+        "admitted": "import dependency\ndef deferred():\n    import lazy_dep\ndeferred()\n",
         "dependency": "import leaf\n",
         "leaf": "",
         "lazy_dep": "",

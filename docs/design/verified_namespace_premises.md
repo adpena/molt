@@ -329,6 +329,11 @@ pruner selects roots before import/value/default/kind analysis and frontend lowe
 there is no intermediate unparse/file/reparse or generation-transfer lane. Original
 source spans keep every deferred owner identity stable as roots grow. Explicit raw
 Python initialization dominates a helper selection, and scan depth never decreases.
+Selected native views provide dependency inventory before graph ingestion.
+The native artifact's actual callable exports separately seed canonical source
+demands; retaining a transitive lowering binding does not execute it. Export
+demands survive promotion to raw source. Resolver keys include inventory purpose
+even when selecting every definition leaves the native and raw AST identical.
 The resolver retains one current selected AST per source/target. Syntax/request and
 runtime-policy caches distinguish raw SHA, target, depth and selection. Root planning
 and views reuse the same original parse; telemetry counts actual parse/prune work.

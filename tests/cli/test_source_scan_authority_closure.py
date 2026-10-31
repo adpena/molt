@@ -64,6 +64,7 @@ def _discover(
     full: bool,
     project: Path | None = None,
     state: discovery._ModuleGraphDiscovery | None = None,
+    native_callable_exports: dict[str, tuple[str, ...]] | None = None,
 ):
     return discovery._discover_module_graph_from_paths(
         (path,),
@@ -75,6 +76,7 @@ def _discover(
         full_scan_roots=full,
         discovery=state,
         resolver_cache=state.resolver_cache if state is not None else None,
+        native_callable_exports=native_callable_exports,
     )
 
 
@@ -132,7 +134,9 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
 
 
 def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) -> None:
-    helper = _source(tmp_path / "helper.py", "def invoke():\n    import leaf\n")
+    helper = _source(
+        tmp_path / "helper.py", "def invoke():\n    import leaf\ninvoke()\n"
+    )
     _source(tmp_path / "leaf.py", "pass\n")
     graph = {}
     roles = {}
@@ -430,7 +434,13 @@ def test_late_native_root_refreshes_policy_and_catalog(
     )
 
     def add_native_root(*, module_graph, scan_authorities, **kwargs):
-        result = _discover(late, tmp_path, full=True, state=kwargs["discovery"])
+        result = _discover(
+            late,
+            tmp_path,
+            full=True,
+            state=kwargs["discovery"],
+            native_callable_exports={"late": ("invoke",)},
+        )
         discovery._merge_discovered_module_graph(module_graph, scan_authorities, result)
         return frozenset(result.explicit_imports | {"late"})
 
@@ -957,6 +967,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
         resolver_cache=cache,
         discovery=state,
         precomputed_scans_by_path={support: record},
+        native_callable_exports={"support": ("later",)},
     )
     expected = {
         "support": support,
@@ -1127,7 +1138,9 @@ def test_native_slice_root_growth_retains_source_and_dependency_identity(
         == counts_after_growth["native_support_source_prunes"]
     )
     assert not tuple((tmp_path / "generated").glob("_molt_generated_*.py"))
-    consumer = _source(tmp_path / "consumer.py", "import support\n")
+    consumer = _source(
+        tmp_path / "consumer.py", "import support\nsupport.first()\nsupport.second()\n"
+    )
     result = discovery._discover_module_graph_from_paths(
         (consumer,),
         [tmp_path],
@@ -1224,9 +1237,94 @@ def test_native_raw_source_dominates_selected_roots_without_losing_depth(
     assert set(graph) == (
         {"support", "initializer"}
         if raw_first
-        else {"support", "initializer", "selected", "other"}
+        else {"support", "initializer", "selected"}
     )
+    # Raw source expands the lowering view, not execution of unused bodies.
+    assert "other" not in graph
     assert tuple((tmp_path / "artifacts").glob("_molt_generated_*.py")) == ()
+
+
+@pytest.mark.parametrize("native_first", [False, True])
+def test_native_inventory_and_raw_execution_do_not_share_same_ast_cache_entry(
+    tmp_path, native_first
+):
+    support = _source(tmp_path / "support.py", "def used():\n    import leaf\n")
+    _source(tmp_path / "leaf.py", "pass\n")
+    cache = _ModuleResolutionCache()
+    for native in (native_first, not native_first, native_first):
+        loaded = discovery._load_module_import_scan(
+            support,
+            module_name="support",
+            is_package=False,
+            import_scan_mode="full",
+            resolution_cache=cache,
+            project_root=None,
+            roots=[tmp_path],
+            stdlib_root=tmp_path / "stdlib",
+            stdlib_allowlist=set(),
+            native_support_function_roots=("used",) if native else (),
+        )
+        assert set(loaded.scan.imports) == ({"leaf"} if native else set())
+        assert (
+            loaded.snapshot.sha256 == hashlib.sha256(support.read_bytes()).hexdigest()
+        )
+    # Selecting every definition leaves the AST identical. Purpose still
+    # separates available native dependencies from executed Python imports.
+    assert len(cache.graph_import_scan_cache) == 2
+
+
+def test_native_callable_export_activates_its_writer_after_raw_source_admission(
+    tmp_path,
+):
+    support = _source(
+        tmp_path / "support.py",
+        "import provider\ndef used():\n    provider.active = 1\n"
+        "def unused():\n    provider.dormant = 1\n",
+    )
+    _source(tmp_path / "provider.py", "VALUE = 0\n")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys\nsys.path.insert(0, sys.argv[1])\nimport support,provider\ngetattr(support, 'used')()\nprint(sorted(set(provider.__dict__) & {'active','dormant'}))",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == "['active']"
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    common = dict(
+        roots=[tmp_path],
+        module_roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        project_root=tmp_path,
+        stdlib_allowlist=set(),
+        resolver_cache=cache,
+        discovery=state,
+        full_scan_roots=False,
+    )
+    initial = discovery._discover_module_graph_from_paths((support,), **common)
+    assert (
+        initial.scan_authority.by_module["provider"].namespace_premise.foreign_writes
+        == ()
+    )
+    active = discovery._discover_module_graph_from_paths(
+        (support,), native_callable_exports={"support": ("used",)}, **common
+    )
+    assert state.scan_sources["provider"].namespace_premise.foreign_writes == (
+        "active",
+    )
+    assert state.scan_sources["support"].body_selection.kind == "complete_source"
+    assert active.discovery is state
+    discovery._discover_module_graph_from_paths((support,), **common)
+    assert state.scan_sources["provider"].namespace_premise.foreign_writes == (
+        "active",
+    )
 
 
 def test_graph_cache_binds_admitted_source_generation(
@@ -1296,12 +1394,14 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
         ast_digest_admission: _PythonAstDigestAdmission,
         namespace_premise,
         target_sys_platform,
+        purpose,
     ) -> _ImportDiscoveryProjection:
         assert source_owner is None
         assert source_arguments == ()
         assert ast_digest_admission.tree is tree
         assert namespace_premise is None
         assert target_sys_platform is None
+        assert purpose is _source_import_scan.SourceImportPurpose.EXECUTION
         calls.append(target_python.tag)
         return _ImportDiscoveryProjection((target_python.tag,))
 
@@ -2014,7 +2114,9 @@ def test_native_cache_container_retirement_preserves_finalizer(tmp_path: Path) -
         ("opaque(provider)", True),
         ("from provider import missing", True),
         ("import builtins\nbuiltins.__import__ = opaque\nimport provider", True),
-        ("sys.modules['provider'] = opaque\nimport provider", True),
+        # Replacing the cached receiver does not expose the former module's
+        # dormant writers. Real replacement metadata callbacks are tested below.
+        ("sys.modules['provider'] = opaque\nimport provider", False),
     ],
 )
 def test_graph_initializer_premise_separates_inventory_from_executed_writers(
@@ -2047,12 +2149,15 @@ def test_graph_initializer_premise_separates_inventory_from_executed_writers(
     )
     premise = result.scan_authority.by_module["entry"].namespace_premise
     assert premise is not None
-    # Every raw writer remains inventoried; only its actual activation may
-    # taint initializer entry. No source availability is thrown away.
-    assert premise.member_writes & int(PythonMember.SYS_PLATFORM)
-    # Ordinary import still uses the callback inventory: entry precision is
-    # not a certificate for arbitrary cached receiver/spec metadata.
-    assert "alternate_leaf" in result.graph
+    # Every raw writer remains inventoried. The graph premise contains only
+    # activated writers, so dormant availability cannot taint import callbacks.
+    assert any(
+        write.module == "sys"
+        and write.name == "platform"
+        and write.source_owner is not None
+        for write in result.discovery.namespace_writes["provider"]
+    )
+    assert ("alternate_leaf" in result.graph) is writer_activated
     if not writer_activated:
         assert not premise.entry_member_writes & int(PythonMember.SYS_PLATFORM)
     assert "selected_leaf" in result.graph

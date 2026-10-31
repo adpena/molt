@@ -19,6 +19,7 @@ from molt.cli.python_import_topology import ExactEntryKind, PythonImportTopology
 from molt.source_root import compiler_source_root
 from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
 from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_identity_catalog_generated import (
     CANONICAL_IMPORT_IDENTITIES,
@@ -51,6 +52,7 @@ _ImportScanCacheKey = tuple[
     # A runtime-import owner's scan: it defers to the catalog, any generation.
     bool,
     PythonNamespacePremise | None,
+    SourceImportPurpose,
 ]
 
 
@@ -848,6 +850,7 @@ class _ModuleResolutionCache:
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
         ast_digest_admission: _PythonAstDigestAdmission | None = None,
         namespace_premise: PythonNamespacePremise | None = None,
+        purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
     ) -> _ImportDiscoveryProjection:
         """Cache source graph facts, never strict import acceptance or live edges."""
         ast_digest_admission = _PythonAstDigestAdmission.for_tree(
@@ -882,6 +885,7 @@ class _ModuleResolutionCache:
             ast_digest_admission.digest,
             runtime_catalog_owner,
             namespace_premise,
+            purpose,
         )
         cached = self.graph_import_scan_cache.get(cache_key)
         if cached is not None:
@@ -898,6 +902,7 @@ class _ModuleResolutionCache:
             target_sys_platform=self.target_sys_platform,
             ast_digest_admission=ast_digest_admission,
             namespace_premise=namespace_premise,
+            purpose=purpose,
             **owner_kwargs,
         )
         self.graph_import_scan_cache[cache_key] = result

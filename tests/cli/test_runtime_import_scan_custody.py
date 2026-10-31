@@ -17,6 +17,7 @@ from molt.cli.models import (
 )
 from molt.cli.module_import_scanner import _complete_import_scan
 from molt.compiler_analysis.python_import_scan import (
+    SourceImportPurpose,
     _DynamicRelativeImportDiscovery,
     _collect_import_scan_requests,
     _collect_import_star_modules,
@@ -141,7 +142,9 @@ def test_dynamic_import_operands_require_exact_runtime_source_custody(
     )
     owner, custody = _custody(tmp_path, source)
     tree = ast.parse(source)
-    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    projection = _collect_imports_for_graph(
+        tree, "pkg.entry", purpose=SourceImportPurpose.INVENTORY
+    )
     assert projection.requires_runtime_package_anchor
     assert projection.dynamic_relative_import_candidates == (
         (candidate,) if candidate is not None else ()
@@ -619,7 +622,9 @@ def test_real_importlib_machinery_keeps_strict_finalizer_boundary() -> None:
         ).imports
     )
 
-    projection = _collect_imports_for_graph(tree, "importlib.machinery")
+    projection = _collect_imports_for_graph(
+        tree, "importlib.machinery", purpose=SourceImportPurpose.INVENTORY
+    )
     assert projection.requires_runtime_package_anchor
     assert "importlib.util" in projection.dynamic_relative_import_candidates
     assert "importlib.util" not in projection.imports
@@ -1556,7 +1561,9 @@ def test_deferred_import_module_package_load_keeps_candidate_without_authority()
         "import importlib\ndef load():\n"
         "    return importlib.import_module('.child', __package__)\n"
     )
-    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    projection = _collect_imports_for_graph(
+        ast.parse(source), "pkg.entry", purpose=SourceImportPurpose.INVENTORY
+    )
     assert projection.requires_runtime_package_anchor
     assert "pkg.child" in projection.dynamic_relative_import_candidates
     assert "pkg.child" not in projection.imports
@@ -1571,7 +1578,9 @@ def test_proven_local_metadata_remains_authoritative_in_deferred_activation() ->
         "    __package__ = 'explicit.pkg'\n"
         "    return loader('.child', __package__)\n"
     )
-    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    projection = _collect_imports_for_graph(
+        ast.parse(source), "pkg.entry", purpose=SourceImportPurpose.INVENTORY
+    )
     assert "explicit.pkg.child" in projection.imports
     assert not projection.requires_runtime_package_anchor
 
@@ -1581,7 +1590,9 @@ def test_definitely_shadowed_globals_never_acquires_discovery_namespace() -> Non
         "def load(globals):\n"
         "    return __import__('child', globals(), None, ('*',), 1)\n"
     )
-    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    projection = _collect_imports_for_graph(
+        ast.parse(source), "pkg.entry", purpose=SourceImportPurpose.INVENTORY
+    )
     assert projection.requires_runtime_package_anchor
     assert projection.dynamic_relative_import_candidates == ()
     assert "pkg.child" not in projection.imports
@@ -1611,7 +1622,9 @@ def test_statement_and_expression_metadata_share_exact_catalog_custody(
         owner_ast_digests=original.owner_ast_digests,
     )
     tree = ast.parse(source)
-    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    projection = _collect_imports_for_graph(
+        tree, "pkg.entry", purpose=SourceImportPurpose.INVENTORY
+    )
     assert projection.requires_runtime_package_anchor
     assert "pkg.child" in projection.dynamic_relative_import_candidates
     assert "pkg.child" not in projection.imports

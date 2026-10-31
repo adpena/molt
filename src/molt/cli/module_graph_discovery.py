@@ -3,7 +3,11 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from molt.compiler_analysis import python_import_scan as _source_import_scan
-from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+from molt.compiler_analysis.python_source_demands import (
+    PythonSourceDemands,
+    SourceCandidate,
+    SourceMember,
+)
 from molt.compiler_analysis.native_support_slice import (
     canonical_native_support_roots,
 )
@@ -516,6 +520,7 @@ def _discover_module_graph_from_paths(
     full_scan_roots: bool,
     discovery: _ModuleGraphDiscovery | None = None,
     entry_imports: Collection[str] = (),
+    native_callable_exports: Mapping[str, tuple[str, ...]] | None = None,
 ) -> _DiscoveredModuleGraph:
     resolution_cache = resolver_cache or (
         discovery.resolver_cache
@@ -925,6 +930,17 @@ def _discover_module_graph_from_paths(
                 path, name, context, full=full_scan_roots, precomputed=precomputed
             )
     admit_imports(entry_imports, context)
+    for module_name, exports in (native_callable_exports or {}).items():
+        for name in exports:
+            # The native artifact consumes this callable, independently of the
+            # source bindings retained for lowering. These canonical demand
+            # edges survive later promotion to an ordinary complete source.
+            demands.demand(
+                (module_name, SourceMember(SourceCandidate(module_name, None), name)),
+                "escape",
+            )
+    demands.drain()
+    refresh_namespace_premises(demands.drain_opaque_activation_changes())
 
     while queue or scan_revisions:
         if not queue:
@@ -1482,6 +1498,14 @@ def _load_module_import_scan(
             target_python=target_python,
         )
         tree, ast_digest_admission = selected.tree, selected.admission
+    # A selected native producer promises dependencies of the retained lowering
+    # view before graph ingestion. That inventory is separate from the native
+    # callable-export demands that activate execution owners in discovery.
+    purpose = (
+        _source_import_scan.SourceImportPurpose.INVENTORY
+        if native_support_function_roots and source_owner is None
+        else _source_import_scan.SourceImportPurpose.EXECUTION
+    )
     import_projection = resolution_cache.collect_graph_imports(
         path,
         tree,
@@ -1495,6 +1519,7 @@ def _load_module_import_scan(
         runtime_import_custody=runtime_import_custody,
         ast_digest_admission=ast_digest_admission,
         namespace_premise=namespace_premise,
+        purpose=purpose,
     )
     requests = _source_import_scan._collect_import_scan_requests(
         import_projection,
@@ -1509,6 +1534,7 @@ def _load_module_import_scan(
         source=source,
         namespace_premise=namespace_premise,
         target_sys_platform=resolution_cache.target_sys_platform,
+        purpose=purpose,
     )
     if project_root is not None and snapshot is not None:
         with contextlib.suppress(OSError):

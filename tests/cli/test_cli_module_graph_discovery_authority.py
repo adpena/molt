@@ -82,7 +82,7 @@ def test_graph_cache_keeps_initialization_and_full_roots_disjoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_full: bool
 ) -> None:
     entry = tmp_path / "entry.py"
-    entry.write_text("def deferred():\n    import lazy\n", encoding="utf-8")
+    entry.write_text("def deferred():\n    import lazy\ndeferred()\n", encoding="utf-8")
     lazy = tmp_path / "lazy.py"
     lazy.write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
@@ -102,8 +102,11 @@ def test_graph_cache_keeps_initialization_and_full_roots_disjoint(
         )
         graph = discovery_result.graph
         imports = discovery_result.explicit_imports
-        assert set(graph) == ({"entry", "lazy"} if full else {"entry"})
-        assert imports == ({"lazy"} if full else set())
+        assert set(graph) == {"entry", "lazy"}
+        assert imports == {"lazy"}
+        assert discovery_result.scan_authority.by_module["entry"].mode == (
+            "full" if full else "module_init"
+        )
 
 
 @pytest.mark.parametrize("deferred", [False, True])
