@@ -785,7 +785,8 @@ packages need the C ABI, the suspension bridge for asynchronous device waits,
 and declared target facts). V has no family prerequisite. Inside V, HF-646's
 `object.__reduce_ex__` precedes HF-643, HF-644 and HF-645 (the encoder moves
 onto it), and row HF-647 (H) precedes HF-644's by-reference pickling of
-intrinsic functions.
+intrinsic functions. V1-05 (K) qualifies the runtime ownership of copy
+reconstruction; HF-646's design reconciles with it rather than waiting on it.
 
 Levels: 0 = A, B, C, D, F (multipliers) and I, K, L, N, O, V (no
 prerequisites); 1 = E, G, Q, M, R, U; 2 = J, P, H; 3 = S, T. Re-cut on
