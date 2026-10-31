@@ -521,7 +521,6 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
         (molt_ir::OpKind::DictNew, 0, 0),
         (molt_ir::OpKind::SetNew, 0, 0),
         (molt_ir::OpKind::FrozensetNew, 0, 0),
-        (molt_ir::OpKind::DataclassNew, 4, 0),
         (molt_ir::OpKind::DataclassNewValues, 3, 0),
         (molt_ir::OpKind::TupleIndex, 2, 0),
         (molt_ir::OpKind::GetAttrName, 2, 0),

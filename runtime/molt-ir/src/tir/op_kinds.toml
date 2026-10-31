@@ -895,7 +895,6 @@ classifier_owned_value = [
     "context_enter",
     "context_exit",
     "dataclass_get",
-    "dataclass_new",
     "dataclass_new_values",
     "dataclass_set",
     "dataclass_set_class",

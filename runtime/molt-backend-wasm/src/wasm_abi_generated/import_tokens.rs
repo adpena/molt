@@ -495,7 +495,6 @@ pub(crate) enum WasmRuntimeImport {
     SysVersion,
     SysVersionInfo,
     DataclassGet,
-    DataclassNew,
     DataclassNewFromValues,
     DataclassSet,
     DataclassSetClass,
