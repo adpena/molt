@@ -337,6 +337,27 @@ def test_presubmit_selects_direct_readers_while_postsubmit_closes_imports(
     assert before.run["tests/test_direct.py"].owners == ("ordinary", "slow")
 
 
+def test_presubmit_direct_readers_include_imports_inside_test_functions(
+    tmp_path,
+):
+    # A test that imports inside its function reads the module at the first
+    # hop: that edge sits on the function's node, not the module's.
+    root = _repository(
+        tmp_path,
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/hub.py": "def value():\n    return 1\n",
+            "tests/test_local.py": (
+                "def test_local():\n    from pkg.hub import value\n\n"
+                "    assert value() == 1\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    pass\n",
+        },
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    assert graph.direct_readers(["src/pkg/hub.py"]) == ("tests/test_local.py",)
+
+
 def test_presubmit_recent_failures_then_changed_tests_then_direct_readers(
     landing_graph,
 ):

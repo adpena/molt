@@ -101,9 +101,11 @@ Each consumer reads the substrate. None keeps a private hash, input list or sele
 The current landing policy uses a typed `PRESUBMIT` / `POSTSUBMIT` selection mode. Presubmit runs
 static gates, then graph-selected pytest with `--maxfail=1`: tests that failed postsubmit in the
 last 24 hours first, changed test files next, then direct readers of changed paths. The dependency
-graph supplies the first hop, without closing importers transitively. Path rules retain their
-declared commands and scopes. A rule that already runs a test absorbs that graph request. Direct
-inputs and changed tests run their slow probes too; the ordinary cells exclude slow probes,
+graph supplies the first hop, without closing importers transitively. A test's first hop is every
+edge of its own module: the module body, its functions and its literal data reads. Path rules
+retain their declared commands and scopes. A rule that runs the same or a wider scope of a test
+absorbs that graph request; a narrower rule scope (`-k`) does not, so the direct reader also runs
+whole. Direct inputs and changed tests run their slow probes too; the ordinary cells exclude slow probes,
 which remain owned by the existing `-m slow` postsubmit cell. Failure history orders execution;
 it never substitutes for a passing result. Pytest's parallel scheduler may finish files out of order.
 
