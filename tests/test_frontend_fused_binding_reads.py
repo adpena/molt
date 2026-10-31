@@ -5,7 +5,9 @@ call inside a chunk loop whose back edge observes pending asynchronous work;
 the ordinary loop then continues on the same iterator. The split/count kernel
 and the fused statement ``d[k] = d.get(k, 0) + delta`` run whole or decline
 before any effect. The frontend only selects the shape; the kernel admits the
-values the loop reads or declines. Where a fused op reads a binding before the
+values the loop reads or declines, so a reduction fuses on an iterable of
+unknown type and declines only one whose type the frontend knows the kernel
+declines. Where a fused op reads a binding before the
 loop does, it must read the binding's current value: from Python 3.13 a
 callback can rebind a running frame's local through ``frame.f_locals`` (PEP
 667), so a cached view serves only where the binding analysis proves the
@@ -142,6 +144,25 @@ def total_after_call(callback):
     for item in seq:
         total += item
     return total
+
+def reduce_parameter(seq):
+    total = 0
+    for item in seq:
+        total += item
+    return total
+
+def reduce_set(callback):
+    seq = {1, 2, 3}
+    total = 0
+    for item in seq:
+        total += item
+    return total
+
+def reduce_str(callback):
+    text = ""
+    for char in "abc":
+        text += char
+    return text
 """
 
 
@@ -162,14 +183,41 @@ def test_sequence_reduction_selects_its_fused_op(
 
 
 @pytest.mark.parametrize("target_python", TARGETS)
-def test_sequence_reduction_fuses_only_on_a_clean_sequence_read(
+def test_sequence_reduction_fuses_on_the_current_value_of_a_dirty_sequence(
     target_python: tuple[int, int],
 ) -> None:
-    ops = _function_ops(REDUCTIONS, "reduce_list_after_call", target_python)
-    # From 3.13 the call may have rebound ``seq``: the loop reads the
-    # binding's current value, whose type the frontend no longer knows.
-    expected = set() if target_python >= (3, 13) else {"vec_sum"}
-    assert _vector_kinds(ops) == expected
+    ops = _function_ops(
+        REDUCTIONS, "reduce_list_after_call", target_python, midend_stage="pre-midend"
+    )
+    (fused,) = [op for op in ops if op["kind"] == "vec_sum"]
+    iterator = _source(ops, fused["args"][0])
+    assert iterator["kind"] == "iter"
+    iterable = _source_kind(ops, iterator["args"][0])
+    # From 3.13 the call may have rebound ``seq``: the loop iterates the
+    # binding's current value, whose type the frontend no longer knows, and
+    # the kernel admits or declines that value's iterator at run time.
+    if target_python >= (3, 13):
+        assert iterable == "frame_home_load"
+    else:
+        assert iterable != "frame_home_load"
+
+
+@pytest.mark.parametrize("target_python", TARGETS)
+def test_reduction_over_an_untyped_parameter_fuses(
+    target_python: tuple[int, int],
+) -> None:
+    ops = _function_ops(REDUCTIONS, "reduce_parameter", target_python)
+    assert _vector_kinds(ops) == {"vec_sum"}
+
+
+@pytest.mark.parametrize("target_python", TARGETS)
+@pytest.mark.parametrize("name", ["reduce_set", "reduce_str"])
+def test_reduction_over_a_known_non_sequence_does_not_fuse(
+    name: str, target_python: tuple[int, int]
+) -> None:
+    # The kernel declines a set or str iterator; the frontend knows the type,
+    # so it emits no kernel call that can only decline.
+    assert _vector_kinds(_function_ops(REDUCTIONS, name, target_python)) == set()
 
 
 @pytest.mark.parametrize("target_python", TARGETS)
