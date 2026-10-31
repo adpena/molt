@@ -163,8 +163,8 @@ pub(crate) fn pickle_vm_setitems(
     if !pairs.len().is_multiple_of(2) {
         return Err(PickleError::Unpickling.raise(_py, "odd number of items for SETITEMS"));
     }
-    for pair in pairs.chunks_exact(2) {
-        let _ = crate::molt_store_index(target_bits, pair[0], pair[1]);
+    for &[key, value] in pairs.as_chunks::<2>().0 {
+        let _ = crate::molt_store_index(target_bits, key, value);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }

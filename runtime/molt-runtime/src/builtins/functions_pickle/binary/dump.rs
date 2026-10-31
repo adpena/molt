@@ -1201,15 +1201,16 @@ pub(crate) fn pickle_dump_obj_binary(
             // CPython's batch_dict_exact: a one-entry dict takes SETITEM;
             // otherwise MARK ... SETITEMS per PICKLE_BATCH_SIZE, repeated while
             // a batch fills, so an exact multiple ends with an empty batch.
-            let entries: Vec<&[u64]> = pairs.chunks_exact(2).collect();
-            if let [only] = entries.as_slice() {
-                pickle_dump_obj_binary(_py, state, only[0], true)?;
-                pickle_dump_obj_binary(_py, state, only[1], true)?;
+            let (entries, _) = pairs.as_chunks::<2>();
+            if let [[key, value]] = entries {
+                pickle_dump_obj_binary(_py, state, *key, true)?;
+                pickle_dump_obj_binary(_py, state, *value, true)?;
                 state.push(PICKLE_OP_SETITEM);
             } else if !entries.is_empty() {
                 pickle_dump_full_batches(state, entries.len(), PICKLE_OP_SETITEMS, |state, at| {
-                    pickle_dump_obj_binary(_py, state, entries[at][0], true)?;
-                    pickle_dump_obj_binary(_py, state, entries[at][1], true)
+                    let [key, value] = entries[at];
+                    pickle_dump_obj_binary(_py, state, key, true)?;
+                    pickle_dump_obj_binary(_py, state, value, true)
                 })?;
             }
             return Ok(());
