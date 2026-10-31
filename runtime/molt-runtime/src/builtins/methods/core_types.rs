@@ -78,6 +78,18 @@ crate::builtins::methods::native_method_table!(type_method_bits, publish_type_me
 crate::builtins::methods::native_method_table!(object_method_bits, publish_object_methods, _py, name, [], {
 
 }, {
+        "__reduce__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).object, "__reduce__").with_text_signature("($self, /)"),
+            fn_addr!(molt_object_reduce),
+            1,
+        )),
+        "__reduce_ex__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).object, "__reduce_ex__").with_text_signature("($self, protocol, /)"),
+            fn_addr!(molt_object_reduce_ex),
+            2,
+        )),
         "__dir__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).object, "__dir__").with_text_signature("($self, /)"),

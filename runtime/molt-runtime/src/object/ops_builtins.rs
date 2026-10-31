@@ -25,6 +25,9 @@ pub use builtin_collections::{
 mod dir;
 pub use dir::{molt_dir_builtin, molt_object_dir_method, molt_type_dir_method};
 
+mod reduction;
+pub use reduction::{molt_object_reduce, molt_object_reduce_ex};
+
 #[path = "ops_builtins_constructors.rs"]
 mod ops_builtins_constructors;
 pub use ops_builtins_constructors::{
