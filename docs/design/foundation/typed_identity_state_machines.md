@@ -85,3 +85,11 @@ source; each lifecycle it touches, as a state table with its transitions and
 lock; and the precondition or semantic property each transformation must keep,
 with the check that proves it. Prior art per findings family is in
 [findings_prior_art.md](../findings_prior_art.md).
+
+A Python-visible lifecycle maps its states onto CPython's, cited by file and
+symbol: frames, `Include/internal/pycore_frame.h` `_framestate`; generators,
+coroutines and async generators, `Lib/inspect.py` `getgeneratorstate` and its
+siblings; module import, `Lib/importlib/_bootstrap.py` `spec._initializing`;
+finalization (PEP 442), `Include/internal/pycore_gc.h` `_PyGC_FINALIZED`.
+Molt's layouts may differ; differential tests check the observable states
+against CPython.

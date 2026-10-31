@@ -55,9 +55,19 @@ Every leading system stores the values live at each suspension in typed, fixed-o
   ([Kotlin](https://github.com/Kotlin/KEEP/blob/master/proposals/coroutines.md),
   [.NET](https://devblogs.microsoft.com/dotnet/how-async-await-really-works/),
   [Swift](https://github.com/swiftlang/swift/blob/main/stdlib/public/Concurrency/TaskAlloc.cpp))
-- **WASM**: a hand-written state machine ran a web-server benchmark in 140 ms, Asyncify in 700 ms,
-  and a stack-switching prototype in 2,700 ms (WasmFX, OOPSLA 2023). Stack switching is Phase 3;
-  JSPI works on JavaScript hosts only. An explicit state machine is the only fast portable choice.
+- **WASM.** In a C web-server benchmark, a hand-written state machine took 140 ms, Asyncify 700 ms
+  and the WasmFX prototype on Wasmtime 2,700 ms
+  (OOPSLA 2023, §5, [arXiv 2308.08347](https://arxiv.org/html/2308.08347v3)).
+  - The paper counts about 37% of samples in Wasmtime's fiber switch and about 33% in unoptimised
+    Rust libcalls.
+  - It expects native code generation for suspend and resume to remove much of that.
+  - So the figure measures one prototype. It says nothing about JSPI or a production
+    implementation.
+  - An explicit state machine is the only mechanism that is fast and runs on every engine.
+- **Python compilers.** Nuitka first ran generators on fibers (separate C stacks), then replaced
+  them with goto-based state machines in 0.5.33 (2018). Generator-using tests ran twice as fast, and
+  each generator's stack fell from 2 MB to 1 KB
+  ([release notes](https://nuitka.net/posts/nuitka-release-0533.html)).
 
 CPython already keeps NULL words and tagged ints in suspended frame slots, so typed slots add no
 semantics that CPython lacks.
@@ -101,6 +111,97 @@ semantics that CPython lacks.
    `await f()` with a known, non-escaping callee, embed the callee frame in the caller frame.
 8. **WASM** uses the same machine, dispatching with `br_table` at the loop header so the CFG stays
    reducible.
+
+## Host bridge
+
+Ledger: HF-610 (the bridge), HF-611 (virtual threads), HF-612 (stack-switching C
+extensions) and HF-614 (`webgpu.h` waits in the browser).
+
+Molt suspends Python code with two mechanisms. They are distinct, and each needs its own host
+support.
+
+1. **Coroutine suspension.** Code is `async`/`await`. The typed poll function of this design
+   carries it on every host. Only the driver of the poll changes.
+2. **Whole-stack suspension.** Synchronous code waits on an asynchronous host: blocking I/O in
+   third-party libraries, or a C extension that switches stacks. The poll function cannot carry
+   this, because the code is not a coroutine. The host must suspend the native stack.
+
+| Code shape | JS host (browser, Workers, Node) | WASI host | Native |
+|---|---|---|---|
+| `async`/`await` | the poll, driven by an asyncio loop on the host event loop; promises and awaitables convert both ways | WASI 0.3: the poll lifted as a stackless `callback` export. WASI 0.1/0.2: Molt's own loop over sync imports | the poll on Molt's loop |
+| Blocking-style library code | JSPI: suspending imports only where a call truly waits (fetch, sockets over connect, WebGPU map and work-done). Engines without JSPI: typed refusal by default, worker plus `Atomics.wait` proxy as an opt-in | sync imports block the host thread; nothing to suspend | blocks the OS thread |
+| C extensions that switch stacks (greenlet) | core stack switching (Phase 3); typed refusal in v1.0 | the same | a Molt-provided switch primitive at the C ABI that saves and restores Molt's per-stack state; greenlet's own assembly is not enough |
+
+### Interleaved stacks are virtual threads
+
+Under JSPI, a host keeps calling promising exports while earlier calls are suspended. Workers runs
+many requests in one isolate. So two Python stacks interleave on one OS thread.
+
+That breaks every thread-keyed fact unless the runtime separates them:
+
+- `threading.local`, and through it Django's per-request connections and translations;
+- `threading.get_ident()`;
+- the active exception;
+- the context stack;
+- the recursion depth.
+
+**Rule.** Each promising entry runs as a typed **virtual thread**, as Java's virtual threads carry
+their own thread-locals ([JEP 444](https://openjdk.org/jeps/444)):
+
+- it gets its own identity and its own thread-local and per-stack state;
+- every suspend saves that state and every resume restores it, as a typed record.
+
+Pyodide had to add this save and restore for asyncio state after the fact
+([pyodide#4532](https://github.com/pyodide/pyodide/pull/4532)).
+
+The cost is one record swap per suspension. It is measured, not assumed.
+
+### Facts and limits
+
+- **JSPI is Phase 5** ([proposals](https://github.com/WebAssembly/proposals)).
+  - It is on by default in Chrome 137 and in Firefox 153, released 2026-07-21
+    ([MDN](https://developer.mozilla.org/en-US/docs/Mozilla/Firefox/Releases/153)).
+  - Safari has no release note for it.
+  - **Workers support is unverified.** The `workerd` repository mentions `Suspending` only in a
+    WPT test and a hibernation test. Verify it with `wrangler dev` before the Workers cell claims
+    blocking-style code.
+- **JSPI traps when a JavaScript frame sits between the suspending import and the promising
+  export.**
+  - A host entry declared synchronous, such as an event listener or an array callback, can
+    therefore never suspend.
+  - Molt's host-binding contract declares each entry's kind. The may-suspend analysis refuses, at
+    build time, a synchronous entry that can reach a suspending import.
+  - Entries the contract cannot see fail with a typed runtime error.
+- **WASI 0.3 was ratified on 2026-06-11.** It needs a **component**, while Molt emits WASI 0.1 core
+  modules today.
+  - Lifting the poll as a `callback` export requires canonical-ABI lifting and WIT bindings.
+  - That is a new output format, with its own support-matrix cell.
+  - In the Component Model, a callee whose type is not `async` traps if it blocks before
+    returning. A sync-lowered caller of an async import suspends the whole component stack, and
+    the host carries that suspension (`Concurrency.md`).
+- **Cancellation and errors cross the bridge as typed values.**
+  - A rejected promise raises a Python exception.
+  - An `AbortSignal` cancels the awaiting task with `CancelledError`.
+  - An uncaught Python exception rejects the promise.
+- **Cost.**
+  - Mark only waiting imports as suspending, and keep host crossings coarse
+    ([emscripten#21081](https://github.com/emscripten-core/emscripten/issues/21081)).
+  - Asyncify is not a default. Emscripten puts its cost at about 50% of time and code size.
+  - A selective transform over the proven may-suspend graph needs a measured case and the owner's
+    decision.
+
+### Verification
+
+- **One differential suite** runs the same async programs on native, Node (JSPI) and Wasmtime, and
+  compares them with CPython.
+- **A JSPI case:** `requests.get` against a local server, from a promising entry.
+- **An interleaving case:** two concurrent entries that each write `threading.local` and the
+  active exception across a suspension; each must read back only its own values.
+- **A refusal case:** a synchronous host entry that reaches a suspending import fails at build
+  time.
+- **Measured:**
+  - suspend and resume round trips on V8 and SpiderMonkey;
+  - the per-suspension state-record swap.
 
 ## Open decision: frame writes
 

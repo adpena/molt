@@ -911,6 +911,39 @@ checkout.
 **Experiment.** Build `molt-backend` with `cargo auditable` and diff its
 embedded graph against `Cargo.lock`.
 
+## U. GPU device boundary
+
+**Problem.** GPU work in the tree goes through Molt-owned substitutes: a
+`src/tinygrad` facade, a reimplemented op set in `runtime/molt-gpu` and
+`demos/tinygrad/reference_stdlib`. Upstream packages cannot reach a device
+through Molt (HF-613, HF-614, HF-615).
+
+**Prior art.**
+- *`webgpu.h`.* [F] The WebGPU native C API (`webgpu-native/webgpu-headers`)
+  is implemented by Dawn on Metal, D3D12 and Vulkan. Sources:
+  https://github.com/webgpu-native/webgpu-headers,
+  https://dawn.googlesource.com/dawn.
+- *tinygrad WebGPU backend.* [F] `tinygrad/runtime/ops_webgpu.py` calls
+  `webgpu.h` through generated ctypes bindings (`tinygrad.runtime.autogen.webgpu`)
+  and renders WGSL, verified 2026-10-30. Source:
+  https://github.com/tinygrad/tinygrad/blob/master/tinygrad/runtime/ops_webgpu.py.
+- *Browser hosting.* [I] Emscripten builds `webgpu.h` programs against the
+  browser's WebGPU through a host-backed implementation; Pyodide has no GPU
+  backend for packages.
+- *Array interchange.* [F] DLPack and the buffer protocol hand device and host
+  arrays between libraries without copies. Source: https://dmlc.github.io/dlpack/latest/.
+
+**Adopt.** [I] Four boundaries: the CPython C-API/ABI (family L), ctypes and
+cffi FFI, the buffer protocol and DLPack, and `webgpu.h`. Upstream tinygrad
+runs unmodified over them. On WASM, `webgpu.h` is host-backed and its
+asynchronous waits use the suspension bridge (HF-610).
+
+**Refuse.** [I] Rewriting, vendoring or maintaining upstream packages (owner,
+2026-10-30). A Molt-owned primitive lives at the C ABI, never as a Python facade.
+
+**Experiment.** Run tinygrad's WebGPU test suite, unmodified, on macOS/Metal
+through Molt's ctypes FFI to Dawn.
+
 ## Candidates not used
 
 Perry has only a README and blog posts, and no family needs a TypeScript
