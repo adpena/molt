@@ -199,7 +199,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "7a42f659ef660ce73b9b68a98bb6eebe84f70fe2e9b875f2ceedc6ad20180e09",
+      "sha256": "b3c3ab4260bb20c2377abcb960aa4b1388dfadd47e84cbe21046033bbb3a1c5f",
       "source_type": "module"
     },
     "browser_target_features.js": {

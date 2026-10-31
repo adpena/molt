@@ -3619,6 +3619,14 @@ export const loadMoltWasm = async (options = {}) => {
     }
 
     if (linkedBytes) {
+      const detectedWasmTableBase = resolveWasmTableBase({
+        manifest: runtimeManifest,
+        extracted: extractWasmTableBase(linkedBytes),
+      });
+      if (!Number.isInteger(detectedWasmTableBase) || detectedWasmTableBase <= 0) {
+        throw new Error('linked wasm missing a positive callable table base');
+      }
+      state.wasmTableBase = detectedWasmTableBase;
       const linkedImports = parseWasmImports(linkedBytes);
       const linkedModule = await WebAssembly.compile(linkedBytes);
       const linkedFunctionExports = new Set(
@@ -3677,6 +3685,15 @@ export const loadMoltWasm = async (options = {}) => {
       const instance = linkedInstance;
       state.runtimeInstance = instance;
       state.memory = instance.exports.molt_memory || instance.exports.memory || memory || env.memory || null;
+      // Linking relocates the app's reserved callable region. Publish that
+      // execution state before runtime admission or any module initializer;
+      // the runtime's default base addresses unrelated Rust table entries.
+      const setTableBaseName = runtimeImportAbi.export_names?.molt_set_wasm_table_base;
+      const setTableBase = instance.exports[setTableBaseName];
+      if (typeof setTableBase !== 'function') {
+        throw new Error('linked wasm missing canonical molt_set_wasm_table_base export');
+      }
+      setTableBase(BigInt(detectedWasmTableBase));
       runtimeLifetime(instance, runtimeImportAbi).admit();
       for (const name of linkedCallIndirectNames) {
         let fn = instance.exports[name];
