@@ -12,6 +12,8 @@ check cannot see: no runtime export may stand in for a disabled feature.
 
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 import re
 import tomllib
 from pathlib import Path
@@ -55,14 +57,15 @@ def test_symbol_features_are_exact_not_prefix_attributed() -> None:
 def test_sqlite_target_availability_is_generated_for_profiles_and_admission() -> None:
     assert runtime_symbol_available_on_target(
         "molt_sqlite3_connect",
-        target_triple="x86_64-unknown-linux-gnu",
-        target_os="linux",
+        target=_target("x86_64-unknown-linux-gnu"),
     )
     assert not runtime_symbol_available_on_target(
-        "molt_sqlite3_connect", target_triple="wasm32-wasip1", target_os="wasi"
+        "molt_sqlite3_connect",
+        target=_target("wasm32-wasip1"),
     )
     assert not runtime_symbol_available_on_target(
-        "molt_sqlite3_connect", target_triple="wasm32-unknown-unknown", target_os="none"
+        "molt_sqlite3_connect",
+        target=_target("wasm32-unknown-unknown"),
     )
     assert features_unsupported_on_target(
         target_arch="wasm32", target_os="wasi"
@@ -85,7 +88,8 @@ def test_networking_has_no_windows_provider(
     for symbol in ("molt_socketpair", "molt_socket_new", "molt_ssl_wrap_socket"):
         assert (
             runtime_symbol_available_on_target(
-                symbol, target_triple=triple, target_os=target_os
+                symbol,
+                target=_target(triple),
             )
             is available
         )
@@ -96,28 +100,41 @@ def test_networking_has_no_windows_provider(
 
 
 @pytest.mark.parametrize(
-    "triple,target_os,expected",
+    "triple,expected",
     [
-        ("x86_64-pc-windows-msvc", "windows", True),
-        ("x86_64-pc-windows-gnu", "windows", True),
-        ("aarch64-pc-windows-msvc", "windows", True),
-        ("x86_64-unknown-linux-gnu", "linux", False),
-        ("aarch64-unknown-linux-musl", "linux", False),
-        ("aarch64-apple-darwin", "macos", False),
-        ("wasm32-wasip1", "wasi", False),
-        ("wasm32-unknown-unknown", "none", False),
-        (None, "windows", True),
-        (None, "linux", False),
-        (None, None, False),
-        ("x86_64-pc-windows-msvc", None, False),
+        ("x86_64-pc-windows-msvc", True),
+        ("x86_64-pc-windows-gnu", True),
+        ("aarch64-pc-windows-msvc", True),
+        ("x86_64-unknown-linux-gnu", False),
+        ("aarch64-unknown-linux-musl", False),
+        ("aarch64-apple-darwin", False),
+        ("wasm32-wasip1", False),
+        ("wasm32-unknown-unknown", False),
     ],
 )
 def test_windows_locale_provider_requires_actual_target_os(
-    triple: str | None, target_os: str | None, expected: bool
+    triple: str, expected: bool
 ) -> None:
+    _assert_windows_locale_availability(_target(triple), expected)
+
+
+@pytest.mark.parametrize(
+    "host,expected",
+    [("x86_64-pc-windows-msvc", True), ("x86_64-unknown-linux-gnu", False)],
+)
+def test_windows_locale_provider_follows_the_resolved_host(
+    monkeypatch: pytest.MonkeyPatch, host: str, expected: bool
+) -> None:
+    # The host's OS comes from the same resolution as its arch (HF-608): a
+    # target cannot pair one host's arch with another OS.
+    monkeypatch.setattr("molt.native_target._host_target_triple", lambda **_: host)
+    _assert_windows_locale_availability(_target(None), expected)
+
+
+def _assert_windows_locale_availability(target, expected: bool) -> None:
     assert (
         runtime_symbol_available_on_target(
-            "molt_locale_getdefaultlocale", target_triple=triple, target_os=target_os
+            "molt_locale_getdefaultlocale", target=target
         )
         is expected
     )
@@ -126,9 +143,7 @@ def test_windows_locale_provider_requires_actual_target_os(
         "molt_locale_setlocale",
         "molt_locale_constants",
     ):
-        assert runtime_symbol_available_on_target(
-            symbol, target_triple=triple, target_os=target_os
-        )
+        assert runtime_symbol_available_on_target(symbol, target=target)
 
 
 def test_high_level_gpu_intrinsics_require_gpu_primitives() -> None:

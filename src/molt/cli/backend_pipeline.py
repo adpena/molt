@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import Target, is_wasm_target
+from molt.compilation_target import Target, TargetKind, is_wasm_target
 
 from molt.cli.native_symbol_inspection import (
     NativeSymbolInspectionError,
@@ -173,7 +173,7 @@ def _run_backend_pipeline(
         target_python=prepared_build_config.target_python,
         stdlib_profile=stdlib_profile,
         target=target,
-        target_triple=output_layout.target_triple,
+        facts_target=output_layout.facts_target,
         native_artifact_plan=native_artifact_plan,
     )
     if prepared_build_preamble.diagnostics_enabled:
@@ -229,9 +229,8 @@ def _run_backend_pipeline(
         _runtime_features.runtime_stdlib_profile_for_required_features(
             stdlib_profile,
             required_link_features,
-            target_triple="wasm32-wasip1"
-            if wasm_target
-            else output_layout.target_triple,
+            # Every WASM build reads the WASI facts here, freestanding included.
+            target=TargetKind.WASI if wasm_target else output_layout.facts_target,
         )
     )
     if prepared_build_preamble.diagnostics_enabled:

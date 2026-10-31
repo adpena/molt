@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 import inspect
 
 import pytest
@@ -48,6 +50,7 @@ def _capture_pipeline(
         output_binary=tmp_path / "app",
         linked_output_path=None,
         emit_ir_path=None,
+        facts_target=_target(None),
     )
     layout = replace(layout, **(layout_changes or {}))
     calls = []

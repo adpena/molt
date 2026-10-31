@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import Target, TargetKind, is_wasm_target
+from molt.compilation_target import ArtifactTarget, Target, TargetKind
 
 from dataclasses import dataclass
 
@@ -1841,8 +1841,7 @@ def _reachability_feature_refusal(
     reached_symbols: frozenset[str],
     *,
     stdlib_profile: str | None,
-    target: Target,
-    target_triple: str | None = None,
+    facts_target: ArtifactTarget,
 ) -> str | None:
     """Refuse when the reached SimpleIR needs a feature the profile excludes.
 
@@ -1856,13 +1855,6 @@ def _reachability_feature_refusal(
     against the native surface. ``RequiredLinkFeatures`` itself is
     target-independent (a property of the reached IR).
     """
-    is_wasm = is_wasm_target(target)
-    if target_triple is None and is_wasm:
-        target_triple = (
-            "wasm32-unknown-unknown"
-            if target in {TargetKind.WASM_FREESTANDING, TargetKind.WASM_UNKNOWN}
-            else "wasm32-wasip1"
-        )
     # The ceiling is the SAME per-target available-feature authority the build
     # uses to select the staticlib (``_runtime_builtin_features_for_profile``):
     # the Cargo ladder plus explicit target exclusions. Using this keeps the
@@ -1870,14 +1862,14 @@ def _reachability_feature_refusal(
     profile_features = frozenset(
         _runtime_features._runtime_builtin_features_for_profile(
             stdlib_profile or DEFAULT_STDLIB_PROFILE,
-            target_triple=target_triple,
+            target=facts_target,
         )
     )
     return _required_features.reachability_profile_feature_refusal(
         reached_symbols,
         profile_name=stdlib_profile or DEFAULT_STDLIB_PROFILE,
         profile_features=profile_features,
-        target_triple=target_triple,
+        target=facts_target,
     )
 
 
@@ -1995,7 +1987,7 @@ def _prepare_backend_ir(
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     target: Target = TargetKind.NATIVE,
-    target_triple: str | None = None,
+    facts_target: ArtifactTarget,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
@@ -2276,8 +2268,7 @@ def _prepare_backend_ir(
     feature_refusal = _reachability_feature_refusal(
         reached_symbols,
         stdlib_profile=stdlib_profile,
-        target=target,
-        target_triple=target_triple,
+        facts_target=facts_target,
     )
     if feature_refusal is not None:
         return None, fail(feature_refusal, json_output, command="build")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 import inspect
 from pathlib import Path
 
@@ -42,6 +44,7 @@ def test_backend_requested_artifact_is_private_until_publication(tmp_path: Path,
         output_binary=None,
         linked_output_path=None,
         emit_ir_path=None,
+        facts_target=_target(None),
     )
     with cli_backend_pipeline._staged_backend_output(layout, project_root=tmp_path) as (
         staged,

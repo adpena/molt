@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from molt.cli.build_output_layout import _runtime_facts_target
 from molt.cli.config_resolution import _select_codegen_backend
 
 
@@ -337,6 +338,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         stdlib_profile=stdlib_profile,
         target=_select_codegen_backend(target, "auto")[0],
         module_source_role_by_module={name: "user" for name in module_graph},
+        facts_target=_runtime_facts_target(_select_codegen_backend(target, "auto")[0]),
     )
     assert error is None
     assert prepared is not None

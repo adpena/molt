@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.native_target import resolve_native_target_spec
 from molt.cli import progress as _progress
 
 import json
@@ -900,15 +901,17 @@ def _prepare_native_runtime_build(
     if runtime_state is not None:
         runtime_state.revoke_native_runtime_admission()
         runtime_state.native_runtime_build_failure = None
+    # This plan selects Cargo by its wire target; the facts read its admitted spec.
+    native_target = resolve_native_target_spec(target_triple)
     runtime_features = tuple(
         dict.fromkeys(
-            [*_runtime_cargo_features(target_triple), *(extra_runtime_features or ())]
+            [*_runtime_cargo_features(native_target), *(extra_runtime_features or ())]
         )
     )
     concrete_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     fingerprint_features = runtime_fingerprint_features_for_profile(
         concrete_stdlib_profile,
-        target_triple=target_triple,
+        target=native_target,
         extra_runtime_features=extra_runtime_features,
     )
     cmd = _native_runtime_cargo_command(
@@ -916,7 +919,7 @@ def _prepare_native_runtime_build(
         concrete_stdlib_profile=concrete_stdlib_profile,
         runtime_features=runtime_features,
         builtin_features=_runtime_builtin_features_for_profile(
-            stdlib_profile, target_triple=target_triple
+            stdlib_profile, target=native_target
         ),
         concrete_stdlib_feature=runtime_cargo_feature_for_profile(
             concrete_stdlib_profile

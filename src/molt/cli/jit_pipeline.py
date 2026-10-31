@@ -122,7 +122,7 @@ def _run_jit_pipeline(
         target_python=prepared_build_config.target_python,
         stdlib_profile=stdlib_profile,
         target=target,
-        target_triple=output_layout.target_triple,
+        facts_target=output_layout.facts_target,
         native_artifact_plan=native_artifact_plan,
     )
     if prepared_backend_ir_error is not None:
@@ -145,7 +145,7 @@ def _run_jit_pipeline(
         _runtime_features.runtime_stdlib_profile_for_required_features(
             stdlib_profile,
             prepared_backend_ir.required_link_features,
-            target_triple=output_layout.target_triple,
+            target=output_layout.facts_target,
         )
     )
     try:

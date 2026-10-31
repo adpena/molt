@@ -8,6 +8,8 @@ archive without dead-stripping any runtime symbol.
 
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 import os
 import re
 from pathlib import Path
@@ -702,7 +704,9 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
     )
     monkeypatch.setattr(jit_pipeline, "ensure_jit_runtime_image", runtime_work)
     bundle = SimpleNamespace(
-        output_layout=SimpleNamespace(emit_ir_path=None, target_triple=None),
+        output_layout=SimpleNamespace(
+            emit_ir_path=None, target_triple=None, facts_target=_target(None)
+        ),
         native_artifact_plan=None,
         module_graph={},
         prepared_frontend_run_ticket=SimpleNamespace(
@@ -958,6 +962,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
             target_triple=None,
             output_artifact=tmp_path / "app.moltjit",
             emit_mode="jit",
+            facts_target=_target(None),
         ),
         native_artifact_plan=None,
         module_graph={},

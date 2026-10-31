@@ -17,6 +17,8 @@ elimination.
 
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 from collections.abc import Mapping, Sequence
 import re
 
@@ -325,7 +327,10 @@ def test_named_runtime_entries_and_addresses_contribute_reached_features(
         {"molt_re_compile", "molt_ast_parse"}
     )
     message = RF.reachability_profile_feature_refusal(
-        symbols, profile_name="micro", profile_features=frozenset()
+        symbols,
+        profile_name="micro",
+        profile_features=frozenset(),
+        target=_target(None),
     )
     assert message is not None
     assert "stdlib_regex" in message and "molt_re_compile" in message
@@ -535,6 +540,7 @@ def test_refusal_fires_when_reached_feature_excluded() -> None:
         RF.reached_intrinsic_symbols(functions),
         profile_name="micro",
         profile_features=frozenset({"stdlib_asyncio"}),
+        target=_target(None),
     )
     assert message is not None
     assert "stdlib_regex" in message
@@ -560,6 +566,7 @@ def test_refusal_silent_when_feature_within_ceiling() -> None:
         RF.reached_intrinsic_symbols(functions),
         profile_name="full",
         profile_features=frozenset({"stdlib_regex"}),
+        target=_target(None),
     )
     assert message is None
 
@@ -577,6 +584,7 @@ def test_refusal_silent_when_reaching_only_core_intrinsics() -> None:
             RF.reached_intrinsic_symbols(functions),
             profile_name="micro",
             profile_features=frozenset(),
+            target=_target(None),
         )
         is None
     )
@@ -598,6 +606,7 @@ def test_refusal_ignores_unreached_intrinsic_user() -> None:
             RF.reached_intrinsic_symbols(functions),
             profile_name="micro",
             profile_features=frozenset(),
+            target=_target(None),
         )
         is None
     )
@@ -661,7 +670,7 @@ def test_refusal_reports_complete_independent_target_and_profile_requirements(
             ),
             profile_name="selected",
             profile_features=profile_features,
-            target_triple=target_triple,
+            target=_target(target_triple),
         )
 
     message = refusal(functions)

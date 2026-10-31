@@ -63,6 +63,7 @@ from molt.cli.runtime_cargo_plan import (
     RuntimeCargoPlan,
     resolve_runtime_cargo_plan,
 )
+from molt.compilation_target import TargetKind
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _wasm_runtime_feature_plan,
@@ -377,7 +378,7 @@ def runtime_wasm_distribution_surface(
     """
     return (
         frozenset(wasm_cpython_abi_distribution_export_names()),
-        frozenset(profile_link_features(stdlib_profile, target_triple="wasm32-wasip1")),
+        frozenset(profile_link_features(stdlib_profile, target=TargetKind.WASI)),
     )
 
 
@@ -470,8 +471,7 @@ def _compute_runtime_wasm_build_spec(
     )
     cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
     builtin_features = _runtime_builtin_features_for_profile(
-        effective_stdlib_profile,
-        target_triple="wasm32-wasip1",
+        effective_stdlib_profile, target=TargetKind.WASI
     )
     no_default_features, wasm_cargo_features, fingerprint_features = (
         _wasm_runtime_feature_plan(

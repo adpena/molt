@@ -18,6 +18,13 @@ from molt.cli import required_features as RF
 from molt.cli import runtime_features as RUNTIME_FEATURES
 from molt._runtime_feature_gates import RUNTIME_FEATURES as DECLARED_FEATURES
 from molt._runtime_feature_gates import feature_for_symbol
+from molt.compilation_target import (
+    ArtifactTarget,
+    artifact_triple,
+    TargetKind,
+)
+from molt.cli.build_output_layout import _runtime_facts_target
+from tests.artifact_targets import artifact_target as _target
 from molt.cli import compiler_metadata as cli_compiler_metadata
 
 
@@ -27,7 +34,7 @@ MOLT_ROOT = cli_compiler_metadata._compiler_root()
 def _micro_features() -> frozenset[str]:
     return frozenset(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(
-            "micro", target_triple=None
+            "micro", target=_target(None)
         )
     )
 
@@ -35,7 +42,7 @@ def _micro_features() -> frozenset[str]:
 def _full_features() -> frozenset[str]:
     return frozenset(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(
-            "full", target_triple=None
+            "full", target=_target(None)
         )
     )
 
@@ -62,16 +69,15 @@ def _refusal_for_reached_symbols(
     profile: str,
     target_triple: str | None,
 ) -> str | None:
+    target = _target(target_triple)
     profile_features = frozenset(
-        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
-            profile, target_triple=target_triple
-        )
+        RUNTIME_FEATURES._runtime_builtin_features_for_profile(profile, target=target)
     )
     return RF.reachability_profile_feature_refusal(
         RF.reached_intrinsic_symbols(_functions_reaching(*symbols)),
         profile_name=profile,
         profile_features=profile_features,
-        target_triple=target_triple,
+        target=target,
     )
 
 
@@ -147,7 +153,7 @@ def test_unicode_names_demand_owns_auto_profile_and_explicit_ceiling(
     assert required == frozenset({"stdlib_unicode_names"})
     assert (
         RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
-            "auto", required, target_triple=target_triple
+            "auto", required, target=_target(target_triple)
         )
         == "full"
     )
@@ -168,13 +174,13 @@ def test_unicode_names_demand_owns_auto_profile_and_explicit_ceiling(
     assert property_required == frozenset({"stdlib_text"})
     assert (
         RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
-            "auto", property_required, target_triple=target_triple
+            "auto", property_required, target=_target(target_triple)
         )
         == "standard"
     )
     assert (
         RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
-            "auto", (), target_triple=target_triple
+            "auto", (), target=_target(target_triple)
         )
         == "micro"
     )
@@ -264,7 +270,7 @@ def test_explicit_profile_refuses_reached_networking_at_build_time() -> None:
     message = BACKEND_IR._reachability_feature_refusal(
         RF.reached_intrinsic_symbols(_socket_module_reaching_socketpair()),
         stdlib_profile="micro",
-        target=admit_target("native"),
+        facts_target=_runtime_facts_target(admit_target("native")),
     )
     assert message is not None
     assert "stdlib_net: reached intrinsic molt_socketpair" in message
@@ -279,7 +285,7 @@ def test_auto_selects_the_networking_tier(target_triple: str | None) -> None:
     assert required == {"stdlib_net"}
     assert (
         RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
-            "auto", required, target_triple=target_triple
+            "auto", required, target=_target(target_triple)
         )
         == "server"
     )
@@ -345,7 +351,7 @@ def test_wasm_micro_uses_wasm_feature_surface_and_refuses_ast() -> None:
 def test_wasm_full_excludes_sqlite_and_refuses_reached_sqlite() -> None:
     wasm_full = frozenset(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(
-            "full", target_triple="wasm32-wasip1"
+            "full", target=_target("wasm32-wasip1")
         )
     )
     assert "sqlite" not in wasm_full
@@ -361,7 +367,7 @@ def test_wasm_full_excludes_sqlite_and_refuses_reached_sqlite() -> None:
 def test_wasm_micro_excludes_crypto_so_reached_hashlib_refuses() -> None:
     wasm_micro = frozenset(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(
-            "micro", target_triple="wasm32-wasip1"
+            "micro", target=_target("wasm32-wasip1")
         )
     )
     assert "stdlib_crypto" not in wasm_micro
@@ -440,15 +446,16 @@ def test_reached_windows_locale_provider_resolves_implicit_native_host(
 
 
 def test_implicit_host_features_follow_the_current_host_not_a_cached_one(monkeypatch):
-    """`None` is resolved per call; the cache is keyed by the concrete target (HF-608)."""
+    """The host is resolved with the target; the cache keys on the typed target (HF-608)."""
     import molt.native_target as native_target
 
     hosts = iter(("x86_64-pc-windows-msvc", "aarch64-apple-darwin"))
     monkeypatch.setattr(native_target, "_host_target_triple", lambda **_: next(hosts))
     unsupported = RUNTIME_FEATURES.runtime_features_unsupported_on_target
-    assert unsupported(None) == unsupported("x86_64-pc-windows-msvc")
-    assert unsupported(None) == unsupported("aarch64-apple-darwin")
-    assert unsupported("x86_64-pc-windows-msvc") != unsupported("aarch64-apple-darwin")
+    windows, mac = _target("x86_64-pc-windows-msvc"), _target("aarch64-apple-darwin")
+    assert unsupported(_target(None)) == unsupported(windows)
+    assert unsupported(_target(None)) == unsupported(mac)
+    assert unsupported(windows) != unsupported(mac)
 
 
 def test_implicit_host_arch_and_os_come_from_one_resolver(monkeypatch):
@@ -458,9 +465,10 @@ def test_implicit_host_arch_and_os_come_from_one_resolver(monkeypatch):
     monkeypatch.setattr(
         native_target, "_host_target_triple", lambda **_: "x86_64-pc-windows-msvc"
     )
-    assert gates.target_arch_from_triple(None) == "x86_64"
-    assert gates.target_os_from_triple(None) == "windows"
-    assert gates.target_arch_from_triple("wasm32-wasip1") == "wasm32"
+    host = _target(None)
+    assert gates.target_arch(host) == "x86_64"
+    assert gates.target_os(host) == "windows"
+    assert gates.target_arch(TargetKind.WASI) == "wasm32"
 
 
 def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
@@ -473,9 +481,10 @@ def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
             "unrestricted/rejected dead functions must not resolve a host target"
         )
 
-    # The profile's own features may resolve the host; only the refusal check
-    # below must not, so compute them before the resolver is forbidden.
+    # The profile's own features and the target may resolve the host; only the
+    # refusal check below must not, so compute them before it is forbidden.
     profile_features = _full_features()
+    host = _target(None)
     monkeypatch.setattr(
         native_target, "resolve_native_target_spec", unexpected_resolution
     )
@@ -492,6 +501,7 @@ def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
             RF.reached_intrinsic_symbols(functions),
             profile_name="full",
             profile_features=profile_features,
+            target=host,
         )
         is None
     )
@@ -528,7 +538,7 @@ def test_backend_refusal_combines_missing_target_and_profile_requirements(
             )
         ),
         stdlib_profile="micro",
-        target=admit_target(target),
+        facts_target=_runtime_facts_target(admit_target(target)),
     )
 
     assert message is not None
@@ -603,7 +613,7 @@ _LADDER_PROFILE_TO_CARGO = {
 
 
 def test_profile_link_features_full_includes_dep_backed_leaf_features() -> None:
-    full = RUNTIME_FEATURES.profile_link_features("full", target_triple=None)
+    full = RUNTIME_FEATURES.profile_link_features("full", target=_target(None))
     assert _PREVIOUSLY_DRIFTED_FULL_FEATURES <= full, (
         "profile_link_features('full') is missing Cargo-linked features: "
         f"{sorted(_PREVIOUSLY_DRIFTED_FULL_FEATURES - full)}"
@@ -612,7 +622,7 @@ def test_profile_link_features_full_includes_dep_backed_leaf_features() -> None:
 
 def test_profile_link_features_matches_cargo_chain_for_every_ladder_tier() -> None:
     for profile, cargo_feature in _LADDER_PROFILE_TO_CARGO.items():
-        derived = RUNTIME_FEATURES.profile_link_features(profile, target_triple=None)
+        derived = RUNTIME_FEATURES.profile_link_features(profile, target=_target(None))
         expected = _independent_cargo_expansion(cargo_feature)
         assert derived == expected, (
             f"profile_link_features({profile!r}) diverged from Cargo "
@@ -627,7 +637,7 @@ def test_auto_runtime_profile_selects_smallest_sufficient_ladder_tier() -> None:
         RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
             "auto",
             frozenset(),
-            target_triple=None,
+            target=_target(None),
         )
         == "micro"
     )
@@ -635,7 +645,7 @@ def test_auto_runtime_profile_selects_smallest_sufficient_ladder_tier() -> None:
         RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
             "auto",
             frozenset({"stdlib_regex"}),
-            target_triple=None,
+            target=_target(None),
         )
         == "edge"
     )
@@ -643,7 +653,7 @@ def test_auto_runtime_profile_selects_smallest_sufficient_ladder_tier() -> None:
         RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
             "micro",
             frozenset({"stdlib_regex"}),
-            target_triple=None,
+            target=_target(None),
         )
         == "micro"
     )
@@ -666,7 +676,7 @@ def test_profile_link_features_rejects_unknown_profile() -> None:
     import pytest
 
     with pytest.raises(ValueError):
-        RUNTIME_FEATURES.profile_link_features("nonsense", target_triple=None)
+        RUNTIME_FEATURES.profile_link_features("nonsense", target=_target(None))
 
 
 def test_full_features_superset_includes_previously_drifted_features() -> None:
@@ -720,7 +730,7 @@ def test_wasm_feature_surface_matches_cargo_ladder_after_migration() -> None:
     def wasm(profile: str) -> frozenset[str]:
         return frozenset(
             RUNTIME_FEATURES._runtime_builtin_features_for_profile(
-                profile, target_triple="wasm32-wasip1"
+                profile, target=_target("wasm32-wasip1")
             )
         )
 
@@ -732,7 +742,7 @@ def test_wasm_feature_surface_matches_cargo_ladder_after_migration() -> None:
     assert "stdlib_archive" not in wasm("micro")
     assert wasm("full") == builtin | RUNTIME_FEATURES.profile_link_features(
         "full",
-        target_triple="wasm32-wasip1",
+        target=_target("wasm32-wasip1"),
     )
 
 
@@ -757,10 +767,8 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
 ) -> None:
     observed: list[tuple[str, str | None]] = []
 
-    def profile_features(
-        _profile: str, *, target_triple: str | None
-    ) -> tuple[str, ...]:
-        observed.append(("profile", target_triple))
+    def profile_features(_profile: str, *, target: ArtifactTarget) -> tuple[str, ...]:
+        observed.append(("profile", artifact_triple(target)))
         return ()
 
     def refusal(
@@ -768,11 +776,11 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
         *,
         profile_name: str,
         profile_features: frozenset[str],
-        target_triple: str | None,
+        target: ArtifactTarget,
     ) -> None:
         del profile_name, profile_features
         assert reached_symbols == frozenset()
-        observed.append(("refusal", target_triple))
+        observed.append(("refusal", artifact_triple(target)))
 
     monkeypatch.setattr(
         BACKEND_IR._runtime_features,
@@ -789,8 +797,7 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
         BACKEND_IR._reachability_feature_refusal(
             frozenset(),
             stdlib_profile="full",
-            target=admit_target("native"),
-            target_triple=target_triple,
+            facts_target=_target(target_triple),
         )
         is None
     )

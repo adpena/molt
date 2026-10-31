@@ -66,12 +66,12 @@ from molt._runtime_feature_gates import (
     feature_for_symbol,
     runtime_symbol_available_on_target,
     supported_target_oses_for_symbol,
-    symbol_availability_depends_on_target_os,
-    target_os_from_triple,
+    target_arch,
     unsupported_target_arches_for_symbol,
     unsupported_target_oses_for_symbol,
 )
 from molt.cli import function_references as _function_references
+from molt.compilation_target import ArtifactTarget, artifact_triple
 from molt.cli.runtime_features import (
     profile_link_features,
     runtime_stdlib_profile_for_required_features,
@@ -202,7 +202,7 @@ def reachability_profile_feature_refusal(
     *,
     profile_name: str,
     profile_features: frozenset[str],
-    target_triple: str | None = None,
+    target: ArtifactTarget,
 ) -> str | None:
     """Report all target and profile requirements absent from reached code's runtime.
 
@@ -222,17 +222,10 @@ def reachability_profile_feature_refusal(
     compile-time refusal, exactly the design's "no silent divergence / no raw
     link error" contract.
     """
-    target_os: str | None = None
-    if any(
-        symbol_availability_depends_on_target_os(symbol) for symbol in reached_symbols
-    ):
-        target_os = target_os_from_triple(target_triple)
     unavailable_symbols: list[str] = []
     blocked: dict[str, list[str]] = {}
     for symbol in reached_symbols:
-        if not runtime_symbol_available_on_target(
-            symbol, target_triple=target_triple, target_os=target_os
-        ):
+        if not runtime_symbol_available_on_target(symbol, target=target):
             unavailable_symbols.append(symbol)
         feature = feature_for_symbol(symbol)
         if feature is not None and feature not in profile_features:
@@ -243,9 +236,7 @@ def reachability_profile_feature_refusal(
 
     messages: list[str] = []
     if unavailable_symbols:
-        arch = (
-            target_triple.split("-", 1)[0] if target_triple is not None else "unknown"
-        )
+        arch = target_arch(target)
         symbol_details: list[str] = []
         for symbol in sorted(unavailable_symbols):
             restrictions: list[str] = []
@@ -258,7 +249,7 @@ def reachability_profile_feature_refusal(
             symbol_details.append(f"{symbol} ({'; '.join(restrictions)})")
         details = ", ".join(symbol_details)
         messages.append(
-            f"target {target_triple!r} (architecture {arch}) has no runtime provider "
+            f"target {artifact_triple(target)!r} (architecture {arch}) has no runtime provider "
             f"for reached intrinsic symbols: {details}; choose a supported "
             "target or remove the reached operation"
         )
@@ -277,14 +268,13 @@ def reachability_profile_feature_refusal(
             else "runtime features " + ", ".join(repr(f) for f in excluded_features)
         )
         unprovidable = sorted(
-            set(excluded_features)
-            - profile_link_features("full", target_triple=target_triple)
+            set(excluded_features) - profile_link_features("full", target=target)
         )
         providable = [f for f in excluded_features if f not in unprovidable]
         remedies: list[str] = []
         if providable:
             tier = runtime_stdlib_profile_for_required_features(
-                "auto", providable, target_triple=target_triple
+                "auto", providable, target=target
             )
             provided = (
                 f"the {providable[0]!r} runtime feature"

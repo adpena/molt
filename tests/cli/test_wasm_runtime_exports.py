@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.artifact_targets import artifact_target as _target
 from molt._wasm_runtime_exports import (
     _all_dynamic_runtime_owned_intrinsic_exports,
     _export_if_defined_link_args,
@@ -696,15 +697,15 @@ def test_runtime_build_abi_is_the_registry_narrowed_by_that_build_only() -> None
     tk = _import_for_runtime_symbol("molt_tk_after")
     micro = wasm_runtime_import_names_for_features(
         runtime_enabled_cargo_features(("no-default-features", "stdlib_micro")),
-        target_triple="wasm32-wasip1",
+        target=_target("wasm32-wasip1"),
     )
     full_wasm = wasm_runtime_import_names_for_features(
-        profile_link_features("full", target_triple="wasm32-wasip1"),
-        target_triple="wasm32-wasip1",
+        profile_link_features("full", target=_target("wasm32-wasip1")),
+        target=_target("wasm32-wasip1"),
     )
     native_full = wasm_runtime_import_names_for_features(
         runtime_enabled_cargo_features(("default-features",)),
-        target_triple="aarch64-apple-darwin",
+        target=_target("aarch64-apple-darwin"),
     )
     assert core in micro and core in full_wasm
     assert decimal not in micro and decimal in full_wasm
@@ -715,8 +716,7 @@ def test_runtime_build_abi_is_the_registry_narrowed_by_that_build_only() -> None
         for name in wasm_runtime_import_names()
         if not runtime_symbol_available_on_target(
             wasm_runtime_export_name_for_import(name) or name,
-            target_triple="aarch64-apple-darwin",
-            target_os="macos",
+            target=_target("aarch64-apple-darwin"),
         )
     }
 
@@ -741,11 +741,11 @@ def test_network_runtime_abi_includes_select_without_widening_provider_targets(
     select = _import_for_runtime_symbol("molt_select_select")
     request = ("no-default-features", "stdlib_micro")
     micro = wasm_runtime_import_names_for_features(
-        runtime_enabled_cargo_features(request), target_triple=target_triple
+        runtime_enabled_cargo_features(request), target=_target(target_triple)
     )
     network = wasm_runtime_import_names_for_features(
         runtime_enabled_cargo_features((*request, "stdlib_net")),
-        target_triple=target_triple,
+        target=_target(target_triple),
     )
     assert watcher not in micro and select not in micro
     assert select in network

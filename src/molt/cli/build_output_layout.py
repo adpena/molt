@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from molt.native_target import NativeTargetSpec
-from molt.compilation_target import target_name, Target, TargetKind, is_wasm_target
+from molt.compilation_target import (
+    ArtifactTarget,
+    Target,
+    TargetKind,
+    is_wasm_target,
+    resolve_artifact_target,
+    target_name,
+)
 
 from typing import TYPE_CHECKING, assert_never, get_args
 
@@ -43,6 +50,8 @@ class _BuildOutputLayout:
     split_runtime: bool
     linked: bool
     target_triple: str | None
+    # The artifact target whose runtime facts this build reads, resolved once.
+    facts_target: ArtifactTarget
     emit_mode: str
     output_artifact: Path
     output_binary: Path | None
@@ -492,6 +501,19 @@ def resolve_build_output_options(
     return linked, emit_mode
 
 
+def _runtime_facts_target(target: Target) -> ArtifactTarget:
+    """The artifact target whose runtime facts a build reads: its one host lookup.
+
+    Rust and Luau transpiles and MLIR emission link no Molt runtime; they read
+    the host's facts, as they did while the triple was None.
+    """
+    match target:
+        case TargetKind.RUST | TargetKind.LUAU | TargetKind.MLIR:
+            return resolve_artifact_target(TargetKind.NATIVE)
+        case _:
+            return resolve_artifact_target(target)
+
+
 def _resolve_build_output_layout(
     *,
     target: Target,
@@ -527,6 +549,7 @@ def _resolve_build_output_layout(
     is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
     is_luau_transpile = target is TargetKind.LUAU
     is_mlir_emit = target is TargetKind.MLIR
+    facts_target = _runtime_facts_target(target)
     target_triple = (
         target.triple
         if isinstance(target, NativeTargetSpec)
@@ -633,6 +656,7 @@ def _resolve_build_output_layout(
         split_runtime=split_runtime,
         linked=linked,
         target_triple=target_triple,
+        facts_target=facts_target,
         emit_mode=emit_mode,
         output_artifact=output_artifact,
         output_binary=output_binary,
