@@ -52,8 +52,8 @@ class LoopLoweringMixin(GeneratorMixinBase):
     # The reduction kernels admit their iterator at run time: they decline any
     # iterator that is not over a list, tuple or range before an effect. So a
     # loop fuses unless its iterable's hint proves that the kernel declines;
-    # an unknown hint (a parameter, or from 3.13 any local a callback may have
-    # rebound) still fuses.
+    # an unknown hint (a parameter, or a local a callback may have rebound
+    # through a PEP 667 frame proxy) still fuses.
     _VECTOR_REDUCTION_ITERABLE_HINTS = frozenset(
         {"list", "tuple", "range", "Any", "Unknown"}
     )
