@@ -1444,7 +1444,7 @@ def test_digest_lookup_work_is_bounded_by_requested_files(tmp_path, monkeypatch)
     with sqlite3.connect(store) as connection:
         row = connection.execute("SELECT * FROM digests").fetchone()
         connection.executemany(
-            "INSERT INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [(f"/unrelated/toolchain/{number}", *row[1:]) for number in range(10_000)],
         )
 
