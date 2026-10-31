@@ -557,11 +557,16 @@ def test_historical_envelope_validation_is_offline_but_live_custody_is_not(
 
 def test_remounted_or_forged_root_identity_is_not_current_custody(tmp_path):
     declaration = layout.declare_root(str(_root(tmp_path)))
-    forged = {**declaration, "inode": declaration["inode"] + 1}
+    forged = {
+        **declaration,
+        "identity": {**declaration["identity"], "file_id": "f" * 32},
+    }
     with pytest.raises(ValueError, match="replaced or remounted"):
         layout.validate_root(forged)
-    with pytest.raises(ValueError, match="identity is malformed"):
-        layout.declared_root({**declaration, "device": True})
+    with pytest.raises(ValueError, match="invalid durable"):
+        layout.declared_root(
+            {**declaration, "identity": {**declaration["identity"], "file_id": True}}
+        )
 
 
 @pytest.mark.parametrize("error", [PermissionError("denied"), OSError("I/O failure")])
@@ -953,7 +958,14 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
 
     def run_git(root, arguments):
         result = run_guarded_test_process(
-            ["git", "-C", str(root), *arguments], text=False, check=True, timeout=30
+            ["git", "-C", str(root), *arguments],
+            env={
+                **os.environ,
+                "MOLT_EXT_ROOT": str(tmp_path / "git-observer-artifacts"),
+            },
+            text=False,
+            check=True,
+            timeout=30,
         )
         assert isinstance(result.stdout, bytes)
         return result.stdout
@@ -1243,7 +1255,10 @@ def test_cache_payload_capacity_and_roles_follow_root_but_identity_and_metadata_
             bound = outputs.bind({}, target=lease.target)
             assert all(bound[name] == str(lease.target) for name in outputs.names)
             identities.append(lease.provenance["input_sha256"])
-            other_root = {**declaration, "inode": declaration["inode"] + 1}
+            other_root = {
+                **declaration,
+                "identity": {**declaration["identity"], "file_id": "f" * 32},
+            }
             with pytest.raises(ValueError, match="differs from admitted envelope"):
                 cache.validate_prelaunch(
                     lease.provenance,
@@ -1604,3 +1619,28 @@ def test_runtime_cargo_intermediate_base_is_owned_by_the_payload_lease(tmp_path)
     outputs.validate(bound, target=target)
     with pytest.raises(ValueError, match="differs"):
         outputs.validate({**bound, **inherited}, target=target)
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_legacy_cargo_declaration_requires_current_readmission(tmp_path, renumbered):
+    root = _root(tmp_path)
+    metadata = root.stat()
+    legacy = {
+        "schema": "molt.proof-cargo-output-root.v1",
+        "path": str(root),
+        "device": metadata.st_dev + int(renumbered),
+        "inode": metadata.st_ino,
+    }
+    before = list(root.iterdir())
+    with pytest.raises(ValueError, match="declaration is malformed"):
+        layout.validate_root(legacy)
+    assert list(root.iterdir()) == before
+
+
+def test_current_cargo_root_survives_device_renumbering(tmp_path, monkeypatch):
+    from tests.test_dx_run_context import _renumber_stat_devices
+
+    root = _root(tmp_path)
+    declaration = layout.declare_root(str(root))
+    _renumber_stat_devices(monkeypatch)
+    assert layout.validate_root(declaration) == declaration

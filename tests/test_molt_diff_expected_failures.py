@@ -1281,11 +1281,11 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
         target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
         capabilities="",
-        # A complete execution environment names its cache; without one the
-        # layout would resolve the real checkout as its own artifact root.
+        # Own cache and artifact custody even when the compiler is mocked.
         environment={
             "MOLT_CAPABILITY_TIER": "none",
             "MOLT_CACHE": str(tmp_path / "molt-cache"),
+            "MOLT_EXT_ROOT": str(tmp_path / "command-artifacts"),
         },
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment(
@@ -1364,11 +1364,11 @@ def test_run_molt_build_only_uses_build_profile_flag(
         target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
         capabilities="fs,env,time,random",
-        # A complete execution environment names its cache; without one the
-        # layout would resolve the real checkout as its own artifact root.
+        # Own cache and artifact custody even when the compiler is mocked.
         environment={
             "MOLT_CAPABILITY_TIER": "none",
             "MOLT_CACHE": str(tmp_path / "molt-cache"),
+            "MOLT_EXT_ROOT": str(tmp_path / "command-artifacts"),
         },
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment(
@@ -2654,9 +2654,7 @@ def test_metadata_deadline_preserves_primary_guard_error_and_receipt(
     def allocate(**kwargs):
         allocation = original_allocation(dir=tmp_path, **kwargs)
         path = Path(allocation.name)
-        allocations.append(
-            (path, temporary_artifacts._identity(path), weakref.ref(allocation))
-        )
+        allocations.append((path, allocation._identity, weakref.ref(allocation)))
         return allocation
 
     monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)

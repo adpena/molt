@@ -1653,3 +1653,69 @@ def test_searchable_executable_has_narrow_error_classification(denial):
         assert caught.value is failure
     else:
         assert identity.is_searchable_executable(candidate) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never reuses detached digests")
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_new_digest_database_starts_cold_without_reading_legacy_rows(
+    tmp_path, monkeypatch, renumbered
+):
+    import sqlite3
+
+    path = tmp_path / "input"
+    path.write_bytes(b"known bytes")
+    metadata = path.stat()
+    digest = hashlib.sha256(b"known bytes").hexdigest()
+    store = tmp_path / "v1.sqlite"
+    with sqlite3.connect(store) as connection:
+        connection.execute(
+            "CREATE TABLE digests (path TEXT PRIMARY KEY, dev INTEGER, ino INTEGER, mode INTEGER, size INTEGER, mtime_ns INTEGER, ctime_ns INTEGER, sha256 TEXT, recorded_ns INTEGER)"
+        )
+        connection.execute(
+            "INSERT INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(path),
+                metadata.st_dev + int(renumbered),
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+                digest,
+                time.time_ns(),
+            ),
+        )
+    new_store = tmp_path / "v3.sqlite"
+    cache = identity.FileDigestCache(new_store, max_age_ns=10**18)
+    found = cache.lookup(path, expected_path_stat=metadata, label="legacy digest")
+    assert found is None
+    with sqlite3.connect(new_store) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(digests)")}
+        assert "dev" not in columns and "ino" not in columns
+        assert "inode" in columns and not {"dev", "volume", "file_id"} & columns
+    # Old immutable cache material remains for older running readers. Its
+    # contents never become current v3 cache state.
+    with sqlite3.connect(store) as connection:
+        assert connection.execute("SELECT dev FROM digests").fetchone() == (
+            metadata.st_dev + int(renumbered),
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never reuses detached digests")
+def test_digest_reuse_survives_device_renumbering(tmp_path, monkeypatch):
+    from tests.test_dx_run_context import _renumber_stat_devices
+
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    path = _settled_file(tmp_path / "input", b"stable content")
+    store = tmp_path / "digests.sqlite"
+    first = identity.FileDigestCache(store, max_age_ns=10**18)
+    expected = first.identity(path, label="input").sha256
+    first.flush()
+    _renumber_stat_devices(monkeypatch)
+    _no_rehash(monkeypatch)
+    assert (
+        identity.FileDigestCache(store, max_age_ns=10**18)
+        .identity(path, label="input")
+        .sha256
+        == expected
+    )

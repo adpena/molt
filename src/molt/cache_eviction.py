@@ -30,6 +30,7 @@ from molt.default_paths import (
     shared_cache_lock_path,
     is_backend_cache_artifact_name,
     backend_cache_sync_receipt_path,
+    backend_cache_artifact_for_sync_receipt,
     backend_cache_publication_lock_name,
     native_stdlib_archive_cache_entry,
     native_stdlib_object_cache_entry,
@@ -420,14 +421,8 @@ def _collect_entries(
                 ),
                 companions=(backend_cache_sync_receipt_path(child),),
             )
-        elif child.name.endswith(".sync.json"):
-            artifact = child.with_name(child.name.removesuffix(".sync.json"))
-            if (
-                is_backend_cache_artifact_name(artifact.name)
-                and not artifact.exists()
-                and child.is_file()
-                and not child.is_symlink()
-            ):
+        elif (artifact := backend_cache_artifact_for_sync_receipt(child)) is not None:
+            if not artifact.exists() and child.is_file() and not child.is_symlink():
                 append(
                     child,
                     shared_cache_lock_path(

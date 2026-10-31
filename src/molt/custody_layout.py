@@ -73,6 +73,7 @@ ReplacedStorageClass = Literal[
     "replaced-lane-evidence",
     "replaced-compile-cache",
     "replaced-temporary",
+    "replaced-identity-state",
 ]
 StorageClass = Literal[
     CheckoutStateKind,
@@ -150,6 +151,10 @@ class StorageRule:
     owner: str
     relative: tuple[str, ...]
     retention: Regenerable | DurableEvidence | ExternalProviderRetention
+    # Finite former producer coordinates under each named class's selected
+    # root. Current versions stay outside this inventory; the executor refuses
+    # any recovery journal encountered in a former namespace.
+    replaced_namespaces: tuple[tuple[StorageClass, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -171,6 +176,40 @@ def storage_rule(kind: StorageClass) -> StorageRule:
     gib = 1024**3
     month = 30 * 86400.0
     match kind:
+        case "replaced-identity-state":
+            return StorageRule(
+                "artifact",
+                "durable-identity producers",
+                (),
+                DurableEvidence(compact_after_s=month),
+                (
+                    ("compile-cache", "file-digests/v[12].sqlite"),
+                    ("compile-cache", "file-digests/v[12].sqlite-wal"),
+                    ("compile-cache", "file-digests/v[12].sqlite-shm"),
+                    ("compile-cache", "toolchain-facts/v[12].json"),
+                    ("compile-cache", "source_hash_cache/[0-9a-f][0-9a-f]"),
+                    ("compile-cache", "source_hash_cache/v2"),
+                    ("compile-cache", "*.sync.json"),
+                    ("compile-cache", "*.sync.v4.json"),
+                    ("run-control", "gs/pending/" + "[0-9a-f]" * 32),
+                    ("run-control", "gs/removing/[0-9a-f]*"),
+                    ("build-control", "*/build_records/[0-9a-f][0-9a-f]"),
+                    ("build-control", "*/build_records/.transient"),
+                    ("build-control", "*/build_records/v11"),
+                    ("build-control", "*/artifact_sync/*.json"),
+                    ("build-control", "*/artifact_sync/v4"),
+                    (
+                        "build-control",
+                        "*/backend_daemon/suite-leases/" + "[0-9a-f]" * 32,
+                    ),
+                    ("build-control", "*/backend_daemon/suite-leases/v2"),
+                    (
+                        "replaced-identity-state",
+                        "logs/runtime_wasm_final_preflight/*.json",
+                    ),
+                    ("replaced-identity-state", "logs/runtime_wasm_final_preflight/v4"),
+                ),
+            )
         case "external-provider":
             return StorageRule("user-home", "provider", (), ExternalProviderRetention())
         case "replaced-controllers":

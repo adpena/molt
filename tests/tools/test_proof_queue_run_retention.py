@@ -20,6 +20,7 @@ from molt.exact_json import write_exact
 from molt.temporary_artifacts import ScratchRetention
 from tools.proof_queue_pkg import (
     cargo_cache_custody,
+    command_identity,
     cli,
     run_retention,
     scheduling,
@@ -130,7 +131,7 @@ def add_run(
             )
         if request_scratch:
             write_exact(
-                log_path.with_suffix(".execution-request.json"),
+                command_identity.execution_record_paths(log_path)[0],
                 {"run_id": run_id, "execution_nonce": nonce},
             )
         if cargo_target is not None:

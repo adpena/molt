@@ -428,6 +428,7 @@ def python_capture_authority_paths(
         "pytest_memory_guard_bootstrap",
         "source_root",
         "temporary_artifacts",
+        "durable_file_identity",
         "disk_capacity",
         "file_deletion",
         "file_locks",

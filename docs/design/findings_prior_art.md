@@ -532,11 +532,12 @@ conventions in aggregate builders (V1-14).
 **Experiment.** Insert n keys into a dict and delete them in insertion order
 for n = 10^4, 10^5 and 10^6. Time per delete must stay flat, as in CPython 3.12.
 
-## L. C-API boundary
+## L. C extension boundary: C-API, ABI and FFI
 
 **Problem.** The C-API bridge keeps two error channels, reconciled at 269
 sites, and locks sharded maps on most crossings (HF-209). It keeps two
-`Python.h` headers (HF-283, HF-61) and stubs warning entry points (HF-527).
+`Python.h` headers (HF-283, HF-61) and stubs warning entry points (HF-527). FFI has no contract: `ctypes` is Partial and P3 behind `ffi.unsafe`, and
+cffi is unspecified (HF-621).
 
 **Prior art.**
 - *PyPy cpyext.* [F] PyPy's authors describe the cost of C-API emulation:
@@ -558,6 +559,21 @@ sites, and locks sharded maps on most crossings (HF-209). It keeps two
   https://docs.hpyproject.org/en/latest/debug-mode.html. Cost [I]: each
   extension must port.
 
+- *libffi and `_ctypes`.* [I] CPython builds `_ctypes` on libffi, so `ctypes`
+  calls foreign functions without compiling stubs.
+- *cffi modes.* [F] ABI mode reaches a library at the binary level through
+  libffi and crashes on a misdeclared `cdef`; API mode compiles against the
+  C-API and is "highly recommended" when a compiler is available. Source:
+  https://cffi.readthedocs.io/en/stable/overview.html.
+- *PyPy.* [F] PyPy recommends cffi for extensions, ships it by default, and
+  says its JIT handles cffi calls well, while `ctypes` performs worse. Source:
+  https://doc.pypy.org/extending.html.
+- *FFI on WebAssembly.* [F] Emscripten CPython builds skipped `_ctypes` until a
+  libffi port existed, and Pyodide cannot load a host library by name: a native
+  library must first be built into the package as WebAssembly. Sources:
+  https://discuss.python.org/t/get-ctypes-working-in-emscripten-build/18466,
+  https://github.com/rougier/freetype-py/issues/155.
+
 **Adopt.** [I] One runtime-owned exception slot that `PyErr_*` reads and
 writes directly, like CPython 3.12's single object. O(1) views for managed
 objects through a header flag; maps only for foreign objects. One declarative
@@ -565,6 +581,10 @@ manifest, like `stable_abi.toml`, generates both headers, the exports and the
 data symbols (HF-283, HF-61). Route `PyErr_WarnExplicit*` to the runtime's
 `warn_explicit`, as `Python/_warnings.c` does
 (https://github.com/python/cpython/blob/v3.12.0/Python/_warnings.c).
+
+FFI: a libffi-backed `_ctypes` and cffi through the libmolt C ABI, with cffi
+API mode built against libmolt headers. On WASM, FFI targets libraries built into
+the artifact, and loading a host library by name is a typed refusal.
 
 **Refuse.** [I] HPy as the v1.0 extension ABI: the target extensions use the
 CPython API. Its debug-mode checks are worth copying into a checked build.
@@ -910,6 +930,39 @@ checkout.
 
 **Experiment.** Build `molt-backend` with `cargo auditable` and diff its
 embedded graph against `Cargo.lock`.
+
+## U. GPU device boundary
+
+**Problem.** GPU work in the tree goes through Molt-owned substitutes: a
+`src/tinygrad` facade, a reimplemented op set in `runtime/molt-gpu` and
+`demos/tinygrad/reference_stdlib`. Upstream packages cannot reach a device
+through Molt (HF-613, HF-614, HF-615).
+
+**Prior art.**
+- *`webgpu.h`.* [F] The WebGPU native C API (`webgpu-native/webgpu-headers`)
+  is implemented by Dawn on Metal, D3D12 and Vulkan. Sources:
+  https://github.com/webgpu-native/webgpu-headers,
+  https://dawn.googlesource.com/dawn.
+- *tinygrad WebGPU backend.* [F] `tinygrad/runtime/ops_webgpu.py` calls
+  `webgpu.h` through generated ctypes bindings (`tinygrad.runtime.autogen.webgpu`)
+  and renders WGSL, verified 2026-10-30. Source:
+  https://github.com/tinygrad/tinygrad/blob/master/tinygrad/runtime/ops_webgpu.py.
+- *Browser hosting.* [I] Emscripten builds `webgpu.h` programs against the
+  browser's WebGPU through a host-backed implementation; Pyodide has no GPU
+  backend for packages.
+- *Array interchange.* [F] DLPack and the buffer protocol hand device and host
+  arrays between libraries without copies. Source: https://dmlc.github.io/dlpack/latest/.
+
+**Adopt.** [I] Four boundaries: the CPython C-API/ABI (family L), ctypes and
+cffi FFI, the buffer protocol and DLPack, and `webgpu.h`. Upstream tinygrad
+runs unmodified over them. On WASM, `webgpu.h` is host-backed and its
+asynchronous waits use the suspension bridge (HF-610).
+
+**Refuse.** [I] Rewriting, vendoring or maintaining upstream packages (owner,
+2026-10-30). A Molt-owned primitive lives at the C ABI, never as a Python facade.
+
+**Experiment.** Run tinygrad's WebGPU test suite, unmodified, on macOS/Metal
+through Molt's ctypes FFI to Dawn.
 
 ## Candidates not used
 

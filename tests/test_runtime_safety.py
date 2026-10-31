@@ -173,7 +173,13 @@ def test_pre_deploy_cargo_checks_use_exit_status(
         assert "ALL CHECKS PASSED" in result.stdout
 
 
-def test_miri_tmp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:
+@pytest.mark.usefixtures("developer_host_context")
+def test_miri_tmp_root_defaults_to_scratch_outside_the_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    checkout = tmp_path / "molt-src"
+    checkout.mkdir()
+    monkeypatch.setattr(runtime_safety, "ROOT", checkout)
     for key in ("MOLT_DIFF_TMPDIR", "TMPDIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 
@@ -204,8 +210,12 @@ def test_run_miri_preserves_explicit_tmpdir(monkeypatch, tmp_path: Path) -> None
     ]
 
 
-def test_run_miri_defaults_to_canonical_tmp_root(monkeypatch) -> None:
+@pytest.mark.usefixtures("developer_host_context")
+def test_run_miri_defaults_to_canonical_tmp_root(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
+    checkout = tmp_path / "molt-src"
+    checkout.mkdir()
+    monkeypatch.setattr(runtime_safety, "ROOT", checkout)
 
     def fake_run(cmd, env=None, cwd=None, log_path=None):
         captured["env"] = env

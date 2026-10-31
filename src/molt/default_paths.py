@@ -334,7 +334,16 @@ def is_backend_cache_artifact_name(name: str) -> bool:
 
 def backend_cache_sync_receipt_path(artifact: Path) -> Path:
     """Origin/byte generation receipt owned by the immutable artifact publisher."""
-    return artifact.with_name(artifact.name + ".sync.json")
+    return artifact.with_name(artifact.name + ".sync.v5.json")
+
+
+def backend_cache_artifact_for_sync_receipt(receipt: Path) -> Path | None:
+    """Decode only the current publisher's receipt namespace."""
+    name, separator, _ = receipt.name.rpartition(".sync.")
+    if not separator or not is_backend_cache_artifact_name(name):
+        return None
+    artifact = receipt.with_name(name)
+    return artifact if backend_cache_sync_receipt_path(artifact) == receipt else None
 
 
 def backend_cache_publication_lock_name(artifact: Path) -> str:
@@ -350,12 +359,12 @@ def cache_control_root(cache_root: Path) -> Path:
 
 def file_digest_cache_path(cache_root: Path) -> Path:
     """The host's stat-keyed file digest store within one cache namespace."""
-    return cache_root / "file-digests" / "v1.sqlite"
+    return cache_root / "file-digests" / "v3.sqlite"
 
 
 def toolchain_fact_store_path(cache_root: Path) -> Path:
     """The host's toolchain probe answers (`molt.toolchain_facts`) within one cache namespace."""
-    return cache_root / "toolchain-facts" / "v1.json"
+    return cache_root / "toolchain-facts" / "v3.json"
 
 
 def shared_cache_lock_path(cache_root: Path, name: str) -> Path:

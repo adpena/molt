@@ -611,7 +611,10 @@ def test_verifier_build_refused_below_the_capacity_floor_starts_no_cargo(
         disk_capacity, "_darwin_important_usage_bytes", lambda path: free_bytes
     )
     monkeypatch.delenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, raising=False)
-    env = {"CARGO_TARGET_DIR": str(tmp_path / "verifier-target")}
+    env = {
+        "CARGO_TARGET_DIR": str(tmp_path / "verifier-target"),
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+    }
 
     with pytest.raises(disk_capacity.DiskCapacityError):
         rust_ir_verifier.verifier_binary(env=env)

@@ -28,9 +28,9 @@ over stale prose or precedent.
   by mechanism and symbol. Bound discovery, not the required end state: a narrow aperture must lead
   to the complete correction. Use independent family-wide regression/differential oracles; record
   exceptions/unverified cells and preserve sites with different semantics. Scale research to risk.
-- Keep one canonical authority per fact, transition, owner, protocol or generated table. Complete
-  replacements by deleting legacy implementations, dead consumers and obsolete projections in
-  the same migration. No internal compatibility lanes, shims, duplicate registries or speculative fallbacks.
+- Keep one canonical authority per fact, transition, owner, protocol or generated table, in code and
+  documents. Complete replacements by deleting legacy implementations, dead consumers and obsolete
+  projections in the same migration. No internal compatibility lanes, shims, duplicate registries or speculative fallbacks.
 - **Incomplete consumer migration blocks landing.** Authority/schema/API/ABI/identity/ownership changes
   are indivisible. Reconcile WIP; migrate callers, projections, fixtures, build/install/release paths,
   docs and backend/target/platform cells together. Search obsolete contracts before costly validation.
@@ -38,7 +38,7 @@ over stale prose or precedent.
   validators or fallbacks may hide unfinished work. Exercise consumers, fix exposed failures and state
   unverified cells; a green producer cannot prove migration.
 - Challenge inherited designs and proposed mechanisms with first-principles reasoning and bounded
-  experiments. Choose the simplest coherent architecture; abstractions and specialized representations
+  experiments. Choose the simplest coherent architecture; abstractions, apparatus and specialized representations
   must remove duplication, expose an invariant or enable measured optimization while preserving contracts.
 - Treat all compiler layers, runtime, ABI, tooling, diagnostics, packaging, tests and docs as one architecture.
 
@@ -126,10 +126,10 @@ over stale prose or precedent.
 - Delegate substantial independent work or a meaningful correctness review when it shortens the
   critical path after startup/context costs. Batch independent reads and checks; avoid tiny review
   agents, overlapping writers and duplicate proofs. The parent owns architecture and integration.
-- Dispatch disjoint work with validated `DispatchBounds` through `tools/dispatch_prompt.py`;
-  `docs/ops/MULTI_AGENT_COORDINATION.md` owns budgets, proofs, stop rules and parent-controlled expansion.
-- Record active worker ownership and handoff state in the coordination records described in
-  `docs/ops/MULTI_AGENT_COORDINATION.md`; task messages and worktree names are not source locks.
+- One owner implements each ledger family across lanes; no other lane copies its facts. Dispatch
+  with validated `DispatchBounds` via `tools/dispatch_prompt.py`; record ownership and handoffs in
+  coordination records. `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets,
+  proofs, stop rules and parent-controlled expansion. Task messages and worktrees are not source locks.
 - Match effort to risk: Astra for complex architecture/correctness, faster workers for bounded mechanics.
   Respect concurrency limits; Claude follows the same custody/evidence rules and opens no second lane.
 
