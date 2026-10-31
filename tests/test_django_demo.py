@@ -43,6 +43,7 @@ def _setup_worker_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYTHONPATH", f"{root}:{root / 'src'}")
 
 
+@pytest.mark.slow
 def test_demo_baseline_and_offload_parity(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_django(monkeypatch)
     _setup_worker_env(monkeypatch)
@@ -60,6 +61,7 @@ def test_demo_baseline_and_offload_parity(monkeypatch: pytest.MonkeyPatch) -> No
     assert set(base_json["counts"].keys()) == set(offload_json["counts"].keys())
 
 
+@pytest.mark.slow
 def test_compute_offload_parity(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_django(monkeypatch)
     _setup_worker_env(monkeypatch)
@@ -94,6 +96,7 @@ def test_demo_baseline_sqlite_mode(
     assert payload["counts"] == {"open": 2, "closed": 1}
 
 
+@pytest.mark.slow
 def test_demo_offload_table_body(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_django(monkeypatch)
     _setup_worker_env(monkeypatch)
@@ -112,6 +115,7 @@ def test_demo_offload_table_body(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "sample" in payload
 
 
+@pytest.mark.slow
 def test_demo_offload_retry_once_on_worker_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
