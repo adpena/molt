@@ -121,11 +121,13 @@ class LinuxLibc(StrEnum):
 
 @cache
 def host_linux_libc() -> LinuxLibc:
-    """The running interpreter's C library, read once: a fact of the process.
+    """The running interpreter's C library, read once: a fact of the process."""
+    return _probe_linux_libc()
 
-    sysconfig carries the interpreter's configured ABI even where libc_ver
-    cannot identify musl's loader; libc_ver reads the executable in chunks.
-    """
+
+def _probe_linux_libc() -> LinuxLibc:
+    # sysconfig carries the interpreter's configured ABI even where libc_ver
+    # cannot identify musl's loader; libc_ver reads the executable in chunks.
     import sysconfig
 
     multiarch = str(sysconfig.get_config_var("MULTIARCH") or "").lower()
