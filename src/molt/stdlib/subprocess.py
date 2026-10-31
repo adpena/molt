@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping as _Mapping
 import os as _os
 import time as _time
+import warnings as _warnings
 from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -12,7 +13,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_SUBPROCESS_RUN = _require_intrinsic("molt_subprocess_run")
 _MOLT_SUBPROCESS_CHECK_CALL = _require_intrinsic("molt_subprocess_check_call")
 _MOLT_SUBPROCESS_CHECK_OUTPUT = _require_intrinsic("molt_subprocess_check_output")
-_MOLT_PROCESS_SPAWN = _require_intrinsic("molt_process_spawn")
 _MOLT_PROCESS_SPAWN_EX = _require_intrinsic("molt_process_spawn_ex")
 _MOLT_PROCESS_PID = _require_intrinsic("molt_process_pid")
 _MOLT_PROCESS_RETURNCODE = _require_intrinsic("molt_process_returncode")
@@ -406,8 +406,9 @@ class Popen:
         errors: str | None = None,
         start_new_session: bool = False,
         process_group: int | None = None,
+        pass_fds: Any = (),
     ) -> None:
-        del bufsize, executable, preexec_fn, close_fds
+        del bufsize, executable, preexec_fn
         self.args = args
         self.returncode: int | None = None
         self._text = bool(text)
@@ -420,27 +421,22 @@ class Popen:
 
         argv = _coerce_argv(args, bool(shell))
         env_map = _coerce_env(env)
-        use_ex = bool(start_new_session) or process_group is not None
-        if use_ex:
-            self._handle = _MOLT_PROCESS_SPAWN_EX(
-                argv,
-                env_map,
-                cwd,
-                self._stdin_mode,
-                self._stdout_mode,
-                self._stderr_mode,
-                bool(start_new_session),
-                process_group,
-            )
-        else:
-            self._handle = _MOLT_PROCESS_SPAWN(
-                argv,
-                env_map,
-                cwd,
-                self._stdin_mode,
-                self._stdout_mode,
-                self._stderr_mode,
-            )
+        pass_fds = tuple(pass_fds)
+        if pass_fds and not close_fds:
+            _warnings.warn("pass_fds overriding close_fds.", RuntimeWarning)
+            close_fds = True
+        self._handle = _MOLT_PROCESS_SPAWN_EX(
+            argv,
+            env_map,
+            cwd,
+            self._stdin_mode,
+            self._stdout_mode,
+            self._stderr_mode,
+            bool(start_new_session),
+            process_group,
+            bool(close_fds),
+            pass_fds,
+        )
         if self._handle is None:
             raise RuntimeError("process spawn failed")
 

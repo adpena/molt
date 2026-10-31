@@ -172,8 +172,7 @@ def mp_spawn(mp_core, monkeypatch):
     for name in (
         "_MOLT_REQUIRE_OPERATION",
         "_MOLT_PROCESS_SPAWN",
-        "_MOLT_PROCESS_STDIN",
-        "_MOLT_PROCESS_STDOUT",
+        "_MOLT_PROCESS_IPC_STREAMS",
         "_MOLT_MP_CODEC_DUMPS",
         "_MOLT_STREAM_SEND",
         "_MOLT_PENDING",
@@ -249,26 +248,20 @@ def test_spawn_admission_precedes_environment_and_one_real_transport_setup(
     module, calls = mp_spawn
     _admit_spawn_environment(module, calls, monkeypatch)
 
-    def spawn(args, env, cwd, stdin, stdout, stderr):
+    def spawn(args, env, cwd):
         calls.append(("spawn",))
         assert env["SELECTED_ENV"] == "retained"
         assert env["MOLT_MP_START_METHOD"] == "spawn"
         assert env["MOLT_MP_SPAWN"] == "1"
         assert env["MOLT_ENTRY_MODULE"] == "multiprocessing.spawn"
-        assert (stdin, stdout, stderr) == (1, 1, 0)
         return 41
 
     frames = []
     monkeypatch.setattr(module, "_MOLT_PROCESS_SPAWN", spawn)
     monkeypatch.setattr(
         module,
-        "_MOLT_PROCESS_STDIN",
-        lambda handle: 51 if handle == 41 else pytest.fail("wrong process"),
-    )
-    monkeypatch.setattr(
-        module,
-        "_MOLT_PROCESS_STDOUT",
-        lambda handle: 52 if handle == 41 else pytest.fail("wrong process"),
+        "_MOLT_PROCESS_IPC_STREAMS",
+        lambda handle: (52, 51) if handle == 41 else pytest.fail("wrong process"),
     )
     monkeypatch.setattr(module, "_MOLT_MP_CODEC_DUMPS", lambda message: b"encoded")
     monkeypatch.setattr(
@@ -325,9 +318,9 @@ def test_process_start_failure_never_runs_target_inline_or_marks_started(
     if failure in {"runtime", "denied"}:
         assert caught.value is expected
     elif failure == "missing":
-        assert str(caught.value) == "Missing intrinsic: molt_process_spawn"
+        assert str(caught.value) == "Missing intrinsic: molt_process_ipc_spawn"
     else:
-        assert str(caught.value) == "process spawn failed"
+        assert str(caught.value) == "multiprocessing process spawn failed"
     assert ran == []
     assert process._started is False
     assert process._handle is None and process._exitcode is None
@@ -335,7 +328,7 @@ def test_process_start_failure_never_runs_target_inline_or_marks_started(
     # The same instance can make another admitted attempt after a failed start.
     monkeypatch.setattr(module, "_MOLT_REQUIRE_OPERATION", lambda operation: None)
     monkeypatch.setattr(module, "_MOLT_PROCESS_SPAWN", lambda *args: None)
-    with pytest.raises(RuntimeError, match="^process spawn failed$"):
+    with pytest.raises(RuntimeError, match="^multiprocessing process spawn failed$"):
         process.start()
     assert not process._started and ran == []
 
