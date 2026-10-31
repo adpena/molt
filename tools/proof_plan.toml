@@ -6660,7 +6660,7 @@ timeout_seconds = 900
 name = "ruff_typed_cache"
 state = "strict"
 strict_when = "landed_functional"
-rationale = "Ruff TID251 bans raw functools.lru_cache and functools.cache in src/molt: they erase a function's signature for ty, which let a string reach an ArtifactTarget-typed cached function unseen (HF-628). molt.typed_cache keeps the signature; src/molt had zero remaining uses when this landed strict. tools/ and tests/ stay exempt until their 34 sites move."
+rationale = "Ruff TID251 bans raw functools.lru_cache and functools.cache in src/molt: they erase a function's signature for ty, which let a string reach an ArtifactTarget-typed cached function unseen (HF-628). molt.typed_cache keeps the signature; src/molt had no remaining uses outside the two stdlib-only bootstrap release modules when this landed strict. Those, tools/ and tests/ stay exempt until they move (HF-632)."
 
 [[gate_flip]]
 name = "gate_liveness_canary"
