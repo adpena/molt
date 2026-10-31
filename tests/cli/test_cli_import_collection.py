@@ -32068,12 +32068,18 @@ def test_read_artifact_sync_state_reuses_process_cache(
     first = cli_artifact_sync._read_artifact_sync_state(state_path)
     observed = output_artifact.stat()
     assert first == {
-        "version": 3,
+        "version": 5,
         "source_key": "module-key",
         "tier": "module",
         "size": len(b"artifact"),
         "sha256": hashlib.sha256(b"artifact").hexdigest(),
-        "generation": [observed.st_dev, observed.st_ino],
+        "generation": [
+            observed.st_ino,
+            observed.st_mode,
+            observed.st_size,
+            observed.st_mtime_ns,
+            observed.st_ctime_ns,
+        ],
         "emission_origin": None,
     }
 
