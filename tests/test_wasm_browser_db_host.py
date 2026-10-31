@@ -13,7 +13,11 @@ from typing import ClassVar
 import pytest
 
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
-from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tests.wasm_linked_runner import (
+    _run_wasm_test_process,
+    wasm_linked_build_command,
+    wasm_test_build_env,
+)
 
 
 ARROW_BYTES = b"ARROW1"
@@ -708,34 +712,21 @@ def test_browser_host_direct_mode_can_invoke_export_with_host_args(
         encoding="utf-8",
     )
 
-    build_env = _browser_wasm_build_env(root)
+    # The browser deployment profile selects split-runtime unconditionally.
+    # This cell proves linked execution; its sibling owns the split profile.
+    command = wasm_linked_build_command(root, src, tmp_path)
     build = _run_wasm_test_process(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            str(src),
-            "--build-profile",
-            "dev",
-            "--profile",
-            "browser",
-            "--target",
-            "wasm",
-            "--linked",
-            "--require-linked",
-            "--out-dir",
-            str(tmp_path),
-        ],
+        list(command.argv),
         role="tool",
-        cwd=root,
-        env=build_env,
+        cwd=command.cwd,
+        env=command.environment,
         capture_output=True,
         text=True,
     )
     assert build.returncode == 0, build.stderr
 
-    linked_wasm = tmp_path / "output_linked.wasm"
+    linked_wasm = command.output
+    assert linked_wasm is not None
     manifest_path = tmp_path / "manifest.json"
     assert linked_wasm.exists()
     assert manifest_path.exists()
