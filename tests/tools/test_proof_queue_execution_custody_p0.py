@@ -2440,8 +2440,9 @@ def test_linux_required_watch_permission_error_remains_fatal(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX native interpreter alias execution")
+@pytest.mark.slow
 def test_python_path_and_cargo_hook_launches_share_native_environment_custody(tmp_path):
-    import shutil
+    from tests.executable_test_support import link_assessed_python
     from tools import proof_plan
     from tools.proof_queue_pkg import (
         command_admission,
@@ -2453,8 +2454,7 @@ def test_python_path_and_cargo_hook_launches_share_native_environment_custody(tm
     path_bin.mkdir()
     path_tool, hook_tool = path_bin / "cargo", tmp_path / "selected-cargo"
     for image in (path_tool, hook_tool):
-        shutil.copyfile(Path(sys.executable).resolve(strict=True), image)
-        image.chmod(0o755)
+        link_assessed_python(image)
     (tmp_path / "pyvenv.cfg").write_text(
         f"home = {Path(sys._base_executable).resolve(strict=True).parent}\n",
         encoding="utf-8",

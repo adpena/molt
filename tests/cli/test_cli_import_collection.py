@@ -35509,6 +35509,7 @@ def _capture_hashseed_cli_builds(
     }
 
 
+@pytest.mark.slow
 @pytest.mark.long_pole
 def test_programs_share_the_lowered_form_of_every_imported_module(
     tmp_path: Path,
@@ -35551,6 +35552,7 @@ _HASHSEED_BUILDS = (
 )
 
 
+@pytest.mark.slow
 @pytest.mark.long_pole
 def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
     tmp_path: Path,

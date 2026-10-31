@@ -1,19 +1,19 @@
 # Landing queue
 
-Status: design, 2026-10-17; landing engineering added 2026-10-20 (HF-373).
+Status: active design; presubmit/postsubmit slice added 2026-10-30.
 Owner: landing and main health. Part of HF-334.
 
-Main advances only to a commit that passed its selected proofs on every
-required cell. One queue on the owner's own machines enforces that rule; no
-agent pushes to main by hand.
+One queue on the owner's machines publishes the immutable candidate that passed
+presubmit, then checks main through postsubmit. The selection and main-health
+policy belongs to [observed_inputs.md](observed_inputs.md). No agent pushes to
+main by hand.
 
 The current local driver implements immutable candidate custody and
 selected-volume readiness through the existing proof plan. Unfiltered pytest
 targets share one invocation using the largest declared owning envelope.
-The driver still uses local rules. Its always gates run as one block through
-the proof executor, which leaves a receipt per landing; rule, pytest and Cargo
-gates still run one at a time. The rest of the scheduling migration belongs to
-the proof executor and HF-334. The family queue,
+The driver retains local rules. Static checks run before heavy gates, which
+share the proof executor and leave command receipts; shared Cargo writers remain
+serialized. The family queue,
 cross-host scheduling and reusable action receipts below remain release work.
 The [integration contract](../ops/INTEGRATION.md) owns implemented local
 behavior. Which tests a landing selects, and when a passing result may be
@@ -60,9 +60,10 @@ tracked file is a dependency).
 The shelved per-test result cache (HF-263) found the same density from
 runtime records. The landing now selects this way
 (`tools/test_dependency_graph.py`, [testing spec](../spec/areas/testing/0007-testing.md#landing-test-selection)).
-On 2026-10-30 each hub module still selected 983 of 983 test files, and a
-platform-only failure stays invisible to it. Observed-input selection replaces
-it (stages 3 and 6 of the observed-input design).
+On 2026-10-30 each hub module's transitive closure selected 983 of 983 test files.
+That closure now belongs to postsubmit; presubmit selection follows the linked
+policy. Platform-only failures still require the corresponding farm cell.
+Observed-input records remain deferred.
 
 ## Selecting by plan entry, not by the plan file (HF-457)
 
@@ -98,28 +99,55 @@ only the targets a BUILD-file edit changes for the same reason.
 
 ## Design
 
-1. **One rule.** main moves only to a commit whose selected pre-push commands
-   passed on every cell those commands declare. The selection is the plan's
-   family selection (`tools/proof_plan.py --path`), the one CI uses.
-2. **One queue.** `molt_dev.py integrate` stops pushing. It runs the fast
-   static gates (formatting, generators, structural audit; seconds), then
-   enqueues the lane's exact commit. A queue runner on the primary host owns
-   main: it builds a candidate (main plus the next lanes, rebased in order),
-   runs the candidate's selected commands, and pushes the tested commit.
-3. **The farm runs the cells.** Each command declares its cell. The runner
-   sends the candidate to the machine for each cell over Tailscale (macOS
-   here, Linux on `molt`, Windows on `bat00`), and each machine runs its
-   commands through the proof executor sized by its own `molt.host_capacity`.
+1. **One selection authority.** `select_landing_gates` reads the candidate's
+   committed plan, with typed `LandingMode` supplied by its caller.
+2. **One queue.** `land` prechecks and enrolls an exact commit. The runner
+   merges ready lanes onto main in its registered sandbox, invokes `integrate`
+   for presubmit and confirmed publication, then finishes managed retirement.
+3. **One executor.** Both modes prepare toolchain closures and output capacity
+   through the same authorities. Cross-host farm scheduling remains future work;
+   local results do not qualify cells on other hosts.
 4. **Rollups and bisection.** The runner tests up to N ready lanes in one
    candidate, as bors rollups do. A failure tests the halves, so one bad lane
    costs O(log N) extra runs and the others still land.
 5. **Receipts.** Every candidate leaves one receipt: each command's cell,
    host, duration, peak RSS and result. Longest-first ordering reads it.
-6. **Speed by reuse, not by skipping.** A passing result is reused only under
-   the observed-input rules (stages 1, 5 and 6 of that design).
-7. **No second path to main.** A pre-push hook refuses a push to main whose
-   commit has no passing queue receipt. The `[[rule]]` tables and their
-   projection are deleted once the queue owns selection.
+6. **Main health receipts.** Postsubmit records green, red or cancelled in the
+   existing integration evidence store. Failure records order later presubmits;
+   no verdict reuse or action-record store is implemented here.
+7. **Integration custody.** The existing integration lock, source fences and
+   exact-commit push confirmation remain authoritative. No new pre-push hook or
+   alternate publication path is added.
+
+### Postsubmit mechanics
+
+After pending requests drain, the runner retains its queue lock and fetches main.
+The clean registered sandbox switches to that exact head. Selection compares it
+with `refs/molt/last-green`; when that ref is absent it selects all tracked source
+inputs rather than inventing a passing baseline. Rule tokens that require a Git
+base bind to the selected head for this initial full-source run.
+
+`_run_postsubmit_gates` uses the ordinary gate preparation and executor. Pytest
+writes JUnit beside each gate's logs, using its built-in `--junitxml` and xunit1
+file attributes. The aggregate `<head>.<run>.postsubmit-result.json` receipt records
+the outcome, test node IDs, prior green, suspect commits, exact restoration
+commands, gate-output directory and any infrastructure error. A failed receipt
+orders later work; a new invocation can requalify the head after a repair. `queue status`
+includes these receipts; there is no additional registry.
+
+A pending request sets a sticky cancellation predicate. Active gates pass it to
+their existing guards, and unscheduled work stops. A cancelled outcome is admitted
+only after the guard reports descendant closure; unresolved custody remains an
+error. The runner then services the request, and postsubmit selects the newest
+head. A passing run re-fetches main before `git update-ref refs/molt/last-green
+<head> <old>`; an absent old ref uses Git's zero object ID. A changed head cancels
+the result, and a failed compare-and-swap cannot overwrite another writer.
+
+Red receipts list every commit since the previous green as suspect. Restoration
+commands walk first parents newest first, using `git revert --no-edit -m 1` for
+merges, so lane commits are not reverted twice. Before the first green exists,
+there is no proven restoration target and the receipt states that fact. The
+integrator owns any restoration; the runner executes none of these commands.
 
 ## Landing engineering (HF-373)
 
@@ -257,7 +285,7 @@ The driver creates, provisions and retires each lane.
   fresh node for each job and delete it after. Bazel runs each action in a
   sandbox it owns.
 - **Design.** `molt_dev.py lane start <slug>` creates the `lane/<slug>`
-  branch from main in a slot worktree, writes the coordination record, and
+  branch from the policy-selected base in a slot worktree, writes the coordination record, and
   provisions it. The checkout selected by `--repo` is preferred only when its
   Git registration is a clean, detached, unlocked, non-prunable slot under the
   selected root; otherwise selection keeps path order. Protected registrations
@@ -389,7 +417,8 @@ One runner owns main. Agents enqueue and continue.
 - **Cost.** N small lanes pay the fixed gate cost once, not N times. A bad
   lane costs O(log N) extra runs. The runner is one process per batch; it
   waits for the integration lock with the lock authority's 2 s retry and
-  exits when the queue is empty, and `land` starts the next one.
+  checks main after the queue drains, and exits after that health run. `land`
+  starts the next runner; a pending request interrupts the health run.
 - **Status.** Batches, bisection, conflict exclusion and the main-moved
   rebuild are implemented and tested on real repositories (2026-10-20). The
   candidate chain runs one batch at a time on this Mac; parallel speculation
@@ -497,8 +526,8 @@ state-use custody and mutation/transfer guards.
   reading artifact payloads. This work is cold and scales with checkout path
   metadata, not per-user executable work. A held lane remains recoverable and
   its terminal result identifies the remaining integration-owner action.
-- This replaces three-day red stretches of main, each repaired by hand after
-  the fact, with one bounded run per candidate.
+- Local presubmit and postsubmit qualification remain distinct from hosted
+  release acceptance. Their wall time must be measured against real lanes.
 
 ## Hosted evidence handoff
 
@@ -542,11 +571,9 @@ HF-373 lands in this order, one slice per landing: the pinned controller;
 stable change ids; checkout provisioning and lane commands; the queue with
 batches and bisection, which replaces every private landing wrapper.
 
-1. Landing receipts, and landing gates run through the proof executor
-   (HF-334 slice 3). The always-gate block and its receipt are done; rule,
-   pytest and Cargo gates remain.
-2. The queue runner on this host, with the plan's family selection for the
-   macOS and host-independent cells.
+1. Local gate blocks and command receipts use the existing proof executor.
+2. The queue on this host uses typed presubmit/postsubmit selection and health
+   receipts; cross-host qualification remains separate.
 3. Linux and Windows cells on the farm.
-4. Rollups and bisection; result reuse follows the observed-input stages.
-5. The pre-push hook; delete the `[[rule]]` tables and their projection.
+4. Rollups and bisection are implemented. Result reuse remains deferred under
+   the observed-input design.
