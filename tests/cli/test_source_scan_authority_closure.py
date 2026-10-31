@@ -226,6 +226,9 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
         else {
             "foreign_writes": expected.foreign_writes,
             "member_writes": expected.member_writes,
+            "entry_member_writes": expected.entry_member_writes,
+            "noncanonical_imports": expected.noncanonical_imports,
+            "opaque_activation_sources": expected.opaque_activation_sources,
         }
     )
 
@@ -1292,11 +1295,13 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
         target_python: TargetPythonVersion,
         ast_digest_admission: _PythonAstDigestAdmission,
         namespace_premise,
+        target_sys_platform,
     ) -> _ImportDiscoveryProjection:
         assert source_owner is None
         assert source_arguments == ()
         assert ast_digest_admission.tree is tree
         assert namespace_premise is None
+        assert target_sys_platform is None
         calls.append(target_python.tag)
         return _ImportDiscoveryProjection((target_python.tag,))
 
@@ -1579,7 +1584,7 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
         owner = result.scan_authority.by_module["pkg"]
         assert owner.package_paths == roots
         assert owner.namespace_premise == PythonNamespacePremise(
-            ("alpha", "beta"), 0, 0, ()
+            ("alpha", "beta"), 0, 0, (), ()
         )
         assert set(result.graph) == {"pkg"}
         assert visits == [roots]
@@ -2246,30 +2251,33 @@ def test_synthetic_intrinsic_from_has_no_foreign_source_body_or_import_request()
         "load=take('molt_importlib_import_module')\nload('leaf',None)\n"
     )
     tree = ast.parse(source)
-    bindings = []
-    values = []
-    protocol = []
-    imports = _source_import_scan._collect_imports(
+    projection = _source_import_scan._collect_imports_for_graph(
         tree,
         module_name="entry",
-        _source_bindings=bindings,
-        _source_values=values,
-        _runtime_import_protocol=protocol,
         namespace_premise=PythonNamespacePremise((), 0, 0, ()),
     )
-    assert not bindings
+    imports = list(projection.imports)
+    assert not projection.source_bindings
     assert not any(name.startswith("pkg._intrinsics") for name in imports)
     assert imports == []
-    assert protocol == [True]
+    assert projection.uses_runtime_import_protocol
     from molt.compiler_analysis.python_binding_flow import (
         analyze_python_source_bindings,
     )
 
     index = analyze_python_source_bindings(source)
-    assert not index.expression_result(tree.body[1].value.func).source_origins
-    ordinary = _source_import_scan._collect_imports(
+    from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+
+    # Canonical callables carry local value provenance, even though synthetic
+    # imports create no foreign source binding or deferred Python body.
+    origins = index.expression_result(tree.body[1].value.func).source_origins
+    callables = dict(index.source_callables)
+    assert {callables[origin] for origin in origins} == {
+        int(PythonIdentity.INTRINSICS_REQUIRE)
+    }
+    ordinary = _source_import_scan._collect_imports_for_graph(
         ast.parse("import pkg._intrinsics\n"), module_name="entry"
-    )
+    ).imports
     assert "pkg._intrinsics" in ordinary
 
 

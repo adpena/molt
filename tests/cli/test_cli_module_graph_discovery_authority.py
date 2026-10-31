@@ -6,6 +6,7 @@ from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
 import inspect
+from dataclasses import replace
 from pathlib import Path
 
 from molt.cli.module_graph_discovery import _DiscoveredModuleGraph
@@ -1112,23 +1113,31 @@ def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
             for module, owner, premise in loads
             if module == "api" and owner is None
         }
-        assert len(api_premises) == 2
         assert (
-            len(
-                {
-                    premise
-                    for module, owner, premise in loads
-                    if module == "api" and owner is not None
-                }
-            )
-            == 2
+            len({replace(p, opaque_activation_sources=()) for p in api_premises}) == 2
         )
+        assert len(api_premises) <= (3 if write_kind == "computed" else 2)
+        body_premises = {
+            premise
+            for module, owner, premise in loads
+            if module == "api" and owner is not None
+        }
+        # Namespace-write deltas still require exactly two projections. The
+        # fifth premise field independently records newly exposed code owners.
+        assert (
+            len({replace(p, opaque_activation_sources=()) for p in body_premises}) == 2
+        )
+        assert len(body_premises) <= (3 if write_kind == "computed" else 2)
         final = result.scan_authority.by_module["api"].namespace_premise
         assert final is not None
         if write_kind == "named":
             assert final.foreign_writes == ("callback",)
         elif write_kind == "computed":
             assert final.foreign_writes is None
+            from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+            run = ast.parse(sources["api"]).body[1]
+            assert final.opaque_activation_sources == (python_node_source_key(run),)
         else:
             assert final.member_writes
         if write_kind != "canonical-member":
@@ -1582,12 +1591,24 @@ def test_foreign_namespace_writes_require_actual_source_body_custody(
         assert actual <= result.graph.keys()
         premise = result.scan_authority.by_module["api"].namespace_premise
         assert premise is not None
-        assert len(body_loads) == int(writes_execute)
+        assert len(
+            {replace(p, opaque_activation_sources=()) for p in body_loads}
+        ) == int(writes_execute)
+        assert len(body_loads) == len(set(body_loads))
+        assert len(body_loads) <= (2 if writes_execute else 0)
         if _warm:
             assert not parses
         if writes_execute:
             assert premise.foreign_writes is None
             assert body_loads[0].foreign_writes is None
+            expected_opaque = tuple(
+                sorted(
+                    python_node_source_key(node)
+                    for node in ast.parse(writer).body
+                    if isinstance(node, ast.FunctionDef)
+                )
+            )
+            assert body_loads[-1].opaque_activation_sources == expected_opaque
         else:
             assert premise.foreign_writes == ()
             assert "late_leaf" not in result.graph
@@ -1694,16 +1715,22 @@ def test_disjoint_import_cache_key_keeps_actual_format_callback_custody(
         "formatting_leaf": "VALUE = 1\n",
         "late_leaf": "VALUE = 1\n",
     }
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
     for name, source in sources.items():
-        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+        # This tests canonical typing-member custody, not a project module
+        # shadowing typing. CPython and discovery use the same provider roots.
+        root = stdlib if name == "typing" else tmp_path
+        (root / f"{name}.py").write_text(source, encoding="utf-8")
     executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
             "-B",
             "-c",
-            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry,formatter_provider\nprint(json.dumps([formatter_provider.events, sorted(set(sys.modules)&{'formatting_leaf','late_leaf'})]))\n",
+            "import json,sys\nsys.path[:0] = sys.argv[1:3]\nimport entry,formatter_provider\nprint(json.dumps([formatter_provider.events, sorted(set(sys.modules)&{'formatting_leaf','late_leaf'})]))\n",
             str(tmp_path),
+            str(stdlib),
         ],
         check=True,
         capture_output=True,
@@ -1724,9 +1751,9 @@ def test_disjoint_import_cache_key_keeps_actual_format_callback_custody(
             (tmp_path / "entry.py",),
             [tmp_path],
             [tmp_path],
-            tmp_path / "stdlib",
+            stdlib,
             tmp_path,
-            set(),
+            {"typing"},
             full_scan_roots=True,
         )
         assert ("formatting_leaf" in result.graph) is (method is not None)
@@ -2356,7 +2383,13 @@ def test_full_runtime_owner_promotion_retires_prior_partial_body_jobs(
 
     def observe(path, **kwargs):
         if kwargs["module_name"] == "owner":
-            owner_jobs.append((kwargs["import_scan_mode"], kwargs.get("source_owner")))
+            owner_jobs.append(
+                (
+                    kwargs["import_scan_mode"],
+                    kwargs.get("source_owner"),
+                    kwargs["namespace_premise"],
+                )
+            )
         return load(path, **kwargs)
 
     monkeypatch.setattr(module_graph_discovery, "_load_module_import_scan", observe)
@@ -2370,5 +2403,14 @@ def test_full_runtime_owner_promotion_retires_prior_partial_body_jobs(
         full_scan_roots=False,
         discovery=state,
     )
-    assert owner_jobs == [("full", None)]
+    assert 1 <= len(owner_jobs) <= 2
+    assert all((mode, owner) == ("full", None) for mode, owner, _ in owner_jobs)
+    premises = [premise for _, _, premise in owner_jobs]
+    assert len({replace(p, opaque_activation_sources=()) for p in premises}) == 1
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    run = ast.parse(owner.read_text(encoding="utf-8")).body[0]
+    assert len(set(premises)) == len(premises)
+    assert set(premises[0].opaque_activation_sources) <= {python_node_source_key(run)}
+    assert premises[-1].opaque_activation_sources == (python_node_source_key(run),)
     assert state.scan_sources["owner"].namespace_premise.foreign_writes is None

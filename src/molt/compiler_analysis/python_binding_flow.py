@@ -380,6 +380,10 @@ class PythonBindingFlowPolicy:
     # can escape into a different FunctionType activation namespace.
     opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None
     analyze_deferred_bodies: bool = True
+    # One source-owned activation may carry proven scalar arguments. The
+    # binding fixpoint owns their lifetime, branch reachability and completion;
+    # consumers must not reconstruct those facts after flow analysis.
+    activation_argument_values: tuple[tuple[PythonSourceKey, str], ...] = ()
     # Spec 0216 admits scoped mutation and excludes unrestricted reflection,
     # exec/eval and arbitrary monkeypatching. A module's globals then change
     # outside its own statements only through named writes from other modules
@@ -421,6 +425,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             noncanonical_imports=self.noncanonical_imports,
             opaque_activation_sources=self.opaque_activation_sources,
             analyze_deferred_bodies=self.analyze_deferred_bodies,
+            activation_argument_values=self.activation_argument_values,
             foreign_namespace_writes=self.foreign_namespace_writes,
             callback_member_writes=self.callback_member_writes,
             entry_invalid_members=self.entry_invalid_members,
@@ -2577,6 +2582,7 @@ class _ObservedStateFrame:
 class _Analyzer:
     def __init__(self, policy: PythonBindingFlowPolicy, source_digest: str) -> None:
         self.policy = policy
+        self._activation_argument_values = dict(policy.activation_argument_values)
         self._opaque_activation_sources = (
             None
             if policy.opaque_activation_sources is None
@@ -7937,15 +7943,23 @@ class _Analyzer:
                     parameter, UNKNOWN_EXPRESSION_RESULT
                 )
                 identities = OTHER_IDENTITY | default_result.identities
+                source = python_node_source_key(parameter_node)
+                argument_value = self._activation_argument_values.get(source)
+                if argument_value is not None:
+                    default_result = StaticExpressionResult.scalar(argument_value)
+                    identities = int(PythonIdentity.INERT_VALUE)
                 state_id = self.states.set_binding(
                     state_id,
                     slot,
                     identities,
-                    PythonParameterRef(parameter),
+                    PythonParameterRef(parameter)
+                    if argument_value is None
+                    else argument_value,
                     replace(
-                        expression_result_without_value_facts(default_result),
-                        source_origins=default_result.source_origins
-                        | {python_node_source_key(parameter_node)},
+                        expression_result_without_value_facts(default_result)
+                        if argument_value is None
+                        else default_result,
+                        source_origins=default_result.source_origins | {source},
                     ),
                 )
         observed: list[int] = [state_id]

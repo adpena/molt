@@ -9,6 +9,7 @@ from molt.python_private_names import (
 )
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
@@ -107,6 +108,11 @@ from molt.compiler_analysis.python_source_keys import (
 _IMPORT_SCAN_MODES = frozenset({"full", "module_init"})
 
 
+class SourceImportPurpose(Enum):
+    EXECUTION = "execution"
+    INVENTORY = "inventory"
+
+
 def _source_binding_policy(
     *,
     target_sys_platform: str | None = None,
@@ -115,6 +121,7 @@ def _source_binding_policy(
     is_package: bool = False,
     namespace_premise: PythonNamespacePremise | None = None,
     include_import_discovery: bool = False,
+    activation_argument_values: tuple[tuple[PythonSourceKey, str], ...] = (),
 ) -> PythonBindingPolicy:
     return python_namespace_binding_policy(
         PythonBindingPolicy(
@@ -126,6 +133,7 @@ def _source_binding_policy(
             module_is_package=is_package,
             module_execution_kind="script" if module_name is None else "imported",
             include_import_discovery=include_import_discovery,
+            activation_argument_values=activation_argument_values,
         ),
         namespace_premise,
     )
@@ -358,6 +366,9 @@ def _collect_static_source_execution_requests(
             module_name=module_name,
             is_package=source_path.name == "__init__.py",
             namespace_premise=namespace_premise,
+            activation_argument_values=_source_argument_values(
+                ast_digest_admission, source_owner, source_arguments
+            ),
         ),
     ).module_import_flow
     aliases: dict[str, str] = {
@@ -535,18 +546,23 @@ def _source_body(
     raise ValueError(f"deferred demand lost source owner: {owner!r}")
 
 
-def _source_parameter_bindings(admission, source_owner, source_arguments):
+def _source_argument_values(admission, source_owner, source_arguments):
     if not source_arguments:
-        return {}
+        return ()
     node = admission.deferred_nodes.get(source_owner)
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
         raise ValueError("argument facts require a function source owner")
-    # Bind proven positional member-selection arguments. Expired or rebound
-    # parameter facts remain unknown in _source_expression_result.
+    # Select typed parameter identities; the canonical binding analysis owns
+    # their scalar facts and all subsequent writes, callbacks and completions.
     parameters = (*node.args.posonlyargs, *node.args.args)
     if len(source_arguments) > len(parameters):
-        return {}
-    return dict(zip((parameter.arg for parameter in parameters), source_arguments))
+        return ()
+    return tuple(
+        zip(
+            (python_node_source_key(parameter) for parameter in parameters),
+            source_arguments,
+        )
+    )
 
 
 def _source_expression_result(binding_index, node, bindings):
@@ -596,10 +612,10 @@ def _static_scan_nodes(
             target_sys_platform=target_sys_platform,
             target_python=target_python,
             namespace_premise=namespace_premise,
+            activation_argument_values=_source_argument_values(
+                ast_digest_admission, source_owner, source_arguments
+            ),
         ).flow_policy(),
-    )
-    source_bindings = _source_parameter_bindings(
-        ast_digest_admission, source_owner, source_arguments
     )
     return tuple(
         region.node
@@ -609,9 +625,7 @@ def _static_scan_nodes(
             include_deferred=include_function_bodies,
             source_owner=source_owner,
             body=_source_body(tree, source_owner, ast_digest_admission),
-            fact_result=lambda expression: _source_expression_result(
-                binding_index, expression, source_bindings
-            ),
+            fact_result=binding_index.expression_result,
         )
         if region.phase == "evaluate"
     )
@@ -699,7 +713,10 @@ def _collect_imports(
     _star_modules: list[str] | None = None,
     _dynamic_star_modules: list[str] | None = None,
     _runtime_import_protocol: list[bool] | None = None,
+    _purpose: SourceImportPurpose = SourceImportPurpose.INVENTORY,
 ) -> list[str]:
+    if not isinstance(_purpose, SourceImportPurpose):
+        raise TypeError("source import projection requires its declared purpose")
     if _runtime_catalog is not None and (
         source_owner is not None or import_scan_mode != "full"
     ):
@@ -734,6 +751,9 @@ def _collect_imports(
             is_package=is_package,
             namespace_premise=namespace_premise,
             include_import_discovery=_dynamic_relative_import_discovery is not None,
+            activation_argument_values=_source_argument_values(
+                ast_digest_admission, source_owner, source_arguments
+            ),
         ),
     )
     import_flow = binding_index.module_import_flow
@@ -899,9 +919,7 @@ def _collect_imports(
             )
         )
 
-    source_bindings = _source_parameter_bindings(
-        ast_digest_admission, source_owner, source_arguments
-    )
+    source_bindings: dict[str, object] = {}
 
     def _static_import_callable(
         call: ast.Call, *, allow_possible: bool = False
@@ -1875,6 +1893,57 @@ def _collect_imports(
                 if ref.phase != "call"
             )
 
+    def record_protocol_use(node: ast.AST) -> None:
+        nonlocal uses_runtime_import_protocol
+        if _runtime_import_protocol is None or uses_runtime_import_protocol:
+            return
+        if isinstance(node, ast.Call):
+            argument_count = (
+                None
+                if any(isinstance(arg, ast.Starred) for arg in node.args)
+                or any(keyword.arg is None for keyword in node.keywords)
+                else len(node.args) + len(node.keywords)
+            )
+            call = binding_index.call_fact(node)
+            uses_runtime_import_protocol = call is not None and bool(
+                possible_runtime_import_call_identities(
+                    call.callee_identities, argument_count
+                )
+            )
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            uses_runtime_import_protocol = (
+                any(alias.name != "_intrinsics" for alias in node.names)
+                if isinstance(node, ast.Import)
+                else node.module != "__future__"
+                and not (node.level == 0 and is_compiler_intrinsics_module(node.module))
+            )
+
+    def record_deferred_inventory(node: ast.AST) -> None:
+        # Full depth describes source permission and protocol requirements;
+        # execution belongs to the source-demand owner. Inventory alone cannot
+        # admit a dormant import, cache write, or source execution.
+        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.states_for(node):
+            return
+        record_protocol_use(node)
+        if _dynamic_relative_import_discovery is None:
+            return
+        if isinstance(node, ast.ImportFrom) and node.level:
+            request = StaticImportRequest.statement(
+                node.module or "",
+                level=node.level,
+                fromlist=tuple(alias.name for alias in node.names),
+            )
+            if plan_static_import_request(
+                request, _import_contexts(node)
+            ).requires_runtime:
+                _dynamic_relative_import_discovery.required = True
+        elif isinstance(node, ast.Call):
+            transfers = _conditional_import_call_plans(node)
+            if transfers is not None and any(
+                transfer.site.plan.requires_runtime for transfer in transfers
+            ):
+                _dynamic_relative_import_discovery.required = True
+
     def _visit(
         node: ast.AST,
     ) -> None:
@@ -2053,11 +2122,12 @@ def _collect_imports(
         held_call_origins = frozenset()
         if held_call_values:
             for held in held_call_values:
+                top, contents = cache_origins(held)
                 held_call_origins |= binding_index.expression_result(
                     held
                 ).exposed_source_origins
+                held_call_origins |= top | contents
                 if _source_demands is not None:
-                    top, contents = cache_origins(held)
                     _source_demands.extend(
                         _SourceValueDemand(origin, "release", None, None)
                         for origin in sorted(top | contents)
@@ -2085,6 +2155,8 @@ def _collect_imports(
                         if key is not None
                     )
             for key in keys:
+                top, contents = cache_origins(key)
+                held_call_origins -= top | contents
                 held_call_origins -= binding_index.expression_result(
                     key
                 ).exposed_source_origins
@@ -2126,16 +2198,7 @@ def _collect_imports(
                 or any(keyword.arg is None for keyword in node.keywords)
                 else len(node.args) + len(node.keywords)
             )
-            if (
-                _runtime_import_protocol is not None
-                and not uses_runtime_import_protocol
-            ):
-                call = binding_index.call_fact(node)
-                uses_runtime_import_protocol = call is not None and bool(
-                    possible_runtime_import_call_identities(
-                        call.callee_identities, argument_count
-                    )
-                )
+            record_protocol_use(node)
             demand(
                 binding_index.expression_result(node.func),
                 "call",
@@ -2223,18 +2286,7 @@ def _collect_imports(
                 binding_index.expression_result(node.subject), "escape", contents=True
             )
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            if (
-                _runtime_import_protocol is not None
-                and not uses_runtime_import_protocol
-            ):
-                uses_runtime_import_protocol = (
-                    any(alias.name != "_intrinsics" for alias in node.names)
-                    if isinstance(node, ast.Import)
-                    else node.module != "__future__"
-                    and not (
-                        node.level == 0 and is_compiler_intrinsics_module(node.module)
-                    )
-                )
+            record_protocol_use(node)
             _record_import_statement(node)
             if isinstance(node, ast.ImportFrom) and _source_demands is not None:
                 _source_demands.extend(
@@ -2277,10 +2329,17 @@ def _collect_imports(
         include_deferred=import_scan_mode == "full" and source_owner is None,
         source_owner=source_owner,
         body=_source_body(tree, source_owner, ast_digest_admission),
-        fact_result=lambda expression: _source_expression_result(
-            binding_index, expression, source_bindings
-        ),
+        fact_result=binding_index.expression_result,
     ):
+        if (
+            _purpose is SourceImportPurpose.EXECUTION
+            and source_owner is None
+            and region.owner is not None
+            and _runtime_catalog is None
+        ):
+            if region.phase == "evaluate":
+                record_deferred_inventory(region.node)
+            continue
         demand_start = len(_source_demands) if _source_demands is not None else 0
         if region.phase == "evaluate":
             _visit(region.node)
@@ -2322,6 +2381,7 @@ def _collect_imports_for_graph(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
+    purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> _ImportDiscoveryProjection:
     """Scan one source's graph requests. A runtime-import owner's scan defers
     its dynamic-import sites to the runtime catalog instead of expanding it, so
@@ -2358,6 +2418,7 @@ def _collect_imports_for_graph(
         _star_modules=star_modules,
         _dynamic_star_modules=dynamic_star_modules,
         _runtime_import_protocol=runtime_import_protocol,
+        _purpose=purpose,
     )
     return discovery.projection(imports, star_modules, dynamic_star_modules)._replace(
         uses_runtime_import_protocol=runtime_import_protocol[0],
@@ -2584,6 +2645,7 @@ def _collect_import_scan_requests(
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission,
     source: str | None = None,
+    purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> _ImportScanRequests:
     executions = (
         ()
@@ -2591,7 +2653,13 @@ def _collect_import_scan_requests(
         else _collect_static_source_execution_requests(
             tree,
             source_path=source_path,
-            import_scan_mode=import_scan_mode,
+            import_scan_mode=(
+                "module_init"
+                if purpose is SourceImportPurpose.EXECUTION
+                and source_owner is None
+                and projection.runtime_catalog is None
+                else import_scan_mode
+            ),
             source_owner=source_owner,
             source_arguments=source_arguments,
             module_name=module_name,

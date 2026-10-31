@@ -55,6 +55,34 @@ def _last_call(source: str):
     return index.calls[-1]
 
 
+@pytest.mark.parametrize("rebind", ["", "    name = 'other'\n"])
+def test_source_activation_arguments_drive_canonical_flow_and_expire_on_store(rebind):
+    source = (
+        "def hook(name):\n"
+        + rebind
+        + "    if name == 'chosen':\n        return 'selected'\n"
+        "    return 'tail'\n"
+        "def sibling(name):\n"
+        "    if name == 'chosen':\n        return 'sibling-selected'\n"
+        "    return 'sibling-tail'\n"
+    )
+    tree = ast.parse(source)
+    namespace = {}
+    exec(compile(tree, "<activation-argument-oracle>", "exec"), namespace)
+    expected = namespace["hook"]("chosen")
+    parameter = python_node_source_key(tree.body[0].args.args[0])
+    policy = PythonBindingPolicy(activation_argument_values=((parameter, "chosen"),))
+    facts = analyze_python_source_bindings(source, policy=policy)
+    assert facts is analyze_python_source_bindings(source, policy=policy)
+    assert facts is not analyze_python_source_bindings(source)
+    reached = {
+        node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return) and facts.statement_fact(node) is not None
+    }
+    assert reached == {expected, "sibling-selected", "sibling-tail"}
+
+
 @pytest.mark.parametrize(
     "method, arguments", [("__setitem__", "'key', None"), ("__delitem__", "'key'")]
 )

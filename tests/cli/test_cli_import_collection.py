@@ -14747,7 +14747,9 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     operation = cli_module_graph_discovery._ModuleGraphDiscovery(
         cache, _DEFAULT_TARGET_PYTHON_VERSION
     )
-    premise = operation.namespace_index.premise(entry.resolve(), frozenset())
+    premise = operation.namespace_index.premise(
+        entry.resolve(), frozenset(), opaque_activation_sources=()
+    )
     snapshot = cli_module_source.PythonSourceSnapshot.capture(entry)
     loaded = cli_module_graph_discovery._load_module_import_scan(
         entry,

@@ -3111,7 +3111,13 @@ def test_retained_descriptor_source_element_survives_cold_and_warm_scan(
         tmp_path / "entry.py",
         f"class Box:\n    @{constructor}\n    def method(cls):\n        import dormant_leaf\n",
     )
-    premise = PythonNamespacePremise((), 0, entry_member_writes=0)
+    premise = PythonNamespacePremise(
+        (),
+        0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+        opaque_activation_sources=(),
+    )
     cold = load(source, namespace_premise=premise)
     assert any(
         item.protocol.value == protocol for item in cold.scan.source_values.elements

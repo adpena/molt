@@ -147,6 +147,7 @@ class _ModuleGraphDiscovery:
         ] = {}
         self.queue: list[_SourceEntryJob | _SourceScanJob] = []
         self.queued_scans: set[_SourceScanJob] = set()
+        self.scan_revisions: set[_SourceScanJob] = set()
         self.namespace_index = PythonGraphNamespaceIndex()
         self.namespace_writes: dict[str, set[PythonNamespaceWrite]] = {}
         self.writer_targets: dict[str, set[PythonNamespaceWrite]] = {}
@@ -528,7 +529,7 @@ def _discover_module_graph_from_paths(
         or state.target_sys_platform != resolution_cache.target_sys_platform
     ):
         raise ValueError("module discovery continuation lost target/resolver custody")
-    if state.queue:
+    if state.queue or state.scan_revisions:
         raise ValueError("module discovery continuation has unfinished source jobs")
     if runtime_import_custody is not None:
         if not full_scan_roots:
@@ -557,6 +558,7 @@ def _discover_module_graph_from_paths(
     )
     graph, scan_sources = state.graph, state.scan_sources
     queue, queued_scans = state.queue, state.queued_scans
+    scan_revisions = state.scan_revisions
     source_generations, scanned_bodies = state.source_generations, state.scanned_bodies
     scan_receipts = state.scan_receipts
     namespace_index = state.namespace_index
@@ -613,8 +615,14 @@ def _discover_module_graph_from_paths(
     def queue_scan(module, owner=None, arguments=()):
         job = _SourceScanJob(module, owner, arguments)
         if job not in queued_scans:
-            queued_scans.add(job)
-            queue.append(job)
+            if job in scan_receipts:
+                # New admissions and first body demands may contribute more
+                # namespace facts. Revisit completed projections only after
+                # that work drains, using the entire latest premise once.
+                scan_revisions.add(job)
+            else:
+                queued_scans.add(job)
+                queue.append(job)
 
     def resolve_candidate(candidate, source_context):
         if source_context.runtime_import_custody is not None:
@@ -817,9 +825,10 @@ def _discover_module_graph_from_paths(
                     if write not in known:
                         known.add(write)
                         pending.setdefault(write.source_owner, []).append(write)
-                if scan_sources[module_name].mode == "full":
-                    # Available callable bodies do not all execute before the
-                    # module initializes. Activate their writes by owner below.
+                if scan.source_requests.runtime_catalog is not None:
+                    # Runtime catalog custody makes every body available to
+                    # dynamic execution. Ordinary full inventory is only
+                    # availability: foreign writes join when their owner runs.
                     merge_namespace_writes(
                         graph_python_namespace_writes(
                             summary.foreign_writes,
@@ -917,19 +926,44 @@ def _discover_module_graph_from_paths(
             )
     admit_imports(entry_imports, context)
 
-    while queue:
+    while queue or scan_revisions:
+        if not queue:
+            # A revision wave retains the same typed source jobs and receipts.
+            # New work discovered by a revision takes priority over the rest
+            # of this wave; further revisions wait for the next drained wave.
+            queue.extend(
+                reversed(
+                    sorted(
+                        scan_revisions,
+                        key=lambda item: (
+                            item.module_name,
+                            item.source is not None,
+                            item.source or (),
+                            item.arguments,
+                        ),
+                    )
+                )
+            )
+            queued_scans.update(scan_revisions)
+            scan_revisions.clear()
         job = queue.pop()
         if isinstance(job, _SourceScanJob):
             queued_scans.discard(job)
             module_name = job.module_name
             path = graph[module_name]
             activate_namespace_writes(module_name, job.source)
-            if job.source is not None and scan_sources[module_name].mode == "full":
-                # Full inventory already covers every body. Retained demands
-                # from an earlier initialization view cannot request a partial
-                # runtime-custody scan after this source is promoted.
-                continue
             source_context = state.contexts[module_name]
+            custody = source_context.runtime_import_custody
+            if (
+                job.source is not None
+                and scan_sources[module_name].mode == "full"
+                and custody is not None
+                and custody.owns(module_name, path)
+            ):
+                # Only actual runtime catalog custody covers every body.
+                # Ordinary full inventories still project demanded bodies;
+                # their availability does not assert execution.
+                continue
             authority = scan_sources[module_name]
             receipt = (
                 authority.namespace_premise,

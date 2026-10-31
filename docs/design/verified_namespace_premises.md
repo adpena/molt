@@ -291,7 +291,32 @@ bytes. Each source keeps its original resolution roots and admission context.
 A full-depth runtime custody promotion adds that permission to the original
 context rather than interpreting application imports under support-library roots.
 
+Ordinary full source inventory grants availability, not execution. It retains
+the runtime-import protocol and dynamic-anchor requirements of deferred code,
+while imports, cache writes and source execution requests enter the graph only
+when their source owner is demanded. Runtime catalog custody covers every body;
+only that full-owner scan retires prior partial body jobs. Scoped foreign writes
+likewise join the namespace premise when their owner activates. Native module
+cache storage retains values without exposing their namespaces, including the
+implicit current-module provenance of `sys.modules[__name__]`; key callbacks
+remain a separate incidence even when a value is also held.
+Stdlib intrinsic classification explicitly requests full import-site inventory:
+another module's deferred import can read a private intrinsic binding even when
+that binding's defining module never loads it itself. This availability proof
+does not admit that deferred import as executed application code.
+
+Literal member selection passes typed parameter-source argument facts into the
+canonical binding fixpoint. Its control flow proves branch selection and abrupt
+completion, including a return before a lazy hook's tail. Parameter stores and
+callbacks follow the same fact lifetime as all other bindings. There is no
+consumer-side reconstruction of that activation's control flow.
+
 A named writer delta wakes only its prior target sources and reached body contexts.
+Revisions of completed scans wait until pending admissions and first body demands
+drain, then run against the latest premise in one wave. New opacity facts still
+revise their full five-field authority immediately. This avoids repeatedly
+walking every completed body while a wave discovers more exposed owners; the
+drained revision queue remains part of the convergence boundary.
 Active rows are also indexed by logical receiver name: a later namespace package
 can acquire a generated source path without losing writes observed before that
 path existed. A closure result separates its own module/reason membership from
@@ -321,9 +346,10 @@ The import visitor records ordinary import statements and possible canonical
 import or `find_spec` calls after its reachability check, before static-target,
 helper or runtime-catalog resolution. Intrinsic and future-import exclusions
 retain their existing semantics. Synthetic support imports do not imply a
-reached Python import operation. Initialization, full inventory and deferred
-owner/argument scans therefore use their actual execution regions and namespace
-premise for both requests and the protocol bit.
+reached Python import operation. Initialization and deferred owner/argument scans
+use their actual execution regions and namespace premise for requests. Full
+inventory also records protocol requirements of available deferred regions,
+without treating them as executed import requests.
 
 This removes the former protocol prepass: one additional O(R) execution-region
 walk, its evaluate-node tuple and a binding-core lookup for every computed scan

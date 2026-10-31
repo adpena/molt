@@ -8,8 +8,8 @@ schema = "molt-perf-methodology-v1"
 # definition (family B), so a benchmark's admitted workload dependencies, and
 # with them its workload identity, can change. Earlier reports retain their
 # recorded class.
-version = 19
-content_sha256 = "d8ad7e66e6ccbc45acd85e0bf8ee5a0c241eadf7350ee6bb07c6cc51a14e12c9"
+version = 20
+content_sha256 = "4be316d31a00a9f1a241e762da23506968b2a5ebdefc3c3b57fe4e4dde822168"
 
 [[methodology]]
 path = "tools/safe_run.py"
