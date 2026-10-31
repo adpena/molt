@@ -406,12 +406,15 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
             (output / "gate-001.junit.xml").write_text(
                 '<testsuites><testsuite><testcase file="tests/test_value.py" '
                 'classname="tests.test_value.TestValue" name="test_value[param]">'
-                '<failure message="independent assertion"/></testcase></testsuite></testsuites>'
+                '<failure message="independent assertion"/></testcase></testsuite></testsuites>',
+                encoding="utf-8",
             )
             raise GateFailure("test failed")
         if outcome.startswith("cancelled"):
             if outcome == "cancelled-partial":
-                (output / "gate-001.junit.xml").write_text("<testsuites><testcase")
+                (output / "gate-001.junit.xml").write_text(
+                    "<testsuites><testcase", encoding="utf-8"
+                )
             queue.enqueue(paths, head=head, worktree=repo, branch="lane/next")
             assert cancelled()
             raise GateCancellation("closed cancellation for next landing")
@@ -478,7 +481,8 @@ def test_postsubmit_junit_normalizes_platform_paths_before_reselection(
 
     (tmp_path / "gate-001.junit.xml").write_text(
         f'<testsuite><testcase file="{spelling}" classname="tests.test_value" '
-        'name="test_value"><error/></testcase></testsuite>'
+        'name="test_value"><error/></testcase></testsuite>',
+        encoding="utf-8",
     )
     assert queue._postsubmit_failures(tmp_path, tmp_path) == (
         "tests/test_value.py::test_value",
@@ -6248,7 +6252,7 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
     paths.evidence.mkdir(parents=True)
     for record in health_records:
         (paths.evidence / f"{record['commit']}.postsubmit-result.json").write_text(
-            json.dumps(record)
+            json.dumps(record), encoding="utf-8"
         )
     for index in range(64):
         name = f"{index * 17 % 64:03d}.json"
