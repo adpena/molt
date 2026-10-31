@@ -445,7 +445,8 @@ pub extern "C" fn molt_set_reduce(obj: u64) -> u64 {
             let args = tuple(py, &[keys.bits()])?;
             let getter = required(py, obj, b"__getstate__")?;
             let state = owned(py, unsafe { call_callable0(py, getter.bits()) })?;
-            Ok(tuple(py, &[type_of_bits(py, obj), args.bits(), state.bits()])?.into_bits())
+            let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
+            Ok(tuple(py, &[cls.bits(), args.bits(), state.bits()])?.into_bits())
         })();
         result.unwrap_or_else(|error| error)
     })
