@@ -3,7 +3,11 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from molt.compiler_analysis import python_import_scan as _source_import_scan
-from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+from molt.compiler_analysis.python_source_demands import (
+    PythonSourceDemands,
+    SourceCandidate,
+    SourceMember,
+)
 from molt.compiler_analysis.native_support_slice import (
     canonical_native_support_roots,
 )
@@ -83,6 +87,16 @@ class _SourceScanJob(NamedTuple):
     arguments: tuple[str, ...] = ()
 
 
+def _graph_import_scan_purpose(
+    selection: ModuleBodySelection, source_owner: PythonSourceKey | None
+) -> _source_import_scan.SourceImportPurpose:
+    return (
+        _source_import_scan.SourceImportPurpose.INVENTORY
+        if selection.kind == "native_support" and source_owner is None
+        else _source_import_scan.SourceImportPurpose.EXECUTION
+    )
+
+
 @dataclass(frozen=True)
 class _SourceDiscoveryContext:
     """Resolution and admission belong to the source, not the latest extension."""
@@ -130,6 +144,7 @@ class _ModuleGraphDiscovery:
     ) -> None:
         self.resolver_cache = resolver_cache
         self.target_python = target_python
+        self.target_sys_platform = resolver_cache.target_sys_platform
         self.graph: dict[str, Path] = {}
         self.scan_sources: dict[str, _ModuleSourceScanAuthority] = {}
         self.contexts: dict[str, _SourceDiscoveryContext] = {}
@@ -146,6 +161,7 @@ class _ModuleGraphDiscovery:
         ] = {}
         self.queue: list[_SourceEntryJob | _SourceScanJob] = []
         self.queued_scans: set[_SourceScanJob] = set()
+        self.scan_revisions: set[_SourceScanJob] = set()
         self.namespace_index = PythonGraphNamespaceIndex()
         self.namespace_writes: dict[str, set[PythonNamespaceWrite]] = {}
         self.writer_targets: dict[str, set[PythonNamespaceWrite]] = {}
@@ -187,11 +203,13 @@ def _bind_precomputed_module_import_scan(
     *,
     module_name: str,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
     scan: _CompleteImportScan,
     snapshot: _module_source.PythonSourceSnapshot,
     is_package: bool | None = None,
     package_paths: tuple[Path, ...] = (),
     native_support_function_roots: tuple[str, ...] = (),
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
     namespace_premise: PythonNamespacePremise | None = None,
 ) -> _PrecomputedModuleImportScan:
@@ -215,8 +233,21 @@ def _bind_precomputed_module_import_scan(
             ),
         ),
         target_python.tag,
+        target_sys_platform,
         scan,
+        purpose,
     )
+
+
+def _validate_precomputed_module_import_purpose(
+    record: _PrecomputedModuleImportScan,
+    purpose: _source_import_scan.SourceImportPurpose,
+) -> None:
+    if record.purpose is not purpose:
+        raise ValueError(
+            "precomputed source scan lost purpose custody: "
+            f"{record.authority.module_name!r}"
+        )
 
 
 def _validate_precomputed_module_import_scan(
@@ -225,8 +256,11 @@ def _validate_precomputed_module_import_scan(
     path: Path,
     module_name: str,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
+    target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
 ) -> None:
+    _validate_precomputed_module_import_purpose(record, purpose)
     record.authority.validate(module_name, path)
     if (
         record.authority.mode != import_scan_mode
@@ -236,6 +270,7 @@ def _validate_precomputed_module_import_scan(
         or record.authority.uses_runtime_import_protocol
         != record.scan.source_requests.uses_runtime_import_protocol
         or record.target_python_tag != target_python.tag
+        or record.target_sys_platform != target_sys_platform
     ):
         raise ValueError(f"precomputed source scan lost custody: {module_name!r}")
     if _module_source._source_content_sha256(path) != record.authority.source_sha256:
@@ -510,6 +545,7 @@ def _discover_module_graph_from_paths(
     full_scan_roots: bool,
     discovery: _ModuleGraphDiscovery | None = None,
     entry_imports: Collection[str] = (),
+    native_callable_exports: Mapping[str, tuple[str, ...]] | None = None,
 ) -> _DiscoveredModuleGraph:
     resolution_cache = resolver_cache or (
         discovery.resolver_cache
@@ -520,9 +556,10 @@ def _discover_module_graph_from_paths(
     if (
         state.resolver_cache is not resolution_cache
         or state.target_python != target_python
+        or state.target_sys_platform != resolution_cache.target_sys_platform
     ):
         raise ValueError("module discovery continuation lost target/resolver custody")
-    if state.queue:
+    if state.queue or state.scan_revisions:
         raise ValueError("module discovery continuation has unfinished source jobs")
     if runtime_import_custody is not None:
         if not full_scan_roots:
@@ -537,6 +574,12 @@ def _discover_module_graph_from_paths(
     precomputed_scans_by_path = {
         path.resolve(): scan for path, scan in (precomputed_scans_by_path or {}).items()
     }
+    for record in precomputed_scans_by_path.values():
+        # Check the incoming request before queue coalescing, receipt reuse or
+        # raw-source dominance can discard a narrower precomputed view.
+        _validate_precomputed_module_import_purpose(
+            record, _graph_import_scan_purpose(record.authority.body_selection, None)
+        )
     context = _SourceDiscoveryContext(
         tuple(roots),
         tuple(module_roots),
@@ -551,6 +594,7 @@ def _discover_module_graph_from_paths(
     )
     graph, scan_sources = state.graph, state.scan_sources
     queue, queued_scans = state.queue, state.queued_scans
+    scan_revisions = state.scan_revisions
     source_generations, scanned_bodies = state.source_generations, state.scanned_bodies
     scan_receipts = state.scan_receipts
     namespace_index = state.namespace_index
@@ -607,8 +651,14 @@ def _discover_module_graph_from_paths(
     def queue_scan(module, owner=None, arguments=()):
         job = _SourceScanJob(module, owner, arguments)
         if job not in queued_scans:
-            queued_scans.add(job)
-            queue.append(job)
+            if job in scan_receipts:
+                # New admissions and first body demands may contribute more
+                # namespace facts. Revisit completed projections only after
+                # that work drains, using the entire latest premise once.
+                scan_revisions.add(job)
+            else:
+                queued_scans.add(job)
+                queue.append(job)
 
     def resolve_candidate(candidate, source_context):
         if source_context.runtime_import_custody is not None:
@@ -630,9 +680,26 @@ def _discover_module_graph_from_paths(
             set(source_context.stdlib_allowlist),
         )
 
-    def namespace_premise(path, package_paths):
+    def namespace_premise(path, package_paths, source_context, module_name):
         path = resolution_cache.resolved_path(path)
-        bounded = namespace_index.premise(path, frozenset())
+        exclusions = resolution_cache.noncanonical_imports(
+            source_context.roots,
+            source_context.stdlib_root,
+            source_context.stdlib_allowlist,
+        )
+        # Premises are computed only once the demand queue below exists.
+        assert demands is not None
+        opaque = demands.opaque_activation_sources(module_name)
+        if source_context.admission_policy.owns_source_closure_with_native_artifact_plan(
+            module_name, path
+        ):
+            opaque = None
+        bounded = namespace_index.premise(
+            path,
+            frozenset(),
+            noncanonical_imports=exclusions,
+            opaque_activation_sources=opaque,
+        )
         if not package_paths or bounded.foreign_writes is None:
             return bounded
         if package_paths not in package_children:
@@ -642,19 +709,25 @@ def _discover_module_graph_from_paths(
                 )
             except (OSError, ValueError):
                 merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
-                return namespace_index.premise(path, frozenset())
-        return namespace_index.premise(path, package_children[package_paths])
-
-    def merge_namespace_writes(batch):
-        changed = namespace_index.merge(batch)
-        affected = (
-            set(scan_sources)
-            if changed is None
-            else set().union(*(modules_by_source.get(path, ()) for path in changed))
+                return namespace_index.premise(
+                    path,
+                    frozenset(),
+                    noncanonical_imports=exclusions,
+                    opaque_activation_sources=opaque,
+                )
+        return namespace_index.premise(
+            path,
+            package_children[package_paths],
+            noncanonical_imports=exclusions,
+            opaque_activation_sources=opaque,
         )
-        for module in sorted(affected):
+
+    def refresh_namespace_premises(affected):
+        for module in sorted(set(affected) & set(scan_sources)):
             prior = scan_sources[module]
-            premise = namespace_premise(prior.source_path, prior.package_paths)
+            premise = namespace_premise(
+                prior.source_path, prior.package_paths, state.contexts[module], module
+            )
             if prior.namespace_premise == premise:
                 continue
             scan_sources[module] = replace(prior, namespace_premise=premise)
@@ -663,6 +736,15 @@ def _discover_module_graph_from_paths(
                 queue_scan(module)
             for owner, arguments in sorted(scanned_bodies.get(module, ())):
                 queue_scan(module, owner, arguments)
+
+    def merge_namespace_writes(batch):
+        changed = namespace_index.merge(batch)
+        affected = (
+            set(scan_sources)
+            if changed is None
+            else set().union(*(modules_by_source.get(path, ()) for path in changed))
+        )
+        refresh_namespace_premises(affected)
 
     def admit_imports(names, source_context):
         for name in names:
@@ -730,11 +812,7 @@ def _discover_module_graph_from_paths(
     def activate_namespace_writes(module_name, source_owner):
         state.active_owners.setdefault(module_name, set()).add(source_owner)
         by_owner = pending_namespace_writes.get(module_name, {})
-        if scan_sources[module_name].mode == "full":
-            writes = [write for rows in by_owner.values() for write in rows]
-            by_owner.clear()
-        else:
-            writes = by_owner.pop(source_owner, ())
+        writes = by_owner.pop(source_owner, ())
         if writes:
             for write in writes:
                 if write.module is not None and write.construct not in {
@@ -783,6 +861,17 @@ def _discover_module_graph_from_paths(
                     if write not in known:
                         known.add(write)
                         pending.setdefault(write.source_owner, []).append(write)
+                if scan.source_requests.runtime_catalog is not None:
+                    # Runtime catalog custody makes every body available to
+                    # dynamic execution. Ordinary full inventory is only
+                    # availability: foreign writes join when their owner runs.
+                    merge_namespace_writes(
+                        graph_python_namespace_writes(
+                            summary.foreign_writes,
+                            lambda name: graph.get(name),
+                            entry=False,
+                        )
+                    )
                 # A widened stable view may expose new rows for an owner that
                 # already ran. The value solver intentionally will not enqueue
                 # that same activation twice, so publish these deltas now.
@@ -792,9 +881,9 @@ def _discover_module_graph_from_paths(
         demands.accept(
             module_name,
             scan.source_requests,
-            full=scan_sources[module_name].mode == "full",
         )
         demands.drain()
+        refresh_namespace_premises(demands.drain_opaque_activation_changes())
         for requested_name, execution_path in scan.source_executions:
             execution_name = requested_name or resolution_cache.module_name_from_path(
                 execution_path,
@@ -872,20 +961,53 @@ def _discover_module_graph_from_paths(
                 path, name, context, full=full_scan_roots, precomputed=precomputed
             )
     admit_imports(entry_imports, context)
+    for module_name, exports in (native_callable_exports or {}).items():
+        for name in exports:
+            # The native artifact consumes this callable, independently of the
+            # source bindings retained for lowering. These canonical demand
+            # edges survive later promotion to an ordinary complete source.
+            demands.demand(
+                (module_name, SourceMember(SourceCandidate(module_name, None), name)),
+                "escape",
+            )
+    demands.drain()
+    refresh_namespace_premises(demands.drain_opaque_activation_changes())
 
-    while queue:
+    while queue or scan_revisions:
+        if not queue:
+            # A revision wave retains the same typed source jobs and receipts.
+            # New work discovered by a revision takes priority over the rest
+            # of this wave; further revisions wait for the next drained wave.
+            revisions: list[_SourceScanJob] = sorted(
+                scan_revisions,
+                key=lambda item: (
+                    item.module_name,
+                    item.source is not None,
+                    item.source or (),
+                    item.arguments,
+                ),
+            )
+            queue.extend(reversed(revisions))
+            queued_scans.update(scan_revisions)
+            scan_revisions.clear()
         job = queue.pop()
         if isinstance(job, _SourceScanJob):
             queued_scans.discard(job)
             module_name = job.module_name
             path = graph[module_name]
-            if job.source is not None and scan_sources[module_name].mode == "full":
-                # Full inventory already covers every body. Retained demands
-                # from an earlier initialization view cannot request a partial
-                # runtime-custody scan after this source is promoted.
-                continue
-            source_context = state.contexts[module_name]
             activate_namespace_writes(module_name, job.source)
+            source_context = state.contexts[module_name]
+            custody = source_context.runtime_import_custody
+            if (
+                job.source is not None
+                and scan_sources[module_name].mode == "full"
+                and custody is not None
+                and custody.owns(module_name, path)
+            ):
+                # Only actual runtime catalog custody covers every body.
+                # Ordinary full inventories still project demanded bodies;
+                # their availability does not assert execution.
+                continue
             authority = scan_sources[module_name]
             receipt = (
                 authority.namespace_premise,
@@ -902,6 +1024,9 @@ def _discover_module_graph_from_paths(
                 import_scan_mode=authority.mode
                 if job.source is None
                 else "module_init",
+                purpose=_graph_import_scan_purpose(
+                    authority.body_selection, job.source
+                ),
                 source_owner=job.source,
                 source_arguments=job.arguments,
                 source_snapshot=source_generations.get(module_name, (None, None))[1],
@@ -1014,7 +1139,9 @@ def _discover_module_graph_from_paths(
         modules_by_source.setdefault(graph[module_name], set()).add(module_name)
         authority = replace(
             authority,
-            namespace_premise=namespace_premise(path, authority.package_paths),
+            namespace_premise=namespace_premise(
+                path, authority.package_paths, source_context, module_name
+            ),
         )
         scan_sources[module_name] = authority
         # A newly admitted name can resolve an earlier writer's topology lease.
@@ -1041,7 +1168,9 @@ def _discover_module_graph_from_paths(
                     path=path,
                     module_name=module_name,
                     import_scan_mode=authority.mode,
+                    purpose=_graph_import_scan_purpose(authority.body_selection, None),
                     target_python=target_python,
+                    target_sys_platform=resolution_cache.target_sys_platform,
                 )
             accepted_scan = (
                 precomputed.scan
@@ -1079,6 +1208,7 @@ def _discover_module_graph_from_paths(
                 module_name=module_name,
                 is_package=bool(authority.is_package),
                 import_scan_mode=authority.mode,
+                purpose=_graph_import_scan_purpose(authority.body_selection, None),
                 resolution_cache=resolution_cache,
                 project_root=source_context.project_root,
                 roots=source_context.roots,
@@ -1184,6 +1314,7 @@ def _load_module_imports(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
     tree: ast.AST,
     resolution_cache: _module_resolution._ModuleResolutionCache,
     project_root: Path | None,
@@ -1199,6 +1330,7 @@ def _load_module_imports(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        purpose=purpose,
         tree=tree,
         resolution_cache=resolution_cache,
         project_root=project_root,
@@ -1218,6 +1350,7 @@ def _load_module_import_scan(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     resolution_cache: _module_resolution._ModuleResolutionCache,
@@ -1238,6 +1371,8 @@ def _load_module_import_scan(
     native_support_function_roots: tuple[str, ...] = (),
 ) -> _LoadedModuleImportScan:
     """Admit source-only requests, then resolve filesystem edges in this operation."""
+    if type(purpose) is not _source_import_scan.SourceImportPurpose:
+        raise TypeError("source import scan requires a typed purpose")
     if native_support_function_roots:
         native_support_function_roots = canonical_native_support_roots(
             native_support_function_roots
@@ -1276,7 +1411,9 @@ def _load_module_import_scan(
             path=path,
             module_name=module_name,
             import_scan_mode=import_scan_mode,
+            purpose=purpose,
             target_python=target_python,
+            target_sys_platform=resolution_cache.target_sys_platform,
         )
         if (
             source is None
@@ -1357,6 +1494,7 @@ def _load_module_import_scan(
             module_name=module_name,
             is_package=is_package,
             import_scan_mode=import_scan_mode,
+            purpose=purpose,
             source_owner=source_owner,
             source_arguments=source_arguments,
             snapshot=snapshot,
@@ -1364,6 +1502,7 @@ def _load_module_import_scan(
             namespace_premise=namespace_premise,
             native_support_function_roots=native_support_function_roots,
             runtime_catalog_owner=runtime_catalog_owner,
+            target_sys_platform=resolution_cache.target_sys_platform,
         )
         if persisted is not None:
             return _LoadedModuleImportScan(
@@ -1412,6 +1551,7 @@ def _load_module_import_scan(
         runtime_import_custody=runtime_import_custody,
         ast_digest_admission=ast_digest_admission,
         namespace_premise=namespace_premise,
+        purpose=purpose,
     )
     requests = _source_import_scan._collect_import_scan_requests(
         import_projection,
@@ -1425,6 +1565,8 @@ def _load_module_import_scan(
         ast_digest_admission=ast_digest_admission,
         source=source,
         namespace_premise=namespace_premise,
+        target_sys_platform=resolution_cache.target_sys_platform,
+        purpose=purpose,
     )
     if project_root is not None and snapshot is not None:
         with contextlib.suppress(OSError):
@@ -1433,6 +1575,7 @@ def _load_module_import_scan(
                 module_name=module_name,
                 is_package=is_package,
                 import_scan_mode=import_scan_mode,
+                purpose=purpose,
                 source_owner=source_owner,
                 source_arguments=source_arguments,
                 scan=requests,
@@ -1441,6 +1584,7 @@ def _load_module_import_scan(
                 namespace_premise=namespace_premise,
                 native_support_function_roots=native_support_function_roots,
                 runtime_catalog_owner=runtime_catalog_owner,
+                target_sys_platform=resolution_cache.target_sys_platform,
             )
     return _LoadedModuleImportScan(
         complete(requests), False, source_parsed, source, tree, snapshot, source_pruned

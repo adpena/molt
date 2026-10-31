@@ -185,6 +185,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         frontend_module_costs=None,
         stdlib_like_by_module=None,
         module_source_role_by_module={},
+        scan_authority=None,
     )
     layout = _BuildOutputLayout(
         is_wasm=False,

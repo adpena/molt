@@ -48,6 +48,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_import_scan import SourceImportPurpose
     from molt.tool_releases import ToolDiscovery
     from molt.backend_protocol import BackendEmissionOrigin
     from molt.cli.build_request import BuildProfile, TypeHintPolicy
@@ -357,13 +358,19 @@ class _CompleteImportScan(NamedTuple):
 
 @dataclass(frozen=True)
 class _PrecomputedModuleImportScan:
-    """Both projections from one identified source and one scan mode."""
+    """Both projections from one identified source, scan mode and purpose."""
 
     authority: _ModuleSourceScanAuthority
     target_python_tag: str
+    target_sys_platform: str | None
     scan: _CompleteImportScan
+    purpose: SourceImportPurpose
 
     def __post_init__(self) -> None:
+        from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+
+        if type(self.purpose) is not SourceImportPurpose:
+            raise TypeError("precomputed source scan requires a typed purpose")
         if self.authority.source_sha256 is None:
             raise ValueError("precomputed source scan requires captured byte identity")
 
@@ -477,6 +484,7 @@ class _ScopedLoweringInputView:
 
 @dataclass(frozen=True)
 class _ModuleGraphMetadata:
+    scan_authority: _ModuleGraphScanAuthority | None
     logical_source_path_by_module: Mapping[str, str]
     namespace_portions_by_module: Mapping[str, tuple[str, ...]]
     module_is_package_by_module: Mapping[str, bool]

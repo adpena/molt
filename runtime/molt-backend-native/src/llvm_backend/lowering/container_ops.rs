@@ -101,21 +101,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         true
     }
 
-    /// Tuple-form `dataclass_new(name, field_names, values, flags)`: four direct
-    /// operands of one constructor transaction.
-    pub(super) fn emit_dataclass_new(&mut self, op: &TirOp) -> bool {
-        if op.operands.len() != 4 {
-            return false;
-        }
-        let result =
-            self.with_borrowed_boxed_operands(&op.operands, "dataclass", |this, words, name| {
-                let constructor = this.ensure_runtime_i64_fn("molt_dataclass_new", 4);
-                this.build_constructor_call(constructor, words, name)
-            });
-        self.bind_owned_runtime_result(op, result);
-        true
-    }
-
     /// `class_def(name, *bases, *namespace_pairs)`: the bases and the namespace
     /// pairs are two borrowed ranges of one constructor transaction.
     pub(super) fn emit_class_definition(

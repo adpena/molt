@@ -10,6 +10,7 @@ and module chunk reset paths.
 from __future__ import annotations
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
 import ast
 from typing import TYPE_CHECKING, Any, Literal
@@ -20,6 +21,7 @@ from molt.frontend._types import (
     AsyncFrameSlot,
     ClassId,
     ClassInfo,
+    CallableId,
     CodeSlotDeclaration,
     CompatibilityReporter,
     ComprehensionBinding,
@@ -310,6 +312,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         module_spec_name: str | None = None,
         module_execution_kind: ModuleExecutionKind | None = None,
         module_source_role: ModuleSourceRole = "user",
+        namespace_premise: PythonNamespacePremise | None = None,
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
         direct_call_modules: set[str] | None = None,
@@ -378,7 +381,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.module_chunk_globals: set[str] = set()
         self.func_symbol_names: dict[str, str] = {}
         self.func_default_specs: dict[str, dict[str, Any]] = {}
-        self.stable_module_funcs: set[str] = set()
+        self.source_callable_symbols: dict[CallableId, str] = {}
         self.module_declared_funcs: dict[str, FunctionKind] = {}
         self.module_declared_classes: set[str] = set()
         self.stable_module_classes: set[str] = set()
@@ -409,7 +412,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.local_intrinsic_wrappers: set[str] = set()
         # Track aliases for ``import typing as <alias>`` so that
         # ``@<alias>.overload`` is recognised as a typing overload stub.
-        self._typing_import_aliases: set[str] = set()
         self._reset_async_scope_state()
         self.target_python: tuple[int, int] = target_python
         # Python 3.14 owns deferred evaluation through __annotate__; 3.12/3.13
@@ -422,6 +424,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         if module_source_role not in {"user", "stdlib"}:
             raise ValueError(f"invalid source provider role: {module_source_role!r}")
         self.module_source_role: ModuleSourceRole = module_source_role
+        self.namespace_premise: PythonNamespacePremise | None = namespace_premise
         # A bundled stdlib module is identified by its logical source path,
         # which only the CLI's toolchain-root mapping assigns (HF-372).
         self.stdlib_hint_trust = source_path is not None and is_stdlib_logical_path(
@@ -508,7 +511,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self._deferred_runtime_warnings: list[str] = []
         self._reset_control_flow_state(reset_function_exception_label=True)
         self.func_aliases: dict[str, str] = {}
-        self.reserved_func_symbols: dict[str, str] = {}
+        self.reserved_func_symbols: dict[CallableId, str] = {}
         self._reset_function_cache_state()
         self.lambda_counter = 0
         self.genexpr_counter = 0

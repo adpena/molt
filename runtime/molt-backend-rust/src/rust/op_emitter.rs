@@ -333,7 +333,6 @@ impl RustBackend {
             | molt_ir::OpKind::ContextEnter
             | molt_ir::OpKind::ContextExit
             | molt_ir::OpKind::DataclassGet
-            | molt_ir::OpKind::DataclassNew
             | molt_ir::OpKind::DataclassNewValues
             | molt_ir::OpKind::DataclassSet
             | molt_ir::OpKind::DataclassSetClass

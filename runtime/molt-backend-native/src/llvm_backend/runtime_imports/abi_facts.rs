@@ -16,7 +16,6 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_class_set_definition", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_closure_load", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_closure_store", 3, RuntimeReturnAbi::I64),
-    runtime_sig("molt_dataclass_new", 4, RuntimeReturnAbi::I64),
     runtime_sig("molt_dataclass_new_from_values", 5, RuntimeReturnAbi::I64),
     runtime_sig("molt_ellipsis", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_exception_match_builtin", 2, RuntimeReturnAbi::I64),

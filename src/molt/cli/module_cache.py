@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from dataclasses import dataclass
@@ -63,6 +66,7 @@ from molt.cli.function_records import (
 )
 from molt.cli.module_graph_cache import (
     _resolved_module_cache_key,
+    _namespace_premise_cache_identity,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import (
@@ -79,6 +83,7 @@ class _ModuleLoweringMetadataView:
     is_package: bool
     module_execution_kind: ModuleExecutionKind
     module_source_role: ModuleSourceRole
+    namespace_premise: PythonNamespacePremise | None
 
 
 @dataclass(frozen=True)
@@ -679,6 +684,13 @@ def _module_lowering_metadata_view(
     module_graph_metadata: _ModuleGraphMetadata,
 ) -> _ModuleLoweringMetadataView:
     return _ModuleLoweringMetadataView(
+        namespace_premise=(
+            module_graph_metadata.scan_authority.by_module[
+                module_name
+            ].namespace_premise
+            if module_graph_metadata.scan_authority is not None
+            else None
+        ),
         module_source_role=module_graph_metadata.module_source_role_by_module[
             module_name
         ],
@@ -1081,6 +1093,7 @@ def _load_module_analysis(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    namespace_premise: PythonNamespacePremise | None,
     source: str | None,
     source_snapshot: PythonSourceSnapshot | None = None,
     logical_source_path: str,
@@ -1129,6 +1142,8 @@ def _load_module_analysis(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        purpose=SourceImportPurpose.INVENTORY,
+        namespace_premise=namespace_premise,
         resolution_cache=resolution_cache,
         project_root=project_root,
         source=source,
@@ -1286,6 +1301,7 @@ def _module_lowering_context_payload(
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
+    namespace_premise: PythonNamespacePremise | None,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
@@ -1368,6 +1384,7 @@ def _module_lowering_context_payload(
         "is_package": is_package,
         "module_execution_kind": module_execution_kind,
         "module_source_role": module_source_role,
+        "namespace_premise": _namespace_premise_cache_identity(namespace_premise),
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
@@ -1531,6 +1548,7 @@ def _module_lowering_context_digest_for_module(
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
+    namespace_premise: PythonNamespacePremise | None,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
@@ -1569,6 +1587,7 @@ def _module_lowering_context_digest_for_module(
         logical_source_path=logical_source_path,
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
+        namespace_premise=namespace_premise,
         known_classes_snapshot=known_classes_snapshot,
         type_hint_policy=type_hint_policy,
         type_facts=type_facts,
@@ -1812,6 +1831,7 @@ def _load_cached_module_lowering_result(
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
+    namespace_premise: PythonNamespacePremise | None,
     is_package: bool,
     known_classes_snapshot: dict[ClassId, ClassInfo],
     type_hint_policy: TypeHintPolicy,
@@ -1854,6 +1874,7 @@ def _load_cached_module_lowering_result(
             logical_source_path=logical_source_path,
             module_execution_kind=module_execution_kind,
             module_source_role=module_source_role,
+            namespace_premise=namespace_premise,
             known_classes_snapshot=known_classes_snapshot,
             type_hint_policy=type_hint_policy,
             type_facts=type_facts,
@@ -1921,6 +1942,7 @@ def _module_worker_payload(
     type_hint_policy: TypeHintPolicy,
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
+    namespace_premise: PythonNamespacePremise | None,
     type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
@@ -1989,6 +2011,7 @@ def _module_worker_payload(
         "type_hint_policy": type_hint_policy,
         "module_execution_kind": module_execution_kind,
         "module_source_role": module_source_role,
+        "namespace_premise": _namespace_premise_cache_identity(namespace_premise),
         "enable_phi": enable_phi,
         "known_modules": scoped_inputs.known_modules_payload,
         "direct_call_modules": scoped_inputs.direct_call_modules_payload,

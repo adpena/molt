@@ -255,7 +255,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_module_frame_enter")
     assert hasattr(SimpleTIRGenerator, "_reset_module_chunk_state")
     # sema-state population
-    assert hasattr(SimpleTIRGenerator, "_module_stable_funcs")
+    assert hasattr(SimpleTIRGenerator, "_source_callable_candidate")
     assert hasattr(SimpleTIRGenerator, "_populate_sema_state")
     # symbol naming
     assert hasattr(SimpleTIRGenerator, "_sanitize_module_name")

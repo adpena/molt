@@ -272,7 +272,6 @@ impl LuauBackend {
             | molt_ir::OpKind::Copy
             | molt_ir::OpKind::CopyVar
             | molt_ir::OpKind::DataclassGet
-            | molt_ir::OpKind::DataclassNew
             | molt_ir::OpKind::DataclassNewValues
             | molt_ir::OpKind::DataclassSet
             | molt_ir::OpKind::DataclassSetClass

@@ -1,8 +1,7 @@
 # Verified namespace premises
 
-Status: implemented for tooling source closures and user-program discovery (2026-10-16);
-operation-wide materialized-graph convergence and source/topology custody are implemented;
-frontend premise adoption and target qualification remain open.
+Status: tooling source closures, user-program discovery and frontend premise transport
+are implemented (2026-10-30). Target qualification remains a separate obligation.
 Owner finding HF-226.
 
 ## Problem
@@ -25,9 +24,9 @@ This default is stricter than Molt's language contract and inconsistent with Mol
 - The [dynamic-semantics policy](../spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
   (spec 0216) admits scoped mutation and excludes unrestricted `exec`/`eval`, arbitrary runtime
   monkeypatching and unrestricted reflection.
-- The frontend already assumes the narrower premise: `_module_stable_funcs`
-  (`frontend/lowering/sema_state.py`) treats a module function as stable when only its own module
-  rebinds it.
+- The frontend consumes the graph's source authority. Callable candidates use
+  `CallableId(module, definition site)`; an actual call keeps the existing runtime
+  code/context guard unless a complete body and execution-context proof permits folding.
 - The import flow (`python_imports.py`) trusted foreign code at calls ("Ordinary foreign code has its own
   global mapping") but widened metadata at iteration and context callbacks.
 
@@ -124,7 +123,8 @@ receiver behavior.
    in one AST traversal and adds lexical lookup projection only for sources with star imports.
    It summarizes the own names its deferred code rebinds
    (`None` on dynamic own reflection) and its named writes to other modules' namespaces, as
-   `(receiver spelling, name, construct, line, execution owner)`. It is conservative by spelling.
+   `(receiver spelling, name, construct, line, execution owner, source site)`.
+   It is conservative by spelling; definition/source identities remain typed.
    The existing read-only AST admission owns these syntax facts by target language
    version and relative-import package. Binding-core policies, graph premises,
    activated bodies and arguments do not change syntax. Graph and binding queries
@@ -133,7 +133,8 @@ receiver behavior.
    Canonical private-name resolution precedes publication, so a class's
    `target.__member` and `global __name` retain CPython's mangled bindings while
    literal strings passed to `setattr` retain their exact spelling. Summary schema
-   4 rejects records from before this normalization. This uses the admitted AST's
+   6 also retains each write's source site for deterministic same-line ordering.
+   This uses the admitted AST's
    existing lifetime, adds no global or persistent cache, and adds no runtime work
    to compiled programs. Already resolved binding and host-source trees query
    the same internal projection without repeating private-name normalization or
@@ -215,7 +216,25 @@ receiver behavior.
    wake all affected sources. Reprojection reuses captured bytes and cached source facts, and
    identical context/premise pairs do no further scan. Uninspected native/artifact/catalog owners
    contribute unknown writes rather than an empty proof. The resulting scan authority carries
-   its actual premise to runtime-import policy. Frontend premise adoption remains separate work.
+   its actual premise to runtime-import policy, frontend contexts, cache identities
+   and workers. The five-field premise carries foreign names, future canonical-member
+   writes, entry member uncertainty, noncanonical providers and opaque source activations.
+   Unknown opaque custody is distinct from a proved empty set. Source bodies whose
+   real function/class values escape, are recreated or have visible attribute mutations
+   retain conservative activation. Exact callees transfer arguments through their
+   existing formal-parameter worklist; merely passing an argument does not expose
+   its whole namespace. Literal `getattr`/`hasattr`/`delattr` select real member
+   sources; unknown selectors retain protocol and escape effects. Class allocation
+   and method folding additionally require unexposed definition/method identities.
+   A declined constructor proof calls the actual class protocol.
+
+   Inventory scans collect deferred writes without asserting they ran before another
+   module's first acquisition. Activating an execution owner contributes its entry
+   writes and wakes dependent projections. The source-demand fixpoint also wakes
+   changed opaque-source premises. Import scan schema 40 rejects older owner/value
+   records. Target platform and version scalars, cache entry provenance and provider
+   exclusions participate in the same scan authority; none is inferred from a host
+   spelling or supplied by a second frontend registry.
 
    Package search paths belong to the same source-scan authority. A regular package
    starts at its original `__init__.py` directory; a generated namespace package
@@ -272,7 +291,37 @@ bytes. Each source keeps its original resolution roots and admission context.
 A full-depth runtime custody promotion adds that permission to the original
 context rather than interpreting application imports under support-library roots.
 
+Full source permission grants availability, not execution. Inventory projections
+retain the runtime-import protocol and dynamic-anchor requirements of deferred
+code. Execution projections admit imports, cache writes and source execution
+requests only when their source owner is demanded. Runtime catalog custody covers
+every body;
+only that full-owner scan retires prior partial body jobs. Scoped foreign writes
+likewise join the namespace premise when their owner activates. Native module
+cache storage retains values without exposing their namespaces, including the
+implicit current-module provenance of `sys.modules[__name__]`; key callbacks
+remain a separate incidence even when a value is also held.
+Stdlib intrinsic classification explicitly requests full import-site inventory:
+another module's deferred import can read a private intrinsic binding even when
+that binding's defining module never loads it itself. This availability proof
+does not admit that deferred import as executed application code.
+Lowering analysis also requests inventory to scope dependencies of available
+function bodies. Its raw-source inventory cannot replace an execution scan:
+purpose travels through the resolver and persisted request keys and payloads,
+and precomputed projections carry a typed purpose checked before graph reuse.
+
+Literal member selection passes typed parameter-source argument facts into the
+canonical binding fixpoint. Its control flow proves branch selection and abrupt
+completion, including a return before a lazy hook's tail. Parameter stores and
+callbacks follow the same fact lifetime as all other bindings. There is no
+consumer-side reconstruction of that activation's control flow.
+
 A named writer delta wakes only its prior target sources and reached body contexts.
+Revisions of completed scans wait until pending admissions and first body demands
+drain, then run against the latest premise in one wave. New opacity facts still
+revise their full five-field authority immediately. This avoids repeatedly
+walking every completed body while a wave discovers more exposed owners; the
+drained revision queue remains part of the convergence boundary.
 Active rows are also indexed by logical receiver name: a later namespace package
 can acquire a generated source path without losing writes observed before that
 path existed. A closure result separates its own module/reason membership from
@@ -285,6 +334,11 @@ pruner selects roots before import/value/default/kind analysis and frontend lowe
 there is no intermediate unparse/file/reparse or generation-transfer lane. Original
 source spans keep every deferred owner identity stable as roots grow. Explicit raw
 Python initialization dominates a helper selection, and scan depth never decreases.
+Selected native views provide dependency inventory before graph ingestion.
+The native artifact's actual callable exports separately seed canonical source
+demands; retaining a transitive lowering binding does not execute it. Export
+demands survive promotion to raw source. Resolver keys include inventory purpose
+even when selecting every definition leaves the native and raw AST identical.
 The resolver retains one current selected AST per source/target. Syntax/request and
 runtime-policy caches distinguish raw SHA, target, depth and selection. Root planning
 and views reuse the same original parse; telemetry counts actual parse/prune work.
@@ -302,9 +356,10 @@ The import visitor records ordinary import statements and possible canonical
 import or `find_spec` calls after its reachability check, before static-target,
 helper or runtime-catalog resolution. Intrinsic and future-import exclusions
 retain their existing semantics. Synthetic support imports do not imply a
-reached Python import operation. Initialization, full inventory and deferred
-owner/argument scans therefore use their actual execution regions and namespace
-premise for both requests and the protocol bit.
+reached Python import operation. Initialization and deferred owner/argument scans
+use their actual execution regions and namespace premise for requests. Full
+inventory also records protocol requirements of available deferred regions,
+without treating them as executed import requests.
 
 This removes the former protocol prepass: one additional O(R) execution-region
 walk, its evaluate-node tuple and a binding-core lookup for every computed scan

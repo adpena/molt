@@ -252,7 +252,7 @@ impl LuauBackend {
             // ================================================================
             // Dataclass
             // ================================================================
-            molt_ir::OpKind::DataclassNew | molt_ir::OpKind::DataclassNewValues => {
+            molt_ir::OpKind::DataclassNewValues => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
             }

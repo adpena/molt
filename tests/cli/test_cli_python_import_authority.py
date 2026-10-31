@@ -1257,7 +1257,10 @@ def test_python_execution_effects_never_leave_a_stale_static_anchor(
 def test_deferred_function_graph_keeps_call_time_states_as_discovery_only() -> None:
     source = "def load():\n    from .child import value\n__package__ = 'other.pkg'\n"
     projection = _source_import_scan._collect_imports_for_graph(
-        ast.parse(source), module_name="pkg.entry", is_package=False
+        ast.parse(source),
+        module_name="pkg.entry",
+        is_package=False,
+        purpose=_source_import_scan.SourceImportPurpose.INVENTORY,
     )
     assert projection.requires_runtime_package_anchor
     assert not projection.imports
@@ -1281,7 +1284,10 @@ def test_deferred_explicit_package_store_keeps_successful_graph_root() -> None:
     # Source-state possibilities remain graph candidates. A deferred activation
     # can replace its globals; no statement may promote them to execution facts.
     projection = _source_import_scan._collect_imports_for_graph(
-        ast.parse(source), module_name="pkg.entry", is_package=False
+        ast.parse(source),
+        module_name="pkg.entry",
+        is_package=False,
+        purpose=_source_import_scan.SourceImportPurpose.INVENTORY,
     )
     assert projection.requires_runtime_package_anchor
     assert not projection.imports
@@ -1796,7 +1802,9 @@ def test_import_completion_local_walrus_does_not_write_module_metadata(
     request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
     assert _known_completion_packages(flow, request) == {"pkg"}
     projection = _source_import_scan._collect_imports_for_graph(
-        tree, module_name="pkg.entry"
+        tree,
+        module_name="pkg.entry",
+        purpose=_source_import_scan.SourceImportPurpose.INVENTORY,
     )
     if owner == "function":
         assert projection.requires_runtime_package_anchor

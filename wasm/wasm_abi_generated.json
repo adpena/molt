@@ -3070,7 +3070,6 @@
     "ctypes_require_ffi": "molt_ctypes_require_ffi",
     "ctypes_sizeof": "molt_ctypes_sizeof",
     "dataclass_get": "molt_dataclass_get",
-    "dataclass_new": "molt_dataclass_new",
     "dataclass_new_from_values": "molt_dataclass_new_from_values",
     "dataclass_set": "molt_dataclass_set",
     "dataclass_set_class": "molt_dataclass_set_class",

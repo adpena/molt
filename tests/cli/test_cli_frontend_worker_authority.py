@@ -174,6 +174,7 @@ def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
         pgo_hot_function_names=(),
         module_dep_closures={"app": frozenset({"app"})},
         module_source_role="user",
+        namespace_premise=None,
     )
 
 
@@ -241,6 +242,7 @@ def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
             entry_module="app",
             entry_execution_kind="script",
             namespace_portions_by_module={},
+            scan_authority=None,
         ),
         known_classes={},
         frontend_phase_timeout=None,
