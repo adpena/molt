@@ -4,7 +4,10 @@ from molt.compilation_target import Target
 
 import time
 
-from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
+from molt.cli.build_diagnostics import (
+    _emit_build_diagnostics_for_result,
+    _frontend_lowering_cache_summary,
+)
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.cache_keys import FunctionDigests
 from molt.cli import backend_ir as _backend_ir
@@ -136,6 +139,14 @@ def _run_build_pipeline(
         )
     if frontend_layer_error is not None:
         return return_after_build_diagnostics(frontend_layer_error)
+    if verbose and not json_output:
+        summary = _frontend_lowering_cache_summary(
+            {
+                "worker_timings": prepared_frontend_run_ticket.frontend_parallel_worker_timings
+            }
+        )
+        if summary is not None:
+            print(f"Frontend {summary['message']}")
 
     _progress.phase("backend_pipeline")
 

@@ -24,7 +24,7 @@ from molt.python_identity_common import _valid_sha256
 from molt.process_environment import ProcessEnvironment
 from molt.wasm_artifact import is_valid_wasm_binary
 
-_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 4
+_RUNTIME_FINGERPRINT_SCHEMA_VERSION = 5
 _FIELDS = frozenset(
     {
         "version",

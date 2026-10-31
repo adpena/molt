@@ -374,6 +374,12 @@ def _run_backend_pipeline(
         if prepared_backend_runtime_error is not None:
             return return_after_build_diagnostics(prepared_backend_runtime_error)
         assert prepared_backend_runtime_context is not None
+        if verbose and not json_output:
+            print(f"Compiler product: {prepared_backend_runtime_context.backend_bin}")
+            if prepared_backend_runtime_context.runtime_lib is not None:
+                print(
+                    f"Runtime product: {prepared_backend_runtime_context.runtime_lib}"
+                )
         if fact_graph_request is not None:
             result = _factgraph.emit_pipeline_fact_graph(
                 request=fact_graph_request,
