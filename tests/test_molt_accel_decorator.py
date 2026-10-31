@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 import json
 
+import pytest
+
 from molt_accel.client import MoltClient, MoltClientPool
 from molt_accel import decorator as decorator_mod
 from molt_accel.decorator import molt_offload, raw_json_response_factory
@@ -24,6 +26,7 @@ def _worker_env() -> dict[str, str]:
     return env
 
 
+@pytest.mark.slow
 def test_molt_offload_decorator() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
 
@@ -44,6 +47,7 @@ def test_molt_offload_decorator() -> None:
     client.close()
 
 
+@pytest.mark.slow
 def test_molt_offload_decorator_pool() -> None:
     pool = MoltClientPool(
         worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2

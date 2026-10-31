@@ -2875,11 +2875,6 @@ type = 3
 boxed_call = true
 
 [[import]]
-name = "dataclass_new"
-return_contract = "owned_object"
-type = 6
-
-[[import]]
 name = "dataclass_new_from_values"
 return_contract = "owned_object"
 type = 10

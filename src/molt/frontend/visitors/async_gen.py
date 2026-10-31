@@ -166,8 +166,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         if self._class_ns_stack and self._class_ns_stack[-1].class_node is not None:
             self._emit_class_function_definition(self._class_ns_stack[-1], node)
             return None
-        if self._has_typing_overload_decorator(node):
-            return None
+
         definition = self._prepare_function_definition(node)
         with self._type_parameter_scope(definition.type_parameter_bindings):
             self._emit_async_function_definition(node, definition)
@@ -187,14 +186,11 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 raise SyntaxError("'return' with value in async generator")
             func_name = node.name
             qualname = self._definition_qualname(node)
-            func_symbol = self._function_symbol(
-                func_name, kind=FunctionKind.ASYNC_GENERATOR, reuse_reserved=True
+            func_symbol = self._source_definition_symbol(
+                node, kind=FunctionKind.ASYNC_GENERATOR
             )
             poll_func_name = f"{func_symbol}_poll"
-            if not self._has_typing_overload_decorator(node):
-                self._record_func_default_specs(poll_func_name, node.args)
-            else:
-                return None
+            self._record_func_default_specs(poll_func_name, node.args)
             has_return = self._function_contains_return(node)
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
                 node.args
@@ -366,14 +362,9 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             return None
         func_name = node.name
         qualname = self._definition_qualname(node)
-        func_symbol = self._function_symbol(
-            func_name, kind=FunctionKind.ASYNC, reuse_reserved=True
-        )
+        func_symbol = self._source_definition_symbol(node, kind=FunctionKind.ASYNC)
         poll_func_name = f"{func_symbol}_poll"
-        if not self._has_typing_overload_decorator(node):
-            self._record_func_default_specs(poll_func_name, node.args)
-        else:
-            return None
+        self._record_func_default_specs(poll_func_name, node.args)
         has_return = self._function_contains_return(node)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]

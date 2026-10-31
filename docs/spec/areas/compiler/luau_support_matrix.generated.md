@@ -13,8 +13,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 - `compile-error`: `84`
 - `implemented-exact`: `191`
 - `implemented-target-limited`: `19`
-- `not-admitted`: `242`
-- `total`: `536`
+- `not-admitted`: `241`
+- `total`: `535`
 
 ## Matrix
 
@@ -171,7 +171,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `copy` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `copy_var` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dataclass_get` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `dataclass_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dataclass_new_values` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dataclass_set` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dataclass_set_class` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |

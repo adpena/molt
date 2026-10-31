@@ -8,6 +8,7 @@ reads changes (HF-457); the driver's own tests run only when the driver does.
 from __future__ import annotations
 
 import shlex
+import sys
 from pathlib import Path, PurePosixPath
 import tomllib
 
@@ -16,7 +17,7 @@ import pytest
 from molt.process_environment import ProcessEnvironment
 from molt import host_capacity
 from tools.molt_dev_gates import display
-from tools.molt_dev_policy import GateConfig
+from tools.molt_dev_policy import GateConfig, LandingMode
 from tools.proof_plan import CargoTargetAccess
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -52,8 +53,10 @@ def _plan_changes(paths, changes):
     return changes if "tools/proof_plan.toml" in paths else None
 
 
-def _selected_pytest_targets(cfg, paths, changes=CI_COMMAND_EDIT):
-    gates, _ = cfg.select(paths, plan_changes=_plan_changes(paths, changes))
+def _selected_pytest_targets(
+    cfg, paths, changes=CI_COMMAND_EDIT, mode=LandingMode.PRESUBMIT
+):
+    gates, _ = cfg.select(paths, plan_changes=_plan_changes(paths, changes), mode=mode)
     return {
         argument
         for gate in gates
@@ -93,9 +96,11 @@ def test_clippy_selector_edits_do_not_run_landing_simulations(path):
     ],
 )
 def test_clippy_shared_authorities_retain_selector_consumer(path):
+    # A transitive consumer: presubmit runs direct readers only, and postsubmit
+    # owns the closure (docs/design/observed_inputs.md).
     cfg = GateConfig.load(COMMITTED_GATES)
     assert "tests/tools/test_check_changed_clippy.py" in _selected_pytest_targets(
-        cfg, [path]
+        cfg, [path], mode=LandingMode.POSTSUBMIT
     )
 
 
@@ -110,7 +115,9 @@ def test_cargo_workspace_edits_keep_driver_and_selector_consumers():
 
 def test_cargo_source_projection_selects_both_consumer_oracles():
     cfg = GateConfig.load(COMMITTED_GATES)
-    selected = _selected_pytest_targets(cfg, ["src/molt/cli/cargo_source_closure.py"])
+    selected = _selected_pytest_targets(
+        cfg, ["src/molt/cli/cargo_source_closure.py"], mode=LandingMode.POSTSUBMIT
+    )
     assert selected >= {
         "tests/tools/test_import_file.py",
         "tests/tools/test_check_changed_clippy.py",
@@ -183,6 +190,7 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
         "tests/tools/test_gen_luau_support_matrix.py",
         # Tests that import the audits or read the design document.
         POLICY_ORACLE,
+        "tests/test_dx_run_context.py",
         "tests/test_agent_coordination.py",
         "tests/test_check_docs_architecture.py",
         "tests/test_executable_test_support.py",
@@ -212,16 +220,41 @@ _GUARD_AUDIT_READERS = {
     "tests/tools/test_check_memory_guard_wiring.py",
     "tests/tools/test_dev_py.py",
 }
+# The CLI completion smoke test names both guard audits as files. Its Linux
+# portability cell owns it (hosted bash, fish and zsh), so it reads them as a
+# direct reader only on a Linux host; another host defers it to that cell.
+COMPLETION_NODE = (
+    "tests/cli/test_cli_smoke.py::"
+    "test_cli_completion_uses_parser_commands_flags_and_positional_semantics"
+)
+if sys.platform.startswith("linux"):
+    _GUARD_AUDIT_READERS.add(COMPLETION_NODE)
+
+
+@pytest.mark.parametrize(
+    "host,local",
+    [("x86_64-unknown-linux-gnu", True), ("aarch64-apple-darwin", False)],
+)
+def test_portability_cells_of_another_os_defer_to_their_own_cell(
+    monkeypatch, host, local
+):
+    monkeypatch.setattr("molt.native_target._host_target_triple", lambda **_: host)
+    cfg = GateConfig.load(COMMITTED_GATES)
+    foreign = cfg.foreign_cells()
+    assert ("linux-x86_64-py312-queue-portability" in foreign) is not local
+    assert "windows-x86_64-py312-queue-portability" in foreign
+    # Host-agnostic cells are never foreign, whatever OS they name.
+    assert "linux-x86_64-py312-unit-collection" not in foreign
+    selected = _selected_pytest_targets(cfg, ["tools/check_memory_guard_wiring.py"])
+    assert (COMPLETION_NODE in selected) is local
 
 
 @pytest.mark.parametrize(
     "source,owner,readers",
     [
-        (
-            "tools/encoding_gate.py",
-            "tests/tools/test_encoding_gate.py",
-            {"tests/tools/test_check_gate_liveness.py"},
-        ),
+        # tools/check_gate_liveness.py imports the encoding gate, so its test
+        # reads it at the second hop: postsubmit runs it, presubmit does not.
+        ("tools/encoding_gate.py", "tests/tools/test_encoding_gate.py", set()),
         ("tools/check_ratio_direction.py", "tests/tools/test_signed_ratio.py", set()),
         (
             "tools/check_subprocess_guard_coverage.py",
@@ -281,6 +314,15 @@ def test_scanner_leaf_source_and_test_select_their_owner(source, owner, readers)
     }
 
 
+def test_second_hop_readers_run_in_postsubmit_only():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    reader = "tests/tools/test_check_gate_liveness.py"
+    assert reader not in _selected_pytest_targets(cfg, ["tools/encoding_gate.py"])
+    assert reader in _selected_pytest_targets(
+        cfg, ["tools/encoding_gate.py"], mode=LandingMode.POSTSUBMIT
+    )
+
+
 def test_guard_wiring_audit_changes_select_their_direct_consumers():
     cfg = GateConfig.load(COMMITTED_GATES)
     direct = {
@@ -310,7 +352,8 @@ def test_guard_wiring_audit_changes_select_their_direct_consumers():
 )
 def test_structural_audit_producers_select_all_parser_consumers(source):
     cfg = GateConfig.load(COMMITTED_GATES)
-    assert _selected_pytest_targets(cfg, [source]) >= {
+    selected = _selected_pytest_targets(cfg, [source], mode=LandingMode.POSTSUBMIT)
+    assert selected >= {
         "tests/test_structural_audit.py",
         "tests/tools/test_structural_audit_records.py",
         "tests/test_generator_manifest.py",
@@ -495,10 +538,14 @@ def test_landing_pytest_preserves_each_actual_owning_envelope():
         ]
     )
     gates = [gate.command for gate in gates]
+    # The rule's scoped cohort keeps its envelope; a direct reader may also run
+    # whole in presubmit, since a narrower rule scope does not absorb it.
     import_run = next(
         gate
         for gate in gates
-        if isinstance(gate, tuple) and "tests/cli/test_cli_import_collection.py" in gate
+        if isinstance(gate, tuple)
+        and "tests/cli/test_cli_import_collection.py" in gate
+        and "-k" in gate
     )
     assert "--molt-worker-memory-gb=6.25" in import_run
     assert import_run[import_run.index("-k") + 1].startswith("backend_codegen or ")
@@ -596,8 +643,12 @@ def test_proof_policy_edits_select_receivers_without_package_production(path):
     } <= selected
     assert "tests/cli/test_source_extension_producer.py" not in selected
     assert "tests/cli/test_source_extension_compiler_inputs.py" not in selected
+    # The rule keeps its scoped queue cohort. A direct reader of the edited path
+    # also runs whole in presubmit: a narrower rule scope does not absorb it.
     queue = next(
-        argv for argv in arguments if "tests/tools/test_proof_queue.py" in argv
+        argv
+        for argv in arguments
+        if "tests/tools/test_proof_queue.py" in argv and "-k" in argv
     )
     assert set(queue[queue.index("-k") + 1].split(" or ")) == {
         "proof_queue_pact_witness",

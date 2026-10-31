@@ -1347,7 +1347,7 @@ pub(crate) fn glob_parse_args(
         Ok((path, flavor)) => (
             path.into_iter()
                 .map(|byte| if byte == b'/' { b'\\' } else { byte })
-                .collect(),
+                .collect::<Vec<u8>>(),
             flavor,
         ),
         Err(bits) => return Err(bits),

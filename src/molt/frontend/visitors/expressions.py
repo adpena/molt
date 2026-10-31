@@ -32,7 +32,6 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import BINOP_OP_KIND
-from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
@@ -114,7 +113,7 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 # whose guard re-checks callable identity at run time. Module
                 # initialisation records hints as app bindings, so it gets none.
                 if self.current_func_name != "molt_main" and (
-                    symbol := self._stable_module_func_candidate(node.id)
+                    symbol := self._source_callable_candidate(node)
                 ):
                     value.type_hint = f"Func:{symbol}"
                 return value
@@ -216,8 +215,8 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                         or self.module_name in self.stdlib_allowlist
                         or self._is_known_project_module(self.module_name)
                     ):
-                        if node.id in self.stable_module_funcs:
-                            return self._emit_stable_module_func_ref(node.id)
+                        if self._source_callable_candidate(node) is not None:
+                            return self._emit_source_callable_ref(node)
                         return self._emit_global_get(node.id)
                 if node.id in {"locals", "__import__"}:
                     return self._emit_module_attr_get_on("builtins", node.id)
@@ -239,29 +238,17 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 return self._emit_global_get(node.id)
             if self.current_func_name == "molt_main":
                 return global_val
-            if node.id in self.stable_module_funcs:
-                return self._emit_stable_module_func_ref(node.id)
+            if self._source_callable_candidate(node) is not None:
+                return self._emit_source_callable_ref(node)
             return self._emit_global_get(node.id)
         return node.id
 
-    def _stable_module_func_candidate(self, name: str) -> str | None:
-        """The code symbol of a stable module-level sync function, or None.
-
-        This names a guarded-dispatch candidate, not a binding fact.
-        """
-        if (
-            name in self.stable_module_funcs
-            and self.module_declared_funcs.get(name) == FunctionKind.SYNC
-        ):
-            return self._function_symbol_for_reference(name)
-        return None
-
-    def _emit_stable_module_func_ref(self, name: str) -> "MoltValue":
-        """Read a stable module-level sync function without erasing identity."""
-        mod_attr = self._emit_module_attr_get(name)
-        if symbol := self._stable_module_func_candidate(name):
-            mod_attr.type_hint = f"Func:{symbol}"
-        return mod_attr
+    def _emit_source_callable_ref(self, node: ast.Name) -> MoltValue:
+        """Retain the actual name lookup with its typed code candidate."""
+        value = self._emit_global_get(node.id)
+        if symbol := self._source_callable_candidate(node):
+            value.type_hint = f"Func:{symbol}"
+        return value
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         # Constant-fold string concatenation: "a" + "b" -> "ab"

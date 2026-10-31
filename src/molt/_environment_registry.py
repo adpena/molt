@@ -5850,6 +5850,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "0",
+      "kind": "int",
+      "name": "MOLT_SELF_SPAWN_DEPTH",
+      "output_neutral": false,
+      "owner": "runtime/molt-runtime/src/async_rt/process/self_spawn.rs",
+      "summary": "How many launches of its own binary led to this compiled program; the runtime spawn authority sets it to one above the parent's on every self-launch, and at 1 or more a self-launch without a declared role (multiprocessing) raises OSError(ENOEXEC); a malformed value counts as 1 and a value set by hand can only raise it (HF-519).",
+      "values": []
+    },
+    {
       "audience": "developer",
       "default": "auto",
       "kind": "enum",

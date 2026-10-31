@@ -330,6 +330,7 @@ def _native_cache_setup(
             frontend_module_costs=None,
             stdlib_like_by_module={name: True for name in stdlib_modules},
             module_source_role_by_module={},
+            scan_authority=None,
         ),
         target_python=TargetPythonVersion(3, 12, 0),
         backend_compiler_fingerprint="selected-compiler",

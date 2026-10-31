@@ -319,8 +319,6 @@ pub enum OpKind {
     CopyVar,
     #[serde(rename = "dataclass_get")]
     DataclassGet,
-    #[serde(rename = "dataclass_new")]
-    DataclassNew,
     #[serde(rename = "dataclass_new_values")]
     DataclassNewValues,
     #[serde(rename = "dataclass_set")]
@@ -1244,7 +1242,6 @@ impl OpKind {
         Self::Copy,
         Self::CopyVar,
         Self::DataclassGet,
-        Self::DataclassNew,
         Self::DataclassNewValues,
         Self::DataclassSet,
         Self::DataclassSetClass,
@@ -1784,7 +1781,6 @@ impl OpKind {
             Self::Copy => "copy",
             Self::CopyVar => "copy_var",
             Self::DataclassGet => "dataclass_get",
-            Self::DataclassNew => "dataclass_new",
             Self::DataclassNewValues => "dataclass_new_values",
             Self::DataclassSet => "dataclass_set",
             Self::DataclassSetClass => "dataclass_set_class",
@@ -2335,7 +2331,6 @@ impl std::str::FromStr for OpKind {
             "copy" => Ok(Self::Copy),
             "copy_var" => Ok(Self::CopyVar),
             "dataclass_get" => Ok(Self::DataclassGet),
-            "dataclass_new" => Ok(Self::DataclassNew),
             "dataclass_new_values" => Ok(Self::DataclassNewValues),
             "dataclass_set" => Ok(Self::DataclassSet),
             "dataclass_set_class" => Ok(Self::DataclassSetClass),
@@ -2893,7 +2888,6 @@ pub const fn simpleir_backend_private_owner(kind: OpKind) -> Option<&'static str
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -3469,7 +3463,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -4013,7 +4006,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -4559,7 +4551,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -5104,7 +5095,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -5648,7 +5638,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -6193,7 +6182,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -6738,7 +6726,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -7282,7 +7269,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -7828,7 +7814,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -8372,7 +8357,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -8912,7 +8896,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -9462,7 +9445,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -10004,7 +9986,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -10552,7 +10533,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -11095,7 +11075,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -11639,7 +11618,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -12183,7 +12161,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -12724,7 +12701,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -13272,7 +13248,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -13817,7 +13792,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -14358,7 +14332,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -14905,7 +14878,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -15454,7 +15426,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -16004,7 +15975,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -16546,7 +16516,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -17089,7 +17058,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -17641,7 +17609,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::ContextExit
         | OpKind::Copy
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -18187,7 +18154,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -18729,7 +18695,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -19438,7 +19403,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -20006,7 +19970,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -20774,7 +20737,6 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::ContextEnter
         | OpKind::ContextExit
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -21379,7 +21341,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -21930,7 +21891,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -22477,7 +22437,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -23022,7 +22981,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -23573,7 +23531,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -24087,7 +24044,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::ContextEnter
         | OpKind::ContextExit
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -24898,7 +24854,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -25669,7 +25624,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::ContextEnter
         | OpKind::ContextExit
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -25989,7 +25943,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -26532,7 +26485,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -27074,7 +27026,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -27615,7 +27566,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -28156,7 +28106,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::ContextEnter
         | OpKind::ContextExit
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -28700,7 +28649,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -29242,7 +29190,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -30443,7 +30390,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -30978,7 +30924,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -31529,7 +31474,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -32074,7 +32018,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -32618,7 +32561,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -33161,7 +33103,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -33706,7 +33647,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -34249,7 +34189,6 @@ impl OpKind {
             | OpKind::Copy
             | OpKind::CopyVar
             | OpKind::DataclassGet
-            | OpKind::DataclassNew
             | OpKind::DataclassNewValues
             | OpKind::DataclassSet
             | OpKind::DataclassSetClass
@@ -44936,7 +44875,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -45470,7 +45408,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -46014,7 +45951,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -46562,7 +46498,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -47239,7 +47174,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -47783,7 +47717,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass
@@ -48329,7 +48262,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Copy
         | OpKind::CopyVar
         | OpKind::DataclassGet
-        | OpKind::DataclassNew
         | OpKind::DataclassNewValues
         | OpKind::DataclassSet
         | OpKind::DataclassSetClass

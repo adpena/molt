@@ -80,6 +80,7 @@ def _sdk_tool(bin_dir: Path, role: str, candidates: Sequence[Path]) -> Path:
 def _verified_llvm_tools() -> VerifiedLlvmTools | str:
     from molt.llvm_wasi_tools import llvm_tool_candidates
     from molt.llvm_toolchain import (
+        LlvmManagedToolchainMissingError,
         llvm_bootstrap_command,
         llvm_host_architecture,
         project_llvm_toolchain_environment,
@@ -89,8 +90,11 @@ def _verified_llvm_tools() -> VerifiedLlvmTools | str:
     from molt.source_root import compiler_source_root
 
     root = compiler_source_root()
-    # A configured but invalid SDK raises LlvmToolchainConfigError: fail loud.
-    verification = verify_available_llvm_toolchain(root)
+    # Only a missing provider is optional; a configured but invalid SDK fails.
+    try:
+        verification = verify_available_llvm_toolchain(root)
+    except LlvmManagedToolchainMissingError as exc:
+        return str(exc)
     if verification is None:
         pin = required_llvm_backend_pin(root)
         provision = (

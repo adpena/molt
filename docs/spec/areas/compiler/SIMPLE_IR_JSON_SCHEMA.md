@@ -914,7 +914,7 @@ All use the standard `args` + `out` pattern.
 | `class_set_definition`    | `args` [class], `class_definition`, `out` | Stamp a fresh class with its class statement identity |
 | `guard_layout`            | `args` [obj, ver], `class_definition`, `out` | Guard on class statement and layout version |
 | `object_new`              | `out`                          | Create bare object             |
-| `dataclass_new`           | `args`, `out`                  | Create dataclass instance      |
+| `dataclass_new_values`    | `args` [name, fields, flags, *values], `out` | Create a dataclass instance from field values |
 | `dataclass_get`           | `args`, `out`                  | Dataclass field get            |
 | `dataclass_set`           | `args`, `out`                  | Dataclass field set            |
 | `dataclass_set_class`     | `args`, `out`                  | Set dataclass's class          |

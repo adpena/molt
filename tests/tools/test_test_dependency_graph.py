@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
-from tools.molt_dev_policy import GateConfig
+from tools.molt_dev_policy import GateConfig, LandingMode, select_landing_gates
+from tools.proof_plan import PytestMemoryUnits
 from tools.test_dependency_graph import (
     RepositoryTree,
     build_graph,
@@ -267,7 +268,261 @@ def test_landing_envelopes_come_from_pre_push_cells_without_builds():
     assert envelopes["tests/test_nodes.py"].targets == ("tests/test_nodes.py::test_a",)
     assert "tests/test_built.py" not in envelopes
     assert others["tests/test_built.py"] == ("build",)
-    assert others["tests/test_late.py"] == ("main-only",)
+    assert envelopes["tests/test_late.py"].targets == ("tests/test_late.py",)
+    assert "tests/test_late.py" not in others
+
+
+@pytest.fixture(scope="module")
+def landing_graph(tmp_path_factory):
+    root = _repository(
+        tmp_path_factory.mktemp("landing-graph"),
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/hub.py": "def value():\n    return 1\n",
+            "src/pkg/middle.py": "from pkg.hub import value\n",
+            "tests/test_direct.py": "from pkg.hub import value\n",
+            "tests/test_transitive.py": "from pkg.middle import value\n",
+            "tests/test_changed.py": "def test_changed():\n    pass\n",
+            "tests/test_recent.py": "def test_recent():\n    pass\n",
+        },
+    )
+    return build_graph(RepositoryTree.from_worktree(root), cache=None)
+
+
+def _landing_commands(graph):
+    return [
+        {
+            "id": "ordinary",
+            "tiers": ["pre-push", "main"],
+            "resource_class": "python-tests",
+            "toolchains": ["python"],
+            "argv": ["python", "-m", "pytest", "-m", "not slow"],
+            "pytest": list(graph.tests),
+            "pytest_worker_memory_gb": 1.0,
+        },
+        {
+            "id": "slow",
+            "tiers": ["scheduled"],
+            "resource_class": "python-tests",
+            "toolchains": ["python"],
+            "argv": ["python", "-m", "pytest", "-m", "slow"],
+            "pytest": list(graph.tests),
+            "pytest_worker_memory_gb": 1.0,
+        },
+    ]
+
+
+def test_a_foreign_portability_cell_owns_its_tests():
+    def command(identifier, cell):
+        return {
+            "id": identifier,
+            "tiers": ["main"],
+            "cell": cell,
+            "resource_class": "python-tests",
+            "toolchains": ["python"],
+            "argv": ["python", "-m", "pytest"],
+            "pytest": [f"tests/test_{identifier}.py"],
+        }
+
+    commands = [command("here", "local-cell"), command("there", "other-os-cell")]
+    envelopes, others = landing_envelopes(
+        commands, foreign_cells=frozenset({"other-os-cell"})
+    )
+    assert "tests/test_here.py" in envelopes
+    assert "tests/test_there.py" not in envelopes
+    assert others["tests/test_there.py"] == ("there",)
+
+
+def test_presubmit_selects_direct_readers_while_postsubmit_closes_imports(
+    landing_graph,
+):
+    commands = _landing_commands(landing_graph)
+    before = graph_selection(
+        landing_graph,
+        ["src/pkg/hub.py"],
+        commands,
+        mode=LandingMode.POSTSUBMIT,
+    )
+    after = graph_selection(
+        landing_graph,
+        ["src/pkg/hub.py"],
+        commands,
+        mode=LandingMode.PRESUBMIT,
+    )
+    assert before.selected == ("tests/test_direct.py", "tests/test_transitive.py")
+    assert after.selected == ("tests/test_direct.py",)
+    # Direct-input probes run in full; ordinary/slow cells together cover the
+    # complete postsubmit scope rather than silently dropping slow probes.
+    assert after.run["tests/test_direct.py"].select == ()
+    assert before.run["tests/test_direct.py"].select == ()
+    assert before.run["tests/test_direct.py"].owners == ("ordinary", "slow")
+
+
+def test_presubmit_direct_readers_include_imports_inside_test_functions(
+    tmp_path,
+):
+    # A test that imports inside its function reads the module at the first
+    # hop: that edge sits on the function's node, not the module's.
+    root = _repository(
+        tmp_path,
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/hub.py": "def value():\n    return 1\n",
+            "tests/test_local.py": (
+                "def test_local():\n    from pkg.hub import value\n\n"
+                "    assert value() == 1\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    pass\n",
+        },
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    assert graph.direct_readers(["src/pkg/hub.py"]) == ("tests/test_local.py",)
+
+
+def test_presubmit_recent_failures_then_changed_tests_then_direct_readers(
+    landing_graph,
+):
+    commands = _landing_commands(landing_graph)
+    selected = graph_selection(
+        landing_graph,
+        ["src/pkg/hub.py", "tests/test_changed.py"],
+        commands,
+        recent_failures=("tests/test_recent.py::test_recent", "tests/deleted.py"),
+    )
+    assert selected.selected == (
+        "tests/test_recent.py",
+        "tests/test_changed.py",
+        "tests/test_direct.py",
+    )
+    assert list(selected.run) == list(selected.selected)
+
+
+def test_graph_pytest_is_failure_first_and_maxfail_one(landing_graph):
+    commands = _landing_commands(landing_graph)
+    config = GateConfig(
+        pytest_memory_units=PytestMemoryUnits(commands, root=landing_graph.tree.root),
+        commands=tuple(commands),
+        dependency_graph=lambda: landing_graph,
+    )
+    gates, _ = config.select(
+        ["src/pkg/hub.py", "tests/test_changed.py"],
+        recent_failures=("tests/test_recent.py::test_recent",),
+    )
+    assert all("--maxfail=1" in gate.command for gate in gates)
+    assert [
+        argument
+        for gate in gates
+        for argument in gate.command
+        if argument.startswith("tests/")
+    ] == ["tests/test_recent.py", "tests/test_changed.py", "tests/test_direct.py"]
+
+
+def test_a_changed_test_runs_its_slow_cases_and_recent_failure_needs_no_path_change(
+    landing_graph,
+):
+    commands = _landing_commands(landing_graph)[:1]
+    config = GateConfig(
+        pytest_memory_units=PytestMemoryUnits(commands, root=landing_graph.tree.root),
+        commands=tuple(commands),
+        dependency_graph=lambda: landing_graph,
+    )
+    changed = config.graph_selection(["tests/test_changed.py"])
+    assert changed is not None
+    assert changed.run["tests/test_changed.py"].select == ()
+    recent = config.graph_selection([], recent_failures=("tests/test_recent.py",))
+    assert recent is not None
+    assert recent.selected == ("tests/test_recent.py",)
+
+
+def test_changed_slow_only_test_uses_its_declared_non_build_owner(landing_graph):
+    ordinary, slow = _landing_commands(landing_graph)
+    ordinary = {**ordinary, "pytest": ["tests/test_recent.py"]}
+    slow = {**slow, "toolchains": ["python", "rustc"]}
+    selected = graph_selection(
+        landing_graph,
+        ["tests/test_changed.py", "tests/test_recent.py"],
+        [ordinary, slow],
+    )
+    assert selected.run["tests/test_changed.py"].toolchains == ("python", "rustc")
+    assert selected.run["tests/test_changed.py"].owners == ("slow",)
+    assert selected.run["tests/test_changed.py"].select == ()
+    assert selected.run["tests/test_recent.py"].toolchains == ("python",)
+    build_only = graph_selection(
+        landing_graph,
+        ["tests/test_changed.py"],
+        [{**slow, "resource_class": "compiler-build-resource"}],
+    )
+    assert not build_only.run
+    assert build_only.deferred == {"tests/test_changed.py": ("slow",)}
+
+
+def test_first_postsubmit_without_last_green_selects_all_source(
+    landing_graph, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from tools import proof_plan, test_dependency_graph
+    from tools.driver_errors import DriverError
+
+    policy = """
+[[command]]
+id = "ordinary"
+family = "unit"
+cell = "test-cell"
+tiers = ["pre-push", "main"]
+resource_class = "python-tests"
+toolchains = ["python"]
+argv = ["python", "-m", "pytest"]
+pytest = ["tests/test_direct.py", "tests/test_transitive.py", "tests/test_changed.py", "tests/test_recent.py"]
+pytest_worker_memory_gb = 1.0
+"""
+    calls = []
+
+    class Git:
+        def _run(self, arguments):
+            calls.append(arguments)
+            if arguments == ["show", "head:tools/proof_plan.toml"]:
+                return SimpleNamespace(stdout=policy)
+            assert arguments == [
+                "ls-tree",
+                "--full-tree",
+                "--name-only",
+                "-r",
+                "-z",
+                "head",
+            ]
+            return SimpleNamespace(stdout="\0".join(landing_graph.tree.blobs) + "\0")
+
+    monkeypatch.setattr(
+        test_dependency_graph, "cached_graph", lambda *_a, **_k: landing_graph
+    )
+    bound = []
+
+    def bind(command, *, upstream_commit):
+        bound.append(upstream_commit)
+        return command
+
+    monkeypatch.setattr(proof_plan, "bind_local_gate_command", bind)
+    _, _, touched, gates, _ = select_landing_gates(
+        Git(),
+        landing_graph.tree.root,
+        "head",
+        None,
+        extra=[],
+        mode=LandingMode.POSTSUBMIT,
+    )
+    assert set(touched) == set(landing_graph.tree.blobs)
+    assert {
+        argument
+        for gate in gates
+        for argument in gate.command
+        if argument.startswith("tests/")
+    } == set(landing_graph.tests)
+    assert bound and set(bound) == {"head"}
+    calls.clear()
+    with pytest.raises(DriverError, match="requires an upstream"):
+        select_landing_gates(Git(), landing_graph.tree.root, "head", None, extra=[])
+    assert calls == []
 
 
 # --------------------------------------------------------------------------
@@ -275,9 +530,9 @@ def test_landing_envelopes_come_from_pre_push_cells_without_builds():
 # --------------------------------------------------------------------------
 
 
-def _landing_tests(paths):
+def _landing_tests(paths, *, mode=LandingMode.PRESUBMIT):
     cfg = GateConfig.load(COMMITTED_GATES)
-    gates, _ = cfg.select(paths)
+    gates, _ = cfg.select(paths, mode=mode)
     return {
         argument.partition("::")[0]
         for gate in gates
@@ -305,7 +560,7 @@ def test_missed_consumers_are_selected_by_construction(changed, test):
     assert test in _landing_tests([changed])
 
 
-def test_frontend_edits_select_the_frontend_lowering_cell():
+def test_postsubmit_frontend_edits_select_the_frontend_lowering_cell():
     # HF-557's frontend edits selected none of this cell. Independent oracle:
     # every cell file whose source imports molt.frontend must run.
     changed = [
@@ -326,12 +581,14 @@ def test_frontend_edits_select_the_frontend_lowering_cell():
         if "molt.frontend" in (REPO_ROOT / target).read_text(encoding="utf-8")
     }
     assert len(readers) >= 20
-    assert readers <= _landing_tests(changed)
+    assert readers <= _landing_tests(changed, mode=LandingMode.POSTSUBMIT)
 
 
 def test_committed_selection_reports_deferred_build_cells():
     cfg = GateConfig.load(COMMITTED_GATES)
-    selection = cfg.graph_selection(["src/molt/cli/build_command.py"])
+    selection = cfg.graph_selection(
+        ["src/molt/cli/build_command.py"], mode=LandingMode.POSTSUBMIT
+    )
     assert selection is not None
     # A build-owned test is selected and named with its cell, not dropped.
     assert selection.deferred
@@ -339,7 +596,10 @@ def test_committed_selection_reports_deferred_build_cells():
     assert set(selection.run).isdisjoint(selection.deferred)
     assert (
         graph_selection(
-            cfg.dependency_graph(), ["src/molt/cli/build_command.py"], cfg.commands
+            cfg.dependency_graph(),
+            ["src/molt/cli/build_command.py"],
+            cfg.commands,
+            mode=LandingMode.POSTSUBMIT,
         ).selected
         == selection.selected
     )
@@ -413,9 +673,7 @@ def test_the_graph_never_drops_what_a_rule_selects():
         after, _ = cfg.select([path])
         commands = {gate.command for gate in after}
         dropped.extend(
-            (path, gate.command)
-            for gate in before
-            if not gate.pytest and gate.command not in commands
+            (path, gate.command) for gate in before if gate.command not in commands
         )
         full = _pytest_requests(after)
         dropped.extend(

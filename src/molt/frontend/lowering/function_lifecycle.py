@@ -267,30 +267,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             stack.extend(ast.iter_child_nodes(current))
         return False
 
-    def _has_typing_overload_decorator(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> bool:
-        """Return True if the function has a @typing.overload or @overload decorator.
-
-        Handles ``typing.overload``, bare ``overload``, and aliased forms
-        like ``t.overload`` (from ``import typing as t``).
-        """
-        for deco in node.decorator_list:
-            if isinstance(deco, ast.Attribute):
-                if isinstance(deco.value, ast.Name) and deco.attr == "overload":
-                    # Accept any <name>.overload where <name> resolves to
-                    # the typing module — covers ``typing.overload``,
-                    # ``t.overload``, etc.  We check a known set of names
-                    # to avoid false positives with unrelated ``overload``
-                    # attributes.
-                    alias = deco.value.id
-                    if alias == "typing" or alias in self._typing_import_aliases:
-                        return True
-            elif isinstance(deco, ast.Name) and deco.id == "overload":
-                return True
-        return False
-
     def _emit_checked_frame_entry(self, code_symbol: str, failure_label: int) -> None:
         # Entry can initialize builtins and fail before pushing a Python frame.
         # Its attempted-entry marker still needs TRACE_EXIT, and no body or

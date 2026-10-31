@@ -94,6 +94,7 @@ def _materialize_plan(
         json_output=False,
         target=admit_target("native"),
         image_scope=image_scope,
+        target_sys_platform=None,
     )
     assert error is None
     assert prepared is not None

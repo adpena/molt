@@ -1291,7 +1291,7 @@ class LocalBindingMixin(GeneratorMixinBase):
     def _capture_class_import_state(self) -> dict[str, object]:
         """Isolate lexical import projections while executing a class body."""
         saved: dict[str, object] = {}
-        for attr in (*FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS, "_typing_import_aliases"):
+        for attr in FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS:
             value = getattr(self, attr)
             saved[attr] = value
             if attr == "_module_provenance_flow_stack":
@@ -1333,12 +1333,6 @@ class LocalBindingMixin(GeneratorMixinBase):
             )
             self.local_imported_modules.discard(name)
             self.local_imported_names.discard(name)
-            self._typing_import_aliases.discard(name)
-            if self.global_imported_modules.get(name) in {
-                "typing",
-                "typing_extensions",
-            }:
-                self._typing_import_aliases.add(name)
         for name in sorted(nonlocal_names):
             # The body may replace the enclosing cell conditionally or through
             # callbacks. Restoring its pre-class import origin would authorize
@@ -1348,7 +1342,6 @@ class LocalBindingMixin(GeneratorMixinBase):
             self.imported_names.pop(name, None)
             self.imported_attr_names.pop(name, None)
             self.local_imported_names.discard(name)
-            self._typing_import_aliases.discard(name)
         self._record_module_provenance_flow_state()
 
     def _binding_targets_module_namespace(self, name: str) -> bool:

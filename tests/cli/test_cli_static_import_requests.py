@@ -181,7 +181,9 @@ def test_deferred_relative_statement_keeps_lexical_dependency_discovery() -> Non
 
     source = "def load():\n    from .sibling import leaf\n"
     projection = _source_import_scan._collect_imports_for_graph(
-        ast.parse(source), "pkg.consumer"
+        ast.parse(source),
+        "pkg.consumer",
+        purpose=_source_import_scan.SourceImportPurpose.INVENTORY,
     )
     assert {"pkg.sibling", "pkg.sibling.leaf"} <= set(
         projection.dynamic_relative_import_candidates
