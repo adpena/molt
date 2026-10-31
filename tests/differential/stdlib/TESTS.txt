@@ -242,6 +242,8 @@ tests/differential/stdlib/contextvars_basic.py
 tests/differential/stdlib/contextvars_task_propagation.py
 tests/differential/stdlib/copy_basic.py
 tests/differential/stdlib/copy_class_hook.py
+tests/differential/stdlib/copy_protocol.py
+tests/differential/stdlib/copy_version_surface.py
 tests/differential/stdlib/copyreg_basic.py
 tests/differential/stdlib/copyreg_failures.py
 tests/differential/stdlib/copyreg_helpers.py
@@ -1531,6 +1533,7 @@ tests/differential/stdlib/multiprocessing_start_method.py
 tests/differential/stdlib/native_handle_close_protocols.py
 tests/differential/stdlib/netrc_basic.py
 tests/differential/stdlib/numeric_cross_type_hash_invariant.py
+tests/differential/stdlib/object_reduce_protocol.py
 tests/differential/stdlib/opcode_basic.py
 tests/differential/stdlib/opcode_tables_basic.py
 tests/differential/stdlib/operator_attrgetter_basic.py
