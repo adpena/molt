@@ -1,6 +1,7 @@
 """CPython 3.12 copy protocol: identity, state, hooks and shared memo."""
 import copy
 import copyreg
+import sys
 
 
 class Plain:
@@ -138,6 +139,65 @@ obj = Hook(None)
 obj.child = obj
 deep = copy.deepcopy(obj, {"marker": "cycle"})
 print("hook cycle", deep.child is deep)
+
+# The immutable tuple can only be memoized by the recursive child walk.
+loop = []
+tuple_cycle = (loop,)
+loop.append(tuple_cycle)
+deep = copy.deepcopy(tuple_cycle)
+print("tuple cycle", deep is not tuple_cycle, deep[0] is not loop,
+      deep[0][0] is deep)
+mapping_cycle = {}
+alias = [mapping_cycle, mapping_cycle]
+mapping_cycle["alias"] = alias
+deep = copy.deepcopy(alias)
+print("mapping cycle", deep[0] is deep[1], deep[0]["alias"] is deep)
+
+
+class Memo(dict):
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, key, default=None):
+        self.calls += 1
+        return dict.get(self, key, default)
+
+
+memo = Memo()
+out = copy.deepcopy([[17]], memo)
+print("memo subclass", out, memo.calls)
+
+
+class Appender:
+    def __init__(self):
+        self.values = []
+
+    def append(self, value):
+        self.values.append(value)
+
+
+alive = Appender()
+memo = {}
+memo[id(memo)] = alive
+original = [[17]]
+out = copy.deepcopy(original, memo)
+print("seeded keep alive", len(alive.values), alive.values[0] is original[0],
+      alive.values[1] is original)
+
+
+def generator():
+    yield 1
+
+
+for label, value in (("module", sys), ("memoryview", memoryview(b"x")),
+                     ("generator", generator())):
+    print("opaque getstate", label, value.__getstate__() is None)
+    for copier in (copy.copy, copy.deepcopy):
+        try:
+            copier(value)
+            print("opaque copied", label)
+        except TypeError:
+            print("opaque rejected", label)
 
 
 class State:

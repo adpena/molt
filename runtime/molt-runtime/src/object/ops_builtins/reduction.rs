@@ -226,23 +226,46 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
         }
         tuple(py, &fields)?
     };
-    let getstate = required(py, obj, b"__getstate__")?;
-    let state = owned(py, unsafe { call_callable0(py, getstate.bits()) })?;
     let type_id = obj_from_bits(obj)
         .as_ptr()
         .map(|ptr| unsafe { object_type_id(ptr) });
-    let listitems = if matches!(
+    let is_list = matches!(
         type_id,
         Some(TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
-    ) {
-        owned(py, molt_iter(obj))?
-    } else {
-        Value::retain(py.core_token(), MoltObject::none().bits())
-    };
+    );
     let is_dict = type_id == Some(TYPE_ID_DICT)
         || obj_from_bits(obj).as_ptr().is_some_and(|ptr| unsafe {
             crate::object::layout::dict_subclass_storage_slot(ptr).is_some()
         });
+    let getstate = required(py, obj, b"__getstate__")?;
+    // CPython object_getstate identifies the native bound descriptor before
+    // calling its default implementation with `required`. Overrides retain
+    // ordinary call semantics, including a user-provided opaque-state recipe.
+    let default_getstate = obj_from_bits(getstate.bits())
+        .as_ptr()
+        .is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_BOUND_METHOD
+                && bound_method_self_bits(ptr) == obj
+                && obj_from_bits(bound_method_func_bits(ptr))
+                    .as_ptr()
+                    .is_some_and(|func| {
+                        object_type_id(func) == TYPE_ID_FUNCTION
+                            && function_fn_ptr(func) == fn_addr!(crate::molt_object_getstate)
+                    })
+        });
+    let state = owned(
+        py,
+        if default_getstate {
+            super::object_getstate_default(py, obj, args.is_none() && !is_list && !is_dict)
+        } else {
+            unsafe { call_callable0(py, getstate.bits()) }
+        },
+    )?;
+    let listitems = if is_list {
+        owned(py, molt_iter(obj))?
+    } else {
+        Value::retain(py.core_token(), MoltObject::none().bits())
+    };
     let dictitems = if is_dict {
         let items = required(py, obj, b"items")?;
         let items = owned(py, unsafe { call_callable0(py, items.bits()) })?;
