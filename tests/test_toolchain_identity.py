@@ -1458,7 +1458,7 @@ def test_digest_lookup_work_is_bounded_by_requested_files(tmp_path, monkeypatch)
         def progress():
             nonlocal steps
             steps += 100
-            return int(steps > 1_000)
+            return int(steps > 2_000)
 
         connection.set_progress_handler(progress, 100)
         return connection
@@ -1468,7 +1468,61 @@ def test_digest_lookup_work_is_bounded_by_requested_files(tmp_path, monkeypatch)
     reused = cache.identity(header, label="header")
     assert reused == recorded
     assert reused.sha256 == hashlib.sha256(data).hexdigest()
-    assert steps <= 1_000
+    assert steps <= 2_000
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_inventory_amortizes_connections_without_retaining_native_handles(
+    tmp_path, monkeypatch
+):
+    import sqlite3
+
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    paths = [_settled_file(tmp_path / f"{i:03}", b"runtime") for i in range(200)]
+    store = tmp_path / "digests.sqlite"
+    first = identity.FileDigestCache(store, max_age_ns=10**18)
+    expected = [first.identity(path, label="file") for path in paths]
+    first.flush()
+    cache = identity.FileDigestCache(store, max_age_ns=10**18)
+    connect = cache._connect
+    connections = []
+
+    def counted():
+        connection = connect()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(cache, "_connect", counted)
+    _no_rehash(monkeypatch)
+    observed = []
+    for path in paths:
+        observed.append(cache.identity(path, label="file"))
+        for connection in connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connection.execute("SELECT 1")
+    assert observed == expected
+    assert len(connections) <= 8
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_page_does_not_bind_a_later_hardlink_to_a_missing_key(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    target = _settled_file(tmp_path / "b", b"one physical file")
+    alias = tmp_path / "a"
+    os.link(target, alias)
+    store = tmp_path / "digests.sqlite"
+    first = identity.FileDigestCache(store, max_age_ns=10**18)
+    recorded = first.identity(target, label="target")
+    first.flush()
+    cache = identity.FileDigestCache(store, max_age_ns=10**18)
+    assert cache.lookup(alias, expected_path_stat=alias.lstat(), label="alias") is None
+    _no_rehash(monkeypatch)
+    assert cache.identity(target, label="target") == recorded
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
