@@ -83,6 +83,8 @@ def test_auto_workers_fill_the_slice_their_parent_exported(tmp_path: Path) -> No
     if (host_capacity.memory_capacity().bounded_bytes[1] or 0) < 3 * 1024**3:
         pytest.skip("needs 3 GiB of live memory")
     env = dict(os.environ, **{host_capacity.MEMORY_SLICE_ENV: str(3 * 1024**3)})
+    # This case owns the default sizing policy; the next case owns overrides.
+    env.pop("PYTEST_XDIST_AUTO_NUM_WORKERS", None)
     assert _workers(tmp_path, "--molt-worker-memory-gb=1", env=env) == 3
 
 

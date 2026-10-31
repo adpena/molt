@@ -35,6 +35,7 @@ def _worker_env() -> dict[str, str]:
     return env
 
 
+@pytest.mark.slow
 def test_client_echo_roundtrip() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     payload = {"ok": True, "count": 3}
@@ -44,6 +45,7 @@ def test_client_echo_roundtrip() -> None:
 
 
 @pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.slow
 def test_dead_worker_buffered_stdin_cleanup_preserves_replacement(
     replace: bool,
 ) -> None:
@@ -70,6 +72,7 @@ def test_dead_worker_buffered_stdin_cleanup_preserves_replacement(
         client.close()
 
 
+@pytest.mark.slow
 def test_client_unknown_entry() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     with pytest.raises(MoltInvalidInput):
@@ -77,6 +80,7 @@ def test_client_unknown_entry() -> None:
     client.close()
 
 
+@pytest.mark.slow
 def test_client_hooks_and_metrics() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     events: list[str] = []
@@ -113,6 +117,7 @@ def test_client_hooks_and_metrics() -> None:
 
 
 @pytest.mark.parametrize("hook", ["before_send", "cancel_check"])
+@pytest.mark.slow
 def test_client_hook_failure_releases_request_for_timeout_restart(
     hook: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -138,6 +143,7 @@ def test_client_hook_failure_releases_request_for_timeout_restart(
         client.close()
 
 
+@pytest.mark.slow
 def test_client_cancel_check() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     with pytest.raises(MoltCancelled):
@@ -224,6 +230,7 @@ def test_client_timeout_not_retried_by_default(
         )
 
 
+@pytest.mark.slow
 def test_client_decode_response_false() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     payload = {"ok": True, "count": 3}
@@ -245,6 +252,7 @@ def test_arrow_ipc_codec_passthrough() -> None:
     assert decode_payload(payload, "arrow_ipc") == payload
 
 
+@pytest.mark.slow
 def test_client_concurrent_calls() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     results: list[int] = []
@@ -277,6 +285,7 @@ def test_client_concurrent_calls() -> None:
     client.close()
 
 
+@pytest.mark.slow
 def test_startup_grace_covers_every_request_sent_before_first_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -316,6 +325,7 @@ def test_startup_grace_covers_every_request_sent_before_first_response(
         client.close()
 
 
+@pytest.mark.slow
 def test_client_pool_round_robin() -> None:
     pool = MoltClientPool(
         worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2
@@ -332,6 +342,7 @@ def test_client_pool_round_robin() -> None:
 
 
 @pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.slow
 def test_dead_worker_replacement_fails_its_requests_before_delayed_eof(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retry: bool
 ) -> None:

@@ -4,8 +4,8 @@
 matches a landing through the paths it globs or, for the plan file itself,
 through the plan entries it claims with ``plan_entities``: an edit to the plan
 selects only the rules that read what it changed (HF-457). Tests are selected
-by what they read: ``tools/test_dependency_graph.py`` derives every test file
-that depends on a changed path, and the test's own ``pre-push`` proof cell
+by what they read: ``tools/test_dependency_graph.py`` derives direct readers
+for presubmit and the transitive closure for postsubmit. The test's proof cell
 supplies its targets and toolchains. Rules keep the gates, the curated cohorts
 of files whose cells need builds, and the edges the graph cannot derive.
 ``integrate``, the land precheck and the queue select through
@@ -18,8 +18,9 @@ import shlex
 import tomllib
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from molt.process_environment import ProcessEnvironment
 from tools.dirty_tree_policy import is_ignored as _is_ignored
@@ -43,6 +44,11 @@ if TYPE_CHECKING:
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 GATES_CONFIG_NAME = "proof_plan.toml"
+
+
+class LandingMode(StrEnum):
+    PRESUBMIT = "presubmit"
+    POSTSUBMIT = "postsubmit"
 
 
 class _EveryPlanEntity:
@@ -262,13 +268,25 @@ class GateConfig:
             commands=tuple(data.get("command", ())),
         )
 
-    def graph_selection(self, touched: list[str]) -> GraphSelection | None:
+    def graph_selection(
+        self,
+        touched: list[str],
+        *,
+        mode: LandingMode = LandingMode.PRESUBMIT,
+        recent_failures: Collection[str] = (),
+    ) -> GraphSelection | None:
         """The tests that read a touched path, and where each one runs."""
-        if self.dependency_graph is None or not touched:
+        if self.dependency_graph is None or not (touched or recent_failures):
             return None
         from tools.test_dependency_graph import graph_selection
 
-        return graph_selection(self.dependency_graph(), touched, self.commands)
+        return graph_selection(
+            self.dependency_graph(),
+            touched,
+            self.commands,
+            mode=mode,
+            recent_failures=recent_failures,
+        )
 
     def prepare(
         self,
@@ -367,6 +385,8 @@ class GateConfig:
         *,
         extra: list[str] | None = None,
         plan_changes: Collection[PlanEntity] | _EveryPlanEntity | None = None,
+        mode: LandingMode = LandingMode.PRESUBMIT,
+        recent_failures: Collection[str] = (),
     ) -> tuple[list[SelectedGate], list[GateRule]]:
         """Select commands with their declared prerequisites intact.
 
@@ -400,6 +420,7 @@ class GateConfig:
         pytest_access: dict[str, list[CargoTargetAccess]] = {}
         pytest_index: int | None = None
         pytest_commands: set[str] = set()
+        graph_commands: set[str] = set()
 
         def command_key(command: str | tuple[str, ...]) -> str:
             return command if isinstance(command, str) else shlex.join(command)
@@ -413,6 +434,10 @@ class GateConfig:
             collection_command: tuple[str, ...] | None = None,
             cargo_target_access: CargoTargetAccess,
         ) -> None:
+            from tools.proof_command_argv import pytest_arguments
+
+            argv = tuple(shlex.split(command)) if isinstance(command, str) else command
+            pytest = pytest or pytest_arguments(argv, root=self.root) is not None
             key = command_key(command)
             if key in indices:
                 index = indices[key]
@@ -473,19 +498,15 @@ class GateConfig:
         # The graph adds each selected file in its cell's envelope unless a
         # rule already runs the same or a wider scope of it.
         graph_runs: list[tuple[str, LandingEnvelope]] = []
-        selection = self.graph_selection(touched)
+        selection = self.graph_selection(
+            touched, mode=mode, recent_failures=recent_failures
+        )
         for envelope in selection.run.values() if selection else ():
             for target in envelope.targets:
                 scopes = rule_scopes.get(target.partition("::")[0], set())
                 if () in scopes or envelope.select in scopes:
                     continue
                 graph_runs.append((target, envelope))
-        # Files the graph runs unfiltered, with the tools their cell declares.
-        graph_whole = {
-            target: envelope.toolchains
-            for target, envelope in graph_runs
-            if "::" not in target and not envelope.select
-        }
         if touched:
             for index, command in enumerate(self.always):
                 add(
@@ -514,13 +535,6 @@ class GateConfig:
                         access(f"{owner}.pytest")
                     )
             for index, cohort in enumerate(rule.pytest_select):
-                if cohort.select and all(
-                    target in graph_whole
-                    and set(cohort.toolchains) <= set(graph_whole[target])
-                    for target in cohort.targets
-                ):
-                    # The graph runs these files unfiltered under these tools.
-                    continue
                 command = local_pytest_argv(
                     cohort.targets,
                     cohort.select,
@@ -542,33 +556,36 @@ class GateConfig:
                 if target not in seen_pytest:
                     seen_pytest.add(target)
                     pytest_targets.append(target)
-        # Every other test that reads a touched path runs in its cell's
-        # envelope: unfiltered targets join the merged session, and each cell
-        # selector runs as its own cohort.
+        # Graph commands keep their failure-first order and fail-fast policy.
+        # Rule-owned pytest commands retain their exact declared invocation.
         filtered: dict[
-            tuple[tuple[str, ...], tuple[str, ...], CargoTargetAccess], list[str]
+            tuple[
+                tuple[bool, bool], tuple[str, ...], tuple[str, ...], CargoTargetAccess
+            ],
+            list[str],
         ] = {}
+        recent_paths = {target.partition("::")[0] for target in recent_failures}
         for target, envelope in graph_runs:
             access = CargoTargetAccess.resolve(envelope.toolchains)
-            if envelope.select:
-                key = (envelope.select, envelope.toolchains, access)
-                filtered.setdefault(key, []).append(target)
-                continue
-            if target in seen_pytest:
-                continue
-            if pytest_index is None:
-                pytest_index = len(selected)
-            seen_pytest.add(target)
-            pytest_targets.append(target)
-            pytest_tools.setdefault(target, {}).update(
-                dict.fromkeys(envelope.toolchains)
-            )
-            pytest_access.setdefault(target, []).append(access)
-        for (select, cohort_tools, cohort_access), targets in filtered.items():
+            path = target.partition("::")[0]
+            priority = (path not in recent_paths, path not in touched)
+            key = (priority, envelope.select, envelope.toolchains, access)
+            filtered.setdefault(key, []).append(target)
+        for (_, select, cohort_tools, cohort_access), targets in sorted(
+            filtered.items(), key=lambda item: item[0][0]
+        ):
+            match mode:
+                case LandingMode.PRESUBMIT:
+                    options = (*select, "--maxfail=1")
+                case LandingMode.POSTSUBMIT:
+                    options = select
+                case _:
+                    assert_never(mode)
             command = local_pytest_argv(
-                targets, select, memory_units=self.pytest_memory_units
+                targets, options, memory_units=self.pytest_memory_units
             )
             pytest_commands.add(command_key(command))
+            graph_commands.add(command_key(command))
             add(
                 command,
                 cohort_tools,
@@ -650,13 +667,17 @@ class GateConfig:
         # consumers. This also moves already-required Cargo gates earlier; it
         # adds no commands or builds and preserves each phase's relative order.
         explicit: list[SelectedGate] = []
+        graph_consumers: list[SelectedGate] = []
         consumers: list[SelectedGate] = []
         for gate in selected:
+            key = command_key(gate.command)
             phase = (
-                consumers if command_key(gate.command) in pytest_commands else explicit
+                graph_consumers
+                if key in graph_commands
+                else (consumers if key in pytest_commands else explicit)
             )
             phase.append(gate)
-        selected = explicit + consumers
+        selected = explicit + graph_consumers + consumers
         return selected, matched_rules
 
     def cargo_outputs(
@@ -694,14 +715,21 @@ def select_landing_gates(
     git: Git,
     repo: Path,
     commit: str,
-    upstream: str,
+    upstream: str | None,
     *,
     extra: list[str],
+    mode: LandingMode = LandingMode.PRESUBMIT,
+    recent_failures: Collection[str] = (),
 ) -> tuple[str, GateConfig, list[str], list[SelectedGate], list[GateRule]]:
     """The policy, touched paths and bound gates of ``commit`` over ``upstream``.
 
     Policy comes from the same immutable commit whose clean source executes it.
+    Without a known green base, postsubmit selects every tracked input.
     """
+    if upstream is None and mode is not LandingMode.POSTSUBMIT:
+        raise DriverError(
+            "presubmit selection requires an upstream commit", code=EXIT_USAGE
+        )
     policy = git._run(["show", f"{commit}:tools/{GATES_CONFIG_NAME}"]).stdout
     try:
         config = GateConfig.parse(
@@ -710,8 +738,18 @@ def select_landing_gates(
     except DriverError as exc:
         # The selected commit's own gate policy is invalid.
         raise CandidateFailure(str(exc), code=exc.code) from exc
-    touched = changed_paths(
-        upstream, commit, run_git=lambda arguments: git._run(arguments).stdout
+    touched = (
+        [
+            path
+            for path in git._run(
+                ["ls-tree", "--full-tree", "--name-only", "-r", "-z", commit]
+            ).stdout.split("\0")
+            if path
+        ]
+        if upstream is None
+        else changed_paths(
+            upstream, commit, run_git=lambda arguments: git._run(arguments).stdout
+        )
     )
     from tools.proof_plan import PLAN_PATH, bind_local_gate_command
     from tools.test_dependency_graph import cached_graph
@@ -720,20 +758,28 @@ def select_landing_gates(
     config.dependency_graph = lambda: cached_graph(repo, commit=commit)
 
     plan_changes = None
-    if PLAN_PATH in touched:
+    if upstream is None:
+        plan_changes = EVERY_PLAN_ENTITY
+    elif PLAN_PATH in touched:
         plan_changes = _plan_changes(git, upstream, policy)
     gates, matched_rules = config.select(
-        touched, extra=extra, plan_changes=plan_changes
+        touched,
+        extra=extra,
+        plan_changes=plan_changes,
+        mode=mode,
+        recent_failures=recent_failures,
     )
 
     try:
         gates = [
             replace(
                 gate,
-                command=bind_local_gate_command(gate.command, upstream_commit=upstream),
+                command=bind_local_gate_command(
+                    gate.command, upstream_commit=upstream or commit
+                ),
                 collection_command=(
                     bind_local_gate_command(
-                        gate.collection_command, upstream_commit=upstream
+                        gate.collection_command, upstream_commit=upstream or commit
                     )
                     if gate.collection_command is not None
                     else None

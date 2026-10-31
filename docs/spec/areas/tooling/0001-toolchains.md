@@ -342,6 +342,12 @@ the general race.
 
 ## Canonical LLVM SDK readiness
 
+Default LLVM discovery requires the managed pinned SDK. A missing managed prefix
+raises a typed refusal naming its path and `python -m tools.bootstrap_llvm`.
+Automatic Homebrew discovery is retired: its separate `llvm@N` and `lld@N`
+formulas do not provide one admitted SDK. An explicitly selected SDK still has
+to pass the complete pinned LLVM/MLIR/LLD contract.
+
 `tools/bootstrap_llvm.py` validates the requested release, projects, targets,
 custody paths and numeric budgets, then checks an existing canonical SDK under
 the build lock. A complete attested prefix returns before CMake/Ninja selection,
@@ -362,7 +368,7 @@ packaging costs; emitted programs acquire no checks or dependencies.
 
 ## macOS
 - Install Xcode CLT: `xcode-select --install`
-- Homebrew recommended: `brew install llvm mlir cmake ninja pkg-config`
+- Homebrew can supply bootstrap prerequisites: `brew install cmake ninja pkg-config`.
 - Provision the manifest-owned wasi-sdk for `wasm32-wasip1` builds (see WASM
   targets below); do not combine a Homebrew `wasi-libc` sysroot with an
   independently installed linker.
@@ -567,7 +573,9 @@ Rust via rustup:
   custody is derived beside that prefix and cannot overlap canonical managed
   custody.
 - Install CMake + Ninja: `winget install Kitware.CMake` and `winget install Ninja-build.Ninja`
-- Ensure `clang`, `llvm-config`, `cmake`, and `ninja` are on PATH.
+- Ensure the source-build prerequisites `cmake` and `ninja` are on PATH. Default
+  compiler discovery uses the managed SDK; an explicit SDK selection must pass
+  its complete pinned contract.
 - Run source LLVM builds from an x64 Visual Studio developer shell, or let
   `tools/bootstrap_llvm.py` activate `VsDevCmd.bat` from an installed Build
   Tools instance.

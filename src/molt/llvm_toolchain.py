@@ -86,6 +86,17 @@ class LlvmBackendPin:
         return llvm_sys_prefix_env_var(self.major, self.minor)
 
 
+class LlvmManagedToolchainMissingError(LlvmToolchainConfigError):
+    """The selected managed LLVM release has not been provisioned."""
+
+    def __init__(self, prefix: Path, pin: LlvmBackendPin) -> None:
+        self.prefix = prefix
+        super().__init__(
+            f"managed LLVM {pin.default_release} is not provisioned at {prefix}; "
+            f"run {llvm_bootstrap_command(pin)}"
+        )
+
+
 @dataclass(frozen=True)
 class LlvmHostArchitecture:
     id: str
@@ -1335,15 +1346,20 @@ def _llvm_config_candidates(
             (_normalized_prefix(configured, environ=env, cwd=cwd), "LLVM_CONFIG_PATH")
         )
 
+    if not configured and explicit_prefix is None and llvm_sys_search_prefix is None:
+        prefix = managed_llvm_prefix(root, pin, environ=env, cwd=cwd)
+        if not prefix.is_dir():
+            raise LlvmManagedToolchainMissingError(prefix, pin)
+        return _dedupe_paths(
+            [
+                (prefix / "bin" / name, f"prefix:{prefix}")
+                for name in llvm_config_names(pin)
+            ]
+        )
+
     prefixes = [explicit_prefix] if explicit_prefix is not None else []
     if llvm_sys_search_prefix is not None:
         prefixes.append(llvm_sys_search_prefix)
-    if explicit_prefix is None:
-        if (
-            not env.get("LLVM_CONFIG_PATH", "").strip()
-            and llvm_sys_search_prefix is None
-        ):
-            prefixes.append(managed_llvm_prefix(root, pin, environ=env, cwd=cwd))
     for prefix in prefixes:
         assert prefix is not None
         for name in llvm_config_names(pin):
@@ -1353,11 +1369,6 @@ def _llvm_config_candidates(
         if discovered := find_executable(name, environment=env, cwd=cwd):
             candidates.append((discovered, "PATH"))
 
-    if platform.system() == "Darwin":
-        for homebrew_root in (Path("/opt/homebrew"), Path("/usr/local")):
-            prefix = homebrew_root / "opt" / f"llvm@{pin.major}"
-            for name in llvm_config_names(pin):
-                candidates.append((prefix / "bin" / name, "Homebrew"))
     return _dedupe_paths(candidates)
 
 
@@ -1374,7 +1385,9 @@ def discover_llvm_toolchain(
     llvm-sys executable-search root (the directory containing ``bin``), which
     may differ for a package-manager split layout. Candidate executables are
     accepted only when their exact version and reported ``--prefix`` bind both
-    path shapes to one SDK identity.
+    path shapes to one SDK identity. Without an explicit selection, only the
+    managed pinned SDK is eligible; ambient PATH and package-manager installs
+    cannot replace a missing managed release.
     """
 
     pin = required_llvm_backend_pin(root)

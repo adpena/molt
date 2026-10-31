@@ -48,7 +48,11 @@ from tests.python_environment_test_support import (
     create_test_venv,
 )
 from tests import proof_queue_owned_roots
-from tests.executable_test_support import custody_spelling, native_executable_name
+from tests.executable_test_support import (
+    custody_spelling,
+    native_executable_donor,
+    native_executable_name,
+)
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
     assert_execution_context_rejects_substitutions,
@@ -3327,7 +3331,7 @@ def test_environment_selected_executable_inputs_are_content_bound(
     tmp_path: Path,
 ) -> None:
     wrapper = tmp_path / Path(sys.executable).name
-    shutil.copy2(sys.executable, wrapper)
+    shutil.copy2(native_executable_donor(), wrapper)
     environment = {
         "RUSTC_WRAPPER": f' \t"{wrapper}" --wrapper-argument',
         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": str(wrapper),
@@ -3356,7 +3360,7 @@ def test_environment_tool_paths_with_spaces_share_execution_resolution(
     selected_cwd = tmp_path / "build-cwd"
     tool = selected_cwd / "tool directory" / Path(sys.executable).name
     tool.parent.mkdir(parents=True)
-    shutil.copy2(sys.executable, tool)
+    shutil.copy2(native_executable_donor(), tool)
     ambient_cwd = tmp_path / "ambient"
     ambient_cwd.mkdir()
     monkeypatch.chdir(ambient_cwd)
