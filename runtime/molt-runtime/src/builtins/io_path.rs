@@ -1864,7 +1864,7 @@ fn stat_result_from_metadata(
     for (index, &field) in StatField::ALL.iter().enumerate() {
         let value = match field {
             Mode => int_bits_from_i128(py, metadata.fields[0]),
-            Ino => int_bits_from_i128(py, metadata.fields[1]),
+            Ino => crate::builtins::numbers::int_bits_from_u128(py, metadata.ino()),
             Dev => int_bits_from_i128(py, metadata.fields[2]),
             Nlink => int_bits_from_i128(py, metadata.fields[3]),
             Uid => int_bits_from_i128(py, metadata.fields[4]),

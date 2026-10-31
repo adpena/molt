@@ -333,6 +333,39 @@ mod tests {
         assert_eq!(stat_filemode(S_IFREG | S_ISGID | S_IXGRP), "------s---");
         assert_eq!(stat_filemode(S_IFDIR | S_ISVTX | S_IXOTH), "d--------t");
     }
+
+    #[cfg(any(unix, windows))]
+    fn host_stat(path: &std::path::Path) -> PathMetadata {
+        #[cfg(unix)]
+        {
+            PathMetadata::from_host(&std::fs::metadata(path).unwrap())
+        }
+        #[cfg(windows)]
+        {
+            PathMetadata::from_windows_path(path, true).unwrap()
+        }
+    }
+
+    /// CPython's samestat compares (st_ino, st_dev); hard links share them and
+    /// count each other in st_nlink, and a distinct file differs.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn host_stat_reports_the_file_identity_and_link_count() {
+        let dir = std::env::temp_dir().join(format!("molt-stat-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first");
+        let linked = dir.join("linked");
+        let other = dir.join("other");
+        std::fs::write(&first, b"a").unwrap();
+        std::fs::write(&other, b"a").unwrap();
+        std::fs::hard_link(&first, &linked).unwrap();
+        let (a, b, c) = (host_stat(&first), host_stat(&linked), host_stat(&other));
+        assert_ne!(a.ino(), 0);
+        assert_eq!((a.ino(), a.fields[2]), (b.ino(), b.fields[2]));
+        assert_ne!((a.ino(), a.fields[2]), (c.ino(), c.fields[2]));
+        assert_eq!((a.fields[3], b.fields[3], c.fields[3]), (2, 2, 1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 /// Exact signed timestamp shared by the route/query and all projections.
@@ -535,22 +568,25 @@ impl PathMetadata {
         Self::from_host_base(metadata)
     }
 
-    /// Preserve the existing fast query for ordinary Windows files. A reparse
-    /// candidate requires a handle: all returned facts are reacquired from it,
-    /// so the tag is never paired with an earlier path observation.
+    /// CPython's `win32_xstat_slow_impl` order: open the path for metadata and
+    /// read every fact, identity included, from that one handle. Only when the
+    /// open is refused for access or sharing does CPython answer from the
+    /// parent directory entry, which carries no identity facts (zero `st_ino`,
+    /// `st_dev` and `st_nlink`).
     #[cfg(windows)]
     pub fn from_windows_path(path: &std::path::Path, follow: bool) -> std::io::Result<Self> {
-        use std::os::windows::fs::MetadataExt;
-        let metadata = if follow {
-            std::fs::metadata(path)
-        } else {
-            std::fs::symlink_metadata(path)
-        }?;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT as u32 == 0 {
-            return Ok(Self::from_host_base(&metadata));
+        match crate::windows_abi::open_metadata_file(path, follow) {
+            Ok(file) => Self::from_windows_file(&file),
+            Err(error) if crate::windows_abi::metadata_open_reads_directory_entry(&error) => {
+                let metadata = if follow {
+                    std::fs::metadata(path)
+                } else {
+                    std::fs::symlink_metadata(path)
+                }?;
+                Ok(Self::from_host_base(&metadata))
+            }
+            Err(error) => Err(error),
         }
-        let file = crate::windows_abi::open_metadata_file(path, follow)?;
-        Self::from_windows_file(&file)
     }
 
     /// Borrow an admitted descriptor or owned path-query handle. A tag-query
@@ -560,11 +596,22 @@ impl PathMetadata {
         use std::os::windows::fs::MetadataExt;
         let metadata = file.metadata()?;
         let mut result = Self::from_host_base(&metadata);
+        let facts = crate::windows_abi::file_identity_facts(file)?;
+        // The ID is 128 bits; `ino` reads this field back unsigned.
+        result.fields[1] = facts.file_id as i128;
+        result.fields[2] = i128::from(facts.volume_serial);
+        result.fields[3] = i128::from(facts.links);
         if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT as u32 != 0 {
             (result.file_attributes, result.reparse_tag) =
                 crate::windows_abi::file_attribute_tag(file)?;
         }
         Ok(result)
+    }
+
+    /// `st_ino`: the file index, unsigned. A Windows file ID fills all 128 bits
+    /// of `fields[1]`; a POSIX inode fits in its low 64.
+    pub fn ino(&self) -> u128 {
+        self.fields[1] as u128
     }
 
     // Keep the same intermediate C long conversion as from_unix_stat; a cast
