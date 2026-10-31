@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
+from functools import cache
 import platform
 import re
 import sys
@@ -111,6 +112,28 @@ class NativeTargetSpec:
         return None
 
 
+class LinuxLibc(StrEnum):
+    """The C library of a Linux host, as the triple's environment names it."""
+
+    GNU = "gnu"
+    MUSL = "musl"
+
+
+@cache
+def host_linux_libc() -> LinuxLibc:
+    """The running interpreter's C library, read once: a fact of the process.
+
+    sysconfig carries the interpreter's configured ABI even where libc_ver
+    cannot identify musl's loader; libc_ver reads the executable in chunks.
+    """
+    import sysconfig
+
+    multiarch = str(sysconfig.get_config_var("MULTIARCH") or "").lower()
+    if "musl" in multiarch or platform.libc_ver()[0].lower() == "musl":
+        return LinuxLibc.MUSL
+    return LinuxLibc.GNU
+
+
 def _host_target_triple(
     *, host_platform: str | None = None, host_arch: str | None = None
 ) -> str:
@@ -122,17 +145,7 @@ def _host_target_triple(
     elif host_platform == "darwin":
         suffix = "apple-darwin"
     elif host_platform.startswith("linux"):
-        # sysconfig carries the interpreter's configured ABI even where libc_ver
-        # cannot identify musl's loader. Both facts come from the running host.
-        import sysconfig
-
-        multiarch = str(sysconfig.get_config_var("MULTIARCH") or "").lower()
-        libc = platform.libc_ver()[0].lower()
-        suffix = (
-            "unknown-linux-musl"
-            if "musl" in multiarch or libc == "musl"
-            else "unknown-linux-gnu"
-        )
+        suffix = f"unknown-linux-{host_linux_libc()}"
     else:
         raise RuntimeError(
             f"Native linking is unsupported on host platform {host_platform!r}."

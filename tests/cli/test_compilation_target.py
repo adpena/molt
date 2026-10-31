@@ -328,3 +328,32 @@ def test_native_target_replacement_recomputes_facts_and_preserves_wire_identity(
     assert BuildRequest(file_path="main.py", target=target).target is target
     assert NativeArtifactKind.OBJECT.suffix(target) == suffix
     assert target_name(target) == triple
+
+
+def test_linux_host_libc_is_read_once_per_process(monkeypatch):
+    # libc_ver reads the interpreter executable in chunks; the C library is a
+    # fact of the running process, so repeated host resolution reads it once.
+    import sysconfig
+
+    from molt import native_target
+
+    calls = []
+
+    def libc_ver():
+        calls.append(1)
+        return ("musl", "1.2")
+
+    native_target.host_linux_libc.cache_clear()
+    monkeypatch.setattr(native_target.platform, "libc_ver", libc_ver)
+    monkeypatch.setattr(sysconfig, "get_config_var", lambda name: None)
+    try:
+        triples = {
+            native_target._host_target_triple(
+                host_platform="linux", host_arch="aarch64"
+            )
+            for _ in range(3)
+        }
+    finally:
+        native_target.host_linux_libc.cache_clear()
+    assert triples == {"aarch64-unknown-linux-musl"}
+    assert calls == [1]
