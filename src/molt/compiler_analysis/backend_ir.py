@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections import Counter
 from collections.abc import Mapping
-import functools
 from typing import Any
 
 from molt.compiler_analysis.hashing import stable_payload_hash
@@ -272,7 +273,7 @@ def _sorted_strings(values: frozenset[str]) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
-@functools.lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def backend_ir_binary_image_analysis_authority_hash() -> str:
     return stable_payload_hash(
         {

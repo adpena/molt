@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 import os
 from typing import Collection
 
@@ -20,7 +21,7 @@ from molt.cli.config_resolution import (
 )
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _runtime_cargo_features_cached(
     target: ArtifactTarget,
     tk_raw: str | None,
@@ -264,7 +265,7 @@ def runtime_features_unsupported_on_target(target: ArtifactTarget) -> frozenset[
     return _runtime_features_unsupported_on_target(target)
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _runtime_features_unsupported_on_target(target: ArtifactTarget) -> frozenset[str]:
     return features_unsupported_on_target(
         target_arch=target_arch(target), target_os=target_os(target)

@@ -14,6 +14,8 @@ and scratch overrides separately.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import hashlib
 import os
 import re
@@ -22,7 +24,6 @@ import tempfile
 import sys
 from dataclasses import dataclass
 from typing import Literal, assert_never, get_args
-from functools import cache
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -533,7 +534,7 @@ def git_directories(repo_root: Path) -> tuple[Path, Path] | None:
     return git_dir, common
 
 
-@cache
+@typed_cache(maxsize=None)
 def checkout_family_state_root(repo_root: Path) -> Path | None:
     """Existing repository control records, shared by all linked worktrees.
 

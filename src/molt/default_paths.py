@@ -7,7 +7,8 @@ import outside the standard library joins that closure in the same change.
 
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 import hashlib
 import ntpath
 import os
@@ -129,7 +130,7 @@ def configured_artifact_root_text(env: Mapping[str, str] | None = None) -> str |
     return raw or None
 
 
-@functools.lru_cache(maxsize=128)
+@typed_cache(maxsize=128)
 def _default_user_state_cached(
     kind: Literal["compile-cache", "installation"],
     values: tuple[tuple[str, str], ...],
@@ -488,7 +489,7 @@ def cache_home_root(cache_root: Path) -> Path:
     return cache_root / "home"
 
 
-@functools.lru_cache(maxsize=128)
+@typed_cache(maxsize=128)
 def _default_molt_home_cached(path: str, cwd_str: str) -> Path:
     selected = Path(path)
     return selected if selected.is_absolute() else (Path(cwd_str) / selected).absolute()
@@ -521,7 +522,7 @@ def _default_installed_runtime_store(
     )
 
 
-@functools.lru_cache(maxsize=128)
+@typed_cache(maxsize=128)
 def _default_molt_bin_cached(path: str, cwd_str: str) -> Path:
     selected = Path(path)
     return selected if selected.is_absolute() else (Path(cwd_str) / selected).absolute()

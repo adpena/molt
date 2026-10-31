@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 # tools/command_execution.py loads this file under a per-checkout neutral
 # package (tools/import_file.py require_repository_identity, HF-223).
 __molt_neutral_authority__ = True
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import functools
 import hashlib
 import math
 import os
@@ -57,7 +58,7 @@ def cargo_command_options(command: Sequence[str]) -> tuple[str | None, tuple[str
     return target, tuple(configs)
 
 
-@functools.lru_cache(maxsize=64)
+@typed_cache(maxsize=64)
 def cargo_profile_directory(cargo_profile: str) -> str:
     """Cargo maps the dev profile to debug; named profiles keep their names."""
     return "debug" if cargo_profile == "dev" else cargo_profile

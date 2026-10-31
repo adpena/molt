@@ -1,8 +1,9 @@
 """Pure effective build intent from the shared command parser and configuration."""
 
 from __future__ import annotations
+
+from molt.typed_cache import typed_cache
 import argparse
-from functools import lru_cache
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -306,7 +307,7 @@ def resolve_build_request(
     )
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _build_argument_parser() -> argparse.ArgumentParser:
     from molt.cli.entrypoint_parser import _build_build_parser
 

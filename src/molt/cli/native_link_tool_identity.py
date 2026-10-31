@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from contextlib import nullcontext
-import functools
 import os
 from pathlib import Path
 import re
@@ -38,7 +39,7 @@ from molt.llvm_linker_roles import (
 from molt import input_report, process_guard
 
 
-@functools.lru_cache(maxsize=128)
+@typed_cache(maxsize=128)
 def _cached_native_link_tool_content_fact(
     physical_path: str,
     stat_identity: tuple[int, int, int, int, int],

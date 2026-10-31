@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.cargo_execution_policy import cargo_profile_directory
 
 from molt.compilation_target import Target, TargetKind
@@ -7,7 +9,6 @@ from molt.compilation_target import Target, TargetKind
 from molt.process_environment import NameRule, ProcessEnvironment
 
 import contextlib
-import functools
 import hashlib
 import json
 import os
@@ -114,7 +115,7 @@ _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 8
 _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 11
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _backend_bin_path_cached(
     cargo_target_str: str,
     cargo_profile: str,
@@ -202,7 +203,7 @@ def _backend_native_codegen_identity(
     )
 
 
-@functools.lru_cache(maxsize=64)
+@typed_cache(maxsize=64)
 def _observed_native_codegen_identity(
     backend_path: str,
     backend_identity: str,
@@ -416,7 +417,7 @@ def _backend_daemon_socket_dir(project_root: Path) -> Path:
     return socket_dir
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _backend_daemon_paths_cached(
     project_root_str: str,
     cargo_profile: str,
@@ -425,7 +426,7 @@ def _backend_daemon_paths_cached(
     socket_dir_override: str | None,
     build_state_root_str: str,
     tempdir_str: str,
-    session_id: str = "",  # Must be in cache key for session isolation
+    session_id: str | None = None,  # Must be in cache key for session isolation
 ) -> tuple[Path, Path, Path]:
     if not config_digest:
         raise CompilerIdentityError("Daemon paths require an admitted config digest")

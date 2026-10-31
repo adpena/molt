@@ -6981,6 +6981,7 @@
       "id": "python.unit.runtime-artifacts",
       "pytest": [
         "tests/cli/test_backend_manifest_contract.py",
+        "tests/test_typed_cache.py",
         "tests/test_cargo_workspace.py",
         "tests/test_cli_build_profile_policy.py",
         "tests/cli/test_runtime_build_identity.py",
@@ -7075,6 +7076,7 @@
       "id": "python.unit.runtime-artifacts.macos",
       "pytest": [
         "tests/cli/test_backend_manifest_contract.py",
+        "tests/test_typed_cache.py",
         "tests/test_cargo_workspace.py",
         "tests/test_cli_build_profile_policy.py",
         "tests/cli/test_runtime_build_identity.py",

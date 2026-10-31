@@ -6,11 +6,12 @@ Read-only toolchain readiness and linker validation remain in wasm_toolchain.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.process_environment import NameRule, ProcessEnvironment
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import functools
 import os
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -109,7 +110,7 @@ def rust_target_libdir(
         )
 
 
-@functools.lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _rust_target_libdir_cached(
     target_triple: str,
     rustc: str,

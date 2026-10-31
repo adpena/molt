@@ -7,6 +7,8 @@ query cannot stall its caller.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Mapping
 import json
 import os
@@ -14,7 +16,6 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from functools import lru_cache
 from types import SimpleNamespace
 from typing import TypeAlias
 
@@ -376,7 +377,7 @@ def _validated_windows_process_binding(
     return max(0, bound_ppid), started_at_ns
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _windows_snapshot_api() -> SimpleNamespace:
     """Bind immutable Win32 snapshot types/functions once per guard process."""
 

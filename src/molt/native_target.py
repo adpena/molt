@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
-from functools import cache
 import platform
 import re
 import sys
@@ -119,7 +120,7 @@ class LinuxLibc(StrEnum):
     MUSL = "musl"
 
 
-@cache
+@typed_cache(maxsize=None)
 def host_linux_libc() -> LinuxLibc:
     """The running interpreter's C library, read once: a fact of the process."""
     return _probe_linux_libc()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 import hashlib
 import json
 import os
@@ -342,7 +343,7 @@ def _write_cached_rustc_version(identity_digest: str, rustc_version: str) -> Non
         return
 
 
-@functools.lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _rustc_version() -> str | None:
     # An installed compiler and its runtime cells are prebuilt release inputs:
     # the host Rust toolchain is neither a cache-key input nor probed.

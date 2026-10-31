@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import functools
 import json
 import os
@@ -453,7 +455,7 @@ PYTEST_CUSTODY_PLUGINS = (
 )
 
 
-@functools.lru_cache(maxsize=2)
+@typed_cache(maxsize=2)
 def _pytest_argument_parser(plugin_options: bool) -> Any:
     """pytest's own argument parser: its builtin options, and plugin options on request.
 

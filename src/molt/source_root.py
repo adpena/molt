@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Mapping
-import functools
 import os
 from pathlib import Path
 import sysconfig
@@ -40,7 +41,7 @@ def compiler_source_root_override() -> Path | None:
 PACKAGED_DISTRIBUTION_PATH = ("share", "molt", "distribution")
 
 
-@functools.cache
+@typed_cache(maxsize=None)
 def packaged_distribution_root() -> Path | None:
     """Return the release bundle a platform wheel installed beside this package.
 
