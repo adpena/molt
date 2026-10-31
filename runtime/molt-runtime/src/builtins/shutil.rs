@@ -805,6 +805,9 @@ pub extern "C" fn molt_shutil_make_archive(
                 cmd.arg("-f").arg(&archive_path);
                 cmd.arg("-C").arg(&root_dir);
                 cmd.arg(".");
+                if let Err(refusal) = crate::async_rt::process::self_spawn::admit_child(&mut cmd) {
+                    return refusal.raise(_py, cmd.get_program());
+                }
                 match cmd.status() {
                     Ok(status) if status.success() => {}
                     Ok(_) => {
@@ -914,6 +917,9 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
         let mut cmd = std::process::Command::new("tar");
         cmd.arg("-xf").arg(&filename);
         cmd.arg("-C").arg(&extract_dir);
+        if let Err(refusal) = crate::async_rt::process::self_spawn::admit_child(&mut cmd) {
+            return refusal.raise(_py, cmd.get_program());
+        }
         match cmd.status() {
             Ok(status) if status.success() => MoltObject::none().bits(),
             Ok(_) => raise_exception::<_>(_py, BuiltinExc::OSError, "tar extraction failed"),

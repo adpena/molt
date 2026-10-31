@@ -45,7 +45,8 @@ util = _types
 def is_forking(argv: list[str] | None = None) -> bool:
     if argv is None:
         argv = list(_sys.argv)
-    return "--multiprocessing-fork" in argv
+    # CPython tests only the first argument; the marker elsewhere is program data.
+    return len(argv) >= 2 and argv[1] == "--multiprocessing-fork"
 
 
 def freeze_support() -> None:
@@ -53,8 +54,12 @@ def freeze_support() -> None:
         spawn_main()
 
 
-def get_command_line(**_kwargs):
-    return [get_executable(), "-m", "multiprocessing.spawn"]
+def get_command_line(**kwds):
+    # A compiled program is CPython's frozen case: its binary runs no -c or -m
+    # source (HF-519), so the child is declared by the fork marker.
+    return [_sys.executable, "--multiprocessing-fork"] + [
+        "%s=%r" % item for item in kwds.items()
+    ]
 
 
 def get_executable() -> str:

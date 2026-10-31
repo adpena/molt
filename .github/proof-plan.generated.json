@@ -963,6 +963,7 @@
         "tests/cli/test_cli_build_identity.py/**",
         "tests/cli/test_traceback_carets.py/**",
         "tests/test_resource_enforcement_e2e.py/**",
+        "tests/test_self_spawn_e2e.py/**",
         "tests/metamorphic/**"
       ],
       "job": "native-integration",
@@ -7400,7 +7401,8 @@
         "tests/cli/test_cli_smoke.py",
         "tests/cli/test_cli_build_identity.py",
         "tests/cli/test_traceback_carets.py",
-        "tests/test_resource_enforcement_e2e.py"
+        "tests/test_resource_enforcement_e2e.py",
+        "tests/test_self_spawn_e2e.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [

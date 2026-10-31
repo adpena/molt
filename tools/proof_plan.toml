@@ -3530,7 +3530,7 @@ timeout_budget = "integration"
 cache_domain = "cargo-workspace"
 dependencies = ["native.integration.capability-manifest"]
 argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "--durations=20"]
-pytest = ["tests/cli/test_cli_smoke.py", "tests/cli/test_cli_build_identity.py", "tests/cli/test_traceback_carets.py", "tests/test_resource_enforcement_e2e.py"]
+pytest = ["tests/cli/test_cli_smoke.py", "tests/cli/test_cli_build_identity.py", "tests/cli/test_traceback_carets.py", "tests/test_resource_enforcement_e2e.py", "tests/test_self_spawn_e2e.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
 
 # Metamorphic compiler equivalence: each case compiles a program and a
