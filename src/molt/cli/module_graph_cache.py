@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt import compiler_process
 from molt import input_report as _input_report
 from molt.compiler_analysis.python_function_kind import FunctionKind
@@ -802,7 +803,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 40
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 41
 
 
 def _import_scan_cache_key(
@@ -818,11 +819,15 @@ def _import_scan_cache_key(
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
+    purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> str:
+    if type(purpose) is not SourceImportPurpose:
+        raise TypeError("source import scan cache requires a typed purpose")
     key_parts = [
         module_name,
         "pkg" if is_package else "mod",
         import_scan_mode,
+        purpose.value,
         "runtime-owner" if runtime_catalog_owner else "strict",
         repr(source_owner),
         repr(source_arguments),
@@ -921,6 +926,7 @@ def _read_persisted_import_scan_record(
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
+    purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> _ImportScanRequests | None:
     record_key = _import_scan_cache_key(
         path,
@@ -934,6 +940,7 @@ def _read_persisted_import_scan_record(
         target_python=target_python,
         target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,
+        purpose=purpose,
     )
     record = _read_import_scan_record(record_key)
     payload = _decode_source_record_json(None if record is None else record.payload)
@@ -948,6 +955,7 @@ def _read_persisted_import_scan_record(
         "module_name",
         "is_package",
         "import_scan_mode",
+        "purpose",
         "source_owner",
         "source_arguments",
         "namespace_premise",
@@ -1006,6 +1014,7 @@ def _read_persisted_import_scan_record(
         or payload.get("target_sys_platform") != target_sys_platform
         or payload.get("parser") != [sys.implementation.name, sys.version]
         or payload.get("import_scan_mode") != import_scan_mode
+        or payload.get("purpose") != purpose.value
         or payload.get("source_owner")
         != (list(source_owner) if source_owner is not None else None)
         or payload.get("source_arguments") != list(source_arguments)
@@ -1391,6 +1400,7 @@ def _write_persisted_import_scan(
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
+    purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> None:
     _validate_import_scan_namespace_summary(
         scan.namespace_summary, source_owner=source_owner
@@ -1416,6 +1426,7 @@ def _write_persisted_import_scan(
             native_support_function_roots
         ).payload(),
         "import_scan_mode": import_scan_mode,
+        "purpose": purpose.value,
         "source_owner": source_owner,
         "source_arguments": source_arguments,
         "namespace_premise": _namespace_premise_cache_identity(namespace_premise),
@@ -1533,6 +1544,7 @@ def _write_persisted_import_scan(
         target_python=target_python,
         target_sys_platform=target_sys_platform,
         runtime_catalog_owner=runtime_catalog_owner,
+        purpose=purpose,
     )
     shared_source_records().put(
         "import-scan",

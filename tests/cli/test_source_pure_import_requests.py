@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
@@ -40,6 +42,7 @@ def write(path: Path, text: str = "pass\n") -> Path:
 
 def load(path: Path, **kwargs):
     options = dict(
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -51,6 +54,30 @@ def load(path: Path, **kwargs):
     )
     options.update(kwargs)
     return discovery._load_module_import_scan(path, **options)
+
+
+@pytest.mark.parametrize("inventory_first", [False, True])
+def test_warm_inventory_and_execution_requests_stay_disjoint(tmp_path, inventory_first):
+    source = write(tmp_path / "entry.py", "def available():\n    import leaf\n")
+    write(tmp_path / "leaf.py")
+    purposes = (
+        (SourceImportPurpose.INVENTORY, SourceImportPurpose.EXECUTION)
+        if inventory_first
+        else (SourceImportPurpose.EXECUTION, SourceImportPurpose.INVENTORY)
+    )
+    for index, purpose in enumerate((*purposes, *purposes)):
+        # Each load has a fresh resolver: a hit proves persisted request reuse,
+        # rather than the in-memory AST/projection cache hiding a wrong record.
+        result = load(source, purpose=purpose)
+        assert set(result.scan.imports) == (
+            {"leaf"} if purpose is SourceImportPurpose.INVENTORY else set()
+        )
+        assert result.cache_hit is (index >= len(purposes))
+    payloads = tuple(source_records("import-scan").values())
+    assert {payload["purpose"] for payload in payloads} == {
+        "inventory",
+        "execution",
+    }
 
 
 def test_warm_star_exports_and_child_presence_are_live(tmp_path):
@@ -1225,6 +1252,9 @@ def test_opaque_callable_escape_discovers_returned_or_yielded_callback(
         "retired-site-owner",
         "retired-demand-owner",
         "unknown-phase",
+        "missing-purpose",
+        "unknown-purpose",
+        "wrong-purpose",
     ],
 )
 def test_source_cache_rejects_retired_or_incoherent_protocol(
@@ -1253,6 +1283,12 @@ def test_source_cache_rejects_retired_or_incoherent_protocol(
         payload["source_demands"][0].append(None)
     elif defect == "unknown-phase":
         payload["source_demands"][0][1] = "invented"
+    elif defect == "missing-purpose":
+        del payload["purpose"]
+    elif defect == "unknown-purpose":
+        payload["purpose"] = "invented"
+    elif defect == "wrong-purpose":
+        payload["purpose"] = "inventory"
     replace_source_record("import-scan", key, payload)
     decoded = records._read_persisted_import_scan_record(
         source,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
@@ -1141,6 +1142,7 @@ def _load_module_analysis(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        purpose=SourceImportPurpose.INVENTORY,
         namespace_premise=namespace_premise,
         resolution_cache=resolution_cache,
         project_root=project_root,

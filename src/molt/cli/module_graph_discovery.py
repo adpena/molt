@@ -87,6 +87,16 @@ class _SourceScanJob(NamedTuple):
     arguments: tuple[str, ...] = ()
 
 
+def _graph_import_scan_purpose(
+    selection: ModuleBodySelection, source_owner: PythonSourceKey | None
+) -> _source_import_scan.SourceImportPurpose:
+    return (
+        _source_import_scan.SourceImportPurpose.INVENTORY
+        if selection.kind == "native_support" and source_owner is None
+        else _source_import_scan.SourceImportPurpose.EXECUTION
+    )
+
+
 @dataclass(frozen=True)
 class _SourceDiscoveryContext:
     """Resolution and admission belong to the source, not the latest extension."""
@@ -193,6 +203,7 @@ def _bind_precomputed_module_import_scan(
     *,
     module_name: str,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
     scan: _CompleteImportScan,
     snapshot: _module_source.PythonSourceSnapshot,
     is_package: bool | None = None,
@@ -224,7 +235,19 @@ def _bind_precomputed_module_import_scan(
         target_python.tag,
         target_sys_platform,
         scan,
+        purpose,
     )
+
+
+def _validate_precomputed_module_import_purpose(
+    record: _PrecomputedModuleImportScan,
+    purpose: _source_import_scan.SourceImportPurpose,
+) -> None:
+    if record.purpose is not purpose:
+        raise ValueError(
+            "precomputed source scan lost purpose custody: "
+            f"{record.authority.module_name!r}"
+        )
 
 
 def _validate_precomputed_module_import_scan(
@@ -233,9 +256,11 @@ def _validate_precomputed_module_import_scan(
     path: Path,
     module_name: str,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
 ) -> None:
+    _validate_precomputed_module_import_purpose(record, purpose)
     record.authority.validate(module_name, path)
     if (
         record.authority.mode != import_scan_mode
@@ -549,6 +574,12 @@ def _discover_module_graph_from_paths(
     precomputed_scans_by_path = {
         path.resolve(): scan for path, scan in (precomputed_scans_by_path or {}).items()
     }
+    for record in precomputed_scans_by_path.values():
+        # Check the incoming request before queue coalescing, receipt reuse or
+        # raw-source dominance can discard a narrower precomputed view.
+        _validate_precomputed_module_import_purpose(
+            record, _graph_import_scan_purpose(record.authority.body_selection, None)
+        )
     context = _SourceDiscoveryContext(
         tuple(roots),
         tuple(module_roots),
@@ -993,6 +1024,9 @@ def _discover_module_graph_from_paths(
                 import_scan_mode=authority.mode
                 if job.source is None
                 else "module_init",
+                purpose=_graph_import_scan_purpose(
+                    authority.body_selection, job.source
+                ),
                 source_owner=job.source,
                 source_arguments=job.arguments,
                 source_snapshot=source_generations.get(module_name, (None, None))[1],
@@ -1134,6 +1168,7 @@ def _discover_module_graph_from_paths(
                     path=path,
                     module_name=module_name,
                     import_scan_mode=authority.mode,
+                    purpose=_graph_import_scan_purpose(authority.body_selection, None),
                     target_python=target_python,
                     target_sys_platform=resolution_cache.target_sys_platform,
                 )
@@ -1173,6 +1208,7 @@ def _discover_module_graph_from_paths(
                 module_name=module_name,
                 is_package=bool(authority.is_package),
                 import_scan_mode=authority.mode,
+                purpose=_graph_import_scan_purpose(authority.body_selection, None),
                 resolution_cache=resolution_cache,
                 project_root=source_context.project_root,
                 roots=source_context.roots,
@@ -1278,6 +1314,7 @@ def _load_module_imports(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
     tree: ast.AST,
     resolution_cache: _module_resolution._ModuleResolutionCache,
     project_root: Path | None,
@@ -1293,6 +1330,7 @@ def _load_module_imports(
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
+        purpose=purpose,
         tree=tree,
         resolution_cache=resolution_cache,
         project_root=project_root,
@@ -1312,6 +1350,7 @@ def _load_module_import_scan(
     module_name: str,
     is_package: bool,
     import_scan_mode: ImportScanMode,
+    purpose: _source_import_scan.SourceImportPurpose,
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     resolution_cache: _module_resolution._ModuleResolutionCache,
@@ -1332,6 +1371,8 @@ def _load_module_import_scan(
     native_support_function_roots: tuple[str, ...] = (),
 ) -> _LoadedModuleImportScan:
     """Admit source-only requests, then resolve filesystem edges in this operation."""
+    if type(purpose) is not _source_import_scan.SourceImportPurpose:
+        raise TypeError("source import scan requires a typed purpose")
     if native_support_function_roots:
         native_support_function_roots = canonical_native_support_roots(
             native_support_function_roots
@@ -1370,6 +1411,7 @@ def _load_module_import_scan(
             path=path,
             module_name=module_name,
             import_scan_mode=import_scan_mode,
+            purpose=purpose,
             target_python=target_python,
             target_sys_platform=resolution_cache.target_sys_platform,
         )
@@ -1452,6 +1494,7 @@ def _load_module_import_scan(
             module_name=module_name,
             is_package=is_package,
             import_scan_mode=import_scan_mode,
+            purpose=purpose,
             source_owner=source_owner,
             source_arguments=source_arguments,
             snapshot=snapshot,
@@ -1495,14 +1538,6 @@ def _load_module_import_scan(
             target_python=target_python,
         )
         tree, ast_digest_admission = selected.tree, selected.admission
-    # A selected native producer promises dependencies of the retained lowering
-    # view before graph ingestion. That inventory is separate from the native
-    # callable-export demands that activate execution owners in discovery.
-    purpose = (
-        _source_import_scan.SourceImportPurpose.INVENTORY
-        if native_support_function_roots and source_owner is None
-        else _source_import_scan.SourceImportPurpose.EXECUTION
-    )
     import_projection = resolution_cache.collect_graph_imports(
         path,
         tree,
@@ -1540,6 +1575,7 @@ def _load_module_import_scan(
                 module_name=module_name,
                 is_package=is_package,
                 import_scan_mode=import_scan_mode,
+                purpose=purpose,
                 source_owner=source_owner,
                 source_arguments=source_arguments,
                 scan=requests,

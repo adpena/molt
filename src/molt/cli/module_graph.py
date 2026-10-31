@@ -769,6 +769,11 @@ def _native_support_source_slices(
         mode = _source_import_scan._module_import_scan_mode(
             module, full_scan=bool(roots) or module in full_scan_modules
         )
+        purpose = (
+            _source_import_scan.SourceImportPurpose.INVENTORY
+            if roots
+            else _source_import_scan.SourceImportPurpose.EXECUTION
+        )
         cache_key = (path.resolve(), roots, mode, resolution_cache.target_sys_platform)
         operation_counts["native_support_slice_requests"] += 1
         operation_counts["native_support_legacy_equivalent_source_parses"] += (
@@ -788,6 +793,7 @@ def _native_support_source_slices(
                 module_name=module,
                 is_package=path.name == "__init__.py",
                 import_scan_mode=mode,
+                purpose=purpose,
                 resolution_cache=resolution_cache,
                 project_root=artifacts_root,
                 roots=import_roots,
@@ -823,6 +829,7 @@ def _native_support_source_slices(
                 path,
                 module_name=module,
                 import_scan_mode=mode,
+                purpose=purpose,
                 is_package=path.name == "__init__.py",
                 package_paths=(path.parent,) if path.name == "__init__.py" else (),
                 scan=loaded_scan.scan,
@@ -1767,6 +1774,7 @@ def _prepare_entry_module_graph(
         module_name=entry_module,
         is_package=entry_is_package,
         import_scan_mode="full",
+        purpose=_source_import_scan.SourceImportPurpose.EXECUTION,
         resolution_cache=module_resolution_cache,
         project_root=None,
         tree=entry_tree,
@@ -1790,6 +1798,7 @@ def _prepare_entry_module_graph(
             source_path,
             module_name=entry_module,
             import_scan_mode="full",
+            purpose=_source_import_scan.SourceImportPurpose.EXECUTION,
             scan=loaded_entry.scan,
             snapshot=entry_snapshot,
             target_sys_platform=module_resolution_cache.target_sys_platform,
