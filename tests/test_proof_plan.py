@@ -9761,6 +9761,41 @@ def test_optimizer_policy_accepts_only_canonical_pinned_binaryen_banners():
         assert re.fullmatch(pattern, banner) is None
 
 
+@pytest.mark.parametrize("consumer", ["projection", "compiler-selector", "admission"])
+def test_missing_managed_llvm_refuses_at_proof_admission_boundary(
+    tmp_path, monkeypatch, consumer
+):
+    from molt import llvm_toolchain
+
+    prefix = tmp_path / "absent-managed-sdk"
+    monkeypatch.setattr(
+        llvm_toolchain, "managed_llvm_prefix", lambda *_args, **_kwargs: prefix
+    )
+    policy = next(item for item in PLAN.toolchain_policies if item.name == "llvm-sdk")
+    environment = {"PATH": str(tmp_path)}
+    with pytest.raises(ValueError, match="tools.bootstrap_llvm") as caught:
+        if consumer == "projection":
+            proof_plan.project_toolchains(
+                (policy,), ("llvm-sdk",), environ=environment, root=policy.root
+            )
+        elif consumer == "compiler-selector":
+            proof_plan.compiler_tool_path(policy, environment=environment, cwd=tmp_path)
+        else:
+            proof_plan.admit_toolchains(
+                PLAN.toolchain_policies,
+                ("llvm-sdk",),
+                python_executable=None,
+                environ=environment,
+                root=policy.root,
+            )
+    assert isinstance(
+        caught.value.__cause__, llvm_toolchain.LlvmManagedToolchainMissingError
+    )
+    assert caught.value.__cause__.prefix == prefix
+    assert str(prefix) in str(caught.value)
+    assert not prefix.exists()
+
+
 def test_sdk_compiler_selector_uses_requested_working_directory(tmp_path, monkeypatch):
     from molt import llvm_toolchain
     from types import SimpleNamespace
