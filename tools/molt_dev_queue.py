@@ -25,8 +25,8 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from types import ModuleType
-from typing import Any
-from dataclasses import asdict, dataclass
+from typing import Any, assert_never
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from heapq import nlargest
@@ -45,6 +45,7 @@ from tools.molt_dev_controller import (
 )  # noqa: E402
 from tools.detached_execution import launch_detached, python_command
 from tools.venv_exec import venv_python
+from tools.molt_dev_policy import LandingMode
 from molt.path_custody import host_path_is_within
 from molt.dx import storage_path
 from molt import process_model
@@ -77,6 +78,8 @@ MAX_BATCH = 8
 # results older than RESULT_DAYS, retire when a runner starts.
 RUNNER_LOGS_KEPT = 20
 RESULT_DAYS = 30
+LAST_GREEN_REF = "refs/molt/last-green"
+POSTSUBMIT_SCHEMA = "molt.postsubmit-result.v1"
 # `land --wait` watches for the queue's result record. Each look costs two
 # stats and a lock probe, so the wait starts short and doubles to one second:
 # a landing that takes two seconds is seen within a second of landing, and a
@@ -96,6 +99,270 @@ class LandingStatus(StrEnum):
     CONFLICT = "conflict"
     # The integrator withdrew it before any batch tested it (`queue withdraw`).
     WITHDRAWN = "withdrawn"
+
+
+class PostsubmitStatus(StrEnum):
+    GREEN = "green"
+    RED = "red"
+    CANCELLED = "cancelled"
+
+
+def last_green(git) -> str | None:
+    result = git._run(["rev-parse", "--verify", "--quiet", LAST_GREEN_REF], check=False)
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        raise DriverError(f"cannot read {LAST_GREEN_REF}: {result.stderr}")
+    return _driver().require_git_object_id(result.stdout.strip(), label="last green")
+
+
+def postsubmit_results(
+    paths: QueuePaths, *, limit: int | None = None
+) -> list[dict[str, Any]]:
+    """Completed health receipts, kept in the existing integration evidence store."""
+    if limit is not None and limit < 0:
+        raise DriverError("--recent must be non-negative", code=EXIT_USAGE)
+    if limit == 0:
+        return []
+
+    def records():
+        for path in paths.evidence.glob("*.postsubmit-result.json"):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record.get("schema") != POSTSUBMIT_SCHEMA:
+                raise DriverError(f"unrecognized postsubmit receipt: {path}")
+            PostsubmitStatus(record["status"])
+            yield record
+
+    def key(record):
+        return datetime.fromisoformat(record["finished_at"]), record["commit"]
+
+    return (
+        sorted(records(), key=key, reverse=True)
+        if limit is None
+        else nlargest(limit, records(), key=key)
+    )
+
+
+def recent_postsubmit_failures(
+    paths: QueuePaths, *, now: float | None = None
+) -> tuple[str, ...]:
+    cutoff = (time.time() if now is None else now) - 24 * 60 * 60
+    failed: dict[str, None] = {}
+    for record in postsubmit_results(paths):
+        if datetime.fromisoformat(record["finished_at"]).timestamp() < cutoff:
+            continue
+        match PostsubmitStatus(record["status"]):
+            case PostsubmitStatus.RED:
+                failed.update(dict.fromkeys(record["failing_tests"]))
+            case PostsubmitStatus.GREEN | PostsubmitStatus.CANCELLED:
+                pass
+            case state:
+                assert_never(state)
+    return tuple(failed)
+
+
+def _postsubmit_failures(output: Path, repo: Path) -> tuple[str, ...]:
+    from xml.etree import ElementTree
+
+    failures: dict[str, None] = {}
+    for path in output.glob("*.junit.xml"):
+        try:
+            tree = ElementTree.parse(path)
+        except (OSError, ElementTree.ParseError) as exc:
+            raise DriverError(f"cannot read postsubmit JUnit {path}: {exc}") from exc
+        for case in tree.iter("testcase"):
+            if case.find("failure") is None and case.find("error") is None:
+                continue
+            file = case.get("file", "")
+            if Path(file).is_absolute():
+                file = Path(file).relative_to(repo).as_posix()
+            file = file.replace("\\", "/")
+            if not file.startswith("tests/") or ".." in Path(file).parts:
+                raise DriverError(f"pytest failure has no repository test path: {path}")
+            module = file.removesuffix(".py").replace("/", ".")
+            classname = case.get("classname", "")
+            classes = classname.removeprefix(module).strip(".").split(".")
+            node = "::".join(
+                (file, *(name for name in classes if name), case.get("name", ""))
+            )
+            failures[node] = None
+    return tuple(failures)
+
+
+def _postsubmit_reverts(
+    git, head: str, green: str | None
+) -> tuple[list[str], list[str]]:
+    suspects = git._run(
+        ["rev-list", head, *(["^" + green] if green else [])]
+    ).stdout.splitlines()
+    if green is None:
+        return suspects, []  # There is no proven restore target yet.
+    first_parents = git._run(
+        ["rev-list", "--first-parent", f"{green}..{head}"]
+    ).stdout.splitlines()
+    commands = []
+    for commit in first_parents:
+        parents = git._run(["rev-list", "--parents", "-n", "1", commit]).stdout.split()
+        commands.append(
+            "git revert --no-edit " + ("-m 1 " if len(parents) > 2 else "") + commit
+        )
+    return suspects, commands
+
+
+def _run_postsubmit_gates(
+    git, head: str, green: str | None, cancelled, output: Path
+) -> None:
+    """The ordinary selection, admission, executor and receipts, without publication."""
+    from molt.dx import RunContext
+    from tools.molt_dev_policy import select_landing_gates
+    from tools.molt_dev_gates import (
+        admit_selected_output_capacity,
+        gate_runs_pytest,
+        run_selected_gates,
+    )
+
+    drv = _driver()
+    repo = git.repo
+    policy, config, _touched, gates, _rules = select_landing_gates(
+        git, repo, head, green, extra=[], mode=LandingMode.POSTSUBMIT
+    )
+    drv._assert_integration_source(git, head)
+    prepared = config.prepare(
+        gates,
+        baseline=drv.gate_environment(repo, session_id="postsubmit", create_dirs=False),
+        prepare_python=lambda baseline, needed: drv.prepare_gate_environment(
+            repo, baseline, requires_python=needed
+        ),
+    )
+    outputs = config.cargo_outputs(prepared.environments, gates)
+    requirements = admit_selected_output_capacity(outputs, prepared.environments)
+    for environment in prepared.environments.values():
+        RunContext(repo).materialize_environment(
+            environment.environment, protected_python_root=environment.python_root
+        )
+    runtime = drv._gate_runtime(
+        git,
+        head,
+        repo=repo,
+        policy=policy,
+        config=config,
+        environments=prepared.environments,
+        cargo_outputs=outputs,
+        capacity_requirements=requirements,
+        progress=drv._IntegrationProgress(),
+        toolchains=prepared.fingerprints,
+        receipt_kind="postsubmit",
+        mode=LandingMode.POSTSUBMIT,
+        cancelled=cancelled,
+    )
+    runtime = replace(runtime, output_dir=output, receipt_path=output / "receipt.json")
+    run_selected_gates(gates, runtime, [])
+    for ordinal, gate in enumerate(gates, start=1):
+        if (
+            gate_runs_pytest(gate, repo=repo)
+            and not (output / f"gate-{ordinal:03d}.junit.xml").is_file()
+        ):
+            raise DriverError(
+                f"passing pytest omitted its JUnit receipt: gate {ordinal}"
+            )
+
+
+def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitStatus:
+    from tools.molt_dev_gates import GateCancellation
+
+    drv = _driver()
+    git.fetch(args.remote, args.branch)
+    head = drv.require_git_object_id(
+        git.rev_parse(f"{args.remote}/{args.branch}"), label="postsubmit main"
+    )
+    green = last_green(git)
+    if green == head:
+        return PostsubmitStatus.GREEN
+    if args.pinned_controller is not None:
+        from tools.controller_source import controller_key
+
+        if controller_key(git.repo, head) != args.pinned_controller:
+            # Main can move between controller admission and this fetch.
+            return PostsubmitStatus.CANCELLED
+    if pending(paths):
+        return PostsubmitStatus.CANCELLED
+    sandbox = _sandbox_git(paths, git, head)
+    drv._assert_integration_source(sandbox, sandbox.head_sha())
+    if sandbox.head_sha() != head:
+        sandbox._run(["switch", "--detach", head])
+    suspects, reverts = _postsubmit_reverts(git, head, green)
+    run = f"{time.time_ns()}-{os.getpid()}"
+    receipt = paths.evidence / f"{head}.{run}.postsubmit-result.json"
+    output = paths.evidence / f"{head}.postsubmit.d" / run
+    cancellation_seen = False
+
+    def cancelled() -> bool:
+        nonlocal cancellation_seen
+        cancellation_seen = cancellation_seen or bool(pending(paths))
+        return cancellation_seen
+
+    error = None
+    failed: tuple[str, ...] = ()
+    try:
+        _step(f"postsubmit main {head} since {green or 'no known green (full source)'}")
+        _run_postsubmit_gates(sandbox, head, green, cancelled, output)
+        failed = _postsubmit_failures(output, sandbox.repo)
+        if failed:
+            raise DriverError("passing gates contain failing pytest reports")
+        git.fetch(args.remote, args.branch)
+        if cancelled() or git.rev_parse(f"{args.remote}/{args.branch}") != head:
+            state = PostsubmitStatus.CANCELLED
+        else:
+            # Only this passing-postsubmit path writes the ref. CAS prevents a
+            # concurrent or manual ref change from being silently overwritten.
+            git._run(["update-ref", LAST_GREEN_REF, head, green or "0" * len(head)])
+            state = PostsubmitStatus.GREEN
+    except GateCancellation as exc:
+        state, error = PostsubmitStatus.CANCELLED, str(exc)
+    except (DriverError, OSError, ValueError) as exc:
+        state, error = PostsubmitStatus.RED, str(exc)
+    if state is not PostsubmitStatus.GREEN:
+        try:
+            failed = _postsubmit_failures(output, sandbox.repo)
+        except (DriverError, OSError, ValueError) as exc:
+            error = f"{error}; {exc}"
+            if state is not PostsubmitStatus.CANCELLED:
+                state = PostsubmitStatus.RED
+    _write_json(
+        receipt,
+        {
+            "schema": POSTSUBMIT_SCHEMA,
+            "mode": LandingMode.POSTSUBMIT.value,
+            "status": state.value,
+            "commit": head,
+            "last_green": green,
+            "finished_at": _now(),
+            "failing_tests": list(failed),
+            "suspects": suspects,
+            "revert_commands": reverts,
+            "error": error,
+            "receipt": str(receipt),
+            "gate_output": str(output),
+        },
+    )
+    match state:
+        case PostsubmitStatus.GREEN:
+            _ok(f"postsubmit passed; {LAST_GREEN_REF} advanced to {head}")
+        case PostsubmitStatus.RED:
+            _fail(
+                f"main red at {head}: {error}; failing tests: {', '.join(failed) or 'see gate receipts'}"
+            )
+            _warn("suspect commits since last green: " + ", ".join(suspects))
+            _warn(
+                "restore last green:\n" + "\n".join(reverts)
+                if reverts
+                else "no last-green ref: no proven restore target"
+            )
+        case PostsubmitStatus.CANCELLED:
+            _step("postsubmit cancelled; landing takes priority")
+        case _:
+            assert_never(state)
+    return state
 
 
 @dataclass(frozen=True)
@@ -971,10 +1238,19 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
             _ok("another landing runner is active")
             return EXIT_OK
         needs_repin = False
+        main_changed = False
+        health = PostsubmitStatus.GREEN
         try:
             if pending(paths):
+                upstream_ref = f"refs/remotes/{args.remote}/{args.branch}"
+                before = git._run(
+                    ["rev-parse", "--verify", "--quiet", upstream_ref], check=False
+                ).stdout.strip()
                 _step(f"landing runner ({controller})")
                 needs_repin = _land_one_batch(args, git, paths)
+                main_changed = git.rev_parse(upstream_ref) != before
+            if not needs_repin and not main_changed and not pending(paths):
+                health = _postsubmit(args, git, paths)
         finally:
             drv._release_file_lock(handle)
         if needs_repin:
@@ -992,11 +1268,38 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
                 repin_args,
                 ["queue", "run", "--remote", args.remote, "--branch", args.branch],
             )
+        if main_changed:
+            # Publication may have changed the driver itself. Postsubmit and
+            # every later batch execute main's newly pinned implementation.
+            return run_from_pinned_controller(
+                args,
+                ["queue", "run", "--remote", args.remote, "--branch", args.branch],
+            )
         # Checked after the release: a request that arrives later starts its
         # own runner, so none waits on a runner that is about to exit.
         if not pending(paths):
-            _ok("landing queue is empty")
-            return EXIT_OK
+            match health:
+                case PostsubmitStatus.GREEN:
+                    _ok("landing queue is empty; main is green")
+                    return EXIT_OK
+                case PostsubmitStatus.RED:
+                    return EXIT_FAIL
+                case PostsubmitStatus.CANCELLED:
+                    # A request may have withdrawn, or upstream may have moved
+                    # without a local request. Qualify the newest head next.
+                    return run_from_pinned_controller(
+                        args,
+                        [
+                            "queue",
+                            "run",
+                            "--remote",
+                            args.remote,
+                            "--branch",
+                            args.branch,
+                        ],
+                    )
+                case _:
+                    assert_never(health)
         if args.pinned_controller is not None:
             # Each batch runs under the driver of the main it lands on.
             return run_from_pinned_controller(
@@ -1020,6 +1323,7 @@ def cmd_queue_status(args: argparse.Namespace) -> int:
         "pending": [request.id for request in requests],
         "plan": plan,
         "recent": recorded_results(paths, limit=args.recent),
+        "postsubmit": postsubmit_results(paths, limit=args.recent),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
     return EXIT_OK
