@@ -6957,12 +6957,15 @@ class _Analyzer:
                 )
                 effects |= bind_effects
         elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and is_compiler_intrinsics_module(node.module):
+            # A star import of the synthetic module names nothing the analysis
+            # can enumerate: it takes the generic IMPORT_STAR path below, and
+            # the frontend owns its placement diagnostic.
+            if (
+                node.level == 0
+                and is_compiler_intrinsics_module(node.module)
+                and all(alias.name != "*" for alias in node.names)
+            ):
                 for alias in node.names:
-                    if alias.name == "*":
-                        raise ValueError(
-                            "synthetic intrinsic imports require explicit names"
-                        )
                     helper = COMPILER_INTRINSIC_CALLABLES.get(alias.name)
                     if helper is not None:
                         self._record_state(state_id)
