@@ -9909,14 +9909,20 @@ def test_runtime_wasm_fixture_change_keeps_its_complete_custody_owner():
     names = {rule.name for rule in matched}
     assert "runtime-cargo-input-custody" in names
     assert "frontend-ir-assembly" not in names
-    (owner,) = [
+    requests = [
         gate
         for gate in gates
         if isinstance(gate.command, tuple)
         and "tests/cli/test_runtime_wasm_single_compile.py" in gate.command
     ]
+    # The rule retains its declared not-slow scope; the changed file's direct
+    # graph request separately supplies the full fail-fast presubmit scope.
+    (owner,) = [gate for gate in requests if "--maxfail=1" not in gate.command]
     assert owner.command[owner.command.index("-m", 3) + 1] == "not slow"
     assert "cargo" in PLAN.toolchain_closure(owner.toolchains)
+    (direct,) = [gate for gate in requests if "--maxfail=1" in gate.command]
+    assert "-m" not in direct.command[3:]
+    assert "cargo" in PLAN.toolchain_closure(direct.toolchains)
 
 
 def test_frontend_producer_keeps_runtime_routing_and_assembly_consumers():
@@ -9999,7 +10005,11 @@ def test_benchmark_fixture_and_producer_have_distinct_proof_obligations(producer
 def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
     from tools import molt_dev_policy
 
-    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select([path])
+    # This is the complete transitive consumer obligation, owned by postsubmit.
+    # Presubmit's first-hop boundary has its own fixed-graph selection oracle.
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select(
+        [path], mode=molt_dev_policy.LandingMode.POSTSUBMIT
+    )
     names = {rule.name for rule in matched}
     assert "native-toolchain-transfer" in names
     assert "ci-wiring" not in names
@@ -10030,7 +10040,9 @@ def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
         "tests/cli/native_toolchain_test_support.py": {"tests/test_proof_plan.py"},
     }
     # Nothing outside the rule's owners and the graph's readers runs.
-    graph = molt_dev_policy.GateConfig.load(PLAN.path).graph_selection([path])
+    graph = molt_dev_policy.GateConfig.load(PLAN.path).graph_selection(
+        [path], mode=molt_dev_policy.LandingMode.POSTSUBMIT
+    )
     assert owners | readers.get(path, set()) <= selected <= owners | set(graph.run)
     if path == "src/molt/cli/native_toolchain_transfer.py":
         # Its importers span the CLI, release and proof tooling; all must run.
