@@ -199,6 +199,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "builtin_callables.py": _P,
         "compat.py": _P,
         "exact_json.py": _P,
+        # Memoizes producer functions; its code sits on their result path.
+        "typed_cache.py": _P,
         # The path every emitted module location reports (HF-372).
         "logical_source_paths.py": _P,
         "native_callable_abi.py": _P,
