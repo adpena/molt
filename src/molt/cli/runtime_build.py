@@ -21,6 +21,7 @@ from molt.cli.config_resolution import (
 )
 from molt.cli.build_request import BuildProfile
 from molt.cli.models import _RuntimeArtifactState
+from molt.compilation_target import TargetKind
 from molt.cli.runtime_features import (
     runtime_features_unsupported_on_target,
     runtime_stdlib_profile_for_required_features,
@@ -161,7 +162,7 @@ def _prebuild_runtime_wasm(
     concrete_stdlib_profile = runtime_stdlib_profile_for_required_features(
         stdlib_profile,
         required_link_features,
-        target_triple="wasm32-wasip1",
+        target=TargetKind.WASI,
     )
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=False,

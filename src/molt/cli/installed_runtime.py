@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence, cast
 import uuid
 
+from molt.native_target import resolve_native_target_spec
 from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_names
 from molt.cli import installed_runtime_contract as _runtime_contract
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
@@ -369,7 +370,7 @@ def native_runtime_cell_key(
     concrete = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     features = runtime_fingerprint_features_for_profile(
         concrete,
-        target_triple=target_triple,
+        target=resolve_native_target_spec(target_triple),
         extra_runtime_features=extra_runtime_features,
     )
     return {

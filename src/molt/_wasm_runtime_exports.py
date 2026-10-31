@@ -9,9 +9,8 @@ from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import (
     feature_for_symbol,
     runtime_symbol_available_on_target,
-    symbol_availability_depends_on_target_os,
-    target_os_from_triple,
 )
+from molt.compilation_target import WasmArtifactKind
 from molt.source_root import compiler_source_root
 from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME,
@@ -261,7 +260,7 @@ def wasm_runtime_import_feature(name: str) -> str | None:
 
 
 def wasm_runtime_import_names_for_features(
-    enabled_features: Collection[str], *, target_triple: str
+    enabled_features: Collection[str], *, target: WasmArtifactKind
 ) -> tuple[str, ...]:
     """The generated runtime imports one runtime build actually defines.
 
@@ -272,14 +271,9 @@ def wasm_runtime_import_names_for_features(
     """
     enabled = frozenset(enabled_features)
     selected: list[str] = []
-    target_os: str | None = None
     for name in wasm_runtime_import_names():
         symbol = _runtime_export_name_or_fail(name)
-        if target_os is None and symbol_availability_depends_on_target_os(symbol):
-            target_os = target_os_from_triple(target_triple)
-        if not runtime_symbol_available_on_target(
-            symbol, target_triple=target_triple, target_os=target_os
-        ):
+        if not runtime_symbol_available_on_target(symbol, target=target):
             continue
         feature = WASM_IMPORT_RUNTIME_FEATURES.get(name)
         if feature is not None and feature not in enabled:

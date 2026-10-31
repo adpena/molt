@@ -234,10 +234,17 @@ class RuntimeWasmGeneration:
         """Generated runtime ABI the shared member's own build must export."""
         from molt._wasm_runtime_exports import wasm_runtime_import_names_for_features
         from molt.cli.runtime_features import runtime_enabled_cargo_features
+        from molt.compilation_target import TargetKind, admit_target
 
+        # The recorded identity names its target as text; admit it here.
+        target = admit_target(self.shared_identity.effective_target)
+        if target is not TargetKind.WASI and target is not TargetKind.WASM_UNKNOWN:
+            raise ValueError(
+                f"shared WASM runtime records a non-WASM target {target!r}"
+            )
         imports = wasm_runtime_import_names_for_features(
             runtime_enabled_cargo_features(self.shared_identity.runtime_features),
-            target_triple=self.shared_identity.effective_target,
+            target=target,
         )
         if not imports:
             raise ValueError("runtime generation selects an empty generated ABI")

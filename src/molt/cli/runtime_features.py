@@ -6,10 +6,11 @@ from typing import Collection
 
 from molt._runtime_feature_gates import (
     features_unsupported_on_target,
-    target_arch_from_triple,
-    target_os_from_triple,
+    target_arch,
+    target_os,
 )
 from molt.cli.compiler_metadata import _compiler_root
+from molt.compilation_target import ArtifactTarget, TargetKind
 from molt.cli.config_resolution import (
     AUTO_STDLIB_PROFILE,
     DEFAULT_RUNTIME_STDLIB_PROFILE,
@@ -21,7 +22,7 @@ from molt.cli.config_resolution import (
 
 @functools.lru_cache(maxsize=32)
 def _runtime_cargo_features_cached(
-    target_triple: str | None,
+    target: ArtifactTarget,
     tk_raw: str | None,
     gpu_metal_raw: str | None,
     gpu_webgpu_raw: str | None,
@@ -29,7 +30,7 @@ def _runtime_cargo_features_cached(
     gpu_hip_raw: str | None,
 ) -> tuple[str, ...]:
     features: list[str] = []
-    if target_triple is not None and target_triple.startswith("wasm32"):
+    if _is_wasm_artifact(target):
         return ()
     tk_enabled = (
         True if tk_raw is None or tk_raw.strip() == "" else _coerce_bool(tk_raw, True)
@@ -72,9 +73,13 @@ def _runtime_cargo_features_cached(
 SOURCE_EXTENSION_RUNTIME_FEATURES: tuple[str, ...] = ("source_extension_loader",)
 
 
-def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
+def _is_wasm_artifact(target: ArtifactTarget) -> bool:
+    return target is TargetKind.WASI or target is TargetKind.WASM_UNKNOWN
+
+
+def _runtime_cargo_features(target: ArtifactTarget) -> tuple[str, ...]:
     return _runtime_cargo_features_cached(
-        target_triple,
+        target,
         os.environ.get("MOLT_RUNTIME_TK_NATIVE"),
         os.environ.get("MOLT_RUNTIME_GPU_METAL"),
         os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"),
@@ -220,9 +225,9 @@ def runtime_enabled_cargo_features(requested: Collection[str]) -> frozenset[str]
 def profile_link_features(
     profile: str | None,
     *,
-    target_triple: str | None,
+    target: ArtifactTarget,
 ) -> frozenset[str]:
-    """Runtime feature names provided by ``profile`` on ``target_triple``.
+    """Runtime feature names provided by ``profile`` on ``target``.
 
     Reads the runtime Cargo feature ladder and transitively expands the profile
     feature (``micro`` -> ``stdlib_micro`` ... ``full`` -> ``stdlib_full``),
@@ -241,37 +246,23 @@ def profile_link_features(
         effective_profile = "full"
     cargo_feature = runtime_cargo_feature_for_profile(effective_profile)
     reached = _expand_cargo_feature(cargo_feature)
-    unavailable = runtime_features_unsupported_on_target(target_triple)
-    if target_triple is not None and target_triple.startswith("wasm32"):
+    unavailable = runtime_features_unsupported_on_target(target)
+    if _is_wasm_artifact(target):
         unavailable = unavailable | _WASM_PROFILE_POLICY_EXCLUDED_FEATURES
     if unavailable:
         reached = reached.difference(unavailable)
     return reached
 
 
-def runtime_features_unsupported_on_target(
-    target_triple: str | None,
-) -> frozenset[str]:
-    """Declared runtime features with no provider on ``target_triple``.
-
-    ``None`` is the host. It is resolved here, before the cache, so a cached
-    answer is keyed by the concrete target and never by "whichever host the
-    first caller saw".
-    """
-    if target_triple is None:
-        from molt.native_target import resolve_native_target_spec
-
-        target_triple = resolve_native_target_spec(None).triple
-    return _runtime_features_unsupported_on_concrete_target(target_triple)
-
-
 @functools.lru_cache(maxsize=32)
-def _runtime_features_unsupported_on_concrete_target(
-    target_triple: str,
-) -> frozenset[str]:
+def runtime_features_unsupported_on_target(target: ArtifactTarget) -> frozenset[str]:
+    """Declared runtime features with no provider on ``target``.
+
+    The target arrives resolved, so the cache keys on the concrete artifact
+    target and never on "whichever host the first caller saw".
+    """
     return features_unsupported_on_target(
-        target_arch=target_arch_from_triple(target_triple),
-        target_os=target_os_from_triple(target_triple),
+        target_arch=target_arch(target), target_os=target_os(target)
     )
 
 
@@ -279,7 +270,7 @@ def runtime_stdlib_profile_for_required_features(
     stdlib_profile: str | None,
     required_link_features: Collection[str],
     *,
-    target_triple: str | None,
+    target: ArtifactTarget,
 ) -> str:
     """Resolve user stdlib intent to one concrete runtime artifact tier.
 
@@ -295,7 +286,7 @@ def runtime_stdlib_profile_for_required_features(
         return effective_profile
     required = frozenset(required_link_features)
     for tier in RUNTIME_STDLIB_PROFILE_TIERS:
-        if required.issubset(profile_link_features(tier, target_triple=target_triple)):
+        if required.issubset(profile_link_features(tier, target=target)):
             return tier
     return "full"
 
@@ -318,13 +309,10 @@ _MICRO_BASE_RUNTIME_FEATURES: tuple[str, ...] = (
 def _runtime_builtin_features_for_profile(
     stdlib_profile: str | None,
     *,
-    target_triple: str | None,
+    target: ArtifactTarget,
 ) -> list[str]:
     effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
-    ladder = profile_link_features(
-        effective_profile,
-        target_triple=target_triple,
-    )
+    ladder = profile_link_features(effective_profile, target=target)
     return list(_ALL_BUILTIN_FEATURES) + sorted(
         ladder.difference(_ALL_BUILTIN_FEATURES)
     )
@@ -333,17 +321,16 @@ def _runtime_builtin_features_for_profile(
 def runtime_fingerprint_features_for_profile(
     stdlib_profile: str | None,
     *,
-    target_triple: str | None,
+    target: ArtifactTarget,
     extra_runtime_features: Collection[str] | None = None,
 ) -> tuple[str, ...]:
     runtime_features = tuple(
         dict.fromkeys(
-            [*_runtime_cargo_features(target_triple), *(extra_runtime_features or ())]
+            [*_runtime_cargo_features(target), *(extra_runtime_features or ())]
         )
     )
     builtin_features = _runtime_builtin_features_for_profile(
-        stdlib_profile,
-        target_triple=target_triple,
+        stdlib_profile, target=target
     )
     concrete_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     concrete_stdlib_feature = runtime_cargo_feature_for_profile(concrete_stdlib_profile)
@@ -384,7 +371,7 @@ def _wasm_runtime_feature_plan(
     profile_features = [
         feature
         for feature in sorted(
-            profile_link_features(effective_profile, target_triple="wasm32-wasip1")
+            profile_link_features(effective_profile, target=TargetKind.WASI)
         )
         if feature != "molt_gpu_primitives"
     ]
@@ -413,9 +400,8 @@ def _wasm_runtime_feature_plan(
 def _builtin_features_from_import_graph(
     resolved_modules: Collection[str] | None,
     stdlib_profile: str | None,
+    *,
+    target: ArtifactTarget,
 ) -> list[str]:
     del resolved_modules
-    return _runtime_builtin_features_for_profile(
-        stdlib_profile,
-        target_triple=None,
-    )
+    return _runtime_builtin_features_for_profile(stdlib_profile, target=target)

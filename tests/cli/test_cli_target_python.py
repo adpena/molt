@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from molt.compilation_target import TargetKind
+from molt.cli.build_output_layout import _runtime_facts_target
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_ir as cli_backend_ir
 from molt.cli import build_inputs as cli_build_inputs
@@ -469,6 +471,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         module_source_role_by_module={
             name: "user" for name in {"__main__": source_path}
         },
+        facts_target=_runtime_facts_target(TargetKind.NATIVE),
     )
 
     assert error is None

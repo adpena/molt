@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
+
 from molt.compilation_target import admit_target
 
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
@@ -200,6 +202,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         output_binary=tmp_path / "app.exe",
         linked_output_path=None,
         emit_ir_path=None,
+        facts_target=_target(target),
     )
     # Only upstream frontend preparation is substituted. Both build-error
     # boundaries, normal output formatting, and IR lease cleanup remain real.

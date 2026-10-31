@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
 from pathlib import Path
 import re
 import tomllib
@@ -652,7 +653,7 @@ def test_cli_profile_availability_covers_every_always_linked_micro_feature() -> 
     for profile in (None, "full", "server", "micro"):
         for target in (None, "aarch64-apple-darwin", "wasm32-unknown-unknown"):
             enabled = set(
-                _runtime_builtin_features_for_profile(profile, target_triple=target)
+                _runtime_builtin_features_for_profile(profile, target=_target(target))
             )
             assert micro_base <= enabled, (
                 f"profile={profile!r} target={target!r} omits always-linked "

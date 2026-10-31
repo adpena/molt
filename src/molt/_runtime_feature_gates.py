@@ -11,6 +11,11 @@ defines it, and reachability must select or refuse that feature.
 
 from __future__ import annotations
 
+from typing import assert_never
+
+from molt.compilation_target import ArtifactTarget, TargetKind
+from molt.native_target import NativeTargetSpec
+
 RUNTIME_SYMBOL_FEATURES: dict[str, str] = {
     "molt_ast_get_docstring": "stdlib_ast",
     "molt_ast_iter_child_nodes": "stdlib_ast",
@@ -1222,28 +1227,28 @@ def feature_for_symbol(symbol: str) -> str | None:
     return RUNTIME_SYMBOL_FEATURES.get(symbol)
 
 
-def target_arch_from_triple(target_triple: str | None) -> str:
-    """Return the target architecture that availability facts name.
-
-    ``None`` is the host. Architecture and OS come from one resolver, so one
-    ``None`` never means the host for the OS and an unknown for the arch.
-    """
-    if target_triple is not None and target_triple.startswith("wasm32"):
-        return "wasm32"
-    from molt.native_target import resolve_native_target_spec
-
-    return resolve_native_target_spec(target_triple).arch
+def target_arch(target: ArtifactTarget) -> str:
+    """The architecture that availability facts name for *target*."""
+    match target:
+        case NativeTargetSpec():
+            return target.arch
+        case TargetKind.WASI | TargetKind.WASM_UNKNOWN:
+            return "wasm32"
+        case _:
+            assert_never(target)
 
 
-def target_os_from_triple(target_triple: str | None) -> str:
-    """Return the target OS that availability facts name for *target_triple*."""
-    if target_triple == "wasm32-wasip1":
-        return "wasi"
-    if target_triple == "wasm32-unknown-unknown":
-        return "none"
-    from molt.native_target import resolve_native_target_spec
-
-    return resolve_native_target_spec(target_triple).os
+def target_os(target: ArtifactTarget) -> str:
+    """The OS that availability facts name for *target*."""
+    match target:
+        case NativeTargetSpec():
+            return target.os
+        case TargetKind.WASI:
+            return "wasi"
+        case TargetKind.WASM_UNKNOWN:
+            return "none"
+        case _:
+            assert_never(target)
 
 
 def unsupported_target_arches_for_symbol(symbol: str) -> tuple[str, ...]:
@@ -1261,27 +1266,15 @@ def unsupported_target_oses_for_symbol(symbol: str) -> tuple[str, ...]:
     return RUNTIME_SYMBOL_UNSUPPORTED_TARGET_OSES.get(symbol, ())
 
 
-def symbol_availability_depends_on_target_os(symbol: str) -> bool:
-    """Whether deciding *symbol*'s availability needs the target OS."""
-    return (
-        symbol in RUNTIME_SYMBOL_SUPPORTED_TARGET_OSES
-        or symbol in RUNTIME_SYMBOL_UNSUPPORTED_TARGET_OSES
-    )
-
-
-def runtime_symbol_available_on_target(
-    symbol: str, *, target_triple: str | None, target_os: str | None
-) -> bool:
-    """Whether *symbol* has a provider for *target_triple*."""
-    # Resolve the (possibly implicit host) architecture only for a symbol that
-    # has architecture restrictions, as the OS is resolved only when needed.
-    unsupported_arches = unsupported_target_arches_for_symbol(symbol)
-    if unsupported_arches and target_arch_from_triple(target_triple) in unsupported_arches:
+def runtime_symbol_available_on_target(symbol: str, *, target: ArtifactTarget) -> bool:
+    """Whether *symbol* has a provider for *target*."""
+    if target_arch(target) in unsupported_target_arches_for_symbol(symbol):
         return False
+    os_name = target_os(target)
     supported_oses = supported_target_oses_for_symbol(symbol)
-    if supported_oses and target_os not in supported_oses:
+    if supported_oses and os_name not in supported_oses:
         return False
-    return target_os not in unsupported_target_oses_for_symbol(symbol)
+    return os_name not in unsupported_target_oses_for_symbol(symbol)
 
 
 def features_unsupported_on_target(

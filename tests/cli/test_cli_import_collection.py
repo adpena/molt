@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.cli.build_output_layout import _runtime_facts_target
+from molt.compilation_target import TargetKind
+from tests.artifact_targets import artifact_target as _target
 from tests.wasm_execution_manifest import wasm_execution_launch
 
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
@@ -3779,6 +3782,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         validate_inputs=lambda: None,
         module_source_role_by_module={name: "user" for name in module_graph},
+        facts_target=_runtime_facts_target(TargetKind.NATIVE),
     )
 
     assert error is None
@@ -3865,6 +3869,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         validate_inputs=lambda: None,
         module_source_role_by_module={name: "user" for name in module_graph},
+        facts_target=_runtime_facts_target(TargetKind.NATIVE),
     )
 
     assert error is None
@@ -3982,6 +3987,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         native_artifact_plan=native_artifact_plan,
         validate_inputs=lambda: None,
         module_source_role_by_module={name: "user" for name in module_graph},
+        facts_target=_runtime_facts_target(admit_target("wasm")),
     )
 
     assert error is None
@@ -4166,6 +4172,7 @@ def test_pure_wasm_dme_mode_overrides_legacy_env(
         output_binary=None,
         linked_output_path=Path("output_linked.wasm"),
         emit_ir_path=None,
+        facts_target=_target("wasm32-wasip1"),
     )
     monkeypatch.setenv("MOLT_DEAD_MODULE_ELIMINATION", "1")
 
@@ -11210,6 +11217,7 @@ def test_external_native_artifact_output_custody_accepts_native_binary(
         output_binary=tmp_path / "app",
         linked_output_path=None,
         emit_ir_path=None,
+        facts_target=_target(None),
     )
 
     assert (
@@ -11256,6 +11264,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 output_binary=None,
                 linked_output_path=None,
                 emit_ir_path=None,
+                facts_target=_target(None),
             ),
             "External static packages require native binary output",
             "target=native",
@@ -11277,6 +11286,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 output_binary=None,
                 linked_output_path=tmp_path / "output_linked.wasm",
                 emit_ir_path=None,
+                facts_target=_target("wasm32-wasip1"),
             ),
             "Linked WASM external static packages require wasm32 static_link",
             (
@@ -11301,6 +11311,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 output_binary=None,
                 linked_output_path=None,
                 emit_ir_path=None,
+                facts_target=_target(None),
             ),
             "External static packages require native binary output",
             "target=rust",
@@ -11322,6 +11333,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 output_binary=None,
                 linked_output_path=None,
                 emit_ir_path=None,
+                facts_target=_target(None),
             ),
             "External static packages require native binary output",
             "target=luau",
@@ -11343,6 +11355,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 output_binary=None,
                 linked_output_path=None,
                 emit_ir_path=None,
+                facts_target=_target(None),
             ),
             "External static packages require native binary output",
             "target=mlir",
@@ -23351,7 +23364,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
     assert {"stdlib_micro", "no-default-features"} <= features
     assert (
         cli_runtime_features.profile_link_features(
-            "micro", target_triple="wasm32-wasip1"
+            "micro", target=_target("wasm32-wasip1")
         )
         <= features
     )
@@ -25676,6 +25689,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         output_binary=output_binary,
         linked_output_path=None,
         emit_ir_path=None,
+        facts_target=_target(None),
     )
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},

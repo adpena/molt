@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.artifact_targets import artifact_target as _target
 from molt.compilation_target import admit_target
 
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -736,7 +737,7 @@ def test_source_graphs_follow_preserved_stat_transitive_manifest_replacements(
             return (
                 set(backend),
                 set(runtime),
-                runtime_features.profile_link_features("micro", target_triple=None),
+                runtime_features.profile_link_features("micro", target=_target(None)),
                 _backend_source_fingerprint(root, ("wasm-backend",)),
                 runtime_key,
             )
