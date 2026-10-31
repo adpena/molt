@@ -34,7 +34,13 @@ _OBSERVED_ENV = "Molt_Supervisor_Unlisted_Input"
 
 
 def _model(tmp_path, monkeypatch, *, during_build=None):
-    target = tmp_path / "store" / "target"
+    from molt.dx import checkout_component, storage_path
+
+    implementation = cargo_output_layout.implementation_source_root()
+    store = storage_path(
+        implementation, "proof-supervisor", {"MOLT_EXT_ROOT": str(tmp_path)}
+    ) / checkout_component(implementation)
+    target = store / "target"
     target.mkdir(parents=True)
     crate = tmp_path / "tools" / "proof_supervisor"
     source = crate / "src" / "main.rs"
@@ -177,7 +183,7 @@ def test_distinct_results_share_cargo_freshness_and_immutable_image(
         )
         records.append((cas_root, receipt, copied))
     # Historical receipts do not depend on the mutable target or shared store.
-    (tmp_path / "store").rename(tmp_path / "retained-store")
+    Path(env["CARGO_TARGET_DIR"]).parent.rename(tmp_path / "retained-store")
     monkeypatch.setenv(_OBSERVED_ENV, "different historical verifier environment")
     for cas_root, receipt, copied in records:
         generation.validate_receipt(
@@ -186,6 +192,86 @@ def test_distinct_results_share_cargo_freshness_and_immutable_image(
             cas_root=cas_root,
             expected_target=Path(env["CARGO_TARGET_DIR"]),
         )
+
+
+@pytest.mark.usefixtures("admitted_build_capacity")
+def test_supervisor_store_retention_observes_producer_and_live_use(
+    tmp_path, monkeypatch
+):
+    from molt.checkout_state import (
+        CheckoutOwner,
+        LAST_USE_STAMP,
+        OWNER_RECORD,
+        checkout_state_retirement,
+        checkout_state_roots,
+        checkout_state_use,
+        read_checkout_owner,
+    )
+    from tools.molt_dev_storage import retire_regenerable
+    from tools.disk_guard import _checkout_state_dirs
+
+    def during_build(_source):
+        with checkout_state_retirement(store) as exclusive:
+            assert not exclusive, (
+                "retirement must not acquire a live provisioner's store"
+            )
+
+    # The model substitutes Cargo, while the store, lease, producer record,
+    # use stamp and collector are the real authorities.
+    env, _source, _mutable, _calls = _model(
+        tmp_path / "other", monkeypatch, during_build=during_build
+    )
+    store = Path(env["CARGO_TARGET_DIR"]).parent
+    image, _receipt = generation.provision(cwd=tmp_path, env=env)
+    assert read_checkout_owner(store) == CheckoutOwner(
+        cargo_output_layout.implementation_source_root(), "proof-supervisor"
+    )
+    assert store in _checkout_state_dirs(store.parent.parent)
+    assert any(
+        root.path == store and root.kind == "proof-supervisor"
+        for root in checkout_state_roots(
+            cargo_output_layout.implementation_source_root(),
+            {"MOLT_EXT_ROOT": str(store.parent.parent)},
+        )
+    )
+    old = time.time() - 40 * 86400
+    for entry in (
+        store / OWNER_RECORD,
+        store / LAST_USE_STAMP,
+        *store.iterdir(),
+        store,
+    ):
+        os.utime(entry, (old, old))
+    with checkout_state_use(((store, None),), publish=False):
+        rows = retire_regenerable(
+            [store], kind="proof-supervisor", now=time.time(), apply=True
+        )
+        assert rows[0]["action"] == "state-in-use" and image.is_file()
+    with checkout_state_use(((store, None),)):
+        pass
+    rows = retire_regenerable(
+        [store], kind="proof-supervisor", now=time.time(), apply=True
+    )
+    assert rows[0]["action"] == "within-budget" and image.is_file()
+    for entry in (*store.iterdir(), store):
+        os.utime(entry, (old, old))
+    rows = retire_regenerable(
+        [store], kind="proof-supervisor", now=time.time(), apply=True
+    )
+    assert rows[0]["action"] == "retire" and not store.exists()
+
+
+def test_supervisor_use_does_not_relabel_a_cargo_output(tmp_path):
+    from molt.checkout_state import LAST_USE_STAMP, OWNER_RECORD
+    from molt.dx import checkout_component
+
+    source = cargo_output_layout.implementation_source_root()
+    cargo_output = tmp_path / "target/checkouts" / checkout_component(source)
+    cargo_output.mkdir(parents=True)
+    with generation.store_use(cargo_output / "target"):
+        pass
+    assert not (cargo_output / OWNER_RECORD).exists()
+    assert not (cargo_output / LAST_USE_STAMP).exists()
 
 
 @pytest.mark.usefixtures("admitted_build_capacity")
