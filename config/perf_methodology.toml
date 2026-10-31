@@ -11,8 +11,12 @@ schema = "molt-perf-methodology-v1"
 # Source fingerprints cover the Git-admitted source set (molt.source_admission)
 # instead of a filesystem walk, so fingerprint digests and cache reuse can move
 # cold and warm samples. Earlier reports retain their recorded class.
-version = 20
-content_sha256 = "154854061ab6d6ffba16d03d65e89bee199b3a9812b41ca92c3528c51ceb444d"
+# The host digest cache reads bounded pages of adjacent keys instead of the
+# whole store (toolchain_identity.FileDigestCache), and target facts resolve
+# once per process (compilation_target, native_target), so warm build samples
+# can move. Earlier reports retain their recorded class.
+version = 21
+content_sha256 = "af1a7fe10537d95c9f73847c950e54b50d55dbaba09bbd92775179050c25b804"
 
 [[methodology]]
 path = "tools/safe_run.py"

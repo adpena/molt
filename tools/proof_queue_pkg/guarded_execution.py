@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import math
@@ -346,6 +347,7 @@ def execute_guarded_request(request_path: Path) -> int:
     }
     custody_session: execution_custody.ExecutionCustodySession | None = None
     cargo_cache: cargo_cache_custody.CargoCacheLease | None = None
+    storage_uses = ExitStack()
     try:
         execution_custody.LiveCustodyMonitor.require_supported_platform()
         inherited_env = ProcessEnvironmentBuilder(
@@ -469,6 +471,7 @@ def execute_guarded_request(request_path: Path) -> int:
             source_root
         ):
             raise ValueError("native proof supervisor target overlaps admitted source")
+        storage_uses.enter_context(supervisor_generation.store_use(supervisor_target))
         supervisor_target.mkdir(parents=True, exist_ok=True)
         supervisor_build_env = _supervisor_build_environment(
             execution_env,
@@ -1550,25 +1553,33 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         return 2
     finally:
-        if cargo_cache is not None:
+        try:
+            if cargo_cache is not None:
+                try:
+                    cargo_cache.close()
+                except BaseException as exc:
+                    result["cargo_cache_lifecycle_error"] = _exception_detail(exc)
+                    print(
+                        f"Cargo generation closure failed: {result['cargo_cache_lifecycle_error']}",
+                        file=sys.stderr,
+                    )
+                    raise
+                finally:
+                    outcome = cargo_cache.publication_outcome
+                    if (
+                        outcome != result.get("cargo_cache_publication")
+                        or "cargo_cache_lifecycle_error" in result
+                    ):
+                        if outcome is not None:
+                            result["cargo_cache_publication"] = dict(outcome)
+                        supervisor._atomic_json(result_path, result)
+        finally:
             try:
-                cargo_cache.close()
+                storage_uses.close()
             except BaseException as exc:
-                result["cargo_cache_lifecycle_error"] = _exception_detail(exc)
-                print(
-                    f"Cargo generation closure failed: {result['cargo_cache_lifecycle_error']}",
-                    file=sys.stderr,
-                )
+                result.update(phase="failed", error=_exception_detail(exc))
+                supervisor._atomic_json(result_path, result)
                 raise
-            finally:
-                outcome = cargo_cache.publication_outcome
-                if (
-                    outcome != result.get("cargo_cache_publication")
-                    or "cargo_cache_lifecycle_error" in result
-                ):
-                    if outcome is not None:
-                        result["cargo_cache_publication"] = dict(outcome)
-                    supervisor._atomic_json(result_path, result)
 
 
 def _main(argv: Sequence[str] | None = None) -> int:
