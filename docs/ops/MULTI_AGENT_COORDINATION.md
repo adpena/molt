@@ -207,6 +207,51 @@ ledger's 20 families (2026-10-31): Qwen3.8-27B 80%, embedding nearest neighbours
 label is advice, never a gate or an authority over typed identities and execution
 evidence. Keep models unloaded when idle; they hold memory that gates need.
 
+### Result review
+
+The parent reviews every returned diff before it lands, at the depth its blast
+radius needs; structural, reference-counting, codegen and ABI changes get every
+lens. Try to break the change, not to confirm it. Send each finding back as a dated
+Correction and review its fix the same way, until a round finds nothing. A finding
+that shows the design is wrong rescopes the lane; do not patch around it.
+
+1. **Cause.** The change fixes the proven cause at its authority. Rerun the failing
+   case on the base and on the change. Look for a second implementation of a fact,
+   and for shims, fallbacks or aliases.
+2. **Oracle.** Each new test fails on the base and on a plausible wrong fix (mutate
+   the fix by hand). Its oracle is independent (CPython, a spec, a measured
+   invariant), not a mirror of the code. Look for deleted or weakened assertions,
+   new skips or xfails, wider tolerances and broad `except` clauses.
+3. **Family.** Every sibling site, consumer, generated projection, fixture and doc
+   moved, in every platform, backend, profile and version cell; the replaced lane
+   is deleted; unverified cells are named.
+4. **Failure paths.** Errors and refusals carry diagnostics; a partial failure
+   leaves no half state; cleanup holds on exception, interruption and crash; no
+   file descriptor, process, lock or temporary file leaks.
+5. **Concurrency and determinism.** Races and check-then-use windows, lock order,
+   re-entrancy, idempotence, parallel test workers, free-threaded execution; no host
+   time, randomness, iteration order or host fact leaks into a result.
+6. **CPython semantics.** Target cells 3.12-3.15; empty, huge, negative, bigint,
+   Unicode, subclass, user-hook and finalizer inputs; exception type, message and
+   order, with the CPython source cited.
+7. **Platforms.** macOS, Linux, Windows and WASM: paths, case, permissions, file
+   identity, line endings and the process model. Say which cells ran.
+8. **Cost.** Hot and cold paths against the base by instructions retired;
+   allocations, syscalls, spawns and bytes; how each scales; cache keys stay
+   complete, so early cutoff stays sound.
+9. **Custody and security.** Untrusted input, injection, path traversal, widened
+   permissions, secrets in logs, writes outside owned paths or into the checkout,
+   AI attribution.
+10. **Types and contracts.** Closed types and exhaustive matches; no new spelled
+    identity and no new type-checker or linter suppression; schema, ABI and format
+    versions move with their consumers.
+11. **User surface.** Diagnostics name the cause and the fix; CLI help, README and
+    contract docs match the behaviour.
+12. **Simplicity.** The smallest design that holds the invariant; no dead code,
+    stale comment or speculative abstraction.
+13. **Evidence.** Each claim in the report matches a tool result from this change,
+    and the numbers reproduce.
+
 Every agent that may run builds, differential tests, conformance, regrtest,
 benchmarks, or long validation must do this before the first heavy command:
 
