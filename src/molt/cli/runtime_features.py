@@ -249,11 +249,26 @@ def profile_link_features(
     return reached
 
 
-@functools.lru_cache(maxsize=32)
 def runtime_features_unsupported_on_target(
     target_triple: str | None,
 ) -> frozenset[str]:
-    """Declared runtime features with no provider on ``target_triple``."""
+    """Declared runtime features with no provider on ``target_triple``.
+
+    ``None`` is the host. It is resolved here, before the cache, so a cached
+    answer is keyed by the concrete target and never by "whichever host the
+    first caller saw".
+    """
+    if target_triple is None:
+        from molt.native_target import resolve_native_target_spec
+
+        target_triple = resolve_native_target_spec(None).triple
+    return _runtime_features_unsupported_on_concrete_target(target_triple)
+
+
+@functools.lru_cache(maxsize=32)
+def _runtime_features_unsupported_on_concrete_target(
+    target_triple: str,
+) -> frozenset[str]:
     return features_unsupported_on_target(
         target_arch=target_arch_from_triple(target_triple),
         target_os=target_os_from_triple(target_triple),
