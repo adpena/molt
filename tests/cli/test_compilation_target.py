@@ -333,19 +333,16 @@ def test_native_target_replacement_recomputes_facts_and_preserves_wire_identity(
 def test_linux_host_libc_is_read_once_per_process(monkeypatch):
     # libc_ver reads the interpreter executable in chunks; the C library is a
     # fact of the running process, so repeated host resolution reads it once.
-    import sysconfig
-
     from molt import native_target
 
     calls = []
 
-    def libc_ver():
+    def probe():
         calls.append(1)
-        return ("musl", "1.2")
+        return native_target.LinuxLibc.MUSL
 
     native_target.host_linux_libc.cache_clear()
-    monkeypatch.setattr(native_target.platform, "libc_ver", libc_ver)
-    monkeypatch.setattr(sysconfig, "get_config_var", lambda name: None)
+    monkeypatch.setattr(native_target, "_probe_linux_libc", probe)
     try:
         triples = {
             native_target._host_target_triple(
