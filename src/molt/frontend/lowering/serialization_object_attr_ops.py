@@ -32,15 +32,7 @@ _SERIALIZE_OBJECT_ATTR_OP_KINDS_2: frozenset[FrontendOpKind] = frozenset(
 
 class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
     def _serialize_object_attr_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
-        if op.kind == FrontendKinds.DATACLASS_NEW:
-            ctx.json_ops.append(
-                {
-                    "kind": "dataclass_new",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == FrontendKinds.DATACLASS_NEW_VALUES:
+        if op.kind == FrontendKinds.DATACLASS_NEW_VALUES:
             ctx.json_ops.append(
                 {
                     "kind": "dataclass_new_values",
