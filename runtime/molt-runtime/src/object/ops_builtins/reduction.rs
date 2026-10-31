@@ -51,6 +51,30 @@ fn special<'a>(py: &'a PyToken<'_>, obj: u64, name: &[u8]) -> Result<Option<Valu
 }
 
 fn copyreg<'a>(py: &'a PyToken<'_>, name: &[u8]) -> Result<Value<'a>, u64> {
+    use crate::builtins::module_table::{CachedModuleOutcome, ModuleImportPolicy};
+    // typeobject.c import_copyreg first uses PyImport_GetModule. Reuse the
+    // interpreter's public module authority, including initialization waits
+    // and target-version identity revalidation; do not keep a private cache.
+    if let Some(observed) = crate::builtins::module_table::module_lookup(py, "copyreg")? {
+        let observed = owned(py, observed)?;
+        let dictionary = crate::builtins::module_table::module_dictionary(py)
+            .ok_or_else(|| MoltObject::none().bits())?;
+        match crate::builtins::module_table::resolve_cached_module(
+            py,
+            "copyreg",
+            None,
+            dictionary,
+            observed.into_bits(),
+            ModuleImportPolicy::CGetModule,
+        )? {
+            CachedModuleOutcome::Return(bits) => {
+                let module = owned(py, bits)?;
+                return required(py, module.bits(), name);
+            }
+            CachedModuleOutcome::Missing => {}
+            CachedModuleOutcome::Reload => unreachable!("cache-only import never reloads"),
+        }
+    }
     let module_name = alloc_string(py, b"copyreg");
     if module_name.is_null() {
         return Err(MoltObject::none().bits());
@@ -273,7 +297,22 @@ pub extern "C" fn molt_object_reduce_ex(obj: u64, protocol: u64) -> u64 {
             if let Some(reduce) = attr(py, obj, b"__reduce__")? {
                 let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
                 let class_reduce = required(py, cls.bits(), b"__reduce__")?;
-                let base_reduce = required(py, builtin_classes(py).object, b"__reduce__")?;
+                // The immutable object's descriptor is metadata, as in
+                // CPython's interpreter-cached objreduce. Only the receiver's
+                // class lookup above observes metaclass attribute semantics.
+                let name = attr_name_bits_from_bytes(py, b"__reduce__")
+                    .ok_or_else(|| MoltObject::none().bits())?;
+                let name = owned(py, name)?;
+                let base_reduce = unsafe {
+                    crate::builtins::attr::class_attr_lookup_raw_mro(
+                        py,
+                        obj_from_bits(builtin_classes(py).object).as_ptr().unwrap(),
+                        name.bits(),
+                    )
+                }
+                .map_err(|()| MoltObject::none().bits())?
+                .expect("object owns __reduce__");
+                let base_reduce = Value::retain(py.core_token(), base_reduce);
                 if class_reduce.bits() != base_reduce.bits() {
                     return Ok(owned(py, unsafe { call_callable0(py, reduce.bits()) })?.into_bits());
                 }
