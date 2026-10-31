@@ -74,7 +74,9 @@ def interpreter(env):
 
 
 def worker():
-    print("worker ran", flush=True)
+    # Molt's multiprocessing carries its frames on the worker's stdout, so the
+    # worker reports only through its exit status.
+    pass
 
 
 def main():
@@ -107,6 +109,20 @@ if __name__ == "__main__":
 """
 
 _ENOEXEC = f"refused errno={errno.ENOEXEC} type=OSError"
+# The probe reads its environment, launches processes, and its multiprocessing
+# child reads and writes its spawn state.
+_CAPABILITIES = ",".join(
+    (
+        "env.read",
+        "env.write",
+        "env.snapshot",
+        "fs.read",
+        "fs.write",
+        "process.exec",
+        "process.spawn",
+        "process.asyncio",
+    )
+)
 
 
 @pytest.fixture(scope="module")
@@ -123,6 +139,9 @@ def probe(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "build",
             "--profile",
             "dev",
+            # A compiled binary takes its grants at build time.
+            "--capabilities",
+            _CAPABILITIES,
             "--output",
             str(binary),
             str(source),
@@ -175,4 +194,4 @@ def test_a_self_spawn_runs_at_depth_zero_and_is_refused_without_a_role_at_depth_
 @pytest.mark.slow
 def test_another_executable_and_multiprocessing_still_launch(probe: Path) -> None:
     assert _run(probe, "other") == ["other ran (0, 'other')"]
-    assert _run(probe, "multiprocessing") == ["worker ran", "multiprocessing exit 0"]
+    assert _run(probe, "multiprocessing") == ["multiprocessing exit 0"]
