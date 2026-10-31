@@ -719,6 +719,7 @@ _LOCAL_RULE_FIELDS = frozenset(
         "cargo_target_access",
         "pytest_cargo_target_access",
         "toolchains",
+        "pinned_assets",
         "plan_entities",
     }
 )
@@ -739,6 +740,7 @@ PLAN_SECTIONS: Mapping[str, str | None] = MappingProxyType(
         "inventory_hash_workers": None,
         "resource_policy": "name",
         "toolchain_policy": "name",
+        "pinned_asset": "name",
         "matrix_cell": "id",
         "ci_family": "name",
         "scheduled_family": "name",
@@ -880,6 +882,7 @@ def plan_policy_errors(data: Mapping[str, Any]) -> list[str]:
 
     try:
         plan_entities(data)
+        load_pinned_assets(data)
     except ValueError as exc:
         return [str(exc)]
     resolver = PlanClaims(data, root=ROOT)
@@ -1217,6 +1220,228 @@ class LocalGateDeclaration:
     command: str
     toolchains: tuple[str, ...]
     cargo_target_access: CargoTargetAccess
+    pinned_assets: tuple[str, ...] = ()
+
+
+def load_pinned_assets(data: Mapping[str, Any]) -> dict[str, Mapping]:
+    """Declared local upstream inputs; content identities live in their pin docs."""
+    assets = {}
+    for row in data.get("pinned_asset", ()):
+        if not isinstance(row, dict) or set(row) != {
+            "name",
+            "path",
+            "pin_document",
+            "owner",
+        }:
+            raise ValueError("pinned_asset requires name, path, pin_document and owner")
+        if not all(isinstance(value, str) and value for value in row.values()):
+            raise ValueError("pinned_asset fields must be nonempty strings")
+        for field in ("path", "pin_document"):
+            portable_relative_path(row[field])
+        if row["name"] in assets:
+            raise ValueError(f"duplicate pinned asset {row['name']!r}")
+        assets[row["name"]] = row
+    for rule in data.get("rule", ()):
+        names = rule.get("pinned_assets", [])
+        if not isinstance(names, list) or not all(
+            isinstance(name, str) for name in names
+        ):
+            raise ValueError("rule pinned_assets must be a list of declared names")
+        if unknown := set(names) - assets.keys():
+            raise ValueError(f"unknown pinned assets: {sorted(unknown)}")
+    return assets
+
+
+def provision_pinned_assets(
+    assets: Mapping[str, Mapping],
+    names: tuple[str, ...],
+    *,
+    root: Path,
+    environment: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Provision ignored oracles alongside toolchain inputs, before gates start.
+
+    Read immutable Git objects from this repository's primary checkout; never
+    copy the donor's working tree. Existing destinations must already match.
+    This boundary serves precheck, integration and postsubmit alike.
+    """
+    import tempfile
+    from tools.git_identity import add_git_config, immutable_git_environment
+
+    if not names:
+        return ()
+    asset_environment = immutable_git_environment(environment)
+    add_git_config(asset_environment, "core.hooksPath", os.devnull)
+    add_git_config(asset_environment, "core.fsmonitor", "false")
+    object_formats = {40: "sha1", 64: "sha256"}
+
+    def git(cwd, *arguments, check=True):
+        result = _COMMANDS.run(
+            [
+                "git",
+                "-C",
+                str(cwd),
+                *arguments,
+            ],
+            cwd=cwd,
+            env=asset_environment,
+            capture_output=True,
+            text=True,
+        )
+        if check and result.returncode:
+            raise ValueError(
+                f"pinned asset Git operation failed: {result.stderr.strip()}"
+            )
+        return result
+
+    def verify(destination: Path, revision: str) -> None:
+        if not (destination / ".git").exists():
+            raise ValueError(
+                f"pinned asset is not a verifiable Git checkout: {destination}"
+            )
+        expected_files = {}
+        for record in git(
+            destination, "ls-tree", "-r", "-l", "-z", revision
+        ).stdout.split("\0"):
+            if not record:
+                continue
+            metadata, relative = record.split("\t", 1)
+            mode, kind, expected, size = metadata.split()
+            if kind != "blob":
+                raise ValueError(f"unsupported pinned asset entry: {relative}")
+            expected_files[relative] = (mode, expected, int(size))
+
+        def scan(directory: str | Path, prefix: str = "") -> None:
+            # One namespace walk replaces index/stat admission. DirEntry reuses
+            # file-type observations; directory symlinks are hashed, never followed.
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not prefix and entry.name == ".git":
+                        continue
+                    relative = f"{prefix}/{entry.name}" if prefix else entry.name
+                    if entry.is_dir(follow_symlinks=False):
+                        scan(entry.path, relative)
+                        continue
+                    declared = expected_files.pop(relative, None)
+                    if declared is None:
+                        raise ValueError(
+                            f"pinned asset has an unpinned entry: {relative}"
+                        )
+                    mode, expected, size = declared
+                    mismatch = (
+                        f"pinned asset content differs from {revision}: {entry.path}"
+                    )
+                    symlink = entry.is_symlink()
+                    digest = hashlib.new(object_formats[len(revision)])
+                    digest.update(f"blob {size}\0".encode("ascii"))
+                    if symlink:
+                        content = os.fsencode(os.readlink(entry.path))
+                        if len(content) != size:
+                            raise ValueError(mismatch)
+                        digest.update(content)
+                    elif entry.is_file(follow_symlinks=False):
+                        if entry.stat(follow_symlinks=False).st_size != size:
+                            raise ValueError(mismatch)
+                        # A changed file cannot force an unbounded allocation
+                        # or read: the pin owns both length and bytes.
+                        with open(entry.path, "rb") as source:
+                            remaining = size
+                            while remaining:
+                                chunk = source.read(min(65536, remaining))
+                                if not chunk:
+                                    raise ValueError(mismatch)
+                                digest.update(chunk)
+                                remaining -= len(chunk)
+                            if source.read(1):
+                                raise ValueError(mismatch)
+                    else:
+                        raise ValueError(f"unsupported pinned asset entry: {relative}")
+                    executable = (
+                        bool(entry.stat(follow_symlinks=False).st_mode & 0o111)
+                        if os.name != "nt" and not symlink
+                        else mode == "100755"
+                    )
+                    if (
+                        digest.hexdigest() != expected
+                        or (mode == "120000") != symlink
+                        or (mode == "100755") != executable
+                    ):
+                        raise ValueError(mismatch)
+
+        scan(destination)
+        if expected_files:
+            raise ValueError(f"pinned asset entries missing: {sorted(expected_files)}")
+
+    absent = []
+    primary: Path | None = None
+    for name in names:
+        asset = assets[name]
+        pin = (root / asset["pin_document"]).read_text(encoding="utf-8")
+        match = re.search(
+            r"^\|\s*\*\*pinned commit\*\*\s*\|\s*`([^`]+)`\s*\|",
+            pin,
+            re.MULTILINE,
+        )
+        if match is None:
+            raise ValueError(f"{asset['pin_document']}: missing full pinned commit")
+        revision = require_git_object_id(match.group(1), label="pinned commit")
+        destination = root / asset["path"]
+        if destination.exists():
+            verify(destination, revision)
+            continue
+        if primary is None:
+            primary = Path(
+                git(
+                    root, "rev-parse", "--path-format=absolute", "--git-common-dir"
+                ).stdout.rstrip("\n")
+            ).parent
+        donor = primary / asset["path"]
+        if (
+            not (donor / ".git").exists()
+            or git(
+                donor, "cat-file", "-e", revision + "^{commit}", check=False
+            ).returncode
+        ):
+            absent.append(name)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".pinned-asset-", dir=destination.parent
+        ) as temporary:
+            staged = Path(temporary) / "tree"
+            staged.mkdir()
+            git(
+                staged,
+                "init",
+                "--quiet",
+                "--object-format=" + object_formats[len(revision)],
+            )
+            git(
+                staged,
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--",
+                str(donor),
+                revision,
+            )
+            git(
+                staged,
+                "-c",
+                "advice.detachedHead=false",
+                "checkout",
+                "--quiet",
+                "--detach",
+                revision,
+            )
+            verify(staged, revision)
+            try:
+                staged.rename(destination)
+            except FileExistsError:
+                verify(destination, revision)
+    return tuple(absent)
 
 
 def local_gate_commands(
@@ -1228,11 +1453,18 @@ def local_gate_commands(
     commands: dict[str, LocalGateDeclaration] = {}
 
     def add(
-        identifier: str, command: str, tools: Iterable[str], access: object = None
+        identifier: str,
+        command: str,
+        tools: Iterable[str],
+        access: object = None,
+        assets: Iterable[str] = (),
     ) -> None:
         toolchains = tuple(tools)
         commands[identifier] = LocalGateDeclaration(
-            command, toolchains, CargoTargetAccess.resolve(toolchains, access)
+            command,
+            toolchains,
+            CargoTargetAccess.resolve(toolchains, access),
+            tuple(assets),
         )
 
     for index, command in enumerate(data.get("always", [])):
@@ -1251,7 +1483,7 @@ def local_gate_commands(
             identifier = f"local.{rule['name']}.{index}"
             if error := local_gate_template_error(command):
                 raise ValueError(f"{identifier}: {error}")
-            add(identifier, command, tools, gate_access)
+            add(identifier, command, tools, gate_access, rule.get("pinned_assets", ()))
         # Pytest targets and selectors are literal argv, including parameter IDs.
         # Only the shell-command producers above admit integration templates.
         if rule.get("pytest"):
@@ -1260,6 +1492,7 @@ def local_gate_commands(
                 local_pytest_command(rule["pytest"], memory_units=memory_units),
                 tools,
                 pytest_access,
+                rule.get("pinned_assets", ()),
             )
         for index, selection in enumerate(local_pytest_selections(rule)):
             add(
@@ -1269,6 +1502,7 @@ def local_gate_commands(
                 ),
                 selection.toolchains,
                 selection.cargo_target_access,
+                rule.get("pinned_assets", ()),
             )
     return commands
 
@@ -1472,6 +1706,7 @@ class ProofPlan:
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
     always_toolchains: tuple[str, ...] = ()
+    pinned_assets: Mapping[str, Mapping] = dataclass_field(default_factory=dict)
 
     def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
         """Expand declared toolchains through the canonical dependency graph."""
@@ -1672,6 +1907,7 @@ class ProofPlan:
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
+            pinned_assets=load_pinned_assets(data),
         )
         errors = plan.validate() + plan_policy_errors(data)
         if errors:
@@ -3603,6 +3839,10 @@ def _toolchain_fingerprint_digest(identity: Mapping[str, Any]) -> str:
     return hashlib.sha256(material.encode()).hexdigest()
 
 
+class ToolchainExecutableAbsent(ValueError):
+    """A declared compiler selector has no executable provider."""
+
+
 def compiler_tool_path(
     policy: ToolchainPolicy, *, environment: Mapping[str, str], cwd: Path
 ) -> Path | None:
@@ -3647,7 +3887,9 @@ def compiler_tool_path(
     else:
         raise ValueError(f"{policy.name}: unknown compiler tool selector {selector!r}")
     if selected is None:
-        raise ValueError(f"{policy.name}: selected compiler helper is unavailable")
+        raise ToolchainExecutableAbsent(
+            f"{policy.name}: selected compiler helper is unavailable"
+        )
     return Path(selected).absolute()
 
 
@@ -4183,6 +4425,7 @@ class ToolchainProjection:
 
     delta: dict[str, str]
     missing: tuple[str, ...]
+    unavailable: tuple[str, ...] = ()
 
 
 def project_toolchains(
@@ -4218,6 +4461,7 @@ def project_toolchains(
     env = dict(environ)
     delta: dict[str, str] = {}
     missing: list[str] = []
+    unavailable: list[str] = []
 
     def apply(values: dict[str, str]) -> None:
         delta.update(values)
@@ -4229,6 +4473,7 @@ def project_toolchains(
         except LlvmToolchainConfigError as exc:
             raise ValueError(f"LLVM SDK selection refused: {exc}") from exc
         if verification is None:
+            unavailable.extend(kinds["llvm-sdk"])
             pin = required_llvm_backend_pin(root)
             command = "" if pin is None else f": {llvm_bootstrap_command(pin)}"
             missing.append(f"LLVM SDK ({', '.join(kinds['llvm-sdk'])}){command}")
@@ -4237,6 +4482,7 @@ def project_toolchains(
     if "wasi-sdk" in kinds:
         installation = selected_wasi_sdk_installation(root, environ=env, cwd=cwd)
         if installation is None:
+            unavailable.extend(kinds["wasi-sdk"])
             missing.append(
                 f"wasi-sdk ({', '.join(kinds['wasi-sdk'])}): "
                 "python3 tools/provision_wasi_sdk.py"
@@ -4276,7 +4522,9 @@ def project_toolchains(
             )
         else:
             apply({"MOLT_WASM_OPT": wasm_opt})
-    return ToolchainProjection(delta=delta, missing=tuple(missing))
+    return ToolchainProjection(
+        delta=delta, missing=tuple(missing), unavailable=tuple(unavailable)
+    )
 
 
 def _not_provisioned(missing: tuple[str, ...], *, attempted: bool = False) -> str:
@@ -4295,6 +4543,24 @@ class AdmittedToolchains:
 
     fingerprints: dict[str, dict[str, Any]]
     environment: dict[str, str]
+    absent: tuple[str, ...] = ()
+
+
+class ToolchainAdmissionError(ValueError):
+    """Probe evidence, preserving absence separately from a broken provider."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        fingerprints: dict[str, dict[str, Any]],
+        absent: tuple[str, ...],
+        invalid: tuple[str, ...],
+    ) -> None:
+        super().__init__(message)
+        self.fingerprints = fingerprints
+        self.absent = absent
+        self.invalid = invalid
 
 
 def admit_toolchains(
@@ -4306,6 +4572,7 @@ def admit_toolchains(
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
     root: Path,
+    defer_absent: bool = False,
 ) -> AdmittedToolchains:
     """Put the installed pinned providers first in ``environ``, then admit each
     selected tool by its version contract, as CI's setup actions do.
@@ -4338,6 +4605,7 @@ def admit_toolchains(
         provisioning_error = "; ".join(
             error for error in (runtime_error, provisioning_error) if error
         )
+    absent: tuple[str, ...] = ()
     try:
         fingerprints = toolchain_fingerprints(
             policies,
@@ -4346,8 +4614,24 @@ def admit_toolchains(
             owners=owners,
             python_admissions=python_admissions,
             python_executable=python_executable,
+            **(
+                {"unavailable": projection.unavailable}
+                if defer_absent and projection.unavailable
+                else {}
+            ),
         )
     except ValueError as exc:
+        if (
+            defer_absent
+            and isinstance(exc, ToolchainAdmissionError)
+            and not exc.invalid
+            and provisioning_error is None
+        ):
+            return AdmittedToolchains(
+                fingerprints=exc.fingerprints,
+                environment=projection.delta,
+                absent=exc.absent,
+            )
         details = [str(exc)]
         if provisioning_error is not None:
             details.append(provisioning_error)
@@ -4362,7 +4646,9 @@ def admit_toolchains(
         raise ValueError("; ".join(details)) from exc
     if provisioning_error is not None:
         raise ValueError(f"toolchain contract violation: {provisioning_error}")
-    return AdmittedToolchains(fingerprints=fingerprints, environment=projection.delta)
+    return AdmittedToolchains(
+        fingerprints=fingerprints, environment=projection.delta, absent=absent
+    )
 
 
 def _provision_checkout_inputs(
@@ -4406,6 +4692,7 @@ def toolchain_fingerprints(
     environment: Mapping[str, str],
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
+    unavailable: tuple[str, ...] = (),
 ) -> dict[str, dict[str, Any]]:
     """Admit all selected images under ``environment`` before work, preserving
     every probe failure."""
@@ -4413,6 +4700,8 @@ def toolchain_fingerprints(
     names = toolchain_closure(policies.values(), names)
     fingerprints: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
+    absent: set[str] = set()
+    blocked_absent: set[str] = set()
     # Only groups expand here. Expanding each executable's transitive closure
     # would repeatedly traverse long dependency chains and retain quadratic
     # edge sets. The selected closure above has already validated the graph.
@@ -4457,6 +4746,9 @@ def toolchain_fingerprints(
         # failing probe must not suppress siblings or independent domains.
         results = {}
         for name in domain_names:
+            if name in unavailable:
+                results[name] = (None, None)
+                continue
             try:
                 results[name] = (
                     _version_fingerprint(
@@ -4473,6 +4765,8 @@ def toolchain_fingerprints(
                     ),
                     None,
                 )
+            except ToolchainExecutableAbsent:
+                results[name] = (None, None)
             except Exception as exc:
                 detail = "".join(traceback.format_exception_only(exc)).strip()
                 results[name] = (None, f"probe raised {detail}")
@@ -4488,6 +4782,11 @@ def toolchain_fingerprints(
                     if dependency in errors
                 ]
                 if blocked:
+                    if all(
+                        dependency in absent or dependency in blocked_absent
+                        for dependency in blocked
+                    ):
+                        blocked_absent.add(name)
                     errors[name] = "blocked by failed prerequisites: " + ", ".join(
                         blocked
                     )
@@ -4511,6 +4810,7 @@ def toolchain_fingerprints(
                 if error is not None:
                     errors[name] = error
                 elif fingerprint is None:
+                    absent.add(name)
                     errors[name] = f"executable {policy.data['executable']!r} not found"
                 elif (
                     re.search(
@@ -4563,7 +4863,16 @@ def toolchain_fingerprints(
                 + (f" [{owner}]" if owner else "")
                 + f": {errors[name]}{suffix}"
             )
-        raise ValueError("toolchain contract violation: " + "; ".join(diagnostics))
+        raise ToolchainAdmissionError(
+            "toolchain contract violation: " + "; ".join(diagnostics),
+            fingerprints=fingerprints,
+            absent=tuple(name for name in names if name in absent),
+            invalid=tuple(
+                name
+                for name in names
+                if name in errors and name not in absent and name not in blocked_absent
+            ),
+        )
     return fingerprints
 
 

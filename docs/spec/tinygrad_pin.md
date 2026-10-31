@@ -12,6 +12,7 @@ constitution: CLAUDE.md "Top Priority: Tinygrad + DFlash Fidelity" (turn-blockin
 |---|---|
 | **upstream package** | `tinygrad` |
 | **pinned version** | **`0.13.0`** |
+| **pinned commit** | `a83710396c991272241e40da94489747c2393851` |
 | **author** | George Hotz / the tinygrad authors |
 | **in-tree oracle** | `bench/friends/repos/tinygrad_off_the_shelf/` |
 | **version manifest** | `bench/friends/repos/tinygrad_off_the_shelf/pyproject.toml` (`[project] version`) |
@@ -25,6 +26,13 @@ string pinned here. A silent dependency bump (someone re-vendoring a newer tinyg
 therefore turns RED at the gate instead of silently invalidating every derived parity
 fact. This is the literal encoding of doc 67 §R1: *"`check_tinygrad_pin.py` fails the
 build on an un-regenerated bump."*
+
+The commit identifies the existing clean upstream oracle's content, including
+its `0.13.0` manifest. Landing prerequisite provisioning reads this commit's Git
+objects from the primary checkout and creates a separate detached checkout;
+the donor's working files are never copied. Existing oracle checkouts must
+match this commit's tree and have no changed, untracked or ignored files. Update the
+commit with the version and generated facts under the bump protocol below.
 
 ## Why a pin at all
 

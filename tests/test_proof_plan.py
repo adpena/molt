@@ -362,6 +362,10 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     assert projection["toolchain_policies"] == [
         policy.data for policy in PLAN.toolchain_policies
     ]
+    assert projection["pinned_assets"] == list(PLAN.pinned_assets.values())
+    assert projection["local"]["pinned_assets"]["local.tinygrad-op-contract.0"] == [
+        "tinygrad-oracle"
+    ]
     assert projection["cargo_execution_policy"]["timeout_seconds_by_class"] == {
         "cold": 1200,
         "cross-check": 240,
@@ -9744,6 +9748,41 @@ def test_missing_compiler_helper_is_refused_before_probe(monkeypatch, tmp_path):
         proof_plan.compiler_tool_path(policy, environment={}, cwd=tmp_path)
 
 
+def test_landing_admits_explicit_optimizer_provider_without_managed_installation(
+    monkeypatch,
+):
+    from molt import wasm_optimizer_identity
+
+    executable = shutil.which("git")
+    assert executable is not None
+    monkeypatch.setattr(
+        wasm_optimizer_identity, "managed_wasm_opt", lambda **kwargs: None
+    )
+    policy = proof_plan.ToolchainPolicy(
+        "optimizer",
+        {
+            "executable": "wasm-opt",
+            "projection": "binaryen",
+            "compiler_tool_selector": "wasm-opt",
+            "version_args": ["--version"],
+            "version_pattern": "^git version ",
+        },
+    )
+    environment = dict(os.environ, MOLT_WASM_OPT=executable)
+    admitted = proof_plan.admit_toolchains(
+        (policy,),
+        ("optimizer",),
+        python_executable=None,
+        environ=environment,
+        root=proof_plan.ROOT,
+        defer_absent=True,
+    )
+    assert admitted.absent == ()
+    assert admitted.fingerprints["optimizer"]["path"] == str(
+        Path(executable).absolute()
+    )
+
+
 def test_optimizer_policy_accepts_only_canonical_pinned_binaryen_banners():
     from molt.binaryen_identity import parse_binaryen_version_output
 
@@ -9907,6 +9946,59 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
     for policy in policies:
         assert "prepare-" + policy.name in message
     assert set(calls) == {"raises", "missing", "wrong"}
+
+
+def test_absent_projected_sdk_defers_only_the_missing_root_without_probing_dependents(
+    tmp_path, monkeypatch
+):
+    from molt import llvm_toolchain
+
+    policies = (
+        proof_plan.ToolchainPolicy(
+            "sdk",
+            {
+                "executable": "sdk-compiler",
+                "projection": "wasi-sdk",
+                "version_args": ["--version"],
+                "version_pattern": ".*",
+            },
+            tmp_path,
+        ),
+        proof_plan.ToolchainPolicy(
+            "consumer",
+            {
+                "executable": "consumer",
+                "dependencies": ["sdk"],
+                "version_args": ["--version"],
+                "version_pattern": ".*",
+            },
+            tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain, "selected_wasi_sdk_installation", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        proof_plan,
+        "_version_fingerprint",
+        lambda *args, **kwargs: pytest.fail(
+            "unavailable SDK or its blocked dependent was probed"
+        ),
+    )
+    projected = proof_plan.project_toolchains(
+        policies, ("sdk",), environ=os.environ, root=tmp_path
+    )
+    assert projected.unavailable == ("sdk",)
+    admitted = proof_plan.admit_toolchains(
+        policies,
+        ("consumer",),
+        python_executable=None,
+        environ=os.environ,
+        root=tmp_path,
+        defer_absent=True,
+    )
+    assert admitted.absent == ("sdk",)
+    assert admitted.fingerprints == {}
 
 
 @pytest.mark.parametrize(

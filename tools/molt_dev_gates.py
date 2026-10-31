@@ -18,7 +18,7 @@ tail.
 
 from __future__ import annotations
 
-from tools.molt_dev_policy import GateEnvironment, LandingMode
+from tools.molt_dev_policy import Deferred, GateEnvironment, LandingMode
 from tools.proof_plan import CargoTargetAccess
 
 from collections.abc import Callable, Mapping, Sequence
@@ -295,6 +295,7 @@ class GateRuntime:
     toolchain_policies: tuple[ToolchainPolicy, ...] = ()
     mode: LandingMode = LandingMode.PRESUBMIT
     cancelled: Callable[[], bool] = lambda: False
+    deferred: tuple[Deferred, ...] = ()
 
 
 def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
@@ -528,6 +529,29 @@ def run_selected_gates(
     within the exported memory slice. The first observed failure within a
     phase halts the landing and cancels its remaining gates through their guards.
     """
+    for item in runtime.deferred:
+        runtime.say(item.diagnostic())
+    try:
+        runtime.output_dir.mkdir(parents=True, exist_ok=True)
+        (runtime.output_dir / "prerequisites.json").write_text(
+            json.dumps(
+                {
+                    "schema": "molt.landing-prerequisites.v1",
+                    "mode": runtime.mode.value,
+                    "runnable": [gate.command for gate in gates],
+                    "deferred": [item.record() for item in runtime.deferred],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        if runtime.deferred:
+            raise DriverError(
+                f"cannot retain deferred prerequisite evidence: {exc}"
+            ) from exc
+        runtime.say(f"prerequisite receipt not kept ({exc})")
     ordered = list(enumerate(gates, start=1))
     for ordinal, gate in ordered:
         _check_cancellation(runtime)

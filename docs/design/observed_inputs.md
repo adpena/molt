@@ -110,13 +110,40 @@ which remain owned by the existing `-m slow` postsubmit cell. Failure history or
 it never substitutes for a passing result. Pytest's parallel scheduler may finish files out of order.
 
 Postsubmit runs the full transitive selection on the newest main head when no landing is pending,
-using the same proof executor and receipts. A new request cancels postsubmit. Only a passing
-postsubmit advances `refs/molt/last-green` by compare-and-swap; new lanes use it unless their base
+using the same proof executor and receipts. A new request cancels postsubmit. A postsubmit whose
+runnable commands all pass advances `refs/molt/last-green` by compare-and-swap; new lanes use it unless their base
 is explicit, and say when they fall back to `origin/main`. A failure retains last green, names
 every commit since it as a suspect and prints the exact revert command for the integrator. The
 runner never reverts. The integrator restores green within about an hour. If transitive misses
 exceed about one landing in five, retain the cases for an owner decision about widening presubmit.
 Observed-input selection and verdict reuse remain deferred stages 4-6, not implemented by this slice.
+
+Before execution, `GateConfig.prepare` resolves each selected command to the closed
+`Runnable | Deferred` outcome. A deferred command names its missing declared
+toolchain, pinned asset or foreign portability execution cell and the owning
+proof cell or provisioned farm host. Foreign cells enter this same outcome;
+the dependency graph no longer silently drops those commands. Toolchain admission
+retains typed absent-image evidence from its existing probes and provider projection.
+A present image with the wrong version, a raised probe, failed provisioning or
+any command that runs and fails still fails the landing. An undeclared tool is
+never grounds for deferral. No error-message parsing grants a deferral.
+
+Pinned assets are declared in `proof_plan.toml`; their pin documents alone own
+content identity. `proof_plan.provision_pinned_assets`, called at the same
+pre-execution preparation boundary as toolchain provisioning, uses immutable
+Git objects in the repository's primary checkout to provision separate detached
+oracle checkouts in the landing sandbox. A missing verified donor defers; an
+existing destination with changed content fails. `docs/spec/tinygrad_pin.md`
+owns the tinygrad commit, rather than a version-only provisioning check.
+
+Runs retain `prerequisites.json` beside their gate logs, with runnable and
+deferred commands; a deferral requires this evidence to be writable.
+Postsubmit's result receipt also lists the deferred commands,
+and its green summary explicitly calls them unproven here. Last green therefore
+attests the runnable host selection, not full farm or release qualification.
+This follows [Bazel's incompatible-target selection](https://bazel.build/versions/9.2.0/extending/platforms)
+and [Buck2's target compatibility](https://buck2.build/docs/concepts/configurations/):
+declared platform incompatibility can skip work, without calling it passed.
 
 ## Stages
 

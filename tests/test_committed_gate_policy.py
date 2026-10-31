@@ -8,7 +8,6 @@ reads changes (HF-457); the driver's own tests run only when the driver does.
 from __future__ import annotations
 
 import shlex
-import sys
 from pathlib import Path, PurePosixPath
 import tomllib
 
@@ -17,7 +16,14 @@ import pytest
 from molt.process_environment import ProcessEnvironment
 from molt import host_capacity
 from tools.molt_dev_gates import display
-from tools.molt_dev_policy import GateConfig, LandingMode
+from tools.molt_dev_policy import (
+    Deferred,
+    GateConfig,
+    GateEnvironment,
+    LandingMode,
+    Prerequisite,
+    PrerequisiteKind,
+)
 from tools.proof_plan import CargoTargetAccess
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -222,13 +228,13 @@ _GUARD_AUDIT_READERS = {
 }
 # The CLI completion smoke test names both guard audits as files. Its Linux
 # portability cell owns it (hosted bash, fish and zsh), so it reads them as a
-# direct reader only on a Linux host; another host defers it to that cell.
+# selected direct reader on every host; prerequisite resolution defers its
+# foreign execution cell before gates start.
 COMPLETION_NODE = (
     "tests/cli/test_cli_smoke.py::"
     "test_cli_completion_uses_parser_commands_flags_and_positional_semantics"
 )
-if sys.platform.startswith("linux"):
-    _GUARD_AUDIT_READERS.add(COMPLETION_NODE)
+_GUARD_AUDIT_READERS.add(COMPLETION_NODE)
 
 
 @pytest.mark.parametrize(
@@ -246,7 +252,31 @@ def test_portability_cells_of_another_os_defer_to_their_own_cell(
     # Host-agnostic cells are never foreign, whatever OS they name.
     assert "linux-x86_64-py312-unit-collection" not in foreign
     selected = _selected_pytest_targets(cfg, ["tools/check_memory_guard_wiring.py"])
-    assert (COMPLETION_NODE in selected) is local
+    assert COMPLETION_NODE in selected
+    gates, _ = cfg.select(["tools/check_memory_guard_wiring.py"])
+    completion = next(gate for gate in gates if COMPLETION_NODE in gate.command)
+    assert completion.cells == ("linux-x86_64-py312-queue-portability",)
+    if not local:
+        prepared = cfg.prepare(
+            [completion],
+            baseline={},
+            prepare_python=lambda env, needed: GateEnvironment(
+                ProcessEnvironment(env), None, False
+            ),
+        )
+        assert prepared.resolutions == (
+            Deferred(
+                completion,
+                (
+                    Prerequisite(
+                        PrerequisiteKind.EXECUTION_CELL,
+                        "linux-x86_64-py312-queue-portability",
+                    ),
+                ),
+                "linux-x86_64-py312-queue-portability",
+            ),
+        )
+        assert prepared.runnable() == []
 
 
 @pytest.mark.parametrize(
@@ -676,6 +706,7 @@ def test_proof_policy_edits_select_receivers_without_package_production(path):
 def test_producer_edits_retain_package_and_proof_boundary_checks(path):
     cfg = GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
+    identities = [(gate.command, gate.cells) for gate in gates]
     gates = [gate.command for gate in gates]
     names = {rule.name for rule in matched}
     assert {"source-extension-package-sets", "source-extension-proof-policy"} <= names
@@ -688,7 +719,9 @@ def test_producer_edits_retain_package_and_proof_boundary_checks(path):
         "tests/tools/test_source_extension_proof_family.py",
         "tests/tools/test_proof_queue.py",
     } <= selected
-    assert len(gates) == len(set(gates))
+    # Equal argv in different execution cells are separate proof obligations;
+    # the foreign obligation must survive until typed prerequisite resolution.
+    assert len(identities) == len(set(identities))
 
 
 def test_mixed_rust_python_change_checks_rust_before_consumer_cohorts():
@@ -855,6 +888,7 @@ def test_committed_source_checks_precede_complete_native_build_selection():
             {("toolchain_policy", "source-extension")} | CI_COMMAND_EDIT
         ),
     )
+    selected = gates
     gates = [gate.command for gate in gates]
     # These independent families must survive reordering, including every
     # affected backend owner and its complete Cargo test/build requirements.
@@ -894,7 +928,7 @@ def test_committed_source_checks_precede_complete_native_build_selection():
     assert max(gates.index(gate) for gate in build_gates) < min(
         gates.index(gate) for gate in consumers
     )
-    assert len(gates) == len(set(gates))
+    assert len(selected) == len({(gate.command, gate.cells) for gate in selected})
 
 
 def test_committed_gate_manifest_selects_molt_ir_op_kind_registry():

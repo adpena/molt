@@ -91,6 +91,8 @@ class SelectedGate:
     # Named-node admission never replaces mandatory execution.
     collection_command: tuple[str, ...] | None = None
     cargo_target_access: CargoTargetAccess | None = None
+    pinned_assets: tuple[str, ...] = ()
+    cells: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -123,10 +125,69 @@ class GateEnvironment:
         return replace(self, environment=self.environment.updated(values))
 
 
+class PrerequisiteKind(StrEnum):
+    TOOLCHAIN = "toolchain"
+    PINNED_ASSET = "pinned asset"
+    EXECUTION_CELL = "execution cell"
+
+
+@dataclass(frozen=True)
+class Prerequisite:
+    kind: PrerequisiteKind
+    name: str
+
+
+@dataclass(frozen=True)
+class Runnable:
+    command: SelectedGate
+
+
+@dataclass(frozen=True)
+class Deferred:
+    command: SelectedGate
+    missing: tuple[Prerequisite, ...]
+    owner: str
+
+    def record(self) -> dict:
+        return {
+            "command": self.command.command,
+            "missing": [
+                {"kind": item.kind.value, "name": item.name} for item in self.missing
+            ],
+            "owner": self.owner,
+        }
+
+    def diagnostic(self) -> str:
+        command = self.command.command
+        display = shlex.join(command) if isinstance(command, tuple) else command
+        missing = ", ".join(f"{item.kind.value} {item.name}" for item in self.missing)
+        return f"deferred (unproven here): {display}; missing: {missing}; runs in: {self.owner}"
+
+
+GateResolution = Runnable | Deferred
+
+
 @dataclass(frozen=True)
 class PreparedGates:
     environments: dict[tuple[str, ...], GateEnvironment]
     fingerprints: dict[str, dict]
+    resolutions: tuple[GateResolution, ...]
+
+    def runnable(self) -> list[SelectedGate]:
+        gates = []
+        for resolution in self.resolutions:
+            match resolution:
+                case Runnable(command):
+                    gates.append(command)
+                case Deferred():
+                    pass
+                case _:
+                    assert_never(resolution)
+        return gates
+
+    @property
+    def deferred(self) -> tuple[Deferred, ...]:
+        return tuple(item for item in self.resolutions if isinstance(item, Deferred))
 
 
 @dataclass
@@ -144,6 +205,7 @@ class GateConfig:
     commands: tuple[Mapping, ...] = ()
     # The plan's matrix cells; a portability cell verifies one OS.
     matrix_cells: tuple[Mapping, ...] = ()
+    pinned_assets: Mapping[str, Mapping] = field(default_factory=dict)
     # The graph that selects tests by what they read. Without one (a driver
     # test's synthetic policy), rules alone select.
     dependency_graph: Callable[[], DependencyGraph] | None = None
@@ -249,6 +311,9 @@ class GateConfig:
         try:
             memory_units = PytestMemoryUnits(data.get("command", ()), root=root)
             commands = local_gate_commands(data, memory_units=memory_units)
+            from tools.proof_plan import load_pinned_assets
+
+            assets = load_pinned_assets(data)
         except ValueError as exc:
             raise DriverError(f"invalid local gate policy: {exc}") from exc
         ceiling = data.get("executor_max_workers")
@@ -269,6 +334,7 @@ class GateConfig:
             resource_limits=resource_limits,
             commands=tuple(data.get("command", ())),
             matrix_cells=tuple(data.get("matrix_cell", ())),
+            pinned_assets=assets,
         )
 
     def graph_selection(
@@ -322,12 +388,27 @@ class GateConfig:
             load_toolchain_policies,
             project_toolchains,
             toolchain_closure,
+            provision_pinned_assets,
         )
         from tools.venv_exec import venv_python
 
         try:
+            foreign = self.foreign_cells()
+            local = [
+                gate
+                for gate in gates
+                if not gate.cells or not set(gate.cells) <= foreign
+            ]
+            absent_assets = provision_pinned_assets(
+                self.pinned_assets,
+                tuple(
+                    dict.fromkeys(name for gate in local for name in gate.pinned_assets)
+                ),
+                root=self.root,
+                environment=baseline,
+            )
             names = tuple(
-                dict.fromkeys(name for gate in gates for name in gate.toolchains)
+                dict.fromkeys(name for gate in local for name in gate.toolchains)
             )
             policies = load_toolchain_policies(
                 self.prerequisite_policy, root=self.root, names=names
@@ -335,7 +416,7 @@ class GateConfig:
             by_name = {policy.name: policy for policy in policies}
             closures = {
                 tools: toolchain_closure(policies, tools)
-                for tools in dict.fromkeys(gate.toolchains for gate in gates)
+                for tools in dict.fromkeys(gate.toolchains for gate in local)
             }
             needs_python = {
                 tools: any(
@@ -352,7 +433,7 @@ class GateConfig:
                 or baseline.get("UV_PROJECT_ENVIRONMENT", "").strip()
             )
             owners: dict[str, list[str]] = {}
-            for gate in gates:
+            for gate in local:
                 identifiers = [
                     identifier
                     for identifier, declaration in self.prerequisites.items()
@@ -377,9 +458,55 @@ class GateConfig:
                     else None
                 ),
                 root=self.root,
+                defer_absent=True,
             )
+            resolutions: list[GateResolution] = []
+            for gate in gates:
+                missing = (
+                    tuple(
+                        Prerequisite(PrerequisiteKind.EXECUTION_CELL, cell)
+                        for cell in gate.cells
+                    )
+                    if gate.cells and set(gate.cells) <= foreign
+                    else (
+                        *(
+                            Prerequisite(PrerequisiteKind.TOOLCHAIN, name)
+                            for name in closures[gate.toolchains]
+                            if name in admitted.absent
+                        ),
+                        *(
+                            Prerequisite(PrerequisiteKind.PINNED_ASSET, name)
+                            for name in gate.pinned_assets
+                            if name in absent_assets
+                        ),
+                    )
+                )
+                if missing:
+                    owner = (
+                        ", ".join(gate.cells)
+                        if gate.cells
+                        else ", ".join(
+                            dict.fromkeys(
+                                self.pinned_assets[item.name]["owner"]
+                                if item.kind is PrerequisiteKind.PINNED_ASSET
+                                else "proof-plan cell on a farm host providing "
+                                + item.name
+                                for item in missing
+                            )
+                        )
+                    )
+                    resolutions.append(Deferred(gate, missing, owner))
+                else:
+                    resolutions.append(Runnable(gate))
             environments = {}
+            runnable_tools = {
+                item.command.toolchains
+                for item in resolutions
+                if isinstance(item, Runnable)
+            }
             for tools, closure in closures.items():
+                if tools not in runnable_tools:
+                    continue
                 context = (
                     selected
                     if needs_python[tools] or explicit
@@ -389,7 +516,9 @@ class GateConfig:
                     policies, closure, environ=context.environment, root=self.root
                 )
                 environments[tools] = context.overlay(projection.delta)
-            return PreparedGates(environments, admitted.fingerprints)
+            return PreparedGates(
+                environments, admitted.fingerprints, tuple(resolutions)
+            )
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
                 f"selected gate prerequisites failed; executed=0: {exc}"
@@ -428,12 +557,14 @@ class GateConfig:
             )
 
         selected: list[SelectedGate] = []
-        indices: dict[str, int] = {}
+        indices: dict[tuple[str, tuple[str, ...]], int] = {}
+        foreign = self.foreign_cells() if self.matrix_cells else frozenset()
         seen_pytest: set[str] = set()
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
         pytest_tools: dict[str, dict[str, None]] = {}
         pytest_access: dict[str, list[CargoTargetAccess]] = {}
+        pytest_assets: dict[str, dict[str, None]] = {}
         pytest_index: int | None = None
         pytest_commands: set[str] = set()
         graph_commands: set[str] = set()
@@ -449,12 +580,17 @@ class GateConfig:
             pytest: bool = False,
             collection_command: tuple[str, ...] | None = None,
             cargo_target_access: CargoTargetAccess,
+            pinned_assets: tuple[str, ...] = (),
+            cells: tuple[str, ...] = (),
         ) -> None:
             from tools.proof_command_argv import pytest_arguments
 
             argv = tuple(shlex.split(command)) if isinstance(command, str) else command
             pytest = pytest or pytest_arguments(argv, root=self.root) is not None
-            key = command_key(command)
+            key = (
+                command_key(command),
+                cells if cells and set(cells) <= foreign else (),
+            )
             if key in indices:
                 index = indices[key]
                 prior = selected[index]
@@ -466,6 +602,10 @@ class GateConfig:
                     cargo_target_access=CargoTargetAccess.union(
                         (prior.cargo_target_access, cargo_target_access)
                     ),
+                    pinned_assets=tuple(
+                        dict.fromkeys((*prior.pinned_assets, *pinned_assets))
+                    ),
+                    cells=tuple(dict.fromkeys((*prior.cells, *cells))),
                 )
             else:
                 indices[key] = len(selected)
@@ -477,6 +617,8 @@ class GateConfig:
                         pytest,
                         collection_command,
                         cargo_target_access,
+                        pinned_assets,
+                        cells,
                     )
                 )
 
@@ -539,6 +681,7 @@ class GateConfig:
                     command,
                     tools(f"{owner}.{index}"),
                     cargo_target_access=access(f"{owner}.{index}"),
+                    pinned_assets=self.prerequisites[f"{owner}.{index}"].pinned_assets,
                 )
             if rule.pytest:
                 if pytest_index is None:
@@ -549,6 +692,11 @@ class GateConfig:
                     )
                     pytest_access.setdefault(target, []).append(
                         access(f"{owner}.pytest")
+                    )
+                    pytest_assets.setdefault(target, {}).update(
+                        dict.fromkeys(
+                            self.prerequisites[f"{owner}.pytest"].pinned_assets
+                        )
                     )
             for index, cohort in enumerate(rule.pytest_select):
                 command = local_pytest_argv(
@@ -567,6 +715,9 @@ class GateConfig:
                         if any("::" in target for target in cohort.targets)
                         else None
                     ),
+                    pinned_assets=self.prerequisites[
+                        f"{owner}.pytest-select-{index}"
+                    ].pinned_assets,
                 )
             for target in rule.pytest:
                 if target not in seen_pytest:
@@ -607,11 +758,31 @@ class GateConfig:
                 cohort_tools,
                 cargo_target_access=cohort_access,
                 pytest=True,
+                cells=tuple(
+                    dict.fromkeys(
+                        cell
+                        for target, envelope in graph_runs
+                        if target in targets
+                        for cell in envelope.cells
+                    )
+                ),
                 collection_command=(
                     local_pytest_collection_argv(command)
                     if any("::" in target for target in targets)
                     else None
                 ),
+            )
+        for envelope in selection.foreign if selection else ():
+            add(
+                local_pytest_argv(
+                    envelope.targets,
+                    envelope.select,
+                    memory_units=self.pytest_memory_units,
+                ),
+                envelope.toolchains,
+                cargo_target_access=CargoTargetAccess.resolve(envelope.toolchains),
+                pytest=True,
+                cells=envelope.cells,
             )
         # Extras are raw policy commands, not bound argv or unowned shell text.
         for command in extra or ():
@@ -633,9 +804,16 @@ class GateConfig:
                 cargo_target_access=CargoTargetAccess.union(
                     tuple(owner.cargo_target_access for owner in owners)
                 ),
+                pinned_assets=tuple(
+                    dict.fromkeys(
+                        asset for owner in owners for asset in owner.pinned_assets
+                    )
+                ),
             )
         if pytest_index is not None:
-            assignments: dict[str, tuple[tuple[str, ...], CargoTargetAccess]] = {}
+            assignments: dict[
+                str, tuple[tuple[str, ...], CargoTargetAccess, tuple[str, ...]]
+            ] = {}
             for group in self.pytest_memory_units.overlapping_requests(pytest_targets):
                 group_tools = tuple(
                     dict.fromkeys(
@@ -647,14 +825,27 @@ class GateConfig:
                         effect for target in group for effect in pytest_access[target]
                     )
                 )
-                assignments.update(dict.fromkeys(group, (group_tools, group_access)))
-            cohorts: dict[tuple[tuple[str, ...], CargoTargetAccess], list[str]] = {}
+                group_assets = tuple(
+                    dict.fromkeys(
+                        asset for target in group for asset in pytest_assets[target]
+                    )
+                )
+                assignments.update(
+                    dict.fromkeys(group, (group_tools, group_access, group_assets))
+                )
+            cohorts: dict[
+                tuple[tuple[str, ...], CargoTargetAccess, tuple[str, ...]], list[str]
+            ] = {}
             for target in pytest_targets:
                 cohorts.setdefault(assignments[target], []).append(target)
             # Keep add()'s command indices valid until every deduplication and
             # prerequisite union is complete. Only newly appended cohorts move.
             before_cohorts = len(selected)
-            for (cohort_tools, cohort_access), targets in cohorts.items():
+            for (
+                cohort_tools,
+                cohort_access,
+                cohort_assets,
+            ), targets in cohorts.items():
                 command = local_pytest_argv(
                     targets, memory_units=self.pytest_memory_units
                 )
@@ -666,6 +857,7 @@ class GateConfig:
                     cohort_tools,
                     cargo_target_access=cohort_access,
                     pytest=True,
+                    pinned_assets=cohort_assets,
                     collection_command=(
                         local_pytest_collection_argv(
                             local_pytest_argv(

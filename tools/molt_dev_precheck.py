@@ -73,6 +73,7 @@ def precheck_landing(
             repo, environment, requires_python=needed
         ),
     )
+    static = prepared.runnable()
     drv._assert_integration_source(git, head)
     runtime = drv._gate_runtime(
         git,
@@ -86,6 +87,7 @@ def precheck_landing(
         progress=drv._IntegrationProgress(),
         toolchains=prepared.fingerprints,
         receipt_kind="precheck",
+        deferred=prepared.deferred,
     )
     gate_seconds: list[tuple[float, str]] = []
     run_selected_gates(
