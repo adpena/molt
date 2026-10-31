@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from molt.compiler_analysis import python_import_scan as _source_import_scan
@@ -682,6 +684,7 @@ def test_context_requests_reuse_the_parsed_source_record(tmp_path, monkeypatch):
     ):
         loaded = module_graph_discovery._load_module_import_scan(
             path,
+            purpose=SourceImportPurpose.EXECUTION,
             module_name="api",
             is_package=False,
             import_scan_mode="module_init",
@@ -698,6 +701,7 @@ def test_context_requests_reuse_the_parsed_source_record(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="lost source owner"):
         module_graph_discovery._load_module_import_scan(
             path,
+            purpose=SourceImportPurpose.EXECUTION,
             module_name="api",
             is_package=False,
             import_scan_mode="module_init",
@@ -1310,6 +1314,7 @@ def test_precomputed_namespace_mismatch_reprojects_identified_bytes(tmp_path):
     snapshot = PythonSourceSnapshot.capture(path)
     unknown = module_graph_discovery._load_module_import_scan(
         path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1321,6 +1326,7 @@ def test_precomputed_namespace_mismatch_reprojects_identified_bytes(tmp_path):
     assert "lazy" in unknown.scan.imports
     precomputed = module_graph_discovery._bind_precomputed_module_import_scan(
         path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         import_scan_mode="full",
         scan=unknown.scan,
@@ -1329,6 +1335,7 @@ def test_precomputed_namespace_mismatch_reprojects_identified_bytes(tmp_path):
     )
     precise = module_graph_discovery._load_module_import_scan(
         path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1381,6 +1388,7 @@ def test_matching_precomputed_scan_keeps_bytes_until_graph_fixpoint(
     snapshot = PythonSourceSnapshot.capture(entry)
     prepared = module_graph_discovery._load_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1392,6 +1400,7 @@ def test_matching_precomputed_scan_keeps_bytes_until_graph_fixpoint(
     )
     precomputed = module_graph_discovery._bind_precomputed_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         import_scan_mode="full",
         scan=prepared.scan,
@@ -1446,6 +1455,7 @@ def test_matching_precomputed_scan_cannot_override_explicit_source(
     cache = module_resolution._ModuleResolutionCache()
     prepared = module_graph_discovery._load_module_import_scan(
         path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1457,6 +1467,7 @@ def test_matching_precomputed_scan_cannot_override_explicit_source(
     )
     precomputed = module_graph_discovery._bind_precomputed_module_import_scan(
         path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         import_scan_mode="full",
         scan=prepared.scan,
@@ -1473,6 +1484,7 @@ def test_matching_precomputed_scan_cannot_override_explicit_source(
     )
     loaded = module_graph_discovery._load_module_import_scan(
         path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",

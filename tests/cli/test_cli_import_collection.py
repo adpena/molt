@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+
 from tests.wasm_execution_manifest import wasm_execution_launch
 
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
@@ -14312,6 +14314,7 @@ def test_persisted_module_scan_requires_summary_before_publication(
     options = dict(module_name="mod", is_package=False, import_scan_mode=mode)
     scan = cli_module_graph_discovery._load_module_import_scan(
         module_path,
+        purpose=SourceImportPurpose.EXECUTION,
         **options,
         resolution_cache=cli_module_resolution._ModuleResolutionCache(),
         project_root=None,
@@ -14362,6 +14365,7 @@ def test_persisted_deferred_scan_keeps_its_owner_without_module_summary(
     options = dict(module_name="mod", is_package=False, import_scan_mode="module_init")
     scan = cli_module_graph_discovery._load_module_import_scan(
         module_path,
+        purpose=SourceImportPurpose.EXECUTION,
         **options,
         source_owner=owner,
         resolution_cache=cli_module_resolution._ModuleResolutionCache(),
@@ -14400,6 +14404,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
     scan = cli_module_graph_discovery._load_module_import_scan(
         module_path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
@@ -14457,6 +14462,7 @@ def test_persisted_import_scan_cache_tracks_source_content(
     snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
     scan = cli_module_graph_discovery._load_module_import_scan(
         module_path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
@@ -14825,6 +14831,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     snapshot = cli_module_source.PythonSourceSnapshot.capture(entry)
     loaded = cli_module_graph_discovery._load_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="main",
         is_package=False,
         import_scan_mode="full",
@@ -14838,6 +14845,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     )
     precomputed = cli_module_graph_discovery._bind_precomputed_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="main",
         import_scan_mode="full",
         scan=loaded.scan,
@@ -15377,6 +15385,7 @@ def test_source_caches_reuse_across_runtime_grants(
     monkeypatch.setenv("MOLT_CAPABILITIES", first_grants)
     scan = cli_module_graph_discovery._load_module_import_scan(
         module_path,
+        purpose=SourceImportPurpose.EXECUTION,
         **common,
         resolution_cache=cli_module_resolution._ModuleResolutionCache(),
         project_root=None,
@@ -16257,6 +16266,7 @@ def test_load_module_imports_reuses_persisted_cache(
 
     imports = cli_module_graph_discovery._load_module_import_scan(
         module_path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
@@ -16274,6 +16284,7 @@ def test_load_module_imports_reuses_persisted_cache(
     )
     cached_imports = cli_module_graph_discovery._load_module_import_scan(
         module_path,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",

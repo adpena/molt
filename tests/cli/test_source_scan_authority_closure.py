@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.python_environment_location import environment_bytecode_arguments
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
@@ -305,6 +307,7 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
     )
     record = discovery._bind_precomputed_module_import_scan(
         source,
+        purpose=SourceImportPurpose.EXECUTION,
         snapshot=PythonSourceSnapshot.capture(source),
         module_name="entry",
         import_scan_mode="full",
@@ -315,6 +318,7 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
     def load(path=source, mode="full"):
         return discovery._load_module_import_scan(
             path,
+            purpose=SourceImportPurpose.EXECUTION,
             module_name="entry",
             is_package=False,
             import_scan_mode=mode,
@@ -809,6 +813,7 @@ def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_ke
     for roots in (("later",), ("first", "later"), ("first", "later")):
         result = discovery._load_module_import_scan(
             source,
+            purpose=SourceImportPurpose.INVENTORY,
             module_name="support",
             is_package=source.name == "__init__.py",
             import_scan_mode="full",
@@ -821,6 +826,7 @@ def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_ke
         loaded.append(result)
         record = discovery._bind_precomputed_module_import_scan(
             source,
+            purpose=SourceImportPurpose.INVENTORY,
             module_name="support",
             import_scan_mode="full",
             is_package=source.name == "__init__.py",
@@ -937,6 +943,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
     state = discovery._ModuleGraphDiscovery(cache, PYTHON)
     loaded = discovery._load_module_import_scan(
         support,
+        purpose=SourceImportPurpose.INVENTORY,
         module_name="support",
         is_package=False,
         import_scan_mode="full",
@@ -949,6 +956,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
     assert "initializer_leaf" not in loaded.scan.imports
     record = discovery._bind_precomputed_module_import_scan(
         support,
+        purpose=SourceImportPurpose.INVENTORY,
         module_name="support",
         import_scan_mode="full",
         scan=loaded.scan,
@@ -1254,6 +1262,9 @@ def test_native_inventory_and_raw_execution_do_not_share_same_ast_cache_entry(
     for native in (native_first, not native_first, native_first):
         loaded = discovery._load_module_import_scan(
             support,
+            purpose=SourceImportPurpose.INVENTORY
+            if native
+            else SourceImportPurpose.EXECUTION,
             module_name="support",
             is_package=False,
             import_scan_mode="full",
@@ -1325,6 +1336,66 @@ def test_native_callable_export_activates_its_writer_after_raw_source_admission(
     assert state.scan_sources["provider"].namespace_premise.foreign_writes == (
         "active",
     )
+
+
+@pytest.mark.parametrize("warm_graph", [False, True])
+def test_raw_inventory_precompute_cannot_certify_execution(tmp_path, warm_graph):
+    source = _source(tmp_path / "support.py", "def available():\n    import leaf\n")
+    _source(tmp_path / "leaf.py", "pass\n")
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    if warm_graph:
+        assert _discover(source, tmp_path, full=True, state=state).graph == {
+            "support": source
+        }
+    loaded = discovery._load_module_import_scan(
+        source,
+        purpose=SourceImportPurpose.INVENTORY,
+        module_name="support",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        target_python=PYTHON,
+    )
+    assert loaded.scan.imports == ("leaf",)
+    record = discovery._bind_precomputed_module_import_scan(
+        source,
+        purpose=SourceImportPurpose.INVENTORY,
+        module_name="support",
+        import_scan_mode="full",
+        is_package=False,
+        scan=loaded.scan,
+        snapshot=loaded.snapshot,
+        target_python=PYTHON,
+    )
+    with pytest.raises(ValueError, match="purpose"):
+        discovery._load_module_import_scan(
+            source,
+            purpose=SourceImportPurpose.EXECUTION,
+            module_name="support",
+            is_package=False,
+            import_scan_mode="full",
+            resolution_cache=cache,
+            project_root=None,
+            precomputed_scan=record,
+            target_python=PYTHON,
+        )
+    # A previously converged root receipt must not bypass purpose validation.
+    with pytest.raises(ValueError, match="purpose"):
+        discovery._discover_module_graph_from_paths(
+            (source,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            None,
+            set(),
+            full_scan_roots=True,
+            resolver_cache=cache,
+            discovery=state,
+            precomputed_scans_by_path={source: record},
+            target_python=PYTHON,
+        )
 
 
 def test_graph_cache_binds_admitted_source_generation(
@@ -1423,6 +1494,7 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
     target = TargetPythonVersion(3, 13, 0)
     loaded = discovery._load_module_import_scan(
         source,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1465,6 +1537,7 @@ def test_generated_package_graph_cache_validates_source_role_authority(
         source_inputs["precomputed_scans_by_path"] = {
             generated.resolve(): discovery._bind_precomputed_module_import_scan(
                 generated,
+                purpose=SourceImportPurpose.EXECUTION,
                 snapshot=PythonSourceSnapshot.capture(generated),
                 module_name="pkg",
                 import_scan_mode="full",
@@ -1516,6 +1589,7 @@ def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_ent
     _source(tmp_path / "pkg" / "second.py", "pass\n")
     first = discovery._load_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1528,6 +1602,7 @@ def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_ent
     )
     record = discovery._bind_precomputed_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         import_scan_mode="full",
         scan=first.scan,
@@ -1542,6 +1617,7 @@ def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_ent
     monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", forbidden)
     second = discovery._load_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1639,6 +1715,7 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
     snapshot = PythonSourceSnapshot.capture(generated)
     loaded = discovery._load_module_import_scan(
         generated,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg",
         is_package=True,
         import_scan_mode="full",
@@ -1649,6 +1726,7 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
     )
     bound = discovery._bind_precomputed_module_import_scan(
         generated,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg",
         is_package=True,
         package_paths=roots,

@@ -291,10 +291,11 @@ bytes. Each source keeps its original resolution roots and admission context.
 A full-depth runtime custody promotion adds that permission to the original
 context rather than interpreting application imports under support-library roots.
 
-Ordinary full source inventory grants availability, not execution. It retains
-the runtime-import protocol and dynamic-anchor requirements of deferred code,
-while imports, cache writes and source execution requests enter the graph only
-when their source owner is demanded. Runtime catalog custody covers every body;
+Full source permission grants availability, not execution. Inventory projections
+retain the runtime-import protocol and dynamic-anchor requirements of deferred
+code. Execution projections admit imports, cache writes and source execution
+requests only when their source owner is demanded. Runtime catalog custody covers
+every body;
 only that full-owner scan retires prior partial body jobs. Scoped foreign writes
 likewise join the namespace premise when their owner activates. Native module
 cache storage retains values without exposing their namespaces, including the
@@ -304,6 +305,10 @@ Stdlib intrinsic classification explicitly requests full import-site inventory:
 another module's deferred import can read a private intrinsic binding even when
 that binding's defining module never loads it itself. This availability proof
 does not admit that deferred import as executed application code.
+Lowering analysis also requests inventory to scope dependencies of available
+function bodies. Its raw-source inventory cannot replace an execution scan:
+purpose travels through the resolver and persisted request keys and payloads,
+and precomputed projections carry a typed purpose checked before graph reuse.
 
 Literal member selection passes typed parameter-source argument facts into the
 canonical binding fixpoint. Its control flow proves branch selection and abrupt
