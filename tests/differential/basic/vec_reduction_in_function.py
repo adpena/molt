@@ -590,3 +590,58 @@ def zero_count_bindings(items, start, original_target):
 
 
 print("min/max zero-count bindings:", zero_count_bindings([], identity_first, identity_equal))
+
+
+# --- an untyped iterable: the kernel admits only a list, tuple or range iterator ---
+# A parameter's type is unknown, so its loop fuses; any other iterator, or a
+# list subclass's own __iter__, must run the ordinary loop with every callback
+# in CPython's order.
+def sum_any(xs, start):
+    total = start
+    for v in xs:
+        total += v
+    return total, v
+
+
+def smallest_any(xs, start):
+    best = start
+    for v in xs:
+        if v < best:
+            best = v
+    return best, v
+
+
+def counting(n):
+    for i in range(n):
+        events.append(("yield", i))
+        yield i
+
+
+class Countdown:
+    def __init__(self, n):
+        self.n = n
+
+    def __iter__(self):
+        events.append("countdown iter")
+        return iter(range(self.n, 0, -1))
+
+
+class LoggingList(list):
+    def __iter__(self):
+        events.append("list subclass iter")
+        return iter([10, 20])
+
+
+print("untyped generator:", sum_any(counting(3), 0), events[:])
+events.clear()
+print("untyped dict keys:", sum_any({1: "a", 2: "b"}, 0))
+print("untyped set:", sum_any({4}, 1))
+print("untyped str:", sum_any("abc", ""))
+print("untyped bytes:", sum_any(b"ab", 0))
+print("untyped custom iter:", sum_any(Countdown(4), 0), events[:])
+events.clear()
+print("untyped list subclass iter:", sum_any(LoggingList([1, 2, 3]), 0), events[:])
+events.clear()
+print("untyped long tuple:", sum_any(tuple(range(5000)), 0))
+print("untyped generator min:", smallest_any(counting(3), 5), events[:])
+events.clear()
