@@ -12,6 +12,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import importlib.util
 import pickle as _host_pickle
+import _pickle as _host_c_pickle
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
@@ -49,10 +50,12 @@ _private = _load_module("_pickle", {str(STDLIB_ROOT / "_pickle.py")!r})
 rows = [
     (name, type(getattr(_private, name)).__name__, bool(callable(getattr(_private, name))))
     for name in sorted(dir(_private))
-    if not name.startswith("_") and name != "annotations"
+    if not name.startswith("_")
 ]
 for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
+host_names = sorted(name for name in dir(_host_c_pickle) if not name.startswith("_"))
+print(f"HOST|{{'|'.join(host_names)}}")
 
 payload = {{"answer": 42}}
 blob = _private.dumps(payload)
@@ -63,18 +66,13 @@ checks = {{
         and "molt_pickle_loads_core" not in _private.__dict__
     ),
     "behavior": _private.loads(blob) == payload,
-    "protocols": (
-        isinstance(_private.DEFAULT_PROTOCOL, int)
-        and isinstance(_private.HIGHEST_PROTOCOL, int)
-        and _private.HIGHEST_PROTOCOL >= _private.DEFAULT_PROTOCOL
-    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
 """
 
 
-def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
+def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str], list[str]]:
     proc = run_surface_test_process(
         [sys.executable, "-c", _PROBE],
         cwd=REPO_ROOT,
@@ -84,20 +82,23 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
     )
     rows: list[tuple[str, str, str]] = []
     checks: dict[str, str] = {}
+    host_names: list[str] = []
     for line in proc.stdout.splitlines():
         prefix, *rest = line.split("|")
         if prefix == "ROW":
             rows.append((rest[0], rest[1], rest[2]))
         elif prefix == "CHECK":
             checks[rest[0]] = rest[1]
-    return rows, checks
+        elif prefix == "HOST":
+            host_names[:] = rest
+    return rows, checks, host_names
 
 
 def test__pickle_public_surface_matches_expected_shape() -> None:
-    rows, checks = _run_probe()
+    rows, checks, host_names = _run_probe()
+    # CPython's C `_pickle` is the oracle for the public names.
+    assert [name for name, _type, _callable in rows] == host_names
     assert rows == [
-        ("DEFAULT_PROTOCOL", "int", "False"),
-        ("HIGHEST_PROTOCOL", "int", "False"),
         ("PickleBuffer", "type", "True"),
         ("PickleError", "type", "True"),
         ("Pickler", "type", "True"),
@@ -112,5 +113,4 @@ def test__pickle_public_surface_matches_expected_shape() -> None:
     assert checks == {
         "anchors_hidden": "True",
         "behavior": "True",
-        "protocols": "True",
     }

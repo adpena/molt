@@ -18,6 +18,20 @@ fn pickle_dump_global(out: &mut String, module: &str, name: &str) {
     out.push('\n');
 }
 
+/// CPython's save_long without the binary opcodes (`Modules/_pickle.c`): INT
+/// text for an int32, LONG text with the `L` suffix for anything wider.
+fn pickle_dump_text_int(out: &mut String, decimal: &str, fits_int32: bool) {
+    if fits_int32 {
+        out.push('I');
+        out.push_str(decimal);
+        out.push('\n');
+    } else {
+        out.push('L');
+        out.push_str(decimal);
+        out.push_str("L\n");
+    }
+}
+
 fn pickle_string_repr(_py: &crate::PyToken<'_>, value: &str) -> Result<String, u64> {
     let Some(value_bits) = alloc_string_bits(_py, value) else {
         return Err(MoltObject::none().bits());
@@ -65,9 +79,7 @@ fn pickle_dump_obj(
         return Ok(());
     }
     if let Some(value) = obj.as_int() {
-        out.push('I');
-        out.push_str(value.to_string().as_str());
-        out.push('\n');
+        pickle_dump_text_int(out, value.to_string().as_str(), i32::try_from(value).is_ok());
         return Ok(());
     }
     if let Some(value) = obj.as_float() {
@@ -82,13 +94,14 @@ fn pickle_dump_obj(
     };
     let type_id = unsafe { object_type_id(ptr) };
     if type_id == crate::TYPE_ID_BIGINT {
+        // CPython writes repr(obj), so the int max-str-digits limit applies.
         let rendered = format_obj(_py, obj);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
-        out.push('I');
-        out.push_str(&rendered);
-        out.push('\n');
+        let big = unsafe { crate::builtins::numbers::bigint_ref(ptr) };
+        let fits_int32 = num_traits::ToPrimitive::to_i32(big).is_some();
+        pickle_dump_text_int(out, &rendered, fits_int32);
         return Ok(());
     }
     if type_id == TYPE_ID_STRING {
@@ -540,17 +553,8 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                             Ok(value) => value,
                             Err(err_bits) => return err_bits,
                         };
-                    let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: append target is not list");
-                    };
-                    if unsafe { object_type_id(target_ptr) } != TYPE_ID_LIST {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: append target is not list");
-                    }
-                    let _ = crate::molt_list_append(target_bits, item_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                    if let Err(err_bits) = pickle_vm_append_items(_py, target_bits, &[item_bits]) {
+                        return err_bits;
                     }
                     stack.push(PickleStackItem::Value(target_bits));
                 }
@@ -570,18 +574,10 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                             Ok(value) => value,
                             Err(err_bits) => return err_bits,
                         };
-                    let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: setitem target is not dict");
-                    };
-                    if unsafe { object_type_id(target_ptr) } != TYPE_ID_DICT {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: setitem target is not dict");
-                    }
-                    let completed =
-                        unsafe { crate::dict_set_in_place(_py, target_ptr, key_bits, value_bits) };
-                    if !completed {
-                        return MoltObject::none().bits();
+                    if let Err(err_bits) =
+                        pickle_vm_setitems(_py, target_bits, &[key_bits, value_bits])
+                    {
+                        return err_bits;
                     }
                     stack.push(PickleStackItem::Value(target_bits));
                 }

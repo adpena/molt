@@ -80,18 +80,17 @@ pub(crate) fn pickle_parse_long_bytes_bits(
     _py: &crate::PyToken<'_>,
     raw: &[u8],
 ) -> Result<u64, u64> {
+    // A little-endian two's-complement payload of any width, as CPython's
+    // load_counted_long decodes it (`Modules/_pickle.c`); empty means zero.
     if raw.is_empty() {
         return Ok(MoltObject::from_int(0).bits());
     }
-    if raw.len() > 8 {
-        return Err(
-            PickleError::Unpickling.raise(_py, "pickle.loads: LONG payload exceeds Molt int range")
-        );
+    let value = num_bigint::BigInt::from_signed_bytes_le(raw);
+    let bits = crate::builtins::numbers::int_bits_from_bigint(_py, value);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
     }
-    let negative = (raw[raw.len() - 1] & 0x80) != 0;
-    let mut bytes = if negative { [0xff; 8] } else { [0u8; 8] };
-    bytes[..raw.len()].copy_from_slice(raw);
-    Ok(MoltObject::from_int(i64::from_le_bytes(bytes)).bits())
+    Ok(bits)
 }
 
 pub(crate) fn pickle_read_f64_be(

@@ -91,6 +91,81 @@ pub(crate) fn pickle_vm_pop_mark_items(
     Err(PickleError::Unpickling.raise(_py, "pickle.loads: mark not found"))
 }
 
+/// CPython's do_append (`Modules/_pickle.c`): an exact list appends in place;
+/// any other object receives the items through its extend() when it has one,
+/// else through append() one item at a time.
+pub(crate) fn pickle_vm_append_items(
+    _py: &crate::PyToken<'_>,
+    target_bits: u64,
+    items: &[u64],
+) -> Result<(), u64> {
+    let exact_list = obj_from_bits(target_bits).as_ptr().is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == TYPE_ID_LIST
+            && crate::object::iterable::builtin_receiver(_py, ptr)
+    });
+    if exact_list {
+        for &item in items {
+            let _ = crate::molt_list_append(target_bits, item);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+        }
+        return Ok(());
+    }
+    if let Some(extend_bits) = pickle_attr_optional(_py, target_bits, b"extend")? {
+        let list_ptr = alloc_list_with_capacity(_py, items, items.len());
+        if list_ptr.is_null() {
+            dec_ref_bits(_py, extend_bits);
+            return Err(MoltObject::none().bits());
+        }
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        let result = unsafe { call_callable1(_py, extend_bits, list_bits) };
+        dec_ref_bits(_py, list_bits);
+        dec_ref_bits(_py, extend_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        dec_ref_bits(_py, result);
+        return Ok(());
+    }
+    let Some(append_bits) = pickle_attr_optional(_py, target_bits, b"append")? else {
+        let type_name = type_name(_py, obj_from_bits(target_bits));
+        let message = format!("'{type_name}' object has no attribute 'append'");
+        return Err(raise_exception(_py, crate::BuiltinExc::AttributeError, &message));
+    };
+    for &item in items {
+        let result = unsafe { call_callable1(_py, append_bits, item) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, append_bits);
+            return Err(MoltObject::none().bits());
+        }
+        dec_ref_bits(_py, result);
+    }
+    dec_ref_bits(_py, append_bits);
+    Ok(())
+}
+
+/// CPython's do_setitems (`Modules/_pickle.c`): the target need not be a dict;
+/// each key/value pair goes through PyObject_SetItem, which `molt_store_index`
+/// implements (an exact dict sets in place, any other object calls its
+/// `__setitem__`). The pair count is checked before any item is set.
+pub(crate) fn pickle_vm_setitems(
+    _py: &crate::PyToken<'_>,
+    target_bits: u64,
+    pairs: &[u64],
+) -> Result<(), u64> {
+    if !pairs.len().is_multiple_of(2) {
+        return Err(PickleError::Unpickling.raise(_py, "odd number of items for SETITEMS"));
+    }
+    for pair in pairs.chunks_exact(2) {
+        let _ = crate::molt_store_index(target_bits, pair[0], pair[1]);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn pickle_vm_pop_value(
     _py: &crate::PyToken<'_>,
     stack: &mut Vec<PickleVmItem>,
