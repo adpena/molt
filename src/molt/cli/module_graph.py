@@ -391,10 +391,14 @@ def _extend_native_support_source_closure(
     operation_counts: MutableMapping[str, int],
 ) -> frozenset[str]:
     previous_parse_count = resolver_cache.source_parse_count
+    callable_export_roots = _native_support_callable_export_roots_by_module(
+        native_artifact_plan
+    )
     function_roots = _native_support_function_roots_by_module(
         native_artifact_plan,
         target_python=target_python,
         resolution_cache=resolver_cache,
+        callable_export_roots=callable_export_roots,
     )
     operation_counts["native_support_source_parses"] += (
         resolver_cache.source_parse_count - previous_parse_count
@@ -461,6 +465,9 @@ def _extend_native_support_source_closure(
             ),
             allow_entry_external_imports=False,
             target_python=target_python,
+            native_callable_exports={
+                module_name: callable_export_roots.get(module_name, ())
+            },
         )
         _graph_discovery._merge_discovered_module_graph(
             module_graph,
@@ -585,25 +592,44 @@ def _support_source_top_level_defs(
     return _native_support_slice.top_level_support_defs(tree)
 
 
-def _native_support_function_roots_by_module(
+def _native_support_callable_export_roots_by_module(
     native_artifact_plan,
-    *,
-    target_python: TargetPythonVersion,
-    resolution_cache: "_module_resolution._ModuleResolutionCache",
 ) -> dict[str, tuple[str, ...]]:
+    """The callable entries actually published by the native artifact."""
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
-    if not support_paths_by_module:
-        return {}
     roots: dict[str, set[str]] = {}
     for artifact in native_artifact_plan.artifacts:
         for export in artifact.callable_exports:
             provider_module = export.provider_module
             if (
-                provider_module is None
-                or provider_module not in support_paths_by_module
+                provider_module is not None
+                and provider_module in support_paths_by_module
             ):
-                continue
-            roots.setdefault(provider_module, set()).add(export.name)
+                roots.setdefault(provider_module, set()).add(export.name)
+    return {
+        module: _native_support_slice.canonical_native_support_roots(names)
+        for module, names in sorted(roots.items())
+    }
+
+
+def _native_support_function_roots_by_module(
+    native_artifact_plan,
+    *,
+    target_python: TargetPythonVersion,
+    resolution_cache: "_module_resolution._ModuleResolutionCache",
+    callable_export_roots: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
+    if not support_paths_by_module:
+        return {}
+    roots = {
+        module: set(names)
+        for module, names in (
+            _native_support_callable_export_roots_by_module(native_artifact_plan)
+            if callable_export_roots is None
+            else callable_export_roots
+        ).items()
+    }
     parsed: dict[str, ast.Module] = {}
     support_defs_by_module: dict[
         str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]
