@@ -876,6 +876,7 @@ def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path, tam
     # Execute the real bootstrap boundary before any Molt environment exists.
     # Its source dependencies must be verified and loaded together in memory.
     from tests.cli.process_guard import run_cli_test_process
+    from tests.process_guard_common import guard_custody_env
 
     root = Path(__file__).resolve().parents[2]
     cache = tmp_path / "selected-cache"
@@ -939,10 +940,13 @@ def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path, tam
         for name, value in os.environ.items()
         if not name.upper().startswith(("MOLT_", "PYTHON"))
     }
+    env.update(guard_custody_env())
+    env["MOLT_EXT_ROOT"] = str(tmp_path / "guard-artifacts")
     env["MOLT_CACHE"] = str(cache)
     result = run_cli_test_process(
         [
             sys.executable,
+            "-B",
             "-I",
             "-S",
             "-c",
