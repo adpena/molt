@@ -216,7 +216,12 @@ from tools.molt_dev_gates import (  # noqa: E402
     gate_time_summary,
     run_selected_gates,
 )
-from tools.molt_dev_policy import GateConfig, GateEnvironment, select_landing_gates  # noqa: E402
+from tools.molt_dev_policy import (  # noqa: E402
+    GateConfig,
+    GateEnvironment,
+    LandingMode,
+    select_landing_gates,
+)
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
@@ -953,6 +958,8 @@ def _gate_runtime(
     progress: _IntegrationProgress,
     toolchains: dict[str, dict],
     receipt_kind: str = "gates",
+    mode: LandingMode = LandingMode.PRESUBMIT,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> GateRuntime:
     from tools.proof_plan import load_toolchain_policies
 
@@ -996,6 +1003,8 @@ def _gate_runtime(
         toolchain_policies=load_toolchain_policies(
             config.prerequisite_policy, root=config.root, names=tuple(toolchains)
         ),
+        mode=mode,
+        cancelled=cancelled,
     )
 
 
@@ -1333,12 +1342,16 @@ def _integrate_exclusive(
             )
 
     # --- step 5: gates (hazard 10) ------------------------------------------
+    from tools.molt_dev_queue import queue_paths, recent_postsubmit_failures
+
+    recent_failures = recent_postsubmit_failures(queue_paths(repo))
     policy, config, touched, gate_cmds, matched_rules = select_landing_gates(
         git,
         repo,
         selected_commit,
         upstream_before,
         extra=list(args.extra_gate or []),
+        recent_failures=recent_failures,
     )
     progress.source_commit = selected_commit
     progress.gate_total = len(gate_cmds)
@@ -1347,7 +1360,7 @@ def _integrate_exclusive(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
-    graph_selection = config.graph_selection(touched)
+    graph_selection = config.graph_selection(touched, recent_failures=recent_failures)
     if graph_selection is not None:
         _say(
             f"    dependency graph: {len(graph_selection.selected)} test file(s) "

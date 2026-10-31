@@ -450,13 +450,11 @@ To test Tier 1:
 
 ## Landing test selection
 
-A landing runs every test file that depends on a changed path.
-`tools/test_dependency_graph.py` derives the relation from the tracked sources
-of the candidate commit; `GateConfig.select` (`tools/molt_dev_policy.py`) runs
-each selected file under its own proof cell. This static relation is today's
-selection; [observed inputs and content identity](../../../design/observed_inputs.md)
-owns the selection and reuse rules and their prior art, and replaces it with
-observed reads.
+`tools/test_dependency_graph.py` derives dependencies from the tracked sources
+of the candidate commit; `GateConfig.select` (`tools/molt_dev_policy.py`) binds
+selected files to their proof cells. The typed presubmit/postsubmit mode applies
+the [selection policy](../../../design/observed_inputs.md) to that static graph.
+Observed-read selection and verdict reuse remain deferred in that authority.
 
 - **Imports.** Every `import` outside `if TYPE_CHECKING:`, literal
   `importlib.import_module` names, and (in a test file) dotted names it patches
@@ -472,16 +470,18 @@ observed reads.
   file is never another test's data.
 - **Harness.** A test binds the module-level code, hooks and autouse fixtures
   of each `conftest.py` above it, the fixtures it requests, and the `-p`
-  plugins in `pyproject.toml`. Edits to that harness closure select the suite.
+  plugins in `pyproject.toml`. The selection mode determines how far changed
+  harness inputs propagate through that relation.
 - **Generators.** A manifest generator's `sync_test` executes the generator.
   The always gate `tools/generators.py check` re-renders every reproducible
   check-mode generator, so a checked output's readers are selected by the
   output's own edit; an unchecked output also follows its generator's edit.
-- **Envelopes.** A selected file runs under its `pre-push` cell that needs no
-  compiler build (targets, toolchains, memory unit). A file whose cells need
-  builds or run later is reported as deferred to those cells. A rule that
-  requests the file keeps its prerequisites; a rule cohort the graph runs whole
-  under the same tools is not run twice.
+- **Envelopes.** Selected graph files use ordinary non-build `pre-push` or
+  `main` owners, with their declared tools and memory units. A scheduled slow
+  owner also supplies a file with no ordinary owner; postsubmit combines slow
+  and ordinary scopes. Compiler-build-only files retain their explicit deferred
+  cell. Rule requests keep their prerequisites and command scope; an equivalent
+  unfiltered rule absorbs the graph request.
 
 Facts are cached by Git blob id under the Molt cache, so a warm selection
 parses only changed blobs (about 1.5 s for 3,900 Python files; a cold parse

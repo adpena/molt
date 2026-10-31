@@ -725,6 +725,35 @@ def test_rustc_metadata_records_nothing_when_the_probe_fails(
     assert not facts.host_toolchain_facts().path.exists()
 
 
+def test_rustc_host_probe_failure_carries_the_wrapper_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A wrapper (sccache) that cannot reach its server fails `rustc -vV`; the
+    # refusal names the exit status and the stderr, and records no answer.
+    _sysroot, rustc = _rust_toolchain(tmp_path)
+    answers = iter(
+        (
+            (2, "", "sccache: error: Timed out waiting for server startup"),
+            (0, "rustc 1.99.1\nrelease: 1.99.1\n", ""),
+        )
+    )
+
+    def run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        returncode, stdout, stderr = next(answers)
+        return subprocess.CompletedProcess(list(cmd), returncode, stdout, stderr)
+
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
+    root = tmp_path / "project"
+    root.mkdir()
+    with pytest.raises(
+        ValueError, match=r"host probe failed \(2\): sccache: error: Timed out"
+    ):
+        rustc_probes.rustc_host_target(rustc, {}, root=root, env={})
+    assert not facts.host_toolchain_facts().path.exists()
+    with pytest.raises(ValueError, match="reported no host triple"):
+        rustc_probes.rustc_host_target(rustc, {}, root=root, env={})
+
+
 # --- rustup which --------------------------------------------------------------
 
 

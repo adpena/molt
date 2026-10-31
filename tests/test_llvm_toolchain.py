@@ -390,6 +390,94 @@ def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
     assert discovery.source == "PATH"
 
 
+@pytest.mark.parametrize(
+    "selection", ["LLVM_CONFIG_PATH", "MOLT_LLVM_PREFIX", "LLVM_SYS_221_PREFIX"]
+)
+def test_missing_managed_pin_refuses_matching_homebrew_without_explicit_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str
+) -> None:
+    _write_facade(tmp_path, '"molt-backend-native/llvm"')
+    _write_native(tmp_path, '"llvm22-1"', "221.0.1")
+    pin = required_llvm_backend_pin(tmp_path)
+    assert pin is not None
+    managed = tmp_path / "managed" / "toolchains" / "llvm-22.1.8"
+    homebrew = tmp_path / "homebrew" / "opt" / "llvm@22"
+    config = homebrew / "bin" / llvm_toolchain.llvm_config_names(pin)[0]
+    _write(config, "version-matching external llvm-config")
+    config.chmod(0o755)
+    monkeypatch.setattr(
+        llvm_toolchain, "managed_llvm_prefix", lambda *_args, **_kwargs: managed
+    )
+    probes = []
+
+    def version(path, *, probe_timeout=None):
+        assert Path(path) == config.resolve()
+        probes.append(path)
+        return 22, 1, "22.1.8"
+
+    monkeypatch.setattr(llvm_toolchain, "_llvm_config_version", version)
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_llvm_config_prefix",
+        lambda _path, *, probe_timeout=None: homebrew.resolve(),
+    )
+    env = {"PATH": str(config.parent), "PATHEXT": ".EXE"}
+    explicit = llvm_toolchain.discover_llvm_toolchain(
+        tmp_path,
+        environ={
+            **env,
+            selection: str(config if selection == "LLVM_CONFIG_PATH" else homebrew),
+        },
+    )
+    assert explicit is not None and explicit.prefix == homebrew.resolve()
+    assert probes and not managed.exists()
+    probes.clear()
+
+    with pytest.raises(llvm_toolchain.LlvmManagedToolchainMissingError) as caught:
+        llvm_toolchain.verify_available_llvm_toolchain(tmp_path, environ=env)
+
+    assert caught.value.prefix == managed
+    assert str(managed) in str(caught.value)
+    assert llvm_toolchain.llvm_bootstrap_command(pin) in str(caught.value)
+    assert "ld64.lld" not in str(caught.value)
+    assert not probes  # Refuse the absent authority before probing ambient LLVM.
+
+
+def test_optional_llvm_test_tools_preserve_missing_managed_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests import llvm_sdk_test_support
+
+    pin = required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    missing = llvm_toolchain.LlvmManagedToolchainMissingError(tmp_path / "missing", pin)
+
+    def unavailable(_root):
+        raise missing
+
+    monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", unavailable)
+    # Exercise this resolution directly without changing another test's cache.
+    assert llvm_sdk_test_support._verified_llvm_tools.__wrapped__() == str(missing)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [LlvmToolchainConfigError("explicit SDK content drift"), OSError("unreadable SDK")],
+)
+def test_optional_llvm_test_tools_propagate_invalid_or_unreadable_sdk(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    from tests import llvm_sdk_test_support
+
+    def invalid(_root):
+        raise failure
+
+    monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", invalid)
+    with pytest.raises(type(failure)) as caught:
+        llvm_sdk_test_support._verified_llvm_tools.__wrapped__()
+    assert caught.value is failure
+
+
 def test_discovery_rejects_unrelated_llvm_sys_search_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

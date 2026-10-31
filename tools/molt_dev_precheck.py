@@ -43,12 +43,19 @@ def precheck_landing(
     ``GateFailure`` and nothing is queued.
     """
     drv = _driver()
+    from tools.molt_dev_queue import queue_paths, recent_postsubmit_failures
+
     base = drv.require_git_object_id(
         git._run(["merge-base", head, upstream]).stdout.strip(),
         label="landing merge base",
     )
     policy, config, _touched, gates, _matched = select_landing_gates(
-        git, repo, head, base, extra=[]
+        git,
+        repo,
+        head,
+        base,
+        extra=[],
+        recent_failures=recent_postsubmit_failures(queue_paths(repo)),
     )
     static = [gate for gate in gates if gate.precheck]
     _step(
