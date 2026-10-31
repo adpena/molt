@@ -397,6 +397,7 @@ def test_molt_queue_uses_main_worktree_project_env_for_linked_worktree(
     )
     common_git = main_repo / ".git"
     common_git.mkdir(parents=True)
+    (common_git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     registration = common_git / "worktrees" / "lane"
     registration.mkdir(parents=True)
     (registration / "HEAD").write_text("ref: refs/heads/lane\n", encoding="utf-8")
