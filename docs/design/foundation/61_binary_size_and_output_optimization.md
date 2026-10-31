@@ -389,7 +389,7 @@ handling remain the existing authorities; the optimizer attestation now binds
 the stubbed input. Unoptimized development builds still perform stubbing without
 launching Binaryen. Final structural, export, callable-table and zero-WASI-import
 validation remain mandatory. The independent host-call/trap execution fixture
-in `tests/test_wasm_link_validation.py` and the unchanged
+in `tests/test_wasm_optimization_imported_memory.py` and the unchanged
 `tests/test_wasm_size_tracking.py` oracle cover behavior and linked size.
 
 The unchanged hello-world oracle measured the following linked outputs on
