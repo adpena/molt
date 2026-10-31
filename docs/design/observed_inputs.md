@@ -98,9 +98,23 @@ Each consumer reads the substrate. None keeps a private hash, input list or sele
 | Proof authority inputs | `tools/proof_plan.toml` | Gate argv and cells | Hand-written input lists (HF-601, HF-591) |
 | Durable state identity | HF-604 | Volume UUID and file ID | `st_dev` keys |
 
-Presubmit runs a test only when its observed inputs changed. Postsubmit runs every cell on trunk,
-records the observed inputs that presubmit selection reads, and routes each failure to its family
-owner.
+The current landing policy uses a typed `PRESUBMIT` / `POSTSUBMIT` selection mode. Presubmit runs
+static gates, then graph-selected pytest with `--maxfail=1`: tests that failed postsubmit in the
+last 24 hours first, changed test files next, then direct readers of changed paths. The dependency
+graph supplies the first hop, without closing importers transitively. Path rules retain their
+declared commands and scopes. A rule that already runs a test absorbs that graph request. Direct
+inputs and changed tests run their slow probes too; the ordinary cells exclude slow probes,
+which remain owned by the existing `-m slow` postsubmit cell. Failure history orders execution;
+it never substitutes for a passing result. Pytest's parallel scheduler may finish files out of order.
+
+Postsubmit runs the full transitive selection on the newest main head when no landing is pending,
+using the same proof executor and receipts. A new request cancels postsubmit. Only a passing
+postsubmit advances `refs/molt/last-green` by compare-and-swap; new lanes use it unless their base
+is explicit, and say when they fall back to `origin/main`. A failure retains last green, names
+every commit since it as a suspect and prints the exact revert command for the integrator. The
+runner never reverts. The integrator restores green within about an hour. If transitive misses
+exceed about one landing in five, retain the cases for an owner decision about widening presubmit.
+Observed-input selection and verdict reuse remain deferred stages 4-6, not implemented by this slice.
 
 ## Stages
 
@@ -110,13 +124,13 @@ the copy it replaces.
 | Stage | Change | Measured or expected effect |
 | --- | --- | --- |
 | 0 | A cancelled gate is recorded as `cancelled`. The runner decides by `failure_trigger` first and bisects every candidate failure (HF-605). | -7,428 s per day (8 identical-tree reruns) |
-| 1 | Per-file verdicts from JUnit. `--maxfail=1`. Failure-first order. A "without patch" rerun on main before a lane is blamed. | -3,666 s measured; up to about -17,000 s estimated |
+| 1 | Fast presubmit: changed tests and first-hop readers, recent postsubmit failures first, with `--maxfail=1`. Rule-owned commands retain their scope; expensive real-process probes run in their slow cell except at a direct changed input. | Historical replay caught 24 of 31 failed blocks with a median 212 files; live before/after wall time remains required |
 | 2 | One CPU budget per host that knows performance cores. Receipts record `-n` and CPU time. | Not yet measured |
 | 3 | A typed layer table: `src/molt` never imports `tools`. Break the 38-file import cycle. Shrink the harness kernel. | 983 to 340 files per batch |
-| 4 | `molt.file_hashing` becomes the only content identity, keyed by durable file identity. Delete the 29 private copies. | One hash per file per host |
-| 5 | Observed-input records (audit-hook reads, dep-info) in one host action store, with two-level lookup. | 13-17% of test-seconds today; more after stage 3 |
-| 6 | Selection, proof authority inputs and perf-methodology inputs come from records. Delete the hand lists. Generated projections stop carrying counts that two lanes can change at once. | Removes HF-601 and HF-591 drift and the projection merge hazard |
-| 7 | Postsubmit on the farm with culprit finding and routing to family owners (trunk loop stage 2). | Main stays green without full presubmit runs |
+| 4 | Deferred by the owner: `molt.file_hashing` becomes the only content identity, keyed by durable file identity; delete private copies. | One hash per file per host |
+| 5 | Deferred by the owner: observed-input records (audit-hook reads, dep-info) in one host action store, with two-level lookup. | 13-17% of test-seconds today; more after stage 3 |
+| 6 | Deferred by the owner: derive selection, proof authority and perf-methodology inputs from records; retire the hand lists and merge-sensitive counts. | Removes HF-601 and HF-591 drift and the projection merge hazard |
+| 7 | Queue postsubmit runs the full selection on newest main after pending landings, retaining last green and red-head suspects for integrator-directed restoration. | Main health is restored without complete presubmit runs; cross-host farm qualification remains open |
 
 ## Costs to measure before stage 5
 

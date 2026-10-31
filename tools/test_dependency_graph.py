@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Landing test selection from the repository's dependency facts.
 
-A changed file selects every test file that depends on it. The dependency
-relation is derived from the tracked sources, never restated by hand:
+A changed file selects its direct test readers for presubmit and every
+dependent test for postsubmit. The dependency relation is derived from the
+tracked sources, never restated by hand:
 
 * Python imports. Every ``import`` and ``from`` statement of a tracked module,
   at any scope except an ``if TYPE_CHECKING:`` body, plus literal
@@ -50,6 +51,7 @@ import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import assert_never
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -60,6 +62,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 ROOT = bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.molt_dev_policy import LandingMode  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 
@@ -974,6 +977,35 @@ class DependencyGraph:
                 selected.append(test)
         return tuple(selected)
 
+    def direct_readers(self, changed: Iterable[str]) -> tuple[str, ...]:
+        """Tests at the first hop, without walking their import closure.
+
+        The existing scanner already records each test's direct data reads,
+        harness inputs and executed sources. Only the test's own outgoing
+        edges are added here; an importer's importer belongs to postsubmit.
+        """
+        changed = frozenset(changed)
+        read = {path for path in changed if not is_test_file(path)}
+        directories = {
+            str(parent) for path in read for parent in PurePosixPath(path).parents
+        }
+        selected = []
+        for test in self.tests:
+            inputs = self.inputs[test]
+            sources = {
+                node_path(node)
+                for node in inputs.roots | self.nodes.get(test, Dependencies()).execs
+            }
+            if (
+                test in changed
+                or sources & changed
+                or any(conftest in changed for conftest in self.conftests[test])
+                or inputs.files & read
+                or inputs.directories & directories
+            ):
+                selected.append(test)
+        return tuple(selected)
+
     def dependencies(self, test: str) -> frozenset[str]:
         """Every tracked file whose change selects ``test`` (for inspection)."""
         reached: set[str] = set()
@@ -1203,7 +1235,7 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
 # Landing envelopes: how the landing runs a selected test
 # --------------------------------------------------------------------------
 
-# The tier whose commands gate a push; the landing runs their tests.
+# Presubmit and postsubmit also admit main-owned direct consumers.
 LANDING_TIER = "pre-push"
 # Commands of this class need compiler builds that a landing's pytest
 # consumers do not provision; their own proof cells run their tests.
@@ -1214,11 +1246,10 @@ BUILD_RESOURCE_CLASS = "compiler-build-resource"
 class LandingEnvelope:
     """The targets and tools under which the landing runs one test file.
 
-    It is the test's own proof cell: the ``pre-push`` plan commands that name
-    the file (whole, or as nodes) and need no compiler build. Their
-    toolchains are the test's declared prerequisites, and their pytest
-    selector (``-m "not slow"``) bounds what runs: the landing runs what the
-    cell runs. Cells that disagree on a selector run the file unfiltered.
+    Pre-push and main plan commands supply the file's declared prerequisites.
+    Presubmit runs its direct inputs unfiltered. Postsubmit also admits the
+    existing slow cell; complementary selectors run the file unfiltered.
+    Cells that require a compiler build retain their separate proof owner.
     """
 
     targets: tuple[str, ...]
@@ -1255,24 +1286,58 @@ def cell_selector(command: Mapping) -> tuple[str, ...]:
 
 def landing_envelopes(
     commands: Iterable[Mapping],
+    *,
+    mode: LandingMode = LandingMode.PRESUBMIT,
 ) -> tuple[dict[str, LandingEnvelope], dict[str, tuple[str, ...]]]:
     """(landing envelopes, other owners) of every test file the plan names."""
     whole: dict[str, list[Mapping]] = {}
     nodes: dict[str, list[tuple[str, Mapping]]] = {}
+    slow_whole: dict[str, list[Mapping]] = {}
+    slow_nodes: dict[str, list[tuple[str, Mapping]]] = {}
     others: dict[str, list[str]] = {}
     for command in commands:
         targets = command.get("pytest") or ()
-        landing = LANDING_TIER in (command.get("tiers") or ()) and (
-            command.get("resource_class") != BUILD_RESOURCE_CLASS
+        tiers = command.get("tiers") or ()
+        match mode:
+            case LandingMode.PRESUBMIT:
+                selected_tier = LANDING_TIER in tiers or "main" in tiers
+            case LandingMode.POSTSUBMIT:
+                selected_tier = (
+                    LANDING_TIER in tiers
+                    or "main" in tiers
+                    or cell_selector(command) == ("-m", "slow")
+                )
+            case _:
+                assert_never(mode)
+        landing = (
+            selected_tier and command.get("resource_class") != BUILD_RESOURCE_CLASS
         )
         for target in targets:
             path, separator, _node = target.partition("::")
             if not landing:
                 others.setdefault(path, []).append(str(command["id"]))
+                if (
+                    mode is LandingMode.PRESUBMIT
+                    and cell_selector(command) == ("-m", "slow")
+                    and command.get("resource_class") != BUILD_RESOURCE_CLASS
+                ):
+                    if separator:
+                        slow_nodes.setdefault(path, []).append((target, command))
+                    else:
+                        slow_whole.setdefault(path, []).append(command)
             elif separator:
                 nodes.setdefault(path, []).append((target, command))
             else:
                 whole.setdefault(path, []).append(command)
+    # A direct changed input may be owned only by the scheduled slow cell.
+    # Use that declared non-build envelope without enlarging ordinary owners.
+    ordinary = {path: None for path in {*whole, *nodes}}
+    for path in {*slow_whole, *slow_nodes}:
+        if _owned_by(path, ordinary) is None:
+            if path in slow_whole:
+                whole[path] = slow_whole[path]
+            else:
+                nodes[path] = slow_nodes[path]
     envelopes: dict[str, LandingEnvelope] = {}
     for path in {*whole, *nodes}:
         if path in whole:
@@ -1302,22 +1367,49 @@ def _owned_by(path: str, table: Mapping[str, object]) -> str | None:
 
 
 def graph_selection(
-    graph: DependencyGraph, changed: Iterable[str], commands: Iterable[Mapping]
+    graph: DependencyGraph,
+    changed: Iterable[str],
+    commands: Iterable[Mapping],
+    *,
+    mode: LandingMode = LandingMode.PRESUBMIT,
+    recent_failures: Iterable[str] = (),
 ) -> GraphSelection:
-    envelopes, others = landing_envelopes(commands)
+    envelopes, others = landing_envelopes(commands, mode=mode)
     run: dict[str, LandingEnvelope] = {}
     deferred: dict[str, tuple[str, ...]] = {}
-    selected = graph.select(changed)
+    changed = tuple(changed)
+    match mode:
+        case LandingMode.PRESUBMIT:
+            recent = (
+                target.partition("::")[0]
+                for target in recent_failures
+                if target.partition("::")[0] in graph.tests
+            )
+            selected = tuple(
+                dict.fromkeys(
+                    (
+                        *recent,
+                        *(path for path in changed if path in graph.tests),
+                        *graph.direct_readers(changed),
+                    )
+                )
+            )
+        case LandingMode.POSTSUBMIT:
+            selected = graph.select(changed)
+        case _:
+            assert_never(mode)
     for test in selected:
         owner = _owned_by(test, envelopes)
         if owner is not None:
             envelope = envelopes[owner]
-            run[test] = (
-                LandingEnvelope(
-                    (test,), envelope.toolchains, envelope.owners, envelope.select
-                )
-                if owner != test
-                else envelope
+            # Every presubmit graph target is a changed test, direct reader or
+            # recent failure. Exercise slow probes too at this direct boundary.
+            selector = () if mode is LandingMode.PRESUBMIT else envelope.select
+            run[test] = LandingEnvelope(
+                (test,) if owner != test else envelope.targets,
+                envelope.toolchains,
+                envelope.owners,
+                selector,
             )
         else:
             other = _owned_by(test, others)
