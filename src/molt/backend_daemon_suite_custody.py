@@ -18,8 +18,13 @@ import uuid
 
 from molt import backend_daemon_custody as daemon, temporary_artifacts
 from molt.file_deletion import delete_path
-from molt.file_publication import resolve_owned_path
+from molt.file_publication import (
+    resolve_owned_path,
+)
 from molt.exact_json import canonical_json_bytes, encode_exact, read_exact, write_exact
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+)
 from molt.file_locks import (
     _FileLockHandle,
     _acquire_file_lock,
@@ -34,7 +39,7 @@ from molt.process_spawn import PROCESS_STATE_HANDOFF_TIMEOUT_S
 from molt.process_model import CustodyInterest
 
 LEASE_ENV = "MOLT_BACKEND_DAEMON_SUITE_LEASE"
-SCHEMA = "molt.backend_daemon.suite-lease.v2"
+SCHEMA = "molt.backend_daemon.suite-lease.v3"
 _TOKEN = re.compile(r"[0-9a-f]{32}")
 _SHA = re.compile(r"[0-9a-f]{64}")
 
@@ -128,7 +133,10 @@ def _source_digest() -> str:
     )
     from molt import process_model
 
+    from molt import durable_file_identity
+
     for source in (
+        Path(durable_file_identity.__file__),
         Path(__file__),
         Path(daemon.__file__),
         Path(file_locks.__file__),
@@ -150,6 +158,7 @@ def _allocate_scratch(directory: Path) -> dict:
     """Bind scratch to this lease before any daemon can receive its path."""
     target = resolve_owned_path(directory / "scratch")
     target.mkdir(mode=0o700)
+    live_identity = temporary_artifacts._live_identity(target)
     identity = temporary_artifacts._identity(target)
     nonce = uuid.uuid4().hex
     try:
@@ -158,7 +167,7 @@ def _allocate_scratch(directory: Path) -> dict:
         # No consumer has received this path. The allocating frame still owns
         # its direct directory even when no usable receipt could be published.
         try:
-            temporary_artifacts._cleanup_temporary_directory(target, identity)
+            temporary_artifacts._cleanup_temporary_directory(target, live_identity)
         except (OSError, ValueError) as cleanup_error:
             error.add_note(f"unpublished suite scratch preserved: {cleanup_error}")
         raise
@@ -172,9 +181,9 @@ def _scratch_target(path: Path, lease: Mapping) -> Path:
     """Consume the shared scratch generation proof, never just its pathname."""
     target = resolve_owned_path(path.parent / "scratch")
     owner = lease["scratch"]
-    if temporary_artifacts._identity(target) != owner[
-        "target_identity"
-    ] or not temporary_artifacts._holds_target_receipt(target, owner):
+    if not temporary_artifacts._same_identity(
+        temporary_artifacts._identity(target), owner["target_identity"]
+    ) or not temporary_artifacts._holds_target_receipt(target, owner):
         raise ValueError("suite scratch allocation changed")
     return target
 
@@ -199,11 +208,11 @@ def _finish_scratch(path: Path, lease: Mapping, *, closed: bool) -> dict:
 
 
 def read_lease(path: Path) -> dict | None:
-    if _LEASE_CHILD_CUSTODY_ERROR is not None:
+    if _LEASE_CHILD_CUSTODY_ERROR is not None or path.parent.parent.name != "v3":
         return None
     try:
         record = read_exact(path, max_bytes=16384, label="daemon suite lease")
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError, KeyError):
         return None
     expected_keys = {
         "schema",
@@ -230,7 +239,16 @@ def read_lease(path: Path) -> dict | None:
         record["token"]
     ):
         return None
-    if path.name != "lease.json" or path.parent.name != record["token"]:
+    if not isinstance(record.get("daemon_root"), str):
+        return None
+    if (
+        path
+        != Path(record["daemon_root"])
+        / "suite-leases"
+        / "v3"
+        / record["token"]
+        / "lease.json"
+    ):
         return None
     for name in (
         "owner_pid",
@@ -261,13 +279,13 @@ def read_lease(path: Path) -> dict | None:
     identity = scratch["target_identity"]
     if (
         not isinstance(identity, dict)
-        or set(identity) != {"device", "inode"}
-        or any(type(value) is not int for value in identity.values())
-        or identity["device"] < 0
-        or identity["inode"] <= 0
         or not isinstance(scratch["target_receipt"], str)
         or not _TOKEN.fullmatch(scratch["target_receipt"])
     ):
+        return None
+    try:
+        DurableFileIdentity.from_payload(identity)
+    except ValueError:
         return None
     return record
 
@@ -283,6 +301,7 @@ def live_lease(path: Path, *, project_root: Path, samples: Mapping) -> dict | No
         expected = (
             Path(record["daemon_root"])
             / "suite-leases"
+            / "v3"
             / record["token"]
             / "lease.json"
         )
@@ -975,7 +994,7 @@ class SuiteDaemonLease:
             daemon_root = (
                 bound_project_build_state_root(project_root, environ) / "backend_daemon"
             )
-            directory = (daemon_root / "suite-leases" / token).resolve()
+            directory = (daemon_root / "suite-leases" / "v3" / token).resolve()
             directory.mkdir(parents=True)
             # Fork serialization covers lock acquisition as well as pipe admission:
             # otherwise a concurrent fork could inherit the lock before registration.

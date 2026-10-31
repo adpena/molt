@@ -432,19 +432,35 @@ def test_reached_windows_locale_provider_resolves_implicit_native_host(
         return host_triple
 
     monkeypatch.setattr(native_target, "_host_target_triple", host_target)
-    # `target_triple=None` means the host, and the profile ladder caches its
-    # unsupported features under that key per process. Resolve this test's host
-    # from a cold cache and leave no patched host behind for later tests.
-    unsupported = RUNTIME_FEATURES.runtime_features_unsupported_on_target
-    unsupported.cache_clear()
-    try:
-        message = _refusal_for_reached_symbols(
-            "molt_locale_getdefaultlocale", profile="full", target_triple=None
-        )
-    finally:
-        unsupported.cache_clear()
+    message = _refusal_for_reached_symbols(
+        "molt_locale_getdefaultlocale", profile="full", target_triple=None
+    )
     assert (message is None) is available
     assert calls and set(calls) == {host_triple}
+
+
+def test_implicit_host_features_follow_the_current_host_not_a_cached_one(monkeypatch):
+    """`None` is resolved per call; the cache is keyed by the concrete target (HF-608)."""
+    import molt.native_target as native_target
+
+    hosts = iter(("x86_64-pc-windows-msvc", "aarch64-apple-darwin"))
+    monkeypatch.setattr(native_target, "_host_target_triple", lambda **_: next(hosts))
+    unsupported = RUNTIME_FEATURES.runtime_features_unsupported_on_target
+    assert unsupported(None) == unsupported("x86_64-pc-windows-msvc")
+    assert unsupported(None) == unsupported("aarch64-apple-darwin")
+    assert unsupported("x86_64-pc-windows-msvc") != unsupported("aarch64-apple-darwin")
+
+
+def test_implicit_host_arch_and_os_come_from_one_resolver(monkeypatch):
+    import molt.native_target as native_target
+    from molt import _runtime_feature_gates as gates
+
+    monkeypatch.setattr(
+        native_target, "_host_target_triple", lambda **_: "x86_64-pc-windows-msvc"
+    )
+    assert gates.target_arch_from_triple(None) == "x86_64"
+    assert gates.target_os_from_triple(None) == "windows"
+    assert gates.target_arch_from_triple("wasm32-wasip1") == "wasm32"
 
 
 def test_unreached_windows_locale_provider_needs_no_target_os_resolution(

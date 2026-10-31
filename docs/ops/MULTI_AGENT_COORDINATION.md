@@ -167,6 +167,28 @@ Only the parent can assign expanded scope, research, proofs or delegation after
 reassessing the critical path. These are validated dispatch inputs and supervisory
 rules, not a sandbox or a mechanism that terminates arbitrary agent processes.
 
+### Brief review
+
+The parent reviews every brief before dispatch. A brief passes when:
+
+1. Every premise is checked. Paths, flags, fields, lines and commands are checked
+   against the checkout (`--help`, `ls`, `rg`), and every rule against the
+   repository's own infrastructure (hooks, generators, launchers), so a brief never
+   forbids what the repository requires. External facts cite a primary source.
+2. Each decision names the case it must refuse, its soundness condition and the
+   evidence that would overturn it. The worker stops and reports that evidence.
+3. Acceptance is an oracle: the invariant, plus tests that tell it from a plausible
+   defect. It is not a list of implementation steps.
+4. It names the cost bar and how to measure it.
+5. It names the lanes in flight, the shared state it touches and the merge points.
+6. It changes no earlier decision silently. A changed decision says so, and why.
+7. It states the stop conditions and the report format.
+
+The brief applies the engineering rules in `AGENTS.md` (typed lifecycles, minimum
+apparatus, whole-family migration); it does not restate them. Dispatch it as a file
+(`dispatch_prompt.py --out`), so a correction appended under a dated "Correction"
+heading reaches a running worker.
+
 Use one proof owner and inspect matching retained evidence before requesting a
 run. An independent reviewer challenges the changed contract and oracle; it does
 not automatically rerun a passing proof. Read-only findings are valid deliverables.
@@ -175,9 +197,15 @@ commit, proof-run or landing quota. `AGENTS.md` is the standing policy and
 `CLAUDE.md` imports that same authority.
 
 Classify facts and identities with typed structures, declared schemas and
-canonical deterministic parsers first. If genuine ambiguity remains, `fmtools`
-may assist classification on macOS as a fallback. It is not a cross-platform
-prerequisite or an authority that overrides typed identities and execution evidence.
+canonical deterministic parsers first. If genuine ambiguity remains, a local model
+may suggest a label. The backend is a typed capability chosen up front and recorded
+on every label, never try-then-fall-back: an OpenAI-compatible local server
+(llama.cpp `llama-server`, LM Studio) on every OS and architecture, or `fmtools`
+(Apple Foundation Models, with per-row candidate sets) on macOS 26. Measured on the
+ledger's 20 families (2026-10-31): Qwen3.8-27B 80%, embedding nearest neighbours
+50% top-1 and 75% top-3, Apple FM 18% (42% choosing among a top-3 shortlist). A
+label is advice, never a gate or an authority over typed identities and execution
+evidence. Keep models unloaded when idle; they hold memory that gates need.
 
 Every agent that may run builds, differential tests, conformance, regrtest,
 benchmarks, or long validation must do this before the first heavy command:

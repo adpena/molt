@@ -885,7 +885,9 @@ claims; exhaustive typing rejects classes without placement/retention policy.
   retain their state-root sibling scratch default. Set
   `disk:<absolute-existing-directory>` to place scratch on a chosen disk,
   such as an existing directory on a local SSD. `memory` selects Linux
-  `/dev/shm`; a bare absolute path selects a memory-backed directory you
+  `/dev/shm`, subject to the capability and refusal in the
+  [durable identity contract](design/durable_file_identity.md); use
+  `MOLT_SCRATCH_STORAGE=disk` when unavailable. A bare absolute path selects a memory-backed directory you
   mounted, such as a macOS RAM disk. Explicit disk and memory roots override
   state-root sibling placement for data scratch only. Molt never creates
   or mounts a RAM disk. Locks, guard markers, build control, products and
@@ -900,7 +902,7 @@ claims; exhaustive typing rejects classes without placement/retention policy.
   The root must already exist, be writable, lie outside source checkouts and
   pass `MOLT_EXTERNAL_MIN_FREE_GB` (default 20 GiB). The command never creates
   it. Every linked worktree reads the same
-  `<git common dir>/molt/artifact-root.json` record without shell startup files.
+  `<git common dir>/molt/artifact-root.v2.json` record without shell startup files.
   Explicit `MOLT_EXT_ROOT` takes precedence; preference flags cannot disable
   the binding. Without a binding, existing plain-clone defaults and candidate
   preferences remain. This is a maintainer storage choice, not a public CLI
@@ -1315,8 +1317,10 @@ fail closed; the inventory itself makes no claim about current file bytes.
 - Toolchain provenance is reused, not re-proved: a process captures each root set
   (Rust sysroot, LLVM SDK, C search paths such as the macOS SDK) once, and later
   fences verify it by directory and file stat tokens. File digests persist
-  under the Molt cache (`file-digests/v1.sqlite`); the content identity rules
-  are in [observed inputs and content identity](design/observed_inputs.md).
+  under the Molt cache; the content identity rules are in
+  [observed inputs and content identity](design/observed_inputs.md), and the
+  persisted identity families and namespaces are in
+  [durable file identity](design/durable_file_identity.md).
 
 ### Profiling harness
 - Use `tools/profile_hotspots.py` first when the question is dev/CI wall clock:
@@ -1483,3 +1487,6 @@ lanes must follow that protocol first.
 ### Merge discipline
 - Merge only after tests pass and conflicts are resolved.
 - If two agents touch the same area, rebase and re-validate.
+
+Artifact-root provisioning and retained-scratch migration follow the
+[durable filesystem identity contract](design/durable_file_identity.md).

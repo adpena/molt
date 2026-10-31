@@ -3966,7 +3966,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_EXT_ROOT",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Explicit artifact root for build state, caches, Cargo targets and scratch; it takes precedence over the durable Git-family binding in <git common dir>/molt/artifact-root.json. configured_artifact_root selects the explicit root or healthy binding; artifact_root otherwise uses requested healthy candidates or checkout custody, and RunContext exports the choice. A missing, replaced, unmounted or unhealthy bound root fails closed; python -m molt.checkout_provisioning artifact-root reports, binds or clears it.",
+      "summary": "Explicit artifact root for build state, caches, Cargo targets and scratch; it takes precedence over the durable Git-family binding in <git common dir>/molt/artifact-root.v2.json. configured_artifact_root selects the explicit root or healthy binding; artifact_root otherwise uses requested healthy candidates or checkout custody, and RunContext exports the choice. A missing, replaced, unmounted or unhealthy bound root fails closed; python -m molt.checkout_provisioning artifact-root reports, binds or clears it.",
       "values": []
     },
     {

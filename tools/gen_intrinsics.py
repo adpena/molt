@@ -939,11 +939,17 @@ def feature_for_symbol(symbol: str) -> str | None:
     return RUNTIME_SYMBOL_FEATURES.get(symbol)
 
 
-def target_arch_from_triple(target_triple: str | None) -> str | None:
-    \"\"\"Return the Rust target architecture component.\"\"\"
-    if target_triple is None:
-        return None
-    return target_triple.split("-", 1)[0]
+def target_arch_from_triple(target_triple: str | None) -> str:
+    \"\"\"Return the target architecture that availability facts name.
+
+    ``None`` is the host. Architecture and OS come from one resolver, so one
+    ``None`` never means the host for the OS and an unknown for the arch.
+    \"\"\"
+    if target_triple is not None and target_triple.startswith("wasm32"):
+        return "wasm32"
+    from molt.native_target import resolve_native_target_spec
+
+    return resolve_native_target_spec(target_triple).arch
 
 
 def target_os_from_triple(target_triple: str | None) -> str:
@@ -984,9 +990,10 @@ def runtime_symbol_available_on_target(
     symbol: str, *, target_triple: str | None, target_os: str | None
 ) -> bool:
     \"\"\"Whether *symbol* has a provider for *target_triple*.\"\"\"
-    if target_arch_from_triple(target_triple) in unsupported_target_arches_for_symbol(
-        symbol
-    ):
+    # Resolve the (possibly implicit host) architecture only for a symbol that
+    # has architecture restrictions, as the OS is resolved only when needed.
+    unsupported_arches = unsupported_target_arches_for_symbol(symbol)
+    if unsupported_arches and target_arch_from_triple(target_triple) in unsupported_arches:
         return False
     supported_oses = supported_target_oses_for_symbol(symbol)
     if supported_oses and target_os not in supported_oses:

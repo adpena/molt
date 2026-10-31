@@ -17,6 +17,9 @@ import subprocess
 import time
 from typing import BinaryIO
 
+from molt.durable_file_identity import (
+    StatToken,
+)
 from molt.default_paths import executable_environment_value, expand_user_path
 from molt.process_environment import ProcessEnvironment
 
@@ -68,10 +71,9 @@ class StableRegularFileVersion:
     _stat_identity: tuple[int, int, int, int, int, int]
     _content_change_time_ns: int
 
-    def stat_token(self) -> tuple[int, int, int, int, int, int]:
-        """This observation as a build-record token: (device, inode, mode,
-        size, mtime, content-change time), as `molt.input_report` takes it."""
-        return (*self._stat_identity[:5], self._content_change_time_ns)
+    def stat_token(self) -> StatToken:
+        """Class-B cache hint; operation-local device fences remain separate."""
+        return StatToken(*self._stat_identity[1:5], self._content_change_time_ns)
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,7 +725,10 @@ def _stable_regular_file_snapshot(
 
 
 def _regular_file_identity(
-    path: Path, metadata: os.stat_result, change_time_ns: int, digest: str
+    path: Path,
+    metadata: os.stat_result,
+    change_time_ns: int,
+    digest: str,
 ) -> StableRegularFileIdentity:
     return StableRegularFileIdentity(
         path=path,
@@ -825,7 +830,7 @@ def stable_regular_file_identity(
 class FileDigestCache:
     """Stat-keyed SHA-256 digests that processes on one host reuse.
 
-    A recorded digest is reused only for a file whose (device, inode, mode,
+    A recorded digest is reused only for a path whose (inode, mode,
     size, mtime_ns, ctime_ns) equals the observation it was recorded with, and
     only digests of files whose timestamps were already older than the racy
     window are recorded. POSIX kernels update ctime on every write and callers
@@ -838,16 +843,20 @@ class FileDigestCache:
         self.store = store
         self._max_age_ns = max_age_ns
         self._started_ns = time.time_ns()
-        self._recorded: dict[str, tuple[_StatToken, str, int] | None] = {}
-        self._pending: dict[str, tuple[_StatToken, str]] = {}
+        self._recorded: dict[str, tuple[StatToken, str, int] | None] = {}
+        self._pending: dict[str, tuple[StatToken, str]] = {}
 
     def _connect(self) -> sqlite3.Connection:
         self.store.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.store, timeout=60)
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(digests)")]
+        if "dev" in columns or "volume" in columns:
+            connection.close()
+            raise ValueError("legacy digest namespace requires the canonical v3 store")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute(
             "CREATE TABLE IF NOT EXISTS digests (path TEXT PRIMARY KEY,"
-            " dev INTEGER NOT NULL, ino INTEGER NOT NULL, mode INTEGER NOT NULL,"
+            " inode TEXT NOT NULL, mode INTEGER NOT NULL,"
             " size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,"
             " ctime_ns INTEGER NOT NULL, sha256 TEXT NOT NULL,"
             " recorded_ns INTEGER NOT NULL)"
@@ -855,16 +864,17 @@ class FileDigestCache:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS digests_recorded ON digests (recorded_ns)"
         )
+        connection.execute("PRAGMA user_version=3")
         return connection
 
-    def _row(self, key: str) -> tuple[_StatToken, str, int] | None:
+    def _row(self, key: str) -> tuple[StatToken, str, int] | None:
         # Fetch a bounded page of adjacent keys. Inventories visit nearby file
         # paths together, amortizing connection/WAL teardown without loading the
         # whole host store or keeping native SQLite handles between calls.
         if key not in self._recorded:
             with closing(self._connect()) as connection:
                 rows = connection.execute(
-                    "SELECT path, dev, ino, mode, size, mtime_ns, ctime_ns,"
+                    "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
                     " sha256, recorded_ns FROM digests WHERE path >= ?"
                     " ORDER BY path LIMIT 64",
                     (key,),
@@ -872,11 +882,7 @@ class FileDigestCache:
             for row in rows:
                 self._recorded.setdefault(
                     row[0],
-                    (
-                        (row[1], row[2], row[3], row[4], row[5], row[6]),
-                        row[7],
-                        row[8],
-                    ),
+                    (StatToken.from_payload([int(row[1]), *row[2:6]]), row[6], row[7]),
                 )
             self._recorded.setdefault(key, None)
         return self._recorded[key]
@@ -918,13 +924,18 @@ class FileDigestCache:
                 f"{label} is not one stable regular file: {path}"
             )
         key = os.fspath(path)
-        token = _stat_identity(expected_path_stat)
+        token = StatToken(
+            *_stat_identity(expected_path_stat)[1:],
+        )
         recorded = self._row(key)
         if recorded is not None and recorded[0] == token:
             if recorded[2] < self._started_ns - self._max_age_ns // 2:
                 self._pending[key] = (token, recorded[1])
             return _regular_file_identity(
-                path, expected_path_stat, expected_path_stat.st_ctime_ns, recorded[1]
+                path,
+                expected_path_stat,
+                expected_path_stat.st_ctime_ns,
+                recorded[1],
             )
         return None
 
@@ -935,7 +946,7 @@ class FileDigestCache:
             < self._started_ns - DIGEST_RACY_WINDOW_NS
         ):
             self._pending[os.fspath(identity.path)] = (
-                identity._stat_identity,
+                identity.stat_token(),
                 identity.sha256,
             )
 
@@ -944,12 +955,12 @@ class FileDigestCache:
         if not self._pending:
             return
         rows = [
-            (path, *token, sha256, self._started_ns)
+            (path, str(token.inode), *token.payload()[1:], sha256, self._started_ns)
             for path, (token, sha256) in self._pending.items()
         ]
         with closing(self._connect()) as connection, connection:
             connection.executemany(
-                "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             connection.execute(

@@ -5284,11 +5284,12 @@ def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
     envelope = command_admission.envelope_for_command(command)
     row = {"command_envelope_json": json.dumps(envelope)}
     log = tmp_path / "run.log"
+    old_request, old_result = command_identity.execution_record_paths(log)
+    old_request.parent.mkdir()
     stale_paths = [
-        log.with_suffix(".execution-request.json"),
-        log.with_suffix(".execution.json"),
-        log.with_suffix(".execution.stdout.bin"),
-        log.with_suffix(".execution.stderr.bin"),
+        old_request,
+        old_result,
+        *command_identity.execution_transcript_paths(old_result).values(),
         log.with_suffix(".memory_guard.json"),
     ]
     for path in stale_paths:

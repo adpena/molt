@@ -435,7 +435,9 @@ def test_next_publication_recovers_interrupted_cross_directory_transaction(
         crash.setattr(
             module,
             "_recover_transaction",
-            lambda _journals: module._TransactionRecovery(committed=False, retained=()),
+            lambda _journals: module._TransactionRecovery(
+                committed=False, retained=(), state=module.JournalState.ROLLED_BACK
+            ),
         )
         with pytest.raises(OSError, match="simulated process loss"):
             module.publish_validated_outputs([(staged_a, final_a), (staged_b, final_b)])
@@ -531,7 +533,9 @@ def test_prepared_recovery_preserves_an_unrelated_replacement(
         crash.setattr(
             module,
             "_recover_transaction",
-            lambda _: module._TransactionRecovery(False, ()),
+            lambda _: module._TransactionRecovery(
+                False, (), module.JournalState.ROLLED_BACK
+            ),
         )
         with pytest.raises(OSError, match="publisher lost"):
             module.publish_validated_outputs(list(zip(stages, finals)))

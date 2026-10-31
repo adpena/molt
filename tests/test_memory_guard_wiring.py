@@ -1017,6 +1017,7 @@ def test_pytest_process_enters_run_context_roots_and_keeps_explicit_ones(
 ) -> None:
     for key in dx.MOLT_ROOT_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
     explicit_cache = tmp_path / "explicit-cache"
     monkeypatch.setenv("MOLT_CACHE", str(explicit_cache))
     monkeypatch.setenv("MOLT_SESSION_ID", "pytest-41")
@@ -1475,7 +1476,7 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
 
     assert pytest_memory_guard_bootstrap.install_pytest_custody_roots()
     temproot = Path(os.environ["PYTEST_DEBUG_TEMPROOT"])
-    assert temproot.parent == tmp_path / "artifact-root" / "tmp"
+    assert temproot.parent == tmp_path / "artifact-root" / "tmp" / "gs" / "v2"
     assert temproot.name.startswith("pt-")
     assert temproot == scratch_lease.target
     assert len(temproot.name) <= 16
@@ -1502,7 +1503,7 @@ def test_pytest_temp_root_reuses_short_parent_owned_allocation(
     second = pytest_memory_guard_bootstrap.guarded_pytest_temp_root()
     assert first == second == scratch_lease.target
     for path in (first, second):
-        assert path.parent == tmp_path / "artifact-root" / "tmp"
+        assert path.parent == tmp_path / "artifact-root" / "tmp" / "gs" / "v2"
         assert path.is_dir()
         assert len(path.name) <= 16
 

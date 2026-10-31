@@ -291,7 +291,7 @@ def test_compare_reference_failure_retains_only_unclosed_owned_namespace(
     def allocate(**kwargs):
         owner = original_allocation(dir=tmp_path, **kwargs)
         owners.append(owner)
-        identities.append(temporary_artifacts._identity(Path(owner.name)))
+        identities.append(owner._identity)
         return owner
 
     receipt = SimpleNamespace(
@@ -384,7 +384,7 @@ def test_compare_refuses_unclosed_reference_result_and_retains_namespace(
     def allocate(**kwargs):
         owner = original_allocation(dir=tmp_path, **kwargs)
         owners.append(owner)
-        identities.append(temporary_artifacts._identity(Path(owner.name)))
+        identities.append(owner._identity)
         return owner
 
     def execute(command, **kwargs):
@@ -1083,9 +1083,7 @@ def test_compare_metadata_failure_aborts_before_next_candidate_or_payload(
     def allocate(**kwargs):
         allocation = original_allocation(dir=tmp_path, **kwargs)
         owners.append(allocation)
-        allocation_identities.append(
-            temporary_artifacts._identity(Path(allocation.name))
-        )
+        allocation_identities.append(allocation._identity)
         return allocation
 
     receipt = SimpleNamespace(descendants_closed=closed)

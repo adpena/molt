@@ -1684,7 +1684,7 @@ def test_source_namespace_reclamation_failure_cannot_mix_wal_generations(
     first = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
     assert first["entries_failed"] == 1 and not root.exists()
     residue = [
-        p for p in root.parent.iterdir() if p.name.startswith(".molt-retired-v1-")
+        p for p in root.parent.iterdir() if p.name.startswith(".molt-retired-v2-")
     ]
     assert len(residue) == 1
     lease = _try_acquire_file_lock(lock, shared=True)
@@ -1837,7 +1837,7 @@ def test_malformed_source_retirement_preserves_evidence_and_continues_sweep(tmp_
     namespace.mkdir(parents=True)
     (namespace / "records.sqlite").write_bytes(b"idle older namespace")
     prefix = hashlib.sha256(records.SOURCE_RECORD_RETIREMENT_SCOPE.encode()).hexdigest()
-    malformed = namespace.parent / f".molt-retired-v1-{prefix}-junk"
+    malformed = namespace.parent / f".molt-retired-v2-{prefix}-junk"
     malformed.write_bytes(b"unqualified retirement evidence")
     artifact = cache / f"{_cache_key('program')}.artifact-{_cache_key('contract')}.o"
     artifact.write_bytes(b"unrelated evictable object")
@@ -1865,9 +1865,16 @@ def test_backend_origin_receipt_shares_publication_eviction_lifetime(tmp_path, s
     artifact = root / ("a" * 64 + ".artifact-" + "b" * 64 + ".o")
     receipt = backend_cache_sync_receipt_path(artifact)
     receipt.write_bytes(b"original receipt")
+    foreign = [
+        artifact.with_name(artifact.name + suffix)
+        for suffix in (".sync.json", ".sync.v4.json")
+    ]
+    for path in foreign:
+        path.write_bytes(b"foreign receipt")
     if state == "paired":
         artifact.write_bytes(b"original object")
     entries = module._collect_entries(root)
+    assert all(entry.path not in foreign for entry in entries)
     selected = [entry for entry in entries if entry.path in (artifact, receipt)]
     assert len(selected) == 1
     entry = selected[0]
@@ -1888,3 +1895,4 @@ def test_backend_origin_receipt_shares_publication_eviction_lifetime(tmp_path, s
         assert module._remove_entry(entry, False) == "removed"
         assert not artifact.exists()
         assert not receipt.exists()
+    assert all(path.read_bytes() == b"foreign receipt" for path in foreign)

@@ -64,7 +64,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.proof_queue_pkg import state as proof_queue_state  # noqa: E402
 
 
-SCHEMA = "molt.runtime-wasm-final-preflight.v3"
+SCHEMA = "molt.runtime-wasm-final-preflight.v5"
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 _GIT_TIMEOUT_SECONDS = 30.0
 _COMPILER_MUTEX = "compiler-build-resource"
@@ -534,7 +534,9 @@ def _disk_facts(
         capacity = probe_capacity(anchor, required_bytes=reserve_bytes)
         usage = shutil.disk_usage(anchor)
         by_volume[volume] = {
-            "volume": volume,
+            # Diagnostic label only; st_dev groups this single observation,
+            # and neither it nor a volume authority enters the receipt.
+            "volume": f"mount-anchor:{os.fspath(anchor)}",
             "anchor": os.fspath(anchor),
             "total_bytes": usage.total,
             "used_bytes": usage.used,
@@ -867,6 +869,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         receipt = (
             context.roots.custody
             / "logs/runtime_wasm_final_preflight"
+            / "v5"
             / f"{context.claim.run_id}.json"
         )
         if not host_path_is_within(receipt, context.roots.custody):

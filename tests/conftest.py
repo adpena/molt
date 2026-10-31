@@ -34,12 +34,20 @@ CHECKOUT_TARGET = ROOT / "target"
 def short_cargo_cache() -> Iterator[Path]:
     """Owned temporary cache whose native startup socket fits on macOS."""
     import tempfile
-    from molt.dx import storage_path
+    from molt.dx import StorageWriteClaim, grant_storage_writes, storage_path
 
-    parent = storage_path(ROOT, "run-control", os.environ)
+    # A deliberately long lane artifact root cannot hold an AF_UNIX startup
+    # socket. This is an explicit temporary fixture output, not a provider's
+    # production placement fallback or another lane's storage.
+    parent = (
+        Path("/tmp").resolve()
+        if os.name == "posix"
+        else storage_path(ROOT, "run-control", os.environ)
+    )
     parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="cenv-", dir=parent) as raw:
-        yield Path(raw) / "cache"
+    with tempfile.TemporaryDirectory(prefix="molt-sc-", dir=parent) as raw:
+        with grant_storage_writes(StorageWriteClaim("temporary", Path(raw))):
+            yield Path(raw) / "cache"
 
 
 @pytest.fixture(autouse=True)
@@ -240,7 +248,7 @@ def unbound_checkout_family(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve this checkout's family as unbound inside the test process.
 
     A developer host may bind the family's artifact root
-    (`.git/molt/artifact-root.json`); hosted CI never does. A test whose subject
+    (`.git/molt/artifact-root.v2.json`); hosted CI never does. A test whose subject
     is unbound selection for the real checkout uses this. Only this process
     stops seeing the binding: a child process still reads it from disk, so a
     test whose children resolve roots runs them on an unbound scratch clone.

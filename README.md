@@ -214,7 +214,10 @@ scratch placement while control state, build products and caches stay in their
 configured locations. Default disk scratch belongs to one lane under
 `<artifact root>/tmp/scratch-<checkout path digest>` and retires after three
 idle days into a recoverable seven-day holding area. See [scratch storage and budget](docs/OPERATIONS.md#build-throughput-multi-agent)
-for defaults, memory-backed storage and free-space admission.
+for defaults, memory-backed storage and free-space admission. Linux
+`MOLT_SCRATCH_STORAGE=memory` requires the capability described in the
+[durable identity contract](docs/design/durable_file_identity.md); unsupported
+hosts use `MOLT_SCRATCH_STORAGE=disk`.
 
 Managed compiler/runtime source builds keep Cargo intermediates with the
 captured external toolchain inputs; ordinary source edits retain incremental

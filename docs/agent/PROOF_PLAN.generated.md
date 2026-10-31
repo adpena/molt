@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 443 |
+| Hashed executable authority inputs | 1 | 444 |
 | Local path rules | 35 | 81 |
 | Unique local commands | 73 | 81 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -57,7 +57,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 154 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 155 |
 
 ## Scheduled families
 
@@ -383,20 +383,20 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `checkout-output-custody` | 14 | 0 |
 | `fresh-guard-observer` | 2 | 0 |
 | `host-entrypoint-imports` | 13 | 0 |
-| `host-capacity` | 15 | 0 |
+| `host-capacity` | 16 | 0 |
 | `guard-marker-custody` | 10 | 0 |
 | `process-environment-consumers` | 9 | 0 |
 | `repository-scan-records` | 4 | 0 |
 | `guard-wiring-source-observation` | 3 | 0 |
 | `rust-source-scan-consumers` | 5 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
-| `build-early-cutoff` | 9 | 0 |
-| `runtime-cargo-input-custody` | 57 | 0 |
+| `build-early-cutoff` | 10 | 0 |
+| `runtime-cargo-input-custody` | 58 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |
 | `target-python-extension-release-identity` | 5 | 0 |
 | `memory-graph` | 4 | 1 |
-| `native-toolchain-transfer` | 38 | 0 |
+| `native-toolchain-transfer` | 39 | 0 |
 | `proof-plan-tests` | 1 | 0 |
 | `ci-wiring` | 53 | 0 |
 | `apparatus-hooks` | 11 | 2 |

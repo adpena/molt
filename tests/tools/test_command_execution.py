@@ -518,7 +518,12 @@ def _effective_ssh(env, home: Path) -> dict[str, str]:
     command = env["GIT_SSH_COMMAND"]
     result = run_guarded_test_process(
         ["sh", "-c", f'{command} "$@"', command, "-G", "example.invalid"],
-        env={**env, "HOME": str(home), "PATH": os.environ["PATH"]},
+        env={
+            **env,
+            "HOME": str(home),
+            "PATH": os.environ["PATH"],
+            "MOLT_EXT_ROOT": str(home.parent),
+        },
     )
     assert result.returncode == 0, result.stderr
     effective: dict[str, str] = {}
@@ -672,6 +677,7 @@ def test_git_transfer_reads_settings_as_git_does_and_git_agrees(tmp_path):
         "HOME": str(tmp_path),
         "GIT_CONFIG_GLOBAL": str(global_config),
         "GIT_CONFIG_NOSYSTEM": "1",
+        "MOLT_EXT_ROOT": str(tmp_path),
     }
     repo = tmp_path / "repo"
 

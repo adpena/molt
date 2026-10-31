@@ -41,6 +41,10 @@ import time
 import warnings
 import weakref
 
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    file_identity,
+)
 from molt.exact_json import (
     ExactJsonError,
     canonical_json_sha256,
@@ -75,7 +79,7 @@ from molt.memory_guard_paths import STATE_ROOT_ENV, memory_guard_state_root
 from molt.toolchain_identity import StableRegularFileError
 
 
-SCHEMA = "molt.guard-scratch.v1"
+SCHEMA = "molt.guard-scratch.v2"
 _TOKEN = re.compile(r"[0-9a-f]{32}")
 _TARGET_NAME = re.compile(r"pt-[a-z0-9_]{8}")
 _MAX_RECEIPT_BYTES = 65536
@@ -197,14 +201,16 @@ def scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
     # A short root preserves Windows compiler/linker path budget. A
     # A queue-issued state root supplies default data placement. An explicit
     # storage root selects data independently; control state stays unchanged.
-    if (
-        environ.get(STATE_ROOT_ENV, "").strip()
-        and scratch_storage(environ).root is None
-    ):
+    storage = scratch_storage(environ)
+    if storage.mode == "memory":
+        assert storage.root is not None
+        # Refuse missing unique-mount capability before allocating a generation.
+        file_identity(storage.root)
+    if environ.get(STATE_ROOT_ENV, "").strip() and storage.root is None:
         return resolve_owned_path(
-            memory_guard_state_root(repo_root, environ).parent / _ROOT_DIRNAME
+            memory_guard_state_root(repo_root, environ).parent / _ROOT_DIRNAME / "v2"
         )
-    return resolve_owned_path(scratch_dir(repo_root, _ROOT_DIRNAME, environ))
+    return resolve_owned_path(scratch_dir(repo_root, _ROOT_DIRNAME, environ) / "v2")
 
 
 def _generation(root: Path, token: str) -> Path:
@@ -213,7 +219,7 @@ def _generation(root: Path, token: str) -> Path:
     return resolve_owned_path(root / token)
 
 
-def _identity(path: Path) -> dict[str, int]:
+def _live_identity(path: Path) -> tuple[int, int]:
     metadata = path.lstat()
     if (
         not stat.S_ISDIR(metadata.st_mode)
@@ -221,7 +227,30 @@ def _identity(path: Path) -> dict[str, int]:
         or not metadata.st_ino
     ):
         raise ValueError("scratch target must be a direct directory")
-    return {"device": metadata.st_dev, "inode": metadata.st_ino}
+    return metadata.st_dev, metadata.st_ino
+
+
+def _identity(path: Path) -> dict[str, str]:
+    _live_identity(path)
+    return file_identity(path).payload()
+
+
+def _same_identity(left: object, right: object) -> bool:
+    """Decode persisted identities before comparing filesystem custody."""
+    try:
+        return DurableFileIdentity.from_payload(
+            left
+        ) == DurableFileIdentity.from_payload(right)
+    except ValueError:
+        return False
+
+
+def _same_owner(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
+    if not _same_identity(left.get("target_identity"), right.get("target_identity")):
+        return False
+    return {key: value for key, value in left.items() if key != "target_identity"} == {
+        key: value for key, value in right.items() if key != "target_identity"
+    }
 
 
 def _target(generation: Path, owner: Mapping[str, object]) -> Path:
@@ -231,7 +260,7 @@ def _target(generation: Path, owner: Mapping[str, object]) -> Path:
     target = resolve_owned_path(Path(raw))
     if owner.get("state") in {"leased", "indeterminate"}:
         if (
-            target.parent != generation.parent.parent
+            target.parent != generation.parent
             or _TARGET_NAME.fullmatch(target.name) is None
         ):
             raise ValueError("scratch target is outside its exact allocation namespace")
@@ -249,7 +278,7 @@ def _locked(generation: Path) -> Generator[None]:
     moved between the check and the lock is gone.
     """
     resolve_owned_path(generation)
-    identity = _identity(generation)
+    identity = _live_identity(generation)
     try:
         handle = _try_acquire_file_lock(
             resolve_owned_path(generation / "lock"), create=False
@@ -257,14 +286,14 @@ def _locked(generation: Path) -> Generator[None]:
     except FileNotFoundError as error:
         # A live owner holds its lock file; a remover moves the whole
         # generation. A generation left without one lost it to a crash.
-        if _identity(generation) != identity:
+        if _live_identity(generation) != identity:
             raise
         raise _CrashResidue(f"scratch generation lock is absent: {error}") from error
     if handle is None:
         raise ScratchBusy(f"scratch generation is busy: {generation}")
     try:
         resolve_owned_path(generation)
-        if _identity(generation) != identity:
+        if _live_identity(generation) != identity:
             raise FileNotFoundError(
                 errno.ENOENT, "scratch generation was removed", str(generation)
             )
@@ -337,6 +366,8 @@ def _read_receipt(path: Path, *, label: str, absent_is_residue: bool = True) -> 
 
 
 def _owner(generation: Path) -> dict[str, object]:
+    if generation.parent.name != "v2":
+        raise ValueError("foreign scratch version; retained by the storage authority")
     value = _read_receipt(generation / "owner.json", label="scratch owner")
     if not isinstance(value, dict):
         raise _owner_mismatch(generation, "owner", {}, value)
@@ -371,6 +402,7 @@ def _owner(generation: Path) -> dict[str, object]:
         raise _owner_mismatch(
             generation, "target_identity", {}, value.get("target_identity")
         )
+    DurableFileIdentity.from_payload(value["target_identity"])
     return value
 
 
@@ -401,10 +433,10 @@ def new_temporary_directory(root: Path, *, prefix: str = "tmp") -> Path:
 
 
 def _cleanup_temporary_directory(
-    path: Path, identity: dict[str, int], *, warn: bool = False
+    path: Path, identity: tuple[int, int], *, warn: bool = False
 ) -> None:
     try:
-        current = _identity(path)
+        current = _live_identity(path)
     except FileNotFoundError:
         return
     if current != identity:
@@ -426,7 +458,7 @@ class OwnedTemporaryDirectory:
             Path(tempfile.gettempdir()) if dir is None else Path(dir), prefix=prefix
         )
         self.name = str(self._path)
-        self._identity = _identity(self._path)
+        self._identity = _live_identity(self._path)
         self._finalizer = weakref.finalize(
             self, _cleanup_temporary_directory, self._path, self._identity, warn=True
         )
@@ -466,7 +498,7 @@ def acquire_guard_scratch(
         raise RuntimeError("new scratch generation unexpectedly locked")
     target: Path | None = None
     try:
-        target = new_temporary_directory(generation.parent.parent, prefix="pt-")
+        target = new_temporary_directory(generation.parent, prefix="pt-")
         nonce = secrets.token_hex(16)
         _write_target_receipt(target, nonce)
         owner = {
@@ -505,7 +537,7 @@ def _write_target_receipt(target: Path, nonce: str) -> None:
 
 def _generation_of_target(target: Path, token: str) -> Path:
     """Return the generation that owns a lease target (``acquire_guard_scratch``)."""
-    return _generation(resolve_owned_path(target.parent / _ROOT_DIRNAME), token)
+    return _generation(resolve_owned_path(target.parent), token)
 
 
 def guard_scratch(environ: Mapping[str, str]) -> Path:
@@ -530,7 +562,7 @@ def guard_scratch(environ: Mapping[str, str]) -> Path:
             owner.get("guard_marker"), environ.get("MOLT_MEMORY_GUARD_MARKER")
         )
         or not _same_owned_path(str(target), environ.get(SCRATCH_ENV))
-        or _identity(target) != owner["target_identity"]
+        or not _same_identity(_identity(target), owner["target_identity"])
     ):
         raise ValueError("scratch is not the active parent's allocation")
     return target
@@ -594,7 +626,7 @@ def _terminal(generation: Path, owner: Mapping[str, object]) -> _ScratchTerminal
     if (
         terminal.get("schema") != SCHEMA
         or terminal.get("token") != owner["token"]
-        or terminal.get("target_identity") != owner["target_identity"]
+        or not _same_identity(terminal.get("target_identity"), owner["target_identity"])
         or not _same_owned_path(terminal.get("target"), owner.get("target"))
         or not _same_owned_path(str(generation), terminal.get("generation"))
         or terminal.get("closed") is not True
@@ -633,7 +665,9 @@ def _require_move_committed(
     if terminal.source_target is None:
         return
     try:
-        undone = _identity(Path(terminal.source_target)) == owner["target_identity"]
+        undone = _same_identity(
+            _identity(Path(terminal.source_target)), owner["target_identity"]
+        )
     except (OSError, ValueError):
         return
     if undone:
@@ -680,7 +714,7 @@ def _recover_transition_locked(
         elif (
             owner["state"] == "retiring"
             and target.exists()
-            and _identity(target) == owner["target_identity"]
+            and _same_identity(_identity(target), owner["target_identity"])
         ):
             owner = {**owner, "state": "retained"}
         else:
@@ -870,7 +904,7 @@ def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, obj
         raise ValueError("scratch is not terminal and reclaimable")
     terminal = _terminal(generation, owner)
     target = _target(generation, owner)
-    if _payload_identity(target) != owner["target_identity"]:
+    if not _same_identity(_payload_identity(target), owner["target_identity"]):
         raise ValueError("scratch target generation changed before reclamation")
     if not terminal.success:
         try:
@@ -922,7 +956,7 @@ def _locked_resolution[T](
         return None, _block_residue_locked(generation, residue)
 
 
-def _payload_identity(target: Path) -> dict[str, int]:
+def _payload_identity(target: Path) -> dict[str, str]:
     """Identity of a retained payload; an absent one is crash residue.
 
     The owner records ``retained`` only after the payload moved in, and an
@@ -1142,7 +1176,9 @@ def _adopt_locked(
             "error": None,
         }
         return _publish_archived_failure(generation, owner, state="reclaimed")
-    if identity != owner["target_identity"] or not _holds_target_receipt(target, owner):
+    if not _same_identity(
+        identity, owner["target_identity"]
+    ) or not _holds_target_receipt(target, owner):
         owner = {
             **owner,
             "state": "blocked",
@@ -1187,6 +1223,12 @@ def resolve_guard_scratch(
     count as resolved here. ``resolved`` False keeps the guard marker active.
     """
     generation = resolve_owned_path(generation)
+    if generation.parent.name != "v2":
+        return {
+            "generation": str(generation),
+            "state": "foreign-version",
+            "resolved": closure is not None,
+        }
     if not os.path.lexists(generation):
         return {"generation": str(generation), "state": "absent", "resolved": True}
 
@@ -1257,6 +1299,8 @@ def inspect_guard_scratch(generation: Path) -> str:
     """Read one generation's state without its lock, for dry runs only."""
     try:
         generation = resolve_owned_path(generation)
+        if generation.parent.name != "v2":
+            return "foreign-version"
         if not os.path.lexists(generation):
             return "absent"
         return str(_owner(generation)["state"])
@@ -1349,10 +1393,10 @@ def _finish_guard_scratch_owned(
     try:
         with timings.measure(ScratchFinalizationPhase.TERMINAL_PUBLICATION):
             owner = _owner(generation)
-            if owner != lease.owner:
+            if not _same_owner(owner, lease.owner):
                 raise ValueError("scratch owner changed from the parent's allocation")
             target = _target(generation, owner)
-            if _identity(target) != owner["target_identity"]:
+            if not _same_identity(_identity(target), owner["target_identity"]):
                 raise ValueError("scratch target changed before terminal publication")
             if not closed:
                 owner = {
@@ -1404,7 +1448,7 @@ def _finish_guard_scratch_owned(
                 exclusive=True,
                 durability=_RECORDS,
             )
-            if _owner(generation) == lease.owner:
+            if _same_owner(_owner(generation), lease.owner):
                 write_exact(
                     generation / "owner.json",
                     {**lease.owner, "state": "indeterminate", "error": str(error)},
@@ -1470,7 +1514,9 @@ def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
     if owner["state"] != "retained":
         return _PendingVisit()
     terminal = _terminal(generation, owner)
-    if _payload_identity(_target(generation, owner)) != owner["target_identity"]:
+    if not _same_identity(
+        _payload_identity(_target(generation, owner)), owner["target_identity"]
+    ):
         raise ValueError("retained scratch payload identity changed")
     return _PendingVisit(
         candidate=(
@@ -1561,9 +1607,8 @@ def reclaim_terminal_scratch(
                     )
                 ):
                     _terminal(generation, owner)
-                    if (
-                        _identity(_target(generation, owner))
-                        != owner["target_identity"]
+                    if not _same_identity(
+                        _identity(_target(generation, owner)), owner["target_identity"]
                     ):
                         raise ValueError("retained scratch payload identity changed")
                     kept_count += 1
