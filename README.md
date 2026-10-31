@@ -171,6 +171,7 @@ production-optimized compiler, WASM inspection tool and prebuilt runtimes for th
 physical runtime cells while retaining distinct compiled products. Installed
 compilation never builds Rust or provisions an LLVM SDK. Compiler developers can opt
 into a development host build with `MOLT_BACKEND_PROFILE=dev` in a source checkout.
+LLVM/MLIR development follows the [pinned SDK contract](docs/spec/areas/tooling/0001-toolchains.md#canonical-llvm-sdk-readiness).
 `--diagnostics` reports the compiler identity/profile separately from the program
 and runtime profiles, together with build-phase and cache information.
 

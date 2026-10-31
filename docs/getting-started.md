@@ -53,6 +53,9 @@ uv run --python 3.12 molt doctor --json
 
 Resolve any reported toolchain errors before building. Exit code `0` means the
 doctor checks passed; it does not prove program semantics or target parity.
+For the LLVM backend, follow the [pinned SDK contract](spec/areas/tooling/0001-toolchains.md#canonical-llvm-sdk-readiness);
+default admission requires its managed installation and reports the bootstrap
+command when that installation is absent.
 
 ## Build And Run Hello World
 
