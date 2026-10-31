@@ -29,7 +29,7 @@ def test_receiver_hint_requires_a_proved_binding_rule(descriptor, expected):
     assert authority._class_method_receiver_hint(SUBJECT, descriptor, 1) is None
 
 
-@pytest.mark.parametrize("decorator", ["staticmethod", "alias"])
+@pytest.mark.parametrize("decorator", ["staticmethod", "alias", "opaque"])
 @pytest.mark.parametrize(
     "definition",
     [
@@ -57,7 +57,8 @@ def test_every_method_execution_kind_consumes_receiver_authority(
     generator = SimpleTIRGenerator(target_python=(3, 14))
     generator.visit(
         ast.parse(
-            "alias = staticmethod\nclass Subject:\n"
+            "alias = staticmethod\ndef opaque(function):\n    return function\n"
+            "class Subject:\n"
             f"    @{decorator}\n    {definition}\n"
         )
     )
@@ -65,5 +66,8 @@ def test_every_method_execution_kind_consumes_receiver_authority(
     assert verification.ok, verification.errors
     assert observed
     assert all(hint is None for _, hint in observed)
-    if decorator == "alias":
-        assert all(descriptor == "decorated" for descriptor, _ in observed)
+    # The binding proof resolves a module alias bound once to staticmethod
+    # (spec 0216 excludes rebinding it from outside); an unproven decorator
+    # stays generic.
+    expected = "decorated" if decorator == "opaque" else "staticmethod"
+    assert all(descriptor == expected for descriptor, _ in observed)

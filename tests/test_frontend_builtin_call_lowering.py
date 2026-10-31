@@ -3352,17 +3352,18 @@ def test_imported_callable_hint_respects_link_partition(
 
 
 @pytest.mark.parametrize(
-    ("source", "calls", "guarded"),
+    ("source", "calls", "stable_binding"),
     [
         # Self-recursion: each call reads the live global, then calls through
         # the identity guard with the function's own code symbol.
         ("def fib(n):\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\n", 2, True),
-        # The module rebinds the name, so it has no stable code symbol.
+        # Rebinding retains the definition as a candidate. The guard must
+        # inspect the live global and miss when it has become a builtin.
         ("def fib(n):\n    return fib(n - 1)\nfib = abs\n", 1, False),
     ],
 )
 def test_global_function_read_calls_through_identity_guard(
-    source: str, calls: int, guarded: bool
+    source: str, calls: int, stable_binding: bool
 ) -> None:
     gen = SimpleTIRGenerator()
     gen.visit(ast.parse(source))
@@ -3372,12 +3373,25 @@ def test_global_function_read_calls_through_identity_guard(
     guarded_calls = [op for op in ops if op.kind == "CALL_GUARDED"]
     # The read keeps LOAD_GLOBAL semantics; the guard checks what it returned.
     assert len(reads) == calls
-    assert len(guarded_calls) == (calls if guarded else 0)
+    assert len(guarded_calls) == calls
     for call in guarded_calls:
         assert call.args[0] in reads
         assert call.metadata["target"] == symbol
-    if not guarded:
-        assert sum(op.kind == "CALL_FUNC" for op in ops) == calls
+    # CPython supplies the independent result for a retained function object
+    # after the rest of its module runs. Calling its old code directly after
+    # the rebind would recurse rather than invoke the new global value.
+    oracle = ast.parse(source)
+    namespace = {}
+    exec(
+        compile(ast.Module(oracle.body[:1], type_ignores=[]), "<oracle>", "exec"),
+        namespace,
+    )
+    retained = namespace["fib"]
+    exec(
+        compile(ast.Module(oracle.body[1:], type_ignores=[]), "<oracle>", "exec"),
+        namespace,
+    )
+    assert retained(6 if stable_binding else -3) == (8 if stable_binding else 4)
 
 
 def test_stdlib_direct_call_requires_lowered_target_module() -> None:

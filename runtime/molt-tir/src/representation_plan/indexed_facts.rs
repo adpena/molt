@@ -1283,7 +1283,6 @@ pub(super) fn simple_op_produces_non_scalar_value(kind: molt_ir::OpKind) -> bool
             | molt_ir::OpKind::CallargsNew
             | molt_ir::OpKind::ClassmethodNew
             | molt_ir::OpKind::CodeNew
-            | molt_ir::OpKind::DataclassNew
             | molt_ir::OpKind::DataclassNewValues
             | molt_ir::OpKind::DictNew
             | molt_ir::OpKind::ExceptionNew

@@ -1974,10 +1974,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "dataclass_get",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassNew,
-        name: "dataclass_new",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassNewFromValues,
         name: "dataclass_new_from_values",
     },
@@ -12056,8 +12052,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
         "dataclass_get" => Some(WasmRuntimeImport::DataclassGet),
         "molt_dataclass_get" => Some(WasmRuntimeImport::DataclassGet),
-        "dataclass_new" => Some(WasmRuntimeImport::DataclassNew),
-        "molt_dataclass_new" => Some(WasmRuntimeImport::DataclassNew),
         "dataclass_new_from_values" => Some(WasmRuntimeImport::DataclassNewFromValues),
         "molt_dataclass_new_from_values" => Some(WasmRuntimeImport::DataclassNewFromValues),
         "dataclass_set" => Some(WasmRuntimeImport::DataclassSet),

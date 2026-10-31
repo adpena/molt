@@ -8,6 +8,8 @@ layout, namespace, and dataclass construction authority.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
 )
@@ -61,8 +63,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             raise FrontendRejection(
                 Diagnostic.INTERNAL_INVARIANT, "Method definition has no class owner"
             )
-        if self._has_typing_overload_decorator(item):
-            return
+
         definition = self._prepare_function_definition(item)
         with self._type_parameter_scope(definition.type_parameter_bindings):
             previous_method = scope.methods.get(item.name)
@@ -210,19 +211,15 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         ].get("dynamic"):
             return "decorated", None
         decorator = item.decorator_list[0]
-        if isinstance(decorator, ast.Name) and decorator.id in {
-            "classmethod",
-            "staticmethod",
-            "property",
-        }:
-            index = self.python_binding_index
-            fact = index.expression_fact(decorator) if index is not None else None
-            if (
-                fact is not None
-                and not fact.binding_invalidated
-                and not fact.binding_is_bound
+        index = self.python_binding_index
+        if index is not None:
+            for identity, descriptor in (
+                (PythonIdentity.BUILTIN_CLASSMETHOD, "classmethod"),
+                (PythonIdentity.BUILTIN_STATICMETHOD, "staticmethod"),
+                (PythonIdentity.BUILTIN_PROPERTY, "property"),
             ):
-                return cast(MethodDescriptor, decorator.id), None
+                if index.expression_is(decorator, identity):
+                    return cast(MethodDescriptor, descriptor), None
         if (
             isinstance(decorator, ast.Attribute)
             and isinstance(decorator.value, ast.Name)

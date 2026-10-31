@@ -17,17 +17,6 @@ from molt.frontend.sema import (
 
 
 class SemaStateMixin(GeneratorMixinBase):
-    def _module_stable_funcs(self, node: ast.Module) -> set[str]:
-        counts, funcs, dynamic = self._collect_module_assignments(node)
-        if dynamic:
-            return set()
-        global_rebinds = self._collect_global_rebinds(node)
-        return {
-            name
-            for name in funcs
-            if counts.get(name, 0) == 1 and name not in global_rebinds
-        }
-
     def _populate_sema_state(self, node: ast.Module) -> SemaResult:
         """Compute the module's :class:`SemaResult` once, pre-walk, and populate
         the existing god-object pre-walk state dicts from it (doc 44 §F2b).

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from molt.compiler_analysis.python_import_scan import (
+    SourceImportPurpose,
     _collect_imports_for_graph,
     _collect_import_scan_requests,
 )
@@ -730,6 +731,7 @@ def _stdlib_module_import_evidence_from_tree(
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=admission,
+        purpose=SourceImportPurpose.INVENTORY,
     )
     scan = _collect_import_scan_requests(
         projection,
@@ -740,6 +742,7 @@ def _stdlib_module_import_evidence_from_tree(
         target_python=target_python,
         namespace_premise=namespace_premise,
         ast_digest_admission=admission,
+        purpose=SourceImportPurpose.INVENTORY,
     )
     facade_imports = _pure_facade_imports(tree)
     facade_keys = {python_node_source_key(node) for node in facade_imports or ()}

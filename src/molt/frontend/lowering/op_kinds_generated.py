@@ -172,7 +172,6 @@ FrontendOpKind = Literal[
     'COPY',
     'COPY_VAR',
     'DATACLASS_GET',
-    'DATACLASS_NEW',
     'DATACLASS_NEW_VALUES',
     'DATACLASS_SET',
     'DATACLASS_SET_CLASS',
@@ -712,7 +711,6 @@ WireOpKind = Literal[
     'copy',
     'copy_var',
     'dataclass_get',
-    'dataclass_new',
     'dataclass_new_values',
     'dataclass_set',
     'dataclass_set_class',
@@ -1244,7 +1242,6 @@ class FrontendKinds:
     COPY: Final = 'COPY'
     COPY_VAR: Final = 'COPY_VAR'
     DATACLASS_GET: Final = 'DATACLASS_GET'
-    DATACLASS_NEW: Final = 'DATACLASS_NEW'
     DATACLASS_NEW_VALUES: Final = 'DATACLASS_NEW_VALUES'
     DATACLASS_SET: Final = 'DATACLASS_SET'
     DATACLASS_SET_CLASS: Final = 'DATACLASS_SET_CLASS'
@@ -1784,7 +1781,6 @@ class WireKinds:
     COPY: Final = 'copy'
     COPY_VAR: Final = 'copy_var'
     DATACLASS_GET: Final = 'dataclass_get'
-    DATACLASS_NEW: Final = 'dataclass_new'
     DATACLASS_NEW_VALUES: Final = 'dataclass_new_values'
     DATACLASS_SET: Final = 'dataclass_set'
     DATACLASS_SET_CLASS: Final = 'dataclass_set_class'
@@ -2317,7 +2313,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'COPY': 'copy',
     'COPY_VAR': 'copy_var',
     'DATACLASS_GET': 'dataclass_get',
-    'DATACLASS_NEW': 'dataclass_new',
     'DATACLASS_NEW_VALUES': 'dataclass_new_values',
     'DATACLASS_SET': 'dataclass_set',
     'DATACLASS_SET_CLASS': 'dataclass_set_class',
@@ -3105,7 +3100,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "copy",
         "copy_var",
         "dataclass_get",
-        "dataclass_new",
         "dataclass_new_values",
         "dataclass_set",
         "dataclass_set_class",
@@ -3670,7 +3664,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "COPY",
         "COPY_VAR",
         "DATACLASS_GET",
-        "DATACLASS_NEW",
         "DATACLASS_NEW_VALUES",
         "DATACLASS_SET",
         "DATACLASS_SET_CLASS",
@@ -6437,7 +6430,6 @@ BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[WireOpKind] = frozenset(
         "context_enter",
         "context_exit",
         "dataclass_get",
-        "dataclass_new",
         "dataclass_new_values",
         "dataclass_set",
         "dataclass_set_class",

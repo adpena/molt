@@ -17,7 +17,7 @@ from molt.frontend.lowering.op_kinds_generated import (
 
 import ast
 
-from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.compiler_analysis.python_lexical_scope import python_scope_declarations
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
@@ -128,7 +128,11 @@ class AttributeAccessMixin(GeneratorMixinBase):
         if class_id is None:
             return None
         class_info = self.classes.get(class_id)
-        if class_info is None or not class_info.get("dataclass"):
+        if (
+            class_info is None
+            or not class_info.get("dataclass")
+            or class_info.get("dynamic")
+        ):
             return None
         offset = class_info.get("fields", {}).get(attr)
         if not isinstance(offset, int) or self._class_attr_may_be_data_descriptor(
@@ -200,11 +204,8 @@ class AttributeAccessMixin(GeneratorMixinBase):
         """
         if _is_non_descriptor_literal(expr):
             return False
-        if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
+        if not isinstance(expr, ast.Call):
             return True
-        descriptor_class = self._class_reference(expr.func)
-        if descriptor_class is not None:
-            return self._class_instances_may_be_data_descriptors(descriptor_class)
         if self._call_is_dataclasses_field(expr.func):
             # ``@dataclass`` replaces the Field by its ``default=`` value or
             # deletes it; an undecorated class keeps the Field, which defines
@@ -214,27 +215,22 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 and self._expr_may_be_data_descriptor(keyword.value)
                 for keyword in expr.keywords
             ) or any(keyword.arg is None for keyword in expr.keywords)
+        if not isinstance(expr.func, ast.Name):
+            return True
+        descriptor_class = self._class_reference(expr.func)
+        if descriptor_class is not None:
+            return self._class_instances_may_be_data_descriptors(descriptor_class)
         return expr.func.id not in _NON_DESCRIPTOR_BUILTIN_CONSTRUCTORS or (
             self._name_has_source_binding(expr.func)
         )
 
-    def _call_is_dataclasses_field(self, func: ast.Name) -> bool:
-        """The read is the ``dataclasses.field`` an import binding supplied."""
-        index = self.python_binding_index
-        fact = index.expression_fact(func) if index is not None else None
-        if fact is None or len(fact.result.source_origins) != 1:
-            return False
-        (origin,) = fact.result.source_origins
-        if origin[4] != "alias":
-            return False
-        module_name = self.imported_names.get(
-            func.id
-        ) or self.global_imported_names.get(func.id)
+    def _call_is_dataclasses_field(self, func: ast.expr) -> bool:
+        """Only the resolved canonical Field constructor proves its protocol."""
         return (
-            module_name is not None
-            and (normalize_stdlib_module_name(module_name) or module_name)
-            == "dataclasses"
-            and self._imported_attr_name(func.id) == "field"
+            self.python_binding_index is not None
+            and self.python_binding_index.expression_is(
+                func, PythonIdentity.DATACLASSES_FIELD
+            )
         )
 
     def _class_instances_may_be_data_descriptors(self, class_id: ClassId) -> bool:

@@ -711,6 +711,7 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
                     logical_source_path_by_module={},
                     namespace_portions_by_module={},
                     module_source_role_by_module={},
+                    scan_authority=None,
                 )
             )
         ),
@@ -967,6 +968,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
                     logical_source_path_by_module={},
                     namespace_portions_by_module={},
                     module_source_role_by_module={},
+                    scan_authority=None,
                 )
             )
         ),

@@ -538,6 +538,7 @@ def _lowering_context(module_path: Path, **changes: object) -> str | None:
         "source_lease": MS._ModuleSourceLease.path_backed(module_path),
         "logical_source_path": str(module_path),
         "module_execution_kind": "imported",
+        "namespace_premise": None,
         "module_source_role": "user",
         "known_classes_snapshot": {},
         "type_hint_policy": "ignore",

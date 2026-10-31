@@ -27,12 +27,6 @@ from molt.frontend.diagnostics import FrontendRejection
 
 
 class CallRuntimeHelperMixin(GeneratorMixinBase):
-    def _function_symbol_for_reference(self, name: str) -> str:
-        reserved = self.reserved_func_symbols.get(name)
-        if reserved is not None:
-            return reserved
-        return self._function_symbol(name)
-
     def _function_result_hint(self, func_symbol: str) -> str:
         info = self.funcs_map.get(func_symbol)
         hint = info.get("return_hint") if info is not None else None
@@ -98,38 +92,6 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                 metadata={"shared": self.target_python < (3, 13)},
             )
         )
-        return res
-
-    def _emit_dataclasses_field_call(
-        self, module_name: str, node: ast.Call
-    ) -> MoltValue:
-        if any(kw.arg is None for kw in node.keywords):
-            # Try to resolve **kwargs spreads from module-level constant dicts
-            expanded: list[ast.keyword] = []
-            all_resolved = True
-            for kw in node.keywords:
-                if (
-                    kw.arg is None
-                    and isinstance(kw.value, ast.Name)
-                    and kw.value.id in self.module_const_dicts
-                ):
-                    for dk, dv in self.module_const_dicts[kw.value.id].items():
-                        expanded.append(
-                            ast.keyword(arg=dk, value=ast.Constant(value=dv))
-                        )
-                elif kw.arg is None:
-                    # Dynamic **kwargs — cannot resolve at compile time.
-                    # Fall through to emit CALLARGS_EXPAND_KWSTAR at runtime.
-                    all_resolved = False
-                    break
-                else:
-                    expanded.append(kw)
-            if all_resolved:
-                node.keywords = expanded
-        func_val = self._emit_module_attr_get_on(module_name, "field")
-        callargs = self._emit_call_args_builder(node)
-        res = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="CALL_BIND", args=[func_val, callargs], result=res))
         return res
 
     def _emit_exception_new_from_class(

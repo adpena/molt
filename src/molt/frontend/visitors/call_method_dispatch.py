@@ -181,12 +181,14 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             return None
         if (
             class_info.get("dynamic")
+            or not class_info.get("constructor_binding_proven")
             or class_info.get("slots")
             or class_info.get("custom_metaclass")
             or class_info.get("decorated")
             or class_info.get("class_attrs")
             or not dataclass_params.get("init", True)
             or dataclass_params.get("kw_only", False)
+            or class_info.get("dataclass_init_requires_binding")
             or methods.get("__init__") is not None
             or methods.get("__post_init__") is not None
             or methods.get("__setattr__") is not None
@@ -380,7 +382,9 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         # Conservative bail-outs: anything that touches the descriptor /
         # attribute-resolution machinery other than a vanilla bound-method
         # binding.
-        if class_info.get("dynamic"):
+        if class_info.get("dynamic") or not class_info.get(
+            "constructor_binding_proven"
+        ):
             return None
         if class_info.get("dataclass"):
             return None
