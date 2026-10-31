@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from multiprocessing.process import BaseProcess
 
 from tools import harness_memory_guard
+from molt.process_guard import raise_for_guard_outcome
 from molt.temporary_artifacts import new_guarded_directory
 from molt.cargo_execution_policy import (
     default_nested_process_timeout_seconds,
@@ -502,16 +503,13 @@ def run_guarded_test_process(
         result.stderr = None
     if stdout == subprocess.DEVNULL:
         result.stdout = None
-    if resolved_timeout is not None and bool(getattr(result, "timed_out", False)):
-        error = subprocess.TimeoutExpired(
-            command,
-            resolved_timeout,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
+    # The guard reports its own timeout as 124 and its own failure as 125; the
+    # one authority turns both into exceptions, so returncode stays the child's.
+    try:
+        raise_for_guard_outcome(command, result, timeout=resolved_timeout)
+    except subprocess.TimeoutExpired as error:
         error.add_note(_timeout_receipt(result))
-        setattr(error, "guarded_result", result)
-        raise error
+        raise
     if check and result.returncode != 0:
         error = subprocess.CalledProcessError(
             result.returncode,
