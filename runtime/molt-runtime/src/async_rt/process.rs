@@ -9,6 +9,8 @@ mod child_resources;
 pub(crate) use child_resources::child_memory_rlimit_bytes;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_io;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod self_spawn;
 mod stdio;
 #[cfg(target_arch = "wasm32")]
 mod wasm_host;
@@ -282,8 +284,14 @@ pub unsafe extern "C" fn molt_process_spawn(
             };
             cmd.current_dir(cwd);
         }
+        if let Err(refusal) = self_spawn::admit_child(&mut cmd) {
+            return refusal.raise(_py, &args[0]);
+        }
         #[cfg(unix)]
         let owns_process_group = configure_unix_owned_process_group(&mut cmd, false, None);
+        // Process groups are a POSIX process-model fact; other hosts own none.
+        #[cfg(not(unix))]
+        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(
             &mut cmd,
@@ -393,6 +401,9 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             };
             cmd.current_dir(cwd);
         }
+        if let Err(refusal) = self_spawn::admit_child(&mut cmd) {
+            return refusal.raise(_py, &args[0]);
+        }
         let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
         let stdout_mode = process_stdio_mode(_py, stdout_bits, "stdout");
         let stderr_mode = process_stdio_mode(_py, stderr_bits, "stderr");
@@ -446,6 +457,8 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         #[cfg(unix)]
         let owns_process_group =
             configure_unix_owned_process_group(&mut cmd, new_session, process_group_val);
+        #[cfg(not(unix))]
+        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(
             &mut cmd,
