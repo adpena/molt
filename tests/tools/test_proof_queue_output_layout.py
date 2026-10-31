@@ -1017,7 +1017,7 @@ def test_supervisor_store_refuses_an_unbound_plain_clone(tmp_path, monkeypatch):
 def test_request_carries_parent_supervisor_selection_without_child_environment(
     tmp_path, monkeypatch, git_checkout, root_source, name_rule, linux_input_custody
 ):
-    import hashlib
+    from molt.dx import checkout_component
     from molt import dx
     from molt.process_environment import NameRule, ProcessEnvironment
 
@@ -1068,7 +1068,7 @@ def test_request_carries_parent_supervisor_selection_without_child_environment(
         pytest.fail("execution child reselected the parent's supervisor root")
 
     monkeypatch.setattr(layout, "artifact_root", refuse_selection)
-    namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:24]
+    namespace = checkout_component(source)
     expected = root / "proof-supervisor" / namespace
     observed = []
 
@@ -1109,7 +1109,7 @@ def test_request_carries_parent_supervisor_selection_without_child_environment(
 def test_supervisor_store_uses_the_durable_artifact_binding(
     tmp_path, monkeypatch, git_checkout
 ):
-    import hashlib
+    from molt.dx import checkout_component
     from molt import dx
 
     source = git_checkout.resolve()
@@ -1123,7 +1123,7 @@ def test_supervisor_store_uses_the_durable_artifact_binding(
     dx.set_artifact_root_binding(source, artifacts, {})
     first = layout.CargoOutputLayout(tmp_path / "receipts-one")
     second = layout.CargoOutputLayout(tmp_path / "receipts-two")
-    namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:24]
+    namespace = checkout_component(source)
     expected = artifacts / "proof-supervisor" / namespace
     assert first.supervisor_store == second.supervisor_store == expected
     assert first.supervisor_target == expected / "target"

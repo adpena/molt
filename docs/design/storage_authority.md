@@ -14,6 +14,7 @@ when a capacity-selected output volume changes.
 | State | Placement | Lifetime |
 | --- | --- | --- |
 | Cargo outputs, product store | Existing DX target and product selectors | Existing build-output retention and 25 GiB admission floor |
+| Native proof-supervisor store | Artifact root `proof-supervisor/<implementation-source-key>` | Thirty days since last use; existing checkout-state lifetime locks protect provisioning and readers |
 | Compile cache | Artifact root `.molt_cache`; unbound SDK user-cache selection has checkout custody | Existing entry locks and last-use byte/age budget |
 | uv, pip, Ruff, sccache caches | Artifact root provider directories | Provider protocols; never unlink uv internals |
 | Development environments | Artifact root existing checkout-addressed layout | Existing shared-use locks and last-use policy |
@@ -96,6 +97,33 @@ An explicit `MOLT_USE_SCCACHE=1`, explicit cache or sccache wrapper instead rais
 `SccacheSocketPathError` before launch; server preparation (`create=True`) checks
 the same capacity before writing placement state. A shorter artifact root or an
 explicit short `SCCACHE_DIR` restores caching without moving provider data to root.
+
+## Native proof-supervisor decision (HF-651)
+
+`proof-supervisor` is a checkout-state storage class. Its source key names the
+implementation checkout, never the admitted guest source, result directory or
+payload's Cargo environment. DX consumes the parent's captured artifact root;
+the existing no-overlap and native path-budget checks still apply. The store
+contains Cargo bootstrap output, tool-identity probes, the immutable executable
+CAS and provisioning state. Historical execution evidence keeps its own CAS
+copy and does not depend on this regenerable store.
+
+The existing `cargo-target` class selects user/compiler build outputs through
+Cargo target and session selectors; `toolchains` selects pinned installed tools
+in repository custody. Neither describes source-owned control-plane bootstrap
+state on the selected artifact volume. A separate class preserves those
+boundaries instead of redirecting a guest's outputs or changing toolchain
+custody. Its key is the existing DX checkout component, so it reuses the
+checkout-state owner, shared-use, last-use and exclusive-retirement protocol
+and daily collector, with no second retention registry or guard exception.
+The execution owner retains the store through generation copying and tool
+probes; provisioning and generation reads also retain it independently.
+Preexisting stores without bound producer provenance remain protected. The
+former 24-hex private namespace is no longer produced or consumed; this change
+does not authorize deleting its contents. Warm provisioning reuses no-follow
+metadata in the existing CAS materializer instead of restating directory
+existence and type through separate filesystem calls; directory publication
+still fsyncs every new entry and its parent.
 
 ## Toolchain volume decision
 

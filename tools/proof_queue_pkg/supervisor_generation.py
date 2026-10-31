@@ -17,6 +17,11 @@ import time
 from typing import Iterator, Mapping
 
 from molt import file_locks, file_publication
+from molt.checkout_state import (
+    CheckoutOwner,
+    checkout_state_kind_of,
+    checkout_state_use,
+)
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.cli.cargo_build_reads import cargo_build_reads
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
@@ -377,6 +382,28 @@ def _provision_guard_scope(env: Mapping[str, str]) -> Iterator[None]:
             sentinel.__exit__(*sys.exc_info())
 
 
+@contextmanager
+def store_use(target: Path) -> Iterator[None]:
+    """Retain shared bootstrap state through provisioning or consumption."""
+    store = target.parent
+    if checkout_state_kind_of(store, store.parent.parent) != "proof-supervisor":
+        # Explicit caller-owned outputs are not adopted as managed bootstrap
+        # state, and another managed class must never receive our owner record.
+        yield
+        return
+    with checkout_state_use(
+        (
+            (
+                store,
+                CheckoutOwner(
+                    cargo_output_layout.implementation_source_root(), "proof-supervisor"
+                ),
+            ),
+        )
+    ):
+        yield
+
+
 def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, object]]:
     target = Path(env["CARGO_TARGET_DIR"])
     if not target.is_absolute():
@@ -386,6 +413,16 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
     target = file_publication.resolve_owned_path(target)
     cargo_output_layout.CargoOutputLayout.admit_cargo_path(target)
     store = target.parent
+    # The existing checkout-state authority owns the external lifetime lock,
+    # producer record and last use. Guest/output fixtures outside its finite
+    # managed placement retain their explicit caller-owned output custody.
+    with store_use(target):
+        return _provision(cwd=cwd, env=env, target=target, store=store)
+
+
+def _provision(
+    *, cwd: Path, env: Mapping[str, str], target: Path, store: Path
+) -> tuple[Path, dict[str, object]]:
     cas_root = store / "custody-cas"
     name = (
         "molt-proof-supervisor.exe"
@@ -393,7 +430,9 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
         else "molt-proof-supervisor"
     )
     custody_cas.admit_executable_path(cas_root, name)
-    custody_cas._canonical_root(store, create=True)
+    # The target and lifetime scope already checked the store's no-link
+    # custody. Materialization still durably publishes each new directory.
+    custody_cas._durable_makedirs(store)
     lock_path = store / "provision.lock"
     started = time.perf_counter()
     lock = file_locks._acquire_file_lock(
@@ -496,8 +535,9 @@ def read_generation(
     raw = telemetry.get("generation_artifact")
     if not isinstance(raw, Mapping):
         raise ValueError("supervisor provisioning has no immutable generation")
-    shared_cas = Path(str(telemetry["build_target_dir"])).parent / "custody-cas"
-    return custody_cas.read_ref(raw, expected_root=shared_cas)
+    target = Path(str(telemetry["build_target_dir"]))
+    with store_use(target):
+        return custody_cas.read_ref(raw, expected_root=target.parent / "custody-cas")
 
 
 def publish_receipt(

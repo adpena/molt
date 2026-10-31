@@ -10455,6 +10455,29 @@ class TestStorageAuthority:
         with pytest.raises(AssertionError):
             storage_rule("unregistered-state")  # type: ignore[invalid-argument-type]
 
+    def test_supervisor_storage_ignores_guest_cargo_and_declares_retention(
+        self, tmp_path
+    ):
+        from molt.dx import checkout_component, storage_location
+
+        source, guest = tmp_path / "implementation", tmp_path / "guest"
+        artifact = tmp_path / "artifact"
+        source.mkdir()
+        artifact.mkdir()
+        environment = {
+            "MOLT_EXT_ROOT": str(artifact),
+            "CARGO_TARGET_DIR": str(guest / "target"),
+        }
+        selected = storage_location(source, "proof-supervisor", environment)
+        assert selected.path == artifact / "proof-supervisor"
+        store = selected.path / checkout_component(source)
+        assert selected.rule.volume == "artifact"
+        assert selected.rule.retention == Regenerable(30 * 86400.0, None)
+        assert not selected.path.exists() and not guest.exists()
+        with storage_write_check(source, environment, molt_only=False):
+            (store / "custody-cas").mkdir(parents=True)
+            (store / "provision.lock").touch()
+
     def test_shared_provider_inventory_preserves_inputs_and_uses_provider_configuration(
         self, tmp_path, monkeypatch
     ):

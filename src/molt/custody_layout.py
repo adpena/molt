@@ -44,6 +44,7 @@ LIVE_WORKTREE_LIMIT = 12
 # Layout consumers project this authority; they must not register private roots.
 CheckoutStateKind = Literal[
     "cargo-target",
+    "proof-supervisor",
     "uv-environment",
     "python-environment",
     "pytest-cache",
@@ -266,6 +267,13 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 "artifact",
                 "cargo",
                 ("target", "checkouts"),
+                Regenerable(month, None),
+            )
+        case "proof-supervisor":
+            return StorageRule(
+                "artifact",
+                "native proof-supervisor provisioning",
+                ("proof-supervisor",),
                 Regenerable(month, None),
             )
         case "uv-environment":
