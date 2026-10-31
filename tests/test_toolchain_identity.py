@@ -1431,6 +1431,47 @@ def test_digest_cache_reuses_a_recorded_digest_across_processes(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_lookup_work_is_bounded_by_requested_files(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    data = b"requested runtime file"
+    header = _settled_file(tmp_path / "runtime.h", data)
+    store = tmp_path / "digests.sqlite"
+    first = identity.FileDigestCache(store, max_age_ns=10**18)
+    recorded = first.identity(header, label="header")
+    first.flush()
+    with sqlite3.connect(store) as connection:
+        row = connection.execute("SELECT * FROM digests").fetchone()
+        connection.executemany(
+            "INSERT INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(f"/unrelated/toolchain/{number}", *row[1:]) for number in range(10_000)],
+        )
+
+    cache = identity.FileDigestCache(store, max_age_ns=10**18)
+    connect = cache._connect
+    steps = 0
+
+    def bounded_connection():
+        connection = connect()
+
+        def progress():
+            nonlocal steps
+            steps += 100
+            return int(steps > 1_000)
+
+        connection.set_progress_handler(progress, 100)
+        return connection
+
+    monkeypatch.setattr(cache, "_connect", bounded_connection)
+    _no_rehash(monkeypatch)
+    reused = cache.identity(header, label="header")
+    assert reused == recorded
+    assert reused.sha256 == hashlib.sha256(data).hexdigest()
+    assert steps <= 1_000
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
 def test_digest_cache_misses_a_same_size_rewrite_with_restored_mtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -838,7 +838,7 @@ class FileDigestCache:
         self.store = store
         self._max_age_ns = max_age_ns
         self._started_ns = time.time_ns()
-        self._recorded: dict[str, tuple[_StatToken, str, int]] | None = None
+        self._recorded: dict[str, tuple[_StatToken, str, int] | None] = {}
         self._pending: dict[str, tuple[_StatToken, str]] = {}
 
     def _connect(self) -> sqlite3.Connection:
@@ -857,21 +857,26 @@ class FileDigestCache:
         )
         return connection
 
-    def _rows(self) -> dict[str, tuple[_StatToken, str, int]]:
-        if self._recorded is None:
+    def _row(self, key: str) -> tuple[_StatToken, str, int] | None:
+        # A runtime capture needs only its own files. Loading the whole host
+        # store makes every probe pay for unrelated toolchains and test images.
+        if key not in self._recorded:
             with closing(self._connect()) as connection:
-                self._recorded = {
-                    row[0]: (
+                row = connection.execute(
+                    "SELECT path, dev, ino, mode, size, mtime_ns, ctime_ns,"
+                    " sha256, recorded_ns FROM digests WHERE path = ?",
+                    (key,),
+                ).fetchone()
+                self._recorded[key] = (
+                    (
                         (row[1], row[2], row[3], row[4], row[5], row[6]),
                         row[7],
                         row[8],
                     )
-                    for row in connection.execute(
-                        "SELECT path, dev, ino, mode, size, mtime_ns, ctime_ns,"
-                        " sha256, recorded_ns FROM digests"
-                    )
-                }
-        return self._recorded
+                    if row is not None
+                    else None
+                )
+        return self._recorded[key]
 
     def identity(self, path: Path, *, label: str) -> StableRegularFileIdentity:
         """This file's stable identity; hash only without a current digest."""
@@ -911,7 +916,7 @@ class FileDigestCache:
             )
         key = os.fspath(path)
         token = _stat_identity(expected_path_stat)
-        recorded = self._rows().get(key)
+        recorded = self._row(key)
         if recorded is not None and recorded[0] == token:
             if recorded[2] < self._started_ns - self._max_age_ns // 2:
                 self._pending[key] = (token, recorded[1])
@@ -948,9 +953,8 @@ class FileDigestCache:
                 "DELETE FROM digests WHERE recorded_ns < ?",
                 (self._started_ns - self._max_age_ns,),
             )
-        recorded = self._rows()
         for path, (token, sha256) in self._pending.items():
-            recorded[path] = (token, sha256, self._started_ns)
+            self._recorded[path] = (token, sha256, self._started_ns)
         self._pending.clear()
 
 
