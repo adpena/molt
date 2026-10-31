@@ -30,8 +30,11 @@ impl FileIdentity {
         #[cfg(windows)]
         {
             let file = crate::windows_abi::open_metadata_file(path, true)?;
-            let (device, index) = crate::windows_abi::file_id(&file)?;
-            Ok(Self { device, index })
+            let facts = crate::windows_abi::file_identity_facts(&file)?;
+            Ok(Self {
+                device: facts.volume_serial,
+                index: facts.file_id,
+            })
         }
         #[cfg(not(any(unix, windows)))]
         {

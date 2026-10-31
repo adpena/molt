@@ -49,6 +49,14 @@ class LoopLoweringMixin(GeneratorMixinBase):
         "min": "VEC_MIN",
         "max": "VEC_MAX",
     }
+    # The reduction kernels admit their iterator at run time: they decline any
+    # iterator that is not over a list, tuple or range before an effect. So a
+    # loop fuses unless its iterable's hint proves that the kernel declines;
+    # an unknown hint (a parameter, or a local a callback may have rebound
+    # through a PEP 667 frame proxy) still fuses.
+    _VECTOR_REDUCTION_ITERABLE_HINTS = frozenset(
+        {"list", "tuple", "range", "Any", "Unknown"}
+    )
     # A fused byte fill writes at most this many bytes per chunk.
     _BYTEARRAY_FILL_CHUNK = 1 << 20
 
@@ -871,8 +879,8 @@ class LoopLoweringMixin(GeneratorMixinBase):
         loop_break_flag: int | ScratchCell | None,
     ) -> bool:
         """``for x in seq: acc += x`` (``*=`` and the min/max updates alike)
-        over the loop's evaluated list, tuple or range, whose type hint only
-        selects the fused op: a fused prefix of the loop, then the loop.
+        over the loop's evaluated iterable, unless its type hint proves that
+        the kernel declines it: a fused prefix of the loop, then the loop.
 
         The loop's iterator is acquired once, where the loop acquires it. Each
         pass of a chunk loop hands the kernel that iterator, the accumulator and
@@ -892,7 +900,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
             reduction = self._match_vector_minmax_loop(node)
         if (
             reduction is None
-            or iterable.type_hint not in {"list", "tuple", "range"}
+            or iterable.type_hint not in self._VECTOR_REDUCTION_ITERABLE_HINTS
             or not isinstance(node.target, ast.Name)
         ):
             return False
