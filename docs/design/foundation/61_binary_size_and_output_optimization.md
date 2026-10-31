@@ -343,6 +343,67 @@ measurement must start from emitted artifacts, never from TIR function names or 
 estimates. **Class retired:** "estimate-only code that masquerades as a product size
 mechanism."
 
+#### Freestanding control flow enters the existing optimizer (HF-639)
+
+Commit `f6973ba2c5` introduced post-link WASI import stubbing so freestanding
+deployment can reuse the `wasm32-wasip1` dependency tree. This does not imply
+identical runtime bytes: the freestanding runtime selects `wasm_freestanding`
+and the unsupported getrandom backend. The application module can be identical
+while the runtime link input differs. Runtime generation receipts, not a common
+target directory or filename, identify those inputs.
+
+The SIMD restriction added in `31a183a4a8` was a workaround for the stub
+rewriter's then-unsupported instructions. Commit `76aebc3a` added SIMD/atomics
+rewriting and explicitly removed that limitation, but the CLI continued to force
+scalar codegen. That stale consumer made freestanding compile a different,
+larger instruction path than hosted WASM. Both deployment modes now use the
+existing SIMD128 baseline through
+`molt.cli.runtime_wasm_build_policy.runtime_wasm_simd_policy`; source builders,
+release-cell selectors and distributed-runtime producers consume this authority.
+Freestanding host-service features remain independent of that instruction-set
+choice. Explicit scalar runtime coordinates remain distinct in build identity;
+the CLI does not select them as an implicit consequence of removing WASI.
+
+WASI stubbing is a control-flow transform. A call that could return now traps;
+its arguments and preceding side effects still execute, but its continuation
+cannot. Stubbing therefore belongs **before the existing post-link Binaryen
+optimizer**, after structural export cleanup and before resource normalization
+and final publication. Binaryen's
+[inliner propagates unreachability and refinalizes callers](https://github.com/WebAssembly/binaryen/blob/version_133/src/passes/Inlining.cpp),
+allowing the same size pipeline to remove those continuations and their unused
+dependencies. Optimizing before stubbing leaves that information unavailable.
+Adding a second whole-module optimizer would duplicate work and optimize the
+wrong input first.
+
+New traps must propagate through multiple Rust/libc wrapper layers. When
+stubbing actually replaces imports, the same optimizer invocation uses the
+existing level's fixed-point policy (`wasm_opt_converges`); `O1` retains its
+single-pass budget. Ordinary WASI links and modules with no WASI imports keep
+their single link pass. This pays the pruning cost only for the control-flow
+change that needs it. Reordering alone, or retaining the stale scalar guard
+while iterating cleanup, does not satisfy the hello-world size oracle.
+
+`tools/wasm_link_pipeline.py::_post_link_transform_stage` owns this ordering.
+The selected optimization level, export roots, optimizer identity and failure
+handling remain the existing authorities; the optimizer attestation now binds
+the stubbed input. Unoptimized development builds still perform stubbing without
+launching Binaryen. Final structural, export, callable-table and zero-WASI-import
+validation remain mandatory. The independent host-call/trap execution fixture
+in `tests/test_wasm_link_validation.py` and the unchanged
+`tests/test_wasm_size_tracking.py` oracle cover behavior and linked size.
+
+The unchanged hello-world oracle measured the following linked outputs on
+`62d1732de3` and the HF-639 correction with the same slot-06 fixture path:
+
+| Deployment | Before bytes | After bytes | Before functions | After functions |
+| --- | ---: | ---: | ---: | ---: |
+| WASI | 7,592,970 | 7,592,970 | 7,742 | 7,742 |
+| Freestanding | 7,612,185 | 7,592,535 | 7,789 | 7,654 |
+
+The WASI output is byte-identical. Freestanding loses 19,559 code-section bytes
+while data grows 206 bytes; it validates with zero WASI imports. These are
+hello-world artifact measurements, not a whole-program performance claim.
+
 ### 3.6 FACT: dylib/static crossover — retires "the linkage choice is folklore"
 
 Add a `linkage ∈ {static, shared}` cell coordinate. The runtime already builds `cdylib`.

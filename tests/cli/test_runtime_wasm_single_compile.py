@@ -265,6 +265,42 @@ def _specs(root: Path, *, build_profile="release"):
     return _bind_specs(shared, reloc, root=root)
 
 
+@pytest.mark.parametrize("freestanding", [False, True])
+def test_default_runtime_isa_is_independent_of_wasi_services(
+    tmp_path: Path, freestanding: bool
+) -> None:
+    from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
+
+    simd = runtime_wasm_simd_policy(freestanding=freestanding)
+    common = {**_COMMON, "simd_enabled": simd, "freestanding": freestanding}
+    shared, reloc = (
+        runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
+            tmp_path,
+            tmp_path / name,
+            build_profile="release",
+            reloc=is_reloc,
+            **common,
+        )
+        for name, is_reloc in (
+            ("molt_runtime.wasm", False),
+            ("molt_runtime_reloc.wasm", True),
+        )
+    )
+    # Exercise the actual final Rust flag and Cargo feature boundary, including
+    # the independent freestanding cfg; the fixture does not pre-bind a hosted
+    # plan in place of the requested coordinate.
+    shared, reloc = runtime_wasm_build_spec._resolve_runtime_wasm_cargo_specs(
+        tmp_path, shared, reloc, simd_enabled=simd, freestanding=freestanding
+    )
+    for spec in (shared, reloc):
+        flags = spec.cargo_rustflags
+        features = [flag for flag in flags if flag.startswith("target-feature=")]
+        assert features[-1] == "target-feature=-reference-types,+simd128"
+        assert ('getrandom_backend="unsupported"' in flags) is freestanding
+        assert ("wasm_freestanding" in spec.wasm_cargo_features) is freestanding
+    assert shared.cargo_plan is reloc.cargo_plan
+
+
 @pytest.mark.parametrize("reloc", [False, True])
 @pytest.mark.parametrize("freestanding", [False, True])
 @pytest.mark.parametrize(

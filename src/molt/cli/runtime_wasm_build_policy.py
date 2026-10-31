@@ -57,8 +57,12 @@ def _resolve_wasm_cargo_profile_cached(
 
 
 def runtime_wasm_simd_policy(*, freestanding: bool) -> bool:
-    """Hosted WASM runtimes use SIMD128; freestanding runtimes stay scalar."""
-    return not freestanding
+    """Both deployment modes use the shipped SIMD128 runtime baseline.
+
+    WASI import rewriting supports SIMD instructions. Freestanding selects
+    host-service policy independently of the runtime's instruction set.
+    """
+    return True
 
 
 def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
