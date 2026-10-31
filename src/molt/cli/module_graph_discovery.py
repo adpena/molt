@@ -947,19 +947,16 @@ def _discover_module_graph_from_paths(
             # A revision wave retains the same typed source jobs and receipts.
             # New work discovered by a revision takes priority over the rest
             # of this wave; further revisions wait for the next drained wave.
-            queue.extend(
-                reversed(
-                    sorted(
-                        scan_revisions,
-                        key=lambda item: (
-                            item.module_name,
-                            item.source is not None,
-                            item.source or (),
-                            item.arguments,
-                        ),
-                    )
-                )
+            revisions: list[_SourceScanJob] = sorted(
+                scan_revisions,
+                key=lambda item: (
+                    item.module_name,
+                    item.source is not None,
+                    item.source or (),
+                    item.arguments,
+                ),
             )
+            queue.extend(reversed(revisions))
             queued_scans.update(scan_revisions)
             scan_revisions.clear()
         job = queue.pop()
