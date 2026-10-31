@@ -858,24 +858,27 @@ class FileDigestCache:
         return connection
 
     def _row(self, key: str) -> tuple[_StatToken, str, int] | None:
-        # A runtime capture needs only its own files. Loading the whole host
-        # store makes every probe pay for unrelated toolchains and test images.
+        # Fetch a bounded page of adjacent keys. Inventories visit nearby file
+        # paths together, amortizing connection/WAL teardown without loading the
+        # whole host store or keeping native SQLite handles between calls.
         if key not in self._recorded:
             with closing(self._connect()) as connection:
-                row = connection.execute(
+                rows = connection.execute(
                     "SELECT path, dev, ino, mode, size, mtime_ns, ctime_ns,"
-                    " sha256, recorded_ns FROM digests WHERE path = ?",
+                    " sha256, recorded_ns FROM digests WHERE path >= ?"
+                    " ORDER BY path LIMIT 64",
                     (key,),
-                ).fetchone()
-                self._recorded[key] = (
+                ).fetchall()
+            for row in rows:
+                self._recorded.setdefault(
+                    row[0],
                     (
                         (row[1], row[2], row[3], row[4], row[5], row[6]),
                         row[7],
                         row[8],
-                    )
-                    if row is not None
-                    else None
+                    ),
                 )
+            self._recorded.setdefault(key, None)
         return self._recorded[key]
 
     def identity(self, path: Path, *, label: str) -> StableRegularFileIdentity:
