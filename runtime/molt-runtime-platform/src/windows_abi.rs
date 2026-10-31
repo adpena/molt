@@ -231,11 +231,22 @@ pub fn open_metadata_file(path: &std::path::Path, follow: bool) -> std::io::Resu
     Ok(unsafe { std::fs::File::from_raw_handle(raw) })
 }
 
-/// The volume serial number and file ID of an open handle, the pair CPython's
-/// `_Py_attribute_data_to_stat` (`Python/fileutils.c`) reports as `st_dev` and
-/// `st_ino`. A file system without `FileIdInfo` reports the 64-bit file index
-/// of `BY_HANDLE_FILE_INFORMATION`, as CPython falls back to it.
-pub fn file_id(file: &std::fs::File) -> std::io::Result<(u64, u128)> {
+/// The identity facts of an open handle that CPython's
+/// `_Py_attribute_data_to_stat` (`Python/fileutils.c`) reports as `st_dev`,
+/// `st_ino` and `st_nlink`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileIdentityFacts {
+    pub volume_serial: u64,
+    pub file_id: u128,
+    pub links: u32,
+}
+
+/// Read the identity facts in CPython's order (`win32_xstat_slow_impl`):
+/// `BY_HANDLE_FILE_INFORMATION` always, for the link count, the 32-bit serial
+/// and the 64-bit index; then `FILE_ID_INFO` where the file system has it, whose
+/// 64-bit serial and 128-bit ID take precedence. A zero ID falls back to the
+/// index, as CPython does.
+pub fn file_identity_facts(file: &std::fs::File) -> std::io::Result<FileIdentityFacts> {
     use std::os::windows::io::AsRawHandle;
     #[repr(C)]
     struct FileIdInfo {
@@ -254,6 +265,16 @@ pub fn file_id(file: &std::fs::File) -> std::io::Result<(u64, u128)> {
     }
     const _: () = assert!(std::mem::size_of::<FileIdInfo>() == 24);
     const _: () = assert!(std::mem::size_of::<ByHandleFileInformation>() == 52);
+    let mut info = std::mem::MaybeUninit::<ByHandleFileInformation>::uninit();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr().cast()) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let info = unsafe { info.assume_init() };
+    let mut facts = FileIdentityFacts {
+        volume_serial: u64::from(info.volume_serial_number),
+        file_id: 0,
+        links: info.links,
+    };
     let mut id = std::mem::MaybeUninit::<FileIdInfo>::uninit();
     let success = unsafe {
         GetFileInformationByHandleEx(
@@ -265,15 +286,21 @@ pub fn file_id(file: &std::fs::File) -> std::io::Result<(u64, u128)> {
     };
     if success != 0 {
         let id = unsafe { id.assume_init() };
-        return Ok((id.volume_serial_number, u128::from_le_bytes(id.file_id)));
+        facts.volume_serial = id.volume_serial_number;
+        facts.file_id = u128::from_le_bytes(id.file_id);
     }
-    let mut info = std::mem::MaybeUninit::<ByHandleFileInformation>::uninit();
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr().cast()) } == 0 {
-        return Err(std::io::Error::last_os_error());
+    if facts.file_id == 0 {
+        facts.file_id = u128::from((u64::from(info.index_high) << 32) | u64::from(info.index_low));
     }
-    let info = unsafe { info.assume_init() };
-    let index = (u64::from(info.index_high) << 32) | u64::from(info.index_low);
-    Ok((u64::from(info.volume_serial_number), u128::from(index)))
+    Ok(facts)
+}
+
+/// True when opening a path for metadata failed in a way CPython's
+/// `win32_xstat_slow_impl` answers from the parent directory entry instead:
+/// `ERROR_ACCESS_DENIED` (5) or `ERROR_SHARING_VIOLATION` (32). That answer
+/// carries no identity facts.
+pub fn metadata_open_reads_directory_entry(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32))
 }
 
 /// Query the actual tag of the same handle used for the rest of the metadata.
