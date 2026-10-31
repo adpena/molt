@@ -3989,6 +3989,14 @@ owner = "tools/secret_guard.py"
 summary = "Path of the JSONL file that tools/secret_guard.py appends security events to, with ~ expanded and a relative path resolved against the working directory; unset or blank uses logs/security/events.jsonl."
 
 [[variable]]
+name = "MOLT_SELF_SPAWN_DEPTH"
+audience = "internal"
+kind = "int"
+default = "0"
+owner = "runtime/molt-runtime/src/async_rt/process/self_spawn.rs"
+summary = "How many launches of its own binary led to this compiled program; the runtime spawn authority sets it to one above the parent's on every self-launch, and at 1 or more a self-launch without a declared role (multiprocessing) raises OSError(ENOEXEC); a malformed value counts as 1 and a value set by hand can only raise it (HF-519)."
+
+[[variable]]
 name = "MOLT_SERVER"
 audience = "developer"
 kind = "enum"

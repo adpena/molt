@@ -14,6 +14,7 @@ const FILE_SHARE_READ: u32 = 1;
 const FILE_SHARE_WRITE: u32 = 2;
 const FILE_SHARE_DELETE: u32 = 4;
 const FILE_ATTRIBUTE_TAG_INFO_CLASS: i32 = 9;
+const FILE_ID_INFO_CLASS: i32 = 18;
 pub const WSAENOTSOCK: i32 = 10038;
 pub const WSAESHUTDOWN: i32 = 10058;
 
@@ -78,6 +79,7 @@ unsafe extern "system" {
         output: *mut c_void,
         size: u32,
     ) -> i32;
+    fn GetFileInformationByHandle(handle: *mut c_void, output: *mut c_void) -> i32;
     pub fn GetFileType(hFile: *mut c_void) -> u32;
     pub fn GetConsoleMode(hConsoleHandle: *mut c_void, lpMode: *mut u32) -> i32;
     pub fn GetHandleInformation(hObject: *mut c_void, lpdwFlags: *mut u32) -> i32;
@@ -227,6 +229,51 @@ pub fn open_metadata_file(path: &std::path::Path, follow: bool) -> std::io::Resu
         return Err(std::io::Error::last_os_error());
     }
     Ok(unsafe { std::fs::File::from_raw_handle(raw) })
+}
+
+/// The volume serial number and file ID of an open handle, the pair CPython's
+/// `_Py_attribute_data_to_stat` (`Python/fileutils.c`) reports as `st_dev` and
+/// `st_ino`. A file system without `FileIdInfo` reports the 64-bit file index
+/// of `BY_HANDLE_FILE_INFORMATION`, as CPython falls back to it.
+pub fn file_id(file: &std::fs::File) -> std::io::Result<(u64, u128)> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct FileIdInfo {
+        volume_serial_number: u64,
+        file_id: [u8; 16],
+    }
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        times: [u32; 6],
+        volume_serial_number: u32,
+        size: [u32; 2],
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    const _: () = assert!(std::mem::size_of::<FileIdInfo>() == 24);
+    const _: () = assert!(std::mem::size_of::<ByHandleFileInformation>() == 52);
+    let mut id = std::mem::MaybeUninit::<FileIdInfo>::uninit();
+    let success = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_ID_INFO_CLASS,
+            id.as_mut_ptr().cast(),
+            std::mem::size_of::<FileIdInfo>() as u32,
+        )
+    };
+    if success != 0 {
+        let id = unsafe { id.assume_init() };
+        return Ok((id.volume_serial_number, u128::from_le_bytes(id.file_id)));
+    }
+    let mut info = std::mem::MaybeUninit::<ByHandleFileInformation>::uninit();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr().cast()) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let info = unsafe { info.assume_init() };
+    let index = (u64::from(info.index_high) << 32) | u64::from(info.index_low);
+    Ok((u64::from(info.volume_serial_number), u128::from(index)))
 }
 
 /// Query the actual tag of the same handle used for the rest of the metadata.
