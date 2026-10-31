@@ -654,6 +654,14 @@ pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
     }
 }
 
+#[inline]
+pub(crate) fn int_bits_from_u128(_py: &PyToken<'_>, val: u128) -> u64 {
+    match i128::try_from(val) {
+        Ok(signed) => int_bits_from_i128(_py, signed),
+        Err(_) => bigint_bits(_py, BigInt::from(val)),
+    }
+}
+
 pub(crate) unsafe fn bigint_ref(ptr: *mut u8) -> &'static BigInt {
     unsafe { &*(ptr as *const BigInt) }
 }

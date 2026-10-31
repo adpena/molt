@@ -443,11 +443,12 @@ pub(crate) fn paths_same_file(
                 Ok(Arc::ptr_eq(left_backend, right_backend) && left_name == right_name)
             }
             (None, None) => {
-                #[cfg(unix)]
+                // CPython's samestat: the same (st_ino, st_dev) pair.
+                #[cfg(any(unix, windows))]
                 {
                     Ok(left_metadata.fields[1..3] == right_metadata.fields[1..3])
                 }
-                #[cfg(not(unix))]
+                #[cfg(not(any(unix, windows)))]
                 {
                     let _ = (left_metadata, right_metadata);
                     Ok(
