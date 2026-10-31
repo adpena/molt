@@ -49,10 +49,11 @@ WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 
 
 @pytest.fixture(autouse=True)
-def _isolated_sccache(monkeypatch, tmp_path):
+def _isolated_sccache(monkeypatch, tmp_path, developer_host_context):
     from tests.sccache_test_support import isolate_sccache_environment
 
     isolate_sccache_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "command-artifacts"))
 
 
 def _base_env(run_context: dict[str, str]) -> dict[str, str]:

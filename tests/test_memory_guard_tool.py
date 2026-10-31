@@ -7155,7 +7155,11 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
+        env={
+            **guard_custody_env(),
+            "CARGO_TARGET_DIR": str(target),
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        },
         sampler=lambda: {},
     )
 
@@ -7183,7 +7187,11 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
+        env={
+            **guard_custody_env(),
+            "CARGO_TARGET_DIR": str(target),
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        },
         sampler=lambda: {},
     )
 
@@ -7239,7 +7247,11 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
-        env={**guard_custody_env(), "CARGO_TARGET_DIR": str(target)},
+        env={
+            **guard_custody_env(),
+            "CARGO_TARGET_DIR": str(target),
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        },
         sampler=lambda: {},
     )
     return result, calls, report

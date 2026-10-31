@@ -107,7 +107,7 @@ def deterministic_drain_clock(monkeypatch):
 @pytest.fixture
 def lease(tmp_path, monkeypatch):
     root = tmp_path / "daemon"
-    path = root / "suite-leases" / ("a" * 32) / "lease.json"
+    path = root / "suite-leases" / "v3" / ("a" * 32) / "lease.json"
     path.parent.mkdir(parents=True)
     record = {
         "schema": suite.SCHEMA,
@@ -236,7 +236,7 @@ def test_live_suite_lease_requires_both_births_and_os_lock(lease, tmp_path):
 
 
 def test_unheld_or_closed_lease_cannot_adopt(tmp_path):
-    path = tmp_path / "daemon" / "suite-leases" / ("a" * 32) / "lease.json"
+    path = tmp_path / "daemon" / "suite-leases" / "v3" / ("a" * 32) / "lease.json"
     path.parent.mkdir(parents=True)
     record = {
         "schema": suite.SCHEMA,
@@ -759,13 +759,24 @@ def test_fork_child_does_not_keep_suite_eof_alive(tmp_path):
         (
             "scratch",
             {
-                "target_identity": {"device": 0, "inode": True},
+                "target_identity": {
+                    "kind": "apple-uuid",
+                    "volume": "1" * 32,
+                    "file_id": True,
+                },
                 "target_receipt": "a" * 32,
             },
         ),
         (
             "scratch",
-            {"target_identity": {"device": 0, "inode": 1}, "target_receipt": ""},
+            {
+                "target_identity": {
+                    "kind": "apple-uuid",
+                    "volume": "1" * 32,
+                    "file_id": "1" * 32,
+                },
+                "target_receipt": "",
+            },
         ),
     ],
 )
@@ -2349,3 +2360,60 @@ def test_sentinel_busy_adoption_lock_skips_discovery_and_retains_known_births(
         assert sentinel._tree_tracker.known_identities[child] == before
     finally:
         _release_file_lock(lock)
+
+
+@pytest.mark.parametrize(
+    "state,renumbered", [("closed", False), ("closed", True), ("active", False)]
+)
+def test_current_suite_reader_never_adopts_or_rekeys_old_scratch(
+    tmp_path, state, renumbered
+):
+    root = tmp_path / "daemon"
+    old = root / "suite-leases" / ("c" * 32) / "lease.json"
+    old.parent.mkdir(parents=True)
+    target = old.parent / "scratch"
+    target.mkdir()
+    (target / "keep").write_bytes(b"old suite payload")
+    metadata = target.stat()
+    nonce = "d" * 32
+    record = {
+        "schema": "molt.backend_daemon.suite-lease.v2",
+        "token": "c" * 32,
+        "state": state,
+        "owner_pid": 10,
+        "owner_started_at_ns": 100,
+        "guardian_pid": 11,
+        "guardian_started_at_ns": 110,
+        "project_root": str(tmp_path),
+        "daemon_root": str(root),
+        "source_digest": "e" * 64,
+        "interpreter": sys.executable,
+        "interpreter_sha256": "f" * 64,
+        "scratch": {
+            "target_identity": {
+                "device": metadata.st_dev + int(renumbered),
+                "inode": metadata.st_ino,
+            },
+            "target_receipt": nonce,
+        },
+    }
+    write_exact(old, record)
+    write_exact(
+        target / suite.temporary_artifacts._TARGET_RECEIPT,
+        {"schema": "molt.guard-scratch.v1", "nonce": nonce},
+    )
+    lock = _try_acquire_file_lock(old.parent / "owner.lock")
+    assert lock is not None
+    _release_file_lock(lock)
+    before = {
+        str(p.relative_to(old.parent)): p.read_bytes()
+        for p in old.parent.rglob("*")
+        if p.is_file()
+    }
+    assert suite.read_lease(old) is None
+    assert not (root / "suite-leases" / "v3").exists()
+    assert {
+        str(p.relative_to(old.parent)): p.read_bytes()
+        for p in old.parent.rglob("*")
+        if p.is_file()
+    } == before

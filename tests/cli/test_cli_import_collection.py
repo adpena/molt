@@ -35,6 +35,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -14524,8 +14525,7 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
     stat = module_path.stat()
     stat_identity_is_strong = cli_module_source._source_hash_stat_identity_is_strong(
         ctime_ns=stat.st_ctime_ns,
-        inode=int(getattr(stat, "st_ino", 0) or 0),
-        device=cli_module_source._stat_device(stat),
+        inode=stat.st_ino,
     )
     assert hash_calls == (1 if stat_identity_is_strong else 2)
 
@@ -14560,6 +14560,78 @@ def test_source_content_sha256_rehashes_preserved_mtime_content_change(
     assert second_hash is not None
     assert second_hash != first_hash
     assert hash_calls == 2
+
+
+def test_source_hash_cache_ignores_device_renumbering(tmp_path, monkeypatch):
+    if os.name == "nt":
+        pytest.skip("Windows source hashes always read content")
+    source = tmp_path / "source.py"
+    content = b"VALUE = 1\n"
+    source.write_bytes(content)
+    metadata = source.stat()
+    fields = list(metadata)
+    fields[stat.ST_DEV] += 6
+    renumbered = os.stat_result(
+        fields,
+        {
+            "st_atime_ns": metadata.st_atime_ns,
+            "st_mtime_ns": metadata.st_mtime_ns,
+            "st_ctime_ns": metadata.st_ctime_ns,
+        },
+    )
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("MOLT_CACHE", str(cache))
+    _clear_molt_home_caches()
+    hash_file = cli_module_source._sha256_file
+    calls = []
+
+    def counted(path):
+        calls.append(path)
+        return hash_file(path)
+
+    monkeypatch.setattr(cli_module_source, "_sha256_file", counted)
+    first = cli_module_source._source_content_sha256(source, metadata)
+    cli_module_source._source_content_sha256_cached.cache_clear()
+    assert cli_module_source._source_content_sha256(source, renumbered) == first
+    assert first == hashlib.sha256(content).hexdigest()
+    assert calls == [source]
+    (row,) = (cache / "source_hash_cache" / "v3").rglob("*.json")
+    payload = json.loads(row.read_text(encoding="utf-8"))
+    assert not {"device", "volume", "file_id"}.intersection(payload)
+
+
+@pytest.mark.parametrize("field", ["ctime", "mode"])
+def test_source_hash_cache_rehashes_suspicious_or_changed_metadata(
+    tmp_path, monkeypatch, field
+):
+    source = tmp_path / "source.py"
+    source.write_bytes(b"VALUE = 1\n")
+    original = source.stat()
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    _clear_molt_home_caches()
+    hash_file = cli_module_source._sha256_file
+    calls = []
+
+    def counted(path):
+        calls.append(path)
+        return hash_file(path)
+
+    monkeypatch.setattr(cli_module_source, "_sha256_file", counted)
+    first = cli_module_source._source_content_sha256(source, original)
+    cli_module_source._source_content_sha256_cached.cache_clear()
+    values = list(original)
+    if field == "mode":
+        values[stat.ST_MODE] ^= stat.S_IWUSR
+    changed = os.stat_result(
+        values,
+        {
+            "st_atime_ns": original.st_atime_ns,
+            "st_mtime_ns": original.st_mtime_ns,
+            "st_ctime_ns": 0 if field == "ctime" else original.st_ctime_ns,
+        },
+    )
+    assert cli_module_source._source_content_sha256(source, changed) == first
+    assert calls == [source, source]
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
@@ -32100,12 +32172,18 @@ def test_read_artifact_sync_state_reuses_process_cache(
     first = cli_artifact_sync._read_artifact_sync_state(state_path)
     observed = output_artifact.stat()
     assert first == {
-        "version": 3,
+        "version": 5,
         "source_key": "module-key",
         "tier": "module",
         "size": len(b"artifact"),
         "sha256": hashlib.sha256(b"artifact").hexdigest(),
-        "generation": [observed.st_dev, observed.st_ino],
+        "generation": [
+            observed.st_ino,
+            observed.st_mode,
+            observed.st_size,
+            observed.st_mtime_ns,
+            observed.st_ctime_ns,
+        ],
         "emission_origin": None,
     }
 
@@ -35661,3 +35739,54 @@ print(json.dumps({{"paths": [str(path) for path in snapshot.source_paths], "fing
         assert result["paths"], "the snapshot keyed no compiler source"
         results.append(result)
     assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("renumbered", [False, True])
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_new_source_hash_namespace_starts_cold(tmp_path, renumbered, legacy_version):
+    import hashlib
+    import json
+    from molt.cli import module_source
+
+    source = tmp_path / "source.py"
+    source.write_bytes(b"x = 1\n")
+    metadata = source.stat()
+    key = {
+        "path": str(source),
+        "size": metadata.st_size,
+        "mtime_ns": metadata.st_mtime_ns,
+        "ctime_ns": metadata.st_ctime_ns,
+        "inode": metadata.st_ino,
+        "device": metadata.st_dev + int(renumbered),
+    }
+    if legacy_version == 2:
+        del key["inode"], key["device"]
+        key.update(file_id=f"{metadata.st_ino:032x}", volume="apple-uuid:" + "1" * 32)
+    digest = hashlib.sha256(
+        json.dumps(key, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    cache = tmp_path / "cache"
+    namespace = cache / "source_hash_cache"
+    if legacy_version == 2:
+        namespace /= "v2"
+    legacy = namespace / digest[:2] / (digest + ".json")
+    legacy.parent.mkdir(parents=True)
+    sha = hashlib.sha256(b"x = 1\n").hexdigest()
+    legacy.write_text(
+        json.dumps({"version": legacy_version, **key, "source_sha256": sha}),
+        encoding="utf-8",
+    )
+    before = legacy.read_bytes()
+    found = module_source._read_persistent_source_hash(
+        cache,
+        path_str=str(source),
+        size=metadata.st_size,
+        mtime_ns=metadata.st_mtime_ns,
+        ctime_ns=metadata.st_ctime_ns,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+    )
+    assert found is None
+    assert legacy.read_bytes() == before
+    current = list((cache / "source_hash_cache" / "v3").rglob("*.json"))
+    assert current == []

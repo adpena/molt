@@ -56,6 +56,7 @@ def run_checker(target: Path):
     return run_guarded_test_process(
         [sys.executable, str(DEMO_BENCH_PATH), "--check-regressions", str(target)],
         cwd=REPO_ROOT,
+        env={**os.environ, "MOLT_EXT_ROOT": str(target.parent)},
     )
 
 
@@ -262,6 +263,7 @@ def test_demo_bench_main_wraps_scenarios_in_repo_sentinel(
     monkeypatch.setattr(demo_bench, "collect_machine_info", lambda: {})
     monkeypatch.setattr(demo_bench, "run_cmd", lambda cmd: "test revision")
     monkeypatch.setenv("MOLT_MEMORY_GUARD", "0")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
     monkeypatch.delenv("MOLT_DEMO_RUN_DIR", raising=False)
 
     demo_bench.main()
@@ -478,6 +480,7 @@ def stack_run(
     """Bind a run as the outer stack does and stub what main() would launch."""
     run_dir = demo_bench.prepare_run(runs_root)
     monkeypatch.setenv("MOLT_DEMO_RUN_DIR", str(run_dir))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(runs_root.parent))
     if worker_bin is None:
         monkeypatch.delenv("MOLT_DEMO_WORKER_BIN", raising=False)
     else:

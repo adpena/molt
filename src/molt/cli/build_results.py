@@ -329,7 +329,7 @@ def _recorded_toolchain_artifact(
         return path.name.casefold() if os.name == "nt" else path.name
 
     identity: dict[str, str | int] = {
-        "size": artifact.token[3],
+        "size": artifact.token.size,
         "sha256": artifact.sha256,
     }
     if executable:

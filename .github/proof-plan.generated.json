@@ -235,6 +235,7 @@
     "src/molt/file_locks.py",
     "src/molt/path_custody.py",
     "src/molt/toolchain_identity.py",
+    "src/molt/durable_file_identity.py",
     "src/molt/toolchain_facts.py",
     "src/molt/input_report.py",
     "src/molt/rust_toolchain.py",
@@ -1336,6 +1337,7 @@
         "docs/agent/AGENTS.full.md",
         "tests/proof_queue_owned_roots.py",
         "tests/cli/test_cli_smoke.py/**",
+        "tests/test_durable_identity_state_machine.py/**",
         "tests/test_dx_run_context.py/**",
         "tests/test_molt_queue_cli.py/**",
         "tests/tools/test_proof_queue.py/**",
@@ -2103,6 +2105,7 @@
       "family": "platform_portability",
       "id": "portability.queue.linux",
       "pytest": [
+        "tests/test_durable_identity_state_machine.py",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -2175,6 +2178,7 @@
       "family": "platform_portability",
       "id": "portability.queue.macos",
       "pytest": [
+        "tests/test_durable_identity_state_machine.py",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -2247,6 +2251,7 @@
       "family": "platform_portability",
       "id": "portability.queue.windows",
       "pytest": [
+        "tests/test_durable_identity_state_machine.py",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -9772,7 +9777,7 @@
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.browser-simd.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_build_browser_simd.py tests/e2e/test_simd_differential.py tests/test_browser_compute_backend_semantics.py",
-      "local.build-early-cutoff.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/test_build_record.py tests/cli/test_build_early_cutoff.py tests/cli/test_compiler_source_root.py tests/test_tool_releases.py",
+      "local.build-early-cutoff.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 tests/test_build_record.py tests/cli/test_build_early_cutoff.py tests/cli/test_compiler_source_root.py tests/test_tool_releases.py tests/cli/test_cli_import_collection.py::test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear tests/cli/test_cli_import_collection.py::test_source_content_sha256_rehashes_preserved_mtime_content_change tests/cli/test_cli_import_collection.py::test_source_hash_cache_ignores_device_renumbering tests/cli/test_cli_import_collection.py::test_source_hash_cache_rehashes_suspicious_or_changed_metadata tests/cli/test_cli_import_collection.py::test_new_source_hash_namespace_starts_cold",
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "cargo test --locked --profile dev-fast -p molt-runtime --lib binding_guards",
       "local.builtin-binding-guard-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
@@ -9800,7 +9805,7 @@
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.guard-wiring-source-observation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_check_memory_guard_wiring.py tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
       "local.host-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
-      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py tests/test_temporary_artifacts.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
+      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py tests/test_temporary_artifacts.py tests/test_durable_identity_state_machine.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_import_file.py",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.installed-compiler-distribution.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_installed_compiler.py tests/cli/test_installed_runtime.py tests/cli/test_installed_toolchain_rules.py tests/tools/test_release_installed_distribution.py tests/tools/test_release_native_build.py tests/tools/test_release_supply_chain.py",
@@ -11017,6 +11022,7 @@
           "src/molt/temporary_artifacts.py",
           "tools/memory_guard_core/memory_limits.py",
           "tests/test_temporary_artifacts.py",
+          "tests/test_durable_identity_state_machine.py",
           "tests/test_memory_guard_tool.py",
           "tools/ci_resource_env.py",
           "tests/test_host_capacity.py",
@@ -11034,6 +11040,7 @@
           "tests/tools/test_ci_resource_env.py",
           "tests/test_memory_guard_tool.py",
           "tests/test_temporary_artifacts.py",
+          "tests/test_durable_identity_state_machine.py",
           "tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup"
         ],
         "toolchains": [
@@ -11222,6 +11229,7 @@
         "globs": [
           "src/molt/build_record.py",
           "src/molt/input_report.py",
+          "src/molt/cli/module_source.py",
           "src/molt/build_output_selection.py",
           "src/molt/cli/build_command.py",
           "src/molt/cli/build_output_layout.py",
@@ -11239,7 +11247,12 @@
               "tests/test_build_record.py",
               "tests/cli/test_build_early_cutoff.py",
               "tests/cli/test_compiler_source_root.py",
-              "tests/test_tool_releases.py"
+              "tests/test_tool_releases.py",
+              "tests/cli/test_cli_import_collection.py::test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear",
+              "tests/cli/test_cli_import_collection.py::test_source_content_sha256_rehashes_preserved_mtime_content_change",
+              "tests/cli/test_cli_import_collection.py::test_source_hash_cache_ignores_device_renumbering",
+              "tests/cli/test_cli_import_collection.py::test_source_hash_cache_rehashes_suspicious_or_changed_metadata",
+              "tests/cli/test_cli_import_collection.py::test_new_source_hash_namespace_starts_cold"
             ],
             "toolchains": [
               "python"
@@ -11289,6 +11302,7 @@
           "src/molt/python_environment_identity.py",
           "src/molt/process_launch.py",
           "src/molt/toolchain_identity.py",
+          "src/molt/durable_file_identity.py",
           "src/molt/toolchain_facts.py",
           "src/molt/rust_toolchain.py",
           "tools/proof_queue_pkg/command_identity.py",
@@ -11519,6 +11533,7 @@
           "src/molt/exact_json.py",
           "src/molt/portable_paths.py",
           "src/molt/toolchain_identity.py",
+          "src/molt/durable_file_identity.py",
           "src/molt/ustar.py",
           "tools/command_execution.py",
           "tools/git_identity.py",

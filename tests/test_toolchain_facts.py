@@ -10,6 +10,10 @@ store is discarded and rewritten.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from molt.durable_file_identity import StatToken
+
 import json
 import os
 import shutil
@@ -57,7 +61,20 @@ def _key(**overrides: object) -> facts.ProbeKey:
         "argv": ("--print", "cfg"),
         "cwd": "/project",
         "environment": (("RUSTC_BOOTSTRAP", None), ("SDKROOT", "/sdk")),
-        "inputs": (("/sysroot/lib/librustc_driver.dylib", (1, 2, 3, 4, 5, 6)),),
+        "inputs": (
+            (
+                "/sysroot/lib/librustc_driver.dylib",
+                facts.FileToken(
+                    StatToken(
+                        2,
+                        3,
+                        4,
+                        5,
+                        6,
+                    )
+                ),
+            ),
+        ),
     }
     fields.update(overrides)
     return facts.ProbeKey(**fields)  # type: ignore[arg-type]
@@ -370,7 +387,7 @@ def test_each_key_input_changes_the_digest(mutation: str) -> None:
             ),
         )
     elif mutation == "tool-token":
-        token = (*tool.token[:5], tool.token[5] + 1)
+        token = replace(tool.token, ctime_ns=tool.token.ctime_ns + 1)
         changed["tools"] = (
             facts.ProbeTool(
                 tool.entrypoint,
@@ -395,12 +412,36 @@ def test_each_key_input_changes_the_digest(mutation: str) -> None:
         changed["environment"] = (("RUSTC_BOOTSTRAP", "1"), ("SDKROOT", "/sdk"))
     elif mutation == "input-token":
         changed["inputs"] = (
-            ("/sysroot/lib/librustc_driver.dylib", (1, 2, 3, 4, 5, 7)),
+            (
+                "/sysroot/lib/librustc_driver.dylib",
+                facts.FileToken(
+                    StatToken(
+                        2,
+                        3,
+                        4,
+                        5,
+                        7,
+                    )
+                ),
+            ),
         )
     elif mutation == "input-absent":
         changed["inputs"] = (("/sysroot/lib/librustc_driver.dylib", None),)
     elif mutation == "input-path":
-        changed["inputs"] = (("/sysroot/lib/other.dylib", (1, 2, 3, 4, 5, 6)),)
+        changed["inputs"] = (
+            (
+                "/sysroot/lib/other.dylib",
+                facts.FileToken(
+                    StatToken(
+                        2,
+                        3,
+                        4,
+                        5,
+                        6,
+                    )
+                ),
+            ),
+        )
     else:
         changed["inputs"] = (*base.inputs, ("/sysroot/lib/target.json", None))
     assert _key(**changed).digest() != base.digest()
@@ -418,23 +459,29 @@ def test_file_and_directory_inputs_name_absence_links_and_listings(
     regular = tmp_path / "lib.dylib"
     regular.write_bytes(b"lib")
     name, token = facts.file_input(regular)
-    assert name == os.fspath(regular) and token is not None and len(token) == 6
-    assert token[3] == 3 and stat.S_ISREG(int(token[2]))
+    assert (
+        name == os.fspath(regular) and token is not None and len(token.payload()) == 5
+    )
+    assert token.node.size == 3 and stat.S_ISREG(token.node.mode)
     if os.name != "nt":
         link = tmp_path / "link"
         link.symlink_to(regular)
         _name, link_token = facts.file_input(link)
-        assert link_token is not None and link_token[6] == os.fspath(regular)
-        assert stat.S_ISLNK(int(link_token[2]))
+        assert link_token is not None and link_token.link_text == os.fspath(regular)
+        assert stat.S_ISLNK(link_token.node.mode)
         # A probe reads through the link: an edit behind it changes the key.
         _rewrite_with_restored_mtime(regular, b"LIB")
         regular.write_bytes(b"libs")
         _name, edited = facts.file_input(link)
-        assert edited is not None and edited[:7] == link_token[:7]
-        assert edited[7] != link_token[7]
+        assert (
+            edited is not None
+            and edited.node == link_token.node
+            and edited.link_text == link_token.link_text
+        )
+        assert edited.target != link_token.target
         dangling = tmp_path / "dangling"
         dangling.symlink_to(tmp_path / "gone")
-        assert facts.file_input(dangling)[1][7] is None
+        assert facts.file_input(dangling)[1].target is None
     (tmp_path / "sub").mkdir()
     (tmp_path / "notes.txt").write_bytes(b"text")
     listing = facts.directory_inputs(tmp_path)
@@ -936,6 +983,7 @@ def test_store_answers_what_real_rustup_answers(
         "RUSTUP_AUTO_INSTALL": "0",
         "PATH": "/usr/bin:/bin",
         "RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS": os.fspath(tmp_path / "none.toml"),
+        "MOLT_EXT_ROOT": os.fspath(tmp_path),
     }
 
     def toolchain_file(path: Path, name: str, *, legacy: bool = False) -> None:
@@ -1266,6 +1314,7 @@ def test_a_warm_toolchain_resolves_a_cargo_plan_without_probe_processes(
         if name in os.environ
     }
     env["CARGO_TARGET_DIR"] = os.fspath(tmp_path / "target")
+    env["MOLT_EXT_ROOT"] = os.fspath(tmp_path)
     real = process_guard.run_completed_command
     probes: list[list[str]] = []
 
@@ -1291,3 +1340,112 @@ def test_a_warm_toolchain_resolves_a_cargo_plan_without_probe_processes(
     third = resolve()
     assert third.toolchain_identity() == first.toolchain_identity()
     assert probes == []
+
+
+@pytest.mark.parametrize("legacy_version", [1, 2])
+@pytest.mark.parametrize("renumbered", [False, True])
+def test_new_probe_store_starts_cold_without_reading_legacy_answers(
+    tmp_path, renumbered, legacy_version
+):
+    import hashlib
+    import time
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    tool = tmp_path / "tool"
+    tool.write_bytes(b"a tool generation")
+    identity = stable_regular_file_identity(tool, label="migration tool")
+    key = facts.ProbeKey(
+        "migration",
+        (facts.ProbeTool.from_identity(tool, identity),),
+        ("--version",),
+        None,
+        (),
+        (facts.file_input(tool),),
+    )
+    legacy_key = key.as_json()
+    metadata = tool.stat()
+    old_prefix = (
+        [metadata.st_dev + int(renumbered), metadata.st_ino]
+        if legacy_version == 1
+        else ["apple-uuid:" + "a" * 32, f"{metadata.st_ino:032x}"]
+    )
+    for token in (legacy_key["tools"][0]["token"], legacy_key["inputs"][0][1]):
+        token[:1] = old_prefix
+    digest = hashlib.sha256(
+        json.dumps(legacy_key, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    legacy = tmp_path / "cache" / "toolchain-facts" / f"v{legacy_version}.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "schema": f"molt.toolchain-facts.v{legacy_version}",
+                "facts": {
+                    digest: {
+                        "key": legacy_key,
+                        "stdout": "old answer",
+                        "stderr": "",
+                        "recorded_ns": time.time_ns(),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = legacy.read_bytes()
+    current = facts.ToolchainFactStore(tmp_path / "cache", max_age_ns=DAY_NS)
+    answer = current.lookup(key)
+    assert answer is None
+    assert current.path == legacy.with_name("v3.json")
+    assert legacy.read_bytes() == before
+    assert not current.path.exists()
+
+
+def test_probe_cache_tokens_ignore_device_without_querying_volume(
+    tmp_path, monkeypatch
+):
+    from molt import durable_file_identity
+    from tests.process_guard_common import install_module_view
+
+    path = tmp_path / "input"
+    path.write_bytes(b"probe input")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("a class-B probe key queried durable volume identity")
+
+    monkeypatch.setattr(durable_file_identity, "file_identity", forbidden)
+    if hasattr(facts, "file_identity"):
+        monkeypatch.setattr(facts, "file_identity", forbidden)
+    original = os.lstat
+    before = facts.file_input(path)
+    assert before[1] is not None
+    metadata = path.stat()
+    assert before[1].payload() == [
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    ]
+
+    def renumbered(name):
+        record = original(name)
+        fields = list(record)
+        fields[stat.ST_DEV] += 6
+        return os.stat_result(
+            fields,
+            {
+                name: getattr(record, name)
+                for name in ("st_atime_ns", "st_mtime_ns", "st_ctime_ns")
+            },
+        )
+
+    install_module_view(monkeypatch, "os", os, facts, lstat=renumbered)
+    assert facts.file_input(path) == before
+    assert _tool("rustc").as_json()["token"] == [
+        2,
+        stat.S_IFREG | 0o755,
+        len(b"MZ tool"),
+        3,
+        4,
+    ]

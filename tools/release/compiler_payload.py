@@ -20,6 +20,8 @@ from molt.compiler_distribution import (
 from molt.host_tool_products import HostToolProduct
 from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 from molt.exact_json import write_exact
+from molt.dx import ARTIFACT_ROOT_ENV
+from molt.memory_guard_paths import STATE_ROOT_ENV
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.toolchain_identity import (
     resolve_executable,
@@ -99,6 +101,9 @@ def source_environment() -> ProcessEnvironmentBuilder:
                 "TMP",
                 "USERPROFILE",
                 "WINDIR",
+                # Source isolation must preserve the caller's storage custody.
+                ARTIFACT_ROOT_ENV,
+                STATE_ROOT_ENV,
             },
             "",
         ),

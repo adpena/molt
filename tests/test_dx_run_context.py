@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import shutil
 import sys
 from pathlib import Path
@@ -1340,7 +1341,7 @@ def test_artifact_binding_is_family_wide_without_shell_environment(
     main, lane, artifacts = bound_artifact_family
     environment = ProcessEnvironment({}, rule=name_rule)
     assert dx.artifact_root_binding_path(main) == (
-        main / ".git" / "molt" / "artifact-root.json"
+        main / ".git" / "molt" / "artifact-root.v2.json"
     )
     assert dx.artifact_root_binding_path(lane) == dx.artifact_root_binding_path(main)
     for checkout in (main, lane):
@@ -1477,7 +1478,7 @@ def test_family_binding_is_read_once_across_threads_and_checkouts(
             )
         )
     assert selected == [artifacts] * 8
-    assert reads == [main / ".git" / "molt" / "artifact-root.json"]
+    assert reads == [main / ".git" / "molt" / "artifact-root.v2.json"]
 
 
 def test_fresh_process_resolves_the_family_binding_without_root_variables(
@@ -1512,7 +1513,7 @@ def test_invalid_binding_refuses_and_can_be_cleared(tmp_path, contents):
     clone = tmp_path / "clone"
     clone.mkdir()
     _git(clone, "init", "-q", "-b", "main")
-    record = clone / ".git" / "molt" / "artifact-root.json"
+    record = clone / ".git" / "molt" / "artifact-root.v2.json"
     record.parent.mkdir()
     record.write_text(contents, encoding="utf-8")
     explicit = tmp_path / "operator-override"
@@ -2213,10 +2214,20 @@ def test_render_env_spells_hyphenated_names_per_shell() -> None:
 
 
 def _git(repo: Path, *args: str) -> str:
+    # Git fixture setup has its own artifact custody even when the test clears
+    # the session roots to observe an unconfigured developer host.
+    artifacts = repo.parent / "git-command-artifacts"
+    artifacts.mkdir(exist_ok=True)
     completed = run_guarded_test_process(
         ["git", "-C", str(repo), *args],
         env={
             **os.environ,
+            "MOLT_EXT_ROOT": str(artifacts),
+            "CARGO_TARGET_DIR": str(artifacts / "target"),
+            "MOLT_DIFF_CARGO_TARGET_DIR": str(artifacts / "target"),
+            "MOLT_BUILD_STATE_DIR": str(artifacts / "build-control"),
+            "MOLT_CACHE": str(artifacts / ".molt_cache"),
+            "UV_CACHE_DIR": str(artifacts / ".uv-cache"),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "t",
@@ -2784,3 +2795,596 @@ def test_developer_host_default_cache_uses_a_per_test_user_cache_base(
     cache = _default_molt_cache()
     assert cache.is_relative_to(tmp_path_factory.getbasetemp())
     assert not cache.is_relative_to(Path.home() / ".cache")
+
+
+def test_matching_legacy_binding_upgrades_through_canonical_selection(
+    bound_artifact_family,
+):
+    main, _, artifacts = bound_artifact_family
+    record = dx.artifact_root_binding_path(main)
+    record.unlink()
+    legacy_path = record.with_name("artifact-root.json")
+    metadata = artifacts.stat()
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "schema": "molt.artifact-root-binding.v1",
+                "root": str(artifacts),
+                "device": metadata.st_dev,
+                "inode": metadata.st_ino,
+            }
+        ),
+        encoding="utf-8",
+    )
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    dx.provision_artifact_root_binding(main, {})
+    assert dx.artifact_root_selection(main, {}).root == artifacts
+    saved = json.loads(record.read_text(encoding="utf-8"))
+    assert set(saved) == {"schema", "root", "identity"}
+    assert saved["schema"] == "molt.artifact-root-binding.v2"
+    assert int(saved["identity"]["file_id"], 16) == metadata.st_ino
+
+
+def test_renumbered_legacy_binding_refuses_with_explicit_bind_remedy(
+    bound_artifact_family,
+):
+    main, _, artifacts = bound_artifact_family
+    record = dx.artifact_root_binding_path(main)
+    record.unlink()
+    legacy_path = record.with_name("artifact-root.json")
+    metadata = artifacts.stat()
+    legacy = {
+        "schema": "molt.artifact-root-binding.v1",
+        "root": str(artifacts),
+        "device": metadata.st_dev + 1,
+        "inode": metadata.st_ino,
+    }
+    legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    with pytest.raises(
+        dx.DxConfigError, match="identity-unverifiable.*artifact-root --bind"
+    ):
+        dx.provision_artifact_root_binding(main, {})
+    assert json.loads(legacy_path.read_text(encoding="utf-8")) == legacy
+
+
+def _renumber_stat_devices(monkeypatch):
+    """Simulate one coherent new mount session, including held descriptors."""
+    import stat
+
+    def renumber(original):
+        def query(*args, **kwargs):
+            metadata = original(*args, **kwargs)
+            fields = list(metadata)
+            fields[stat.ST_DEV] += 1000
+            extra = {
+                name: getattr(metadata, name)
+                for name in (
+                    "st_atime_ns",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                    "st_birthtime",
+                    "st_birthtime_ns",
+                    "st_file_attributes",
+                    "st_reparse_tag",
+                )
+                if hasattr(metadata, name)
+            }
+            return os.stat_result(fields, extra)
+
+        return query
+
+    for name in ("stat", "lstat", "fstat"):
+        monkeypatch.setattr(os, name, renumber(getattr(os, name)))
+
+
+def _replay_artifact_root_stat(monkeypatch, artifacts):
+    """Substitute the reboot's stat source; volume queries keep their real authority."""
+    import stat
+    from molt import durable_file_identity as durable
+
+    actual = artifacts.stat()
+    actual_stat = os.stat
+    live = {"device": 16777240, "inode": 5983296}
+
+    def replay(original):
+        def query(*args, **kwargs):
+            metadata = original(*args, **kwargs)
+            if (metadata.st_dev, metadata.st_ino) != (actual.st_dev, actual.st_ino):
+                return metadata
+            fields = list(metadata)
+            fields[stat.ST_DEV] = live["device"]
+            fields[stat.ST_INO] = live["inode"]
+            extra = {
+                name: getattr(metadata, name)
+                for name in (
+                    "st_atime_ns",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                    "st_birthtime",
+                    "st_birthtime_ns",
+                    "st_file_attributes",
+                    "st_reparse_tag",
+                )
+                if hasattr(metadata, name)
+            }
+            return os.stat_result(fields, extra)
+
+        return query
+
+    for name in ("stat", "lstat", "fstat"):
+        monkeypatch.setattr(os, name, replay(getattr(os, name)))
+    if sys.platform == "darwin":
+        native_leaf = durable._apple_leaf
+
+        def replay_leaf(fd, leaf):
+            captured = native_leaf(fd, leaf)
+            metadata = actual_stat(leaf, dir_fd=fd, follow_symlinks=False)
+            if (metadata.st_dev, metadata.st_ino) == (actual.st_dev, actual.st_ino):
+                return durable._AppleLeaf(captured.device, live["inode"])
+            return captured
+
+        monkeypatch.setattr(durable, "_apple_leaf", replay_leaf)
+    if sys.platform.startswith("linux"):
+        # Replaying the stat device allocation must retain the UUID mapping of
+        # this real test filesystem. The mount itself has not been substituted.
+        real_volume = durable._linux_volume
+        monkeypatch.setattr(
+            durable,
+            "_linux_volume",
+            lambda device: real_volume(
+                actual.st_dev if device == live["device"] else device
+            ),
+        )
+    return live
+
+
+def test_durable_binding_survives_new_device_number(bound_artifact_family, monkeypatch):
+    main, lane, artifacts = bound_artifact_family
+    live = _replay_artifact_root_stat(monkeypatch, artifacts)
+    # Publish the original durable binding before replaying the reboot.
+    record = dx.set_artifact_root_binding(main, artifacts, {})
+    before = artifacts.stat()
+    assert (before.st_dev, before.st_ino) == (16777240, 5983296)
+    saved = record.read_bytes()
+    live["device"] = 16777246
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    after = artifacts.stat()
+    assert (after.st_dev, after.st_ino) == (16777246, 5983296)
+    assert dx.artifact_root_selection(lane, {}).root == artifacts
+    assert RunContext(lane).canonical_env({}, create_dirs=False)[
+        "MOLT_EXT_ROOT"
+    ] == str(artifacts)
+    assert record.read_bytes() == saved
+    # Execute a real guarded child with the environment projected from the
+    # replayed binding; neither the user nor the guard repairs its record.
+    selected = RunContext(lane).canonical_env({}, create_dirs=True)
+    completed = run_guarded_test_process(
+        [sys.executable, "-B", "-c", "print('reboot replay')"],
+        cwd=lane,
+        env={**os.environ, **selected},
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "reboot replay"
+    assert record.read_bytes() == saved
+
+
+def test_durable_binding_refuses_same_inode_on_another_volume(
+    bound_artifact_family, monkeypatch
+):
+    from molt import durable_file_identity as durable
+
+    main, _, artifacts = bound_artifact_family
+    _replay_artifact_root_stat(monkeypatch, artifacts)
+    record = dx.set_artifact_root_binding(main, artifacts, {})
+    saved = record.read_bytes()
+    bound = dx._load_artifact_root_binding(record)
+    assert isinstance(bound, dx._ArtifactRootBinding)
+    original = dx.file_identity
+
+    def replaced_volume(path, *, expected=None):
+        identity = original(path, expected=expected)
+        if path != artifacts:
+            return identity
+        return durable.DurableFileIdentity(
+            identity.kind,
+            ("0" if identity.volume[0] != "0" else "1") + identity.volume[1:],
+            identity.file_id,
+        )
+
+    # Same live stat pair, path and file ID, with a substituted volume authority.
+    monkeypatch.setattr(dx, "file_identity", replaced_volume)
+    assert (artifacts.stat().st_dev, artifacts.stat().st_ino) == (16777240, 5983296)
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    with pytest.raises(
+        dx.DxConfigError, match="identity changed.*artifact-root --bind"
+    ):
+        dx.artifact_root_selection(main, {})
+    assert record.read_bytes() == saved
+
+
+def test_artifact_binding_refused_state_cannot_be_revived():
+    with pytest.raises(
+        dx.DxConfigError, match="illegal artifact-root binding transition"
+    ):
+        dx.apply_artifact_binding_event(
+            dx.ArtifactBindingState.REFUSED,
+            dx.ArtifactBindingEvent.IDENTITY_MATCHES,
+        )
+
+
+@pytest.mark.parametrize("replacement", ["directory", "volume", "unmounted"])
+def test_durable_binding_refuses_replacement_or_unmount(
+    bound_artifact_family, monkeypatch, replacement
+):
+    from molt import durable_file_identity as durable
+
+    main, _, artifacts = bound_artifact_family
+    if replacement == "volume":
+        if sys.platform == "darwin":
+            native_volume = durable._apple_volume
+            monkeypatch.setattr(
+                durable,
+                "_apple_volume",
+                lambda fd: durable._AppleVolume(native_volume(fd).device, "f" * 32),
+            )
+        elif sys.platform.startswith("linux"):
+            monkeypatch.setattr(
+                durable, "_linux_volume", lambda device: "another-filesystem"
+            )
+        else:
+            real = durable._windows_identity
+            monkeypatch.setattr(
+                durable,
+                "_windows_identity",
+                lambda fd: durable.DurableFileIdentity(
+                    durable.VolumeKind.WINDOWS_SERIAL, "f" * 16, real(fd).file_id
+                ),
+            )
+    else:
+        artifacts.rename(artifacts.with_name("original-artifacts"))
+        if replacement == "directory":
+            artifacts.mkdir()
+    dx._ARTIFACT_BINDING_CACHE.clear()
+    with pytest.raises(dx.DxConfigError, match="artifact-root --bind"):
+        dx.artifact_root_selection(main, {})
+
+
+def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
+    tmp_path, monkeypatch
+):
+    import stat
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    by_uuid = tmp_path / "by-uuid"
+    by_uuid.mkdir()
+    (by_uuid / "ABCD-1234").touch()
+    (by_uuid / "unrelated").touch()
+    original = Path.stat
+
+    def query(path, *args, **kwargs):
+        if path.parent == by_uuid:
+            return SimpleNamespace(
+                st_mode=stat.S_IFBLK,
+                st_dev=55,
+                st_rdev=91 if path.name == "ABCD-1234" else 92,
+            )
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", query)
+    assert durable._linux_volume(91, by_uuid) == "ABCD-1234"
+    with pytest.raises(durable.IdentityUnavailable, match="absent"):
+        durable._linux_volume(55, by_uuid)
+    (by_uuid / "alias").touch()
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda path, *a, **kw: (
+            SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=91)
+            if path.parent == by_uuid
+            else original(path, *a, **kw)
+        ),
+    )
+    with pytest.raises(durable.IdentityUnavailable, match="ambiguous"):
+        durable._linux_volume(91, by_uuid)
+
+
+def test_windows_file_id_info_preserves_high_file_id_bits():
+    from molt import durable_file_identity as durable
+
+    payload = struct.pack("<Q", 0xFEDCBA9876543210) + bytes.fromhex(
+        "102030405060708090a0b0c0d0e0f001"
+    )
+    identity = durable._windows_file_id_info(payload)
+    assert identity.payload() == {
+        "kind": "windows-serial",
+        "volume": "fedcba9876543210",
+        "file_id": "102030405060708090a0b0c0d0e0f001",
+    }
+    for malformed in (payload[:16], payload + b"x", payload[:8] + b"\0" * 16):
+        with pytest.raises(durable.IdentityUnavailable):
+            durable._windows_file_id_info(malformed)
+
+
+@pytest.mark.parametrize("filesystem_type", [0x01021994, 0x858458F6])
+def test_linux_volatile_identity_expires_with_the_kernel_boot(
+    monkeypatch, filesystem_type
+):
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    install_module_view(monkeypatch, "sys", sys, durable, platform="linux")
+    monkeypatch.setattr(durable, "_linux_filesystem_type", lambda fd: filesystem_type)
+    mount = 101
+    monkeypatch.setattr(durable, "_linux_unique_mount_id", lambda fd: mount)
+    boot = "12345678-1234-4567-8123-123456789abc"
+    original = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda path, **kw: (
+            boot
+            if str(path) == "/proc/sys/kernel/random/boot_id"
+            else original(path, **kw)
+        ),
+    )
+    monkeypatch.setattr(
+        durable,
+        "_linux_volume",
+        lambda device: pytest.fail("volatile content must use its boot authority"),
+    )
+    metadata = SimpleNamespace(st_dev=91, st_ino=17)
+    first = durable.identity_from_fd(-1, metadata=metadata)
+    assert first.payload() == {
+        "kind": "boot-scoped",
+        "volume": "12345678123445678123123456789abc.mnt-0000000000000065",
+        "file_id": "00000000000000000000000000000011",
+    }
+    assert durable.DurableFileIdentity.from_payload(first.payload()) == first
+    assert durable.identity_from_fd(-1, metadata=metadata) == first
+    # Same boot, device and inode; a replacement mount has a unique ID.
+    mount = 102
+    assert durable.identity_from_fd(-1, metadata=metadata) != first
+    boot = "87654321-1234-4567-8123-123456789abc"
+    assert durable.identity_from_fd(-1, metadata=metadata) != first
+    boot = "bad-boot-id"
+    with pytest.raises(durable.IdentityUnavailable, match="boot ID is invalid"):
+        durable.identity_from_fd(-1, metadata=metadata)
+
+
+def test_linux_persistent_filesystem_cannot_use_boot_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    install_module_view(monkeypatch, "sys", sys, durable, platform="linux")
+    monkeypatch.setattr(durable, "_linux_filesystem_type", lambda fd: 0xEF53)
+    query = durable._linux_volume
+    monkeypatch.setattr(
+        durable, "_linux_volume", lambda device: query(device, tmp_path / "absent")
+    )
+    monkeypatch.setattr(
+        durable,
+        "_linux_boot_volume",
+        lambda device: pytest.fail("unidentified persistent content must refuse"),
+    )
+    with pytest.raises(
+        durable.IdentityUnavailable, match="provide a unique filesystem UUID mapping"
+    ):
+        durable.identity_from_fd(-1, metadata=SimpleNamespace(st_dev=91, st_ino=17))
+
+
+@pytest.mark.parametrize(
+    "returned_mask,mount,expected",
+    [
+        (0x4000, 0xFEDCBA9876543210, 0xFEDCBA9876543210),
+        (0x1000, 100, None),
+        (0, 0, None),
+    ],
+)
+def test_statx_unique_mount_uses_the_linux_68_abi(
+    monkeypatch, returned_mask, mount, expected
+):
+    import ctypes
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    seen = []
+
+    class Query:
+        def __call__(self, fd, path, flags, requested, output):
+            seen.append((fd, path, flags, requested))
+            # Independent UAPI byte offsets, not the implementation's fields.
+            raw = bytearray(256)
+            struct.pack_into("=I", raw, 0, returned_mask)
+            struct.pack_into("=Q", raw, 0x90, mount)
+            ctypes.memmove(output, bytes(raw), len(raw))
+            return 0
+
+    install_module_view(
+        monkeypatch,
+        "ctypes",
+        ctypes,
+        durable,
+        CDLL=lambda *a, **kw: SimpleNamespace(statx=Query()),
+    )
+    if expected is None:
+        with pytest.raises(durable.UniqueMountIdentityUnavailable) as error:
+            durable._linux_unique_mount_id(42)
+        assert error.value.reason == "unique-mount-id-unavailable"
+        assert error.value.remedy == "MOLT_SCRATCH_STORAGE=disk"
+    else:
+        assert durable._linux_unique_mount_id(42) == expected
+    assert seen == [(42, b"", 0x1000, 0x4000)]
+
+
+def test_statx_missing_from_libc_has_the_disk_remedy(monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from molt import durable_file_identity as durable
+
+    install_module_view(
+        monkeypatch, "ctypes", ctypes, durable, CDLL=lambda *a, **kw: SimpleNamespace()
+    )
+    with pytest.raises(
+        durable.UniqueMountIdentityUnavailable, match="MOLT_SCRATCH_STORAGE=disk"
+    ):
+        durable._linux_unique_mount_id(42)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS parent capture")
+def test_apple_identity_ancestor_aba_never_combines_two_volumes(tmp_path, monkeypatch):
+    """Replay c4-apple-ancestor-aba.json with both native volume authorities."""
+    import tempfile
+    from molt import durable_file_identity as durable
+
+    parent = tmp_path / "original-parent"
+    parent.mkdir()
+    subject = parent / "leaf"
+    subject.write_bytes(b"original volume")
+    parked = parent.with_name("held-original-parent")
+    with tempfile.TemporaryDirectory(
+        prefix="molt-identity-aba-", dir="/private/tmp"
+    ) as name:
+        foreign = Path(name) / "foreign-parent"
+        foreign.mkdir()
+        foreign_subject = foreign / subject.name
+        foreign_subject.write_bytes(b"foreign volume")
+        before = durable.file_identity(subject)
+        other = durable.file_identity(foreign_subject)
+        if before.volume == other.volume:
+            pytest.skip("native ancestor ABA requires two distinct volume UUIDs")
+        expected = subject.lstat()
+        native_volume = durable._apple_volume
+        observed = []
+
+        def swap_ancestor(fd):
+            assert isinstance(fd, int), "capture must query the held parent descriptor"
+            parent.rename(parked)
+            try:
+                parent.symlink_to(foreign, target_is_directory=True)
+                assert subject.read_bytes() == b"foreign volume"
+                # The path now addresses B, while fd retains A's real vnode.
+                captured = native_volume(fd)
+                observed.append(captured.uuid)
+                return captured
+            finally:
+                if parent.is_symlink():
+                    parent.unlink()
+                parked.rename(parent)
+
+        monkeypatch.setattr(durable, "_apple_volume", swap_ancestor)
+        try:
+            captured = durable.file_identity(subject, expected=expected)
+        except durable.ParentCaptureUnavailable as refused:
+            assert refused.remedy and refused.reason in durable.ParentCaptureReason
+        else:
+            assert captured == before
+            assert captured != durable.DurableFileIdentity(
+                before.kind, other.volume, before.file_id
+            ), "a foreign UUID must never be joined to the original inode"
+        assert observed and all(volume == before.volume for volume in observed)
+        assert subject.read_bytes() == b"original volume"
+        assert foreign_subject.read_bytes() == b"foreign volume"
+        assert not parent.is_symlink() and not parked.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS parent capture")
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_apple_identity_mode_zero_leaf_needs_no_leaf_open(tmp_path, monkeypatch, kind):
+    from molt import durable_file_identity as durable
+
+    parent = tmp_path / "searchable-parent"
+    parent.mkdir()
+    subject = parent / "mode-zero-leaf"
+    if kind == "file":
+        subject.write_bytes(b"metadata only")
+    else:
+        subject.mkdir()
+    before = durable.file_identity(subject)
+    native_open = os.open
+    opened = []
+
+    def open_parent(path, flags, *args, **kwargs):
+        assert Path(path) == parent, "identity capture must not open the mode-zero leaf"
+        opened.append(Path(path))
+        return native_open(path, flags, *args, **kwargs)
+
+    install_module_view(monkeypatch, "os", os, durable, open=open_parent)
+    subject.chmod(0)
+    try:
+        assert durable.file_identity(subject) == before
+    finally:
+        subject.chmod(0o600 if kind == "file" else 0o700)
+    assert opened
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or (os.name != "nt" and os.geteuid() == 0),
+    reason="native macOS search permissions as an unprivileged user",
+)
+def test_apple_identity_unsearchable_parent_refuses_with_typed_remedy(tmp_path):
+    from molt import durable_file_identity as durable
+
+    parent = tmp_path / "unsearchable-parent"
+    parent.mkdir()
+    subject = parent / "leaf"
+    subject.write_bytes(b"retained")
+    parent.chmod(0)
+    try:
+        with pytest.raises(durable.ParentCaptureUnavailable) as caught:
+            durable.file_identity(subject)
+        assert caught.value.reason is durable.ParentCaptureReason.UNAVAILABLE
+        assert "searchable parent" in caught.value.remedy
+        assert str(subject) in str(caught.value)
+    finally:
+        parent.chmod(0o700)
+    assert subject.read_bytes() == b"retained"
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="native macOS real device attributes"
+)
+def test_apple_identity_refuses_a_masked_cross_mount_leaf(tmp_path, monkeypatch):
+    from molt import durable_file_identity as durable
+
+    subject = tmp_path / "leaf"
+    subject.write_bytes(b"retained")
+    metadata = subject.lstat()
+    # Ordinary metadata claims one device, as a virtual/firmlink view may do.
+    assert metadata.st_dev == tmp_path.stat().st_dev
+    native_leaf = durable._apple_leaf
+    captured_devices = []
+
+    def other_real_mount(fd, leaf):
+        captured = native_leaf(fd, leaf)
+        captured_devices.append(captured.device)
+        return durable._AppleLeaf(captured.device ^ 0x80000000, captured.file_id)
+
+    monkeypatch.setattr(durable, "_apple_leaf", other_real_mount)
+    with pytest.raises(durable.ParentCaptureUnavailable) as caught:
+        durable.file_identity(subject, expected=metadata)
+    assert caught.value.reason is durable.ParentCaptureReason.CROSS_MOUNT
+    assert "same volume as its parent" in caught.value.remedy
+    assert captured_devices
+    assert subject.read_bytes() == b"retained"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS root capture")
+def test_apple_identity_volume_root_uses_held_relative_dot(monkeypatch):
+    from molt import durable_file_identity as durable
+
+    root = Path("/")
+    metadata = root.stat()
+    native_leaf = durable._apple_leaf
+    leaves = []
+
+    def root_leaf(fd, leaf):
+        leaves.append(leaf)
+        return native_leaf(fd, leaf)
+
+    monkeypatch.setattr(durable, "_apple_leaf", root_leaf)
+    captured = durable.file_identity(root, expected=metadata)
+    assert int(captured.file_id, 16) == metadata.st_ino
+    assert leaves and all(leaf == "." for leaf in leaves)

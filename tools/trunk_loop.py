@@ -589,7 +589,9 @@ def fixture_roots(record: dict, env: dict[str, str]) -> dict:
         selected = record["host"].get(field)
         if selected is None:
             continue
-        parent = resolve_owned_path(Path(selected))
+        # Root declarations contain durable identity in v2. A v1 worker keeps
+        # its nonce directories in the parent and never sees these records.
+        parent = resolve_owned_path(Path(selected)) / "v2"
         parent.mkdir(parents=True, exist_ok=True)
         directory = parent / record["nonce"][:16]
         directory.mkdir(exist_ok=False)

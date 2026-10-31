@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+from molt.durable_file_identity import identity_from_fd
 from pathlib import Path
 import re
 import secrets
@@ -1030,8 +1031,8 @@ def execution_transcript_paths(result_path: Path) -> dict[str, Path]:
 def execution_record_paths(log_path: Path) -> tuple[Path, Path]:
     """Request/result pair for one queue log; never accept a supplied fallback."""
     return (
-        log_path.with_suffix(".execution-request.json"),
-        log_path.with_suffix(".execution.json"),
+        (log_path.parent / "execution-v6" / log_path.name).with_suffix(".request.json"),
+        (log_path.parent / "execution-v6" / log_path.name).with_suffix(".json"),
     )
 
 
@@ -1042,8 +1043,7 @@ def opened_transcript_identity(path: Path, handle: BinaryIO) -> dict[str, object
         raise ValueError("live command transcript requires a regular file identity")
     return {
         "path": str(path),
-        "device": metadata.st_dev,
-        "inode": metadata.st_ino,
+        "identity": identity_from_fd(handle.fileno(), metadata=metadata).payload(),
     }
 
 

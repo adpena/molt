@@ -7,7 +7,6 @@ import hashlib
 import io
 import json
 import os
-import sys
 import tokenize
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
@@ -370,22 +369,15 @@ class _ModuleSourceCatalog:
         return self.lease_for(module_name, module_path).worker_payload()
 
 
-def _stat_device(stat: os.stat_result) -> int:
-    return int(getattr(stat, "st_dev", 0) or 0)
-
-
-_SOURCE_HASH_CACHE_SCHEMA_VERSION = 1
+_SOURCE_HASH_CACHE_SCHEMA_VERSION = 3
 
 
 def _source_hash_stat_identity_is_strong(
     *,
     ctime_ns: int,
     inode: int,
-    device: int,
 ) -> bool:
-    if sys.platform.startswith("win"):
-        return False
-    return ctime_ns > 0 and inode > 0 and device >= 0
+    return os.name != "nt" and ctime_ns > 0 and type(inode) is int and inode > 0
 
 
 @functools.lru_cache(maxsize=16384)
@@ -396,21 +388,27 @@ def _source_hash_cache_path_cached(
     mtime_ns: int,
     ctime_ns: int,
     inode: int,
-    device: int,
+    mode: int,
 ) -> Path:
-    identity = {
+    coordinate = {
         "path": path_str,
         "size": size,
         "mtime_ns": mtime_ns,
         "ctime_ns": ctime_ns,
         "inode": inode,
-        "device": device,
+        "mode": mode,
     }
-    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+    encoded = json.dumps(coordinate, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
     )
     digest = hashlib.sha256(encoded).hexdigest()
-    return Path(cache_root_str) / "source_hash_cache" / digest[:2] / f"{digest}.json"
+    return (
+        Path(cache_root_str)
+        / "source_hash_cache"
+        / "v3"
+        / digest[:2]
+        / f"{digest}.json"
+    )
 
 
 def _source_hash_cache_path(
@@ -421,7 +419,7 @@ def _source_hash_cache_path(
     mtime_ns: int,
     ctime_ns: int,
     inode: int,
-    device: int,
+    mode: int,
 ) -> Path:
     return _source_hash_cache_path_cached(
         os.fspath(cache_root),
@@ -430,7 +428,7 @@ def _source_hash_cache_path(
         mtime_ns,
         ctime_ns,
         inode,
-        device,
+        mode,
     )
 
 
@@ -468,11 +466,9 @@ def _read_persistent_source_hash(
     mtime_ns: int,
     ctime_ns: int,
     inode: int,
-    device: int,
+    mode: int,
 ) -> str | None:
-    if not _source_hash_stat_identity_is_strong(
-        ctime_ns=ctime_ns, inode=inode, device=device
-    ):
+    if not _source_hash_stat_identity_is_strong(ctime_ns=ctime_ns, inode=inode):
         return None
     cache_path = _source_hash_cache_path(
         cache_root,
@@ -481,18 +477,31 @@ def _read_persistent_source_hash(
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
         inode=inode,
-        device=device,
+        mode=mode,
     )
     payload = _read_source_hash_cache_payload(cache_path)
     if (
         not isinstance(payload, dict)
+        or set(payload)
+        != {
+            "version",
+            "path",
+            "size",
+            "mtime_ns",
+            "ctime_ns",
+            "inode",
+            "mode",
+            "source_sha256",
+        }
         or payload.get("version") != _SOURCE_HASH_CACHE_SCHEMA_VERSION
         or payload.get("path") != path_str
         or payload.get("size") != size
         or payload.get("mtime_ns") != mtime_ns
         or payload.get("ctime_ns") != ctime_ns
+        or type(payload.get("inode")) is not int
         or payload.get("inode") != inode
-        or payload.get("device") != device
+        or type(payload.get("mode")) is not int
+        or payload.get("mode") != mode
     ):
         return None
     source_hash = payload.get("source_sha256")
@@ -507,12 +516,10 @@ def _write_persistent_source_hash(
     mtime_ns: int,
     ctime_ns: int,
     inode: int,
-    device: int,
+    mode: int,
     source_hash: str,
 ) -> None:
-    if not _source_hash_stat_identity_is_strong(
-        ctime_ns=ctime_ns, inode=inode, device=device
-    ):
+    if not _source_hash_stat_identity_is_strong(ctime_ns=ctime_ns, inode=inode):
         return
     cache_path = _source_hash_cache_path(
         cache_root,
@@ -521,7 +528,7 @@ def _write_persistent_source_hash(
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
         inode=inode,
-        device=device,
+        mode=mode,
     )
     payload = {
         "version": _SOURCE_HASH_CACHE_SCHEMA_VERSION,
@@ -530,7 +537,7 @@ def _write_persistent_source_hash(
         "mtime_ns": mtime_ns,
         "ctime_ns": ctime_ns,
         "inode": inode,
-        "device": device,
+        "mode": mode,
         "source_sha256": source_hash,
     }
     _write_source_hash_cache_payload(cache_path, payload)
@@ -543,7 +550,7 @@ def _source_content_sha256_cached(
     mtime_ns: int,
     ctime_ns: int,
     inode: int,
-    device: int,
+    mode: int,
     cache_root_str: str,
 ) -> str | None:
     cache_root = Path(cache_root_str)
@@ -554,7 +561,7 @@ def _source_content_sha256_cached(
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
         inode=inode,
-        device=device,
+        mode=mode,
     )
     if cached_hash is not None:
         return cached_hash
@@ -569,7 +576,7 @@ def _source_content_sha256_cached(
         mtime_ns=mtime_ns,
         ctime_ns=ctime_ns,
         inode=inode,
-        device=device,
+        mode=mode,
         source_hash=source_hash,
     )
     return source_hash
@@ -596,11 +603,8 @@ def _source_content_sha256(
     except OSError:
         path_str = os.fspath(path)
     ctime_ns = path_stat.st_ctime_ns
-    inode = int(getattr(path_stat, "st_ino", 0) or 0)
-    device = _stat_device(path_stat)
-    if not _source_hash_stat_identity_is_strong(
-        ctime_ns=ctime_ns, inode=inode, device=device
-    ):
+    inode = path_stat.st_ino
+    if not _source_hash_stat_identity_is_strong(ctime_ns=ctime_ns, inode=inode):
         try:
             return _sha256_file(Path(path_str))
         except OSError:
@@ -611,7 +615,7 @@ def _source_content_sha256(
         path_stat.st_mtime_ns,
         ctime_ns,
         inode,
-        device,
+        path_stat.st_mode,
         os.fspath(_default_molt_cache()),
     )
 

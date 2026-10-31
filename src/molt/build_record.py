@@ -26,19 +26,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, assert_never
 
 from molt import file_publication, input_report
+from molt.durable_file_identity import (
+    DurableFileIdentity,
+    StatToken,
+    file_identity,
+)
 from molt.build_output_selection import BuildOutputSelection
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import (
     FileEvidence,
     ProbeOutcome,
     ReadReceiptId,
-    StatToken,
     resolved_probe,
     stat_token,
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v10"
+_SCHEMA = "molt-build-record-v12"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -127,7 +131,7 @@ class RecordedBuildClaim:
     kind: BuildClaimKind
     root: Path
     resolved_root: Path
-    directory_identity: tuple[int, int]
+    directory_identity: DurableFileIdentity
     cargo_target: Path | None = None
     product_identity: str | None = None
 
@@ -149,7 +153,7 @@ class RecordedBuildClaim:
             kind,
             root,
             resolved,
-            (metadata.st_dev, metadata.st_ino),
+            file_identity(resolved, expected=metadata),
             None if cargo_target is None else cargo_target.absolute(),
             product_identity,
         )
@@ -171,7 +175,7 @@ class RecordedBuildClaim:
             "kind": self.kind.value,
             "root": str(self.root),
             "resolved_root": str(self.resolved_root),
-            "directory_identity": list(self.directory_identity),
+            "directory_identity": self.directory_identity.payload(),
             "cargo_target": None
             if self.cargo_target is None
             else str(self.cargo_target),
@@ -190,13 +194,7 @@ class RecordedBuildClaim:
         }:
             raise ValueError("invalid build claim")
         kind = BuildClaimKind(value["kind"])
-        identity = value["directory_identity"]
-        if (
-            not isinstance(identity, list)
-            or len(identity) != 2
-            or any(type(part) is not int or part < 0 for part in identity)
-        ):
-            raise ValueError("invalid build claim directory identity")
+        identity = DurableFileIdentity.from_payload(value["directory_identity"])
         cargo_target = (
             None
             if value["cargo_target"] is None
@@ -213,7 +211,7 @@ class RecordedBuildClaim:
             kind,
             _record_path(value["root"]),
             _record_path(value["resolved_root"]),
-            (identity[0], identity[1]),
+            identity,
             cargo_target,
             product,
         )
@@ -274,7 +272,7 @@ class RecordedArtifact:
             # Existing host policy hashes Windows and racy POSIX generations;
             # only settled, unchanged POSIX bytes can reuse a recorded digest.
             current = cache.identity(self.resolved_path, label="build result artifact")
-            if current.size != self.token[3] or current.sha256 != self.sha256:
+            if current.size != self.token.size or current.sha256 != self.sha256:
                 raise ValueError(f"build result artifact content changed: {self.path}")
             self.verify_path()
             if owned_cache:
@@ -286,7 +284,7 @@ class RecordedArtifact:
         return {
             "path": str(self.path),
             "resolved_path": str(self.resolved_path),
-            "token": list(self.token),
+            "token": self.token.payload(),
             "sha256": self.sha256,
         }
 
@@ -299,19 +297,13 @@ class RecordedArtifact:
             "sha256",
         }:
             raise ValueError("invalid build result artifact")
-        token = value["token"]
-        if (
-            not isinstance(token, list)
-            or len(token) != 6
-            or any(type(item) is not int for item in token)
-        ):
-            raise ValueError("invalid build result artifact token")
-        if not stat.S_ISREG(token[2]) or token[3] < 0:
+        token = StatToken.from_payload(value["token"])
+        if not stat.S_ISREG(token.mode) or token.size < 0:
             raise ValueError("build result artifact is not a regular file")
         return cls(
             _record_path(value["path"]),
             _record_path(value["resolved_path"]),
-            (token[0], token[1], token[2], token[3], token[4], token[5]),
+            token,
             _record_digest(value["sha256"]),
         )
 
@@ -415,7 +407,7 @@ class NativeBuildResult:
         except sqlite3.Error as exc:
             raise ValueError(f"build result digest cache unavailable: {exc}") from exc
         if self.emission_origin is not None and (
-            self.emission_origin.output_size != self.archive.token[3]
+            self.emission_origin.output_size != self.archive.token.size
             or self.emission_origin.output_sha256 != self.archive.sha256
         ):
             raise ValueError("build result archive differs from original emission")
@@ -703,11 +695,11 @@ class InputLedger:
         racy = [
             name
             for name, fact in self.files.items()
-            if fact.token[5] >= limit
+            if fact.token.ctime_ns >= limit
             and (fact.evidence != FileEvidence.CONSUMED or fact.sha256 is None)
         ]
         racy.extend(
-            name for name, token in self.directories.items() if token[5] >= limit
+            name for name, token in self.directories.items() if token.ctime_ns >= limit
         )
         return racy
 
@@ -731,7 +723,7 @@ def enter_build() -> bool:
 
 def transient_root(state_root: Path) -> Path:
     """Where recorded builds keep their transient files: a product root."""
-    return state_root / "build_records" / _TRANSIENT_DIRNAME
+    return state_root / "build_records" / "v12" / _TRANSIENT_DIRNAME
 
 
 @contextmanager
@@ -800,7 +792,7 @@ def request_key(
         load_registry() if any(key.startswith("MOLT_") for key in environment) else None
     )
     material = {
-        "schema": _SCHEMA,
+        "schema": "molt-build-record-v10",
         "arguments": dict(arguments),
         "cwd": cwd,
         "interpreter": interpreter,
@@ -827,7 +819,7 @@ def request_key(
 
 
 def record_path(state_root: Path, key: str) -> Path:
-    return state_root / "build_records" / key[:2] / f"{key}.json"
+    return state_root / "build_records" / "v12" / key[:2] / f"{key}.json"
 
 
 def _publication_custody(paths: set[str], outputs: tuple[Path, ...]) -> set[str]:
@@ -957,7 +949,7 @@ def resolve_observed(
                 break
             token = stat_token(parent)
             if token is not None:
-                if stat.S_ISDIR(token[2]):
+                if stat.S_ISDIR(token.mode):
                     if parent not in ledger.directories:
                         ledger.directory(parent, token)
                 elif parent not in ledger.files:
@@ -992,7 +984,7 @@ def resolve_observed(
         if kind == "directory":
             if name not in ledger.directories:
                 ledger.directory(name, token)
-        elif stat.S_ISREG(token[2]):
+        elif stat.S_ISREG(token.mode):
             ledger.file(name, token, None)
 
 
@@ -1003,13 +995,14 @@ def _first_change(
 ) -> str | None:
     """The first recorded input that no longer matches, or None."""
     for name, token in directories:
-        if stat_token(name) != tuple(token):
+        if stat_token(name) != StatToken.from_payload(token):
             return f"directory {name}"
     for name, outcome in probes:
         expected = None if outcome is None else (outcome[0], outcome[1])
         if resolved_probe(name) != expected:
             return f"lookup {name}"
     for name, token, sha256, mode in files:
+        recorded = StatToken.from_payload(token)
         validation = FileValidation(mode)
         current = stat_token(name)
         if validation is FileValidation.CHECKSUM:
@@ -1021,21 +1014,21 @@ def _first_change(
                 raise ValueError(f"invalid checksum input {name}")
             if (
                 current is None
-                or current[3] != token[3]
+                or current.size != recorded.size
                 or _file_sha256(name) != sha256
             ):
                 return f"file {name}"
             continue
         if validation is not FileValidation.METADATA:
             assert_never(validation)
-        if current == tuple(token):
+        if current == recorded:
             continue
         # A rewritten file with equal bytes (a touch, a checkout) is unchanged
         # when its content digest was recorded.
         if (
             sha256 is None
             or current is None
-            or current[3] != token[3]
+            or current.size != recorded.size
             or _file_sha256(name) != sha256
         ):
             return f"file {name}"
@@ -1060,7 +1053,7 @@ def write_record(
     files = [
         [
             name,
-            list(fact.token),
+            fact.token.payload(),
             fact.sha256,
             FileValidation.CHECKSUM
             if fact.evidence & FileEvidence.CONSUMED
@@ -1069,7 +1062,7 @@ def write_record(
         for name, fact in sorted(ledger.files.items())
     ]
     directories = [
-        [name, list(token)] for name, token in sorted(ledger.directories.items())
+        [name, token.payload()] for name, token in sorted(ledger.directories.items())
     ]
     probes = [
         [name, None if outcome is None else list(outcome)]
@@ -1090,7 +1083,7 @@ def write_record(
     except (OSError, ValueError) as exc:
         return str(exc)
     output_token = stat_token(output.path)
-    if output_token is None or not stat.S_ISREG(output_token[2]):
+    if output_token is None or not stat.S_ISREG(output_token.mode):
         return f"output {output.path} is not a regular file"
     products: list[list[object]] = []
     consumer = output.path
@@ -1100,15 +1093,15 @@ def write_record(
         consumer = ledger.products.consumer
         for role, product in ledger.products.products:
             token = stat_token(product)
-            if token is None or not stat.S_ISREG(token[2]):
+            if token is None or not stat.S_ISREG(token.mode):
                 return f"product {product} is not a regular file"
-            products.append([role, os.fspath(product), list(token)])
+            products.append([role, os.fspath(product), token.payload()])
     payload = {
         "schema": _SCHEMA,
         "key": key,
         "output": {
             "selection": output.to_dict(),
-            "token": list(output_token),
+            "token": output_token.payload(),
             "consumer": os.fspath(consumer),
             "products": products,
         },
@@ -1181,7 +1174,9 @@ def check(
         recorded_output = payload["output"]
         selection = BuildOutputSelection.from_dict(recorded_output["selection"])
         selection.verify()
-        if stat_token(selection.path) != tuple(recorded_output["token"]):
+        if stat_token(selection.path) != StatToken.from_payload(
+            recorded_output["token"]
+        ):
             return f"output {selection.path} changed"
         consumer = _record_path(recorded_output["consumer"])
         products = recorded_output["products"]
@@ -1193,7 +1188,7 @@ def check(
                 return "unreadable record: invalid product role"
             path = _record_path(product)
             product_paths.add(path)
-            if stat_token(path) != tuple(token):
+            if stat_token(path) != StatToken.from_payload(token):
                 return f"product {path} changed"
         if consumer != selection.path and consumer not in product_paths:
             return "unreadable record: consumer is not a product"

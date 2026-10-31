@@ -10573,6 +10573,12 @@ class TestStorageAuthority:
     def test_registered_clean_sandbox_relocation_preserves_git_and_bytes(
         self, tmp_path, monkeypatch, cross_volume
     ):
+        # This case observes relocation, not unbound host placement. Its real
+        # native Git children must retain fixture artifact custody after the
+        # class's developer-host fixture clears the session environment.
+        command_artifacts = tmp_path / "command-artifacts"
+        command_artifacts.mkdir()
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(command_artifacts))
         repo, source, destination = (
             tmp_path / "repo",
             tmp_path / "sandbox",

@@ -21,10 +21,11 @@ import threading
 from enum import IntFlag, StrEnum
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol, assert_never
+from typing import TYPE_CHECKING, Any, Protocol, assert_never
 
-# (device, inode, mode, file size or POSIX directory size, mtime_ns, content-change ns)
-StatToken = tuple[int, int, int, int, int, int]
+if TYPE_CHECKING:
+    from molt.durable_file_identity import StatToken
+
 # A lookup's resolved target and file type; an empty target carries the errno
 # of a lookup that failed for a reason other than absence; None is absent.
 ProbeOutcome = tuple[str, int] | None
@@ -69,8 +70,11 @@ def stat_token(
             return None
     else:
         change = metadata.st_ctime_ns
-    return (
-        metadata.st_dev,
+    if metadata.st_ino <= 0:
+        return None
+    from molt.durable_file_identity import StatToken
+
+    return StatToken(
         metadata.st_ino,
         metadata.st_mode,
         # Windows by-name and handle metadata can report 4096 and 0 for
@@ -187,6 +191,13 @@ _O_TMPFILE = getattr(os, "O_TMPFILE", 0)
 
 
 def _reads_existing_content(flags: int) -> bool:
+    # These handles grant metadata access only. Identity capture must not turn
+    # a proven semantic read into an additional unbound content observation.
+    if flags & (getattr(os, "O_PATH", 0) | getattr(os, "O_EVTONLY", 0)):
+        return False
+    search = getattr(os, "O_SEARCH", 0)
+    if search and flags & search == search:
+        return False
     # An open that creates a new file (O_CREAT|O_EXCL, or Linux's unnamed
     # O_TMPFILE) or truncates one with write access reads nothing that
     # existed before it: `tempfile` opens both ways (HF-250).
@@ -198,6 +209,14 @@ def _reads_existing_content(flags: int) -> bool:
     ):
         return False
     return access != os.O_WRONLY or bool(flags & os.O_APPEND)
+
+
+def _worker_json_value(value: object) -> object:
+    from molt.durable_file_identity import StatToken
+
+    if isinstance(value, StatToken):
+        return value.payload()
+    raise TypeError(f"unsupported worker fact: {type(value).__name__}")
 
 
 def _worker_log(entry: list[Any]) -> None:
@@ -213,7 +232,7 @@ def _worker_log(entry: list[Any]) -> None:
         try:
             if _WORKER_LOG is None:
                 _WORKER_LOG = open(name, "a", encoding="utf-8")  # noqa: SIM115
-            _WORKER_LOG.write(json.dumps(entry) + "\n")
+            _WORKER_LOG.write(json.dumps(entry, default=_worker_json_value) + "\n")
             _WORKER_LOG.flush()
         except (OSError, TypeError, ValueError):
             try:
@@ -333,6 +352,10 @@ def _install_hook() -> None:
     if not _HOOK_INSTALLED:
         import sys
 
+        # Worker codecs must be initialized before the audit hook can observe
+        # their imports; a spawned worker otherwise reenters a partial module.
+        from molt import durable_file_identity  # noqa: F401
+
         if os.name == "nt":
             from molt.file_hashing import _windows_file_api
 
@@ -407,16 +430,20 @@ def merge_worker_logs(sink: FactSink, log_dir: str) -> None:
 
 
 def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
+    from molt.durable_file_identity import StatToken
+
     kind = WorkerFactKind(entry[0])
     if kind is WorkerFactKind.OBSERVED:
         _, observed_kind, name = entry
         sink.observe((observed_kind, name))
     elif kind is WorkerFactKind.FILE:
         _, name, token, sha256 = entry
-        sink.file(name, None if token is None else tuple(token), sha256)
+        sink.file(
+            name, None if token is None else StatToken.from_payload(token), sha256
+        )
     elif kind is WorkerFactKind.DIRECTORY:
         _, name, token = entry
-        sink.directory(name, None if token is None else tuple(token))
+        sink.directory(name, None if token is None else StatToken.from_payload(token))
     elif kind is WorkerFactKind.PROBE:
         _, name, outcome = entry
         sink.probe(name, None if outcome is None else (outcome[0], outcome[1]))
@@ -433,7 +460,9 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
         sink.build_result(entry[1])
     elif kind is WorkerFactKind.CONSUMED_FILE:
         _, name, token, sha256 = entry
-        sink.consumed_file(name, None if token is None else tuple(token), sha256)
+        sink.consumed_file(
+            name, None if token is None else StatToken.from_payload(token), sha256
+        )
     elif kind is WorkerFactKind.READ_STARTED or kind is WorkerFactKind.READ_FINISHED:
         identity = entry[1]
         if (
@@ -449,7 +478,10 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
         else:
             _, _, name, token, sha256 = entry
             sink.read_finished(
-                receipt, name, None if token is None else tuple(token), sha256
+                receipt,
+                name,
+                None if token is None else StatToken.from_payload(token),
+                sha256,
             )
     else:
         assert_never(kind)
