@@ -245,7 +245,7 @@ def runtime_cell_key(request: RuntimeCellRequest) -> dict[str, Any]:
     return wasm_runtime_cell_key(
         runtime_profile=cargo_profile,
         stdlib_profile=request.stdlib_profile,
-        simd_enabled=runtime_wasm_simd_policy(freestanding=request.freestanding),
+        simd_enabled=runtime_wasm_simd_policy(),
         freestanding=request.freestanding,
     )
 
@@ -461,7 +461,7 @@ def _produce_wasm(
             cargo_profile=cargo_profile,
             cargo_timeout=timeout,
             project_root=source_root,
-            simd_enabled=runtime_wasm_simd_policy(freestanding=request.freestanding),
+            simd_enabled=runtime_wasm_simd_policy(),
             freestanding=request.freestanding,
             stdlib_profile=request.stdlib_profile,
             resolved_modules=None,
