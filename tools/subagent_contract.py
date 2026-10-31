@@ -93,13 +93,17 @@ HANDOFF_PRECHECK = (
 GIT_CUSTODY = (
     "GIT CUSTODY: use the assigned managed checkout and exact owned paths; preserve other work. "
     "NEVER `git add -A` or broadly stage, reset, clean or overwrite. Reuse existing WIP and "
-    "lanes; the integration owner owns publication and retirement under AGENTS.md."
+    "lanes; the integration owner owns publication and retirement under AGENTS.md. Generated "
+    "outputs of sources you change are in your write scope; regenerate them with "
+    "`tools/generators.py write`."
 )
 
 BUILD_ENV = (
     "BUILD ENV: resolve the supported CPython 3.12+ interpreter and child environment through "
     "canonical DX/toolchain authorities. Artifact placement must never change source, seal, "
-    "worktree, or toolchain custody. Use the proof plan for actual profiles and prerequisites."
+    "worktree, or toolchain custody. Use the proof plan for actual profiles and prerequisites. "
+    "Run every driver, probe and helper with the slot image's interpreter, never a system or "
+    "bare `python3`; the repository's own Git hooks are exempt."
 )
 
 DISTILL = (
