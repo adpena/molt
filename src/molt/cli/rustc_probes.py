@@ -309,7 +309,13 @@ def rustc_host_target(
         _rustc_probe_key(host_probe, ("-vV",), root=root, env=env, kind="rustc-host"),
         run_host_probe,
     )
+    if result.returncode != 0:
+        raise ValueError(
+            f"runtime rustc host probe failed ({result.returncode}): {result.stderr.strip()}"
+        )
     match = re.search(r"(?m)^host:\s*(\S+)\s*$", result.stdout)
-    if result.returncode != 0 or match is None:
-        raise ValueError("runtime rustc host selection could not be proven")
+    if match is None:
+        raise ValueError(
+            f"runtime rustc -vV reported no host triple: {result.stdout.strip()!r}"
+        )
     return match.group(1)
