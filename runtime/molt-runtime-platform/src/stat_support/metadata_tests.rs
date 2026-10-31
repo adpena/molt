@@ -114,8 +114,13 @@ fn exact_time_views_keep_fractional_negative_and_large_native_values() {
     let virtual_max = PathMetadata::from_virtual(true, false, false, 1, u64::MAX);
     assert_eq!(virtual_max.times[1].seconds(), u64::MAX as i128);
     assert_eq!(virtual_max.times[0], StatTime::default());
-    let before = std::time::UNIX_EPOCH - std::time::Duration::from_nanos(1);
-    assert_eq!(StatTime::from_system_time(Ok(before)), time);
+    // Windows SystemTime counts 100 ns ticks, so a 1 ns step before the epoch
+    // is the epoch itself there; 100 ns is exact on every host.
+    let before = std::time::UNIX_EPOCH - std::time::Duration::from_nanos(100);
+    assert_eq!(
+        StatTime::from_system_time(Ok(before)),
+        StatTime::from_parts(-1, 999_999_900)
+    );
 }
 
 #[cfg(windows)]
