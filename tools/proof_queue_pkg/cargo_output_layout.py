@@ -18,7 +18,7 @@ import sys
 from typing import Mapping, Sequence
 
 from molt import custody_layout, file_publication
-from molt.dx import artifact_root
+from molt.dx import artifact_root, checkout_component, storage_path
 from molt.durable_file_identity import (
     DurableFileIdentity,
     file_identity,
@@ -401,11 +401,9 @@ class CargoOutputLayout:
         # or a cached Python fixture. Result paths cannot fragment this store.
         source = implementation_source_root()
         root = Path(str(self.supervisor_artifact_root["path"]))
-        namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
-            :24
-        ]
         store = file_publication.resolve_owned_path(
-            root / "proof-supervisor" / namespace
+            storage_path(source, "proof-supervisor", {"MOLT_EXT_ROOT": str(root)})
+            / checkout_component(source)
         )
         if any(
             _overlaps(store, protected)
