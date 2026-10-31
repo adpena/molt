@@ -298,8 +298,8 @@ mod binary;
 #[cfg(test)]
 pub(crate) use binary::pickle_apply_build;
 pub(crate) use binary::pickle_resolve_global_bits;
-pub(crate) use binary::{pickle_vm_append_items, pickle_vm_setitems};
 pub use binary::{
     molt_multiprocessing_codec_dumps, molt_multiprocessing_codec_loads, molt_pickle_dumps_core,
     molt_pickle_loads_core,
 };
+pub(crate) use binary::{pickle_vm_append_items, pickle_vm_setitems};

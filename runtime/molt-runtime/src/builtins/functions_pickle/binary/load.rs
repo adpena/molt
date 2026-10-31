@@ -99,10 +99,12 @@ pub(crate) fn pickle_vm_append_items(
     target_bits: u64,
     items: &[u64],
 ) -> Result<(), u64> {
-    let exact_list = obj_from_bits(target_bits).as_ptr().is_some_and(|ptr| unsafe {
-        object_type_id(ptr) == TYPE_ID_LIST
-            && crate::object::iterable::builtin_receiver(_py, ptr)
-    });
+    let exact_list = obj_from_bits(target_bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_LIST
+                && crate::object::iterable::builtin_receiver(_py, ptr)
+        });
     if exact_list {
         for &item in items {
             let _ = crate::molt_list_append(target_bits, item);
@@ -131,7 +133,11 @@ pub(crate) fn pickle_vm_append_items(
     let Some(append_bits) = pickle_attr_optional(_py, target_bits, b"append")? else {
         let type_name = type_name(_py, obj_from_bits(target_bits));
         let message = format!("'{type_name}' object has no attribute 'append'");
-        return Err(raise_exception(_py, crate::BuiltinExc::AttributeError, &message));
+        return Err(raise_exception(
+            _py,
+            crate::BuiltinExc::AttributeError,
+            &message,
+        ));
     };
     for &item in items {
         let result = unsafe { call_callable1(_py, append_bits, item) };

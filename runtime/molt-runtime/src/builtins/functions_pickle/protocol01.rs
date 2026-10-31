@@ -79,7 +79,11 @@ fn pickle_dump_obj(
         return Ok(());
     }
     if let Some(value) = obj.as_int() {
-        pickle_dump_text_int(out, value.to_string().as_str(), i32::try_from(value).is_ok());
+        pickle_dump_text_int(
+            out,
+            value.to_string().as_str(),
+            i32::try_from(value).is_ok(),
+        );
         return Ok(());
     }
     if let Some(value) = obj.as_float() {

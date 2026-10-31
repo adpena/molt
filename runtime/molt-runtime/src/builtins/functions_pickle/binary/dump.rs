@@ -140,7 +140,10 @@ fn pickle_dump_unicode_binary(
         return Ok(());
     }
     if raw.len() <= u32::MAX as usize {
-        state.write_payload(&pickle_payload_header_u32(PICKLE_OP_BINUNICODE, raw.len()), raw);
+        state.write_payload(
+            &pickle_payload_header_u32(PICKLE_OP_BINUNICODE, raw.len()),
+            raw,
+        );
         return Ok(());
     }
     state.write_payload(&pickle_payload_header_u64(0x8d, raw.len()), raw);
@@ -169,10 +172,16 @@ fn pickle_dump_bytes_binary(
         return Ok(());
     }
     if raw.len() <= u32::MAX as usize {
-        state.write_payload(&pickle_payload_header_u32(PICKLE_OP_BINBYTES, raw.len()), raw);
+        state.write_payload(
+            &pickle_payload_header_u32(PICKLE_OP_BINBYTES, raw.len()),
+            raw,
+        );
         return Ok(());
     }
-    state.write_payload(&pickle_payload_header_u64(PICKLE_OP_BINBYTES8, raw.len()), raw);
+    state.write_payload(
+        &pickle_payload_header_u64(PICKLE_OP_BINBYTES8, raw.len()),
+        raw,
+    );
     Ok(())
 }
 
@@ -182,7 +191,10 @@ fn pickle_dump_bytearray_binary(
     raw: &[u8],
 ) -> Result<(), u64> {
     if state.protocol >= PICKLE_PROTO_5 {
-        state.write_payload(&pickle_payload_header_u64(PICKLE_OP_BYTEARRAY8, raw.len()), raw);
+        state.write_payload(
+            &pickle_payload_header_u64(PICKLE_OP_BYTEARRAY8, raw.len()),
+            raw,
+        );
         return Ok(());
     }
     // Protocols 2-4: bytearray(bytes(...)) reduce path.
@@ -519,8 +531,13 @@ fn pickle_dump_full_batches(
 /// A dictitems element's key and value; anything but a 2-tuple is the
 /// TypeError CPython's batch_dict raises.
 fn pickle_dict_item_pair(_py: &crate::PyToken<'_>, item_bits: u64) -> Result<[u64; 2], u64> {
-    let refuse =
-        || raise_exception(_py, BuiltinExc::TypeError, "dict items iterator must return 2-tuples");
+    let refuse = || {
+        raise_exception(
+            _py,
+            BuiltinExc::TypeError,
+            "dict items iterator must return 2-tuples",
+        )
+    };
     let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
         return Err(refuse());
     };
@@ -1206,9 +1223,12 @@ pub(crate) fn pickle_dump_obj_binary(
                 // CPython's save_set: MARK ... ADDITEMS per PICKLE_BATCH_SIZE,
                 // repeated while a batch fills.
                 if !values.is_empty() {
-                    pickle_dump_full_batches(state, values.len(), PICKLE_OP_ADDITEMS, |state, at| {
-                        pickle_dump_obj_binary(_py, state, values[at], true)
-                    })?;
+                    pickle_dump_full_batches(
+                        state,
+                        values.len(),
+                        PICKLE_OP_ADDITEMS,
+                        |state, at| pickle_dump_obj_binary(_py, state, values[at], true),
+                    )?;
                 }
                 return Ok(());
             }
