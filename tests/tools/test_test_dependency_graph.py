@@ -312,6 +312,27 @@ def _landing_commands(graph):
     ]
 
 
+def test_a_foreign_portability_cell_owns_its_tests():
+    def command(identifier, cell):
+        return {
+            "id": identifier,
+            "tiers": ["main"],
+            "cell": cell,
+            "resource_class": "python-tests",
+            "toolchains": ["python"],
+            "argv": ["python", "-m", "pytest"],
+            "pytest": [f"tests/test_{identifier}.py"],
+        }
+
+    commands = [command("here", "local-cell"), command("there", "other-os-cell")]
+    envelopes, others = landing_envelopes(
+        commands, foreign_cells=frozenset({"other-os-cell"})
+    )
+    assert "tests/test_here.py" in envelopes
+    assert "tests/test_there.py" not in envelopes
+    assert others["tests/test_there.py"] == ("there",)
+
+
 def test_presubmit_selects_direct_readers_while_postsubmit_closes_imports(
     landing_graph,
 ):

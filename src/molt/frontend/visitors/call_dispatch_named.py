@@ -22,7 +22,6 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-from molt.compiler_analysis.python_function_kind import FunctionKind
 
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
@@ -175,8 +174,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 )
                 if native_call is not None:
                     return native_call
-                if func_id == "field" and allowlist_key == "dataclasses":
-                    return self._emit_dataclasses_field_call(allowlist_key, node)
                 original_attr = self._imported_attr_name(func_id)
                 known_func_hint = self._known_module_function_type_hint(
                     allowlist_key, original_attr
@@ -218,13 +215,9 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             )
             if imported_classlike_call is not CALL_NOT_HANDLED:
                 return imported_classlike_call
-            if (
-                target_info is None
-                and self.current_func_name != "molt_main"
-                and self.module_declared_funcs.get(func_id) == FunctionKind.SYNC
-            ):
-                func_symbol = self._function_symbol_for_reference(func_id)
-                target_info = MoltValue(func_id, type_hint=f"Func:{func_symbol}")
+            source_symbol = self._source_callable_candidate(node.func)
+            if source_symbol is not None:
+                target_info = MoltValue(func_id, type_hint=f"Func:{source_symbol}")
             imported_binding_is_live = imported_from is not None and (
                 self.current_func_name != "molt_main"
                 or func_id not in self.module_global_mutations
@@ -882,83 +875,14 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     if static_dataclass is not None:
                         self._stamp_exact_class(static_dataclass, class_id)
                         return static_dataclass
-                    field_order = class_info["field_order"]
-                    name_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(
-                        MoltOp(kind="CONST_STR", args=[class_id.name], result=name_val)
-                    )
-                    field_name_vals: list[MoltValue] = []
-                    for field in field_order:
-                        field_val = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(
-                            MoltOp(kind="CONST_STR", args=[field], result=field_val)
-                        )
-                        field_name_vals.append(field_val)
-                    field_names_tuple = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(
-                            kind="TUPLE_NEW",
-                            args=field_name_vals,
-                            result=field_names_tuple,
-                        )
-                    )
-                    missing_val = MoltValue(self.next_var(), type_hint="missing")
-                    self.emit(MoltOp(kind="MISSING", args=[], result=missing_val))
-                    field_values = [missing_val for _ in field_order]
-                    values_tuple = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(
-                            kind="TUPLE_NEW",
-                            args=field_values,
-                            result=values_tuple,
-                        )
-                    )
-                    flags = 0
-                    if class_info.get("frozen"):
-                        flags |= 0x1
-                    if class_info.get("repr"):
-                        flags |= 0x4
-                    if class_info.get("slots"):
-                        flags |= 0x8
-                    flags_val = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[flags], result=flags_val))
+                    # A declined allocation proof uses the actual class protocol:
+                    # metaclass __call__, __new__, and live initializer validation.
+                    callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
-                        MoltOp(
-                            kind="DATACLASS_NEW",
-                            args=[name_val, field_names_tuple, values_tuple, flags_val],
-                            result=res,
-                        )
+                        MoltOp(kind="CALL_BIND", args=[class_ref, callargs], result=res)
                     )
-                    self.emit(
-                        MoltOp(
-                            kind="DATACLASS_SET_CLASS",
-                            args=[res, class_ref],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    init_func = self._emit_class_method_func(class_ref, "__init__")
-                    bound_init = MoltValue(self.next_var(), type_hint="method")
-                    self.emit(
-                        MoltOp(
-                            kind="BOUND_METHOD_NEW",
-                            args=[init_func, res],
-                            result=bound_init,
-                        )
-                    )
-                    callargs = self._emit_call_args_builder(node)
-                    init_res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[bound_init, callargs],
-                            result=init_res,
-                        )
-                    )
-                    # User initialization can run arbitrary callbacks, including
-                    # a supported ``self.__class__`` reassignment.  The allocation
-                    # result was exact when produced; the post-callback value is not.
-                    return MoltValue(res.name, type_hint="Any")
+                    return res
                 _, new_returns_any = self._class_new_policy(class_id, class_info)
 
                 # Phase-1-sibling class-instantiation fold.
@@ -1057,6 +981,9 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                     if param_count is not None:
                                         expected_positional = param_count - 1
                                         if len(node.args) == expected_positional:
+                                            init_args = self._emit_call_args(
+                                                list(node.args)
+                                            )
                                             res = MoltValue(
                                                 self.next_var(),
                                                 type_hint=DeclaredClass(class_id),
@@ -1083,9 +1010,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                             )
                                             self._stamp_exact_class(res, class_id)
                                             allocation_token = self.exact_class_token
-                                            init_args = [
-                                                self.visit(a) for a in node.args
-                                            ]
                                             if not any(a is None for a in init_args):
                                                 # Phase 2 sibling — inline
                                                 # __init__ body directly when
@@ -1172,7 +1096,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             if stateful_result is not None:
                 return stateful_result
             if target_info and isinstance(target_info.type_hint, BoundMethodHint):
-                callee = self._named_callee_value(target_info, func_id, node)
+                callee = self._named_callee_value(node)
                 res_hint = "Any"
                 if needs_bind:
                     callargs = self._emit_call_args_builder(node)
@@ -1205,9 +1129,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 # A registered intrinsic is called by its symbol; any other
                 # call, and one that binds its arguments, reads the name.
                 callee = (
-                    target_info
-                    if intrinsic_target
-                    else self._named_callee_value(target_info, func_id, node)
+                    target_info if intrinsic_target else self._named_callee_value(node)
                 )
                 direct_ok = intrinsic_target or target_name in self.func_default_specs
                 if not direct_ok:
@@ -1218,7 +1140,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         direct_ok = True
                 if needs_bind or not direct_ok:
                     if intrinsic_target:
-                        callee = self._named_callee_value(target_info, func_id, node)
+                        callee = self._named_callee_value(node)
                     callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint=res_hint)
                     self.emit(

@@ -4,11 +4,15 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
+# Binding-flow analysis admits only reachable modules and resolves callables by
+# definition (family B), so a benchmark's admitted workload dependencies, and
+# with them its workload identity, can change. Earlier reports retain their
+# recorded class.
 # Source fingerprints cover the Git-admitted source set (molt.source_admission)
 # instead of a filesystem walk, so fingerprint digests and cache reuse can move
 # cold and warm samples. Earlier reports retain their recorded class.
-version = 18
-content_sha256 = "897cae7417784be91a80b8e8d93dd733570f8cf561cc092e166d877a1735caba"
+version = 20
+content_sha256 = "154854061ab6d6ffba16d03d65e89bee199b3a9812b41ca92c3528c51ceb444d"
 
 [[methodology]]
 path = "tools/safe_run.py"

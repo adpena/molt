@@ -1288,8 +1288,13 @@ def landing_envelopes(
     commands: Iterable[Mapping],
     *,
     mode: LandingMode = LandingMode.PRESUBMIT,
+    foreign_cells: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, LandingEnvelope], dict[str, tuple[str, ...]]]:
-    """(landing envelopes, other owners) of every test file the plan names."""
+    """(landing envelopes, other owners) of every test file the plan names.
+
+    A command of a ``foreign_cells`` cell verifies another platform (its hosted
+    toolchains are absent here), so its own cell owns its tests.
+    """
     whole: dict[str, list[Mapping]] = {}
     nodes: dict[str, list[tuple[str, Mapping]]] = {}
     slow_whole: dict[str, list[Mapping]] = {}
@@ -1310,7 +1315,9 @@ def landing_envelopes(
             case _:
                 assert_never(mode)
         landing = (
-            selected_tier and command.get("resource_class") != BUILD_RESOURCE_CLASS
+            selected_tier
+            and command.get("resource_class") != BUILD_RESOURCE_CLASS
+            and command.get("cell") not in foreign_cells
         )
         for target in targets:
             path, separator, _node = target.partition("::")
@@ -1373,8 +1380,11 @@ def graph_selection(
     *,
     mode: LandingMode = LandingMode.PRESUBMIT,
     recent_failures: Iterable[str] = (),
+    foreign_cells: frozenset[str] = frozenset(),
 ) -> GraphSelection:
-    envelopes, others = landing_envelopes(commands, mode=mode)
+    envelopes, others = landing_envelopes(
+        commands, mode=mode, foreign_cells=foreign_cells
+    )
     run: dict[str, LandingEnvelope] = {}
     deferred: dict[str, tuple[str, ...]] = {}
     changed = tuple(changed)

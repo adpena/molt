@@ -8,6 +8,7 @@ reads changes (HF-457); the driver's own tests run only when the driver does.
 from __future__ import annotations
 
 import shlex
+import sys
 from pathlib import Path, PurePosixPath
 import tomllib
 
@@ -218,9 +219,34 @@ _GUARD_AUDIT_READERS = {
     "tests/test_memory_guard_wiring.py",
     "tests/tools/test_check_memory_guard_wiring.py",
     "tests/tools/test_dev_py.py",
-    # The CLI completion smoke test names both guard audits as files.
-    "tests/cli/test_cli_smoke.py::test_cli_completion_uses_parser_commands_flags_and_positional_semantics",
 }
+# The CLI completion smoke test names both guard audits as files. Its Linux
+# portability cell owns it (hosted bash, fish and zsh), so it reads them as a
+# direct reader only on a Linux host; another host defers it to that cell.
+COMPLETION_NODE = (
+    "tests/cli/test_cli_smoke.py::"
+    "test_cli_completion_uses_parser_commands_flags_and_positional_semantics"
+)
+if sys.platform.startswith("linux"):
+    _GUARD_AUDIT_READERS.add(COMPLETION_NODE)
+
+
+@pytest.mark.parametrize(
+    "host,local",
+    [("x86_64-unknown-linux-gnu", True), ("aarch64-apple-darwin", False)],
+)
+def test_portability_cells_of_another_os_defer_to_their_own_cell(
+    monkeypatch, host, local
+):
+    monkeypatch.setattr("molt.native_target._host_target_triple", lambda **_: host)
+    cfg = GateConfig.load(COMMITTED_GATES)
+    foreign = cfg.foreign_cells()
+    assert ("linux-x86_64-py312-queue-portability" in foreign) is not local
+    assert "windows-x86_64-py312-queue-portability" in foreign
+    # Host-agnostic cells are never foreign, whatever OS they name.
+    assert "linux-x86_64-py312-unit-collection" not in foreign
+    selected = _selected_pytest_targets(cfg, ["tools/check_memory_guard_wiring.py"])
+    assert (COMPLETION_NODE in selected) is local
 
 
 @pytest.mark.parametrize(

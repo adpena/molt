@@ -188,6 +188,7 @@ def _wrapper_build_dependency_fingerprints(
                     target=target,
                     import_admission_policy=import_admission_policy,
                     target_python=resolved_build_entry.target_python,
+                    target_sys_platform=_build_inputs._target_sys_platform(target),
                     image_scope=resolved_build_entry.image_scope,
                     stdlib_profile=request.stdlib_profile,
                 )

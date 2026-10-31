@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.python_environment_location import environment_bytecode_arguments
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
@@ -64,6 +66,7 @@ def _discover(
     full: bool,
     project: Path | None = None,
     state: discovery._ModuleGraphDiscovery | None = None,
+    native_callable_exports: dict[str, tuple[str, ...]] | None = None,
 ):
     return discovery._discover_module_graph_from_paths(
         (path,),
@@ -75,6 +78,7 @@ def _discover(
         full_scan_roots=full,
         discovery=state,
         resolver_cache=state.resolver_cache if state is not None else None,
+        native_callable_exports=native_callable_exports,
     )
 
 
@@ -132,7 +136,9 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
 
 
 def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) -> None:
-    helper = _source(tmp_path / "helper.py", "def invoke():\n    import leaf\n")
+    helper = _source(
+        tmp_path / "helper.py", "def invoke():\n    import leaf\ninvoke()\n"
+    )
     _source(tmp_path / "leaf.py", "pass\n")
     graph = {}
     roles = {}
@@ -160,16 +166,33 @@ def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) ->
 @pytest.mark.parametrize(
     ("left", "right", "expected"),
     [
-        (None, PythonNamespacePremise((), 0), None),
+        (None, PythonNamespacePremise((), 0, 0, ()), None),
         (
-            PythonNamespacePremise(("a",), 0),
-            PythonNamespacePremise(("b",), int(PythonMember.IMPORT_HOOKS)),
-            PythonNamespacePremise(("a", "b"), int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(("a",), 0, 0, ()),
+            PythonNamespacePremise(
+                ("b",),
+                int(PythonMember.IMPORT_HOOKS),
+                int(PythonMember.IMPORT_HOOKS),
+                (),
+            ),
+            PythonNamespacePremise(
+                ("a", "b"),
+                int(PythonMember.IMPORT_HOOKS),
+                int(PythonMember.IMPORT_HOOKS),
+                (),
+            ),
         ),
         (
-            PythonNamespacePremise(None, 0),
-            PythonNamespacePremise(("b",), int(PythonMember.IMPORT_HOOKS)),
-            PythonNamespacePremise(None, int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(None, 0, 0, ()),
+            PythonNamespacePremise(
+                ("b",),
+                int(PythonMember.IMPORT_HOOKS),
+                int(PythonMember.IMPORT_HOOKS),
+                (),
+            ),
+            PythonNamespacePremise(
+                None, int(PythonMember.IMPORT_HOOKS), int(PythonMember.IMPORT_HOOKS), ()
+            ),
         ),
     ],
 )
@@ -209,6 +232,9 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
         else {
             "foreign_writes": expected.foreign_writes,
             "member_writes": expected.member_writes,
+            "entry_member_writes": expected.entry_member_writes,
+            "noncanonical_imports": expected.noncanonical_imports,
+            "opaque_activation_sources": expected.opaque_activation_sources,
         }
     )
 
@@ -281,6 +307,7 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
     )
     record = discovery._bind_precomputed_module_import_scan(
         source,
+        purpose=SourceImportPurpose.EXECUTION,
         snapshot=PythonSourceSnapshot.capture(source),
         module_name="entry",
         import_scan_mode="full",
@@ -291,6 +318,7 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
     def load(path=source, mode="full"):
         return discovery._load_module_import_scan(
             path,
+            purpose=SourceImportPurpose.EXECUTION,
             module_name="entry",
             is_package=False,
             import_scan_mode=mode,
@@ -410,7 +438,13 @@ def test_late_native_root_refreshes_policy_and_catalog(
     )
 
     def add_native_root(*, module_graph, scan_authorities, **kwargs):
-        result = _discover(late, tmp_path, full=True, state=kwargs["discovery"])
+        result = _discover(
+            late,
+            tmp_path,
+            full=True,
+            state=kwargs["discovery"],
+            native_callable_exports={"late": ("invoke",)},
+        )
         discovery._merge_discovered_module_graph(module_graph, scan_authorities, result)
         return frozenset(result.explicit_imports | {"late"})
 
@@ -779,6 +813,7 @@ def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_ke
     for roots in (("later",), ("first", "later"), ("first", "later")):
         result = discovery._load_module_import_scan(
             source,
+            purpose=SourceImportPurpose.INVENTORY,
             module_name="support",
             is_package=source.name == "__init__.py",
             import_scan_mode="full",
@@ -791,6 +826,7 @@ def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_ke
         loaded.append(result)
         record = discovery._bind_precomputed_module_import_scan(
             source,
+            purpose=SourceImportPurpose.INVENTORY,
             module_name="support",
             import_scan_mode="full",
             is_package=source.name == "__init__.py",
@@ -907,6 +943,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
     state = discovery._ModuleGraphDiscovery(cache, PYTHON)
     loaded = discovery._load_module_import_scan(
         support,
+        purpose=SourceImportPurpose.INVENTORY,
         module_name="support",
         is_package=False,
         import_scan_mode="full",
@@ -919,6 +956,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
     assert "initializer_leaf" not in loaded.scan.imports
     record = discovery._bind_precomputed_module_import_scan(
         support,
+        purpose=SourceImportPurpose.INVENTORY,
         module_name="support",
         import_scan_mode="full",
         scan=loaded.scan,
@@ -937,6 +975,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
         resolver_cache=cache,
         discovery=state,
         precomputed_scans_by_path={support: record},
+        native_callable_exports={"support": ("later",)},
     )
     expected = {
         "support": support,
@@ -1107,7 +1146,9 @@ def test_native_slice_root_growth_retains_source_and_dependency_identity(
         == counts_after_growth["native_support_source_prunes"]
     )
     assert not tuple((tmp_path / "generated").glob("_molt_generated_*.py"))
-    consumer = _source(tmp_path / "consumer.py", "import support\n")
+    consumer = _source(
+        tmp_path / "consumer.py", "import support\nsupport.first()\nsupport.second()\n"
+    )
     result = discovery._discover_module_graph_from_paths(
         (consumer,),
         [tmp_path],
@@ -1204,9 +1245,157 @@ def test_native_raw_source_dominates_selected_roots_without_losing_depth(
     assert set(graph) == (
         {"support", "initializer"}
         if raw_first
-        else {"support", "initializer", "selected", "other"}
+        else {"support", "initializer", "selected"}
     )
+    # Raw source expands the lowering view, not execution of unused bodies.
+    assert "other" not in graph
     assert tuple((tmp_path / "artifacts").glob("_molt_generated_*.py")) == ()
+
+
+@pytest.mark.parametrize("native_first", [False, True])
+def test_native_inventory_and_raw_execution_do_not_share_same_ast_cache_entry(
+    tmp_path, native_first
+):
+    support = _source(tmp_path / "support.py", "def used():\n    import leaf\n")
+    _source(tmp_path / "leaf.py", "pass\n")
+    cache = _ModuleResolutionCache()
+    for native in (native_first, not native_first, native_first):
+        loaded = discovery._load_module_import_scan(
+            support,
+            purpose=SourceImportPurpose.INVENTORY
+            if native
+            else SourceImportPurpose.EXECUTION,
+            module_name="support",
+            is_package=False,
+            import_scan_mode="full",
+            resolution_cache=cache,
+            project_root=None,
+            roots=[tmp_path],
+            stdlib_root=tmp_path / "stdlib",
+            stdlib_allowlist=set(),
+            native_support_function_roots=("used",) if native else (),
+        )
+        assert set(loaded.scan.imports) == ({"leaf"} if native else set())
+        assert (
+            loaded.snapshot.sha256 == hashlib.sha256(support.read_bytes()).hexdigest()
+        )
+    # Selecting every definition leaves the AST identical. Purpose still
+    # separates available native dependencies from executed Python imports.
+    assert len(cache.graph_import_scan_cache) == 2
+
+
+def test_native_callable_export_activates_its_writer_after_raw_source_admission(
+    tmp_path,
+):
+    support = _source(
+        tmp_path / "support.py",
+        "import provider\ndef used():\n    provider.active = 1\n"
+        "def unused():\n    provider.dormant = 1\n",
+    )
+    _source(tmp_path / "provider.py", "VALUE = 0\n")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys\nsys.path.insert(0, sys.argv[1])\nimport support,provider\ngetattr(support, 'used')()\nprint(sorted(set(provider.__dict__) & {'active','dormant'}))",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == "['active']"
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    common = dict(
+        roots=[tmp_path],
+        module_roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        project_root=tmp_path,
+        stdlib_allowlist=set(),
+        resolver_cache=cache,
+        discovery=state,
+        full_scan_roots=False,
+    )
+    initial = discovery._discover_module_graph_from_paths((support,), **common)
+    assert (
+        initial.scan_authority.by_module["provider"].namespace_premise.foreign_writes
+        == ()
+    )
+    active = discovery._discover_module_graph_from_paths(
+        (support,), native_callable_exports={"support": ("used",)}, **common
+    )
+    assert state.scan_sources["provider"].namespace_premise.foreign_writes == (
+        "active",
+    )
+    assert state.scan_sources["support"].body_selection.kind == "complete_source"
+    assert active.discovery is state
+    discovery._discover_module_graph_from_paths((support,), **common)
+    assert state.scan_sources["provider"].namespace_premise.foreign_writes == (
+        "active",
+    )
+
+
+@pytest.mark.parametrize("warm_graph", [False, True])
+def test_raw_inventory_precompute_cannot_certify_execution(tmp_path, warm_graph):
+    source = _source(tmp_path / "support.py", "def available():\n    import leaf\n")
+    _source(tmp_path / "leaf.py", "pass\n")
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    if warm_graph:
+        assert _discover(source, tmp_path, full=True, state=state).graph == {
+            "support": source
+        }
+    loaded = discovery._load_module_import_scan(
+        source,
+        purpose=SourceImportPurpose.INVENTORY,
+        module_name="support",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        target_python=PYTHON,
+    )
+    assert loaded.scan.imports == ("leaf",)
+    record = discovery._bind_precomputed_module_import_scan(
+        source,
+        purpose=SourceImportPurpose.INVENTORY,
+        module_name="support",
+        import_scan_mode="full",
+        is_package=False,
+        scan=loaded.scan,
+        snapshot=loaded.snapshot,
+        target_python=PYTHON,
+    )
+    with pytest.raises(ValueError, match="purpose"):
+        discovery._load_module_import_scan(
+            source,
+            purpose=SourceImportPurpose.EXECUTION,
+            module_name="support",
+            is_package=False,
+            import_scan_mode="full",
+            resolution_cache=cache,
+            project_root=None,
+            precomputed_scan=record,
+            target_python=PYTHON,
+        )
+    # A previously converged root receipt must not bypass purpose validation.
+    with pytest.raises(ValueError, match="purpose"):
+        discovery._discover_module_graph_from_paths(
+            (source,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            None,
+            set(),
+            full_scan_roots=True,
+            resolver_cache=cache,
+            discovery=state,
+            precomputed_scans_by_path={source: record},
+            target_python=PYTHON,
+        )
 
 
 def test_graph_cache_binds_admitted_source_generation(
@@ -1275,11 +1464,15 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
         target_python: TargetPythonVersion,
         ast_digest_admission: _PythonAstDigestAdmission,
         namespace_premise,
+        target_sys_platform,
+        purpose,
     ) -> _ImportDiscoveryProjection:
         assert source_owner is None
         assert source_arguments == ()
         assert ast_digest_admission.tree is tree
         assert namespace_premise is None
+        assert target_sys_platform is None
+        assert purpose is _source_import_scan.SourceImportPurpose.EXECUTION
         calls.append(target_python.tag)
         return _ImportDiscoveryProjection((target_python.tag,))
 
@@ -1301,6 +1494,7 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
     target = TargetPythonVersion(3, 13, 0)
     loaded = discovery._load_module_import_scan(
         source,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1343,6 +1537,7 @@ def test_generated_package_graph_cache_validates_source_role_authority(
         source_inputs["precomputed_scans_by_path"] = {
             generated.resolve(): discovery._bind_precomputed_module_import_scan(
                 generated,
+                purpose=SourceImportPurpose.EXECUTION,
                 snapshot=PythonSourceSnapshot.capture(generated),
                 module_name="pkg",
                 import_scan_mode="full",
@@ -1394,6 +1589,7 @@ def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_ent
     _source(tmp_path / "pkg" / "second.py", "pass\n")
     first = discovery._load_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1406,6 +1602,7 @@ def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_ent
     )
     record = discovery._bind_precomputed_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         import_scan_mode="full",
         scan=first.scan,
@@ -1420,6 +1617,7 @@ def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_ent
     monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", forbidden)
     second = discovery._load_module_import_scan(
         entry,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -1517,6 +1715,7 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
     snapshot = PythonSourceSnapshot.capture(generated)
     loaded = discovery._load_module_import_scan(
         generated,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg",
         is_package=True,
         import_scan_mode="full",
@@ -1527,6 +1726,7 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
     )
     bound = discovery._bind_precomputed_module_import_scan(
         generated,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="pkg",
         is_package=True,
         package_paths=roots,
@@ -1561,7 +1761,9 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
         )
         owner = result.scan_authority.by_module["pkg"]
         assert owner.package_paths == roots
-        assert owner.namespace_premise == PythonNamespacePremise(("alpha", "beta"), 0)
+        assert owner.namespace_premise == PythonNamespacePremise(
+            ("alpha", "beta"), 0, 0, (), ()
+        )
         assert set(result.graph) == {"pkg"}
         assert visits == [roots]
         if expected is None:
@@ -1679,3 +1881,841 @@ def test_materialized_namespace_package_identity_matches_cpython(
     assert metadata.namespace_portions_by_module == plan.namespace_portions_by_module
     assert "hf226_namespace" not in metadata.logical_source_path_by_module
     assert not tuple((tmp_path / "artifacts").glob("_molt_generated_*.py"))
+
+
+@pytest.mark.parametrize(
+    ("publication", "entry_source", "dependency_reached"),
+    [
+        ("", "from provider import wanted\nwanted()\n", False),
+        (
+            "import sys\n"
+            "sys.modules['provider_alias'] = sys.modules[__name__]\n"
+            "globals().pop('_absent',None)\n",
+            "from provider import wanted\nwanted()\n",
+            False,
+        ),
+        (
+            "import sys\nsys.modules['provider_alias'] = sys.modules[__name__]\n",
+            "from provider import wanted\nwanted()\n",
+            False,
+        ),
+        (
+            "import sys\nsys.modules['provider_alias'] = sys.modules[__name__]\n",
+            "import provider\nimport provider_alias\nprovider_alias.dormant()\n",
+            True,
+        ),
+        (
+            "import sys\nsys.modules['provider_alias'] = sys.modules[__name__]\n",
+            "import provider,sys\nsys.modules['provider_alias'].dormant()\n",
+            True,
+        ),
+        (
+            "import sys\nsys.modules['provider_alias'] = sys.modules[__name__]\n",
+            "import provider,sys\nsys.modules.get('provider_alias').dormant()\n",
+            True,
+        ),
+        (
+            "import sys\nsys.modules['provider_alias'] = sys.modules[__name__]\n",
+            "import provider,sys\nsys.modules.get('provider_alias')\n",
+            False,
+        ),
+        (
+            "import sys\nsys.modules['provider_alias'] = sys.modules[__name__]\n",
+            "import provider,sys\nunknown(sys.modules)\n",
+            True,
+        ),
+        (
+            "import sys\n"
+            "sys.modules['provider_alias'] = sys.modules[__name__]\n"
+            "sys.modules['provider_alias']=None\n",
+            "import provider\nimport provider_alias\nprovider_alias.dormant()\n",
+            True,
+        ),
+        (
+            "import sys\nsys.modules.setdefault('provider_alias',sys.modules[__name__])\n",
+            "from provider import wanted\nwanted()\n",
+            False,
+        ),
+        (
+            "import sys\nsys.modules.setdefault('provider_alias',sys.modules[__name__])\n",
+            "import provider,sys\nsys.modules['provider_alias'].dormant()\n",
+            True,
+        ),
+        (
+            "import sys\nsys.modules['provider_alias'] = sys.modules[__name__]\n",
+            "import provider,sys\nsys.modules[unknown_key].dormant()\n",
+            True,
+        ),
+        (
+            "import sys\nsys.modules[unknown_key]=sys.modules[__name__]\n",
+            "from provider import wanted\nwanted()\n",
+            True,
+        ),
+        (
+            "import sys\nsys.modules[unknown_key]=sys.modules[__name__]\n",
+            "import provider,sys\nsys.modules['provider_alias'].dormant()\n",
+            True,
+        ),
+        (
+            "import holder,sys\nholder.mapping['provider_alias']=sys.modules[__name__]\n",
+            "from provider import wanted\nwanted()\n",
+            True,
+        ),
+    ],
+    ids=[
+        "plain",
+        "held_alias_cleanup",
+        "held_alias",
+        "alias_import_call",
+        "alias_read_call",
+        "alias_get_call",
+        "alias_get_discard",
+        "cache_opaque_argument",
+        "cache_none_overwrite",
+        "default_hold",
+        "default_read_call",
+        "unknown_key_read",
+        "unknown_key_hold",
+        "unknown_key_write",
+        "opaque_mapping_store",
+    ],
+)
+def test_import_dictionary_source_values_require_actual_consumption(
+    tmp_path: Path,
+    publication: str,
+    entry_source: str,
+    dependency_reached: bool,
+) -> None:
+    # Cache ownership holds values. Calling an alias/read must discover the
+    # provider body even when no physical module exists under the alias name.
+    provider = (
+        "def wanted():\n    return 7\n\n"
+        "def dormant():\n    import dependency\n    return dependency.value\n\n"
+    )
+    for name, source in {
+        "provider": provider + publication,
+        "dependency": "value = 8\n",
+        "holder": "mapping = {}\n",
+        "entry": entry_source,
+    }.items():
+        _source(tmp_path / f"{name}.py", source)
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "provider" in result.graph
+    assert ("dependency" in result.graph) is dependency_reached
+    assert "provider_alias" not in result.graph
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    [
+        "sys.modules['provider'].dormant()",
+        "sys.modules.get('provider').dormant()",
+        "unknown(sys.modules)",
+    ],
+)
+def test_implicit_import_publication_supplies_cache_source_values(
+    tmp_path: Path, consumer: str
+) -> None:
+    _source(tmp_path / "entry.py", "import provider, sys\n" + consumer + "\n")
+    _source(tmp_path / "provider.py", "def dormant():\n    import implicit_leaf\n")
+    _source(tmp_path / "implicit_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "implicit_leaf" in result.graph
+
+
+def test_cache_aliases_join_later_writes_without_erasing_original_source(
+    tmp_path: Path,
+) -> None:
+    _source(tmp_path / "entry.py", "import alias\nalias.call()\nimport replacement\n")
+    _source(tmp_path / "alias.py", "def call():\n    import original_leaf\n")
+    _source(
+        tmp_path / "replacement.py",
+        "import sys\ndef call():\n    import replacement_leaf\nsys.modules['alias'] = sys.modules[__name__]\n",
+    )
+    _source(tmp_path / "original_leaf.py", "pass\n")
+    _source(tmp_path / "replacement_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert {"original_leaf", "replacement_leaf"} <= result.graph.keys()
+
+
+def test_cache_replacement_preserves_key_and_terminal_object_callbacks(
+    tmp_path: Path,
+) -> None:
+    _source(tmp_path / "entry.py", "import provider\n")
+    _source(
+        tmp_path / "provider.py",
+        "import sys\nclass Key:\n    def __hash__(self):\n        import hash_leaf\n        return 1\nclass Retired:\n    def __del__(self):\n        import finalizer_leaf\nsys.modules[Key()] = Retired()\nsys.modules[Key()] = None\n",
+    )
+    _source(tmp_path / "hash_leaf.py", "pass\n")
+    _source(tmp_path / "finalizer_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert {"hash_leaf", "finalizer_leaf"} <= result.graph.keys()
+
+
+@pytest.mark.parametrize(
+    ("storage", "consumer", "reached"),
+    [
+        ("sys.modules['x'] = dormant", "", False),
+        ("sys.modules['x'] = dormant", "sys.modules['x']()", True),
+        ("sys.modules['x'] = [dormant]", "", False),
+        ("sys.modules['x'] = [dormant]", "sys.modules['x'][0]()", True),
+        ("sys.modules['x'] = [[dormant]]", "sys.modules['x'][0][0]()", True),
+        ("sys.modules.setdefault('x', [dormant])", "sys.modules['x'][0]()", True),
+        ("pass", "sys.modules.get('absent', [dormant])[0]()", True),
+        (
+            "sys.modules['x'] = dormant if isinstance(opaque, int) else opaque",
+            "",
+            False,
+        ),
+        (
+            "sys.modules['x'] = dormant if isinstance(opaque, int) else opaque",
+            "sys.modules['x']()",
+            True,
+        ),
+        (
+            "sys.modules['x'] = [dormant] if isinstance(opaque, int) else opaque",
+            "sys.modules['x'][0]()",
+            True,
+        ),
+        ("sys.modules.__setitem__('x', dormant)", "", False),
+        ("sys.modules.__setitem__('x', dormant)", "sys.modules['x']()", True),
+        ("sys.modules.update({'x': dormant})", "", False),
+        ("sys.modules.update({'x': dormant})", "sys.modules['x']()", True),
+        ("sys.modules.update(x=dormant)", "sys.modules['x']()", True),
+        (
+            "sys.modules['x'] = dormant",
+            "for item in sys.modules.values():\n    item()",
+            True,
+        ),
+        (
+            "sys.modules['x'] = dormant",
+            "for key, item in sys.modules.items():\n    item()",
+            True,
+        ),
+        ("sys.modules['x'] = dormant", "sys.modules.popitem()[1]()", True),
+    ],
+)
+def test_native_cache_owns_mixed_and_contained_values_until_consumed(
+    tmp_path: Path, storage: str, consumer: str, reached: bool
+) -> None:
+    _source(tmp_path / "entry.py", "import owner\n")
+    _source(
+        tmp_path / "owner.py",
+        "import sys\ndef dormant():\n    import contained_leaf\n"
+        + storage
+        + "\n"
+        + consumer
+        + "\n",
+    )
+    _source(tmp_path / "contained_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert ("contained_leaf" in result.graph) is reached
+
+
+def test_native_cache_container_retirement_preserves_finalizer(tmp_path: Path) -> None:
+    _source(tmp_path / "entry.py", "import owner\n")
+    _source(
+        tmp_path / "owner.py",
+        "import sys\nclass Retired:\n    def __del__(self):\n        import contained_finalizer_leaf\nsys.modules['x'] = [Retired()]\ndel sys.modules['x']\n",
+    )
+    _source(tmp_path / "contained_finalizer_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "contained_finalizer_leaf" in result.graph
+
+
+@pytest.mark.parametrize(
+    ("activation", "writer_activated"),
+    [
+        ("", False),
+        ("provider.write()", True),
+        ("provider.invoke(provider.write)", True),
+        ("opaque(provider)", True),
+        ("from provider import missing", True),
+        ("import builtins\nbuiltins.__import__ = opaque\nimport provider", True),
+        # Replacing the cached receiver does not expose the former module's
+        # dormant writers. Real replacement metadata callbacks are tested below.
+        ("sys.modules['provider'] = opaque\nimport provider", False),
+    ],
+)
+def test_graph_initializer_premise_separates_inventory_from_executed_writers(
+    tmp_path: Path, activation: str, writer_activated: bool
+) -> None:
+    provider = _source(
+        tmp_path / "provider.py",
+        'import sys\ndef write():\n    sys.platform = "changed"\n'
+        "def invoke(callback):\n    callback()\n"
+        "def __getattr__(name):\n    write()\n    return None\n",
+    )
+    entry = _source(
+        tmp_path / "entry.py",
+        "import provider, sys\n" + activation + "\n"
+        "if sys.platform == 'wasi':\n    import selected_leaf\nelse:\n    import alternate_leaf\n",
+    )
+    _source(tmp_path / "selected_leaf.py", "pass\n")
+    _source(tmp_path / "alternate_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph_from_paths(
+        (entry, provider),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    premise = result.scan_authority.by_module["entry"].namespace_premise
+    assert premise is not None
+    # Every raw writer remains inventoried. The graph premise contains only
+    # activated writers, so dormant availability cannot taint import callbacks.
+    assert any(
+        write.module == "sys"
+        and write.name == "platform"
+        and write.source_owner is not None
+        for write in result.discovery.namespace_writes["provider"]
+    )
+    assert ("alternate_leaf" in result.graph) is writer_activated
+    if not writer_activated:
+        assert not premise.entry_member_writes & int(PythonMember.SYS_PLATFORM)
+    assert "selected_leaf" in result.graph
+
+
+def test_cached_module_spec_truth_keeps_import_callback_effects(tmp_path: Path) -> None:
+    _source(tmp_path / "provider.py", "marker = 1\n")
+    entry_source = (
+        "import provider, sys\n"
+        "class Flag:\n"
+        "    def __bool__(self):\n"
+        "        sys.platform = 'changed'\n"
+        "        return False\n"
+        "class Spec:\n"
+        "    _initializing = Flag()\n"
+        "provider.__spec__ = Spec()\n"
+        "import provider\n"
+        "observed = sys.platform\n"
+        "if observed == 'wasi':\n    import selected_leaf\nelse:\n    import alternate_leaf\n"
+    )
+    _source(tmp_path / "entry.py", entry_source)
+    for name in ("selected_leaf", "alternate_leaf"):
+        _source(tmp_path / (name + ".py"), "pass\n")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys;sys.path.insert(0,sys.argv[1]);import entry;print(entry.observed)",
+            str(tmp_path),
+        ],
+        timeout=10,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == "changed"
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "alternate_leaf" in result.graph
+
+
+@pytest.mark.parametrize(
+    "consumer,leaf",
+    [
+        ("", False),
+        ("provider.Box.method()", True),
+        ("provider.Box().method()", True),
+        ("provider.Box.stat()", True),
+        ("provider.Box().stat()", True),
+        ("opaque(provider.Box)", True),
+        ("opaque(provider.Box.method.__self__)", True),
+    ],
+)
+def test_retained_descriptor_constructor_requires_actual_consumption(
+    tmp_path, consumer, leaf
+):
+    _source(tmp_path / "entry.py", "import provider\n" + consumer + "\n")
+    _source(
+        tmp_path / "provider.py",
+        "class Box:\n"
+        "    @classmethod\n    def method(cls):\n        import descriptor_leaf\n"
+        "    @staticmethod\n    def stat():\n        import descriptor_leaf\n",
+    )
+    _source(tmp_path / "descriptor_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert ("descriptor_leaf" in result.graph) is leaf
+
+
+def test_retained_classmethod_uses_actual_inherited_class_argument(tmp_path):
+    for name, source in {
+        "entry": "import provider\nprovider.Derived.pick().needed()\n",
+        "provider": "import first, second\nclass Base:\n    value=first\n    @classmethod\n    def pick(cls):\n        return cls.value\nclass Derived(Base):\n    value=second\n",
+        "first": "def needed():\n    import first_leaf\n",
+        "second": "def needed():\n    import second_leaf\n",
+        "first_leaf": "pass\n",
+        "second_leaf": "pass\n",
+    }.items():
+        _source(tmp_path / (name + ".py"), source)
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "second_leaf" in result.graph
+
+
+@pytest.mark.parametrize("decorator", ["unknown", "property"])
+def test_retained_descriptor_unproved_decorator_still_exposes_function(
+    tmp_path, decorator
+):
+    _source(tmp_path / "entry.py", "import provider\n")
+    _source(
+        tmp_path / "provider.py",
+        f"@{decorator}\ndef method():\n    import descriptor_leaf\n",
+    )
+    _source(tmp_path / "descriptor_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "descriptor_leaf" in result.graph
+
+
+@pytest.mark.parametrize("parameters", ["*args", ""])
+@pytest.mark.parametrize(
+    "consumer", ["opaque(provider.Box.method.__self__)", "opaque(provider.Box.method)"]
+)
+def test_retained_classmethod_receiver_is_independent_of_formal_parameters(
+    tmp_path, parameters, consumer
+):
+    _source(tmp_path / "entry.py", "import provider\n" + consumer + "\n")
+    _source(
+        tmp_path / "provider.py",
+        "class Box:\n    @classmethod\n    def method("
+        + parameters
+        + "): pass\n    def dormant(self):\n        import descriptor_leaf\n",
+    )
+    _source(tmp_path / "descriptor_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "descriptor_leaf" in result.graph
+
+
+@pytest.mark.parametrize(
+    "consumer,reached",
+    [("", False), ("provider.Box.method()", True), ("opaque(provider.Box)", True)],
+)
+def test_retained_descriptor_literal_defaults_activate_only_on_consumption(
+    tmp_path, consumer, reached
+):
+    _source(tmp_path / "entry.py", "import provider\n" + consumer + "\n")
+    _source(
+        tmp_path / "provider.py",
+        "class Box:\n    @classmethod\n    def method(cls,path=None,*,target=None):\n        import descriptor_leaf\n",
+    )
+    _source(tmp_path / "descriptor_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert ("descriptor_leaf" in result.graph) is reached
+
+
+def test_synthetic_intrinsic_from_has_no_foreign_source_body_or_import_request():
+    source = (
+        "from pkg._intrinsics import require_intrinsic as take, _require_intrinsic, load_intrinsic, _load_intrinsic, runtime_active, unknown\n"
+        "load=take('molt_importlib_import_module')\nload('leaf',None)\n"
+    )
+    tree = ast.parse(source)
+    projection = _source_import_scan._collect_imports_for_graph(
+        tree,
+        module_name="entry",
+        namespace_premise=PythonNamespacePremise((), 0, 0, ()),
+    )
+    imports = list(projection.imports)
+    assert not projection.source_bindings
+    assert not any(name.startswith("pkg._intrinsics") for name in imports)
+    assert imports == []
+    assert projection.uses_runtime_import_protocol
+    from molt.compiler_analysis.python_binding_flow import (
+        analyze_python_source_bindings,
+    )
+
+    index = analyze_python_source_bindings(source)
+    from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+
+    # Canonical callables carry local value provenance, even though synthetic
+    # imports create no foreign source binding or deferred Python body.
+    origins = index.expression_result(tree.body[1].value.func).source_origins
+    callables = dict(index.source_callables)
+    assert {callables[origin] for origin in origins} == {
+        int(PythonIdentity.INTRINSICS_REQUIRE)
+    }
+    ordinary = _source_import_scan._collect_imports_for_graph(
+        ast.parse("import pkg._intrinsics\n"), module_name="entry"
+    ).imports
+    assert "pkg._intrinsics" in ordinary
+
+
+def test_ordinary_class_decorator_consumes_class_namespace_methods(tmp_path):
+    source = "def decorate(cls):\n    cls.enter()\n    return cls\n@decorate\nclass Box:\n    @staticmethod\n    def enter():\n        import decorator_leaf\n"
+    entry = _source(tmp_path / "entry.py", source)
+    _source(tmp_path / "decorator_leaf.py", "VALUE = 1\n")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys\nsys.path.insert(0, sys.argv[1])\nexec(compile(sys.argv[2], '<class-decorator-consumer>', 'exec'), {})\nprint('decorator_leaf' in sys.modules)",
+            str(tmp_path),
+            source,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == "True"
+    for _ in range(2):
+        graph = _discover(entry, tmp_path, full=True, project=tmp_path).graph
+        assert "decorator_leaf" in graph
+
+
+@pytest.mark.parametrize(
+    "operation,expected",
+    [
+        ("setattr(provider, 'tag', None)", ()),
+        ("getattr(provider, 'chosen')", ()),
+        ("getattr(provider, 'chosen')()", ("selected_leaf",)),
+        ("hasattr(provider, 'chosen')", ()),
+        ("delattr(provider, 'chosen')", ()),
+        ("getattr(provider, 'absent', fallback)", ()),
+        ("getattr(provider, 'absent', fallback)()", ("fallback_leaf",)),
+        ("hold(provider)", ()),
+        ("consume(provider)", ("unused_leaf",)),
+        ("setattr(box, 'stored', provider)", ("unused_leaf",)),
+        ("replacement(provider, 'tag')", ("unused_leaf",)),
+        ("opaque = getattr(provider, 'consumer'); opaque(provider)", ("unused_leaf",)),
+        ("hold.__code__ = consume.__code__; hold(provider)", ("unused_leaf",)),
+        (
+            "setattr(hold, '__code__', consume.__code__); hold(provider)",
+            ("unused_leaf",),
+        ),
+    ],
+)
+def test_precise_call_arguments_preserve_actual_source_closure(
+    tmp_path, operation, expected
+):
+    # CPython establishes actual execution independently of binding/source facts.
+    provider = (
+        "def chosen():\n    import selected_leaf\n"
+        "def unused():\n    import unused_leaf\n"
+        "def consumer(module): module.unused()\n"
+    )
+    _source(tmp_path / "provider.py", provider)
+    for name in ("selected_leaf", "unused_leaf", "fallback_leaf"):
+        _source(tmp_path / f"{name}.py", "VALUE = 1\n")
+    source = (
+        "import provider\n"
+        "def fallback():\n    import fallback_leaf\n"
+        "def hold(module): return None\n"
+        "def consume(module): module.unused()\n"
+        "def replacement(owner, name): return owner.unused()\n"
+        "class Box: pass\nbox = Box()\n" + operation + "\n"
+    )
+    entry = _source(tmp_path / "entry.py", source)
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys\nsys.path.insert(0, sys.argv[1])\nexec(compile(sys.argv[2], '<call-argument-closure>', 'exec'), {})\nprint(','.join(sorted(name for name in sys.modules if name.endswith('_leaf'))))",
+            str(tmp_path),
+            source,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    actual = tuple(filter(None, observed.stdout.strip().split(",")))
+    # Stored module exposure is deliberately conservative until storage uses are
+    # represented; it must not lose the existing opaque-publication guarantee.
+    if not operation.startswith("setattr(box"):
+        assert actual == tuple(sorted(expected))
+    else:
+        assert actual == ()
+    for _ in range(2):
+        graph = _discover(entry, tmp_path, full=True, project=tmp_path).graph
+        reached = {name for name in graph if name.endswith("_leaf")}
+        if operation.startswith(
+            ("setattr(box", "opaque =", "hold.__code__", "setattr(hold")
+        ):
+            assert "unused_leaf" in reached
+        else:
+            assert reached == set(expected)
+
+
+@pytest.mark.parametrize("selector", ["getattr", "hasattr"])
+def test_literal_attribute_builtin_reaches_lazy_hook_only_selected_branch(
+    tmp_path, selector
+):
+    package = (
+        "def __getattr__(name):\n"
+        "    if name == 'chosen':\n        import hook_leaf\n        return 1\n"
+        "    import dead_hook_leaf\n    raise AttributeError(name)\n"
+        "def unused():\n    import unused_leaf\n"
+    )
+    _source(tmp_path / "provider.py", package)
+    for name in ("hook_leaf", "dead_hook_leaf", "unused_leaf"):
+        _source(tmp_path / f"{name}.py", "VALUE = 1\n")
+    source = f"import provider\nalias = {selector}\nalias(provider, 'chosen')\n"
+    entry = _source(tmp_path / "entry.py", source)
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys\nsys.path.insert(0, sys.argv[1])\nexec(compile(sys.argv[2], '<lazy-attribute-closure>', 'exec'), {})\nprint(','.join(sorted(name for name in sys.modules if name.endswith('_leaf'))))",
+            str(tmp_path),
+            source,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == "hook_leaf"
+    for _ in range(2):
+        graph = _discover(entry, tmp_path, full=True, project=tmp_path).graph
+        assert {name for name in graph if name.endswith("_leaf")} == {"hook_leaf"}
+
+
+@pytest.mark.parametrize(
+    "action,opaque",
+    [
+        ("C()", False),
+        ("C.__init__ = replacement; C()", True),
+        ("setattr(C, '__init__', replacement); C()", True),
+        ("install(C); C()", True),
+        ("set_install(C); C()", True),
+        ("opaque_consumer(C())", True),
+    ],
+)
+def test_class_mutation_activation_follows_foreign_source_and_formal_receiver(
+    tmp_path, action, opaque
+):
+    from molt.compiler_analysis.python_imports import _ImportScanRequests
+    from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+    provider = "class C:\n    def __init__(self): self.value = 'old'\n"
+    helper = (
+        "def replacement(self):\n    import replacement_leaf\n    self.value = 'new'\n"
+    )
+    entry_source = (
+        "from provider import C\nfrom helper import replacement\n"
+        "def install(target): target.__init__ = replacement\n"
+        "def set_install(target): setattr(target, '__init__', replacement)\n"
+        "def opaque_consumer(value): return unknown(value)\n" + action + "\n"
+    )
+    paths = {
+        "entry": _source(tmp_path / "entry.py", entry_source),
+        "provider": _source(tmp_path / "provider.py", provider),
+        "helper": _source(tmp_path / "helper.py", helper),
+    }
+    _source(tmp_path / "replacement_leaf.py", "VALUE = 1\n")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys\nsys.path.insert(0, sys.argv[1])\nnamespace = {'unknown': lambda value: None}\nexec(compile(sys.argv[2], '<foreign-class-mutation>', 'exec'), namespace)\nprint(namespace['C']().value)",
+            str(tmp_path),
+            entry_source,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    changed = "__init__" in action or action.startswith(("install(", "set_install("))
+    assert observed.stdout.strip() == ("new" if changed else "old")
+    trees = {
+        name: ast.parse(path.read_text(encoding="utf-8"))
+        for name, path in paths.items()
+    }
+    bodies = []
+    engine = PythonSourceDemands(
+        require_runtime_import_protocol=lambda module: None,
+        admit_imports=lambda *args: None,
+        queue_body=lambda *job: bodies.append(job),
+    )
+
+    def scan(module, owner=None, arguments=()):
+        tree = trees[module]
+        projection = _source_import_scan._collect_imports_for_graph(
+            tree,
+            module,
+            source_owner=owner,
+            source_arguments=arguments,
+            import_scan_mode="module_init",
+            namespace_premise=PythonNamespacePremise(
+                (), 0, 0, (), engine.opaque_activation_sources(module)
+            ),
+            ast_digest_admission=_PythonAstDigestAdmission.for_tree(tree),
+        )
+        engine.accept(
+            module, _ImportScanRequests((), ())._replace(**projection._asdict())
+        )
+
+    for module in paths:
+        scan(module)
+    while True:
+        engine.drain()
+        changed_modules = engine.drain_opaque_activation_changes()
+        for module in sorted(changed_modules):
+            scan(module)
+        if bodies:
+            scan(*bodies.pop())
+        elif not changed_modules:
+            break
+    class_source = python_node_source_key(trees["provider"].body[0])
+    assert (class_source in engine.opaque_activation_sources("provider")) is opaque
+
+
+def test_dataclass_exposure_keeps_post_init_source_import(tmp_path):
+    source = (
+        "from dataclasses import dataclass\n@dataclass\nclass C:\n"
+        "    value: int\n    def __post_init__(self):\n        import post_init_leaf\n"
+        "C(1)\n"
+    )
+    entry = _source(tmp_path / "entry.py", source)
+    _source(tmp_path / "post_init_leaf.py", "VALUE = 1\n")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys\nsys.path.insert(0, sys.argv[1])\nexec(compile(sys.argv[2], '<dataclass-post-init>', 'exec'), {})\nprint('post_init_leaf' in sys.modules)",
+            str(tmp_path),
+            source,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == "True"
+    for _ in range(2):
+        assert (
+            "post_init_leaf"
+            in _discover(entry, tmp_path, full=True, project=tmp_path).graph
+        )

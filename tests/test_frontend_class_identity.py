@@ -11,6 +11,10 @@ import ast
 
 import pytest
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_source_keys import python_node_source_key
+from molt.compiler_analysis.python_identity_catalog_generated import ALL_INVALID_MEMBERS
+
 from molt.frontend import (
     BoundMethodHint,
     BuiltinClass,
@@ -58,6 +62,224 @@ def _lower(source: str, module_name: str = "mod") -> SimpleTIRGenerator:
 
 def _ops(generator: SimpleTIRGenerator) -> list[MoltOp]:
     return [op for function in generator.funcs_map.values() for op in function["ops"]]
+
+
+@pytest.mark.parametrize("method", ["__init__", "value"])
+def test_method_code_mutation_rejects_class_body_folding(method):
+    source = (
+        "class C:\n"
+        "    def __init__(self): self.x = 1\n"
+        "    def value(self): return self.x\n"
+        "def replacement(self):\n"
+        "    self.x = 2\n"
+        f"    return {'None' if method == '__init__' else 'self.x'}\n"
+        f"C.{method}.__code__ = replacement.__code__\n"
+    )
+    namespace = {}
+    exec(compile(source, "<method-code-mutation>", "exec"), namespace)
+    assert namespace["C"]().value() == 2
+    tree = ast.parse(source)
+    changed = next(item for item in tree.body[0].body if item.name == method)
+    premise = PythonNamespacePremise((), 0, 0, (), (python_node_source_key(changed),))
+    generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
+    generator.visit(tree)
+    info = generator.classes[ClassId("mod", "C")]
+    assert info["dynamic"]
+    assert not info["constructor_binding_proven"]
+
+
+def test_non_none_initializer_requires_runtime_constructor_validation():
+    source = "class C:\n    def __init__(self): return 9\n"
+    namespace = {}
+    exec(compile(source, "<initializer-return>", "exec"), namespace)
+    with pytest.raises(TypeError, match="__init__.*return None"):
+        namespace["C"]()
+    generator = SimpleTIRGenerator(
+        module_name="mod", namespace_premise=PythonNamespacePremise((), 0, 0, (), ())
+    )
+    generator.visit(ast.parse(source + "C()\n"))
+    assert not generator.classes[ClassId("mod", "C")].get("constructor_fold_safe")
+    assert not any(op.kind == "OBJECT_NEW_BOUND" for op in _ops(generator))
+
+
+def test_unknown_foreign_namespace_cannot_certify_constructor_identity():
+    source = "class C:\n    def __init__(self, value): self.value = value\nC(3)\n"
+    generator = SimpleTIRGenerator(
+        module_name="mod",
+        namespace_premise=PythonNamespacePremise(
+            None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, (), ()
+        ),
+    )
+    generator.visit(ast.parse(source))
+    assert not generator.classes[ClassId("mod", "C")]["constructor_binding_proven"]
+    assert not any(op.kind == "OBJECT_NEW_BOUND" for op in _ops(generator))
+
+
+@pytest.mark.parametrize(
+    "prefix,decorator",
+    [
+        ("def dataclass(cls): return cls\n", "dataclass"),
+        (
+            "from dataclasses import dataclass\ndef dataclass(cls): return cls\n",
+            "dataclass",
+        ),
+        (
+            "class dataclasses:\n    @staticmethod\n    def dataclass(cls): return cls\n",
+            "dataclasses.dataclass",
+        ),
+        (
+            "def dataclass(**options):\n    return lambda cls: cls\n",
+            "dataclass(custom='value')",
+        ),
+    ],
+)
+def test_user_decorator_spelling_never_supplies_dataclass_identity(prefix, decorator):
+    source = prefix + f"@{decorator}\nclass C:\n    x: int\n"
+    namespace = {}
+    exec(compile(source, "<decorator-binding>", "exec"), namespace)
+    assert not hasattr(namespace["C"], "__dataclass_fields__")
+    generator = _lower(source)
+    assert not generator.classes[ClassId("mod", "C")].get("dataclass", False)
+
+
+@pytest.mark.parametrize(
+    "prefix,decorator",
+    [
+        ("from dataclasses import dataclass as record\n", "record"),
+        ("import dataclasses as records\n", "records.dataclass"),
+        ("from dataclasses import dataclass\nrecord = dataclass\n", "record"),
+    ],
+)
+def test_dataclass_identity_survives_import_and_value_aliases(prefix, decorator):
+    source = prefix + f"@{decorator}\nclass C:\n    x: int\n"
+    namespace = {}
+    exec(compile(source, "<decorator-binding>", "exec"), namespace)
+    assert namespace["C"](7).x == 7
+    generator = _lower(source)
+    assert generator.classes[ClassId("mod", "C")]["dataclass"]
+
+
+@pytest.mark.parametrize("name", ["overload", "kernel"])
+def test_user_function_decorator_keeps_its_runtime_function(name):
+    source = f"def {name}(fn): return fn\n@{name}\ndef f(): return 7\n"
+    namespace = {}
+    exec(compile(source, "<decorator-binding>", "exec"), namespace)
+    assert namespace["f"]() == 7
+    generator = _lower(source)
+    assert "mod__f" in generator.funcs_map
+    assert all(
+        op.kind != "CALL" or op.args[0] != "molt_gpu_kernel_descriptor_set"
+        for op in _ops(generator)
+    )
+
+
+def test_source_callable_guard_is_reserved_before_its_definition_body():
+    generator = _lower(
+        "def caller():\n    return target(3)\n"
+        "def target(value):\n    return value + 1\n"
+        "print(caller())\n"
+    )
+    assert any(
+        op.kind == "CALL_GUARDED" and op.metadata["target"] == "mod__target"
+        for op in generator.funcs_map["mod__caller"]["ops"]
+    )
+
+
+def test_static_attributes_follow_cpython_syntax_not_descriptor_identity():
+    # CPython 3.13.17's class metadata is syntactic: decorated/nested bodies
+    # count literal self stores; a differently named receiver and annotations
+    # do not. This differs from the physical instance-layout proof.
+    source = """\
+def passthrough(fn): return fn
+class C:
+    annotation: int
+    @classmethod
+    def class_method(self): self.class_field = 1
+    @staticmethod
+    def static_method(self): self.static_field = 1
+    @passthrough
+    def decorated(self): self.decorated_field = 1
+    def other(first): first.not_literal_self = 1
+    def nested(self):
+        def inner(): self.inner_field = 1
+    def unpack(self): self.z, self.a = 1, 2
+    class Inner:
+        def inner(self): self.belongs_to_inner = 1
+"""
+    generator = SimpleTIRGenerator(target_python=(3, 13))
+    assert generator._collect_static_attributes(ast.parse(source).body[1]) == (
+        "a",
+        "class_field",
+        "decorated_field",
+        "inner_field",
+        "static_field",
+        "z",
+    )
+
+
+@pytest.mark.parametrize("minor", [13, 14])
+@pytest.mark.parametrize(
+    "source,expected13,expected14",
+    [
+        (
+            "class C:\n def f(self):\n  self.only: int\n  self.valued: int = 2\n",
+            ("valued",),
+            ("valued",),
+        ),
+        (
+            "class C:\n f = lambda: [0 for self.lambda_field in []]\n",
+            ("lambda_field",),
+            ("lambda_field",),
+        ),
+        (
+            "class C:\n def f(x=lambda: [0 for self.default_field in []]): pass\n",
+            ("default_field",),
+            ("default_field",),
+        ),
+        (
+            "class C:\n xs = [0 for self.class_comp in []]\n",
+            (),
+            (),
+        ),
+        (
+            "class C:\n xs = (0 for self.generator_field in [])\n",
+            ("generator_field",),
+            ("generator_field",),
+        ),
+        (
+            "class C:\n x: [0 for self.class_ann in []]\n def f(x: [0 for self.method_ann in []]): pass\n",
+            (),
+            ("class_ann", "method_ann"),
+        ),
+        (
+            "class C:\n x: (lambda: [0 for self.ann_lambda in []])\n",
+            ("ann_lambda",),
+            ("ann_lambda",),
+        ),
+        (
+            "from __future__ import annotations\nclass C:\n x: (lambda: [0 for self.ann_lambda in []])\n",
+            (),
+            (),
+        ),
+        (
+            "class C:\n type Alias = [0 for self.alias_field in []]\n",
+            ("alias_field",),
+            ("alias_field",),
+        ),
+    ],
+)
+def test_static_attributes_match_pinned_cpython_code_scopes(
+    minor, source, expected13, expected14
+):
+    # Independent CPython 3.13.17/3.14.9 compiler oracles, including PEP 649's
+    # annotation code units. Physical instance layout is a separate contract.
+    tree = ast.parse(source)
+    generator = SimpleTIRGenerator(target_python=(3, minor))
+    generator.future_annotations = generator._module_has_future_annotations(tree)
+    node = next(item for item in tree.body if isinstance(item, ast.ClassDef))
+    assert generator._collect_static_attributes(node) == (
+        expected13 if minor == 13 else expected14
+    )
 
 
 def test_class_ids_carry_cpython_qualnames_and_separate_repeats() -> None:

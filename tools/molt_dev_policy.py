@@ -142,6 +142,8 @@ class GateConfig:
     resource_limits: dict[str, int] = field(default_factory=dict)
     # The plan's proof commands: each test file's cell and envelope.
     commands: tuple[Mapping, ...] = ()
+    # The plan's matrix cells; a portability cell verifies one OS.
+    matrix_cells: tuple[Mapping, ...] = ()
     # The graph that selects tests by what they read. Without one (a driver
     # test's synthetic policy), rules alone select.
     dependency_graph: Callable[[], DependencyGraph] | None = None
@@ -266,6 +268,7 @@ class GateConfig:
             executor_max_workers=ceiling,
             resource_limits=resource_limits,
             commands=tuple(data.get("command", ())),
+            matrix_cells=tuple(data.get("matrix_cell", ())),
         )
 
     def graph_selection(
@@ -286,6 +289,19 @@ class GateConfig:
             self.commands,
             mode=mode,
             recent_failures=recent_failures,
+            foreign_cells=self.foreign_cells(),
+        )
+
+    def foreign_cells(self) -> frozenset[str]:
+        """Portability cells of another OS: they verify that OS's hosted shells
+        and compilers, which this host does not provide."""
+        from molt.native_target import resolve_native_target_spec
+
+        host_os = resolve_native_target_spec(None).os
+        return frozenset(
+            str(cell["id"])
+            for cell in self.matrix_cells
+            if cell.get("profile") == "portability" and cell.get("os") != host_os
         )
 
     def prepare(
