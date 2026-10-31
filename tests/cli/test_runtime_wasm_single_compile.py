@@ -271,7 +271,7 @@ def test_default_runtime_isa_is_independent_of_wasi_services(
 ) -> None:
     from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
 
-    simd = runtime_wasm_simd_policy(freestanding=freestanding)
+    simd = runtime_wasm_simd_policy()
     common = {**_COMMON, "simd_enabled": simd, "freestanding": freestanding}
     shared, reloc = (
         runtime_wasm_build_spec._compute_runtime_wasm_build_spec(

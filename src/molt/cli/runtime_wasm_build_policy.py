@@ -56,10 +56,10 @@ def _resolve_wasm_cargo_profile_cached(
     return cargo_profile
 
 
-def runtime_wasm_simd_policy(*, freestanding: bool) -> bool:
-    """Both deployment modes use the shipped SIMD128 runtime baseline.
+def runtime_wasm_simd_policy() -> bool:
+    """Every WASM deployment uses the shipped SIMD128 runtime baseline.
 
-    WASI import rewriting supports SIMD instructions. Freestanding selects
+    WASI import rewriting supports SIMD instructions, so freestanding selects
     host-service policy independently of the runtime's instruction set.
     """
     return True
