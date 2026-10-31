@@ -1064,26 +1064,29 @@ def test_os_owned_results_preserve_flavor_without_scans_or_copies(monkeypatch):
     assert module.path.commonpath(iter([path, path + b"/child"])) is path
     # One acquisition returns the native record itself, including fields beyond
     # its visible tuple. Public type rebinding cannot re-enter construction.
+    # A DirEntry that is not a symlink acquires once and serves stat() and
+    # lstat() from that record (posixmodule.c DirEntry_get_stat).
     module.stat_result = object
     entry = module.DirEntry(b"entry", path, False, True, False)
     with intrinsic_registry(stat_providers):
         for query, expected in (
-            (lambda: module.stat(path), (path,)),
-            (lambda: module.stat(path, follow_symlinks=False), (path,)),
-            (lambda: module.stat(path, dir_fd=7), (path, 7, True)),
+            (lambda: module.stat(path), [(path,)]),
+            (lambda: module.stat(path, follow_symlinks=False), [(path,)]),
+            (lambda: module.stat(path, dir_fd=7), [(path, 7, True)]),
             (
                 lambda: module.stat(path, dir_fd=7, follow_symlinks=False),
-                (path, 7, False),
+                [(path, 7, False)],
             ),
-            (lambda: module.lstat(path), (path,)),
-            (lambda: module.lstat(path, dir_fd=7), (path, 7)),
-            (lambda: module.fstat(7), (7,)),
-            (entry.stat, (path,)),
-            (lambda: entry.stat(follow_symlinks=False), (path,)),
+            (lambda: module.lstat(path), [(path,)]),
+            (lambda: module.lstat(path, dir_fd=7), [(path, 7)]),
+            (lambda: module.fstat(7), [(7,)]),
+            (entry.stat, [(path,)]),
+            (lambda: entry.stat(follow_symlinks=False), []),
+            (entry.stat, []),
         ):
             before = len(stat_calls)
             assert query() is native_stat
-            assert stat_calls[before:] == [expected]
+            assert stat_calls[before:] == expected
     assert native_stat[7] == 7 and native_stat.st_atime == 70.25
     assert native_stat.st_atime_ns == 70_250_000_001
 
