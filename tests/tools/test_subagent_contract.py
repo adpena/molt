@@ -109,6 +109,33 @@ def test_cli_requires_and_renders_explicit_bounds(tmp_path, capsys) -> None:
     )
 
 
+def test_cli_out_writes_a_live_brief_and_prints_only_its_pointer(
+    tmp_path, capsys
+) -> None:
+    bounds = tmp_path / "bounds.json"
+    bounds.write_text(json.dumps(asdict(_BOUNDS)), encoding="utf-8")
+    brief = tmp_path / "task.md"
+    assert (
+        dp.main(
+            [
+                "--task-text",
+                "Inspect retained profile",
+                "--bounds",
+                str(bounds),
+                "--out",
+                str(brief),
+            ]
+        )
+        == 0
+    )
+    text = brief.read_text(encoding="utf-8")
+    assert text.startswith(dp.BRIEF_HEADER)
+    assert "Assigned deliverable: Identify the dominant repeated harness cost" in text
+    out = capsys.readouterr().out
+    assert out.strip() == dp.launch_prompt(brief)
+    assert "Assigned deliverable" not in out
+
+
 # --- (module invariants) -------------------------------------------------------------------
 
 

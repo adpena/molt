@@ -160,6 +160,22 @@ def compose(
     return f"{body}\n\n{contract}" if contract else body
 
 
+#: Header of a brief dispatched as a file (``--out``): corrections reach a running worker.
+BRIEF_HEADER = (
+    "This file is your brief. Re-read it before each commit and before each long command. "
+    'The integrator may append corrections at the end, under a dated "Correction" heading. '
+    "A correction overrides the text above it."
+)
+
+
+def launch_prompt(brief: Path) -> str:
+    """The one-line launch prompt that points a worker at its live brief file."""
+    return (
+        f"Read and follow the brief at {brief}, including any dated Correction at its end. "
+        "It is a live file: re-read it before each commit and before each long command."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     src = ap.add_mutually_exclusive_group()
@@ -172,6 +188,11 @@ def main(argv: list[str] | None = None) -> int:
         "--sections",
         default="all",
         help="comma-separated section keys (default: all). e.g. landing,web,git,verify",
+    )
+    ap.add_argument(
+        "--out",
+        type=Path,
+        help="write the brief to this file with the live-brief header and print the launch prompt",
     )
     ap.add_argument(
         "--list-sections",
@@ -203,7 +224,12 @@ def main(argv: list[str] | None = None) -> int:
         bounds = DispatchBounds.from_payload(
             json.loads(args.bounds.read_text(encoding="utf-8"))
         )
-        print(compose(task, bounds=bounds, sections=sections))
+        prompt = compose(task, bounds=bounds, sections=sections)
+        if args.out is None:
+            print(prompt)
+        else:
+            args.out.write_text(f"{BRIEF_HEADER}\n\n{prompt}\n", encoding="utf-8")
+            print(launch_prompt(args.out))
     except (KeyError, TypeError, ValueError, OSError) as exc:
         ap.error(str(exc))
     return 0
