@@ -74,10 +74,7 @@ impl OperandConstructor {
     /// Direct constructors pass their words as arguments; only range
     /// constructors own an entry-block word range.
     fn uses_range(self) -> bool {
-        !matches!(
-            self,
-            Self::Slice | Self::PreservedSlice | Self::DirectSlice
-        )
+        !matches!(self, Self::Slice | Self::PreservedSlice | Self::DirectSlice)
     }
 
     /// The operation whose constructor words are `[first, first, second]`.
