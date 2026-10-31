@@ -289,6 +289,9 @@ pub unsafe extern "C" fn molt_process_spawn(
         }
         #[cfg(unix)]
         let owns_process_group = configure_unix_owned_process_group(&mut cmd, false, None);
+        // Process groups are a POSIX process-model fact; other hosts own none.
+        #[cfg(not(unix))]
+        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(
             &mut cmd,
@@ -454,6 +457,8 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         #[cfg(unix)]
         let owns_process_group =
             configure_unix_owned_process_group(&mut cmd, new_session, process_group_val);
+        #[cfg(not(unix))]
+        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(
             &mut cmd,
