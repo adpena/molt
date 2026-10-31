@@ -260,6 +260,7 @@ def _build_frontend_module_costs(
 def _build_module_graph_metadata(
     module_graph: Mapping[str, Path],
     *,
+    scan_authority: _ModuleGraphScanAuthority | None,
     stdlib_root: Path,
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
@@ -302,6 +303,7 @@ def _build_module_graph_metadata(
         for name, path in module_graph.items()
     }
     return _ModuleGraphMetadata(
+        scan_authority=scan_authority,
         module_source_role_by_module=MappingProxyType(source_roles),
         logical_source_path_by_module=MappingProxyType(logical_source_path_by_module),
         namespace_portions_by_module=MappingProxyType(
@@ -383,15 +385,20 @@ def _extend_native_support_source_closure(
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     target_python: TargetPythonVersion,
     slice_cache: MutableMapping[
-        tuple[Path, tuple[str, ...], ImportScanMode], _NativeSupportSourceSlice | None
+        tuple[Path, tuple[str, ...], ImportScanMode, str | None],
+        _NativeSupportSourceSlice | None,
     ],
     operation_counts: MutableMapping[str, int],
 ) -> frozenset[str]:
     previous_parse_count = resolver_cache.source_parse_count
+    callable_export_roots = _native_support_callable_export_roots_by_module(
+        native_artifact_plan
+    )
     function_roots = _native_support_function_roots_by_module(
         native_artifact_plan,
         target_python=target_python,
         resolution_cache=resolver_cache,
+        callable_export_roots=callable_export_roots,
     )
     operation_counts["native_support_source_parses"] += (
         resolver_cache.source_parse_count - previous_parse_count
@@ -458,6 +465,9 @@ def _extend_native_support_source_closure(
             ),
             allow_entry_external_imports=False,
             target_python=target_python,
+            native_callable_exports={
+                module_name: callable_export_roots.get(module_name, ())
+            },
         )
         _graph_discovery._merge_discovered_module_graph(
             module_graph,
@@ -582,25 +592,44 @@ def _support_source_top_level_defs(
     return _native_support_slice.top_level_support_defs(tree)
 
 
-def _native_support_function_roots_by_module(
+def _native_support_callable_export_roots_by_module(
     native_artifact_plan,
-    *,
-    target_python: TargetPythonVersion,
-    resolution_cache: "_module_resolution._ModuleResolutionCache",
 ) -> dict[str, tuple[str, ...]]:
+    """The callable entries actually published by the native artifact."""
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
-    if not support_paths_by_module:
-        return {}
     roots: dict[str, set[str]] = {}
     for artifact in native_artifact_plan.artifacts:
         for export in artifact.callable_exports:
             provider_module = export.provider_module
             if (
-                provider_module is None
-                or provider_module not in support_paths_by_module
+                provider_module is not None
+                and provider_module in support_paths_by_module
             ):
-                continue
-            roots.setdefault(provider_module, set()).add(export.name)
+                roots.setdefault(provider_module, set()).add(export.name)
+    return {
+        module: _native_support_slice.canonical_native_support_roots(names)
+        for module, names in sorted(roots.items())
+    }
+
+
+def _native_support_function_roots_by_module(
+    native_artifact_plan,
+    *,
+    target_python: TargetPythonVersion,
+    resolution_cache: "_module_resolution._ModuleResolutionCache",
+    callable_export_roots: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
+    if not support_paths_by_module:
+        return {}
+    roots = {
+        module: set(names)
+        for module, names in (
+            _native_support_callable_export_roots_by_module(native_artifact_plan)
+            if callable_export_roots is None
+            else callable_export_roots
+        ).items()
+    }
     parsed: dict[str, ast.Module] = {}
     support_defs_by_module: dict[
         str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]
@@ -725,7 +754,8 @@ def _native_support_source_slices(
     stdlib_allowlist: set[str] | None = None,
     artifacts_root: Path,
     slice_cache: MutableMapping[
-        tuple[Path, tuple[str, ...], ImportScanMode], _NativeSupportSourceSlice | None
+        tuple[Path, tuple[str, ...], ImportScanMode, str | None],
+        _NativeSupportSourceSlice | None,
     ],
     operation_counts: MutableMapping[str, int],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -739,7 +769,12 @@ def _native_support_source_slices(
         mode = _source_import_scan._module_import_scan_mode(
             module, full_scan=bool(roots) or module in full_scan_modules
         )
-        cache_key = (path.resolve(), roots, mode)
+        purpose = (
+            _source_import_scan.SourceImportPurpose.INVENTORY
+            if roots
+            else _source_import_scan.SourceImportPurpose.EXECUTION
+        )
+        cache_key = (path.resolve(), roots, mode, resolution_cache.target_sys_platform)
         operation_counts["native_support_slice_requests"] += 1
         operation_counts["native_support_legacy_equivalent_source_parses"] += (
             2 if roots else 1
@@ -758,6 +793,7 @@ def _native_support_source_slices(
                 module_name=module,
                 is_package=path.name == "__init__.py",
                 import_scan_mode=mode,
+                purpose=purpose,
                 resolution_cache=resolution_cache,
                 project_root=artifacts_root,
                 roots=import_roots,
@@ -793,10 +829,12 @@ def _native_support_source_slices(
                 path,
                 module_name=module,
                 import_scan_mode=mode,
+                purpose=purpose,
                 is_package=path.name == "__init__.py",
                 package_paths=(path.parent,) if path.name == "__init__.py" else (),
                 scan=loaded_scan.scan,
                 snapshot=loaded_scan.snapshot,
+                target_sys_platform=resolution_cache.target_sys_platform,
                 target_python=target_python,
                 native_support_function_roots=roots,
             ),
@@ -1340,7 +1378,8 @@ def _materialize_import_plan(
         "native_support_legacy_equivalent_source_parses": 0,
     }
     native_support_slice_cache: dict[
-        tuple[Path, tuple[str, ...], ImportScanMode], _NativeSupportSourceSlice | None
+        tuple[Path, tuple[str, ...], ImportScanMode, str | None],
+        _NativeSupportSourceSlice | None,
     ] = {}
     native_artifact_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     while True:
@@ -1476,6 +1515,7 @@ def _materialize_import_plan(
     stdlib_allowlist.add("molt.stdlib")
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
+        scan_authority=final_scan_authority,
         stdlib_root=stdlib_root,
         entry_module=entry_module,
         entry_execution_kind=prepared_module_graph.image_scope.entry_execution_kind,
@@ -1697,6 +1737,7 @@ def _prepare_entry_module_graph(
     diagnostics_enabled: bool,
     module_reasons: MutableMapping[str, set[str]],
     json_output: bool,
+    target_sys_platform: str | None,
     target: Target,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1707,6 +1748,7 @@ def _prepare_entry_module_graph(
     stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _module_resolution._ModuleResolutionCache(
+        target_sys_platform=target_sys_platform,
         import_topology=import_topology or _module_resolution.PythonImportTopology(),
         module_root_aliases=module_root_aliases,
     )
@@ -1732,6 +1774,7 @@ def _prepare_entry_module_graph(
         module_name=entry_module,
         is_package=entry_is_package,
         import_scan_mode="full",
+        purpose=_source_import_scan.SourceImportPurpose.EXECUTION,
         resolution_cache=module_resolution_cache,
         project_root=None,
         tree=entry_tree,
@@ -1755,8 +1798,10 @@ def _prepare_entry_module_graph(
             source_path,
             module_name=entry_module,
             import_scan_mode="full",
+            purpose=_source_import_scan.SourceImportPurpose.EXECUTION,
             scan=loaded_entry.scan,
             snapshot=entry_snapshot,
+            target_sys_platform=module_resolution_cache.target_sys_platform,
             target_python=target_python,
         ),
         import_admission_policy=import_admission_policy,

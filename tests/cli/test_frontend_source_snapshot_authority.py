@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
     _ImportScanRequests,
@@ -345,6 +347,7 @@ class _ImportScanOptions(TypedDict):
     module_name: str
     is_package: bool
     import_scan_mode: ImportScanMode
+    namespace_premise: PythonNamespacePremise | None
 
 
 def _scan_options(
@@ -354,6 +357,7 @@ def _scan_options(
         "module_name": module_name,
         "is_package": False,
         "import_scan_mode": mode,
+        "namespace_premise": None,
     }
 
 
@@ -433,6 +437,7 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
     if warm_operation == "scan":
         imports = discovery._load_module_import_scan(
             support,
+            purpose=SourceImportPurpose.EXECUTION,
             resolution_cache=module_resolution._ModuleResolutionCache(),
             project_root=app,
             **_scan_options("support", "module_init"),
@@ -579,6 +584,7 @@ def test_complete_cold_scan_hashes_each_source_generation_once(
     monkeypatch.setattr(python_source_keys, "python_ast_digest", record_digest)
     loaded = discovery._load_module_import_scan(
         source,
+        purpose=SourceImportPurpose.EXECUTION,
         module_name="entry",
         is_package=False,
         import_scan_mode="full",
@@ -610,6 +616,7 @@ def test_malformed_execution_projection_rejects_entire_scan(
     snapshot = PythonSourceSnapshot.capture(source)
     request = discovery._load_module_import_scan(
         source,
+        purpose=SourceImportPurpose.EXECUTION,
         **options,
         resolution_cache=module_resolution._ModuleResolutionCache(),
         project_root=None,
@@ -719,6 +726,7 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
     snapshot = PythonSourceSnapshot.capture(source)
     request = discovery._load_module_import_scan(
         source,
+        purpose=SourceImportPurpose.EXECUTION,
         **_scan_options("entry"),
         resolution_cache=module_resolution._ModuleResolutionCache(),
         project_root=None,
@@ -793,7 +801,13 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
     policy = _ImportAdmissionPolicy(
         native_artifact_source_packages=frozenset({"owner"})
     )
-    unknown = PythonNamespacePremise(None, ALL_INVALID_MEMBERS)
+    unknown = PythonNamespacePremise(
+        None,
+        ALL_INVALID_MEMBERS,
+        entry_member_writes=ALL_INVALID_MEMBERS,
+        noncanonical_imports=(),
+        opaque_activation_sources=(),
+    )
     target_scan = _CompleteImportScan(
         _ImportScanRequests(
             **_source_import_scan._collect_imports_for_graph(
@@ -844,6 +858,7 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
         precomputed_scans_by_path={
             owner: discovery._bind_precomputed_module_import_scan(
                 owner,
+                purpose=SourceImportPurpose.EXECUTION,
                 snapshot=PythonSourceSnapshot.capture(owner),
                 module_name="owner",
                 import_scan_mode="full",
@@ -858,6 +873,7 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
             ),
             target: discovery._bind_precomputed_module_import_scan(
                 target,
+                purpose=SourceImportPurpose.EXECUTION,
                 snapshot=PythonSourceSnapshot.capture(target),
                 module_name="target",
                 import_scan_mode="module_init",
@@ -971,6 +987,7 @@ def test_frontend_analysis_keeps_the_snapshot_that_supplied_its_facts(
         entry_execution_kind="script",
         namespace_portions_by_module={},
         stdlib_root=tmp_path / "stdlib",
+        scan_authority=None,
     )
     seen: list[PythonSourceSnapshot] = []
 

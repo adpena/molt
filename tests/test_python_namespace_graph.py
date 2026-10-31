@@ -33,10 +33,10 @@ def test_namespace_graph_groups_source_aliases_and_package_bindings() -> None:
     for order in permutations(writes):
         graph = graph_python_namespace_writes(order, topology.get)
         assert graph.premise(shared, frozenset({"child"})) == PythonNamespacePremise(
-            ("a", "child", "shared_name", "z"), 0
+            ("a", "child", "shared_name", "z"), 0, 0, ()
         )
         assert graph.premise(untouched, frozenset()) == PythonNamespacePremise(
-            ("shared_name",), 0
+            ("shared_name",), 0, 0, ()
         )
         assert graph.by_source == {shared: frozenset({"a", "z"})}
 
@@ -58,10 +58,10 @@ def test_computed_name_widens_its_target_without_losing_later_writes(
     )
     members = ALL_INVALID_MEMBERS if computed_target else 0
     assert graph.premise(first, frozenset({"child"})) == PythonNamespacePremise(
-        None, members
+        None, members, members, ()
     )
     assert graph.premise(second, frozenset()) == PythonNamespacePremise(
-        None if computed_target else ("other",), members
+        None if computed_target else ("other",), members, members, ()
     )
 
 
@@ -76,7 +76,10 @@ def test_non_source_canonical_writes_still_invalidate_members() -> None:
     )
     assert not graph.by_source
     assert graph.premise(Path("entry.py"), frozenset()) == PythonNamespacePremise(
-        (), int(PythonMember.TYPING_TYPE_CHECKING | PythonMember.IMPORT_HOOKS)
+        (),
+        int(PythonMember.TYPING_TYPE_CHECKING | PythonMember.IMPORT_HOOKS),
+        int(PythonMember.TYPING_TYPE_CHECKING | PythonMember.IMPORT_HOOKS),
+        (),
     )
 
 
@@ -84,7 +87,7 @@ def test_aggregation_and_empty_premise_are_immutable() -> None:
     source = Path("entry.py")
     assert NO_GRAPH_NAMESPACE_WRITES.premise(
         source, frozenset({"child"})
-    ) == PythonNamespacePremise(("child",), 0)
+    ) == PythonNamespacePremise(("child",), 0, 0, ())
     graph = graph_python_namespace_writes(
         (PythonNamespaceWrite("entry", "flag", "attribute", 1),),
         {"entry": source}.get,
@@ -128,12 +131,12 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
         (PythonNamespaceWrite("first", "flag", "attribute", 1),), topology.get
     )
     assert index.merge(batch) == frozenset({first})
-    assert old == PythonNamespacePremise((), 0)
+    assert old == PythonNamespacePremise((), 0, 0, ())
     assert index.premise(second, frozenset()) == old
     assert index.merge(NO_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) is None
     assert index.premise(second, frozenset()) == PythonNamespacePremise(
-        None, ALL_INVALID_MEMBERS
+        None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, ()
     )
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(batch) == frozenset()
@@ -151,18 +154,33 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
 @pytest.mark.parametrize(
     ("left", "right", "expected"),
     [
-        (None, PythonNamespacePremise((), 0), None),
+        (None, PythonNamespacePremise((), 0, 0, ()), None),
         (
-            PythonNamespacePremise(("a", "shared"), 0),
-            PythonNamespacePremise(("b", "shared"), int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(("a", "shared"), 0, 0, ()),
             PythonNamespacePremise(
-                ("a", "b", "shared"), int(PythonMember.IMPORT_HOOKS)
+                ("b", "shared"),
+                int(PythonMember.IMPORT_HOOKS),
+                int(PythonMember.IMPORT_HOOKS),
+                (),
+            ),
+            PythonNamespacePremise(
+                ("a", "b", "shared"),
+                int(PythonMember.IMPORT_HOOKS),
+                int(PythonMember.IMPORT_HOOKS),
+                (),
             ),
         ),
         (
-            PythonNamespacePremise(None, 0),
-            PythonNamespacePremise(("b",), int(PythonMember.IMPORT_HOOKS)),
-            PythonNamespacePremise(None, int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(None, 0, 0, ()),
+            PythonNamespacePremise(
+                ("b",),
+                int(PythonMember.IMPORT_HOOKS),
+                int(PythonMember.IMPORT_HOOKS),
+                (),
+            ),
+            PythonNamespacePremise(
+                None, int(PythonMember.IMPORT_HOOKS), int(PythonMember.IMPORT_HOOKS), ()
+            ),
         ),
     ],
 )
@@ -171,3 +189,20 @@ def test_authority_join_never_grants_unverified_precision(
 ) -> None:
     assert join_python_namespace_premises(left, right) == expected
     assert join_python_namespace_premises(right, left) == expected
+
+
+def test_callback_inventory_does_not_claim_initializer_execution() -> None:
+    path = Path("provider.py")
+    write = PythonNamespaceWrite("sys", "platform", "attribute", 3)
+    inventory = graph_python_namespace_writes((write,), lambda _name: None, entry=False)
+    active = graph_python_namespace_writes((write,), lambda _name: None, entry=True)
+    index = PythonGraphNamespaceIndex()
+    index.merge(inventory)
+    before = index.premise(path, frozenset())
+    assert before.member_writes & int(PythonMember.SYS_PLATFORM)
+    assert before.entry_member_writes == 0
+    index.merge(active)
+    assert index.premise(path, frozenset()).entry_member_writes & int(
+        PythonMember.SYS_PLATFORM
+    )
+    assert before.entry_member_writes == 0

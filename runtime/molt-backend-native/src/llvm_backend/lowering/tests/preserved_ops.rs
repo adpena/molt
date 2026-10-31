@@ -131,7 +131,6 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         (OpKind::GuardTag, 2, true, None, "molt_guard_type"),
         (OpKind::GuardType, 2, false, None, "molt_guard_type"),
         (OpKind::GuardType, 2, true, None, "molt_guard_type"),
-        (OpKind::DataclassNew, 4, true, None, "molt_dataclass_new"),
         (
             OpKind::StatefulLocalsRegister,
             2,

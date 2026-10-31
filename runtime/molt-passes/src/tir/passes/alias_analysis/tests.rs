@@ -618,7 +618,6 @@ fn copy_lowering_classes_are_total_and_disjoint() {
         Some(molt_ir::OpKind::Contains),
         Some(molt_ir::OpKind::ClassmethodNew),
         Some(molt_ir::OpKind::CodeNew),
-        Some(molt_ir::OpKind::DataclassNew),
         Some(molt_ir::OpKind::DataclassNewValues),
         Some(molt_ir::OpKind::StrFromObj),
         Some(molt_ir::OpKind::Iter),

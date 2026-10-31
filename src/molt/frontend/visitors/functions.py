@@ -33,37 +33,17 @@ from molt.frontend.lowering.gpu_kernel_descriptor import (
 )
 from molt.frontend.sema import stateful_function_frame_plan
 from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
 class FunctionVisitorMixin(GeneratorMixinBase):
-    def _is_contextmanager_decorator(self, deco: ast.expr) -> bool:
-        if isinstance(deco, ast.Name) and deco.id == "contextmanager":
-            return True
-        if (
-            isinstance(deco, ast.Attribute)
-            and isinstance(deco.value, ast.Name)
-            and deco.value.id == "contextlib"
-            and deco.attr == "contextmanager"
-        ):
-            return True
-        return False
-
-    @staticmethod
-    def _is_gpu_kernel_decorator(deco: ast.expr) -> bool:
-        """Return True if the decorator is @gpu.kernel."""
-        # @gpu.kernel  (attribute form: gpu.kernel)
-        if (
-            isinstance(deco, ast.Attribute)
-            and isinstance(deco.value, ast.Name)
-            and deco.value.id == "gpu"
-            and deco.attr == "kernel"
-        ):
-            return True
-        # @kernel  (bare name after `from molt.gpu import kernel`)
-        if isinstance(deco, ast.Name) and deco.id == "kernel":
-            return True
-        return False
+    def _is_gpu_kernel_decorator(self, deco: ast.expr) -> bool:
+        """Publish GPU metadata only for the resolved GPU decorator."""
+        return (
+            self.python_binding_index is not None
+            and self.python_binding_index.expression_is(deco, PythonIdentity.GPU_KERNEL)
+        )
 
     def _has_gpu_kernel_decorator(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -123,8 +103,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             and node.name in self.module_elided_deleted_funcs
         ):
             return None
-        if self._has_typing_overload_decorator(node):
-            return None
+
         definition = self._prepare_function_definition(node)
         with self._type_parameter_scope(definition.type_parameter_bindings):
             self._emit_function_definition(node, definition)
@@ -146,13 +125,10 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         func_name = node.name
         qualname = self._definition_qualname(node)
         if is_generator:
-            func_symbol = self._function_symbol(
-                func_name, kind=FunctionKind.GENERATOR, reuse_reserved=True
+            func_symbol = self._source_definition_symbol(
+                node, kind=FunctionKind.GENERATOR
             )
-            if not self._has_typing_overload_decorator(node):
-                self._record_func_default_specs(func_symbol, node.args)
-            else:
-                return None
+            self._record_func_default_specs(func_symbol, node.args)
             poll_func_name = f"{func_symbol}_poll"
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
                 node.args
@@ -319,15 +295,8 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             return None
 
         func_name = node.name
-        func_symbol = self._function_symbol(func_name, reuse_reserved=True)
-        if not self._has_typing_overload_decorator(node):
-            self._record_func_default_specs(func_symbol, node.args)
-        else:
-            # Overload stubs are purely for type-checking; the real implementation
-            # that follows will compile the body and emit FUNC_NEW.  Skip stub
-            # compilation entirely so the backend never sees duplicate function
-            # declarations with incompatible signatures.
-            return None
+        func_symbol = self._source_definition_symbol(node)
+        self._record_func_default_specs(func_symbol, node.args)
         self.funcs_map.setdefault(
             func_symbol,
             FuncInfo(
@@ -360,6 +329,8 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         func_hint = f"Func:{func_symbol}"
         if has_closure:
             func_hint = f"ClosureFunc:{func_symbol}"
+        elif self.current_func_name == "molt_main":
+            self._register_source_callable(node, func_symbol)
         func_val = MoltValue(self.next_var(), type_hint=func_hint)
         if has_closure and closure_val is not None:
             self.emit(
@@ -730,6 +701,8 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         func_hint = f"Func:{func_symbol}"
         if has_closure:
             func_hint = f"ClosureFunc:{func_symbol}"
+        elif self.current_func_name == "molt_main":
+            self._register_source_callable(node, func_symbol)
         func_val = MoltValue(self.next_var(), type_hint=func_hint)
         if has_closure and closure_val is not None:
             self.emit(

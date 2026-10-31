@@ -313,6 +313,7 @@ def _prepare_frontend_analysis(
                     module_name
                 ],
                 import_scan_mode="full",
+                namespace_premise=source_authorities[module_name].namespace_premise,
                 runtime_import_custody=runtime_import_scan_custody,
                 native_support_function_roots=source_authorities[
                     module_name
@@ -398,6 +399,7 @@ def _prepare_frontend_lowering_config(
     type_facts_path: str | None,
     type_hint_policy: TypeHintPolicy,
     module_graph: Mapping[str, Path],
+    scan_authority: _ModuleGraphScanAuthority | None,
     source_path: Path,
     json_output: bool,
     warnings: list[str],
@@ -473,6 +475,7 @@ def _prepare_frontend_lowering_config(
     )
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
+        scan_authority=scan_authority,
         stdlib_root=stdlib_root,
         entry_module=entry_module,
         entry_execution_kind=entry_execution_kind,
@@ -817,6 +820,7 @@ def _prepare_frontend_stage_state(
         target=target,
         import_admission_policy=import_admission_policy,
         target_python=prepared_build_config.target_python,
+        target_sys_platform=prepared_build_config.target_sys_platform,
         image_scope=resolved_build_entry.image_scope,
         stdlib_profile=stdlib_profile,
     )
@@ -996,6 +1000,7 @@ def _prepare_frontend_stage_state(
             type_facts_path=type_facts_path,
             type_hint_policy=type_hint_policy,
             module_graph=import_plan.module_graph,
+            scan_authority=import_plan.scan_authority,
             source_path=source_path,
             json_output=json_output,
             warnings=warnings,

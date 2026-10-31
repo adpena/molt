@@ -171,6 +171,8 @@ fn build_command(
         }
     }
 
+    crate::async_rt::process::self_spawn::admit_child(&mut cmd)
+        .map_err(|refusal| refusal.raise(_py, &argv[0]))?;
     Ok(cmd)
 }
 

@@ -843,7 +843,7 @@ class FileDigestCache:
         self.store = store
         self._max_age_ns = max_age_ns
         self._started_ns = time.time_ns()
-        self._recorded: dict[str, tuple[StatToken, str, int]] | None = None
+        self._recorded: dict[str, tuple[StatToken, str, int] | None] = {}
         self._pending: dict[str, tuple[StatToken, str]] = {}
 
     def _connect(self) -> sqlite3.Connection:
@@ -867,21 +867,25 @@ class FileDigestCache:
         connection.execute("PRAGMA user_version=3")
         return connection
 
-    def _rows(self) -> dict[str, tuple[StatToken, str, int]]:
-        if self._recorded is None:
+    def _row(self, key: str) -> tuple[StatToken, str, int] | None:
+        # Fetch a bounded page of adjacent keys. Inventories visit nearby file
+        # paths together, amortizing connection/WAL teardown without loading the
+        # whole host store or keeping native SQLite handles between calls.
+        if key not in self._recorded:
             with closing(self._connect()) as connection:
-                self._recorded = {
-                    row[0]: (
-                        StatToken.from_payload([int(row[1]), *row[2:6]]),
-                        row[6],
-                        row[7],
-                    )
-                    for row in connection.execute(
-                        "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
-                        " sha256, recorded_ns FROM digests"
-                    )
-                }
-        return self._recorded
+                rows = connection.execute(
+                    "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
+                    " sha256, recorded_ns FROM digests WHERE path >= ?"
+                    " ORDER BY path LIMIT 64",
+                    (key,),
+                ).fetchall()
+            for row in rows:
+                self._recorded.setdefault(
+                    row[0],
+                    (StatToken.from_payload([int(row[1]), *row[2:6]]), row[6], row[7]),
+                )
+            self._recorded.setdefault(key, None)
+        return self._recorded[key]
 
     def identity(self, path: Path, *, label: str) -> StableRegularFileIdentity:
         """This file's stable identity; hash only without a current digest."""
@@ -923,7 +927,7 @@ class FileDigestCache:
         token = StatToken(
             *_stat_identity(expected_path_stat)[1:],
         )
-        recorded = self._rows().get(key)
+        recorded = self._row(key)
         if recorded is not None and recorded[0] == token:
             if recorded[2] < self._started_ns - self._max_age_ns // 2:
                 self._pending[key] = (token, recorded[1])
@@ -963,9 +967,8 @@ class FileDigestCache:
                 "DELETE FROM digests WHERE recorded_ns < ?",
                 (self._started_ns - self._max_age_ns,),
             )
-        recorded = self._rows()
         for path, (token, sha256) in self._pending.items():
-            recorded[path] = (token, sha256, self._started_ns)
+            self._recorded[path] = (token, sha256, self._started_ns)
         self._pending.clear()
 
 

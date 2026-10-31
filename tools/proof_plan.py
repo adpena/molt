@@ -3624,13 +3624,21 @@ def compiler_tool_path(
         )
         selected = candidates[0] if candidates else None
     elif selector == "llvm-sdk":
-        from molt.llvm_toolchain import discover_llvm_toolchain
+        from molt.llvm_toolchain import (
+            LlvmToolchainConfigError,
+            discover_llvm_toolchain,
+        )
 
         # The policy's checkout pins the SDK, not the driver running admission
         # (under the landing controller they differ).
-        discovery = discover_llvm_toolchain(
-            policy.root, environ=dict(environment), cwd=cwd
-        )
+        try:
+            discovery = discover_llvm_toolchain(
+                policy.root, environ=dict(environment), cwd=cwd
+            )
+        except LlvmToolchainConfigError as exc:
+            raise ValueError(
+                f"{policy.name}: LLVM SDK selection refused: {exc}"
+            ) from exc
         selected = discovery.llvm_config if discovery is not None else None
     elif selector == "wasm-opt":
         from molt.wasm_optimizer_identity import find_wasm_opt
@@ -4189,6 +4197,7 @@ def project_toolchains(
 
     from molt.dx import canonical_toolchain_root
     from molt.llvm_toolchain import (
+        LlvmToolchainConfigError,
         llvm_bootstrap_command,
         llvm_toolchain_environment_delta,
         required_llvm_backend_pin,
@@ -4215,7 +4224,10 @@ def project_toolchains(
         env.update(values)
 
     if "llvm-sdk" in kinds:
-        verification = verify_available_llvm_toolchain(root, environ=env, cwd=cwd)
+        try:
+            verification = verify_available_llvm_toolchain(root, environ=env, cwd=cwd)
+        except LlvmToolchainConfigError as exc:
+            raise ValueError(f"LLVM SDK selection refused: {exc}") from exc
         if verification is None:
             pin = required_llvm_backend_pin(root)
             command = "" if pin is None else f": {llvm_bootstrap_command(pin)}"

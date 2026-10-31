@@ -1832,7 +1832,7 @@ timeout_seconds = 2400
 cache_domain = "cargo-workspace"
 dependencies = ["nightly.determinism.compiler-prewarm"]
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-s", "-m", "slow"]
-pytest = ["tests/cli/test_checkout_independent_objects.py"]
+pytest = ["tests/cli/test_checkout_independent_objects.py", "tests/cli/test_source_build_environment_probe.py", "tests/test_memory_guard_wiring.py", "tests/tools/test_release_supply_chain.py", "tests/test_executable_test_support.py", "tests/tools/test_proof_queue_execution_custody_p0.py::test_python_path_and_cargo_hook_launches_share_native_environment_custody", "tests/test_django_demo.py", "tests/test_molt_accel_client.py", "tests/test_molt_accel_decorator.py", "tests/cli/test_cli_import_collection.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
 
 # The typed-IR verification and the IR hash-seed suite are CPU-bound Python
@@ -3530,7 +3530,7 @@ timeout_budget = "integration"
 cache_domain = "cargo-workspace"
 dependencies = ["native.integration.capability-manifest"]
 argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "--durations=20"]
-pytest = ["tests/cli/test_cli_smoke.py", "tests/cli/test_cli_build_identity.py", "tests/cli/test_traceback_carets.py", "tests/test_resource_enforcement_e2e.py"]
+pytest = ["tests/cli/test_cli_smoke.py", "tests/cli/test_cli_build_identity.py", "tests/cli/test_traceback_carets.py", "tests/test_resource_enforcement_e2e.py", "tests/test_self_spawn_e2e.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
 
 # Metamorphic compiler equivalence: each case compiles a program and a
@@ -4697,12 +4697,12 @@ globs = [
   "tests/cli/test_source_build_environment_probe.py",
 ]
 gates = []
+pytest_select = [{ m = "not slow", targets = ["tests/cli/test_source_build_environment_probe.py"] }]
 pytest = [
   "tests/cli/test_source_extension_set_registry.py",
   "tests/cli/test_source_extension_manifest_authority.py",
   "tests/cli/test_source_extension_link_requirements.py",
   "tests/cli/test_source_extension_producer.py",
-  "tests/cli/test_source_build_environment_probe.py",
   "tests/cli/test_source_extension_candidate_attestation.py",
   "tests/cli/test_source_extension_candidate_transaction.py",
   "tests/cli/test_source_package_seal.py",
@@ -5886,13 +5886,13 @@ globs = [
   "tests/tools/test_release_supply_chain.py",
 ]
 gates = []
+pytest_select = [{ m = "not slow", targets = ["tests/tools/test_release_supply_chain.py"] }]
 pytest = [
   "tests/cli/test_installed_compiler.py",
   "tests/cli/test_installed_runtime.py",
   "tests/cli/test_installed_toolchain_rules.py",
   "tests/tools/test_release_installed_distribution.py",
   "tests/tools/test_release_native_build.py",
-  "tests/tools/test_release_supply_chain.py",
 ]
 
 # The selected locked checkout input installs the development tree before

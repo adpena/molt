@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 from collections.abc import Callable, Mapping
@@ -11,6 +12,7 @@ from collections.abc import Callable, Mapping
 
 _DONOR_FACTORY: Callable[[], Path] | None = None
 _DONOR: Path | None = None
+_PYTHON_DONOR: Path | None = None
 _BUILD_ENVIRONMENT: Mapping[str, str] | None = None
 
 
@@ -25,8 +27,9 @@ def bind_native_donor_factory(
     asks: a test that points HOME elsewhere hides rustup's toolchains from the
     rustc proxy, which then fails or installs a toolchain.
     """
-    global _DONOR_FACTORY, _DONOR, _BUILD_ENVIRONMENT
+    global _DONOR_FACTORY, _DONOR, _PYTHON_DONOR, _BUILD_ENVIRONMENT
     _DONOR_FACTORY, _DONOR = factory, None
+    _PYTHON_DONOR = None
     _BUILD_ENVIRONMENT = None if environment is None else dict(environment)
 
 
@@ -46,6 +49,41 @@ def native_executable_donor() -> Path:
             raise RuntimeError("tests/conftest.py must bind the native donor directory")
         _DONOR = build_native_executable(_DONOR_FACTORY() / "donor", "fn main() {}\n")
     return _DONOR
+
+
+def link_assessed_python(path: Path) -> Path:
+    """Give an executable alias the session's already assessed private inode.
+
+    Fresh macOS copies pay code-signature assessment on their first launch.
+    Assess one owned copy with the cold fixture budget, then hardlink aliases;
+    never change the shared host interpreter's link count or identity. An alias
+    must not mutate its bytes, and its caller owns any needed pyvenv.cfg.
+    Cross-device links refuse rather than silently create another cold image.
+    """
+    from tests.process_guard_common import run_guarded_test_process
+
+    global _PYTHON_DONOR
+    if _PYTHON_DONOR is None:
+        if _DONOR_FACTORY is None or _BUILD_ENVIRONMENT is None:
+            raise RuntimeError(
+                "tests/conftest.py must bind the executable donor directory"
+            )
+        root = _DONOR_FACTORY()
+        donor = root / native_executable_name("python")
+        shutil.copy2(Path(sys.executable).resolve(strict=True), donor)
+        (root / "pyvenv.cfg").write_text(
+            f"home = {Path(sys._base_executable).resolve(strict=True).parent}\n",
+            encoding="utf-8",
+        )
+        run_guarded_test_process(
+            [str(donor), "-B", "-I", "-S", "-c", "pass"],
+            env=_BUILD_ENVIRONMENT,
+            check=True,
+            timeout=native_fixture_build_timeout(),
+        )
+        _PYTHON_DONOR = donor
+    path.hardlink_to(_PYTHON_DONOR)
+    return path
 
 
 def write_mock_executable(path: Path, content: bytes) -> Path:

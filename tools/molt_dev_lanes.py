@@ -64,6 +64,7 @@ from molt.file_locks import FileLockTimeout, _acquire_file_lock, _release_file_l
 from molt.process_environment import ProcessEnvironment
 from tools.driver_errors import EXIT_FAIL, EXIT_OK, EXIT_USAGE, DriverError  # noqa: E402
 from tools.molt_dev_common import (
+    _warn,
     _COMMANDS,
     _fail,
     _ok,
@@ -798,7 +799,18 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
 
         _step(f"fetch {args.remote}/{args.branch}")
         git.fetch(args.remote, args.branch)
-        base_ref = args.base or f"{args.remote}/{args.branch}"
+        if args.base is not None:
+            base_ref = args.base
+        else:
+            from tools.molt_dev_queue import LAST_GREEN_REF, last_green
+
+            green = last_green(git)
+            if green is None:
+                base_ref = f"{args.remote}/{args.branch}"
+                _warn(f"{LAST_GREEN_REF} is absent; starting from {base_ref}")
+            else:
+                base_ref = green
+                _step(f"lane base: {LAST_GREEN_REF} ({green})")
         base = git.rev_parse(f"{base_ref}^{{commit}}")
 
         worktree, reused = _choose_slot(

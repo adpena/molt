@@ -14,30 +14,6 @@ pub(super) fn emit_dataclass_op(
     reloc_enabled: bool,
 ) -> bool {
     match op.kind {
-        molt_ir::OpKind::DataclassNew => {
-            let args = op.args.as_ref().unwrap();
-            let name = locals[&args[0]];
-            let fields = locals[&args[1]];
-            let values = locals[&args[2]];
-            let flags = locals[&args[3]];
-            func.instruction(&Instruction::LocalGet(name));
-            func.instruction(&Instruction::LocalGet(fields));
-            func.instruction(&Instruction::LocalGet(values));
-            func.instruction(&Instruction::LocalGet(flags));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew],
-            );
-            store_runtime_result(
-                func,
-                op,
-                locals,
-                import_ids,
-                reloc_enabled,
-                crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew,
-            );
-        }
         molt_ir::OpKind::DataclassNewValues => {
             let args = op.args.as_ref().unwrap();
             let name = locals[&args[0]];

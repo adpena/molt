@@ -249,6 +249,29 @@ def test_private_provider_requires_a_proved_import_edge(tmp_path: Path) -> None:
     assert classification.unresolved_imports_payload()
 
 
+@pytest.mark.parametrize("deferred", [False, True])
+def test_private_intrinsic_import_inventory_preserves_deferred_consumers(
+    tmp_path, deferred
+):
+    statement = "from owner import _private\n"
+    source = "def use():\n    " + statement if deferred else statement
+    classification = _classify_sources(
+        tmp_path,
+        {
+            "owner": "from _intrinsics import require_intrinsic\n_private = require_intrinsic('molt_capabilities_has')\n",
+            "consumer": source,
+        },
+    )
+    assert classification.import_evidence["consumer"].private_imports == frozenset(
+        {("owner", "_private")}
+    )
+    assert classification.used_intrinsics["owner"] == frozenset(
+        {"molt_capabilities_has"}
+    )
+    assert "owner" not in classification.unused_bindings
+    assert classification.statuses["owner"] == STATUS_INTRINSIC
+
+
 def test_private_provider_cannot_bypass_pure_facade_all_owner_proof(
     tmp_path: Path,
 ) -> None:
@@ -1008,8 +1031,20 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
         encoding="utf-8",
     )
     counts = {}
-    stable = PythonNamespacePremise((), 0)
-    rewritten = PythonNamespacePremise(("TYPE_CHECKING",), 0)
+    stable = PythonNamespacePremise(
+        (),
+        0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+        opaque_activation_sources=None,
+    )
+    rewritten = PythonNamespacePremise(
+        ("TYPE_CHECKING",),
+        0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+        opaque_activation_sources=None,
+    )
 
     def facts(premise):
         return cache._stdlib_intrinsic_source_facts(
@@ -1131,8 +1166,20 @@ def test_intrinsic_warmer_transports_each_modules_namespace_premise(
         )
         paths[module] = path
     premises = {
-        "stable": PythonNamespacePremise((), 0),
-        "rewritten": PythonNamespacePremise(("TYPE_CHECKING",), 0),
+        "stable": PythonNamespacePremise(
+            (),
+            0,
+            entry_member_writes=0,
+            noncanonical_imports=(),
+            opaque_activation_sources=None,
+        ),
+        "rewritten": PythonNamespacePremise(
+            ("TYPE_CHECKING",),
+            0,
+            entry_member_writes=0,
+            noncanonical_imports=(),
+            opaque_activation_sources=None,
+        ),
     }
     cache.warm_stdlib_intrinsic_source_facts(
         paths,
@@ -1162,7 +1209,13 @@ def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
     cache = premise_source_cache
     path = tmp_path / "entry.py"
     path.write_text("pass\n", encoding="utf-8")
-    premise = PythonNamespacePremise((), 0)
+    premise = PythonNamespacePremise(
+        (),
+        0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+        opaque_activation_sources=None,
+    )
     facts = cache._stdlib_intrinsic_source_facts(
         "entry",
         path,

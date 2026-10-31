@@ -18,6 +18,7 @@ from molt.python_private_names import (
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis import native_support_slice as _native_support_slice
+from molt.compiler_analysis.python_binding_facts import PythonClassPreparation
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_bindings,
@@ -25,6 +26,9 @@ from molt.compiler_analysis.python_binding_flow import (
 from molt.compiler_analysis.python_syntax import require_python_syntax_target
 from molt.compiler_analysis.python_lexical_scope import python_scope_syntax_error
 from molt.compiler_analysis.python_source_keys import python_ast_digest
+from molt.compiler_analysis.python_namespace_graph import (
+    python_namespace_binding_policy,
+)
 from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
     static_expression_result,
@@ -35,7 +39,6 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
-from molt.compiler_analysis.python_function_kind import normalize_function_kind
 
 
 class StatementScopeVisitorMixin(GeneratorMixinBase):
@@ -246,13 +249,17 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         self.python_binding_index = analyze_python_bindings(
             node,
             source_digest=python_ast_digest(node),
-            policy=PythonBindingPolicy(
-                target_python=self.target_python,
-                target_sys_platform=self.target_sys_platform,
-                module_name=self.module_name,
-                module_spec_name=self.module_spec_name,
-                module_is_package=self.module_is_package,
-                module_execution_kind=self.module_execution_kind,
+            policy=python_namespace_binding_policy(
+                PythonBindingPolicy(
+                    target_python=self.target_python,
+                    class_preparation=PythonClassPreparation.MOLT_NATIVE,
+                    target_sys_platform=self.target_sys_platform,
+                    module_name=self.module_name,
+                    module_spec_name=self.module_spec_name,
+                    module_is_package=self.module_is_package,
+                    module_execution_kind=self.module_execution_kind,
+                ),
+                self.namespace_premise,
             ),
         )
         self.module_import_flow = self.python_binding_index.module_import_flow
@@ -261,7 +268,6 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             defer = False
         prev_defer = self.defer_module_attrs
         prev_dirty = self.deferred_module_attrs
-        prev_stable = self.stable_module_funcs
         prev_mutated = self.mutated_classes
         prev_declared = self.module_declared_funcs
         prev_declared_classes = self.module_declared_classes
@@ -287,9 +293,6 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         self.module_elided_deleted_funcs = set(
             self._module_elidable_deleted_functions(node)
         )
-        self.stable_module_funcs = (
-            self._module_stable_funcs(node) - self.module_elided_deleted_funcs
-        )
         # F2b (doc 44): the static class graph, const environment, and top-level
         # function metadata are now computed once, pre-walk, by frontend/sema/ and
         # the existing god-object dicts are populated FROM the immutable SemaResult.
@@ -298,13 +301,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         self._populate_sema_state(node)
         self.stable_module_classes = self._collect_stable_module_classes(node)
         self.reserved_func_symbols = {}
-        for func_name, kind in self.module_declared_funcs.items():
-            function_kind = normalize_function_kind(kind)
-            if (
-                function_kind is not None
-                and func_name not in self.module_elided_deleted_funcs
-            ):
-                self._reserve_function_symbol(func_name, kind=function_kind)
+        self._reserve_source_callables(node)
         self.module_defined_funcs = set()
         # module_func_defaults is populated by _populate_sema_state above (the
         # AST-derived defaults from SemaResult, with the known_func_defaults
@@ -490,7 +487,6 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             self._emit_function_exception_handler()
         self.defer_module_attrs = prev_defer
         self.deferred_module_attrs = prev_dirty
-        self.stable_module_funcs = prev_stable
         self.mutated_classes = prev_mutated
         self.module_declared_funcs = prev_declared
         self.module_declared_classes = prev_declared_classes
@@ -565,11 +561,6 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         require_python_syntax_target(node, self.target_python)
         for alias in node.names:
             module_name = alias.name
-            if module_name in {"typing", "typing_extensions"}:
-                # Track the alias so @<alias>.overload is recognised.
-                if alias.asname:
-                    self._typing_import_aliases.add(alias.asname)
-                # Fall through — typing names have runtime significance.
             bind_name = python_import_binding(alias)
             if self._source_imports_use_transaction():
                 if alias.asname:

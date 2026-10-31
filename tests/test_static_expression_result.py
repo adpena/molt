@@ -1411,3 +1411,65 @@ def test_context_execution_phases_match_cpython_order_and_owner(
         owners.add(region.owner)
     assert projected == events
     assert owners == {python_node_source_key(tree.body[0]) if asynchronous else None}
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (12, 15),
+        (15, 15),
+        (16, 15),
+        (True, 1),
+        (False, -1.0),
+        (10**100, 1e100),
+        (-0.0, 0),
+        (math.inf, 100),
+        (math.nan, 1),
+        (1, math.nan),
+        (math.nan, math.nan),
+        ("alpha", "beta"),
+        (b"alpha", b"beta"),
+        (None, None),
+        (1j, 1),
+        ("1", 1),
+        (b"a", "a"),
+    ],
+)
+def test_exact_scalar_ordering_matches_python_without_erasing_evaluation(left, right):
+    from molt.compiler_analysis.static_truth import static_comparison_result
+
+    for operation, expected in (
+        (ast.Lt(), lambda: left < right),
+        (ast.LtE(), lambda: left <= right),
+        (ast.Gt(), lambda: left > right),
+        (ast.GtE(), lambda: left >= right),
+    ):
+        result = static_comparison_result(
+            StaticExpressionResult.scalar(left, evaluation_required=True),
+            operation,
+            StaticExpressionResult.scalar(right),
+        )
+        try:
+            truth = expected()
+        except TypeError:
+            assert result.truth is None and not result.value_known
+        else:
+            assert result.truth is truth and result.value_known
+        assert result.evaluation_required
+
+
+def test_scalar_ordering_does_not_execute_unknown_protocol_or_order_tuples():
+    class Compared:
+        def __lt__(self, other):
+            raise AssertionError("analysis must not invoke a comparison callback")
+
+    from molt.compiler_analysis.static_truth import static_comparison_result
+
+    result = static_comparison_result(
+        StaticExpressionResult.scalar(Compared()),
+        ast.Lt(),
+        StaticExpressionResult.scalar(1),
+    )
+    assert result.truth is None and result.evaluation_required
+    result = static_expression_result(ast.parse("(3, 14) < (3, 15)", mode="eval").body)
+    assert result.truth is None and result.evaluation_required
