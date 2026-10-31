@@ -254,13 +254,18 @@ def profile_link_features(
     return reached
 
 
-@functools.lru_cache(maxsize=32)
 def runtime_features_unsupported_on_target(target: ArtifactTarget) -> frozenset[str]:
     """Declared runtime features with no provider on ``target``.
 
     The target arrives resolved, so the cache keys on the concrete artifact
-    target and never on "whichever host the first caller saw".
+    target and never on "whichever host the first caller saw". The public
+    function stays typed: ``lru_cache`` erases a signature for the checker.
     """
+    return _runtime_features_unsupported_on_target(target)
+
+
+@functools.lru_cache(maxsize=32)
+def _runtime_features_unsupported_on_target(target: ArtifactTarget) -> frozenset[str]:
     return features_unsupported_on_target(
         target_arch=target_arch(target), target_os=target_os(target)
     )

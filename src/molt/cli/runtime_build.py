@@ -141,7 +141,7 @@ def _prebuild_runtime_wasm(
         return 1
 
     invalid_features = required_link_features - (
-        RUNTIME_FEATURES - runtime_features_unsupported_on_target("wasm32-wasip1")
+        RUNTIME_FEATURES - runtime_features_unsupported_on_target(TargetKind.WASI)
     )
     if invalid_features:
         return fail(

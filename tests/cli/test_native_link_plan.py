@@ -1424,8 +1424,17 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
 def test_linux_host_triple_projects_musl_abi(monkeypatch):
     import sysconfig
 
+    from molt.native_target import host_linux_libc
+
     monkeypatch.setattr(sysconfig, "get_config_var", lambda name: "x86_64-linux-musl")
-    target = resolve_native_target_spec(None, host_platform="linux", host_arch="x86_64")
+    # The C library is read once per process; this case simulates another one.
+    host_linux_libc.cache_clear()
+    try:
+        target = resolve_native_target_spec(
+            None, host_platform="linux", host_arch="x86_64"
+        )
+    finally:
+        host_linux_libc.cache_clear()
     assert target.triple == "x86_64-unknown-linux-musl"
     assert target.cargo_target is None
 
