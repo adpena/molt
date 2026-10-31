@@ -130,8 +130,9 @@ over stale prose or precedent.
   with validated `DispatchBounds` via `tools/dispatch_prompt.py`; record ownership and handoffs in
   coordination records. `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets,
   proofs, stop rules and parent-controlled expansion. Task messages and worktrees are not source locks.
-- Match effort to risk: Astra for complex architecture/correctness, faster workers for bounded mechanics.
-  Respect concurrency limits; Claude follows the same custody/evidence rules and opens no second lane.
+- Match effort to risk: Codex `gpt-6.1-sol` for nearly all work; Astra only for the hardest
+  architecture or correctness work, because it spends usage fastest. Name the model on every
+  dispatch and resume. Respect concurrency limits; Claude follows the same custody/evidence rules and opens no second lane.
 
 ## Verify the claim, not the ritual
 
