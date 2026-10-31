@@ -868,6 +868,11 @@ def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_bytes(b"marker-1\n")
 
+    from tests.cli.test_cli_file_hashing import _git
+
+    _git(root, "init", "-q")
+    (root / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
+
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
 
     first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
@@ -1289,7 +1294,7 @@ def test_installed_python_layout_drives_both_fingerprint_scopes(
         tmp_path
     )
     paths = CACHE_FINGERPRINTS._frontend_semantic_tooling_sources(tmp_path).paths
-    assert frontend in paths and target in paths
+    assert frontend / "__init__.py" in paths and target in paths
     assert all(path.is_relative_to(site_packages) for path in paths)
     first = CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint()
     target.write_text("TARGET = 313\n", encoding="utf-8")

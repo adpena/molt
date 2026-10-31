@@ -372,7 +372,7 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
     Workspace inheritance is a manifest input, not permission to include the
     whole runtime workspace. Cargo still owns actual dependency resolution.
     """
-    from molt import cargo_execution_policy, process_environment
+    from molt import cargo_execution_policy, process_environment, source_admission
     from molt.cli import cargo_build_reads, cargo_environment_inputs
 
     source = repo_root / "tools" / "proof_supervisor"
@@ -388,6 +388,7 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
         Path(cargo_execution_policy.__file__),
         Path(process_environment.__file__),
         Path(cargo_build_reads.__file__),
+        Path(source_admission.__file__),
         Path(cargo_environment_inputs.__file__),
         Path(__file__),
         Path(sys.modules[encode_exact.__module__].__file__),

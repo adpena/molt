@@ -78,18 +78,11 @@ def test_tree_identity_is_the_index_projection(release_source):
         )
 
 
-def test_empty_directory_addition_invalidates_a_source_receipt(release_source):
+def test_empty_directory_addition_preserves_a_source_receipt(release_source):
     recorded = _recorded(release_source, ())
     added = release_source / "runtime/core/new-headers"
     added.mkdir()
-    with pytest.raises(ValueError, match="source"):
-        identity.verify_runtime_source_trees(release_source, [((), recorded)])
-    changed = _recorded(release_source, ())
-    assert changed["file_count"] == recorded["file_count"]
-    assert changed["total_size"] == recorded["total_size"]
-    added.rmdir()
-    with pytest.raises(ValueError, match="source"):
-        identity.verify_runtime_source_trees(release_source, [((), changed)])
+    identity.verify_runtime_source_trees(release_source, [((), recorded)])
     assert _recorded(release_source, ()) == recorded
 
 
@@ -168,3 +161,18 @@ def test_missing_unconsumed_tooling_does_not_affect_source_identity(build_trees)
     before = identity._capture_runtime_build_sources(root, sources)
     tooling.unlink()
     assert identity._capture_runtime_build_sources(root, sources) == before
+
+
+def test_runtime_projection_retains_canonical_parent_resolution(
+    release_source, tmp_path
+):
+    alias = tmp_path / "source-parent-alias"
+    try:
+        alias.symlink_to(release_source, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    roots = [("source/core", release_source / "runtime/core")]
+    relocated = [("source/core", alias / "runtime/core")]
+    assert identity._tree_identity(roots, require_all=True) == identity._tree_identity(
+        relocated, require_all=True
+    )
