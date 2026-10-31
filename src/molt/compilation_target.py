@@ -8,7 +8,7 @@ An explicit native triple carries the existing admitted native specification.
 from __future__ import annotations
 
 from enum import Enum
-from typing import assert_never
+from typing import Literal, assert_never
 
 from molt.native_target import LinkDialect, NativeTargetSpec, resolve_native_target_spec
 
@@ -25,6 +25,12 @@ class TargetKind(Enum):
 
 
 type Target = TargetKind | NativeTargetSpec
+
+# The artifact a build produces, with the host resolved: a native spec, or one
+# of the two WASM artifact triples. Target facts are keyed by this type, never
+# by `str | None` with None meaning the host (Cargo's CompileKind, LLVM Triple).
+type WasmArtifactKind = Literal[TargetKind.WASI, TargetKind.WASM_UNKNOWN]
+type ArtifactTarget = NativeTargetSpec | WasmArtifactKind
 
 
 def validate_target(target: Target) -> None:
@@ -98,6 +104,37 @@ def target_triple(target: Target) -> str | None:
             return "wasm32-unknown-unknown"
         case NativeTargetSpec():
             return target.cargo_target
+        case _:
+            assert_never(target)
+
+
+def resolve_artifact_target(target: Target) -> ArtifactTarget:
+    """Resolve compilation intent to its artifact target: the one host lookup."""
+    validate_target(target)
+    match target:
+        case TargetKind.NATIVE:
+            return resolve_native_target_spec(None)
+        case NativeTargetSpec():
+            return target
+        case TargetKind.WASM | TargetKind.WASI:
+            return TargetKind.WASI
+        case TargetKind.WASM_FREESTANDING | TargetKind.WASM_UNKNOWN:
+            return TargetKind.WASM_UNKNOWN
+        case TargetKind.RUST | TargetKind.LUAU | TargetKind.MLIR:
+            raise ValueError(f"Target {target.value!r} has no artifact target")
+        case _:
+            assert_never(target)
+
+
+def artifact_triple(target: ArtifactTarget) -> str:
+    """The concrete triple of an artifact target; the host is already resolved."""
+    match target:
+        case NativeTargetSpec():
+            return target.triple
+        case TargetKind.WASI:
+            return "wasm32-wasip1"
+        case TargetKind.WASM_UNKNOWN:
+            return "wasm32-unknown-unknown"
         case _:
             assert_never(target)
 

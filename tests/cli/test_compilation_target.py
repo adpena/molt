@@ -357,3 +357,53 @@ def test_linux_host_libc_is_read_once_per_process(monkeypatch):
         native_target.host_linux_libc.cache_clear()
     assert triples == {"aarch64-unknown-linux-musl"}
     assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    "text,triple",
+    [
+        ("wasm", "wasm32-wasip1"),
+        ("wasm32-wasip1", "wasm32-wasip1"),
+        ("wasm-freestanding", "wasm32-unknown-unknown"),
+        ("wasm32-unknown-unknown", "wasm32-unknown-unknown"),
+        ("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"),
+        ("aarch64-apple-darwin", "aarch64-apple-darwin"),
+        ("x86_64-pc-windows-msvc", "x86_64-pc-windows-msvc"),
+    ],
+)
+def test_artifact_target_resolves_explicit_intent_without_the_host(
+    monkeypatch, text, triple
+):
+    from molt.compilation_target import artifact_triple, resolve_artifact_target
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("explicit target resolution probed the host")
+
+    monkeypatch.setattr("molt.native_target._host_target_triple", forbidden)
+    assert artifact_triple(resolve_artifact_target(admit_target(text))) == triple
+
+
+def test_artifact_target_resolves_the_symbolic_host_once(monkeypatch):
+    from molt.compilation_target import artifact_triple, resolve_artifact_target
+
+    calls = []
+
+    def host(**_):
+        calls.append(1)
+        return "riscv64gc-unknown-linux-gnu"
+
+    monkeypatch.setattr("molt.native_target._host_target_triple", host)
+    target = resolve_artifact_target(TargetKind.NATIVE)
+    assert isinstance(target, NativeTargetSpec) and target.is_host
+    # The resolved value carries the host; projecting it asks nothing again.
+    assert artifact_triple(target) == "riscv64gc-unknown-linux-gnu"
+    assert artifact_triple(target) == "riscv64gc-unknown-linux-gnu"
+    assert calls == [1]
+
+
+@pytest.mark.parametrize("kind", [TargetKind.RUST, TargetKind.LUAU, TargetKind.MLIR])
+def test_source_backends_have_no_artifact_target(kind):
+    from molt.compilation_target import resolve_artifact_target
+
+    with pytest.raises(ValueError, match="has no artifact target"):
+        resolve_artifact_target(kind)
