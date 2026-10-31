@@ -1572,6 +1572,7 @@ tests/differential/stdlib/os_pipe_basic.py
 tests/differential/stdlib/os_posix_argument_conversion.py
 tests/differential/stdlib/os_read_write_basic.py
 tests/differential/stdlib/os_read_write_errors.py
+tests/differential/stdlib/os_scandir_entry_cache.py
 tests/differential/stdlib/os_stat_file_identity.py
 tests/differential/stdlib/os_stat_rename_replace_intrinsic.py
 tests/differential/stdlib/os_supports_dir_fd.py
