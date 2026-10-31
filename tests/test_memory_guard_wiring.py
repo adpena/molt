@@ -81,6 +81,7 @@ def _own_host_records(root: Path) -> set[str]:
     }
 
 
+@pytest.mark.slow
 def test_guards_started_by_tests_keep_custody_out_of_the_host_root(
     test_guard_custody_roots,
 ) -> None:
@@ -326,6 +327,7 @@ def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, rel
 
 
 @pytest.mark.parametrize("invocation", ["command", "module", "script"])
+@pytest.mark.slow
 def test_nontest_python_startup_does_not_initialize_test_custody(
     tmp_path: Path, invocation: str
 ) -> None:
@@ -1686,6 +1688,7 @@ def test_pytest_startup_requires_the_repo_config_and_its_custody_plugins(
             )
 
 
+@pytest.mark.slow
 def test_pytest_custody_leaves_plugin_imports_to_pytest(tmp_path: Path) -> None:
     # The custody check runs in the pytest process before pytest starts. A
     # plugin it imported there would precede pytest's assertion-rewrite hook,
@@ -1703,7 +1706,8 @@ def test_pytest_custody_leaves_plugin_imports_to_pytest(tmp_path: Path) -> None:
         "error::pytest.PytestAssertRewriteWarning",
         "-c",
         str(REPO_ROOT / "pyproject.toml"),
-        str(case),
+        "--pyargs",
+        case.stem,
     ]
     environ = {
         key: value
@@ -1716,6 +1720,9 @@ def test_pytest_custody_leaves_plugin_imports_to_pytest(tmp_path: Path) -> None:
             "PYTEST_XDIST_WORKER_COUNT",
         }
     }
+    environ["PYTHONPATH"] = os.pathsep.join(
+        (str(tmp_path), environ.get("PYTHONPATH", ""))
+    )
     env = memory_guard.test_custody_launch_env(command, environ=environ, cwd=REPO_ROOT)
     result = memory_guard.run_guarded(
         command,
@@ -1808,6 +1815,7 @@ def test_pytest_custody_keeps_the_deleted_basetemp_out_of_sources(
     )
 
 
+@pytest.mark.slow
 def test_in_process_pytest_main_meets_the_custody_check() -> None:
     # Review v4. sys.argv never shows the list an in-process pytest.main()
     # receives; the repository conftest reads pytest's own invocation
@@ -2254,6 +2262,7 @@ def _current_test_record_lock(wrap):
     return (wrapped, host_lock, lock_timeout)
 
 
+@pytest.mark.slow
 def test_a_reader_holding_the_record_past_the_deadline_skips_one_phase(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -2373,6 +2382,7 @@ def test_pytest_current_test_short_writes_never_commit_partial_identity(
 
 
 @pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.slow
 def test_live_current_test_reader_is_nonblocking_and_writer_death_is_unknown(
     monkeypatch,
     tmp_path: Path,
@@ -2573,6 +2583,7 @@ def test_pytest_immediate_failures_register_once_and_only_format_failed_reports(
         "capture-suppressed-abrupt",
     ),
 )
+@pytest.mark.slow
 def test_pytest_failure_details_survive_later_abrupt_exit(
     tmp_path: Path,
     workers: int,
@@ -2586,11 +2597,22 @@ def test_pytest_failure_details_survive_later_abrupt_exit(
     fixture = tmp_path / "failure-probe"
     fixture.mkdir()
     finished = fixture / "session-finished"
-    (fixture / "conftest.py").write_text(
-        "import os\nfrom pathlib import Path\n"
-        "pytest_plugins = ['tests.conftest']\n"
+    (fixture / "failure_probe_hooks.py").write_text(
+        "import os\nimport sys\nimport threading\nimport pytest\nfrom pathlib import Path\n"
+        "collecting = False\ncollection_thread = threading.get_ident()\n"
+        "ancestors = set(Path(__file__).parents[1:])\n"
+        "def audit(event, args):\n"
+        "    if collecting and threading.get_ident() == collection_thread and event == 'os.scandir':\n"
+        "        if not isinstance(args[0], int) and Path(args[0]) in ancestors:\n"
+        "            raise AssertionError('fixture collection scanned a shared ancestor: ' + str(args[0]))\n"
+        "sys.addaudithook(audit)\n"
+        "@pytest.hookimpl(wrapper=True)\n"
+        "def pytest_collection(session):\n"
+        "    global collecting\n    collecting = True\n"
+        "    try:\n        yield\n    finally:\n        collecting = False\n"
         "controller_abort = False\nfailed_seen = False\n"
         "def pytest_configure(config):\n"
+        "    assert config.pluginmanager.is_registered(sys.modules['tests.conftest'])\n"
         f"    global controller_abort\n    controller_abort = {abrupt!r} and "
         "not hasattr(config, 'workerinput') and bool(getattr(config.option, 'numprocesses', 0))\n"
         "def pytest_runtest_logreport(report):\n"
@@ -2649,7 +2671,10 @@ def test_pytest_failure_details_survive_later_abrupt_exit(
     ]
     if workers:
         command.extend(["-p", "xdist.plugin", "-n", str(workers), "--dist=loadfile"])
-    command.append(str(test_file))
+    # --pyargs stops collection at the fixture module, rather than listing
+    # every ancestor of this external path, including shared host scratch.
+    command.extend(["-p", "failure_probe_hooks", "--pyargs", test_file.stem])
+    env["PYTHONPATH"] = os.pathsep.join((str(fixture), env.get("PYTHONPATH", "")))
     result = run_guarded_test_process(
         command,
         cwd=REPO_ROOT,

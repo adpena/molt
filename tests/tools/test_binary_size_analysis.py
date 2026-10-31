@@ -21,6 +21,7 @@ from molt.native_artifact_header import (
 )
 from molt.cli.backend_generation import backend_generation_path
 from molt.native_target_shape import NativeObjectFormat
+from tests.executable_test_support import native_executable_donor
 from tools import binary_size_analysis as size
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -421,12 +422,12 @@ def test_development_scanner_uses_current_source_admission(monkeypatch, tmp_path
 
 
 def _copied_scanner(tmp_path):
-    # The real stable-executable owner validates this copied host executable.
+    # The real stable-executable owner validates this private native executable.
     # Tests replace only the process boundary, never its image custody.
     import shutil
 
     selected = tmp_path / ("scanner.exe" if sys.platform == "win32" else "scanner")
-    shutil.copy2(sys.executable, selected)
+    shutil.copy2(native_executable_donor(), selected)
     identity = size.stable_regular_file_identity(selected, label="scanner test")
     return selected, identity
 

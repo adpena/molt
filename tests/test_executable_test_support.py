@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import json
+import errno
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -149,6 +151,75 @@ def test_mock_executable_preserves_bytes_and_admits_host_execution_permission(
     assert path.read_bytes() == b"mocked-native-image"
     assert os.access(path, os.X_OK)
     assert resolve_executable(str(path), environment={}, label="test compiler") == path
+
+
+@pytest.mark.slow
+def test_assessed_python_aliases_share_one_private_image_and_execute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests import executable_test_support, process_guard_common
+    from tests.executable_test_support import (
+        link_assessed_python,
+        native_executable_name,
+    )
+    from tests.process_guard_common import run_guarded_test_process
+
+    donor_root = tmp_path / "session-image"
+    donor_root.mkdir()
+    monkeypatch.setattr(executable_test_support, "_DONOR_FACTORY", lambda: donor_root)
+    monkeypatch.setattr(executable_test_support, "_PYTHON_DONOR", None)
+    launches = []
+
+    def observe(command, **kwargs):
+        launches.append(command)
+        return run_guarded_test_process(command, **kwargs)
+
+    monkeypatch.setattr(process_guard_common, "run_guarded_test_process", observe)
+    host = Path(sys.executable).resolve(strict=True)
+    before = host.stat()
+    first = link_assessed_python(tmp_path / native_executable_name("first-python"))
+    second = link_assessed_python(tmp_path / native_executable_name("second-python"))
+    assert first.samefile(second)
+    assert not first.samefile(host)
+    assert len(launches) == 1 and Path(launches[0][0]).samefile(first)
+    assert first.read_bytes() == host.read_bytes()
+    (tmp_path / "pyvenv.cfg").write_text(
+        f"home = {Path(sys._base_executable).resolve(strict=True).parent}\n",
+        encoding="utf-8",
+    )
+    result = run_guarded_test_process(
+        [str(second), "-B", "-I", "-S", "-c", "import sys; print(sys.executable)"],
+        check=True,
+    )
+    assert Path(result.stdout.strip()) == second
+    after = host.stat()
+    assert (before.st_ino, before.st_nlink, before.st_ctime_ns) == (
+        after.st_ino,
+        after.st_nlink,
+        after.st_ctime_ns,
+    )
+
+
+@pytest.mark.slow
+def test_assessed_python_alias_refuses_cross_device_copy_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.executable_test_support import (
+        link_assessed_python,
+        native_executable_name,
+    )
+
+    first = link_assessed_python(tmp_path / native_executable_name("first-python"))
+    destination = tmp_path / native_executable_name("other-volume-python")
+
+    def cross_device(*args, **kwargs):
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr(os, "link", cross_device)
+    with pytest.raises(OSError) as caught:
+        link_assessed_python(destination)
+    assert caught.value.errno == errno.EXDEV
+    assert first.is_file() and not destination.exists()
 
 
 def test_custody_spelling_lowercases_only_the_windows_anchor(tmp_path: Path) -> None:

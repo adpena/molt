@@ -1723,7 +1723,12 @@
       "family": "nightly_determinism",
       "id": "nightly.determinism.checkout-independence",
       "pytest": [
-        "tests/cli/test_checkout_independent_objects.py"
+        "tests/cli/test_checkout_independent_objects.py",
+        "tests/cli/test_source_build_environment_probe.py",
+        "tests/test_memory_guard_wiring.py",
+        "tests/tools/test_release_supply_chain.py",
+        "tests/test_executable_test_support.py",
+        "tests/tools/test_proof_queue_execution_custody_p0.py::test_python_path_and_cargo_hook_launches_share_native_environment_custody"
       ],
       "resource_class": "scheduled-suite",
       "tiers": [
@@ -9650,6 +9655,7 @@
       "local.host-entrypoint-imports.pytest": "none",
       "local.import-symbol-gate.0": "none",
       "local.installed-compiler-distribution.pytest": "none",
+      "local.installed-compiler-distribution.pytest-select-0": "none",
       "local.intrinsic-registry.pytest": "none",
       "local.llvm-runtime-abi.0": "none",
       "local.llvm-runtime-abi.pytest": "none",
@@ -9699,6 +9705,7 @@
       "local.rust-toolchain.0": "none",
       "local.rust-toolchain.pytest": "none",
       "local.source-extension-package-sets.pytest": "none",
+      "local.source-extension-package-sets.pytest-select-0": "none",
       "local.source-extension-proof-policy.pytest": "none",
       "local.source-extension-proof-policy.pytest-select-0": "none",
       "local.stdlib-intrinsic-contracts.0": "none",
@@ -9802,7 +9809,8 @@
       "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py tests/test_temporary_artifacts.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_import_file.py",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
-      "local.installed-compiler-distribution.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_installed_compiler.py tests/cli/test_installed_runtime.py tests/cli/test_installed_toolchain_rules.py tests/tools/test_release_installed_distribution.py tests/tools/test_release_native_build.py tests/tools/test_release_supply_chain.py",
+      "local.installed-compiler-distribution.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_installed_compiler.py tests/cli/test_installed_runtime.py tests/cli/test_installed_toolchain_rules.py tests/tools/test_release_installed_distribution.py tests/tools/test_release_native_build.py",
+      "local.installed-compiler-distribution.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/tools/test_release_supply_chain.py",
       "local.intrinsic-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_intrinsics.py tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable tests/test_frontend_builtin_call_lowering.py::test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources tests/test_frontend_builtin_call_lowering.py::test_frontend_intrinsic_function_objects_use_runtime_default_authority tests/test_frontend_builtin_call_lowering.py::test_frontend_builtin_func_specs_are_wasm_manifest_backed tests/test_stdlib_intrinsic_registry.py tests/test_stdlib_inspect_coroutine_marking.py tests/cli/test_required_features_reachability.py tests/cli/test_wasm_runtime_exports.py tests/cli/test_cli_lowering_cache_tooling_scope.py::test_unkeyed_edits_keep_the_key_and_keyed_edits_change_it",
       "local.llvm-runtime-abi.0": "python tools/llvm_runtime_abi_audit.py --check",
       "local.llvm-runtime-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_llvm_runtime_abi_audit.py",
@@ -9851,7 +9859,8 @@
       "local.rust-source-scan-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_rust_source_scan.py tests/tools/test_gen_luau_support_matrix.py",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
       "local.rust-toolchain.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_rust_toolchain_contract.py tests/cli/test_backend_manifest_contract.py",
-      "local.source-extension-package-sets.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
+      "local.source-extension-package-sets.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
+      "local.source-extension-package-sets.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 -m 'not slow' tests/cli/test_source_build_environment_probe.py",
       "local.source-extension-proof-policy.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
       "local.source-extension-proof-policy.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift' tests/tools/test_proof_queue.py",
       "local.stdlib-intrinsic-contracts.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
@@ -10455,7 +10464,8 @@
       },
       {
         "command_ids": [
-          "local.source-extension-package-sets.pytest"
+          "local.source-extension-package-sets.pytest",
+          "local.source-extension-package-sets.pytest-select-0"
         ],
         "description": "Source-extension registry, producer, retained inputs, link and publication contracts; proof-policy consumers are selected separately.",
         "gates": [],
@@ -10511,7 +10521,6 @@
           "tests/cli/test_source_extension_manifest_authority.py",
           "tests/cli/test_source_extension_link_requirements.py",
           "tests/cli/test_source_extension_producer.py",
-          "tests/cli/test_source_build_environment_probe.py",
           "tests/cli/test_source_extension_candidate_attestation.py",
           "tests/cli/test_source_extension_candidate_transaction.py",
           "tests/cli/test_source_package_seal.py",
@@ -10529,6 +10538,14 @@
           "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
           "tests/cli/test_source_extension_invocation.py",
           "tests/cli/test_source_extension_compiler_inputs.py"
+        ],
+        "pytest_select": [
+          {
+            "m": "not slow",
+            "targets": [
+              "tests/cli/test_source_build_environment_probe.py"
+            ]
+          }
         ],
         "toolchains": [
           "python",
@@ -11989,7 +12006,8 @@
       },
       {
         "command_ids": [
-          "local.installed-compiler-distribution.pytest"
+          "local.installed-compiler-distribution.pytest",
+          "local.installed-compiler-distribution.pytest-select-0"
         ],
         "description": "Installed executable admission, provenance and complete bundle/wheel consumer projections move together.",
         "gates": [],
@@ -12019,8 +12037,15 @@
           "tests/cli/test_installed_runtime.py",
           "tests/cli/test_installed_toolchain_rules.py",
           "tests/tools/test_release_installed_distribution.py",
-          "tests/tools/test_release_native_build.py",
-          "tests/tools/test_release_supply_chain.py"
+          "tests/tools/test_release_native_build.py"
+        ],
+        "pytest_select": [
+          {
+            "m": "not slow",
+            "targets": [
+              "tests/tools/test_release_supply_chain.py"
+            ]
+          }
         ],
         "toolchains": [
           "python"
@@ -13221,6 +13246,9 @@
       "local.installed-compiler-distribution.pytest": [
         "python"
       ],
+      "local.installed-compiler-distribution.pytest-select-0": [
+        "python"
+      ],
       "local.intrinsic-registry.pytest": [
         "python",
         "rustc",
@@ -13486,6 +13514,10 @@
         "python"
       ],
       "local.source-extension-package-sets.pytest": [
+        "python",
+        "uv"
+      ],
+      "local.source-extension-package-sets.pytest-select-0": [
         "python",
         "uv"
       ],
