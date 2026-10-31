@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from tests.executable_test_support import custody_spelling
+from tests.executable_test_support import custody_spelling, native_executable_donor
 from tests.process_guard_common import run_custody_subject_process
 from tests import proof_queue_owned_roots
 from tools.proof_queue_pkg import (
@@ -653,7 +653,7 @@ def test_extended_windows_environment_tool_reaches_both_consumers(tmp_path):
     from tools.proof_queue_pkg import execution_environment
 
     executable = tmp_path / "selected.exe"
-    shutil.copyfile(sys.executable, executable)
+    shutil.copyfile(native_executable_donor(), executable)
     extended = "\\\\?\\" + str(executable)
     configured = execution_environment._execution_environment_executable_identities(
         {"CC": extended}, cwd=tmp_path

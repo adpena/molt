@@ -145,6 +145,7 @@ def test_installation_seal_preserves_external_links_and_image_alias_topology(tmp
 
 @pytest.mark.skipif(os.name != "posix", reason="actual POSIX mode/bytecode denial")
 @pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.slow
 def test_sealed_image_refuses_real_isolated_bytecode_and_keeps_admission(
     real_published_image, partial
 ):
@@ -191,6 +192,7 @@ def test_sealed_image_refuses_real_isolated_bytecode_and_keeps_admission(
     assert manifest.read_bytes() == before
 
 
+@pytest.mark.slow
 def test_modified_sealed_image_refusal_names_file_and_preserves_attestation(
     real_published_image,
 ):
@@ -208,6 +210,7 @@ def test_modified_sealed_image_refusal_names_file_and_preserves_attestation(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="actual POSIX mode bits")
+@pytest.mark.slow
 def test_sealed_attestation_skips_the_seal_and_refuses_reopened_write_bits(
     real_published_image,
 ):
@@ -544,6 +547,7 @@ def test_selection_preserves_prerelease_identity(selection_image, version):
         )
 
 
+@pytest.mark.slow
 def test_selection_runs_without_site_capture_subprocess_or_full_manifest(
     selection_image,
 ):
@@ -1526,6 +1530,7 @@ def test_development_image_reuse_preserves_exact_host_request(
         parse_target_python_version("3.15")
 
 
+@pytest.mark.slow
 def test_real_tag_capture_keeps_exact_runtime_identity(
     verifier,
 ):

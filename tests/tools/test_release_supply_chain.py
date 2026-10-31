@@ -1377,6 +1377,7 @@ def test_staged_snapshot_preserves_external_index_path_whitespace(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="executable POSIX hook negative control")
+@pytest.mark.slow
 def test_staged_snapshot_does_not_execute_repository_hooks(
     staged_source_repository,
 ) -> None:
