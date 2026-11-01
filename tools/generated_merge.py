@@ -117,11 +117,14 @@ def _git(run_git: GitRunner, *args: str) -> GitResult:
 
 def regenerate(root: Path, tools: tuple[str, ...]) -> tuple[str, ...]:
     """Use the checkout's selected image, as its generator check gate does."""
-    from tools.venv_exec import resolve_venv, venv_env, venv_python
+    from tools.venv_exec import VenvExecError, resolve_venv, venv_env, venv_python
     from molt import checkout_provisioning
 
     if os.environ.get("UV_PROJECT_ENVIRONMENT") or os.environ.get("MOLT_VENV"):
-        image = resolve_venv(repo_root=root)
+        try:
+            image = resolve_venv(repo_root=root)
+        except VenvExecError as exc:
+            raise GeneratedMergeError(str(exc)) from exc
     else:
         try:
             prepared = checkout_provisioning.ensure(
@@ -137,10 +140,14 @@ def regenerate(root: Path, tools: tuple[str, ...]) -> tuple[str, ...]:
     environment = environment.updated(
         {"PYTHONPATH": os.pathsep.join((str(root / "src"), str(root)))}
     )
+    try:
+        selected_python = venv_python(image)
+    except VenvExecError as exc:
+        raise GeneratedMergeError(str(exc)) from exc
     with tempfile.TemporaryDirectory(prefix="molt-generated-merge-") as raw:
         receipt = Path(raw) / "outputs.json"
         command = [
-            str(venv_python(image)),
+            str(selected_python),
             "-B",
             str(root / "tools/generators.py"),
             "merge",
@@ -155,6 +162,7 @@ def regenerate(root: Path, tools: tuple[str, ...]) -> tuple[str, ...]:
             env=environment,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         if result.stdout:
             print(result.stdout, end="", flush=True)
@@ -238,6 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
 
     result = run_git(("merge", "--no-edit", "--", args.ref))

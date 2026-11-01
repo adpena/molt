@@ -648,3 +648,14 @@ def test_landing_generated_failure_keeps_its_error_and_restores_the_candidate(
     assert "injected producer failure after source merge" in candidate.conflicted[0][1]
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
     assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+def test_merge_regeneration_names_an_unavailable_selected_image(tmp_path, monkeypatch):
+    from tools import generated_merge
+
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "missing-image"))
+    with pytest.raises(
+        generated_merge.GeneratedMergeError, match="virtualenv Python not found"
+    ):
+        generated_merge.regenerate(ROOT, ("tools/gen_finding_ids.py",))
