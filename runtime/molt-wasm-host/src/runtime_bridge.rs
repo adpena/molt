@@ -577,17 +577,6 @@ pub(super) fn register_call_indirect_exports(
         .map_err(|_| wasmtime::Error::msg("indirect-call application exports already registered"))
 }
 
-pub(super) fn alloc_results(ty: &FuncType, export_name: &str) -> Result<Vec<Val>> {
-    let mut results = Vec::new();
-    for val_ty in ty.results() {
-        let Some(val) = Val::default_for_ty(&val_ty) else {
-            bail!("unsupported {export_name} return type: {val_ty:?}");
-        };
-        results.push(val);
-    }
-    Ok(results)
-}
-
 #[cfg(test)]
 mod indirect_dispatch_tests {
     use super::*;
