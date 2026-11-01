@@ -118,6 +118,19 @@ runner never reverts. The integrator restores green within about an hour. If tra
 exceed about one landing in five, retain the cases for an owner decision about widening presubmit.
 Observed-input selection and verdict reuse remain deferred stages 4-6, not implemented by this slice.
 
+The compiled runtime-WASM signature oracle resolves the checkout's dev/full Cargo
+plan through `resolve_runtime_wasm_pair_identity`, the pair producer's input-identity
+authority. It reads only `<family digest>.source-build.expected.json`, with the
+receipt role and path owned by `RuntimeWasmExpectedPair.path`, and admits the
+selection against those exact shared/reloc identities. Other candidates' records
+cannot establish this checkout's compiled truth. Missing, substituted or damaged
+candidate evidence fails as `candidate-runtime-wasm-pair-unavailable`; it never
+skips. The local `runtime-wasm-signatures` rule puts the existing atomic pair
+producer before the oracle in the shared-target Cargo dependency chain for both
+presubmit and postsubmit. The WASM CI command depends on that same producer;
+Python-only surface cells no longer claim the compiled obligation. Final preflight
+uses the same identity resolver and receipt path, including the source-build role.
+
 Before execution, `GateConfig.prepare` resolves each selected command to the closed
 `Runnable | Deferred` outcome. A deferred command names its missing declared
 toolchain, pinned asset or foreign portability execution cell and the owning

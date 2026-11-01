@@ -160,90 +160,111 @@ def _parse_wasm_export_signatures(
     return signatures
 
 
-def test_runtime_wasm_export_signatures_match_import_registry() -> None:
-    """Every app-declared runtime import type must equal the runtime export type.
-
-    wasm-ld fails closed on function signature mismatches when the app links
-    against the relocatable runtime, so drift between the manifest static type
-    table and the runtime's compiled export signatures is a guaranteed
-    linked-lane build failure. The canonical runtime artifact root is resolved
-    through Molt's DX path authority so stale repo-local ignored artifacts do
-    not masquerade as compiled truth.
-    """
-    import sys
-
-    sys.path.insert(0, str(ROOT / "src"))
-    sys.path.insert(0, str(ROOT / "tools"))
-    from molt._wasm_abi_generated import (
-        WASM_IMPORT_SIGNATURES,
-        WASM_RUNTIME_IMPORT_EXPORT_NAMES,
+def _checkout_expected_runtime_pair(project_root: Path, runtime_artifact: Path):
+    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
+    from molt.cli.runtime_wasm_build_spec import (
+        _compute_runtime_wasm_build_spec,
+        _resolve_runtime_wasm_cargo_specs,
     )
-    from molt.cli.artifact_state import _build_state_root
     from molt.cli.runtime_wasm_generation import (
         RuntimeWasmExpectedPair,
         RuntimeWasmReceiptRole,
     )
+    from molt.cli.runtime_wasm_pair_build import resolve_runtime_wasm_pair_identity
+
+    # The proof plan's wasm.build.shared-runtime and local prebuild use this
+    # same explicit dev/full coordinate, including resolved Cargo overrides.
+    cargo_profile, error = _resolve_cargo_profile_name("dev", wasm=True)
+    if error is not None:
+        pytest.fail(error)
+
+    def spec(*, reloc: bool):
+        return _compute_runtime_wasm_build_spec(
+            project_root,
+            runtime_artifact.with_name("molt_runtime_reloc.wasm")
+            if reloc
+            else runtime_artifact,
+            reloc=reloc,
+            build_profile="dev",
+            cargo_profile=cargo_profile,
+            simd_enabled=True,
+            freestanding=False,
+            stdlib_profile="full",
+            resolved_modules=None,
+            required_link_features=frozenset(),
+            required_exports=None,
+        )
+
+    shared_spec, reloc_spec = _resolve_runtime_wasm_cargo_specs(
+        project_root,
+        spec(reloc=False),
+        spec(reloc=True),
+        simd_enabled=True,
+        freestanding=False,
+    )
+    identity = resolve_runtime_wasm_pair_identity(project_root, shared_spec, reloc_spec)
+    return RuntimeWasmExpectedPair(
+        identity.shared, identity.reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
+    )
+
+
+def _runtime_signature_generation(project_root: Path):
+    from molt.cli.artifact_state import _build_state_root
     from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
     from molt.cli.runtime_wasm_generation import (
+        RuntimeWasmExpectedPair,
         read_runtime_wasm_generation,
         runtime_wasm_generation_path,
     )
     from molt.dx import development_artifact_env
-    from tools.wasm_abi_gen.manifest import load_manifest
 
     runtime_env = development_artifact_env(
-        ROOT,
+        project_root,
         os.environ,
         session_prefix="wasm-signature",
         create_dirs=False,
     )
     runtime_artifact = _runtime_wasm_artifact_path_from_env(
-        ROOT,
+        project_root,
         "molt_runtime.wasm",
         runtime_env,
     )
-    generation_manifest = runtime_wasm_generation_path(runtime_artifact)
-    if not generation_manifest.exists():
-        pytest.skip(
-            f"{generation_manifest} is a generated build artifact; build the "
-            "WASM runtime pair before running the compiled export-signature gate"
-        )
-    expected_dir = _build_state_root(ROOT) / "runtime_wasm_generations"
-    expected_paths = sorted(expected_dir.glob("*.expected.json"))
-    if not expected_paths:
-        pytest.skip(
-            f"{runtime_artifact} has no trusted expected pair identity; build the "
-            "WASM runtime pair before running the compiled export-signature gate"
-        )
-    matching_expected: list[Path] = []
-    selected_runtime = None
-    for expected_path in expected_paths:
-        try:
-            expected = RuntimeWasmExpectedPair.read(expected_path)
-        except ValueError:
-            continue
-        if expected.receipt_role is not RuntimeWasmReceiptRole.SOURCE_BUILD:
-            continue
-        generation = read_runtime_wasm_generation(
-            generation_manifest,
-            expected_shared_identity=expected.shared,
-            expected_reloc_identity=expected.reloc,
-        )
-        if generation is not None:
-            matching_expected.append(expected_path)
-            selected_runtime = generation.shared
-    if not matching_expected:
-        # The pair an artifact root selects is shared by every checkout of
-        # that root, so another checkout's build can select a pair built from
-        # other inputs; this checkout's pair is then not built, the same
-        # precondition as the two above.
-        pytest.skip(
-            f"{runtime_artifact} matches none of this checkout's expected pairs "
-            "(built from other inputs, or its selection manifest or a member is "
-            "damaged); build this checkout's WASM runtime pair before running "
-            "the compiled export-signature gate"
-        )
-    assert selected_runtime is not None
+    expected = _checkout_expected_runtime_pair(project_root, runtime_artifact)
+    expected_path = expected.path(_build_state_root(project_root))
+    reason = (
+        "candidate-runtime-wasm-pair-unavailable: build this checkout's dev/full "
+        "WASM runtime pair before the compiled export-signature gate "
+        f"(expected {expected_path})"
+    )
+    try:
+        recorded = RuntimeWasmExpectedPair.read(expected_path)
+    except ValueError as exc:
+        pytest.fail(f"{reason}: {exc}")
+    if recorded != expected:
+        pytest.fail(f"{reason}: expected-pair receipt differs from checkout inputs")
+    generation = read_runtime_wasm_generation(
+        runtime_wasm_generation_path(runtime_artifact),
+        expected_shared_identity=expected.shared,
+        expected_reloc_identity=expected.reloc,
+    )
+    if generation is None:
+        pytest.fail(f"{reason}: selection or members do not match checkout inputs")
+    return generation
+
+
+def test_runtime_wasm_export_signatures_match_import_registry() -> None:
+    """Compare compiled exports only with this checkout's input-keyed pair.
+
+    The proof plan builds the dev/full pair first. Missing or damaged candidate
+    evidence fails by name; another checkout's receipt can never satisfy it.
+    """
+    from molt._wasm_abi_generated import (
+        WASM_IMPORT_SIGNATURES,
+        WASM_RUNTIME_IMPORT_EXPORT_NAMES,
+    )
+    from tools.wasm_abi_gen.manifest import load_manifest
+
+    selected_runtime = _runtime_signature_generation(ROOT).shared
     runtime_signatures = _parse_wasm_export_signatures(selected_runtime)
     assert len(runtime_signatures) > 1000, (
         "runtime export signature parse collapsed; the gate would pass vacuously"

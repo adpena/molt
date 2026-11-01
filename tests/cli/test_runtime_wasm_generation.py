@@ -196,6 +196,55 @@ def _publish_pair(
 
 
 @pytest.mark.parametrize(
+    "state", ["both", "other-only", "other-selected", "substituted-receipt"]
+)
+def test_signature_gate_selects_only_checkout_input_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    from molt.cli import artifact_state, runtime_paths
+    from tests import test_wasm_runtime_call_signature_authority as gate
+
+    # Publish two independently identified families into the same selection
+    # root, just as two landing candidates do. The previous candidate's bytes
+    # and expected record are valid, but cannot prove this candidate.
+    other, other_shared, other_reloc = _publish_pair(tmp_path, pair_seed="other")
+    previous_selection = other.manifest.read_bytes()
+    current, shared, reloc = _publish_pair(tmp_path, pair_seed="current")
+    expected = RuntimeWasmExpectedPair(
+        shared, reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
+    )
+    previous = RuntimeWasmExpectedPair(
+        other_shared, other_reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
+    )
+    state_root = tmp_path / "state"
+    previous.write(previous.path(state_root))
+    if state != "other-only":
+        expected.write(expected.path(state_root))
+    if state in {"other-only", "other-selected"}:
+        # A different candidate can displace the root selection after prebuild.
+        current.manifest.write_bytes(previous_selection)
+    if state == "substituted-receipt":
+        previous.write(expected.path(state_root))
+    monkeypatch.setattr(artifact_state, "_build_state_root", lambda _root: state_root)
+    monkeypatch.setattr(
+        runtime_paths,
+        "_runtime_wasm_artifact_path_from_env",
+        lambda *_args: tmp_path / "molt_runtime.wasm",
+    )
+    monkeypatch.setattr(
+        gate, "_checkout_expected_runtime_pair", lambda *_args: expected
+    )
+
+    if state == "both":
+        assert gate._runtime_signature_generation(tmp_path).shared == current.shared
+    else:
+        with pytest.raises(
+            pytest.fail.Exception, match="candidate-runtime-wasm-pair-unavailable"
+        ):
+            gate._runtime_signature_generation(tmp_path)
+
+
+@pytest.mark.parametrize(
     "failure", ["shared-collision", "reloc-collision", "shared-source"]
 )
 def test_runtime_pair_staging_reaps_only_successfully_created_files(

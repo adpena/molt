@@ -1245,7 +1245,7 @@ def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
         captured = _test_pair_identity()
         monkeypatch.setattr(
             runtime_wasm_pair_build,
-            "_resolve_runtime_wasm_pair_identity",
+            "resolve_runtime_wasm_pair_identity",
             lambda *_a, **_k: captured,
         )
         monkeypatch.setattr(

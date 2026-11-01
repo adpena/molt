@@ -776,6 +776,7 @@
         "vendor/rust/regalloc2/**",
         "tests/test_wasm_runner_table_base.py/**",
         "tests/cli/test_cli_import_collection.py/**",
+        "tests/test_wasm_runtime_call_signature_authority.py/**",
         "tests/test_wasm_startup_failures.py/**",
         "tests/test_wasm_optimization_imported_memory.py/**",
         "tests/test_generate_worker.py/**",
@@ -4127,6 +4128,41 @@
         "tools/venv_exec.py",
         "python3",
         "-m",
+        "pytest",
+        "-q"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.shared-runtime"
+      ],
+      "family": "wasm",
+      "id": "wasm.test.runtime-signatures",
+      "pytest": [
+        "tests/test_wasm_runtime_call_signature_authority.py"
+      ],
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "molt.cli",
         "internal-runtime-wasm-build",
         "--build-profile",
@@ -6413,7 +6449,6 @@
         "tests/test_wasm_pickle_protocol01.py",
         "tests/test_wasm_print_keywords.py",
         "tests/test_wasm_reserved_callable_arity.py",
-        "tests/test_wasm_runtime_call_signature_authority.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
         "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
@@ -6784,7 +6819,6 @@
         "tests/test_wasm_pickle_protocol01.py",
         "tests/test_wasm_print_keywords.py",
         "tests/test_wasm_reserved_callable_arity.py",
-        "tests/test_wasm_runtime_call_signature_authority.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
         "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
@@ -9292,7 +9326,7 @@
         "required_job_seconds": 19980,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 19800,
-          "python-tests": 420,
+          "python-tests": 480,
           "wasm-runtime": 450
         }
       }
@@ -9717,6 +9751,8 @@
       "local.runtime-vfs.0": "shared",
       "local.runtime-vfs.1": "shared",
       "local.runtime-vfs.pytest": "none",
+      "local.runtime-wasm-signatures.0": "shared",
+      "local.runtime-wasm-signatures.pytest": "shared",
       "local.rust-clippy-changed.0": "shared",
       "local.rust-source-scan-consumers.pytest": "none",
       "local.rust-toolchain.0": "none",
@@ -9872,6 +9908,8 @@
       "local.runtime-vfs.0": "cargo clippy --config 'build.warnings=\"deny\"' --locked -p molt-runtime-vfs --all-targets --all-features",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_browser_vfs.py",
+      "local.runtime-wasm-signatures.0": "python -m molt.cli internal-runtime-wasm-build --build-profile dev --stdlib-profile full --kind both --json",
+      "local.runtime-wasm-signatures.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_wasm_runtime_call_signature_authority.py",
       "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
       "local.rust-source-scan-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_rust_source_scan.py tests/tools/test_gen_luau_support_matrix.py",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
@@ -11307,6 +11345,42 @@
         ],
         "toolchains": [
           "python"
+        ]
+      },
+      {
+        "cargo_target_access": "shared",
+        "command_ids": [
+          "local.runtime-wasm-signatures.0",
+          "local.runtime-wasm-signatures.pytest"
+        ],
+        "description": "Build and compare only the candidate's dev/full runtime WASM input family.",
+        "gates": [
+          "python -m molt.cli internal-runtime-wasm-build --build-profile dev --stdlib-profile full --kind both --json"
+        ],
+        "globs": [
+          "runtime/**",
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          ".cargo/**",
+          "src/molt/cli/runtime_*.py",
+          "src/molt/_wasm*.py",
+          "src/molt/cli/cargo_*.py",
+          "src/molt/cli/wasm_link_args.py",
+          "tests/test_wasm_runtime_call_signature_authority.py"
+        ],
+        "name": "runtime-wasm-signatures",
+        "pytest": [
+          "tests/test_wasm_runtime_call_signature_authority.py"
+        ],
+        "toolchains": [
+          "python",
+          "uv",
+          "rustc",
+          "cargo",
+          "wasm-ld",
+          "wasm-tools",
+          "wasi-clang"
         ]
       },
       {
@@ -13544,6 +13618,26 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.runtime-wasm-signatures.0": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ],
+      "local.runtime-wasm-signatures.pytest": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
       ],
       "local.rust-clippy-changed.0": [
         "python",

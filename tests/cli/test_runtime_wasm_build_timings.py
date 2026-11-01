@@ -120,7 +120,7 @@ def test_exact_pair_build_records_pre_and_post_identity_phases() -> None:
     from molt.cli import runtime_wasm_pair_build
 
     identity_source = inspect.getsource(
-        runtime_wasm_pair_build._resolve_runtime_wasm_pair_identity
+        runtime_wasm_pair_build.resolve_runtime_wasm_pair_identity
     )
     prebuild_source = inspect.getsource(
         runtime_wasm_pair_build._prepare_runtime_wasm_pair_build
