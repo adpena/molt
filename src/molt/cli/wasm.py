@@ -261,6 +261,7 @@ def _generate_split_worker_js(
                 "runtime_execution_enter",
                 "runtime_execution_leave",
                 "runtime_shutdown",
+                "molt_set_wasm_table_base",
             )
         )
     )
@@ -310,6 +311,8 @@ const {
   deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callableTableFromModule,
+  prepareWasmTableAdmission,
+  publishWasmTableAdmission,
   callableTableSignature,
   runtimeExceptionPending,
   verifyCallableTableEntries,
@@ -317,7 +320,13 @@ const {
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
 const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
-const appCallableTable = callableTableFromModule(appModule, "app wasm");
+const tableAdmission = prepareWasmTableAdmission({
+  module: appModule,
+  manifest: { ...deploymentManifest, wasm_table_base: __MOLT_SHARED_TABLE_BASE__ },
+  runtimeExportNames: __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__,
+  label: "app wasm",
+});
+const appCallableTable = tableAdmission.callableTable;
 
 // The ABI generator owns both protocols. Allocate immutable views once per module.
 const GUEST_ERRNO = Object.freeze(__MOLT_SYNTHETIC_ERRNO__);
@@ -389,8 +398,8 @@ export default {
 
     const guestEnvironment = deploymentLaunchEnvironment(deploymentManifest);
     guestEnvironment.MOLT_EXECUTION_TARGET = "cloudflare";
-    if (__MOLT_SHARED_TABLE_BASE__ !== null) {
-      guestEnvironment.MOLT_WASM_TABLE_BASE = String(__MOLT_SHARED_TABLE_BASE__);
+    if (tableAdmission.base !== null) {
+      guestEnvironment.MOLT_WASM_TABLE_BASE = String(tableAdmission.base);
     }
     if (queryString) guestEnvironment.QUERY_STRING = queryString;
     const envVars = Object.entries(guestEnvironment).map(([name, value]) => `${name}=${value}`);
@@ -949,23 +958,23 @@ export default {
     };
 
     const remapDefaultAppRuntimeSharedIdx = (idx) => {
-      if (__MOLT_SHARED_TABLE_BASE__ === null || __MOLT_SHARED_TABLE_BASE__ <= DEFAULT_WASM_APP_TABLE_BASE) {
+      if (tableAdmission.base === null || tableAdmission.base <= DEFAULT_WASM_APP_TABLE_BASE) {
         return idx;
       }
       if (
         idx >= DEFAULT_WASM_APP_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
         idx < DEFAULT_WASM_APP_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
       ) {
-        return idx - DEFAULT_WASM_APP_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
+        return idx - DEFAULT_WASM_APP_TABLE_BASE + tableAdmission.base;
       }
       return idx;
     };
 
     const reservedRuntimeCallableForTableIndex = (idx) => {
-      if (!Number.isInteger(idx) || __MOLT_SHARED_TABLE_BASE__ === null) {
+      if (!Number.isInteger(idx) || tableAdmission.base === null) {
         return null;
       }
-      const directStart = __MOLT_SHARED_TABLE_BASE__ + RESERVED_RUNTIME_CALLABLE_BASE;
+      const directStart = tableAdmission.base + RESERVED_RUNTIME_CALLABLE_BASE;
       const trampolineStart = directStart + reservedRuntimeCallables.length;
       let offset = idx - directStart;
       let trampoline = false;
@@ -1254,15 +1263,13 @@ export default {
         env: { ...hostEnv, __indirect_function_table: sharedTable },
       };
       rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
+      publishWasmTableAdmission(tableAdmission, rtInstance);
       lifetime = createRuntimeLifetime(rtInstance, runtimeImportExportNames, () => {
         if (runtimeExceptionPending(rtInstance)) {
           throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception");
         }
       });
       lifetime.admit();
-      if (__MOLT_SHARED_TABLE_BASE__ !== null && rtInstance.exports.molt_set_wasm_table_base) {
-        rtInstance.exports.molt_set_wasm_table_base(BigInt(__MOLT_SHARED_TABLE_BASE__));
-      }
       verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.

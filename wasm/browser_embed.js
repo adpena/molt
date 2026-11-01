@@ -41,6 +41,8 @@ const {
   parseWasmImports: parseMoltWasmImports,
   planReservedRuntimeDispatch,
   requireWasmCallableTable,
+  prepareWasmTableAdmission,
+  publishWasmTableAdmission,
   remapDefaultAppRuntimeSharedTableIndex,
   runtimeCallableTableLayoutFromAbi,
   runtimeExceptionPending,
@@ -811,7 +813,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
   const stubZero = () => 0;
   const stubZeroI64 = () => 0n;
   const gpuHost = createBrowserGpuHost(state, options);
-  const sharedTableBase = manifest?.wasm_table_base ?? null;
+  const sharedTableBase = options.tableAdmission.base;
   const tableLayout = browserAbi.tableLayout;
   const appCallableTable = options.appCallableTable;
   const runtimeCallableTable = options.runtimeCallableTable;
@@ -1052,9 +1054,12 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     verifyManifestModuleBytes(appBytes, manifest?.modules?.app, 'app wasm', appUrl, globalThis.crypto, manifestUrl, moduleUrl),
     verifyManifestModuleBytes(runtimeBytes, manifest?.modules?.runtime, 'runtime wasm', runtimeUrl, globalThis.crypto, manifestUrl, moduleUrl),
   ]);
+  const tableAdmission = prepareWasmTableAdmission({
+    buffer: appBytes, manifest, label: 'app wasm',
+  });
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);
-  const appCallableTable = requireWasmCallableTable(appBytes, 'app wasm');
+  const appCallableTable = tableAdmission.callableTable;
   const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
   verifyCallableTableManifestSummary(
     appCallableTable,
@@ -1100,6 +1105,7 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     ...options,
     appCallableTable,
     runtimeCallableTable,
+    tableAdmission,
   });
   const runtimeWasi = buildMinimalWasi(state, options.log || null, environmentBytes, environmentSize);
   const appWasi = buildMinimalWasi(appHostState, options.log || null, environmentBytes, environmentSize);
@@ -1115,6 +1121,7 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     installWasmTagImports(runtimeImportObject, runtimeImports);
     runtimeInstance = await WebAssembly.instantiate(runtimeModule, runtimeImportObject);
     state.runtimeInstance = runtimeInstance;
+    publishWasmTableAdmission(tableAdmission, runtimeInstance);
     lifetime = createRuntimeLifetime(runtimeInstance, manifest?.abi?.runtime_imports?.export_names, () => {
       if (runtimeExceptionPending(runtimeInstance)) {
         throw new Error(pendingRuntimeExceptionMessage(runtimeInstance, memory) ||
@@ -1122,12 +1129,6 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
       }
     });
     lifetime.admit();
-    if (manifest.wasm_table_base !== null && manifest.wasm_table_base !== undefined) {
-      const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
-      if (typeof setTableBase === 'function') {
-        setTableBase(BigInt(manifest.wasm_table_base));
-      }
-    }
     verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
     const appModule = await WebAssembly.compile(appBytes);
     const moltNative = createMoltNativeCallableImports(appHostState, appImports, {

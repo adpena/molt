@@ -170,14 +170,14 @@ const {
   callRuntimeByteSpanOutImport,
   callRuntimeObjectArrayArgImport,
   callWithWasmSignature,
-  extractWasmTableBase,
+  prepareWasmTableAdmission,
+  publishWasmTableAdmission,
   installWasmTagImports,
   normalizeValueForKind,
   parseWasmImports,
   planReservedRuntimeDispatch,
   requireWasmCallableTable,
   remapDefaultAppRuntimeSharedTableIndex,
-  resolveWasmTableBase,
   runtimeCallableTableLayout,
   callableTableSignature,
   runtimeExceptionPending,
@@ -3611,23 +3611,18 @@ export const loadMoltWasm = async (options = {}) => {
         globalThis.crypto,
         manifestUrl,
       );
-      const imports = parseWasmImports(linkedBytes);
-      const hasRuntime = imports.funcImports.some((imp) => imp.module === 'molt_runtime');
-      if (hasRuntime) {
-        throw new Error('linked browser module still imports molt_runtime');
-      }
     }
 
     if (linkedBytes) {
-      const detectedWasmTableBase = resolveWasmTableBase({
-        manifest: runtimeManifest,
-        extracted: extractWasmTableBase(linkedBytes),
+      const tableAdmission = prepareWasmTableAdmission({
+        buffer: linkedBytes, manifest: runtimeManifest,
+        runtimeExportNames: runtimeImportAbi.export_names, label: 'linked wasm',
       });
-      if (!Number.isInteger(detectedWasmTableBase) || detectedWasmTableBase <= 0) {
-        throw new Error('linked wasm missing a positive callable table base');
-      }
-      state.wasmTableBase = detectedWasmTableBase;
+      state.wasmTableBase = tableAdmission.base;
       const linkedImports = parseWasmImports(linkedBytes);
+      if (linkedImports.funcImports.some((imp) => imp.module === 'molt_runtime')) {
+        throw new Error('linked browser module still imports molt_runtime');
+      }
       const linkedModule = await WebAssembly.compile(linkedBytes);
       const linkedFunctionExports = new Set(
         WebAssembly.Module.exports(linkedModule)
@@ -3652,7 +3647,7 @@ export const loadMoltWasm = async (options = {}) => {
           `linked wasm self-import manifest mismatch: declared=${JSON.stringify(declaredLinkedSelfImports)} actual=${JSON.stringify(actualLinkedSelfImports)}`,
         );
       }
-      const linkedCallableTable = requireWasmCallableTable(linkedBytes, 'linked wasm');
+      const linkedCallableTable = tableAdmission.callableTable;
       const linkedCallIndirectNames = linkedImports.funcImports
         .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
         .map((imp) => imp.name);
@@ -3688,24 +3683,10 @@ export const loadMoltWasm = async (options = {}) => {
       // Linking relocates the app's reserved callable region. Publish that
       // execution state before runtime admission or any module initializer;
       // the runtime's default base addresses unrelated Rust table entries.
-      const setTableBaseName = runtimeImportAbi.export_names?.molt_set_wasm_table_base;
-      const setTableBase = instance.exports[setTableBaseName];
-      if (typeof setTableBase !== 'function') {
-        throw new Error('linked wasm missing canonical molt_set_wasm_table_base export');
-      }
-      setTableBase(BigInt(detectedWasmTableBase));
+      publishWasmTableAdmission(tableAdmission, instance);
       runtimeLifetime(instance, runtimeImportAbi).admit();
       for (const name of linkedCallIndirectNames) {
-        let fn = instance.exports[name];
-        if (typeof fn !== 'function') {
-          const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
-          const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
-          const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
-          if (arityRaw) {
-            const arity = Number.parseInt(arityRaw, 10);
-            fn = instance.exports[`molt_call_indirect${arity}`];
-          }
-        }
+        const fn = instance.exports[name];
         if (typeof fn !== 'function') {
           throw new Error(`linked wasm missing ${name} export`);
         }
@@ -3766,9 +3747,13 @@ export const loadMoltWasm = async (options = {}) => {
       globalThis.crypto,
       manifestUrl,
     );
+    const tableAdmission = prepareWasmTableAdmission({
+      buffer: wasmBytes, manifest: runtimeManifest,
+      runtimeExportNames: runtimeImportAbi.export_names, label: 'app wasm',
+    });
     const outputImports = parseWasmImports(wasmBytes);
     const runtimeImports = parseWasmImports(runtimeBytes);
-    const appCallableTable = requireWasmCallableTable(wasmBytes, 'app wasm');
+    const appCallableTable = tableAdmission.callableTable;
     const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
     verifyCallableTableManifestSummary(
       appCallableTable,
@@ -3784,10 +3769,7 @@ export const loadMoltWasm = async (options = {}) => {
       runtimeManifest,
       parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
     );
-    const detectedWasmTableBase = resolveWasmTableBase({
-      manifest: runtimeManifest,
-      extracted: extractWasmTableBase(wasmBytes),
-    });
+    const detectedWasmTableBase = tableAdmission.base;
     state.wasmTableBase = detectedWasmTableBase;
     if (!outputImports.table || !runtimeImports.table || !runtimeImports.memory) {
       throw new Error('Direct-link wasm requires split-runtime shared table plus runtime memory imports');
@@ -3887,13 +3869,8 @@ export const loadMoltWasm = async (options = {}) => {
     const runtimeModule = await WebAssembly.instantiate(runtimeBytes, runtimeImportObject);
     const runtimeInstance = runtimeModule.instance;
     state.runtimeInstance = runtimeInstance;
+    publishWasmTableAdmission(tableAdmission, runtimeInstance);
     runtimeLifetime(runtimeInstance, runtimeImportAbi).admit();
-    if (detectedWasmTableBase !== null) {
-      const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
-      if (typeof setTableBase === 'function') {
-        setTableBase(BigInt(detectedWasmTableBase));
-      }
-    }
     const outputImportObject = {
       molt_runtime: buildRuntimeImports(outputImports, runtimeInstance, {
         runtimeImportAbi,

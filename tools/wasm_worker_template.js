@@ -379,6 +379,10 @@ export default {
                     throw new Error('worker requires its compiler-owned fixed lexical Wasm Module');
                 }
             }
+            const tableAdmission = globalThis.MoltWasmLoaderBridge.prepareWasmTableAdmission({
+                module, manifest: deploymentManifest, runtimeExportNames: lifetimeExports,
+                label: 'linked wasm',
+            });
             const instance = await WebAssembly.instantiate(
                 module, { env: hostEnv, wasi_snapshot_preview1: wasiImports }
             );
@@ -387,6 +391,7 @@ export default {
             // use them (the WASM module owns memory in Molt builds).
             state.memory = instance.exports.memory || null;
             state.table = instance.exports.__indirect_function_table || null;
+            globalThis.MoltWasmLoaderBridge.publishWasmTableAdmission(tableAdmission, instance);
 
             const lifetime = createRuntimeLifetime(instance, lifetimeExports, () => {
                 const pending = instance.exports.molt_exception_pending;

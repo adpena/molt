@@ -5,7 +5,7 @@ const dns = require('dns');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn, execFileSync } = require('child_process');
+const { spawn } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
 const { createRuntimeLifetime, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError } = require('./runtime_lifecycle.js');
 const {
@@ -25,12 +25,12 @@ const {
   installWasmTagImports,
   normalizeValueForKind,
   parseWasmMetadata,
-  parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge,
   parseWasmImports,
   planReservedRuntimeDispatch,
   requireWasmCallableTable,
+  prepareWasmTableAdmission,
+  publishWasmTableAdmission,
   remapDefaultAppRuntimeSharedTableIndex,
-  resolveWasmTableBase,
   runtimeCallableTableLayout,
   callableTableSignature,
   runtimeExceptionPending,
@@ -88,6 +88,7 @@ let wasi = null;
 let wasiImport = null;
 let wasiExitCode = null;
 let detectedWasmTableBase = null;
+let tableAdmission = null;
 let implicitBundlePreopen = null;
 let runnerGuestArgs = [];
 let guestStderrCapture = null;
@@ -270,10 +271,12 @@ const initWasmAssets = (manifestPath) => {
   linkedPath = resolved.linkedPath;
   linkedBuffer = resolved.linkedBuffer;
   const tableBaseProbe = linkedBuffer || wasmBuffer;
-  detectedWasmTableBase = resolveWasmTableBase({
-    manifest: runtimeManifest,
-    extracted: extractWasmTableBase(tableBaseProbe),
+  tableAdmission = prepareWasmTableAdmission({
+    buffer: tableBaseProbe, manifest: runtimeManifest,
+    runtimeExportNames: runtimeImportExportNames,
+    label: linkedBuffer ? 'linked wasm' : 'app wasm',
   });
+  detectedWasmTableBase = tableAdmission.base;
   runtimePath = resolved.runtimePath;
   runtimeBuffer = resolved.runtimeBuffer;
   wasmEnv = deploymentLaunchEnvironment(runtimeManifest, process.env);
@@ -5020,56 +5023,6 @@ const processHostPoll = () => {
   return 0;
 };
 
-const parseWasmExportFunctionSignatures = (buffer, sourcePath = null) => {
-  const tryObjdump = () => {
-    if (!sourcePath) {
-      return {};
-    }
-    let text;
-    try {
-      text = execFileSync('wasm-objdump', ['-x', sourcePath], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch {
-      return {};
-    }
-    const types = {};
-    for (const line of text.split(/\r?\n/)) {
-      const typeMatch = /^\s*- type\[(\d+)\] \((.*)\) -> (.+)$/.exec(line);
-      if (typeMatch) {
-        const idx = Number(typeMatch[1]);
-        const rawParams = typeMatch[2].trim();
-        const rawResult = typeMatch[3].trim();
-        types[idx] = {
-          params: rawParams ? rawParams.split(/,\s*/).filter(Boolean) : [],
-          result:
-            rawResult === 'nil' || rawResult.startsWith('(') ? null : rawResult,
-        };
-        continue;
-      }
-    }
-    const signatures = {};
-    for (const line of text.split(/\r?\n/)) {
-      const exportMatch = /^\s*- func\[\d+\] sig=(\d+) <[^>]*> -> \"([^\"]+)\"$/.exec(line);
-      if (!exportMatch) {
-        continue;
-      }
-      const typeIdx = Number(exportMatch[1]);
-      const name = exportMatch[2];
-      if (types[typeIdx]) {
-        signatures[name] = types[typeIdx];
-      }
-    }
-    return signatures;
-  };
-
-  try {
-    return parseWasmExportFunctionSignaturesFromBridge(buffer);
-  } catch {
-    return tryObjdump();
-  }
-};
 
 let outputImports = null;
 let runtimeImportsDesc = null;
@@ -5366,7 +5319,7 @@ const runDirectLink = async () => {
       'WASM output is missing shared memory/table imports; rebuild with the updated toolchain or use a linked artifact.'
     );
   }
-  const outputCallableTable = requireWasmCallableTable(wasmBuffer, 'output wasm');
+  const outputCallableTable = tableAdmission.callableTable;
   const runtimeCallableTable = requireWasmCallableTable(runtimeBuffer, 'runtime wasm');
   const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
@@ -5544,15 +5497,10 @@ const runDirectLink = async () => {
   traceMark('direct:runtime_instantiate:completed');
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
+  publishWasmTableAdmission(tableAdmission, runtimeInst);
   runtimeLifetime(runtimeInst).admit();
   if (traceRun) {
     console.error('[molt wasm] direct: runtime instantiated');
-  }
-  if (detectedWasmTableBase !== null) {
-    const setTableBase = runtimeInst.exports.molt_set_wasm_table_base;
-    if (typeof setTableBase === 'function') {
-      setTableBase(BigInt(detectedWasmTableBase));
-    }
   }
   verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
   traceTableSlot(table, 'after-runtime-instantiate');
@@ -5636,7 +5584,7 @@ const runLinked = async () => {
   if (!linkedBuffer) {
     throw new Error(`Linked wasm not found at ${linkedPath}`);
   }
-  const linkedCallableTable = requireWasmCallableTable(linkedBuffer, 'linked wasm');
+  const linkedCallableTable = tableAdmission.callableTable;
   const linkedImports = parseWasmImports(linkedBuffer);
   const hasRuntimeImports = linkedImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
@@ -5762,6 +5710,7 @@ const runLinked = async () => {
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
   traceMark('linked:instantiate:completed');
   runtimeInstance = linkedModule.instance;
+  publishWasmTableAdmission(tableAdmission, runtimeInstance);
   runtimeLifetime(runtimeInstance).admit();
   const { molt_main } = linkedModule.instance.exports;
   if (typeof molt_main !== 'function') {

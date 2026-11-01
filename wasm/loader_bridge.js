@@ -70,6 +70,9 @@
         throw new Error('Unexpected EOF while reading varuint');
       }
       const byte = view[pos++];
+      if (shift === 28 && (byte & 0xf0) !== 0) {
+        throw new Error('Overflow while reading varuint32');
+      }
       result |= (byte & 0x7f) << shift;
       if ((byte & 0x80) === 0) {
         break;
@@ -208,96 +211,93 @@
   };
 
   const extractWasmTableBase = (buffer) => {
-    if (!buffer) return null;
-    try {
-      const bytes = new Uint8Array(buffer);
-      if (bytes.length < 8) {
-        return null;
-      }
-      let offset = 8;
-      const activeTableBases = [];
-      let callableTableLayout = null;
-      while (offset < bytes.length) {
-        const sectionId = bytes[offset++];
-        const sizeRes = readVarUint(bytes, offset);
-        const sectionSize = sizeRes.value;
-        offset = sizeRes.offset;
-        const sectionEnd = offset + sectionSize;
-        if (sectionEnd > bytes.length) {
-          return null;
-        }
-        if (sectionId === 0) {
-          const name = readString(bytes, offset);
-          if (name.value === CALLABLE_TABLE_LAYOUT_SECTION_NAME) {
-            if (callableTableLayout !== null) {
-              throw new Error('Duplicate callable-table layout publication');
-            }
-            callableTableLayout = parseCallableTableLayoutPayload(
-              bytes,
-              name.offset,
-              sectionEnd,
-            );
-          }
-          offset = sectionEnd;
-        } else if (sectionId === 9) {
-          let count;
-          ({ value: count, offset } = readVarUint(bytes, offset));
-          for (let idx = 0; idx < count; idx += 1) {
-            let flags;
-            ({ value: flags, offset } = readVarUint(bytes, offset));
-            const usesExpressions = (flags & 0x04) !== 0;
-            const isActive = flags === 0 || flags === 2 || flags === 4 || flags === 6;
-            if (flags === 2 || flags === 6) {
-              ({ offset } = readVarUint(bytes, offset));
-            }
-            if (isActive) {
-              const expr = readConstExprI32(bytes, offset);
-              offset = expr.offset;
-              if (flags === 2 || flags === 3) {
-                offset += 1;
-              } else if (flags === 6 || flags === 7 || flags === 5) {
-                offset += 1;
-              }
-              if (Number.isFinite(expr.value) && expr.value > 0) {
-                activeTableBases.push(expr.value);
-              }
-            } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
-              offset += 1;
-            } else {
-              throw new Error(`Unsupported element segment flags ${flags}`);
-            }
-            offset = skipVec(
-              bytes,
-              offset,
-              usesExpressions
-                ? (view, pos) => readConstExprI32(view, pos).offset
-                : (view, pos) => readVarUint(view, pos).offset,
-            );
-          }
-        } else {
-          offset = sectionEnd;
-        }
-        if (offset !== sectionEnd && sectionId !== 10) {
-          offset = sectionEnd;
-        }
-      }
-
-      if (callableTableLayout) {
-        return callableTableLayout.fixedPrefixLen > 0
-          ? callableTableLayout.fixedPrefixBase
-          : callableTableLayout.finalizedAppBase;
-      }
-      if (activeTableBases.length > 0) {
-        const appActiveTableBases = activeTableBases.filter((base) => base > 1);
-        if (appActiveTableBases.length > 0) {
-          return Math.min(...appActiveTableBases);
-        }
-        return Math.min(...activeTableBases);
-      }
-      return null;
-    } catch {
-      return null;
+    const bytes = new Uint8Array(buffer);
+    const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (bytes.length < 8 || header.getUint32(0, true) !== WASM_MAGIC ||
+        header.getUint32(4, true) !== WASM_VERSION) {
+      throw new Error('Invalid WASM header for callable-table layout');
     }
+    let offset = 8;
+    const activeTableBases = [];
+    let callableTableLayout = null;
+    while (offset < bytes.length) {
+      const sectionId = bytes[offset++];
+      const sizeRes = readVarUint(bytes, offset);
+      const sectionSize = sizeRes.value;
+      offset = sizeRes.offset;
+      const sectionEnd = offset + sectionSize;
+      if (sectionEnd > bytes.length) {
+        throw new Error('Unexpected EOF in callable-table layout section');
+      }
+      if (sectionId === 0) {
+        const name = readString(bytes, offset);
+        if (name.value === CALLABLE_TABLE_LAYOUT_SECTION_NAME) {
+          if (callableTableLayout !== null) {
+            throw new Error('Duplicate callable-table layout publication');
+          }
+          callableTableLayout = parseCallableTableLayoutPayload(
+            bytes.subarray(name.offset, sectionEnd),
+            0,
+            sectionEnd - name.offset,
+          );
+        }
+        offset = sectionEnd;
+      } else if (sectionId === 9) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let idx = 0; idx < count; idx += 1) {
+          let flags;
+          ({ value: flags, offset } = readVarUint(bytes, offset));
+          const usesExpressions = (flags & 0x04) !== 0;
+          const isActive = flags === 0 || flags === 2 || flags === 4 || flags === 6;
+          if (flags === 2 || flags === 6) {
+            ({ offset } = readVarUint(bytes, offset));
+          }
+          if (isActive) {
+            const expr = readConstExprI32(bytes, offset);
+            offset = expr.offset;
+            if (flags === 2 || flags === 3) {
+              offset += 1;
+            } else if (flags === 6 || flags === 7 || flags === 5) {
+              offset += 1;
+            }
+            if (Number.isFinite(expr.value) && expr.value > 0) {
+              activeTableBases.push(expr.value);
+            }
+          } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
+            offset += 1;
+          } else {
+            throw new Error(`Unsupported element segment flags ${flags}`);
+          }
+          offset = skipVec(
+            bytes,
+            offset,
+            usesExpressions
+              ? (view, pos) => readConstExprI32(view, pos).offset
+              : (view, pos) => readVarUint(view, pos).offset,
+          );
+        }
+      } else {
+        offset = sectionEnd;
+      }
+      if (offset !== sectionEnd) {
+        throw new Error('Malformed callable-table layout section bounds');
+      }
+    }
+
+    if (callableTableLayout) {
+      return callableTableLayout.fixedPrefixLen > 0
+        ? callableTableLayout.fixedPrefixBase
+        : callableTableLayout.finalizedAppBase;
+    }
+    if (activeTableBases.length > 0) {
+      const appActiveTableBases = activeTableBases.filter((base) => base > 1);
+      if (appActiveTableBases.length > 0) {
+        return Math.min(...appActiveTableBases);
+      }
+      return Math.min(...activeTableBases);
+    }
+    return null;
   };
 
   const wasmTableBaseFromManifest = (manifest) => {
@@ -768,6 +768,76 @@
       throw new Error(`${label} is missing required ${CALLABLE_TABLE_SECTION_NAME} section`);
     }
     return callableTable;
+  };
+
+  /** @typedef {{kind: 'empty', base: null, callableTable: object} |
+   * {kind: 'publish', base: number, exportName: string, callableTable: object}} WasmTableAdmission */
+
+  // The attestation, not the presence of a table or a setter, decides whether
+  // execution needs a reserved callable region. Compiled-module consumers use
+  // the same layout publication as byte consumers (Workers import Modules).
+  const prepareWasmTableAdmission = ({
+    buffer = null, module = null, manifest = null,
+    runtimeExportNames = manifest?.abi?.runtime_imports?.export_names,
+    label = 'wasm',
+  }) => {
+    let callableTable;
+    let extracted;
+    try {
+      if (module !== null) {
+        const sections = WebAssembly.Module.customSections(module, CALLABLE_TABLE_SECTION_NAME);
+        if (sections.length === 0) {
+          throw new Error('missing callable-table attestation');
+        }
+        callableTable = callableTableFromModule(module, label);
+        const layouts = WebAssembly.Module.customSections(module, CALLABLE_TABLE_LAYOUT_SECTION_NAME);
+        if (layouts.length > 1) throw new Error('Duplicate callable-table layout publication');
+        extracted = null;
+        if (layouts.length === 1) {
+          const view = new Uint8Array(layouts[0]);
+          const layout = parseCallableTableLayoutPayload(view, 0, view.length);
+          extracted = layout.fixedPrefixLen > 0 ? layout.fixedPrefixBase : layout.finalizedAppBase;
+        }
+      } else {
+        callableTable = parseWasmMetadata(buffer, {
+          exportFunctionSignatures: false, label,
+        }).callableTable;
+        if (callableTable === null) throw new Error('missing callable-table attestation');
+        extracted = extractWasmTableBase(buffer);
+      }
+    } catch (error) {
+      const missing = error.message === 'missing callable-table attestation';
+      throw new Error(`${missing ? 'MOLT_WASM_TABLE_ATTESTATION_MISSING' : 'MOLT_WASM_TABLE_ATTESTATION_MALFORMED'}: ${label}: ${error.message}`);
+    }
+    if (callableTable.entries.length === 0) {
+      return Object.freeze({ kind: 'empty', base: null, callableTable });
+    }
+    const base = resolveWasmTableBase({ manifest, extracted });
+    if (!Number.isInteger(base) || base <= 0) {
+      throw new Error(`MOLT_WASM_TABLE_BASE_REQUIRED: ${label} needs a positive callable table base`);
+    }
+    const exportName = runtimeExportNames?.molt_set_wasm_table_base;
+    if (typeof exportName !== 'string' || exportName.length === 0) {
+      throw new Error(`MOLT_WASM_TABLE_EXPORT_REQUIRED: ${label} ABI must name canonical molt_set_wasm_table_base export`);
+    }
+    return Object.freeze({ kind: 'publish', base, exportName, callableTable });
+  };
+
+  // Call immediately after runtime instantiation, before lifetime admission or
+  // WASI/libc/app initialization. Empty attestations deliberately publish nothing.
+  const publishWasmTableAdmission = (admission, instance) => {
+    switch (admission.kind) {
+      case 'empty': return;
+      case 'publish': {
+        const setter = instance.exports[admission.exportName];
+        if (typeof setter !== 'function') {
+          throw new Error(`MOLT_WASM_TABLE_EXPORT_REQUIRED: missing canonical molt_set_wasm_table_base export ${admission.exportName}`);
+        }
+        setter(BigInt(admission.base));
+        return;
+      }
+      default: throw new Error('Invalid WASM table admission outcome');
+    }
   };
 
   const parseWasmImports = (buffer, options = {}) =>
@@ -1455,9 +1525,10 @@
     parseWasmExportFunctionSignatures,
     parseWasmImports,
     requireWasmCallableTable,
+    prepareWasmTableAdmission,
+    publishWasmTableAdmission,
     planReservedRuntimeDispatch,
     remapDefaultAppRuntimeSharedTableIndex,
-    resolveWasmTableBase,
     reservedRuntimeCallablesFromManifest,
     runtimeCallableTableLayout,
     runtimeCallableTableLayoutFromAbi,

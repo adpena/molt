@@ -417,7 +417,8 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
     assert 'import "./callable_table_abi_generated.js";' in content
     assert 'import "./loader_bridge.js";' in content
     assert 'callableTableFromModule(runtimeModule, "runtime wasm")' in content
-    assert 'callableTableFromModule(appModule, "app wasm")' in content
+    assert "const tableAdmission = prepareWasmTableAdmission({" in content
+    assert "const appCallableTable = tableAdmission.callableTable;" in content
     assert (
         'verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");'
         in content
@@ -707,6 +708,7 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         "runtime_execution_enter": "molt_runtime_execution_enter",
         "runtime_execution_leave": "molt_runtime_execution_leave",
         "runtime_shutdown": "molt_runtime_shutdown",
+        "molt_set_wasm_table_base": "molt_set_wasm_table_base",
     }
     assert result_kinds.keys() == signatures.keys() == exports.keys()
     assert (
@@ -714,7 +716,8 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         in content
     )
     assert "bindRuntimeFunctionImports" in content
-    assert "callableTableFromModule(appModule" in content
+    assert "module: appModule," in content
+    assert "prepareWasmTableAdmission" in content
     assert "callableTableFromModule(runtimeModule" in content
     assert "const TAG_NONE = 0x0003000000000000n;" in content
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
@@ -886,7 +889,7 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     )
     assert "const outputMetadata = parseWasmMetadata(wasmBuffer, {" in run_wasm
     assert "exportFunctionSignatures: false," in run_wasm
-    assert "requireWasmCallableTable(wasmBuffer, 'output wasm')" in run_wasm
+    assert "const outputCallableTable = tableAdmission.callableTable;" in run_wasm
     assert "const runtimeMetadata = parseWasmMetadata(runtimeBuffer);" in run_wasm
     assert (
         "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;"
@@ -896,13 +899,15 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     consumers = {
         "wasm/browser_host.js": (
             "globalThis.MoltWasmLoaderBridge",
-            "extractWasmTableBase,",
+            "prepareWasmTableAdmission,",
+            "publishWasmTableAdmission,",
             "runtimeCallableTableLayout,",
         ),
         "wasm/run_wasm.js": (
             "require('./loader_bridge.js')",
             "parseWasmMetadata,",
-            "parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge",
+            "prepareWasmTableAdmission,",
+            "publishWasmTableAdmission,",
             "runtimeCallableTableLayout,",
         ),
         "wasm/browser_embed.js": (
@@ -1679,8 +1684,7 @@ def test_generated_worker_delivers_manifest_policy_through_real_wasi(
         "MOLT_EXECUTION_TARGET": "cloudflare",
         "__proto__": "ordinary data",
     }
-    if mode == "split":
-        expected["MOLT_WASM_TABLE_BASE"] = "32"
+    # These fixtures attest an empty table: no reserved region is published.
     assert observed == expected
 
 

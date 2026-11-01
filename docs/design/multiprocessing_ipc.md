@@ -77,10 +77,12 @@ kind and no borrowed standard-stream handles. Closing parent transports is
 idempotent, so Pool joining and subsequent retirement cannot release a stream
 reference twice.
 
-Linked-browser qualification also requires binding the runtime's callable-table
-execution state before admission. Linking relocates the app's reserved region;
-the loader resolves its base from the binary metadata and publishes it through
-the canonical `molt_set_wasm_table_base` export. Using the default base calls
+Linked-browser qualification also requires binding non-empty callable-table
+execution state before admission under the shared
+[portable ABI admission contract](../spec/areas/wasm/0400_WASM_PORTABLE_ABI.md#callable-table-execution-state-admission).
+Linking relocates the app's reserved region; the shared loader publishes its
+resolved base through the canonical ABI export. Empty attestations need no
+publication. Using the default base for a non-empty reserved region calls
 unrelated table entries: the observed signature trap abandoned a Rust recursion
 guard and was then diagnosed during shutdown. The correction binds the base;
 the recursion-depth teardown assertion remains intact.
