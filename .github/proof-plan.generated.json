@@ -2,6 +2,7 @@
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
     "src/molt/cli/module_source.py",
+    "src/molt/typed_cache.py",
     "src/molt/cli/python_import_resolution.py",
     "src/molt/cli/python_import_topology.py",
     "src/molt/cli/python_source_closure.py",
