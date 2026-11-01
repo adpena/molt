@@ -148,6 +148,37 @@ def test_note_appends_to_an_open_row_and_keeps_its_family(tmp_path: Path) -> Non
     assert _family_keys(root) == {"A": ("HF-1",), "B": ("HF-2",)}
 
 
+_REQUIREMENT_LEDGER = _LEDGER.replace(
+    "## Open: release blockers",
+    "## Open release requirements\n\n"
+    "| ID | Open release requirement | Existing authority and acceptance boundary |\n"
+    "|----|--------------------------|--------------------------------------------|\n"
+    "| V1-1 | Requirement. | Boundary. |\n\n"
+    "## Open: release blockers",
+).replace("| A. Alpha | cause a | HF-1 |", "| A. Alpha | cause a | HF-1, V1-1 |")
+
+
+def test_note_appends_to_a_release_requirement_and_refuses_a_next_step(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    (root / ledger_edit.LEDGER).write_text(_REQUIREMENT_LEDGER, encoding="utf-8")
+
+    assert ledger_edit.main(["note", "V1-1", "--next-note", "N."], root=root) == 2
+    text = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    assert text == _REQUIREMENT_LEDGER
+
+    status = ledger_edit.main(
+        ["note", "V1-1", "--defect-note", "Half done.", "--evidence-note", "HF-9."],
+        root=root,
+    )
+
+    assert status == 0
+    text = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    assert "| V1-1 | Requirement. Half done. | Boundary. HF-9. |" in text
+    assert "| HF-2 | Two. | E2. | N2. |" in text
+
+
 def test_a_note_on_a_fixed_row_or_without_text_writes_nothing(tmp_path: Path) -> None:
     root = _root(tmp_path)
 

@@ -25,6 +25,13 @@ pub use builtin_collections::{
 mod dir;
 pub use dir::{molt_dir_builtin, molt_object_dir_method, molt_type_dir_method};
 
+mod reduction;
+pub use reduction::{
+    molt_bytearray_reduce, molt_bytearray_reduce_ex, molt_bytes_getnewargs,
+    molt_complex_getnewargs, molt_float_getnewargs, molt_int_getnewargs, molt_object_reduce,
+    molt_object_reduce_ex, molt_set_reduce, molt_str_getnewargs, molt_tuple_getnewargs,
+};
+
 #[path = "ops_builtins_constructors.rs"]
 mod ops_builtins_constructors;
 pub use ops_builtins_constructors::{
@@ -1842,78 +1849,94 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(ptr) = obj_from_bits(_self_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let type_id = unsafe { object_type_id(ptr) };
-        if !unsafe { crate::object::object_has_class_shape(ptr) }
-            && type_id != crate::TYPE_ID_DATACLASS
-        {
-            return MoltObject::none().bits();
-        }
+    crate::with_gil_entry_nopanic!(_py, { object_getstate_default(_py, _self_bits, false) })
+}
 
-        // 1. Collect __dict__ entries.
-        let mut dict_state_bits: Option<u64> = None;
-        let dict_bits = unsafe {
-            if super::field_storage::allows_dictionary(_py, ptr) {
-                super::field_storage::materialize(_py, ptr).unwrap_or(0)
-            } else {
-                0
-            }
-        };
-        if dict_bits != 0
-            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
-            && unsafe { crate::dict_len(dict_ptr) } != 0
-        {
-            inc_ref_bits(_py, dict_bits);
-            dict_state_bits = Some(dict_bits);
-        }
+// CPython typeobject.c object_getstate_default: reduction requires that a
+// default state can represent the complete instance, not an opaque payload.
+// Explicit object.__getstate__ calls do not impose reconstruction admission.
+fn object_getstate_default(_py: &crate::PyToken<'_>, _self_bits: u64, required: bool) -> u64 {
+    let Some(ptr) = obj_from_bits(_self_bits).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    if required && !matches!(type_id, crate::TYPE_ID_OBJECT | crate::TYPE_ID_DATACLASS) {
+        return crate::raise_exception::<u64>(
+            _py,
+            crate::BuiltinExc::TypeError,
+            &format!(
+                "cannot pickle '{}' object",
+                crate::type_name(_py, obj_from_bits(_self_bits))
+            ),
+        );
+    }
+    if !unsafe { crate::object::object_has_class_shape(ptr) }
+        && !unsafe { crate::object::native_instance::has_fields(ptr) }
+        && type_id != crate::TYPE_ID_DATACLASS
+    {
+        return MoltObject::none().bits();
+    }
 
-        if exception_pending(_py) {
-            if let Some(bits) = dict_state_bits {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
+    // 1. Collect __dict__ entries.
+    let mut dict_state_bits: Option<u64> = None;
+    let dict_bits = unsafe {
+        if super::field_storage::allows_dictionary(_py, ptr) {
+            super::field_storage::materialize(_py, ptr).unwrap_or(0)
+        } else {
+            0
         }
+    };
+    if dict_bits != 0
+        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+        && unsafe { object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
+        && unsafe { crate::dict_len(dict_ptr) } != 0
+    {
+        inc_ref_bits(_py, dict_bits);
+        dict_state_bits = Some(dict_bits);
+    }
 
-        // 2. Collect genuine slots; inferred attributes belong only to __dict__.
-        let slot_state_bits = object_getstate_slot_state(_py, ptr);
-        if exception_pending(_py) {
-            if let Some(bits) = dict_state_bits {
-                dec_ref_bits(_py, bits);
-            }
-            if let Some(bits) = slot_state_bits {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
+    if exception_pending(_py) {
+        if let Some(bits) = dict_state_bits {
+            dec_ref_bits(_py, bits);
         }
+        return MoltObject::none().bits();
+    }
 
-        // 3. Combine following CPython's (dict, slots) tuple convention.
-        match (dict_state_bits, slot_state_bits) {
-            (Some(d), Some(s)) => {
-                let tuple_ptr = crate::alloc_tuple(_py, &[d, s]);
-                dec_ref_bits(_py, d);
-                dec_ref_bits(_py, s);
-                if tuple_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                MoltObject::from_ptr(tuple_ptr).bits()
-            }
-            (None, Some(s)) => {
-                let none_bits = MoltObject::none().bits();
-                let tuple_ptr = crate::alloc_tuple(_py, &[none_bits, s]);
-                dec_ref_bits(_py, s);
-                if tuple_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                MoltObject::from_ptr(tuple_ptr).bits()
-            }
-            (Some(d), None) => d,
-            (None, None) => MoltObject::none().bits(),
+    // 2. Collect genuine slots; inferred attributes belong only to __dict__.
+    let slot_state_bits = object_getstate_slot_state(_py, ptr);
+    if exception_pending(_py) {
+        if let Some(bits) = dict_state_bits {
+            dec_ref_bits(_py, bits);
         }
-    })
+        if let Some(bits) = slot_state_bits {
+            dec_ref_bits(_py, bits);
+        }
+        return MoltObject::none().bits();
+    }
+
+    // 3. Combine following CPython's (dict, slots) tuple convention.
+    match (dict_state_bits, slot_state_bits) {
+        (Some(d), Some(s)) => {
+            let tuple_ptr = crate::alloc_tuple(_py, &[d, s]);
+            dec_ref_bits(_py, d);
+            dec_ref_bits(_py, s);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+        (None, Some(s)) => {
+            let none_bits = MoltObject::none().bits();
+            let tuple_ptr = crate::alloc_tuple(_py, &[none_bits, s]);
+            dec_ref_bits(_py, s);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+        (Some(d), None) => d,
+        (None, None) => MoltObject::none().bits(),
+    }
 }
 
 /// Default state uses normal attribute semantics for each declared slot name.

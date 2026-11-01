@@ -39,6 +39,12 @@ crate::builtins::methods::native_method_table!(slice_method_bits, publish_slice_
 crate::builtins::methods::native_method_table!(string_method_bits, publish_string_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::String, {
 
 }, {
+        "__getnewargs__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).str, "__getnewargs__"),
+            fn_addr!(crate::molt_str_getnewargs),
+            1,
+        )),
         "__format__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).str, "__format__").with_text_signature("($self, format_spec, /)"),
@@ -467,6 +473,12 @@ crate::builtins::methods::native_method_table!(string_method_bits, publish_strin
 crate::builtins::methods::native_method_table!(bytes_method_bits, publish_bytes_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytes, {
 
 }, {
+        "__getnewargs__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).bytes, "__getnewargs__"),
+            fn_addr!(crate::molt_bytes_getnewargs),
+            1,
+        )),
         "__getitem__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bytes, "__getitem__").with_text_signature("($self, key, /)"),
@@ -850,6 +862,18 @@ crate::builtins::methods::native_method_table!(bytes_method_bits, publish_bytes_
 crate::builtins::methods::native_method_table!(bytearray_method_bits, publish_bytearray_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytearray, {
 
 }, {
+        "__reduce_ex__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).bytearray, "__reduce_ex__"),
+            fn_addr!(crate::molt_bytearray_reduce_ex),
+            2,
+        )),
+        "__reduce__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).bytearray, "__reduce__"),
+            fn_addr!(crate::molt_bytearray_reduce),
+            1,
+        )),
         "__getitem__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).bytearray, "__getitem__").with_text_signature("($self, key, /)"),

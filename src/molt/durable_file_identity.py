@@ -303,8 +303,13 @@ def _apple_identity(path: Path, expected: os.stat_result | None) -> DurableFileI
             or first.file_id != before.st_ino
             or first.file_id != after.st_ino
             or not os.path.samestat(held, os.fstat(fd))
-            or (before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-            != (after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            or before.st_mode != after.st_mode
+            # Directory entries can change without substituting the directory.
+            or (
+                not stat.S_ISDIR(before.st_mode)
+                and (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            )
         ):
             raise ParentCaptureUnavailable(
                 ParentCaptureReason.CHANGED,

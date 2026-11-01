@@ -41,6 +41,8 @@ from tools import finding_coverage, finding_status, gen_finding_ids  # noqa: E40
 
 LEDGER = Path("docs/agent/V1_HANDOFF_FINDINGS.md")
 FIXED_HEADING = "## Fixed after the handoff"
+# The section whose rows are release requirements, with three cells.
+RELEASE_REQUIREMENTS_SECTION = "Open release requirements"
 
 
 class LedgerEditError(ValueError):
@@ -140,13 +142,33 @@ def close_row(text: str, args: argparse.Namespace) -> str:
 
 
 def _append_notes(
-    lines: list[str], key: str, args: argparse.Namespace, *, trailer: str = ""
+    lines: list[str],
+    status: finding_status.FindingStatus,
+    key: str,
+    args: argparse.Namespace,
+    *,
+    trailer: str = "",
 ) -> None:
-    """Append the note arguments (and ``trailer``) to open row ``key``'s cells."""
+    """Append the note arguments (and ``trailer``) to open row ``key``'s cells.
+
+    The row's section sets its table: a release requirement has the
+    requirement and its acceptance boundary, and a finding has the defect,
+    its evidence and the next step.
+    """
     index = _row_index(lines, key)
+    (row,) = (row for row in status.rows if row.key == key)
+    requirement = row.section == RELEASE_REQUIREMENTS_SECTION
     cells = finding_status.cells(lines[index])
-    if len(cells) != 4:
-        raise LedgerEditError(f"{key} does not have four cells")
+    if len(cells) != (3 if requirement else 4):
+        raise LedgerEditError(
+            f"{key} has {len(cells)} cells; a "
+            f"{'release requirement has three' if requirement else 'finding has four'}"
+        )
+    if requirement and args.next_note:
+        raise LedgerEditError(
+            f"{key} is a release requirement and has no next-step cell; "
+            "note its acceptance boundary with --evidence-note"
+        )
     cells[1] = " ".join(p for p in (cells[1], args.defect_note, trailer) if p)
     if args.evidence_note:
         cells[2] = f"{cells[2]} {args.evidence_note}"
@@ -160,10 +182,11 @@ def note_row(text: str, args: argparse.Namespace) -> str:
         raise LedgerEditError(
             "a note needs --defect-note, --evidence-note or --next-note"
         )
-    if args.key not in finding_status.project(text).open_keys:
+    status = finding_status.project(text)
+    if args.key not in status.open_keys:
         raise LedgerEditError(f"{args.key} is not an open row")
     lines = text.split("\n")
-    _append_notes(lines, args.key, args)
+    _append_notes(lines, status, args.key, args)
     return "\n".join(lines)
 
 
@@ -176,7 +199,11 @@ def merge_rows(text: str, args: argparse.Namespace) -> str:
     lines = text.split("\n")
     today = args.date or dt.date.today().isoformat()
     _append_notes(
-        lines, args.into, args, trailer=f"This row absorbed {args.key} on {today}."
+        lines,
+        status,
+        args.into,
+        args,
+        trailer=f"This row absorbed {args.key} on {today}.",
     )
     for letter in _families_holding(status, args.key):
         _edit_family(

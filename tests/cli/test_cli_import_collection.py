@@ -4540,13 +4540,8 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     )
     core_paths = [
         path
-        for name in (
-            "builtins",
-            "sys",
-            "types",
-            "importlib",
-            "importlib.util",
-            "importlib.machinery",
+        for name in cli_module_stdlib_policy._core_stdlib_module_names_for_profile(
+            cli_module_stdlib_policy.DEFAULT_STDLIB_PROFILE
         )
         if (path := module_graph.get(name)) is not None
     ]
@@ -20440,13 +20435,8 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     )
     core_paths = [
         path
-        for name in (
-            "builtins",
-            "sys",
-            "types",
-            "importlib",
-            "importlib.util",
-            "importlib.machinery",
+        for name in cli_module_stdlib_policy._core_stdlib_module_names_for_profile(
+            cli_module_stdlib_policy.DEFAULT_STDLIB_PROFILE
         )
         if (path := module_graph.get(name)) is not None
     ]

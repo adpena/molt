@@ -10,7 +10,6 @@ use crate::builtins::attributes::attributes_clear_runtime_state;
 use crate::builtins::codecs_ext::codecs_clear_error_handlers;
 use crate::builtins::concurrent::concurrent_clear_runtime_state;
 use crate::builtins::contextvars::clear_thread_context;
-use crate::builtins::copy_mod::copy_memo_clear_state;
 use crate::builtins::exceptions::{
     canonical_exception_class_roots, drain_dynamic_exception_type_cache,
     exceptions_release_runtime_class_anchor, take_thread_exception_for_teardown,
@@ -510,7 +509,6 @@ fn clear_runtime_callback_roots(
     changed |= clear_task_state(py, state);
     changed |= signal_clear_state(py, state);
     changed |= clear_thread_context(py);
-    changed |= copy_memo_clear_state(py, state);
     changed |= sys_ext_clear_state(py, state);
     changed |= c_api_module_clear_state(py, state);
     changed |= runtime_extension_states_clear_and_drop(state);
