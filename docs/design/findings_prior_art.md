@@ -609,18 +609,19 @@ platform/profile/engine coordinates need their own physical-frame qualification.
 
 **HF-660 shallow cost.** [M] On native macOS arm64, release/full, the whole-program
 workload allocates and retires 4,000,000 small lists and dictionaries in batches
-of 40,000, each with primitive values. Three `/usr/bin/time -l` runs per binary
-give median retired instructions of 41,823,154,944 before and 42,032,957,854
-after: **+0.5016%**, above observed run variation. The first queue implementation
-cost +0.8105%; moving root-only initialization/drain out of the nested path and
-inlining its state entry removed 129,172,278 median instructions. The remaining
-added shallow work is the thread-record lookup, active-state test and balanced
-depth updates on terminal transitions. This is a measured bounded-release safety
+of 40,000, each with primitive values. Three interleaved `/usr/bin/time -l` runs
+per binary in the same lane environment, with `PYTHONHASHSEED=0`, give median
+retired instructions of 41,788,583,955 before and 41,927,783,872 after:
+**+0.3331%**, above observed run variation. Root-only setup is outlined, the
+nested state entry is inlined, and `PyToken`'s cached execution record removes
+repeated native TLS lookups. The remaining added shallow work is the
+active-state/depth test, balanced depth updates and outlined terminal-body call.
+The retained split was faster than a measured admission-in-body alternative.
+This is a measured bounded-release safety
 cost, not a claim of no regression or a package-wide performance result. Empty
 queues allocate no worklist backing storage. The linked binary grows by 40 bytes
-(20,516,560 to 20,516,600); observed process RSS ranges overlap (54.18–56.28 MB
-before, 54.79–55.46 MB after). Wall-clock variation does not establish a speed
-change: before runs span 2.19–5.71 s and after runs 2.22–2.58 s.
+(20,516,560 to 20,516,600). Wall-clock and process-RSS variation do not establish
+a speed or memory improvement; the per-run observations stay in private evidence.
 
 **HF-660 callback semantics.** [F/I] The Python language does not prescribe
 prompt refcounting or relative sibling destruction timing. The selected CPython

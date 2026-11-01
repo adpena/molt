@@ -149,7 +149,7 @@ impl Drop for ActiveRelease<'_> {
 /// ordinary, collector-pin, C-view and runtime-teardown owner releases.
 #[inline(always)]
 pub(super) unsafe fn release(py: &PyToken<'_>, release: TerminalRelease) -> Option<u64> {
-    let active = &crate::state::execution_tls().terminal_release;
+    let active = &py.execution_tls().terminal_release;
     let state = active.get();
     if !state.is_null() {
         // SAFETY: only the current thread can read this Cell. Its outermost
