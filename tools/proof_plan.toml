@@ -5288,13 +5288,21 @@ pytest_select = [
 # The compiled signature oracle is a shared-target reader following its pair
 # producer in the landing Cargo chain. A missing candidate pair fails by name;
 # the Python-only cells do not silently skip this compiled obligation.
+# The globs are the runtime WASM identity closure plus the oracle's own
+# inputs (the ABI manifest and its generator). Compiler crates such as
+# molt-ir, molt-tir, molt-passes and the backends are outside the closure;
+# tests/tools/test_runtime_wasm_final_preflight.py proves both directions.
 [[rule]]
 name = "runtime-wasm-signatures"
 description = "Build and compare only the candidate's dev/full runtime WASM input family."
 toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
 cargo_target_access = "shared"
 globs = [
-  "runtime/**",
+  "runtime/molt-runtime/**", "runtime/molt-runtime-*/**", "runtime/molt-stdlib-*/**",
+  "runtime/molt-obj-model/**", "runtime/molt-codegen-abi/**", "runtime/molt-cpython-abi/**",
+  "runtime/molt-gpu/**", "runtime/molt-gpu-runtime/**", "runtime/build_support/**",
+  "runtime/wasm_table_layout.inc",
+  "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml", "tools/wasm_abi_gen/**",
   "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**",
   "LICENSE", "include/molt/**", "vendor/rust/**",
   "src/molt/wasi_c_abi_protocol.txt", "src/molt/wasm_artifact.py",

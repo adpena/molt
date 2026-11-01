@@ -64,6 +64,57 @@ def test_signature_rule_covers_canonical_runtime_identity_inputs():
 
 @pytest.mark.parametrize(
     "changed",
+    [
+        "runtime/molt-ir/src/tir/ops.rs",
+        "runtime/molt-tir/src/representation_plan.rs",
+        "runtime/molt-passes/src/tir/lower_to_simple.rs",
+        "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs",
+        "runtime/molt-backend-wasm/src/wasm/final_functions.rs",
+        "runtime/molt-wasm-host/src/main.rs",
+    ],
+)
+def test_signature_rule_skips_compiler_crates_outside_the_runtime_closure(changed):
+    # A compiler-only edit cannot change the runtime WASM pair, so it must not
+    # pay for a dev/full pair build.
+    from molt.cli.runtime_source_closure import runtime_source_paths
+    from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_features
+    from tools.dirty_tree_policy import is_ignored
+    from tools.molt_dev_policy import GateConfig
+
+    root = Path(__file__).resolve().parents[2]
+    owner = next(
+        rule
+        for rule in GateConfig.load(root / "tools/proof_plan.toml").rules
+        if rule.name == "runtime-wasm-signatures"
+    )
+    closure = runtime_source_paths(
+        root, runtime_wasm_distribution_features("full", freestanding=False)
+    )
+    crate = root / Path(changed).parts[0] / Path(changed).parts[1]
+    assert crate not in closure
+    assert not is_ignored(changed, owner.globs)
+
+
+def test_signature_rule_selects_the_oracle_manifest():
+    from tools.dirty_tree_policy import is_ignored
+    from tools.molt_dev_policy import GateConfig
+
+    root = Path(__file__).resolve().parents[2]
+    owner = next(
+        rule
+        for rule in GateConfig.load(root / "tools/proof_plan.toml").rules
+        if rule.name == "runtime-wasm-signatures"
+    )
+    for changed in (
+        "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+        "tools/wasm_abi_gen/manifest.py",
+        "src/molt/_wasm_abi_generated.py",
+    ):
+        assert is_ignored(changed, owner.globs), changed
+
+
+@pytest.mark.parametrize(
+    "changed",
     ["runtime/molt-runtime/src/process.rs", "src/molt/_wasm_abi_generated.py"],
 )
 def test_signature_plan_builds_candidate_before_its_compiled_oracle(changed):
