@@ -255,7 +255,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "7116dda1bc719780d519ffe847c5c16a270d439d4b2deca6f97f9d8b7326e0c9",
+      "sha256": "c4399f56748bf4cdcef31d8b7934f51d2a46bfacb777a7cbb501e89e6dcd196a",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {

@@ -169,10 +169,10 @@ pub(crate) fn validate_callable_table_attestation(
     canonical_types: &[Option<WasmFunctionType>],
 ) -> Result<(), String> {
     let mut decoder = AttestationDecoder::new(data);
-    if decoder.read_u32()? != 1 {
+    if decoder.read_u32()? != CALLABLE_TABLE_SECTION_VERSION {
         return Err("unsupported callable-table attestation version".to_string());
     }
-    if decoder.read_u32()? != 1 {
+    if decoder.read_u32()? != CALLABLE_TABLE_VALUE_TYPE_FORMAT {
         return Err("unsupported callable-table value-type format".to_string());
     }
     let used_types = expected_entries
@@ -225,7 +225,7 @@ pub(crate) fn validate_callable_table_attestation(
         let function_index = decoder.read_u32()?;
         let type_index = decoder.read_u32()?;
         let role = decoder.read_u32()?;
-        if role != 0 {
+        if role != crate::CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE {
             return Err(format!(
                 "callable-table slot {slot} has unknown role {role}"
             ));

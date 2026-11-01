@@ -99,13 +99,20 @@ modules; product startup tests cover runtime/app initialization ordering.
 
 `prepareWasmTableAdmission` and `publishWasmTableAdmission` in
 `wasm/loader_bridge.js` own this protocol for Node, browser, minimal embeds and
-both Worker generators, in linked and split-runtime modes. Byte consumers and
+both Worker generators, in linked and split-runtime modes. The Rust deployment
+host uses `molt_wasm_facts::admit_callable_table` with the same generated ABI
+constants and final-module attestation validator; its typed empty/publish outcome
+owns setter selection and `MOLT_WASM_TABLE_BASE` publication, overriding ambient
+and launch-policy values only for Molt applications. Raw and manifest-bound WASI
+commands retain their separate environment contract. Byte consumers and
 precompiled `WebAssembly.Module` consumers read the same generated callable-table
 attestation and layout. An explicit zero-entry attestation yields `empty`: no
 reserved callable region needs publication, even if the module exposes a table.
 A non-empty attestation yields `publish` only with a positive resolved base and
-the canonical setter identity named by the runtime import ABI. The host must
-call that export immediately after runtime instantiation, before runtime lifetime
+the canonical setter identity named by the runtime import ABI. The base comes
+from the published layout or the first attested callable slot, with a manifest
+base constrained by that binary authority; element-segment guesses are forbidden.
+The host must call that export immediately after runtime instantiation, before runtime lifetime
 admission, WASI/libc initialization or application execution. Missing setters
 never select an environment-only fallback.
 

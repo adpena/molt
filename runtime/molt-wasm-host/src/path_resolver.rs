@@ -9,6 +9,9 @@ struct RuntimeManifest {
     modules: RuntimeManifestModules,
     entry: Option<RuntimeManifestEntry>,
     launch: RuntimeManifestLaunch,
+    wasm_table_base: Option<u32>,
+    #[serde(default)]
+    abi: JsonValue,
 }
 
 /// A producer-owned transport projection, not a second capability-policy parser.
@@ -63,6 +66,7 @@ pub(super) struct ResolvedExecutionModules {
     pub(super) main: ModuleSource,
     pub(super) runtime: Option<ModuleSource>,
     pub(super) linked: bool,
+    pub(super) table_config: WasmTableConfig,
 }
 
 /// One owned byte sequence for validation, fact scanning and compilation.
@@ -298,6 +302,14 @@ pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedE
         main,
         runtime,
         linked,
+        table_config: WasmTableConfig {
+            base: manifest.wasm_table_base,
+            export_name: manifest
+                .abi
+                .pointer("/runtime_imports/export_names/molt_set_wasm_table_base")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned),
+        },
     })
 }
 

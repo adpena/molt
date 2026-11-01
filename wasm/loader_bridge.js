@@ -156,39 +156,6 @@
     throw new Error(`Unknown import kind ${kind}`);
   };
 
-  const readConstExprI32 = (view, offset) => {
-    if (offset >= view.length) {
-      throw new Error('Unexpected EOF while reading const expr');
-    }
-    let pos = offset;
-    const opcode = view[pos++];
-    let value = null;
-    if (opcode === 0x41) {
-      const res = readVarInt32(view, pos);
-      value = res.value;
-      pos = res.offset;
-    } else if (opcode === 0x23 || opcode === 0xd2) {
-      pos = readVarUint(view, pos).offset;
-    } else if (opcode === 0xd0) {
-      pos = readVarInt32(view, pos).offset;
-    } else {
-      throw new Error(`Unsupported const expr opcode ${opcode}`);
-    }
-    if (pos >= view.length || view[pos] !== 0x0b) {
-      throw new Error('Malformed const expr');
-    }
-    return { value, offset: pos + 1 };
-  };
-
-  const skipVec = (view, offset, skipItem) => {
-    let count;
-    ({ value: count, offset } = readVarUint(view, offset));
-    for (let idx = 0; idx < count; idx += 1) {
-      offset = skipItem(view, offset);
-    }
-    return offset;
-  };
-
   const parseCallableTableLayoutPayload = (view, offset, end) => {
     const values = [];
     for (let idx = 0; idx < 5; idx += 1) {
@@ -218,86 +185,39 @@
       throw new Error('Invalid WASM header for callable-table layout');
     }
     let offset = 8;
-    const activeTableBases = [];
+    let callableTable = null;
     let callableTableLayout = null;
     while (offset < bytes.length) {
       const sectionId = bytes[offset++];
       const sizeRes = readVarUint(bytes, offset);
-      const sectionSize = sizeRes.value;
       offset = sizeRes.offset;
-      const sectionEnd = offset + sectionSize;
+      const sectionEnd = offset + sizeRes.value;
       if (sectionEnd > bytes.length) {
         throw new Error('Unexpected EOF in callable-table layout section');
       }
       if (sectionId === 0) {
-        const name = readString(bytes, offset);
+        const section = bytes.subarray(offset, sectionEnd);
+        const name = readString(section, 0);
         if (name.value === CALLABLE_TABLE_LAYOUT_SECTION_NAME) {
           if (callableTableLayout !== null) {
             throw new Error('Duplicate callable-table layout publication');
           }
           callableTableLayout = parseCallableTableLayoutPayload(
-            bytes.subarray(name.offset, sectionEnd),
-            0,
-            sectionEnd - name.offset,
+            section, name.offset, section.length,
           );
+        } else if (name.value === CALLABLE_TABLE_SECTION_NAME) {
+          if (callableTable !== null) throw new Error('Duplicate callable-table attestation');
+          callableTable = parseCallableTableSectionPayload(section.subarray(name.offset));
         }
-        offset = sectionEnd;
-      } else if (sectionId === 9) {
-        let count;
-        ({ value: count, offset } = readVarUint(bytes, offset));
-        for (let idx = 0; idx < count; idx += 1) {
-          let flags;
-          ({ value: flags, offset } = readVarUint(bytes, offset));
-          const usesExpressions = (flags & 0x04) !== 0;
-          const isActive = flags === 0 || flags === 2 || flags === 4 || flags === 6;
-          if (flags === 2 || flags === 6) {
-            ({ offset } = readVarUint(bytes, offset));
-          }
-          if (isActive) {
-            const expr = readConstExprI32(bytes, offset);
-            offset = expr.offset;
-            if (flags === 2 || flags === 3) {
-              offset += 1;
-            } else if (flags === 6 || flags === 7 || flags === 5) {
-              offset += 1;
-            }
-            if (Number.isFinite(expr.value) && expr.value > 0) {
-              activeTableBases.push(expr.value);
-            }
-          } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
-            offset += 1;
-          } else {
-            throw new Error(`Unsupported element segment flags ${flags}`);
-          }
-          offset = skipVec(
-            bytes,
-            offset,
-            usesExpressions
-              ? (view, pos) => readConstExprI32(view, pos).offset
-              : (view, pos) => readVarUint(view, pos).offset,
-          );
-        }
-      } else {
-        offset = sectionEnd;
       }
-      if (offset !== sectionEnd) {
-        throw new Error('Malformed callable-table layout section bounds');
-      }
+      offset = sectionEnd;
     }
-
     if (callableTableLayout) {
       return callableTableLayout.fixedPrefixLen > 0
         ? callableTableLayout.fixedPrefixBase
         : callableTableLayout.finalizedAppBase;
     }
-    if (activeTableBases.length > 0) {
-      const appActiveTableBases = activeTableBases.filter((base) => base > 1);
-      if (appActiveTableBases.length > 0) {
-        return Math.min(...appActiveTableBases);
-      }
-      return Math.min(...activeTableBases);
-    }
-    return null;
+    return callableTable?.entries[0]?.slot ?? null;
   };
 
   const wasmTableBaseFromManifest = (manifest) => {
@@ -465,6 +385,9 @@
         );
       }
       slot = index === 0 ? slotDelta : slot + slotDelta;
+      if (slot > 0xffffffff) {
+        throw new Error(`${label} ${CALLABLE_TABLE_SECTION_NAME} slot exceeds u32`);
+      }
       const functionIndexRes = readVarUint(view, offset);
       const functionIndex = functionIndexRes.value;
       offset = functionIndexRes.offset;
@@ -792,7 +715,7 @@
         callableTable = callableTableFromModule(module, label);
         const layouts = WebAssembly.Module.customSections(module, CALLABLE_TABLE_LAYOUT_SECTION_NAME);
         if (layouts.length > 1) throw new Error('Duplicate callable-table layout publication');
-        extracted = null;
+        extracted = callableTable.entries[0]?.slot ?? null;
         if (layouts.length === 1) {
           const view = new Uint8Array(layouts[0]);
           const layout = parseCallableTableLayoutPayload(view, 0, view.length);

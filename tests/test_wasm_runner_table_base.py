@@ -324,6 +324,8 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
         (host, case, expected)
         for host in (
             "node",
+            "rust",
+            "rust-split",
             "browser",
             "linked-worker",
             "node-split",
@@ -335,8 +337,10 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
             ("empty", None),
             ("nonempty", None),
             ("nonempty-layout", None),
+            ("nonempty-attested", None),
             ("missing", "MOLT_WASM_TABLE_ATTESTATION_MISSING"),
             ("malformed", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
+            ("malformed-slot", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
             ("missing-export", "MOLT_WASM_TABLE_EXPORT_REQUIRED"),
             ("zero-base", "MOLT_WASM_TABLE_BASE_REQUIRED"),
             ("malformed-layout", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
@@ -345,16 +349,24 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
         # Linked self-import identities and split table dispatch are different
         # protocols; the mangled-export substitution exists only in linked mode.
         if case != "missing-indirect-export"
-        or host in {"node", "browser", "linked-worker"}
+        or host in {"node", "browser", "linked-worker", "rust"}
     ],
 )
 def test_hosts_share_callable_table_admission(
     tmp_path: Path, host: str, case: str, expected: str | None
 ) -> None:
     """Actual guest guards prove publication precedes admission and initialization."""
-    split = host in {"node-split", "browser-split", "embed", "split-worker"}
+    split = host in {
+        "node-split",
+        "rust-split",
+        "browser-split",
+        "embed",
+        "split-worker",
+    }
     nonempty = case != "empty"
     base = 0 if case == "zero-base" else 4
+    # Split imports introduce () -> i64 as type zero; $ref is the next type.
+    ref_type_index = int(split)
     payload = b"".join(
         _write_varuint(value)
         for value in (
@@ -364,13 +376,13 @@ def test_hosts_share_callable_table_admission(
             *(
                 (
                     1,
-                    0,
+                    ref_type_index,
                     0,
                     0,
                     1,
                     base,
                     int(split or case == "missing-indirect-export"),
-                    0,
+                    ref_type_index,
                     WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
                 )
                 if nonempty
@@ -382,9 +394,30 @@ def test_hosts_share_callable_table_admission(
         payload = b""
     elif case == "malformed":
         payload = b"\x80"  # truncated version, not an absent section
+    elif case == "malformed-slot":
+        payload = b"".join(
+            _write_varuint(value)
+            for value in (
+                WASM_CALLABLE_TABLE_SECTION_VERSION,
+                WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
+                1,
+                ref_type_index,
+                0,
+                0,
+                2,
+                0xFFFFFFFF,
+                int(split),
+                ref_type_index,
+                WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
+                1,
+                int(split),
+                ref_type_index,
+                WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
+            )
+        )
     check = (
         "global.get $published i64.const 4 i64.ne if unreachable end"
-        if nonempty and case != "missing-export"
+        if case in {"nonempty", "nonempty-layout", "nonempty-attested", "zero-base"}
         else ""
     )
     setter = (
@@ -410,7 +443,9 @@ def test_hosts_share_callable_table_admission(
           (func (export "molt_exception_pending") (result i64) i64.const 0)
           (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "_initialize") {check})
-          (func (export "molt_main") {check}))"""
+          (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
+          (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
+          (func (export "molt_main") (result i64) {check} i64.const 0))"""
     runtime = None
     if split:
         runtime_wat = (
@@ -438,7 +473,9 @@ def test_hosts_share_callable_table_admission(
           (export "memory" (memory 0))
           (func $ref)
           {f"(elem (i32.const {base}) func $ref)" if nonempty else ""}
-          (func (export "molt_main") call $init drop))"""
+          (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
+          (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
+          (func (export "molt_main") (result i64) call $init drop i64.const 0))"""
     wasm = _wasm_from_wat(
         tmp_path,
         "app" if split else "admission",
@@ -470,7 +507,7 @@ def test_hosts_share_callable_table_admission(
         else _linked_manifest(wasm)
     )
     data = json.loads(manifest.read_text(encoding="utf-8"))
-    if nonempty and case != "nonempty-layout":
+    if nonempty and case not in {"nonempty-layout", "nonempty-attested"}:
         data["wasm_table_base"] = base
     data["abi"] = {
         "linked_self_imports": [],
@@ -515,7 +552,14 @@ def test_hosts_share_callable_table_admission(
             for role in ("app", "runtime")
         }
     manifest.write_text(json.dumps(data), encoding="utf-8")
-    if host in {"node", "node-split"}:
+    if host in {"rust", "rust-split"}:
+        from molt.cli.wasm_host import resolve_molt_wasm_host_binary
+
+        binary = resolve_molt_wasm_host_binary(ROOT, cargo_profile="dev-fast")
+        if binary is None:
+            pytest.skip("prebuilt molt-wasm-host dev-fast binary is required")
+        command = [binary, str(manifest)]
+    elif host in {"node", "node-split"}:
         command = ["node", "wasm/run_wasm.js", str(manifest)]
     elif host == "linked-worker":
         from tools.generate_worker import generate_worker
@@ -547,7 +591,7 @@ def test_hosts_share_callable_table_admission(
                 shared_memory_initial_pages=1,
                 shared_table_initial=8,
                 shared_table_base=base
-                if nonempty and case != "nonempty-layout"
+                if nonempty and case not in {"nonempty-layout", "nonempty-attested"}
                 else None,
                 runtime_import_names={"runtime_init"},
             ),
@@ -588,7 +632,9 @@ def test_hosts_share_callable_table_admission(
         command = ["node", "-e", script, str(manifest), host]
     result = _run_wasm_test_process(
         command,
-        role="guest-host" if host in {"node", "node-split"} else "tool",
+        role="guest-host"
+        if host in {"node", "node-split", "rust", "rust-split"}
+        else "tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
