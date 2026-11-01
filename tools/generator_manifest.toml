@@ -73,6 +73,18 @@ schema_version = 1
 generated_scan_roots = ["runtime", "src", "tools"]
 
 [[generator]]
+tool = "tools/generated_merge.py"
+outputs = [".gitattributes"]
+source = "tools/generator_manifest.toml + tools/generated_merge.py (base attributes) + tools/generator_io.py"
+check_mode = true
+check_command = "tools/generated_merge.py --check"
+toolchains = []
+idempotent = true
+sync_test = "tests/tools/test_ledger_merge.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_project_version.py"
 outputs = ["src/molt/_version.py"]
 source = "pyproject.toml + tools/generator_io.py"
