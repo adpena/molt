@@ -318,25 +318,42 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
     )
 
 
-@pytest.mark.parametrize("host", ["node", "browser", "linked-worker"])
 @pytest.mark.parametrize(
-    ("case", "expected"),
+    ("host", "case", "expected"),
     [
-        ("empty", None),
-        ("nonempty", None),
-        ("missing", "MOLT_WASM_TABLE_ATTESTATION_MISSING"),
-        ("malformed", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
-        ("missing-export", "MOLT_WASM_TABLE_EXPORT_REQUIRED"),
-        ("zero-base", "MOLT_WASM_TABLE_BASE_REQUIRED"),
-        ("malformed-layout", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
-        ("missing-indirect-export", "molt_call_indirect012habE"),
+        (host, case, expected)
+        for host in (
+            "node",
+            "browser",
+            "linked-worker",
+            "node-split",
+            "browser-split",
+            "embed",
+            "split-worker",
+        )
+        for case, expected in (
+            ("empty", None),
+            ("nonempty", None),
+            ("nonempty-layout", None),
+            ("missing", "MOLT_WASM_TABLE_ATTESTATION_MISSING"),
+            ("malformed", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
+            ("missing-export", "MOLT_WASM_TABLE_EXPORT_REQUIRED"),
+            ("zero-base", "MOLT_WASM_TABLE_BASE_REQUIRED"),
+            ("malformed-layout", "MOLT_WASM_TABLE_ATTESTATION_MALFORMED"),
+            ("missing-indirect-export", "molt_call_indirect012habE"),
+        )
+        # Linked self-import identities and split table dispatch are different
+        # protocols; the mangled-export substitution exists only in linked mode.
+        if case != "missing-indirect-export"
+        or host in {"node", "browser", "linked-worker"}
     ],
 )
 def test_hosts_share_callable_table_admission(
     tmp_path: Path, host: str, case: str, expected: str | None
 ) -> None:
     """Actual guest guards prove publication precedes admission and initialization."""
-    nonempty = case not in {"empty", "missing-indirect-export"}
+    split = host in {"node-split", "browser-split", "embed", "split-worker"}
+    nonempty = case != "empty"
     base = 0 if case == "zero-base" else 4
     payload = b"".join(
         _write_varuint(value)
@@ -345,7 +362,17 @@ def test_hosts_share_callable_table_admission(
             WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
             # One () -> () type and one active element, or an empty attestation.
             *(
-                (1, 0, 0, 0, 1, base, 0, 0, WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE)
+                (
+                    1,
+                    0,
+                    0,
+                    0,
+                    1,
+                    base,
+                    int(split or case == "missing-indirect-export"),
+                    0,
+                    WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
+                )
                 if nonempty
                 else (0, 0)
             ),
@@ -364,14 +391,11 @@ def test_hosts_share_callable_table_admission(
         ""
         if case == "missing-export"
         else f"""
-      (func (export "{"molt_set_wasm_table_base" if host == "linked-worker" else "publish_base"}") (param i64)
+      (func (export "{"molt_set_wasm_table_base" if "worker" in host else "publish_base"}") (param i64)
         {"local.get 0 global.set $published" if nonempty else "unreachable"})
     """
     )
-    wasm = _wasm_from_wat(
-        tmp_path,
-        "admission",
-        f"""(module
+    wat = f"""(module
           {'(import "env" "molt_call_indirect012habE" (func))' if case == "missing-indirect-export" else ""}
           (memory (export "memory") 1)
           (table (export "molt_table") 8 funcref)
@@ -386,20 +410,67 @@ def test_hosts_share_callable_table_admission(
           (func (export "molt_exception_pending") (result i64) i64.const 0)
           (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "_initialize") {check})
-          (func (export "molt_main") {check}))""",
+          (func (export "molt_main") {check}))"""
+    runtime = None
+    if split:
+        runtime_wat = (
+            wat.replace(
+                '(memory (export "memory") 1)',
+                '(import "env" "memory" (memory 1)) (export "memory" (memory 0))',
+            )
+            .replace(
+                '(table (export "molt_table") 8 funcref)',
+                '(import "env" "__indirect_function_table" (table 8 funcref))',
+            )
+            .replace(f"(elem (i32.const {base}) func $ref)", "")
+        )
+        runtime_wat = (
+            runtime_wat[:-1]
+            + f'(func (export "molt_runtime_init") (result i64) {check} i64.const 1))'
+        )
+        runtime = _wasm_from_wat(
+            tmp_path, "molt_runtime", runtime_wat, empty_callable_table=True
+        )
+        wat = f"""(module
+          (import "env" "memory" (memory 1))
+          (import "env" "__indirect_function_table" (table 8 funcref))
+          (import "molt_runtime" "runtime_init" (func $init (result i64)))
+          (export "memory" (memory 0))
+          (func $ref)
+          {f"(elem (i32.const {base}) func $ref)" if nonempty else ""}
+          (func (export "molt_main") call $init drop))"""
+    wasm = _wasm_from_wat(
+        tmp_path,
+        "app" if split else "admission",
+        wat,
         callable_table_payload=payload,
     )
-    if case == "malformed-layout":
-        from molt._wasm_abi_generated import WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME
+    if case in {"malformed-layout", "nonempty-layout"}:
+        from molt._wasm_abi_generated import (
+            WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME,
+            WASM_CALLABLE_TABLE_LAYOUT_VERSION,
+        )
 
         name = WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME.encode()
-        section = _write_varuint(len(name)) + name + b"\x80"
+        layout = (
+            b"\x80"
+            if case == "malformed-layout"
+            else b"".join(
+                _write_varuint(value)
+                for value in (WASM_CALLABLE_TABLE_LAYOUT_VERSION, 0, 0, base, 1)
+            )
+        )
+        section = _write_varuint(len(name)) + name + layout
         wasm.write_bytes(
             wasm.read_bytes() + b"\0" + _write_varuint(len(section)) + section
         )
-    manifest = _linked_manifest(wasm)
-    data = json.loads(manifest.read_text())
-    if nonempty:
+    manifest = (
+        _split_manifest(wasm, runtime)
+        if runtime is not None
+        else _linked_manifest(wasm)
+    )
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    if nonempty and case != "nonempty-layout":
         data["wasm_table_base"] = base
     data["abi"] = {
         "linked_self_imports": [],
@@ -414,15 +485,37 @@ def test_hosts_share_callable_table_admission(
                 "runtime_execution_leave": "molt_runtime_execution_leave",
                 "runtime_shutdown": "molt_runtime_shutdown",
                 "molt_set_wasm_table_base": (
-                    "molt_set_wasm_table_base"
-                    if host == "linked-worker"
-                    else "publish_base"
+                    "molt_set_wasm_table_base" if "worker" in host else "publish_base"
                 ),
             },
         },
     }
-    manifest.write_text(json.dumps(data))
-    if host == "node":
+    if split:
+        from molt.cli.wasm import _split_runtime_browser_abi_from_manifest
+
+        data["target_features"] = {
+            "authority": "target_feature_manifest",
+            "profile": "wasm-browser",
+            "required_host_imports": {"webgpu": []},
+            "browser_probes": {"webgpu": {"required": False}},
+        }
+        imports = data["abi"]["runtime_imports"]
+        imports["names"].append("runtime_init")
+        imports["export_names"]["runtime_init"] = "molt_runtime_init"
+        imports["signatures"] = {"runtime_init": {"params": [], "result": "i64"}}
+        data["abi"]["browser_embed"] = _split_runtime_browser_abi_from_manifest()
+        data["abi"]["callable_table"] = {
+            role: {
+                "section": WASM_CALLABLE_TABLE_SECTION_NAME,
+                "version": WASM_CALLABLE_TABLE_SECTION_VERSION,
+                "entry_count": 1 if role == "app" and nonempty else 0,
+                "first_slot": base if role == "app" and nonempty else None,
+                "last_slot": base if role == "app" and nonempty else None,
+            }
+            for role in ("app", "runtime")
+        }
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    if host in {"node", "node-split"}:
         command = ["node", "wasm/run_wasm.js", str(manifest)]
     elif host == "linked-worker":
         from tools.generate_worker import generate_worker
@@ -444,21 +537,58 @@ def test_hosts_share_callable_table_admission(
 })().catch(error => {console.error(error); process.exitCode = 1;});
 """
         command = ["node", "-e", script, str(worker), str(wasm)]
+    elif host == "split-worker":
+        from molt.cli.wasm import _generate_split_worker_js
+
+        worker = tmp_path / "worker.js"
+        worker.write_text(
+            _generate_split_worker_js(
+                deployment_manifest=data,
+                shared_memory_initial_pages=1,
+                shared_table_initial=8,
+                shared_table_base=base
+                if nonempty and case != "nonempty-layout"
+                else None,
+                runtime_import_names={"runtime_init"},
+            ),
+            encoding="utf-8",
+        )
+        script = r"""
+(async () => {
+  const fs = require('node:fs'), vm = require('node:vm');
+  const bridge = require('./wasm/loader_bridge.js');
+  const lifetime = require('./wasm/runtime_lifecycle.js');
+  const {MoltVfs} = require('./wasm/molt_vfs_browser.js');
+  const context = vm.createContext({WebAssembly, TextEncoder, TextDecoder, URL, Request,
+    Response, performance, console, MoltWasmLoaderBridge: bridge,
+    MoltRuntimeLifecycle: lifetime, MoltVfs,
+    appModule: new WebAssembly.Module(fs.readFileSync(process.argv[2])),
+    runtimeModule: new WebAssembly.Module(fs.readFileSync(process.argv[3]))});
+  const source = fs.readFileSync(process.argv[1], 'utf8')
+    .replace(/^import .*;$/gm, '').replace('export default {', 'globalThis.worker = {');
+  vm.runInContext(source, context);
+  const response = await context.worker.fetch(new Request('https://molt.test/'), {}, {});
+  if (response.status !== 200) process.exitCode = 1;
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+        command = ["node", "-e", script, str(worker), str(wasm), str(runtime)]
     else:
         script = r"""
 (async () => {
   const fs = require('node:fs');
   const {pathToFileURL, fileURLToPath} = require('node:url');
   globalThis.fetch = async url => new Response(fs.readFileSync(fileURLToPath(url)));
-  const {loadMoltWasm} = await import(pathToFileURL(require('node:path').resolve('wasm/browser_host.js')).href);
-  const loaded = await loadMoltWasm({manifestUrl: pathToFileURL(process.argv[1]).href, vfs: {}});
-  try { loaded.run(); } finally { loaded.dispose(); }
+  const embed = process.argv[2] === 'embed';
+  const host = await import(pathToFileURL(require('node:path').resolve(embed ? 'wasm/browser_embed.js' : 'wasm/browser_host.js')).href);
+  const loaded = await (embed ? host.loadMoltBrowserEmbed : host.loadMoltWasm)({manifestUrl: pathToFileURL(process.argv[1]).href, vfs: {}});
+  try { if (embed) loaded.execute(() => loaded.appInstance.exports.molt_main()); else loaded.run(); }
+  finally { loaded.dispose(); }
 })().catch(error => {console.error(error); process.exitCode = 1;});
 """
-        command = ["node", "-e", script, str(manifest)]
+        command = ["node", "-e", script, str(manifest), host]
     result = _run_wasm_test_process(
         command,
-        role="guest-host" if host == "node" else "tool",
+        role="guest-host" if host in {"node", "node-split"} else "tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
