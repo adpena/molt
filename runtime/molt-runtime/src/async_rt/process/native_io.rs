@@ -145,6 +145,11 @@ pub(super) fn attach_process_stdio(
     state: &Arc<ProcessState>,
     entry: &mut ProcessRegistryEntry,
 ) -> std::io::Result<()> {
+    if let Some(ipc) = stdio.ipc.take() {
+        let (reader, writer) = ipc.finish(child)?;
+        spawn_process_reader(reader, stdio.ipc_recv_stream, Arc::clone(state), entry)?;
+        spawn_process_writer(writer, stdio.ipc_send_stream, Arc::clone(state), entry)?;
+    }
     if stdio.stdin_stream != 0
         && let Some(stdin) = child.stdin.take()
     {

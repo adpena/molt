@@ -1531,6 +1531,7 @@ tests/differential/stdlib/multiprocessing_pool_timeout.py
 tests/differential/stdlib/multiprocessing_sem_unlink_arguments.py
 tests/differential/stdlib/multiprocessing_shared_value_array.py
 tests/differential/stdlib/multiprocessing_start_method.py
+tests/differential/stdlib/multiprocessing_worker_stdio.py
 tests/differential/stdlib/native_handle_close_protocols.py
 tests/differential/stdlib/netrc_basic.py
 tests/differential/stdlib/numeric_cross_type_hash_invariant.py

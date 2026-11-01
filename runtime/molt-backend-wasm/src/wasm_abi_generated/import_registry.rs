@@ -6698,6 +6698,18 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "process_spawn_ex",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ProcessIpcSpawn,
+        name: "process_ipc_spawn",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ProcessIpcStreams,
+        name: "process_ipc_streams",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ProcessIpcChild,
+        name: "process_ipc_child",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::MultiprocessingCodecDumps,
         name: "multiprocessing_codec_dumps",
     },
@@ -14916,6 +14928,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_logging_config_stop_listening" => Some(WasmRuntimeImport::LoggingConfigStopListening),
         "process_spawn_ex" => Some(WasmRuntimeImport::ProcessSpawnEx),
         "molt_process_spawn_ex" => Some(WasmRuntimeImport::ProcessSpawnEx),
+        "process_ipc_spawn" => Some(WasmRuntimeImport::ProcessIpcSpawn),
+        "molt_process_ipc_spawn" => Some(WasmRuntimeImport::ProcessIpcSpawn),
+        "process_ipc_streams" => Some(WasmRuntimeImport::ProcessIpcStreams),
+        "molt_process_ipc_streams" => Some(WasmRuntimeImport::ProcessIpcStreams),
+        "process_ipc_child" => Some(WasmRuntimeImport::ProcessIpcChild),
+        "molt_process_ipc_child" => Some(WasmRuntimeImport::ProcessIpcChild),
         "multiprocessing_codec_dumps" => Some(WasmRuntimeImport::MultiprocessingCodecDumps),
         "molt_multiprocessing_codec_dumps" => Some(WasmRuntimeImport::MultiprocessingCodecDumps),
         "multiprocessing_codec_loads" => Some(WasmRuntimeImport::MultiprocessingCodecLoads),

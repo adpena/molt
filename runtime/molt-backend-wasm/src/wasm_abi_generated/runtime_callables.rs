@@ -6380,7 +6380,22 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_process_spawn_ex",
         import: WasmRuntimeImport::ProcessSpawnEx,
-        arity: 8,
+        arity: 10,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_process_ipc_spawn",
+        import: WasmRuntimeImport::ProcessIpcSpawn,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_process_ipc_streams",
+        import: WasmRuntimeImport::ProcessIpcStreams,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_process_ipc_child",
+        import: WasmRuntimeImport::ProcessIpcChild,
+        arity: 0,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_multiprocessing_codec_dumps",
@@ -14064,6 +14079,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_logging_config_listen" => Some(WasmRuntimeImport::LoggingConfigListen),
         "molt_logging_config_stop_listening" => Some(WasmRuntimeImport::LoggingConfigStopListening),
         "molt_process_spawn_ex" => Some(WasmRuntimeImport::ProcessSpawnEx),
+        "molt_process_ipc_spawn" => Some(WasmRuntimeImport::ProcessIpcSpawn),
+        "molt_process_ipc_streams" => Some(WasmRuntimeImport::ProcessIpcStreams),
+        "molt_process_ipc_child" => Some(WasmRuntimeImport::ProcessIpcChild),
         "molt_multiprocessing_codec_dumps" => Some(WasmRuntimeImport::MultiprocessingCodecDumps),
         "molt_multiprocessing_codec_loads" => Some(WasmRuntimeImport::MultiprocessingCodecLoads),
         "molt_stream_reader_new" => Some(WasmRuntimeImport::StreamReaderNew),

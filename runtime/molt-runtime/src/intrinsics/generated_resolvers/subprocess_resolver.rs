@@ -11,6 +11,18 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_process_spawn_ex",
             crate::molt_process_spawn_ex as *const (),
         )),
+        "molt_process_ipc_spawn" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_process_ipc_spawn",
+            crate::molt_process_ipc_spawn as *const (),
+        )),
+        "molt_process_ipc_streams" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_process_ipc_streams",
+            crate::molt_process_ipc_streams as *const (),
+        )),
+        "molt_process_ipc_child" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_process_ipc_child",
+            crate::molt_process_ipc_child as *const (),
+        )),
         "molt_process_wait_future" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_process_wait_future",
             crate::molt_process_wait_future as *const (),

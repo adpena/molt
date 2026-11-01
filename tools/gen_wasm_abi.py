@@ -426,13 +426,12 @@ def _render_rs_callable_table(
         lines.append(
             f"pub const WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: &[&str] = &[{names}];\n"
         )
-    if include_active_element_role:
-        lines.extend(
-            [
-                "pub(crate) const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: u32 = ",
-                f"{authority['active_element_role']};\n",
-            ]
-        )
+    lines.extend(
+        [
+            "pub(crate) const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: u32 = ",
+            f"{authority['active_element_role']};\n",
+        ]
+    )
     lines.extend(
         [
             "pub(crate) const CALLABLE_TABLE_VALUE_TYPE_FORMAT: u32 = ",

@@ -1134,7 +1134,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
             slot: element.slot,
             function_index: element.function_index,
             type_index,
-            role: 0,
+            role: crate::CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
         });
     }
     let callable_table_attestation_present = callable_table_attestation.is_some();

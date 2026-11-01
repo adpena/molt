@@ -17,6 +17,9 @@ pub(super) struct NativeProcessStdio {
     pub(super) stdout_stream: u64,
     pub(super) stderr_stream: u64,
     pub(super) merged_stdout_reader: Option<os_pipe::PipeReader>,
+    pub(super) ipc: Option<super::ipc::PreparedIpc>,
+    pub(super) ipc_recv_stream: u64,
+    pub(super) ipc_send_stream: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -47,6 +50,9 @@ impl NativeProcessStdio {
             stdout_stream,
             stderr_stream,
             merged_stdout_reader: None,
+            ipc: None,
+            ipc_recv_stream: 0,
+            ipc_send_stream: 0,
         }
     }
 
@@ -54,6 +60,14 @@ impl NativeProcessStdio {
         drop_stream(&mut self.stdin_stream);
         drop_stream(&mut self.stdout_stream);
         drop_stream(&mut self.stderr_stream);
+        drop_stream(&mut self.ipc_recv_stream);
+        drop_stream(&mut self.ipc_send_stream);
+    }
+
+    pub(super) fn set_ipc(&mut self, ipc: super::ipc::PreparedIpc, max_queued_bytes: usize) {
+        self.ipc = Some(ipc);
+        self.ipc_recv_stream = new_process_pipe_stream(max_queued_bytes);
+        self.ipc_send_stream = new_process_pipe_stream(max_queued_bytes);
     }
 }
 

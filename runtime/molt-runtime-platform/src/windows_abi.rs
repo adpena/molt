@@ -3,6 +3,8 @@
 use std::ffi::c_void;
 
 pub const FILE_TYPE_CHAR: u32 = 0x0002;
+pub const FILE_TYPE_PIPE: u32 = 0x0003;
+pub const PROCESS_DUP_HANDLE: u32 = 0x0040;
 pub const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
 pub const DUPLICATE_SAME_ACCESS: u32 = 0x00000002;
 pub const FILE_NAME_NORMALIZED: u32 = 0x00000000;
@@ -64,6 +66,15 @@ pub fn winerror_to_errno(mut winerror: i32) -> i32 {
 unsafe extern "system" {
     pub fn NeedCurrentDirectoryForExePathW(exe_name: *const u16) -> i32;
     pub fn GetCurrentProcess() -> *mut c_void;
+    pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+    pub fn PeekNamedPipe(
+        pipe: *mut c_void,
+        buffer: *mut c_void,
+        buffer_size: u32,
+        bytes_read: *mut u32,
+        bytes_available: *mut u32,
+        bytes_left: *mut u32,
+    ) -> i32;
     pub fn CreateFileW(
         path: *const u16,
         access: u32,

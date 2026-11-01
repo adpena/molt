@@ -178,17 +178,28 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
     stderr_bits: u64,
     _start_new_session_bits: u64,
     _process_group_bits: u64,
+    _close_fds_bits: u64,
+    pass_fds_bits: u64,
 ) -> u64 {
-    unsafe {
-        molt_process_spawn(
-            args_bits,
-            env_bits,
-            cwd_bits,
-            stdin_bits,
-            stdout_bits,
-            stderr_bits,
-        )
-    }
+    crate::with_gil_entry_nopanic!(_py, {
+        if is_truthy(_py, obj_from_bits(pass_fds_bits)) {
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "pass_fds is unavailable: this WASM host has no descriptor-passing process model",
+            );
+        }
+        unsafe {
+            molt_process_spawn(
+                args_bits,
+                env_bits,
+                cwd_bits,
+                stdin_bits,
+                stdout_bits,
+                stderr_bits,
+            )
+        }
+    })
 }
 
 extern "C" fn process_stdin_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {

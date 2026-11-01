@@ -325,7 +325,7 @@ struct LoadedGuestOptions<'a> {
     launch_environment: &'a [(String, String)],
     vfs_envs: &'a [(String, String)],
     guest_args: &'a [String],
-    wasm_table_base: Option<u64>,
+    wasm_table_admission: WasmTableAdmission,
 }
 
 fn execute_loaded_guest(
@@ -339,7 +339,7 @@ fn execute_loaded_guest(
         launch_environment,
         vfs_envs,
         guest_args,
-        wasm_table_base,
+        wasm_table_admission,
     } = options;
     let indirect_calls = validate_execution_imports(kind, output_module, runtime_module)?;
     let is_wasi_command = matches!(
@@ -373,6 +373,9 @@ fn execute_loaded_guest(
                 runtime,
             })?;
         }
+    }
+    if !is_wasi_command {
+        wasm_table_admission.validate_export(runtime_module.unwrap_or(output_module))?;
     }
     let runtime_imports = RuntimeImportPlan::new(output_module, runtime_module)?;
     let output_mem = memory_limits(output_module);
@@ -411,6 +414,7 @@ fn execute_loaded_guest(
                 vfs_envs,
                 guest_args,
                 (!matches!(kind, LoadedGuestKind::WasiCommand)).then_some("wasi"),
+                (!is_wasi_command).then_some(&wasm_table_admission),
             )?,
             memory: None,
             call_indirect: Arc::default(),
@@ -508,8 +512,12 @@ fn execute_loaded_guest(
                 .context("instantiate runtime")?;
             log::debug!("runtime instantiated");
             set_memory_from_exports(&mut store, &runtime_instance);
+            // Publish before admission. Retain a setter trap until typed
+            // cleanup bindings exist so failed setup still finalizes the runtime.
+            let publication =
+                configure_wasm_table_base(&mut store, &runtime_instance, &wasm_table_admission);
             lifetime = Some(MoltRuntimeLifetime::admit(&mut store, &runtime_instance)?);
-            configure_wasm_table_base(&mut store, &runtime_instance, wasm_table_base)?;
+            publication?;
             runtime_imports.bind(&mut linker, &mut store, &runtime_instance)?;
             Some(runtime_instance)
         } else {
@@ -540,7 +548,12 @@ fn execute_loaded_guest(
         log::debug!("{output_label} instantiated");
         set_memory_from_exports(&mut store, &output_instance);
         if !is_wasi_command && runtime_instance.is_none() {
+            // Publish before admission. Retain a setter trap until typed
+            // cleanup bindings exist so failed setup still finalizes the runtime.
+            let publication =
+                configure_wasm_table_base(&mut store, &output_instance, &wasm_table_admission);
             lifetime = Some(MoltRuntimeLifetime::admit(&mut store, &output_instance)?);
+            publication?;
         }
         if !is_wasi_command {
             register_isolate_exports(&mut store, &output_instance)?;
@@ -552,9 +565,6 @@ fn execute_loaded_guest(
                 &registry,
                 &indirect_calls,
             )?;
-        }
-        if !is_wasi_command && runtime_instance.is_none() {
-            configure_wasm_table_base(&mut store, &output_instance, wasm_table_base)?;
         }
 
         if is_wasi_command {
@@ -663,6 +673,7 @@ fn run() -> Result<GuestTermination> {
         use_linked,
         is_wasi_command,
         launch_environment,
+        table_config,
     ) = match resolved {
         ResolvedExecution::MoltApplication(ResolvedExecutionModules {
             manifest_path,
@@ -670,6 +681,7 @@ fn run() -> Result<GuestTermination> {
             runtime,
             linked,
             launch_environment,
+            table_config,
         }) => (
             Some(manifest_path),
             main,
@@ -677,8 +689,17 @@ fn run() -> Result<GuestTermination> {
             linked,
             false,
             launch_environment,
+            table_config,
         ),
-        ResolvedExecution::WasiCommand { module } => (None, module, None, true, true, Vec::new()),
+        ResolvedExecution::WasiCommand { module } => (
+            None,
+            module,
+            None,
+            true,
+            true,
+            Vec::new(),
+            WasmTableConfig::default(),
+        ),
         ResolvedExecution::WasiCommandManifest(command) => {
             let engine = build_engine()?;
             let command = command.load(&engine)?;
@@ -696,21 +717,16 @@ fn run() -> Result<GuestTermination> {
                     launch_environment: command.launch_environment(),
                     vfs_envs: &vfs_envs,
                     guest_args: &guest_args,
-                    wasm_table_base: None,
+                    wasm_table_admission: WasmTableAdmission::Empty,
                 },
             );
         }
     };
-    let wasm_table_base = if is_wasi_command {
-        None
+    let wasm_table_admission = if is_wasi_command {
+        WasmTableAdmission::Empty
     } else {
-        detect_wasm_table_base(&main_source)?
+        admit_wasm_table(&main_source, runtime_source.as_ref(), table_config)?
     };
-    if let Some(base) = wasm_table_base
-        && env::var_os("MOLT_WASM_TABLE_BASE").is_none()
-    {
-        upsert_extra_env(&mut vfs_envs, "MOLT_WASM_TABLE_BASE", base.to_string());
-    }
 
     let engine = build_engine()?;
     let output_module = load_or_compile_module(&engine, &main_source, ModuleRole::Main)?;
@@ -751,7 +767,7 @@ fn run() -> Result<GuestTermination> {
             vfs_envs: &vfs_envs,
             launch_environment: &launch_environment,
             guest_args: &guest_args,
-            wasm_table_base,
+            wasm_table_admission,
         },
     )
 }

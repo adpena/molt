@@ -498,7 +498,10 @@ fn actual_manifest_command_core_start_exit_precedes_exported_start() {
     let positional = host().arg(&manifest).output().unwrap();
     assert!(!positional.status.success());
     let diagnostic = String::from_utf8_lossy(&positional.stderr);
-    assert!(diagnostic.contains("molt_main"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("MOLT_WASM_TABLE_ATTESTATION_MISSING"),
+        "{diagnostic}"
+    );
     assert!(!diagnostic.contains("unreachable"), "{diagnostic}");
 }
 
@@ -549,6 +552,8 @@ fn actual_application_reports_runtime_exit_status_and_finishes_lifetime() {
                 i64.const 1))"#
         ))
         .unwrap();
+        let program = molt_wasm_facts::publish_callable_table_attestation(&program, None)
+            .expect("publish the application's empty callable-table attestation");
         fixture.write("application.wasm", &program);
         let manifest = fixture.write(
             "manifest.json",

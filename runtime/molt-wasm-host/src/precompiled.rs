@@ -552,6 +552,7 @@ mod tests {
             main,
             runtime: Some(runtime),
             linked: false,
+            table_config: WasmTableConfig::default(),
         });
         let error = precompile_execution(&build_engine().unwrap(), &execution)
             .err()
@@ -580,6 +581,7 @@ mod tests {
             main,
             runtime: Some(runtime),
             linked: false,
+            table_config: WasmTableConfig::default(),
         });
         let engine = build_engine().unwrap();
         let receipt = precompile_execution(&engine, &execution).unwrap();

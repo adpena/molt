@@ -2959,7 +2959,7 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         )
     assert not startup.dependencies
     runner = rows["wasm.host.runner-fixtures"]
-    assert runner.dependencies == ("wasm.build.backend",)
+    assert runner.dependencies == ("wasm.build.backend", "wasm.build.host")
     # The import-collection cases that validate WASM with the pinned
     # wasm-tools run here, where the job provisions it (HF-160).
     assert {arg for arg in runner.argv if arg.startswith("tests/")} == {
@@ -11801,11 +11801,14 @@ def test_host_error_abi_laws_have_binary_execution_ownership() -> None:
     )
     gate = next(gate for gate in rule.gates if "cargo test" in gate)
     assert "--bin molt-wasm-host" in gate
-    assert {
-        "socket_host::tests::",
-        "main_tests::runtime_manifest_",
-        "main_tests::explicit_wasi_command_",
-    } <= set(gate.split())
+    assert "--test host_diagnostics" in gate
+    assert "--no-fail-fast" in gate.split(" -- ", 1)[0].split()
+    # No legacy name filter may omit the admission tests or filter the CLI
+    # integration producer down to a zero-test success.
+    assert gate.split(" -- ", 1)[1].split() == [
+        "--nocapture",
+        "--test-threads=1",
+    ]
     packages = {
         command.argv[index + 1]
         for index, argument in enumerate(command.argv[:-1])
