@@ -6198,7 +6198,7 @@ gates = [
   # Selecting the integration target also produces the dev-fast deployment bin
   # consumed by runner parity. Cargo's target-selection contract:
   # https://doc.rust-lang.org/cargo/commands/cargo-test.html#target-selection
-  "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host --test host_diagnostics -- --nocapture --test-threads=1",
+  "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host --test host_diagnostics --no-fail-fast -- --nocapture --test-threads=1",
 ]
 
 # --- GPU object-runtime integration --------------------------------------

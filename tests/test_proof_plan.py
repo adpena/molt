@@ -11802,6 +11802,7 @@ def test_host_error_abi_laws_have_binary_execution_ownership() -> None:
     gate = next(gate for gate in rule.gates if "cargo test" in gate)
     assert "--bin molt-wasm-host" in gate
     assert "--test host_diagnostics" in gate
+    assert "--no-fail-fast" in gate.split(" -- ", 1)[0].split()
     # No legacy name filter may omit the admission tests or filter the CLI
     # integration producer down to a zero-test success.
     assert gate.split(" -- ", 1)[1].split() == [
