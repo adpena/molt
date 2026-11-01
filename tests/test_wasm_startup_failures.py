@@ -1542,10 +1542,11 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
     tmp_path: Path,
 ) -> None:
     from tools.generate_worker import generate_worker
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 
     output = tmp_path / "worker.js"
     module = tmp_path / "worker_linked.wasm"
-    module.write_bytes(EMPTY_WASM_MODULE)
+    module.write_bytes(attested_empty_callable_table(EMPTY_WASM_MODULE))
     write_wasm_execution_manifest(tmp_path, linked=module)
     generate_worker(output, tmp_quota_mb=32)
     source = output.read_text(encoding="utf-8")
@@ -2071,11 +2072,11 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
     tmp_path: Path,
 ) -> None:
     from molt.cli.wasm import _generate_split_worker_js
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 
+    module = attested_empty_callable_table(EMPTY_WASM_MODULE)
     source = _generate_split_worker_js(
-        deployment_manifest=split_wasm_execution_manifest(
-            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
-        ),
+        deployment_manifest=split_wasm_execution_manifest(module, module),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -2089,6 +2090,8 @@ def assert_split_worker_runtime_lifecycle(
     source: str, lifecycle_path: Path, tmp_path: Path
 ) -> None:
     """Execute the emitted worker transaction with its actual lifecycle companion."""
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+
     assert 'import "./runtime_lifecycle.js";' in source
     assert lifecycle_path.is_file(), f"Missing lifecycle companion: {lifecycle_path}"
     start = source.index("    let rtInstance = null;")
@@ -2101,10 +2104,17 @@ def assert_split_worker_runtime_lifecycle(
         + "const lifetimePath = "
         + json.dumps(str(lifecycle_path))
         + ";\n"
+        + "const loaderPath = "
+        + json.dumps(str(ROOT / "wasm/loader_bridge.js"))
+        + ";\nconst moduleBytes = new Uint8Array("
+        + json.dumps(list(attested_empty_callable_table(EMPTY_WASM_MODULE)))
+        + ");\n"
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {createRuntimeLifetime, combinedError} = require(lifetimePath);
+const {prepareWasmTableAdmission, publishWasmTableAdmission} = require(loaderPath);
+const tableAdmission = prepareWasmTableAdmission({module: new WebAssembly.Module(moduleBytes)});
 async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const events = [];
   const cleanup = new Error('shutdown failed');
@@ -2119,6 +2129,7 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const runtimeModule = {};
   const context = {
     createRuntimeLifetime, combinedError, runtimeExceptionPending: () => false,
+    tableAdmission, publishWasmTableAdmission,
     runtimeImportExportNames: {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'},
     runtimeModule, appModule: {}, appInstance: null, wasi: {}, hostEnv: {}, sharedTable: {}, wasmMemory: {},
     runtimeCallableTable: {}, appCallableTable: {}, verifyCallableTableEntries() {}, buildRuntimeImports: () => ({}),
