@@ -188,6 +188,36 @@ def _start(root: Path, slug: str) -> Path:
     return worktree
 
 
+def test_lane_env_files_name_the_environment_that_provisioning_selects(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A lane records its task, then provisions. Provisioning publishes the uv
+    # environment selection, so a fresh slot's env files must be republished
+    # after it, or `uv run` in the lane misses the slot image (HF-663).
+    selected = family / "selected-environment"
+    base = family / "molt-src" / "logs" / "agents" / "lane-fresh"
+    before: list[str] = []
+
+    def provision(worktree: Path) -> tuple[cp.Ensured, ...]:
+        before.extend((base / "env.sh").read_text(encoding="utf-8").splitlines())
+        return ()
+
+    def selection(checkout: Path, environ, **_kwargs) -> Path | None:
+        return selected if before else None
+
+    monkeypatch.setattr(lanes, "provision_lane", provision)
+    monkeypatch.setattr(cp, "selected_development_environment", selection)
+    _start(family, "fresh")
+
+    uv_line = f'export UV_PROJECT_ENVIRONMENT="{selected}"'
+    after = (base / "env.sh").read_text(encoding="utf-8").splitlines()
+    assert uv_line not in before
+    assert uv_line in after
+    assert [line for line in after if line != uv_line] == before
+    assert str(selected) in (base / "env.ps1").read_text(encoding="utf-8")
+    assert _record(family, "fresh")["dx_env"]["UV_PROJECT_ENVIRONMENT"] == str(selected)
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_pinned_assets_share_one_generation_and_survive_handoff_without_archival(
     family, legacy

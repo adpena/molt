@@ -904,14 +904,19 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
             done = provision_lane(worktree)
         except checkout_provisioning.ProvisioningError as exc:
             _fail(str(exc))
+            # A later start reuses the slot and republishes the env files.
             _say(
-                f"    the lane exists; finish provisioning with: cd {worktree} && "
-                "uv run python -m molt.checkout_provisioning ensure"
+                "    the lane exists; finish provisioning with: "
+                f"molt_dev.py lane retire --abandon {slug} && "
+                f"molt_dev.py lane start {slug}"
             )
             return EXIT_FAIL
         for item in done:
             action = "provisioned" if item.provisioned else "current"
             _ok(f"{item.name}: {action} ({item.seconds:.2f} s)")
+        agent_coordination.refresh_task_environment(
+            registry_root=main, source_root=worktree, task=lane_task(slug)
+        )
         print(worktree, flush=True)
         return EXIT_OK
 
