@@ -335,13 +335,26 @@ pub(crate) fn weakref_clear_for_ptr(_py: &PyToken<'_>, target_ptr: *mut u8) {
     if target_ptr.is_null() {
         return;
     }
+    // Only committed death retires internal observations. Generators and GC
+    // clear Python weakrefs before finalization, which can still resurrect.
+    runtime_state(_py)
+        .weakrefs
+        .lock()
+        .unwrap()
+        .borrowed_targets
+        .remove(&PtrSlot(target_ptr));
+    clear_python_weakrefs_for_ptr(_py, target_ptr);
+}
+
+/// CPython gen_dealloc clears Python weakrefs before calling the finalizer.
+/// This does not invalidate internal lifetime observations if it resurrects.
+pub(crate) fn clear_python_weakrefs_for_ptr(_py: &PyToken<'_>, target_ptr: *mut u8) {
+    if target_ptr.is_null() {
+        return;
+    }
     let target_slot = PtrSlot(target_ptr);
     let capacity = {
-        let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
-        // This entrypoint is called only after committed death, after any
-        // resurrection opportunity. GC's early Python-weakref clearing does
-        // not retire internal observations of still-live allocations.
-        registry.borrowed_targets.remove(&target_slot);
+        let registry = runtime_state(_py).weakrefs.lock().unwrap();
         registry.by_target.get(&target_slot).map_or(0, Vec::len)
     };
     let mut deaths: Vec<PendingWeakDeath> = Vec::new();
