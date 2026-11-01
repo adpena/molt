@@ -242,6 +242,39 @@ Determinism constraints: GC triggers use explicit byte/epoch budgets. Finalizers
 and release callbacks preserve admitted CPython semantics, including reentry;
 cleanup must not expose partially retired ownership or replace the original error.
 
+Terminal heap release enters `object::bounded_release` before running a finalizer
+or detaching a payload. One per-thread depth counter bounds nested terminal
+transactions. At the bound, the zero-count object retains its intact payload in
+a LIFO worklist; the outermost release drains that worklist without another
+reference-count decrement. Pending objects are untracked until resumption, keep
+their allocation charge, and cannot be upgraded through weakrefs at zero count.
+Resumption reloads lifecycle flags before running the ordinary resurrection,
+weakref, detach, resource and physical-storage transaction. No queue borrow or
+global release lock crosses Python callbacks. The thread record borrows the
+outermost release's stack-owned state and has no TLS destructor, so runtime and
+thread teardown use the same authority.
+
+`HEADER_FLAG_SCOPED` retains its allocation-site meaning: backing storage belongs
+to a frame or arena. Its terminal transaction finishes synchronously, including
+when entered above the heap depth bound; only heap-owned children may wait.
+Storage must remain valid until all of its owners have been released. Queuing a
+pointer cannot extend a caller-owned storage lifetime.
+
+All generated heap kinds share this entry and the existing exhaustive payload
+detach authority, including instance dictionaries and slots, closure cells,
+frame/generator bindings, bound methods and exception chains. Their shallow
+edge order stays unchanged: finalization precedes ordinary instance weakref
+callbacks, resurrection preserves weakrefs and `__del__` runs once.
+Generators clear old Python weakrefs before closing or calling their async
+finalization hook, including when that hook resurrects the generator. Deep
+deallocation cut points are an implementation detail; Molt does not copy
+CPython's type-specific participation count. The bound's physical-stack
+derivation and CPython provenance belong to family K's
+[bounded release design](../../../design/findings_prior_art.md#k-runtime-ownership-and-resources).
+The native and WASM `runtime.public-consumers` proof cells own the deep-release
+and shallow finalizer/resurrection differentials; source implementation does
+not qualify additional profiles, platforms or concurrency cells.
+
 See `docs/spec/areas/runtime/0009_GC_DESIGN.md` for the concrete hybrid design and targets.
 
 ### 3.3 Header Layout (runtime-relevant)
