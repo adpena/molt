@@ -1063,6 +1063,57 @@ over plain, `__slots__`, list-subclass and nested-class instances. Then run
 `copy.deepcopy` on a user class whose `__deepcopy__` shares the memo, and load
 a CPython-made protocol-1 pickle.
 
+## W. Startup and build-time initialization
+
+**Problem.** Every start of a compiled program reruns runtime setup and every
+module body. An almost empty program starts in 217.4M instructions retired
+against CPython 3.12's 88.8M (`-I -S`), and a program that imports
+`dataclasses` in 402.1M against 167.2M (2026-11-01, release, macOS arm64,
+HF-668's probes). Nothing owns startup cost, so a change that adds 14.6M to
+17.4M startup instructions had no row to answer to (HF-661 review).
+
+**Prior art.**
+- *CPython frozen core modules.* [F] Python 3.11 statically allocates the code
+  objects of the core startup modules, so their execution skips reading
+  `__pycache__` and unmarshalling; interpreter startup is 10-15% faster than
+  3.10. Source: https://docs.python.org/3.11/whatsnew/3.11.html ("Frozen
+  imports / Static code objects"), fetched 2026-11-01.
+- *GraalVM Native Image build-time initialization.* [F] Native Image runs safe
+  class initializers while it builds the executable and stores their static
+  state in the image, so neither the initializer nor its per-access checks run
+  at startup. A class qualifies only if its supertypes are safe and its
+  initializer reaches no native call, no unresolved virtual call and no
+  substituted method. Source:
+  https://www.graalvm.org/latest/reference-manual/native-image/optimizations-and-performance/ClassInitialization/,
+  fetched 2026-11-01.
+- *V8 startup snapshots.* [F] A snapshot stores an initialized heap (built-in
+  globals and scripts run before capture); context creation drops from 40 ms to
+  under 2 ms on a desktop and from 270 ms to 10 ms on a phone. A snapshot
+  cannot capture external interaction, and `Math.random` and `Date.now` values
+  freeze at capture time. Source: https://v8.dev/blog/custom-startup-snapshots,
+  fetched 2026-11-01.
+- *HotSpot AOT class loading and linking.* [F] JEP 483 (JDK 24) stores the
+  loaded and linked classes of a training run in an AOT cache; startup falls
+  42% (`HelloStream` 0.031 s to 0.018 s, Spring PetClinic 4.486 s to
+  2.604 s). Source: https://openjdk.org/jeps/483, fetched 2026-11-01.
+
+**Adopt.** [I] Molt sees the whole program at build time. Evaluate each module
+body whose initialization is deterministic at build time, under GraalVM's
+safety rule restated for Python: no foreign or native call, no unresolved
+dynamic dispatch, no read of the environment, clock, randomness, filesystem or
+process state. Emit the resulting objects as immortal static data (as CPython's
+static code objects), keyed by the content identity of their inputs (F) and by
+the declared target (O), and initialize the rest lazily at first use.
+
+**Refuse.** [I] A snapshot that captures host state: V8's frozen `Math.random`
+and `Date.now` show the hazard, and Molt is deterministic by default. Refuse a
+build-time result that differs between the build host and the declared target.
+
+**Experiment.** [H] Attribute an almost empty program's 217.4M startup
+instructions to phases (runtime setup, each module body) with
+`tools/opt_explorer.py profile`; then emit one pure module's objects as static
+data and measure the instructions-retired delta at N=0.
+
 ## Candidates not used
 
 Perry has only a README and blog posts, and no family needs a TypeScript
