@@ -10,10 +10,31 @@ macOS holds the parent directory with `O_SEARCH`. It queries the direct leaf's
 that descriptor, and its volume UUID/real device through `fgetattrlist` on the
 same held parent. The leaf and parent real devices must agree within the
 operation; no device-to-UUID result is cached. Leaf and parent identity fences
-reject changes. A mode-000 leaf needs no open; an unsearchable parent, unsupported
+reject substitution. A directory leaf retains the native device/file-ID,
+inode and mode fences; its size and mutation clocks describe entry activity,
+not object identity. Regular files and symlinks additionally retain frozen size
+and mutation-clock fences during capture. Renaming a replacement directory over
+the leaf is refused even when its mode, size and clocks match: the native file
+ID and final stat must still name the original inode. A mode-000 leaf needs no
+open; an unsearchable parent, unsupported
 attributes, or a leaf mounted on a different volume raises typed
 `ParentCaptureUnavailable` with a remedy. The filesystem root uses the held root
 and relative `.`. An ancestor replacement can no longer combine two volumes.
+
+This leaf-type distinction corrects the metadata fence introduced with the
+held-parent protocol (`806af4dbd0`); that protocol's replacement protection is
+the held-parent and native leaf identity comparison. Apple's
+[stat manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/stat.2.html)
+defines size and mutation times separately from device, inode and type.
+Linux and Windows named captures already fence the pathname against the held
+leaf descriptor with `samestat`; neither compares size or mutation clocks.
+Their volume queries and descriptor/name fences remain unchanged.
+
+Successful macOS named capture still makes nine explicit filesystem calls:
+one parent open, two parent `fstat`s, two relative leaf `stat`s, two
+`getattrlistat` leaf queries, one `fgetattrlist` volume query and one close.
+This change adds no call or retained allocation; directories skip the two
+metadata-comparison tuples, and other leaves retain two smaller tuples.
 
 [Apple's getattrlist manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/getattrlist.2.html)
 defines metadata-only permissions and nofollow lookup.

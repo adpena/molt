@@ -688,3 +688,112 @@ def test_former_namespace_selection_grants_no_new_storage_write(tmp_path):
             )
             (artifact / "undeclared-sibling").write_bytes(b"refused")
     assert not (artifact / "undeclared-sibling").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="native Darwin held-parent protocol"
+)
+def test_native_directory_identity_survives_concurrent_entry_changes(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "leaf"
+    target.mkdir()
+    original_stat = target.lstat()
+    expected = durable.file_identity(target)
+    native_leaf = durable._apple_leaf
+    capturing = Event()
+
+    def change_entries():
+        assert capturing.wait(timeout=10)
+        for index in range(16):
+            child = target / f"child-{index}"
+            child.write_bytes(b"directory entry activity")
+            child.unlink()
+        return target.lstat()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        changed = pool.submit(change_entries)
+
+        def query_during_entry_changes(fd, name):
+            answer = native_leaf(fd, name)
+            if not capturing.is_set():
+                capturing.set()
+                observed = changed.result(timeout=10)
+                assert os.path.samestat(original_stat, observed)
+                assert (original_stat.st_mtime_ns, original_stat.st_ctime_ns) != (
+                    observed.st_mtime_ns,
+                    observed.st_ctime_ns,
+                )
+            return answer
+
+        monkeypatch.setattr(durable, "_apple_leaf", query_during_entry_changes)
+        try:
+            actual = durable.file_identity(target, expected=original_stat)
+        finally:
+            capturing.set()
+    assert actual == expected
+    assert actual.file_id == f"{original_stat.st_ino:032x}"
+    assert os.path.samestat(original_stat, target.lstat())
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="native Darwin held-parent protocol"
+)
+@pytest.mark.parametrize("query_number", [1, 2])
+def test_native_directory_identity_refuses_rename_replacement(
+    tmp_path, monkeypatch, query_number
+):
+    target, replacement = tmp_path / "leaf", tmp_path / "replacement"
+    target.mkdir()
+    replacement.mkdir()
+    original_stat = target.lstat()
+    replacement_stat = replacement.lstat()
+    native_leaf = durable._apple_leaf
+    queries = 0
+
+    def query_with_replacement(fd, name):
+        nonlocal queries
+        answer = native_leaf(fd, name)
+        queries += 1
+        if queries == query_number:
+            target.rename(tmp_path / "retained-original")
+            replacement.rename(target)
+        return answer
+
+    monkeypatch.setattr(durable, "_apple_leaf", query_with_replacement)
+    with pytest.raises(durable.ParentCaptureUnavailable) as caught:
+        durable.file_identity(target, expected=original_stat)
+    assert caught.value.reason is durable.ParentCaptureReason.CHANGED
+    assert queries == 2
+    assert not os.path.samestat(original_stat, target.lstat())
+    assert os.path.samestat(replacement_stat, target.lstat())
+    assert os.path.samestat(original_stat, (tmp_path / "retained-original").lstat())
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="native Darwin held-parent protocol"
+)
+def test_native_regular_file_identity_still_refuses_content_mutation(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "leaf"
+    target.write_bytes(b"before")
+    original_stat = target.lstat()
+    native_leaf = durable._apple_leaf
+    mutated = False
+
+    def query_with_mutation(fd, name):
+        nonlocal mutated
+        answer = native_leaf(fd, name)
+        if not mutated:
+            mutated = True
+            target.write_bytes(b"changed regular-file contents")
+        return answer
+
+    monkeypatch.setattr(durable, "_apple_leaf", query_with_mutation)
+    with pytest.raises(durable.ParentCaptureUnavailable) as caught:
+        durable.file_identity(target)
+    assert caught.value.reason is durable.ParentCaptureReason.CHANGED
+    assert mutated
+    assert os.path.samestat(original_stat, target.lstat())
