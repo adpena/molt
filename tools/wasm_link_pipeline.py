@@ -48,6 +48,7 @@ from molt.cli.link_selection_admission import (
 from molt.cli.wasm_link_args import wasm_link_output_arguments
 
 from molt.wasm_artifact import read_wasm_split_runtime_callable_layout
+from molt.wasm_optimization import wasm_opt_converges
 from molt.wasm_optimizer_identity import (
     WasmOptimizerExecutableIdentity,
     WasmOptimizerIdentityError,
@@ -514,6 +515,7 @@ def _post_link_transform_stage(
     optimize: bool,
     optimize_level: str,
     split_runtime: bool,
+    freestanding: bool,
     optimizer_attestation: dict[str, object],
     optimizer_identity: WasmOptimizerExecutableIdentity | None,
     operation_counts: dict[str, int | float],
@@ -542,6 +544,21 @@ def _post_link_transform_stage(
             f"{savings / pre_opt_size * 100:.1f}% reduction)",
             file=sys.stderr,
         )
+    # Stubbing changes control flow: a WASI call now traps instead of returning.
+    # The existing optimizer must see that fact to remove its dead continuations.
+    n_stubbed = 0
+    if freestanding:
+        try:
+            freestanding_bytes, n_stubbed = stub_wasi_imports(artifact.data)
+            if n_stubbed > 0:
+                artifact.replace(freestanding_bytes)
+                print(
+                    f"Freestanding: stubbed {n_stubbed} WASI imports",
+                    file=sys.stderr,
+                )
+        except ValueError as exc:
+            print(f"Freestanding WASI stubbing failed: {exc}", file=sys.stderr)
+            return False
     if optimize:
         optimizer_telemetry: dict[str, object] = {}
         _optimizer._cache_metric_add(
@@ -551,7 +568,9 @@ def _post_link_transform_stage(
             lambda path: _optimizer._run_wasm_opt_via_optimize(
                 path,
                 level=optimize_level,
-                converge=False,
+                # Propagate the new traps through Rust/libc wrapper layers.
+                # O1 retains the canonical single-pass iteration budget.
+                converge=n_stubbed > 0 and wasm_opt_converges(optimize_level),
                 apply_level=not split_runtime,
                 required_exports=(
                     set(artifact.facts().function_exports) & preserve_exports
@@ -594,7 +613,6 @@ def _normalize_linked_resources_stage(
     split_runtime: bool,
     app_identity_exports: Sequence[str],
     preserved_output_exports: Sequence[str],
-    freestanding: bool,
 ) -> bool:
     """Normalize linked table/memory/export state with facts invalidation."""
 
@@ -646,18 +664,6 @@ def _normalize_linked_resources_stage(
     except ValueError as exc:
         print(f"Wasm link failed: {exc}", file=sys.stderr)
         return False
-    if freestanding:
-        try:
-            freestanding_bytes, n_stubbed = stub_wasi_imports(artifact.data)
-            if n_stubbed > 0:
-                artifact.replace(freestanding_bytes)
-                print(
-                    f"Freestanding: stubbed {n_stubbed} WASI imports",
-                    file=sys.stderr,
-                )
-        except ValueError as exc:
-            print(f"Freestanding WASI stubbing failed: {exc}", file=sys.stderr)
-            return False
     return True
 
 
@@ -1300,6 +1306,7 @@ def _prepare_linked_artifact_stage(
         optimize=plan.optimize,
         optimize_level=plan.optimize_level,
         split_runtime=plan.split_runtime,
+        freestanding=plan.freestanding,
         optimizer_attestation=optimizer_attestation,
         optimizer_identity=optimizer_identity,
         operation_counts=operation_counts,
@@ -1315,7 +1322,6 @@ def _prepare_linked_artifact_stage(
         split_runtime=plan.split_runtime,
         app_identity_exports=tuple(plan.identity_exports),
         preserved_output_exports=plan.preserved_output_exports,
-        freestanding=plan.freestanding,
     ):
         return None
     return _PreparedLinkedArtifact(

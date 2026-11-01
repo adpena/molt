@@ -10,10 +10,11 @@ The holder names itself in ``<lock>.holder`` while it holds the lock.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-import functools
 import json
 import os
 from pathlib import Path
@@ -32,7 +33,7 @@ from molt.file_locks import (
 from molt.cli.runtime_paths import _build_state_root
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _build_lock_dir_cached(project_root_str: str, build_state_root_str: str) -> Path:
     return Path(build_state_root_str) / "build_locks"
 

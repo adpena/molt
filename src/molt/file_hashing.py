@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import hashlib
 import os
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
@@ -17,7 +18,7 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _windows_file_api() -> tuple[Any, Any, Any] | None:
     if os.name != "nt":
         return None

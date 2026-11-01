@@ -2,6 +2,7 @@
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
     "src/molt/cli/module_source.py",
+    "src/molt/typed_cache.py",
     "src/molt/cli/python_import_resolution.py",
     "src/molt/cli/python_import_topology.py",
     "src/molt/cli/python_source_closure.py",
@@ -5624,6 +5625,7 @@
         "tests/test_codec_lowering.py",
         "tests/test_frontend_builtin_binding_guards.py",
         "tests/test_frontend_builtin_call_lowering.py",
+        "tests/test_frontend_fused_binding_reads.py",
         "tests/test_opcode_literal_payloads.py",
         "tests/test_frontend_builtin_shape_authority.py",
         "tests/test_frontend_class_identity.py",
@@ -5689,6 +5691,7 @@
         "tests/test_codec_lowering.py",
         "tests/test_frontend_builtin_binding_guards.py",
         "tests/test_frontend_builtin_call_lowering.py",
+        "tests/test_frontend_fused_binding_reads.py",
         "tests/test_opcode_literal_payloads.py",
         "tests/test_frontend_builtin_shape_authority.py",
         "tests/test_frontend_class_identity.py",
@@ -6981,6 +6984,7 @@
       "id": "python.unit.runtime-artifacts",
       "pytest": [
         "tests/cli/test_backend_manifest_contract.py",
+        "tests/test_typed_cache.py",
         "tests/test_cargo_workspace.py",
         "tests/test_cli_build_profile_policy.py",
         "tests/cli/test_runtime_build_identity.py",
@@ -7075,6 +7079,7 @@
       "id": "python.unit.runtime-artifacts.macos",
       "pytest": [
         "tests/cli/test_backend_manifest_contract.py",
+        "tests/test_typed_cache.py",
         "tests/test_cargo_workspace.py",
         "tests/test_cli_build_profile_policy.py",
         "tests/cli/test_runtime_build_identity.py",

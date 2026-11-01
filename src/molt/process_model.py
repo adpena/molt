@@ -7,6 +7,8 @@ module, never the reverse.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import (
     Callable,
     Collection,
@@ -19,7 +21,7 @@ from collections.abc import (
 )
 from dataclasses import MISSING, dataclass
 from datetime import datetime
-from functools import lru_cache, partial
+from functools import partial
 import os
 from pathlib import Path
 import re
@@ -933,7 +935,7 @@ def _linux_proc_children(pid: int, proc_root: Path) -> tuple[int, ...]:
     return tuple(children)
 
 
-@lru_cache(maxsize=None)
+@typed_cache(maxsize=None)
 def _linux_proc_children_supported() -> bool:
     """Whether the kernel publishes ``task/<tid>/children`` (CONFIG_PROC_CHILDREN)."""
     if not sys.platform.startswith("linux"):
@@ -2044,7 +2046,7 @@ def command_arg_executable_names(command: str) -> tuple[str, ...]:
     return tuple(names)
 
 
-@lru_cache(maxsize=2048)
+@typed_cache(maxsize=2048)
 def _cached_host_control_plane_command(
     command: str,
     tokens: tuple[str, ...],

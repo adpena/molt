@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-import functools
 import os
 from pathlib import Path
 import subprocess
@@ -187,7 +188,7 @@ def _directory_identity(path: Path) -> tuple[int, int, int, int, int]:
     )
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _cached_managed_llvm_bin_directories(
     roots: tuple[str, ...],
     toolchain_directory_identities: tuple[tuple[int, int, int, int, int], ...],
@@ -308,7 +309,7 @@ def _observe_provenance_path(
     return observations[key]
 
 
-@functools.lru_cache(maxsize=512)
+@typed_cache(maxsize=512)
 def _cached_provenance_path(
     path: str, identity: _PathIdentity, parent_identity: _PathIdentity
 ) -> Path | None:
@@ -334,7 +335,7 @@ def _resolved_provenance_path(
     )
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _cached_sdk_bin_layout(
     directory: str,
     shared_sysroot_identity: _PathIdentity,
@@ -512,7 +513,7 @@ def _dedupe_search_directories(
     return tuple(result)
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _observed_search_directories(
     search_directories: tuple[str, ...],
     environment: tuple[tuple[str, str], ...],
@@ -538,7 +539,7 @@ class _LlvmCandidateSnapshot:
     provenance: tuple[tuple[str, _PathIdentity], ...]
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _cached_llvm_named_tool_candidates(
     names: tuple[str, ...],
     explicit_commands: tuple[tuple[str, ...], ...],

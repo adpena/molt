@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
     FrontendOpKind,
@@ -8,7 +10,7 @@ from molt.frontend.lowering.op_kinds_generated import (
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntFlag
-from functools import cached_property, lru_cache
+from functools import cached_property
 from types import MappingProxyType
 from typing import Any, Protocol, Sequence
 
@@ -541,7 +543,7 @@ def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
     return _cfg_for_projection(_control_projection(ops))
 
 
-@lru_cache(maxsize=128)
+@typed_cache(maxsize=128)
 def _cfg_for_projection(projection: _ControlProjection) -> CFGGraph:
     kinds, operand_items = projection
     operands = dict(operand_items)

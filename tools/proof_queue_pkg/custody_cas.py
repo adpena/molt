@@ -32,16 +32,23 @@ def _durable_makedirs(path: Path) -> None:
     """Create a directory chain and durably publish every new entry on POSIX."""
     missing: list[Path] = []
     cursor = path
-    while not cursor.exists():
-        missing.append(cursor)
-        parent = cursor.parent
-        if parent == cursor:
-            break
-        cursor = parent
-    if cursor.exists() and (
-        not cursor.is_dir() or file_publication.is_link_like(cursor)
-    ):
-        raise ValueError(f"proof custody directory is not a real directory: {cursor}")
+    while True:
+        try:
+            metadata = cursor.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            missing.append(cursor)
+            parent = cursor.parent
+            if parent == cursor:
+                raise
+            cursor = parent
+            continue
+        if not stat.S_ISDIR(metadata.st_mode) or file_publication.metadata_is_link_like(
+            metadata
+        ):
+            raise ValueError(
+                f"proof custody directory is not a real directory: {cursor}"
+            )
+        break
     for directory in reversed(missing):
         try:
             directory.mkdir()
@@ -58,9 +65,8 @@ def _durable_makedirs(path: Path) -> None:
 
 def _canonical_root(root: Path, *, create: bool) -> Path:
     lexical = root.expanduser().absolute()
-    file_publication.resolve_owned_path(lexical)
+    canonical = file_publication.resolve_owned_path(lexical)
     if create:
-        canonical = lexical.resolve()
         _durable_makedirs(canonical)
     else:
         try:

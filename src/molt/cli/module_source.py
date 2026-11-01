@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import ast
 from molt.python_private_names import resolve_python_private_names
 import functools
@@ -380,7 +382,7 @@ def _source_hash_stat_identity_is_strong(
     return os.name != "nt" and ctime_ns > 0 and type(inode) is int and inode > 0
 
 
-@functools.lru_cache(maxsize=16384)
+@typed_cache(maxsize=16384)
 def _source_hash_cache_path_cached(
     cache_root_str: str,
     path_str: str,
@@ -543,7 +545,7 @@ def _write_persistent_source_hash(
     _write_source_hash_cache_payload(cache_path, payload)
 
 
-@functools.lru_cache(maxsize=16384)
+@typed_cache(maxsize=16384)
 def _source_content_sha256_cached(
     path_str: str,
     size: int,

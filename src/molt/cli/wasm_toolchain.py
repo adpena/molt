@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.process_environment import ProcessEnvironment
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import functools
 import os
 import re
 from pathlib import Path
@@ -67,7 +68,7 @@ class RustToolchainContract:
         return tuple(targets)
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def rust_toolchain_contract(root: Path | str | None = None) -> RustToolchainContract:
     root_path = Path(root).resolve(strict=False) if root is not None else None
     toolchain_path = (

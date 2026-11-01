@@ -9,6 +9,124 @@ from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tools import output_startup_size_audit
 
 
+def test_first_load_probe_pairs_one_fresh_inode_with_its_warm_runs(
+    tmp_path, monkeypatch
+) -> None:
+    from tools import executable_scan_probe as probe
+
+    source = tmp_path / "program"
+    source.write_bytes(b"independent fresh executable")
+    source.chmod(0o755)
+    starts = []
+    times = iter([0.25, 0.02, 0.04, 0.35, 0.03, 0.05, 0.45, 0.04, 0.06])
+
+    def run(command, **_kwargs):
+        image = Path(command[0])
+        assert image.read_bytes() == b"independent fresh executable"
+        assert not image.samefile(source)
+        starts.append((image, image.stat().st_ino))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="hello\n",
+            stderr="",
+            child_elapsed_s=next(times),
+            elapsed_s=2.0,
+        )
+
+    monkeypatch.setattr(probe.startup, "_run_guarded", run)
+    monkeypatch.setattr(probe, "_load", lambda: [1.0, 3.0, 4.0])
+    report = probe.probe(source, work=tmp_path / "work", arguments=[], warm_runs=2)
+    assert report["unloaded"] is True
+    assert [row["first_extra_s"] for row in report["records"]] == [0.22, 0.31, 0.4]
+    for index in range(0, 9, 3):
+        assert starts[index : index + 3] == [starts[index]] * 3
+    assert len({row[0] for row in starts}) == 3
+    assert not list((tmp_path / "work").iterdir())
+
+
+def test_first_load_probe_does_not_certify_loaded_or_unknown_hosts(
+    tmp_path, monkeypatch
+):
+    from tools import executable_scan_probe as probe
+
+    source = tmp_path / "program"
+    source.write_bytes(b"probe")
+    monkeypatch.setattr(
+        probe.startup,
+        "_run_guarded",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout="", stderr="", child_elapsed_s=0.1, elapsed_s=0.2
+        ),
+    )
+    for load in ([2.1, 1.0, 1.0], None):
+        monkeypatch.setattr(probe, "_load", lambda: load)
+        report = probe.probe(source, work=tmp_path / "work", arguments=[], samples=1)
+        assert report["unloaded"] is False
+
+
+def test_first_load_probe_refuses_changed_observable_output(tmp_path, monkeypatch):
+    import pytest
+    from tools import executable_scan_probe as probe
+
+    source = tmp_path / "program"
+    source.write_bytes(b"probe")
+    outputs = iter(["first", "warm"])
+    monkeypatch.setattr(
+        probe.startup,
+        "_run_guarded",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout=next(outputs),
+            stderr="",
+            child_elapsed_s=0.1,
+            elapsed_s=0.2,
+        ),
+    )
+    with pytest.raises(ValueError, match="output/exit/stderr differ"):
+        probe.probe(source, work=tmp_path / "work", arguments=[], samples=1)
+    assert not list((tmp_path / "work").iterdir())
+
+
+def test_first_load_probe_copies_and_seals_only_private_interpreter_bytes(
+    tmp_path, monkeypatch
+):
+    from tools import executable_scan_probe as probe
+
+    tree = tmp_path / "installation"
+    tree.mkdir()
+    binary = tree / "python"
+    binary.write_bytes(b"interpreter")
+    library = tree / "libpython"
+    library.write_bytes(b"runtime")
+    before = binary.stat()
+
+    def run(command, **_kwargs):
+        private = Path(command[0])
+        assert private.read_bytes() == b"interpreter"
+        assert (private.parent / "libpython").read_bytes() == b"runtime"
+        assert private.stat().st_ino != before.st_ino
+        return SimpleNamespace(
+            returncode=0, stdout="", stderr="", child_elapsed_s=0.1, elapsed_s=0.2
+        )
+
+    monkeypatch.setattr(probe.startup, "_run_guarded", run)
+    for seal in (False, True):
+        probe.probe(
+            binary,
+            work=tmp_path / "work",
+            arguments=[],
+            samples=1,
+            tree=tree,
+            seal=seal,
+        )
+    after = binary.stat()
+    assert (after.st_ino, after.st_nlink, after.st_ctime_ns) == (
+        before.st_ino,
+        before.st_nlink,
+        before.st_ctime_ns,
+    )
+
+
 def test_stats_are_deterministic() -> None:
     audit = output_startup_size_audit
 

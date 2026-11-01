@@ -302,3 +302,4 @@ pub use binary::{
     molt_multiprocessing_codec_dumps, molt_multiprocessing_codec_loads, molt_pickle_dumps_core,
     molt_pickle_loads_core,
 };
+pub(crate) use binary::{pickle_vm_append_items, pickle_vm_setitems};

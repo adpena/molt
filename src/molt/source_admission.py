@@ -7,11 +7,12 @@ rule owns directory admission. Admission is separate from stable byte custody.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Callable, Sequence
 import os
 from pathlib import Path
 import stat
-from functools import lru_cache
 
 from molt.file_publication import metadata_is_link_like
 
@@ -57,7 +58,7 @@ def _git_generation(checkout: Path) -> tuple[bytes, tuple[int, ...] | None]:
     return head, _version(git / "index")
 
 
-@lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _inventory_paths(
     root: Path, output: bytes, generation: tuple[object, ...]
 ) -> tuple[Path, ...]:
