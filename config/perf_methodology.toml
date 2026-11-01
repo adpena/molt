@@ -16,7 +16,7 @@ schema = "molt-perf-methodology-v1"
 # once per process (compilation_target, native_target), so warm build samples
 # can move. Earlier reports retain their recorded class.
 version = 21
-content_sha256 = "af1a7fe10537d95c9f73847c950e54b50d55dbaba09bbd92775179050c25b804"
+content_sha256 = "ff90c3faa741e60855c6ffb115423c8596d87287cd0c9d7af78dc0017f610820"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -409,3 +409,7 @@ role = "admits portable sealed input roots and rejects aliasing workload paths"
 [[mechanics]]
 path = "src/molt/exact_json.py"
 reason = "canonical JSON encoding for sealed input identity; seal digest is recorded in workload identity"
+
+[[mechanics]]
+path = "src/molt/typed_cache.py"
+reason = "a signature-preserving wrapper over functools caching that the same lookups used before; it memoizes pure results and never changes a computed value or sample"
