@@ -556,8 +556,10 @@ def test_hosts_share_callable_table_admission(
         from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 
         binary = resolve_molt_wasm_host_binary(ROOT, cargo_profile="dev-fast")
-        if binary is None:
-            pytest.skip("prebuilt molt-wasm-host dev-fast binary is required")
+        assert binary is not None, (
+            "Rust host parity requires the molt-wasm-host dev-fast producer; "
+            "build it with cargo build --profile dev-fast -p molt-wasm-host"
+        )
         command = [binary, str(manifest)]
     elif host in {"node", "node-split"}:
         command = ["node", "wasm/run_wasm.js", str(manifest)]

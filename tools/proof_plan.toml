@@ -2745,12 +2745,11 @@ env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "native", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
-# The Node runner, browser host and loader bridge: table bases, callable
-# tables and split-runtime import conversion against synthetic WAT modules,
-# while startup/status-ABI controls belong to wasm.test.startup-lifecycle. Each
-# WAT fixture publishes its link facts with the backend wasm.build.backend
-# selects and builds, so the command follows that build and never compiles a
-# second one.
+# Node/browser/Worker/Rust host parity against synthetic WAT modules. Callable
+# fixtures publish through the admitted standalone facts tool; compilation/cache
+# fixtures also consume the backend producer. Rust parity consumes the dev-fast
+# deployment host, so both declared producers must finish before this cell.
+# Startup/status-ABI controls belong to wasm.test.startup-lifecycle.
 [[command]]
 id = "wasm.host.runner-fixtures"
 family = "wasm"
@@ -2760,7 +2759,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.backend"]
+dependencies = ["wasm.build.backend", "wasm.build.host"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-n", "auto"]
 pytest = ["tests/test_wasm_runner_table_base.py", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
 pytest_worker_memory_gb = 0.75
@@ -6182,7 +6181,7 @@ gates = [
 [[rule]]
 name = "wasm-host"
 toolchains = ["python", "rustc", "cargo"]
-description = "Wasmtime host Rust: release-fast link build and actual host-error ABI binary tests."
+description = "Wasmtime host Rust: release-fast link build, complete host tests and the dev-fast deployment producer."
 globs = [
   "runtime/molt-wasm-host/**/*.rs",
   "runtime/molt-runtime-platform/src/synthetic_errno*.rs",
@@ -6196,7 +6195,10 @@ globs = [
 ]
 gates = [
   "cargo build --locked --profile release-fast -p molt-wasm-host",
-  "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ main_tests::deployment_environment_ main_tests::manifest_bound_command_ --nocapture --test-threads=1",
+  # Selecting the integration target also produces the dev-fast deployment bin
+  # consumed by runner parity. Cargo's target-selection contract:
+  # https://doc.rust-lang.org/cargo/commands/cargo-test.html#target-selection
+  "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host --test host_diagnostics -- --nocapture --test-threads=1",
 ]
 
 # --- GPU object-runtime integration --------------------------------------
