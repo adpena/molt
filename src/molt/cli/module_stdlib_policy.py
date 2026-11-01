@@ -49,19 +49,21 @@ def _stdlib_allowlist() -> set[str]:
     return set(_stdlib_allowlist_cached(spec_path.read_text(encoding="utf-8")))
 
 
-_CORE_STDLIB_MODULES_FULL = (
+# Object's universally published reduction methods acquire copyreg lazily.
+# Admit the initializer without adding an eager import to program startup.
+_CORE_STDLIB_MODULES_MICRO = (
     "builtins",
     "sys",
+    "copyreg",
+)
+
+
+_CORE_STDLIB_MODULES_FULL = (
+    *_CORE_STDLIB_MODULES_MICRO,
     "types",
     "importlib",
     "importlib.util",
     "importlib.machinery",
-)
-
-
-_CORE_STDLIB_MODULES_MICRO = (
-    "builtins",
-    "sys",
 )
 
 

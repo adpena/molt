@@ -7,8 +7,6 @@ Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from collections.abc import Callable
-from types import BuiltinFunctionType as _new_type
 
 
 __all__ = [
@@ -62,14 +60,14 @@ if not isinstance(_constructor_registry, set):
 
 def pickle(
     cls: type,
-    reducer: Callable[[object], object],
-    constructor_func: Callable[..., object] | None = None,
+    reducer,
+    constructor_func=None,
 ) -> None:
     _MOLT_COPYREG_PICKLE(cls, reducer, constructor_func)
     return None
 
 
-def constructor(func: Callable[..., object]) -> None:
+def constructor(func) -> None:
     _MOLT_COPYREG_CONSTRUCTOR(func)
     return None
 

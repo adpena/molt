@@ -1533,6 +1533,7 @@ tests/differential/stdlib/multiprocessing_start_method.py
 tests/differential/stdlib/native_handle_close_protocols.py
 tests/differential/stdlib/netrc_basic.py
 tests/differential/stdlib/numeric_cross_type_hash_invariant.py
+tests/differential/stdlib/object_reduce_implicit_copyreg.py
 tests/differential/stdlib/object_reduce_protocol.py
 tests/differential/stdlib/opcode_basic.py
 tests/differential/stdlib/opcode_tables_basic.py
