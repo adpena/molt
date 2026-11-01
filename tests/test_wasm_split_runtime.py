@@ -203,7 +203,11 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "const stderrDecoder = new TextDecoder();" in worker_js
     # Runtime shutdown and error ordering are executed by the shared witness in
     # test_wasm_startup_failures, including the emitted artifact below.
-    assert "molt_set_wasm_table_base(BigInt(4096))" in worker_js
+    # The declared base reaches the shared admission, which publishes it before
+    # runtime admission; test_wasm_runner_table_base.py
+    # test_hosts_share_callable_table_admission runs this Worker's verdicts.
+    assert "manifest: { ...deploymentManifest, wasm_table_base: 4096 }," in worker_js
+    assert "publishWasmTableAdmission(tableAdmission, rtInstance);" in worker_js
     assert (
         'const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";'
         in worker_js

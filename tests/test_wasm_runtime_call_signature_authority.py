@@ -30,7 +30,10 @@ def test_browser_embed_requires_binary_callable_table_signatures() -> None:
         "try {\n"
         "return callWithSignature(tableFn, directSignature, args);"
     ) in source
-    assert "requireWasmCallableTable(appBytes, 'app wasm')" in source
+    # The app's callable-table attestation is required through the shared
+    # admission authority; test_wasm_runner_table_base.py
+    # test_hosts_share_callable_table_admission proves it behaviorally for
+    # this loader (missing and malformed attestations are named errors).
     assert "verifyCallableTableEntries(appCallableTable, table, 'app wasm')" in source
     assert "appTableRefSignatures" not in source
     assert "appDirectFn" not in source
@@ -48,7 +51,9 @@ def test_node_runner_requires_binary_callable_table_signatures() -> None:
         "if (typeof fn === 'function' && directSignature) {\n"
         "return callWithWasmSignature(fn, directSignature, args.slice(1));"
     ) in source
-    assert "requireWasmCallableTable(wasmBuffer, 'output wasm')" in source
+    # Callable-table attestation is required through the shared admission
+    # authority; test_wasm_runner_table_base.py
+    # test_hosts_share_callable_table_admission proves it for the Node loaders.
     assert (
         "verifyCallableTableEntries(outputCallableTable, table, 'output wasm')"
         in source
