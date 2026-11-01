@@ -217,6 +217,7 @@ from tools.molt_dev_gates import (  # noqa: E402
     run_selected_gates,
 )
 from tools.molt_dev_policy import (  # noqa: E402
+    Deferred,
     GateConfig,
     GateEnvironment,
     LandingMode,
@@ -960,6 +961,7 @@ def _gate_runtime(
     receipt_kind: str = "gates",
     mode: LandingMode = LandingMode.PRESUBMIT,
     cancelled: Callable[[], bool] = lambda: False,
+    deferred: tuple[Deferred, ...] = (),
 ) -> GateRuntime:
     from tools.proof_plan import load_toolchain_policies
 
@@ -1005,6 +1007,7 @@ def _gate_runtime(
         ),
         mode=mode,
         cancelled=cancelled,
+        deferred=deferred,
     )
 
 
@@ -1387,6 +1390,7 @@ def _integrate_exclusive(
             ),
         )
         toolchains = prepared.fingerprints
+        gate_cmds = prepared.runnable()
         environments = prepared.environments
         progress.environments = environments
         try:
@@ -1424,6 +1428,7 @@ def _integrate_exclusive(
                 capacity_requirements=capacity_requirements,
                 progress=progress,
                 toolchains=toolchains,
+                deferred=prepared.deferred,
             ),
             gate_seconds,
             host_limit=lambda: concurrent_gate_limit(),

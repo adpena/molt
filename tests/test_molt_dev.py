@@ -375,7 +375,15 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
 
 @pytest.mark.parametrize(
     "outcome",
-    ["green", "red", "cancelled", "cancelled-partial", "cas-race", "bootstrap"],
+    [
+        "green",
+        "red",
+        "cancelled",
+        "cancelled-partial",
+        "cas-race",
+        "bootstrap",
+        "deferred",
+    ],
 )
 def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     tmp_path, monkeypatch, outcome
@@ -402,6 +410,25 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         assert selected.head_sha() == head == commit and green == starting_green
         assert queue.last_green(selected) == starting_green
         output.mkdir(parents=True)
+        if outcome == "deferred":
+            selection = molt_dev_gates.prerequisite_receipt_path(
+                output / "receipt.json"
+            )
+            selection.parent.mkdir(parents=True)
+            selection.write_text(
+                json.dumps(
+                    {
+                        "deferred": [
+                            {
+                                "command": "fish --version",
+                                "missing": [{"kind": "toolchain", "name": "fish"}],
+                                "owner": "linux-x86_64-py312-queue-portability",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
         if outcome == "red":
             (output / "gate-001.junit.xml").write_text(
                 '<testsuites><testsuite><testcase file="tests/test_value.py" '
@@ -420,6 +447,17 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
             raise GateCancellation("closed cancellation for next landing")
         if outcome == "cas-race":
             _git(repo, "update-ref", queue.LAST_GREEN_REF, head, base)
+        return (
+            tuple(
+                json.loads(
+                    molt_dev_gates.prerequisite_receipt_path(
+                        output / "receipt.json"
+                    ).read_text(encoding="utf-8")
+                )["deferred"]
+            )
+            if outcome == "deferred"
+            else ()
+        )
 
     monkeypatch.setattr(queue, "_run_postsubmit_gates", execute)
     state = queue._postsubmit(
@@ -435,7 +473,7 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         else "cancelled"
         if outcome.startswith("cancelled")
         else "green"
-        if outcome == "bootstrap"
+        if outcome in {"bootstrap", "deferred"}
         else outcome
     )
     assert record["status"] == state.value == expected
@@ -446,7 +484,7 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     )
     assert git.head_sha() == head, "postsubmit never reverts main on its own"
     assert queue.last_green(git) == (
-        head if outcome in {"green", "cas-race", "bootstrap"} else base
+        head if outcome in {"green", "cas-race", "bootstrap", "deferred"} else base
     )
     if outcome == "red":
         assert record["failing_tests"] == [
@@ -456,7 +494,7 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         assert queue.recent_postsubmit_failures(paths, now=time.time() + 86401) == ()
         # Failure history orders work, and cannot block requalification after
         # a host/tool repair. Keep that history after a later green receipt.
-        monkeypatch.setattr(queue, "_run_postsubmit_gates", lambda *_args: None)
+        monkeypatch.setattr(queue, "_run_postsubmit_gates", lambda *_args: ())
         assert (
             queue._postsubmit(
                 argparse.Namespace(
@@ -471,6 +509,14 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         assert queue.recent_postsubmit_failures(paths) == tuple(record["failing_tests"])
     elif outcome == "cas-race":
         assert "update-ref" in record["error"]
+    if outcome == "deferred":
+        assert record["deferred"] == [
+            {
+                "command": "fish --version",
+                "missing": [{"kind": "toolchain", "name": "fish"}],
+                "owner": "linux-x86_64-py312-queue-portability",
+            }
+        ]
 
 
 @pytest.mark.parametrize("spelling", ["tests/test_value.py", r"tests\test_value.py"])
@@ -3961,6 +4007,8 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
     ]
     with pytest.raises(GateFailure, match=r"gate failed \(exit 2\)"):
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+    receipt = molt_dev_gates.prerequisite_receipt_path(runtime.receipt_path)
+    assert json.loads(receipt.read_text(encoding="utf-8"))["deferred"] == []
     shown = capsys.readouterr().err
     assert "gate output not kept (" in shown and "the real reason" in shown
 
@@ -5438,7 +5486,7 @@ def _run_queue(drv, work: Path) -> int:
     # distribution or postsubmit workload. Keep the real health/CAS transition,
     # and stub its executor boundary as the dedicated health controls do.
     with (
-        patch.object(queue, "_run_postsubmit_gates", return_value=None),
+        patch.object(queue, "_run_postsubmit_gates", return_value=()),
         patch.object(
             queue,
             "run_from_pinned_controller",
@@ -5478,6 +5526,359 @@ def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
     landed = {queue.read_result(paths, r.id)["landed"] for r in requests}
     assert landed == {_git(work, "rev-parse", "origin/main").stdout.strip()}
     assert queue.pending(paths) == [] and not paths.plan.exists()
+
+
+def test_queue_lands_runnable_gates_with_absent_declared_toolchain(
+    drv, origin_and_clone, tmp_path, capsys
+):
+    _, work = origin_and_clone
+    counter = tmp_path / "runnable.txt"
+    forbidden = tmp_path / "deferred-must-not-run.txt"
+    _counting_policy(work, counter)
+    policy = (
+        (work / "tools/proof_plan.toml").read_text(encoding="utf-8")
+        + f"""
+[[toolchain_policy]]
+name = "absent-shell"
+executable = "molt-hf629-no-such-shell"
+version_pattern = ".*"
+setup_value = "absent shell package"
+setup_evidence = ["host::install absent shell"]
+[[matrix_cell]]
+id = "shell-cell"
+[[command]]
+id = "shell-command"
+cell = "shell-cell"
+toolchains = ["absent-shell"]
+[[rule]]
+name = "foreign-shell"
+globs = ["**"]
+gates = [{json.dumps("echo forbidden > " + shlex.quote(str(forbidden)))}]
+toolchains = ["absent-shell"]
+"""
+    )
+    _commit_file(work, "tools/proof_plan.toml", policy, "declared absent shell")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    heads = [
+        _lane(work, name, {name + ".py": "VALUE = 1\n"}) for name in ("one", "two")
+    ]
+    paths, requests = _enqueue(drv, work, *heads)
+    assert _run_queue(drv, work) == EXIT_OK
+    assert _statuses(paths, requests) == ["landed", "landed"]
+    assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert not forbidden.exists()
+    captured = capsys.readouterr()
+    diagnostic = captured.out + captured.err
+    assert "deferred (unproven here)" in diagnostic
+    assert "toolchain absent-shell" in diagnostic
+    assert "runs in:" in diagnostic
+    receipts = list(paths.evidence.rglob("prerequisites.json"))
+    assert receipts
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in receipts]
+    assert any(
+        record["deferred"][0]["missing"]
+        == [{"kind": "toolchain", "name": "absent-shell"}]
+        for record in records
+        if record["deferred"]
+    )
+
+
+@pytest.mark.parametrize(
+    "provider", ["absent", "present", "wrong-version", "probe-error"]
+)
+def test_gate_prerequisite_resolution_distinguishes_absence_from_invalid_provider(
+    tmp_path, monkeypatch, provider
+):
+    from tools import proof_plan
+    from tools.molt_dev_policy import Deferred, Prerequisite, PrerequisiteKind, Runnable
+
+    executable = "molt-hf629-no-such-tool" if provider == "absent" else "git"
+    pattern = "^never-a-git-version$" if provider == "wrong-version" else ".*"
+    config = GateConfig.parse(
+        f'''
+always = ["git --version"]
+always_toolchains = ["selected-tool"]
+[[toolchain_policy]]
+name = "selected-tool"
+executable = "{executable}"
+version_args = ["--version"]
+version_pattern = "{pattern}"
+setup_value = "git package"
+setup_evidence = ["host::install git"]
+[[toolchain_policy]]
+name = "unselected-package"
+node_package = "missing"
+package_lock = "unselected/missing-lock"
+[[matrix_cell]]
+id = "tool-cell"
+[[command]]
+id = "tool-command"
+cell = "tool-cell"
+toolchains = ["selected-tool"]
+''',
+        "declared provider",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    if provider == "probe-error":
+
+        def fail_probe(*args, **kwargs):
+            raise OSError("not found in an unrelated probe diagnostic")
+
+        monkeypatch.setattr(proof_plan, "_version_fingerprint", fail_probe)
+
+    def prepare():
+        return config.prepare(
+            gates,
+            baseline=os.environ,
+            prepare_python=lambda env, needed: GateEnvironment(
+                ProcessEnvironment(env), None, False
+            ),
+        )
+
+    if provider in {"wrong-version", "probe-error"}:
+        with pytest.raises(
+            DriverError, match="selected gate prerequisites failed; executed=0"
+        ):
+            prepare()
+        return
+    prepared = prepare()
+    if provider == "present":
+        assert prepared.resolutions == (Runnable(gates[0]),)
+        assert prepared.runnable() == gates
+        assert "selected-tool" in prepared.fingerprints
+    else:
+        assert prepared.resolutions == (
+            Deferred(
+                gates[0],
+                (
+                    Prerequisite(
+                        PrerequisiteKind.TOOLCHAIN,
+                        "selected-tool",
+                        "git package",
+                        ("host::install git",),
+                    ),
+                ),
+                "tool-cell",
+            ),
+        )
+        assert prepared.runnable() == []
+        assert "missing: toolchain selected-tool" in prepared.deferred[0].diagnostic()
+        assert (
+            "provide selected-tool: git package; setup: host::install git"
+            in prepared.deferred[0].diagnostic()
+        )
+
+
+@pytest.mark.parametrize("command", ["exit 37", "molt-hf629-undeclared-tool"])
+def test_gate_failure_and_undeclared_tool_remain_failures(
+    drv, origin_and_clone, command
+):
+    _, work = origin_and_clone
+    _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        "always = " + json.dumps([command]) + "\n",
+        "failing runnable gate",
+    )
+    before = _git(work, "rev-parse", "origin/main").stdout
+    with pytest.raises(GateFailure):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    assert _git(work, "rev-parse", "origin/main").stdout == before
+
+
+@pytest.mark.parametrize("drift", ["hidden-content", "untracked", "ignored"])
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_pinned_oracle_provisions_immutable_objects_and_rejects_destination_drift(
+    tmp_path,
+    monkeypatch,
+    drift,
+    object_format,
+):
+    from tools.proof_plan import provision_pinned_assets
+
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    donor = primary / "oracle"
+    monkeypatch.setenv("GIT_DEFAULT_HASH", object_format)
+    _init_repo(donor)
+    monkeypatch.setenv(
+        "GIT_DEFAULT_HASH", "sha256" if object_format == "sha1" else "sha1"
+    )
+    _commit_file(donor, "authority.py", "VALUE = 629\n", "pinned upstream content")
+    pin = _commit_file(donor, ".gitignore", "ignored.txt\n", "upstream ignores")
+    _commit_file(primary, ".gitignore", "oracle/\n", "ignored upstream oracle")
+    _commit_file(primary, "pin.md", f"| **pinned commit** | `{pin}` |\n", "content pin")
+    lane = tmp_path / "lane"
+    _git(primary, "worktree", "add", "--detach", "-q", str(lane), "HEAD")
+    store_root = tmp_path / "state"
+    store_root.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(store_root))
+    assets = {"oracle": {"path": "oracle", "pin_document": "pin.md"}}
+    # A mutable working tree is not the content provider: exact pinned objects
+    # supply the new checkout even when the donor's working files change.
+    (donor / "authority.py").write_text("VALUE = 'wrong'\n", encoding="utf-8")
+    assert (
+        provision_pinned_assets(assets, ("oracle",), root=lane, environment=os.environ)
+        == ()
+    )
+    assert (lane / "oracle/authority.py").read_text(encoding="utf-8") == "VALUE = 629\n"
+    assert _git(lane / "oracle", "rev-parse", "HEAD").stdout.strip() == pin
+    assert (
+        provision_pinned_assets(assets, ("oracle",), root=lane, environment=os.environ)
+        == ()
+    )
+    if drift == "hidden-content":
+        target = lane / "oracle/authority.py"
+        prior = target.stat()
+        _git(lane / "oracle", "update-index", "--assume-unchanged", "authority.py")
+        target.write_text("VALUE = 628\n", encoding="utf-8")
+        os.utime(target, ns=(prior.st_atime_ns, prior.st_mtime_ns))
+        assert _git(lane / "oracle", "status", "--porcelain").stdout == ""
+    else:
+        target = (
+            lane / "oracle" / ("ignored.txt" if drift == "ignored" else "untracked.txt")
+        )
+        target.write_text("VALUE = 628\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="content differs|unpinned entry"):
+        provision_pinned_assets(assets, ("oracle",), root=lane, environment=os.environ)
+    assert target.read_text(encoding="utf-8") == "VALUE = 628\n"
+
+
+def test_absent_pinned_oracle_resolves_to_deferred_command(tmp_path, monkeypatch):
+    from tools.molt_dev_policy import Prerequisite, PrerequisiteKind
+
+    state = tmp_path.parent / (tmp_path.name + "-state")
+    state.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(state))
+    _init_repo(tmp_path)
+    _commit_file(
+        tmp_path,
+        "pin.md",
+        "| **pinned commit** | `" + "a" * 40 + "` |\n",
+        "missing oracle pin",
+    )
+    config = GateConfig.parse(
+        """
+always = []
+[[pinned_asset]]
+name = "oracle"
+path = "oracle"
+pin_document = "pin.md"
+owner = "oracle-cell"
+[[matrix_cell]]
+id = "oracle-cell"
+[[command]]
+id = "oracle-command"
+cell = "oracle-cell"
+[[rule]]
+name = "oracle-consumer"
+globs = ["source.py"]
+gates = ["echo must-not-run"]
+toolchains = []
+pinned_assets = ["oracle"]
+""",
+        "absent oracle",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    prepared = config.prepare(
+        gates,
+        baseline=os.environ,
+        prepare_python=lambda env, needed: GateEnvironment(
+            ProcessEnvironment(env), None, False
+        ),
+    )
+    assert prepared.runnable() == []
+    assert prepared.deferred[0].missing == (
+        Prerequisite(PrerequisiteKind.PINNED_ASSET, "oracle"),
+    )
+    assert prepared.deferred[0].owner == "oracle-cell"
+
+
+def test_pinned_asset_migration_preserves_a_linked_git_worktree(tmp_path, monkeypatch):
+    from tools.proof_plan import provision_pinned_assets
+
+    primary = tmp_path / "primary"
+    _init_repo(primary)
+    donor = primary / "oracle"
+    _init_repo(donor)
+    pin = _commit_file(donor, "value.py", "VALUE = 629\n", "oracle")
+    _commit_file(primary, ".gitignore", "oracle/\n", "oracle path")
+    _commit_file(primary, "pin.md", f"| **pinned commit** | `{pin}` |\n", "pin")
+    lane = tmp_path / "lane"
+    _git(primary, "worktree", "add", "--detach", "-q", str(lane), "HEAD")
+    legacy = lane / "oracle"
+    _git(donor, "worktree", "add", "--detach", "-q", str(legacy), pin)
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(state))
+    assets = {"oracle": {"path": "oracle", "pin_document": "pin.md"}}
+    before = (legacy / ".git").read_bytes()
+    with pytest.raises(ValueError, match="independent Git custody"):
+        provision_pinned_assets(assets, ("oracle",), root=lane, environment=os.environ)
+    assert (legacy / ".git").read_bytes() == before
+    assert (legacy / "value.py").read_text(encoding="utf-8") == "VALUE = 629\n"
+    assert _git(legacy, "rev-parse", "HEAD").stdout.strip() == pin
+
+
+@pytest.mark.parametrize(
+    "owner, commands, message",
+    [
+        ("invented", [{"cell": "oracle-cell"}], "unknown prerequisite owner cell"),
+        ("oracle-cell", [], "owner cell has no command"),
+    ],
+)
+def test_pinned_asset_owner_must_be_a_produced_matrix_cell(owner, commands, message):
+    from tools.proof_plan import load_pinned_assets
+
+    with pytest.raises(ValueError, match=message):
+        load_pinned_assets(
+            {
+                "pinned_asset": [
+                    {
+                        "name": "oracle",
+                        "path": "oracle",
+                        "pin_document": "pin.md",
+                        "owner": owner,
+                    }
+                ],
+                "matrix_cell": [{"id": "oracle-cell"}],
+                "command": commands,
+            }
+        )
+
+
+def test_foreign_execution_cell_uses_the_same_deferred_outcome(tmp_path):
+    from tools.molt_dev_policy import Prerequisite, PrerequisiteKind, SelectedGate
+
+    config = GateConfig.parse(
+        """
+always = []
+[[matrix_cell]]
+id = "other-os"
+profile = "portability"
+os = "unavailable-os"
+[[command]]
+id = "foreign-command"
+cell = "other-os"
+""",
+        "foreign cell",
+        root=tmp_path,
+    )
+    gate = SelectedGate("echo foreign", (), cells=("other-os",))
+    prepared = config.prepare(
+        [gate],
+        baseline=os.environ,
+        prepare_python=lambda env, needed: GateEnvironment(
+            ProcessEnvironment(env), None, False
+        ),
+    )
+    assert prepared.runnable() == []
+    assert prepared.deferred[0].missing == (
+        Prerequisite(PrerequisiteKind.EXECUTION_CELL, "other-os"),
+    )
+    assert prepared.deferred[0].owner == "other-os"
 
 
 def test_queue_retry_preserves_unchanged_inputs_and_ignored_products(
@@ -8222,6 +8623,8 @@ version_pattern = '^ok$'
 
 
 def _capacity_integration_policy(drv, work, monkeypatch):
+    from tools.molt_dev_policy import Runnable
+
     _commit_file(
         work,
         "tools/proof_plan.toml",
@@ -8252,6 +8655,7 @@ version_pattern = '.*'
                 for gate in gates
             },
             {},
+            tuple(Runnable(gate) for gate in gates),
         ),
     )
 
@@ -8581,7 +8985,7 @@ def test_selected_catalog_admission_preserves_imports_after_proof_plan_collectio
 
 
 def test_integrate_uses_selected_committed_target_catalog_without_import_rebinding(
-    drv, origin_and_clone, monkeypatch
+    drv, origin_and_clone, monkeypatch, capsys
 ):
     from molt import target_python_policy
     from tools import proof_plan
@@ -8613,6 +9017,12 @@ version_pattern = '^ok$'
 [[toolchain_policy]]
 name = "target-pythons"
 python_versions = "supported-targets"
+[[matrix_cell]]
+id = "target-python-cell"
+[[command]]
+id = "target-python-command"
+cell = "target-python-cell"
+toolchains = ["target-pythons"]
 """,
         "selected target prerequisites",
     )
@@ -8638,11 +9048,14 @@ python_versions = "supported-targets"
             lambda *args: pytest.fail("gate began before selected catalog admission")
         ),
     )
-    with pytest.raises(DriverError) as caught:
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    assert (
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == EXIT_OK
+    )
     assert set(observed) == {"uv", "target-pythons.3.12", "target-pythons.3.15"}
-    assert "local.always.0" in str(caught.value)
-    assert "3.15" in str(caught.value) and "executed=0" in str(caught.value)
+    diagnostic = capsys.readouterr().err
+    assert "deferred (unproven here): echo must-not-run" in diagnostic
+    assert "toolchain target-pythons.3.12" in diagnostic
+    assert "toolchain target-pythons.3.15" in diagnostic
     assert sys.path == before_path
     assert sys.modules["molt.target_python_policy"] is target_python_policy
     assert target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is before_catalog

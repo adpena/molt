@@ -520,6 +520,12 @@ executor_max_workers = 4
 # proof-command fanout; every pre/post scan still reads every admitted byte.
 inventory_hash_workers = 12
 
+[[pinned_asset]]
+name = "tinygrad-oracle"
+path = "bench/friends/repos/tinygrad_off_the_shelf"
+pin_document = "docs/spec/tinygrad_pin.md"
+owner = "linux-x86_64-py312-repository-policy"
+
 [[resource_policy]]
 name = "compiler-build-resource"
 max_parallel = 1
@@ -4569,6 +4575,8 @@ pytest = [
 [[rule]]
 name = "tinygrad-op-contract"
 toolchains = ["python"]
+pinned_assets = ["tinygrad-oracle"]
+plan_entities = ["pinned_asset"]
 description = "tinygrad ML op-contract FACT: pin freshness + generated op_contract.toml sync (doc 67 Phase 0/1)."
 globs = [
   "tools/check_tinygrad_pin.py",
@@ -4990,7 +4998,7 @@ pytest = [
 [[rule]]
 name = "committed-gate-policy"
 toolchains = ["python", "uv"]
-plan_entities = ["rule", "always", "always_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy"]
+plan_entities = ["rule", "always", "always_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy", "pinned_asset"]
 description = "The committed proof plan's gate selection and the tests that read its toolchain policies."
 globs = [
   "tests/test_committed_gate_policy.py",
@@ -5542,7 +5550,7 @@ pytest_select = [
 [[rule]]
 name = "ci-wiring"
 toolchains = ["python"]
-plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
+plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "pinned_asset", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
 description = "CI workflows or pyproject: the CI-topology contract test."
 globs = [
   ".github/actions/**",

@@ -267,6 +267,7 @@ def _json_projection(plan: ProofPlan) -> str:
         "matrix_cells": [cell.data for cell in plan.matrix_cells],
         "commands": [command.data for command in plan.commands],
         "toolchain_policies": [policy.data for policy in plan.toolchain_policies],
+        "pinned_assets": list(plan.pinned_assets.values()),
         "cargo_environment_policy": {
             "wrapper_environment_names": list(
                 shared_cargo_policy.environment.wrapper_environment_names
@@ -301,6 +302,11 @@ def _json_projection(plan: ProofPlan) -> str:
             "cargo_target_access": {
                 identifier: declaration.cargo_target_access.value
                 for identifier, declaration in local_rows.items()
+            },
+            "pinned_assets": {
+                identifier: list(declaration.pinned_assets)
+                for identifier, declaration in local_rows.items()
+                if declaration.pinned_assets
             },
             "rules": local_rules,
         },

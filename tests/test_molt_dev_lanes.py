@@ -152,7 +152,7 @@ def family(
     # Model those two execution boundaries; health/CAS still runs normally.
     from tools import molt_dev_queue as queue
 
-    monkeypatch.setattr(queue, "_run_postsubmit_gates", lambda *_args: None)
+    monkeypatch.setattr(queue, "_run_postsubmit_gates", lambda *_args: ())
     monkeypatch.setattr(
         queue,
         "run_from_pinned_controller",
@@ -186,6 +186,98 @@ def _start(root: Path, slug: str) -> Path:
     _git(worktree, "config", "user.email", "dev@molt.test")
     _git(worktree, "config", "user.name", "Molt Dev")
     return worktree
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_pinned_assets_share_one_generation_and_survive_handoff_without_archival(
+    family, legacy
+):
+    from molt.dx import storage_path
+    from tools import molt_dev_queue as queue
+    from tools.proof_plan import provision_pinned_assets, load_pinned_assets
+    import tomllib
+
+    main = family / "molt-src"
+    donor = main / "bench/friends/repos/oracle"
+    donor.mkdir(parents=True)
+    _init_repo(donor)
+    pin = _commit_file(donor, "oracle.py", "VALUE = 629\n", "oracle pin")
+    _commit_file(
+        main, ".gitignore", "*-tree/\nbench/friends/repos/\n", "ignored oracle"
+    )
+    _commit_file(main, "pin.md", f"| **pinned commit** | `{pin}` |\n", "pin")
+    manifest = """always = ["git --version"]
+always_toolchains = []
+[[matrix_cell]]
+id = "oracle-cell"
+[[command]]
+id = "oracle-command"
+cell = "oracle-cell"
+[[pinned_asset]]
+name = "oracle"
+path = "bench/friends/repos/oracle"
+pin_document = "pin.md"
+owner = "oracle-cell"
+"""
+    _commit_file(main, "tools/proof_plan.toml", manifest, "oracle contract")
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    assets = load_pinned_assets(tomllib.loads(manifest))
+    checkouts = [_start(family, slug) for slug in ("oracle-one", "oracle-two")]
+    store = storage_path(main, "pinned-assets", os.environ)
+    evidence = storage_path(main, "lane-evidence", os.environ)
+    before = set(evidence.rglob("*"))
+    if legacy:
+        old = checkouts[0] / assets["oracle"]["path"]
+        old.parent.mkdir(parents=True)
+        _git(main, "clone", "-q", "--no-hardlinks", str(donor), str(old))
+        assert lanes._unharvested_ignored_paths(molt_dev.Git(checkouts[0])) == ([], [])
+    for checkout in checkouts:
+        _commit_file(checkout, "source.py", "VALUE = 1\n", "candidate")
+        assert (
+            provision_pinned_assets(
+                assets, ("oracle",), root=checkout, environment=os.environ
+            )
+            == ()
+        )
+        assert lanes._unharvested_ignored_paths(molt_dev.Git(checkout)) == ([], [])
+        args = molt_dev.build_parser().parse_args(
+            [
+                "land",
+                "--repo",
+                str(checkout),
+                "--candidate-controller",
+                "--precheck-only",
+            ]
+        )
+        assert queue.cmd_land(args) == EXIT_OK
+        assert not queue.pending(queue.queue_paths(checkout))
+    links = [checkout / assets["oracle"]["path"] for checkout in checkouts]
+    assert all(link.is_symlink() for link in links)
+    assert links[0].resolve() == links[1].resolve() == store / "oracle" / pin
+    assert os.path.samefile(links[0] / "oracle.py", links[1] / "oracle.py")
+    assert list((store / "oracle").iterdir()) == [store / "oracle" / pin]
+    assert set(evidence.rglob("*")) == before
+    # Git reports the ignored parent; a sibling must still be preserved.
+    signal = links[0].parent / "unknown.txt"
+    signal.write_text("owner signal\n", encoding="utf-8")
+    assert lanes._unharvested_ignored_paths(molt_dev.Git(checkouts[0])) == (
+        [],
+        ["bench/friends/repos/unknown.txt"],
+    )
+    # The link remains a regenerable projection even when the external tree
+    # drifts. Admission still rejects the drift and preserves its bytes.
+    content = links[0] / "oracle.py"
+    content.write_text("VALUE = 630\n", encoding="utf-8")
+    assert lanes._unharvested_ignored_paths(molt_dev.Git(checkouts[0])) == (
+        [],
+        ["bench/friends/repos/unknown.txt"],
+    )
+    with pytest.raises(ValueError, match="content differs"):
+        provision_pinned_assets(
+            assets, ("oracle",), root=checkouts[0], environment=os.environ
+        )
+    assert content.read_text(encoding="utf-8") == "VALUE = 630\n"
+    assert set(evidence.rglob("*")) == before
 
 
 def _ref(repo: Path, ref: str) -> str | None:

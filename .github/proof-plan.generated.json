@@ -9898,6 +9898,17 @@
       "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ main_tests::deployment_environment_ main_tests::manifest_bound_command_ --nocapture --test-threads=1",
       "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
+    "pinned_assets": {
+      "local.tinygrad-op-contract.0": [
+        "tinygrad-oracle"
+      ],
+      "local.tinygrad-op-contract.1": [
+        "tinygrad-oracle"
+      ],
+      "local.tinygrad-op-contract.pytest": [
+        "tinygrad-oracle"
+      ]
+    },
     "rules": [
       {
         "command_ids": [
@@ -10403,6 +10414,12 @@
           "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/renderer/cstyle.py"
         ],
         "name": "tinygrad-op-contract",
+        "pinned_assets": [
+          "tinygrad-oracle"
+        ],
+        "plan_entities": [
+          "pinned_asset"
+        ],
         "pytest": [
           "tests/test_gen_gpu_op_contract.py"
         ],
@@ -10905,7 +10922,8 @@
           "command",
           "executor_max_workers",
           "resource_policy",
-          "toolchain_policy"
+          "toolchain_policy",
+          "pinned_asset"
         ],
         "pytest": [
           "tests/test_committed_gate_policy.py",
@@ -11679,6 +11697,7 @@
           "inventory_hash_workers",
           "resource_policy",
           "toolchain_policy",
+          "pinned_asset",
           "matrix_cell",
           "ci_family",
           "scheduled_family",
@@ -13890,6 +13909,14 @@
       "python": "none",
       "runner": "ubuntu-latest",
       "target": "x86_64-unknown-linux-gnu"
+    }
+  ],
+  "pinned_assets": [
+    {
+      "name": "tinygrad-oracle",
+      "owner": "linux-x86_64-py312-repository-policy",
+      "path": "bench/friends/repos/tinygrad_off_the_shelf",
+      "pin_document": "docs/spec/tinygrad_pin.md"
     }
   ],
   "receipt_schema": "molt.proof-receipt.v4",

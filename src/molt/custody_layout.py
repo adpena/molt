@@ -86,6 +86,7 @@ StorageClass = Literal[
     "sccache",
     ToolchainStateKind,
     "controllers",
+    "pinned-assets",
     "landing-sandbox",
     "coordination",
     "temporary",
@@ -372,6 +373,13 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 "tool-release provisioning",
                 ("target-root",),
                 Regenerable(month, 15 * gib),
+            )
+        case "pinned-assets":
+            return StorageRule(
+                "artifact",
+                "proof-plan pinned asset provisioning",
+                ("molt-state", "pinned-assets"),
+                Regenerable(month, None),
             )
         case "controllers":
             return StorageRule(

@@ -110,13 +110,54 @@ which remain owned by the existing `-m slow` postsubmit cell. Failure history or
 it never substitutes for a passing result. Pytest's parallel scheduler may finish files out of order.
 
 Postsubmit runs the full transitive selection on the newest main head when no landing is pending,
-using the same proof executor and receipts. A new request cancels postsubmit. Only a passing
-postsubmit advances `refs/molt/last-green` by compare-and-swap; new lanes use it unless their base
+using the same proof executor and receipts. A new request cancels postsubmit. A postsubmit whose
+runnable commands all pass advances `refs/molt/last-green` by compare-and-swap; new lanes use it unless their base
 is explicit, and say when they fall back to `origin/main`. A failure retains last green, names
 every commit since it as a suspect and prints the exact revert command for the integrator. The
 runner never reverts. The integrator restores green within about an hour. If transitive misses
 exceed about one landing in five, retain the cases for an owner decision about widening presubmit.
 Observed-input selection and verdict reuse remain deferred stages 4-6, not implemented by this slice.
+
+Before execution, `GateConfig.prepare` resolves each selected command to the closed
+`Runnable | Deferred` outcome. A deferred command names its missing declared
+toolchain, pinned asset or foreign portability execution cell and the owning
+proof cell id, validated against the matrix and its command producers. Diagnostic
+prose renders that id; missing tools also render their policy's `setup_value`
+and `setup_evidence`. Foreign cells enter this same outcome;
+the dependency graph no longer silently drops those commands. Toolchain admission
+retains typed absent-image evidence from its existing probes and provider projection.
+A present image with the wrong version, a raised probe, failed provisioning or
+any command that runs and fails still fails the landing. An undeclared tool is
+never grounds for deferral. No error-message parsing grants a deferral.
+
+Pinned assets are declared in `proof_plan.toml`; their pin documents alone own
+content identity. `proof_plan.provision_pinned_assets`, called at the same
+pre-execution preparation boundary as toolchain provisioning, uses immutable
+Git objects in the repository's primary checkout to provision one verified
+generation per asset name and pinned commit in DX's `pinned-assets` storage
+class, under `<artifact root>/molt-state/pinned-assets`, outside all checkouts.
+Provisioning holds the canonical shared-cache lock for that key. Every lane
+and sandbox reaches the same generation through a directory symlink at the
+declared path. Lane payload discovery recognizes links to the declared store
+key as regenerable projections, splitting ignored parents to preserve unknown
+siblings. Verified regenerable assets never become lane evidence. A missing verified donor defers; an
+older verified in-checkout generation migrates into the store and becomes a link;
+changed or unpinned entries block migration and remain in their owner's custody. An
+existing destination with changed content fails. `docs/spec/tinygrad_pin.md`
+owns the tinygrad commit, rather than a version-only provisioning check.
+Execution preparation owns the single full content scan; payload discovery
+does not repeat it for a store link. A corrupt external tree still fails admission.
+
+Runs retain `prerequisites.json` in the executor receipt's `.d` directory, with runnable and
+deferred commands, atomically published through `molt.file_publication` even
+when nothing deferred. Its location is independent of the optional per-run
+logs; inability to retain selection evidence fails preparation before execution.
+Postsubmit's result receipt also lists the deferred commands,
+and its green summary explicitly calls them unproven here. Last green therefore
+attests the runnable host selection, not full farm or release qualification.
+This follows [Bazel's incompatible-target selection](https://bazel.build/versions/9.2.0/extending/platforms)
+and [Buck2's target compatibility](https://buck2.build/docs/concepts/configurations/):
+declared platform incompatibility can skip work, without calling it passed.
 
 ## Stages
 

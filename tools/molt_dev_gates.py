@@ -18,7 +18,7 @@ tail.
 
 from __future__ import annotations
 
-from tools.molt_dev_policy import GateEnvironment, LandingMode
+from tools.molt_dev_policy import Deferred, GateEnvironment, LandingMode
 from tools.proof_plan import CargoTargetAccess
 
 from collections.abc import Callable, Mapping, Sequence
@@ -208,7 +208,12 @@ def gate_output_dir(receipt_path: Path) -> Path:
     """This run's gate logs, beside the receipt, named by UTC time and pid so
     a run never reuses another's."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    return receipt_path.with_suffix(".d") / f"{stamp}-{os.getpid()}"
+    return prerequisite_receipt_path(receipt_path).parent / f"{stamp}-{os.getpid()}"
+
+
+def prerequisite_receipt_path(receipt_path: Path) -> Path:
+    """Selection evidence follows the executor receipt, independently of logs."""
+    return receipt_path.with_suffix(".d") / "prerequisites.json"
 
 
 def prepare_gate_streams(
@@ -295,6 +300,7 @@ class GateRuntime:
     toolchain_policies: tuple[ToolchainPolicy, ...] = ()
     mode: LandingMode = LandingMode.PRESUBMIT
     cancelled: Callable[[], bool] = lambda: False
+    deferred: tuple[Deferred, ...] = ()
 
 
 def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
@@ -528,6 +534,28 @@ def run_selected_gates(
     within the exported memory slice. The first observed failure within a
     phase halts the landing and cancels its remaining gates through their guards.
     """
+    for item in runtime.deferred:
+        runtime.say(item.diagnostic())
+    from molt.file_publication import atomic_write_bytes
+
+    prerequisites = (
+        json.dumps(
+            {
+                "schema": "molt.landing-prerequisites.v1",
+                "mode": runtime.mode.value,
+                "runnable": [gate.command for gate in gates],
+                "deferred": [item.record() for item in runtime.deferred],
+            },
+            indent=2,
+        )
+        + "\n"
+    ).encode("utf-8")
+    try:
+        atomic_write_bytes(
+            prerequisite_receipt_path(runtime.receipt_path), prerequisites
+        )
+    except OSError as exc:
+        raise DriverError(f"cannot retain prerequisite evidence: {exc}") from exc
     ordered = list(enumerate(gates, start=1))
     for ordinal, gate in ordered:
         _check_cancellation(runtime)
