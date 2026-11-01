@@ -21,6 +21,148 @@ from tools import runtime_wasm_final_preflight as preflight
 from tools.proof_queue_pkg import state as proof_queue_state
 
 
+def test_signature_rule_covers_canonical_runtime_identity_inputs():
+    from molt.cli.runtime_source_closure import runtime_source_paths
+    from molt.cli.runtime_identity_schema import (
+        RuntimePublicationTransform,
+        runtime_publication_executor_paths,
+    )
+    from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_features
+    from tools.dirty_tree_policy import is_ignored
+    from tools.molt_dev_policy import GateConfig
+
+    root = Path(__file__).resolve().parents[2]
+    owner = next(
+        rule
+        for rule in GateConfig.load(root / "tools/proof_plan.toml").rules
+        if rule.name == "runtime-wasm-signatures"
+    )
+    inputs = set(
+        runtime_source_paths(
+            root, runtime_wasm_distribution_features("full", freestanding=False)
+        )
+    )
+    inputs.update(
+        root / path
+        for transform in (
+            RuntimePublicationTransform.SHARED,
+            RuntimePublicationTransform.RELOC,
+        )
+        for path in runtime_publication_executor_paths(transform)
+    )
+    # The existing identity authority includes directory roots as well as files.
+    # Check their actual files, including external build inputs and patched crates.
+    files = {
+        child.relative_to(root).as_posix()
+        for path in inputs
+        for child in (path.rglob("*") if path.is_dir() else (path,))
+        if child.is_file()
+    }
+    assert files
+    assert not sorted(path for path in files if not is_ignored(path, owner.globs))
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "runtime/molt-ir/src/tir/ops.rs",
+        "runtime/molt-tir/src/representation_plan.rs",
+        "runtime/molt-passes/src/tir/lower_to_simple.rs",
+        "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs",
+        "runtime/molt-backend-wasm/src/wasm/final_functions.rs",
+        "runtime/molt-wasm-host/src/main.rs",
+    ],
+)
+def test_signature_rule_skips_compiler_crates_outside_the_runtime_closure(changed):
+    # A compiler-only edit cannot change the runtime WASM pair, so it must not
+    # pay for a dev/full pair build.
+    from molt.cli.runtime_source_closure import runtime_source_paths
+    from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_features
+    from tools.dirty_tree_policy import is_ignored
+    from tools.molt_dev_policy import GateConfig
+
+    root = Path(__file__).resolve().parents[2]
+    owner = next(
+        rule
+        for rule in GateConfig.load(root / "tools/proof_plan.toml").rules
+        if rule.name == "runtime-wasm-signatures"
+    )
+    closure = runtime_source_paths(
+        root, runtime_wasm_distribution_features("full", freestanding=False)
+    )
+    crate = root / Path(changed).parts[0] / Path(changed).parts[1]
+    assert crate not in closure
+    assert not is_ignored(changed, owner.globs)
+
+
+def test_signature_rule_selects_the_oracle_manifest():
+    from tools.dirty_tree_policy import is_ignored
+    from tools.molt_dev_policy import GateConfig
+
+    root = Path(__file__).resolve().parents[2]
+    owner = next(
+        rule
+        for rule in GateConfig.load(root / "tools/proof_plan.toml").rules
+        if rule.name == "runtime-wasm-signatures"
+    )
+    for changed in (
+        "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+        "tools/wasm_abi_gen/manifest.py",
+        "src/molt/_wasm_abi_generated.py",
+    ):
+        assert is_ignored(changed, owner.globs), changed
+
+
+@pytest.mark.parametrize(
+    "changed",
+    ["runtime/molt-runtime/src/process.rs", "src/molt/_wasm_abi_generated.py"],
+)
+def test_signature_plan_builds_candidate_before_its_compiled_oracle(changed):
+    from tools.molt_dev_gates import _cargo_chain, _local_command
+    from tools.molt_dev_policy import GateConfig, LandingMode
+    from tools.proof_plan import CargoTargetAccess, ProofPlan
+
+    root = Path(__file__).resolve().parents[2]
+    config = GateConfig.load(root / "tools/proof_plan.toml")
+    owner = next(
+        rule for rule in config.rules if rule.name == "runtime-wasm-signatures"
+    )
+    # Keep real policy prerequisites and the actual executor dependency builder;
+    # unrelated rules/graph consumers are outside this ordering obligation.
+    config.rules = [owner]
+    config.always = []
+    config.dependency_graph = None
+    for mode in LandingMode:
+        gates, matched = config.select([changed], mode=mode)
+        assert matched == [owner]
+        assert len(gates) == 2
+        build, compare = _cargo_chain(
+            [_local_command(i, gate, "local") for i, gate in enumerate(gates)]
+        )
+        assert (
+            "internal-runtime-wasm-build --build-profile dev --stdlib-profile full"
+            in build.gate.command
+        )
+        assert compare.gate.pytest
+        assert "tests/test_wasm_runtime_call_signature_authority.py" in compare.argv
+        assert build.gate.cargo_target_access is CargoTargetAccess.SHARED
+        assert compare.gate.cargo_target_access is CargoTargetAccess.SHARED
+        assert compare.dependencies == (build.id,)
+
+    plan = ProofPlan.load(root / "tools/proof_plan.toml")
+    compiled = next(c for c in plan.commands if c.id == "wasm.test.runtime-signatures")
+    assert compiled.dependencies == ("wasm.build.shared-runtime",)
+    assert (
+        "tests/test_wasm_runtime_call_signature_authority.py" in compiled.data["pytest"]
+    )
+    for command in plan.commands:
+        if command.id.startswith("python.unit.surface-contracts"):
+            assert (
+                "tests/test_wasm_runtime_call_signature_authority.py"
+                not in command.data["pytest"]
+            )
+
+
 @pytest.mark.parametrize("explicit_state", [False, True])
 @pytest.mark.parametrize(
     ("build_profile", "explicit_profile", "requested"),
@@ -57,9 +199,10 @@ def test_planned_pair_uses_production_control_root(
     if explicit_state:
         build_env["MOLT_BUILD_STATE_DIR"] = str(custody / "operator-state")
     manifest = SimpleNamespace(digest="toolchain", write=lambda _path: None)
-    identity = SimpleNamespace(
-        family_digest="f" * 64, digest="identity", toolchain_manifest=manifest
-    )
+    from tests.runtime_build_identity_helper import runtime_build_identity
+
+    shared_identity = runtime_build_identity("shared")
+    reloc_identity = runtime_build_identity("reloc")
     requests = []
 
     def compute_spec(*_args, build_profile: str, **kwargs):
@@ -78,8 +221,10 @@ def test_planned_pair_uses_production_control_root(
     )
     monkeypatch.setattr(
         preflight,
-        "_resolved_runtime_wasm_family_identities",
-        lambda *a: (identity, identity),
+        "resolve_runtime_wasm_pair_identity",
+        lambda *a: SimpleNamespace(
+            shared=shared_identity, reloc=reloc_identity, toolchain=manifest
+        ),
     )
     monkeypatch.setattr(
         preflight,
@@ -101,7 +246,9 @@ def test_planned_pair_uses_production_control_root(
         environment=build_env,
     )
     assert pair["expected_identity"] == str(
-        state / "runtime_wasm_generations" / f"{'f' * 64}.expected.json"
+        state
+        / "runtime_wasm_generations"
+        / f"{shared_identity.family_digest}.source-build.expected.json"
     )
     assert state.is_relative_to(custody)
     assert requests == [(build_profile, requested), (build_profile, requested)]

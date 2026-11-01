@@ -35,11 +35,15 @@ from molt.cli.runtime_paths import (  # noqa: E402
 )
 from molt.cli.runtime_wasm_build_spec import (  # noqa: E402
     _compute_runtime_wasm_build_spec,
-    _resolved_runtime_wasm_family_identities,
     _resolve_runtime_wasm_cargo_specs,
     _runtime_wasm_toolchain_manifest_path,
 )
-from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path  # noqa: E402
+from molt.cli.runtime_wasm_generation import (  # noqa: E402
+    RuntimeWasmExpectedPair,
+    RuntimeWasmReceiptRole,
+    runtime_wasm_generation_path,
+)
+from molt.cli.runtime_wasm_pair_build import resolve_runtime_wasm_pair_identity  # noqa: E402
 from molt.disk_capacity import (  # noqa: E402
     _nearest_existing_directory,
     capacity_bytes_from_gib,
@@ -627,12 +631,13 @@ def _planned_pair(
             simd_enabled=True,
             freestanding=False,
         )
-        shared_identity, reloc_identity = _resolved_runtime_wasm_family_identities(
+        identity = resolve_runtime_wasm_pair_identity(
             project_root,
             shared_spec,
             reloc_spec,
         )
-        toolchain_manifest = shared_identity.toolchain_manifest
+        shared_identity, reloc_identity = identity.shared, identity.reloc
+        toolchain_manifest = identity.toolchain
         manifest_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
         toolchain_manifest.write(manifest_path)
         state_root = _build_state_root(project_root)
@@ -648,9 +653,9 @@ def _planned_pair(
         "reloc": {"path": os.fspath(reloc), "digest": reloc_identity.digest},
         "generation": os.fspath(runtime_wasm_generation_path(shared)),
         "expected_identity": os.fspath(
-            state_root
-            / "runtime_wasm_generations"
-            / f"{shared_identity.family_digest}.expected.json"
+            RuntimeWasmExpectedPair(
+                shared_identity, reloc_identity, RuntimeWasmReceiptRole.SOURCE_BUILD
+            ).path(state_root)
         ),
     }
 
