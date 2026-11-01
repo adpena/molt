@@ -45,6 +45,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import time
 from types import ModuleType
 from typing import Any
@@ -825,6 +826,17 @@ def _admit_dispatch(
     return dispatch
 
 
+def _dispatch_argv(dispatch: dag_dispatch.Dispatch) -> str:
+    """The `lane start` arguments that reproduce ``dispatch``."""
+    words = []
+    if dispatch.rows:
+        words.append(f"--rows {','.join(dispatch.rows)}")
+    if dispatch.reason is not dag_dispatch.DispatchReason.DAG_FRONTIER:
+        words.append(f"--dispatch-reason {dispatch.reason.value}")
+        words.append(f"--reason {shlex.quote(dispatch.text)}")
+    return " ".join(words)
+
+
 def cmd_lane_dispatch(args: argparse.Namespace) -> int:
     """Record an existing lane's place in the work order (re-admission)."""
     from tools import agent_coordination, coordination_records
@@ -984,11 +996,12 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
             done = provision_lane(worktree)
         except checkout_provisioning.ProvisioningError as exc:
             _fail(str(exc))
-            # A later start reuses the slot and republishes the env files.
+            # A later start reuses the slot and republishes the env files; it
+            # repeats this start's dispatch so the work order admits it again.
             _say(
                 "    the lane exists; finish provisioning with: "
                 f"molt_dev.py lane retire --abandon {slug} && "
-                f"molt_dev.py lane start {slug}"
+                f"molt_dev.py lane start {slug} {_dispatch_argv(dispatch)}"
             )
             return EXIT_FAIL
         for item in done:

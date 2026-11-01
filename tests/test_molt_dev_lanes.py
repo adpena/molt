@@ -32,6 +32,7 @@ from tools import controller_source
 from tools import molt_dev, molt_dev_lanes as lanes
 from tools.molt_dev_change_ids import landing_representation, read_commit_records
 from tools.driver_errors import EXIT_OK, EXIT_FAIL, EXIT_USAGE, DriverError  # noqa: E402
+from tests.integration_driver_fixture import FIXTURE_LEDGER  # noqa: E402
 
 CHANGE_A = "I" + "a1" * 20
 CHANGE_B = "I" + "b2" * 20
@@ -98,31 +99,6 @@ def _fixture_checkout_input(
             {"PATH": str(python.parent) + os.pathsep + environment.get("PATH", "")}
         ),
     )
-
-
-# The smallest real ledger: family A (level 0) and family B (level 1, A -> B).
-FIXTURE_LEDGER = """# Ledger
-
-## Release dependency and landing order
-
-### Family dependency order
-
-| Family | Shared cause or missing authority | Open rows |
-| --- | --- | --- |
-| A. First | a | HF-1 |
-| B. Second | b | HF-2 |
-
-| From | To | Reason |
-| --- | --- | --- |
-| A | B | b needs a |
-
-## Open: correctness and release blockers
-
-| ID | Defect | Evidence | Next |
-|----|--------|----------|------|
-| HF-1 | d | e | n |
-| HF-2 | d | e | n |
-"""
 
 
 @pytest.fixture(scope="session")
