@@ -36,6 +36,7 @@ pub fn bump_type_version() -> u64 {
 pub(crate) mod accessors;
 pub(crate) mod aux_header;
 pub(crate) mod backing;
+pub(crate) mod bounded_release;
 pub(crate) mod buffer2d;
 pub(crate) mod buffer_exports;
 pub(crate) mod builders;
@@ -3624,9 +3625,9 @@ fn run_finalizer_resource_test_hook(
 /// CPython-faithful exception save/clear/restore + synthetic-handler-frame
 /// dance) and sets `HEADER_FLAG_FINALIZER_RAN` so the finalizer is run at most
 /// once per object lifetime. Objects with no finalizer (or whose finalizer
-/// already ran) return immediately without side effects; the caller's window
-/// still covers the subsequent `weakref_clear_for_ptr`, so a weakref callback
-/// can resurrect through the SAME window even for a `__del__`-free object.
+/// already ran) return immediately without side effects. The caller checks
+/// resurrection before committing death and clearing ordinary instance weakrefs.
+/// Generator weakrefs have already been cleared, following `gen_dealloc`.
 unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     let header_ptr = unsafe { header_from_obj_ptr(ptr) };
     let obj_bits = MoltObject::from_ptr(ptr).bits();
@@ -3801,10 +3802,9 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
     // `__del__` ran under the synthetic handler frame above, so `molt_raise`
     // recorded the raise value-based rather than running the uncaught-exception
     // process-exit terminator (#65) — this branch is reachable.
-    // The revival ref opened by the caller stays held: `dec_ref_ptr` performs the
-    // single closing `dec_ref` + resurrection check AFTER `weakref_clear_for_ptr`
-    // runs, so a `__del__`-resurrect and a weakref-callback-resurrect collapse to
-    // the SAME post-window check (CPython's finalize+ClearWeakRefs window).
+    // The caller retains the revival pin until its resurrection verdict. On
+    // committed death the same storage stays pinned across weakref callbacks;
+    // those callbacks cannot upgrade a referent whose death has committed.
 }
 
 /// Cyclic-collector finalizer: run `__del__` once without the acyclic rc=0
@@ -4240,6 +4240,30 @@ unsafe fn dec_ref_ptr_terminal(
     header_aux: ObjectAuxSnapshot,
 ) -> Option<u64> {
     unsafe {
+        bounded_release::release(
+            py,
+            bounded_release::TerminalRelease {
+                ptr: std::ptr::NonNull::new(ptr).expect("terminal object"),
+                type_id,
+                header_flags,
+                header_size_class,
+                header_aux,
+            },
+        )
+    }
+}
+
+/// Resume terminal custody without a second reference-count transition.
+#[inline(never)]
+unsafe fn dec_ref_ptr_terminal_body(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    type_id: u32,
+    header_flags: u32,
+    header_size_class: u16,
+    header_aux: ObjectAuxSnapshot,
+) -> Option<u64> {
+    unsafe {
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
             eprintln!("EXC_RC_FREE ptr=0x{:x} (rc hit 0, freeing)", ptr as usize);
@@ -4324,28 +4348,13 @@ unsafe fn dec_ref_ptr_terminal(
                 name, freed_fn_ptr, ptr as usize,
             );
         }
-        // FINALIZE + WEAKREF-CLEAR REVIVAL WINDOW (council #1 P0 fix).
-        //
-        // CPython's `_Py_Dealloc` runs `tp_finalize` (`__del__`) FIRST and,
-        // only if the object was NOT resurrected by it, then runs
-        // `PyObject_ClearWeakRefs` (the weakref callbacks) and `tp_dealloc`.
-        // Crucially, BOTH the finalizer and the weakref callbacks execute with
-        // the object's storage LIVE: CPython resurrects the object across each
-        // Python-visible step. molt previously dropped the finalizer's
-        // temporary revival ref BEFORE clearing weakrefs, so the callbacks ran
-        // at rc=0 — a callback that re-touched the dying object's storage was a
-        // use-after-free. The fix makes the revival window a first-class step
-        // here in `dec_ref_ptr` (the Python lifetime boundary): ONE revival
-        // ref is held across `__del__` AND, separately, across the weakref
-        // clear, with a resurrection check after EACH Python-visible step. No
-        // Python code ever runs while the object is at rc=0.
-        //
-        // The window is opened ONLY when the object actually participates — it
-        // currently derives a `__del__` finalizer from its class or has ever
-        // exposed a weakref (`HAS_WEAKREF`). Objects with neither (the hot
-        // path: ints, strings, tuples, plain instances) skip the revival
-        // inc/dec AND the global weakref lock entirely and fall straight
-        // through to the free tail with zero added cost.
+        // Pin storage throughout callback-capable finalization. Ordinary
+        // instances run __del__ before weakrefs and keep those weakrefs on
+        // resurrection; generators clear old Python weakrefs before their
+        // finalizer, as CPython gen_dealloc does. Internal observations retire
+        // only after the resurrection verdict. Committed-dead referents cannot
+        // be upgraded while weakref callbacks run. Nonparticipating objects
+        // skip both the revival pin and weakref registry access.
         let needs_revival_window =
             (header_flags & HEADER_FLAG_HAS_WEAKREF) != 0 || object_has_finalizer(py, ptr);
         if needs_revival_window {
@@ -4362,6 +4371,13 @@ unsafe fn dec_ref_ptr_terminal(
             // checks.
             let mut revival_window = (*header_ptr).open_revival_window(has_abi_view);
             let mut window_baseline = revival_window.baseline();
+            if matches!(type_id, TYPE_ID_GENERATOR | TYPE_ID_ASYNC_GENERATOR) {
+                // CPython gen_dealloc differs from subtype_dealloc: old
+                // weakrefs die before close()/the async-generator hook, even
+                // if that finalizer resurrects the generator. Keep internal
+                // lifetime observations until the later death verdict.
+                weakref::clear_python_weakrefs_for_ptr(py, ptr);
+            }
             // `__del__` runs INLINE at this rc→0 point, exactly as CPython
             // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
             // `__del__` before `print`), under a synthetic exception-handler

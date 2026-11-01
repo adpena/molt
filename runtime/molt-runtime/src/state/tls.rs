@@ -44,6 +44,9 @@ pub(crate) struct ExecutionTls {
     pub(crate) runtime_state: Cell<*mut RuntimeState>,
     /// Whether this thread ordered its destructor-bearing thread-locals.
     pub(crate) tls_guard_touched: Cell<bool>,
+    /// Borrowed from the outermost terminal release until its queue drains.
+    /// A pointer Cell has no TLS destructor, including during runtime teardown.
+    pub(crate) terminal_release: Cell<*const crate::object::bounded_release::TerminalReleaseState>,
 }
 
 const _: () = {
@@ -75,6 +78,7 @@ thread_local! {
             retained_worker_origin: Cell::new(None),
             runtime_state: Cell::new(std::ptr::null_mut()),
             tls_guard_touched: Cell::new(false),
+            terminal_release: Cell::new(std::ptr::null()),
         }
     };
 }

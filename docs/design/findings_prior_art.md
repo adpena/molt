@@ -560,6 +560,96 @@ conventions in aggregate builders (V1-14).
 
 **Refuse.** [I] Global maps keyed by integer handles: they outlive owners.
 
+**HF-660 terminal release.** [I] `object::bounded_release` owns the managed
+zero-transition worklist. The outermost release lends stack-owned state to the
+destructor-free execution TLS record; recursive terminals share its depth and
+LIFO queue. No mutable borrow crosses a finalizer. At the limit a heap object
+waits with its payload intact, temporarily untracked but still allocation-accounted.
+Drain restores tracking, reloads lifecycle flags and resumes the terminal body
+without decrementing again. Every generated heap kind already shares this
+terminal body and the exhaustive payload detach authority. Tee blocks retain
+their existing iterative successor fast path. The C-ABI's actual native
+`tp_dealloc` participation policy is separate; managed views still retire through
+this managed authority.
+
+Caller-owned storage is identified by the existing allocation-site
+`HEADER_FLAG_SCOPED` fact. It cannot wait beyond the call returning to its frame
+or arena owner: its own terminal transaction runs immediately, even above the
+heap depth limit; only heap-owned child terminals may be queued. Storage owners
+still must keep backing storage valid until every physical owner is released.
+The runtime scoped-finalizer regression destroys and then overwrites a scoped
+payload at the heap limit before the outer queue can drain.
+
+**HF-660 stack budget.** [M] The first macOS arm64 release-output archive's retained
+frames measured from actual machine-code prologues are 64 bytes for the terminal
+entry, 288 for the TLS/root wrapper, 96 for the state entry, 784 for the terminal
+body, 512 for edge release and 368 for aggregate-resource release: 2,112 bytes
+on the aggregate path per nested level. The first wasm-release shared image's linear
+stack decrements are 192, 16, 448, 144 and 112 bytes for the corresponding
+entry/state/body/edge/resource functions: 912 bytes per level. Rust/WASM locals
+and engine call frames additionally use the host execution stack, not that
+linear stack. These measurements are for the actual release/full native and
+WASM producers, not a threshold found by crashing progressively deeper graphs.
+After outlining root-only setup and inlining the nested shallow path, the native
+retained frames are 80 + 784 + 384 + 352 = 1,600 bytes per aggregate level, plus
+a 208-byte outermost frame. WASM is 32 + 448 + 144 + 112 = 736 linear-stack bytes
+per aggregate level, plus a 96-byte outermost frame. The earlier measurements
+remain the conservative basis of the bound; the optimization does not increase it.
+
+[I] Reserve 128 KiB for a release segment, one eighth of the 1 MiB linear stack
+configured by `tools/wasm_link_pipeline.py`. Round each measured level up to
+8 KiB to leave over three times the measured native retained frames for
+dispatch, callback entry and a synchronous scoped release. The source computes
+`RELEASE_DEPTH_LIMIT = 128 KiB / 8 KiB = 16`. The measured native main-stack limit
+is 8,176 KiB; thread and foreign-callback stack headroom remains a prerequisite,
+as with any callback into compiled code. Python callback recursion is still
+charged by the existing recursion authority. The graph's depth does not enlarge
+the terminal stack segment or reserve a graph-sized native stack. Other
+platform/profile/engine coordinates need their own physical-frame qualification.
+
+**HF-660 shallow cost.** [M] On native macOS arm64, release/full, the whole-program
+workload allocates and retires 4,000,000 small lists and dictionaries in batches
+of 40,000, each with primitive values. Three interleaved `/usr/bin/time -l` runs
+per binary in the same lane environment, with `PYTHONHASHSEED=0`, give median
+retired instructions of 41,788,583,955 before and 41,927,783,872 after:
+**+0.3331%**, above observed run variation. Root-only setup is outlined, the
+nested state entry is inlined, and `PyToken`'s cached execution record removes
+repeated native TLS lookups. The remaining added shallow work is the
+active-state/depth test, balanced depth updates and outlined terminal-body call.
+The retained split was faster than a measured admission-in-body alternative.
+This is a measured bounded-release safety
+cost, not a claim of no regression or a package-wide performance result. Empty
+queues allocate no worklist backing storage. The linked binary grows by 40 bytes
+(20,516,560 to 20,516,600). Wall-clock and process-RSS variation do not establish
+a speed or memory improvement; the per-run observations stay in private evidence.
+
+**HF-660 callback semantics.** [F/I] The Python language does not prescribe
+prompt refcounting or relative sibling destruction timing. The selected CPython
+implementation is the oracle for Molt's deterministic shallow release: list and
+tuple edges retire in reverse, dictionaries in insertion order, and ordinary
+instance `__del__` precedes weakref callbacks. Resurrection keeps those weakrefs
+and does not rerun `__del__`. Generator deallocation is different: Python
+weakrefs clear before `close()` or the async-generator finalization hook, even
+when that hook resurrects the generator; internal lifetime observations survive
+until committed death. The shared weakref authority implements both phases.
+A zero-count queued referent cannot be upgraded. Cut points and inter-segment
+timing are not identical to CPython's type-specific 50-frame counter (3.12) or
+physical stack-margin policy (3.14). No hash-table iteration order is invented
+for independent objects in a set.
+
+Primary mechanisms: CPython 3.12's
+[trashcan segment comment](https://github.com/python/cpython/blob/v3.12.15/Include/cpython/object.h#L435-L474),
+3.14's [_Py_Dealloc margin check and drain](https://github.com/python/cpython/blob/v3.14.0/Objects/object.c#L2860-L2921),
+3.12's [queued weakref zero-count rule](https://github.com/python/cpython/blob/v3.12.15/Include/cpython/weakrefobject.h#L35-L50)
+and [gen_dealloc weakref/finalizer order](https://github.com/python/cpython/blob/v3.12.15/Objects/genobject.c#L114-L148).
+The implementation follows these mechanisms; it does not copy their source.
+`runtime.public-consumers.native` and `.wasm` own the differential cases.
+The deep case uses 100,000 links and a bottom finalizer witness for each family,
+including a global destroyed during teardown. CPython 3.12 itself overflows on
+a pure deque chain, so deque, cell and generator links include a list that
+participates in CPython's trashcan. The pure list/tuple/dict/set/instance/slot,
+frozenset, bound-method and exception-cause cases remain independent.
+
 **Experiment.** Insert n keys into a dict and delete them in insertion order
 for n = 10^4, 10^5 and 10^6. Time per delete must stay flat, as in CPython 3.12.
 
