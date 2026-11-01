@@ -44,10 +44,10 @@ over stale prose or precedent.
 
 ## Build to the state of the art
 
-- Proactively research our codebase/history/WIP and leading projects' designs and avoided pitfalls
-  when choosing architectural/performance work. Seek reusable algorithms, data structures, code and
-  tools across languages (MLIR/LLVM, Cranelift, rustc, CPython, PyPy, HotSpot/V8, Codon and build tools).
-  Borrow/adapt when the evidence fits; retain provenance, attribution and license obligations.
+- Research our codebase/history/WIP and leading projects' designs and pitfalls before architectural or
+  performance work. Seek reusable algorithms, data structures, code and tools: AOT first (GraalVM
+  Native Image, Go, mypyc, Codon, MLIR/LLVM, Cranelift, rustc; spec 0216 closes the program), then
+  CPython, PyPy, HotSpot/V8 where static proof fails. Borrow/adapt with provenance and license duties.
   Reuse matching research; keep inquiry decision-focused. Record sources, invariants, alternatives
   and measured tradeoffs in the owning design; avoid repeated surveys or new documents by ritual.
 - Identity is typed, never spelled; lifecycles are typed state machines; rewrites prove themselves
