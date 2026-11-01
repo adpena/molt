@@ -206,6 +206,45 @@ enum SpawnTransport {
     DedicatedPipes,
 }
 
+/// One process-spawn request, as runtime-encoded objects from the extern ABI.
+#[cfg(not(target_arch = "wasm32"))]
+struct SpawnRequest {
+    args: u64,
+    env: u64,
+    cwd: u64,
+    stdin: u64,
+    stdout: u64,
+    stderr: u64,
+    start_new_session: u64,
+    process_group: u64,
+    close_fds: u64,
+    pass_fds: u64,
+    transport: SpawnTransport,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SpawnRequest {
+    /// `subprocess.Popen`'s defaults for the options the plain spawn does not take.
+    fn with_default_options(
+        [args, env, cwd, stdin, stdout, stderr]: [u64; 6],
+        transport: SpawnTransport,
+    ) -> Self {
+        Self {
+            args,
+            env,
+            cwd,
+            stdin,
+            stdout,
+            stderr,
+            start_new_session: MoltObject::from_bool(false).bits(),
+            process_group: MoltObject::none().bits(),
+            close_fds: MoltObject::from_bool(true).bits(),
+            pass_fds: MoltObject::none().bits(),
+            transport,
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
@@ -219,19 +258,10 @@ pub unsafe extern "C" fn molt_process_spawn(
     stderr: u64,
 ) -> u64 {
     unsafe {
-        spawn_native(
-            args,
-            env,
-            cwd,
-            stdin,
-            stdout,
-            stderr,
-            MoltObject::from_bool(false).bits(),
-            MoltObject::none().bits(),
-            MoltObject::from_bool(true).bits(),
-            MoltObject::none().bits(),
+        spawn_native(SpawnRequest::with_default_options(
+            [args, env, cwd, stdin, stdout, stderr],
             SpawnTransport::ProgramStdio,
-        )
+        ))
     }
 }
 
@@ -252,7 +282,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
     pass_fds: u64,
 ) -> u64 {
     unsafe {
-        spawn_native(
+        spawn_native(SpawnRequest {
             args,
             env,
             cwd,
@@ -263,8 +293,8 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             process_group,
             close_fds,
             pass_fds,
-            SpawnTransport::ProgramStdio,
-        )
+            transport: SpawnTransport::ProgramStdio,
+        })
     }
 }
 
@@ -274,19 +304,17 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
 pub unsafe extern "C" fn molt_process_ipc_spawn(args: u64, env: u64, cwd: u64) -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
-        spawn_native(
-            args,
-            env,
-            cwd,
-            MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_DEVNULL)).bits(),
-            MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_INHERIT)).bits(),
-            MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_INHERIT)).bits(),
-            MoltObject::from_bool(false).bits(),
-            MoltObject::none().bits(),
-            MoltObject::from_bool(true).bits(),
-            MoltObject::none().bits(),
+        spawn_native(SpawnRequest::with_default_options(
+            [
+                args,
+                env,
+                cwd,
+                MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_DEVNULL)).bits(),
+                MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_INHERIT)).bits(),
+                MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_INHERIT)).bits(),
+            ],
             SpawnTransport::DedicatedPipes,
-        )
+        ))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -354,19 +382,20 @@ fn child_descriptors_from_bits(
 /// All arguments must be valid runtime-encoded objects.
 /// `start_new_session_bits` should be a bool (truthy → setsid).
 /// `process_group_bits` should be int or None (None → ignore, int → setpgid(0, pgid)).
-unsafe fn spawn_native(
-    args_bits: u64,
-    env_bits: u64,
-    cwd_bits: u64,
-    stdin_bits: u64,
-    stdout_bits: u64,
-    stderr_bits: u64,
-    start_new_session_bits: u64,
-    process_group_bits: u64,
-    close_fds_bits: u64,
-    pass_fds_bits: u64,
-    transport: SpawnTransport,
-) -> u64 {
+unsafe fn spawn_native(request: SpawnRequest) -> u64 {
+    let SpawnRequest {
+        args: args_bits,
+        env: env_bits,
+        cwd: cwd_bits,
+        stdin: stdin_bits,
+        stdout: stdout_bits,
+        stderr: stderr_bits,
+        start_new_session: start_new_session_bits,
+        process_group: process_group_bits,
+        close_fds: close_fds_bits,
+        pass_fds: pass_fds_bits,
+        transport,
+    } = request;
     crate::with_gil_entry_nopanic!(_py, {
         ignore_sigpipe();
         if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {

@@ -140,7 +140,7 @@ impl DescriptorTable {
         if read <= 0 {
             return Err(io::Error::last_os_error());
         }
-        if read >= bytes || read as usize % size != 0 {
+        if read >= bytes || !(read as usize).is_multiple_of(size) {
             return Err(io::Error::from_raw_os_error(libc::EOVERFLOW));
         }
         for entry in &self.buffer[..read as usize / size] {
