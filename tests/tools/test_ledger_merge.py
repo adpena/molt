@@ -10,6 +10,8 @@ section, and a lane editing a row next to one that main moved.
 from __future__ import annotations
 
 import sys
+import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -281,3 +283,368 @@ def test_both_sides_renaming_one_family_is_a_conflict() -> None:
     result = _merge(base, ours, theirs)
 
     assert result.conflicts == ("family C",)
+
+
+def test_generated_merge_attributes_are_the_manifest_projection() -> None:
+    from tools import generated_merge
+
+    assert generated_merge.generated_outputs()[ROOT / ".gitattributes"] == (
+        ROOT / ".gitattributes"
+    ).read_text(encoding="utf-8")
+    owners = generated_merge.output_owners(ROOT)
+    result = _git(ROOT, "check-attr", "merge", "--", *owners)
+    attributes = {
+        line.rsplit(": ", 2)[0]: line.rsplit(": ", 1)[1]
+        for line in result.stdout.splitlines()
+    }
+    for path, owner in owners.items():
+        assert (attributes[path] == "binary") == owner.eligible
+
+
+def _generated_ledger(keys: list[str]) -> str:
+    header = "| ID | Finding | Evidence |\n|---|---|---|\n"
+    return (
+        "# Ledger\n\n## Open\n\n"
+        + header
+        + "".join(f"| {key} | x | evidence |\n" for key in keys)
+        + "\n## Fixed\n\n"
+        + header
+        + "| HF-0 | x | evidence |\n"
+    )
+
+
+@pytest.fixture
+def generated_repo(tmp_path: Path, monkeypatch):
+    """Real generator/CLI sources, selected image, and two independently authored rows."""
+    from tools import gen_finding_ids, generated_merge
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for directory in ("tools", "src", "config"):
+        shutil.copytree(
+            ROOT / directory,
+            repo / directory,
+            ignore=shutil.ignore_patterns("__pycache__", "node_modules"),
+        )
+    for file in (
+        "pyproject.toml",
+        "uv.lock",
+        ".python-version",
+        "Cargo.toml",
+        ".gitignore",
+    ):
+        shutil.copyfile(ROOT / file, repo / file)
+    # The selected producer needs no external toolchain. Keep the real runner,
+    # import boundary and guard, with just this proof cell's declared producers.
+    (repo / "tools/proof_plan.toml").write_text("", encoding="utf-8")
+    manifest = """schema_version = 1
+[[generator]]
+tool = "tools/gen_finding_ids.py"
+outputs = ["tests/findings/finding_ids.py"]
+check_mode = true
+idempotent = true
+toolchains = []
+[[generator]]
+tool = "tools/generated_merge.py"
+outputs = [".gitattributes"]
+check_mode = true
+idempotent = true
+toolchains = []
+[[generator]]
+tool = "tools/external.py"
+outputs = ["external.txt"]
+ci_checkable = false
+ci_skip_reason = "external oracle is absent"
+idempotent = true
+check_mode = true
+toolchains = []
+"""
+    (repo / "tools/generator_manifest.toml").write_text(manifest, encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(generated_merge, "ROOT", repo)
+        (repo / ".gitattributes").write_text(
+            generated_merge.generated_outputs()[repo / ".gitattributes"],
+            encoding="utf-8",
+        )
+    ledger = repo / "docs/agent/V1_HANDOFF_FINDINGS.md"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(_generated_ledger(["HF-1"]), encoding="utf-8")
+    output = repo / "tests/findings/finding_ids.py"
+    output.parent.mkdir(parents=True)
+    output.write_text(gen_finding_ids.render(repo), encoding="utf-8")
+    (repo / "external.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(
+        repo,
+        "config",
+        "merge.molt-ledger.driver",
+        f'"{sys.executable}" -B "{repo / "tools/ledger_merge.py"}" %O %A %B',
+    )
+    # Support sources stay outside the fixture's branch content. Only the
+    # actual merge inputs are versioned; neither source is a fake generator.
+    (repo / ".git/info/exclude").write_text(
+        "tools/\nsrc/\nconfig/\npyproject.toml\nuv.lock\nCargo.toml\n", encoding="utf-8"
+    )
+    _git(
+        repo,
+        "add",
+        ".gitattributes",
+        ".gitignore",
+        ".python-version",
+        "docs",
+        "tests",
+        "external.txt",
+    )
+    _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "branch", "lane")
+    for branch, key in (("main", "HF-10"), ("lane", "HF-11")):
+        _git(repo, "switch", "-q", branch)
+        ledger.write_text(_generated_ledger([key, "HF-1"]), encoding="utf-8")
+        output.write_text(gen_finding_ids.render(repo), encoding="utf-8")
+        _git(repo, "commit", "-qam", f"open {key}")
+    _git(repo, "switch", "-q", "main")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", sys.prefix)
+    return repo, base, ledger, output
+
+
+def _pending_merge(repo: Path, ref: str = "lane"):
+    return run_guarded_test_process(
+        ["git", "merge", "--no-edit", ref], cwd=repo, capture_output=True, text=True
+    )
+
+
+def _assert_generated_union(repo, ledger, output):
+    from tools import gen_finding_ids
+
+    # Independent membership oracle plus byte identity with the canonical producer.
+    assert set(_keys(ledger.read_text(encoding="utf-8"))) == {
+        "HF-0",
+        "HF-1",
+        "HF-10",
+        "HF-11",
+    }
+    assert output.read_text(encoding="utf-8") == gen_finding_ids.render(repo)
+    assert _git(
+        repo, "show", "HEAD:tests/findings/finding_ids.py"
+    ).stdout == output.read_text(encoding="utf-8")
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    assert (
+        len(_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()) == 3
+    )
+
+
+def _landing_generated_candidate(repo: Path, ref: str = "lane"):
+    from tools import molt_dev_queue as queue
+
+    upstream = _git(repo, "rev-parse", "main").stdout.strip()
+    tip = _git(repo, "rev-parse", ref).stdout.strip()
+    request = queue.LandingRequest(
+        "merge-fixture", tip, str(repo), ref, "2026-11-01T08:00:00+00:00"
+    )
+    calls = []
+
+    def run(args):
+        calls.append(tuple(args))
+        result = run_guarded_test_process(
+            ["git", *args], cwd=repo, capture_output=True, text=True
+        )
+        return queue.GitResult(result.returncode, result.stdout, result.stderr)
+
+    return queue.build_candidate(run, upstream, (request,)), calls
+
+
+@pytest.mark.parametrize("entry", ["resolver", "worker", "runner"])
+def test_generated_ledger_merge_uses_the_merged_source_tree(
+    generated_repo, entry, capsys, record_property
+):
+    from tools import generated_merge
+
+    repo, _base, ledger, output = generated_repo
+    started = time.perf_counter()
+    if entry == "worker":
+        from molt.process_environment import ProcessEnvironment
+        import os
+
+        environment = ProcessEnvironment(os.environ).updated(
+            {"PYTHONPATH": os.pathsep.join((str(repo / "src"), str(repo)))}
+        )
+        result = run_guarded_test_process(
+            [
+                sys.executable,
+                "-B",
+                str(repo / "tools/generated_merge.py"),
+                "merge",
+                "lane",
+            ],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        rendered = result.stdout
+    elif entry == "resolver":
+        merge = _pending_merge(repo)
+        assert merge.returncode != 0
+        assert (
+            _git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+            == "tests/findings/finding_ids.py"
+        )
+        assert "<<<<<<<" not in output.read_text(encoding="utf-8")
+        assert generated_merge.resolve_generated_merge(lambda args: _git(repo, *args))
+        rendered = capsys.readouterr().out
+    else:
+        result, _calls = _landing_generated_candidate(repo)
+        assert len(result.included) == 1 and result.conflicted == ()
+        rendered = capsys.readouterr().out
+    assert rendered.count("s tools/gen_finding_ids.py") == 1
+    _assert_generated_union(repo, ledger, output)
+    elapsed = time.perf_counter() - started
+    record_property("merge_elapsed_seconds", elapsed)
+    record_property("producer_renders", 1)
+    print(f"generated merge {entry}: {elapsed:.6f}s; one producer render")
+
+
+def test_generated_merge_preserves_source_conflicts_without_running_a_generator(
+    generated_repo,
+):
+    from tools import generated_merge
+
+    repo, _base, ledger, output = generated_repo
+    ledger.write_text(
+        _row(ledger.read_text(encoding="utf-8"), "HF-1", "main edit"), encoding="utf-8"
+    )
+    _git(repo, "commit", "-qam", "main edits shared row")
+    _git(repo, "switch", "-q", "lane")
+    ledger.write_text(
+        _row(ledger.read_text(encoding="utf-8"), "HF-1", "lane edit"), encoding="utf-8"
+    )
+    _git(repo, "commit", "-qam", "lane edits shared row")
+    _git(repo, "switch", "-q", "main")
+    assert _pending_merge(repo).returncode != 0
+    before = {p: p.read_bytes() for p in (ledger, output)}
+    index = _git(repo, "ls-files", "--stage").stdout
+    assert (
+        generated_merge.resolve_generated_merge(lambda args: _git(repo, *args)) is False
+    )
+    assert {p: p.read_bytes() for p in before} == before
+    assert _git(repo, "ls-files", "--stage").stdout == index
+
+
+def test_generated_merge_generator_error_does_not_commit_ours(generated_repo):
+    from tools import generated_merge
+
+    repo, _base, ledger, output = generated_repo
+    assert _pending_merge(repo).returncode != 0
+    # A real malformed merged ledger is rejected by the real producer.
+    text = ledger.read_text(encoding="utf-8")
+    ledger.write_text(text + "\n" + "| HF-1 | duplicate | x |\n", encoding="utf-8")
+    _git(repo, "add", "docs/agent/V1_HANDOFF_FINDINGS.md")
+    before = _git(repo, "rev-parse", "HEAD").stdout
+    with pytest.raises(
+        generated_merge.GeneratedMergeError, match="structural problems"
+    ):
+        generated_merge.resolve_generated_merge(lambda args: _git(repo, *args))
+    assert _git(repo, "rev-parse", "HEAD").stdout == before
+    assert (
+        _git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+        == "tests/findings/finding_ids.py"
+    )
+
+
+def test_external_generator_conflict_names_its_owner(generated_repo):
+    from tools import generated_merge
+
+    repo, _base, _ledger_path, _output = generated_repo
+    for branch in ("main", "lane"):
+        _git(repo, "switch", "-q", branch)
+        (repo / "external.txt").write_text(branch + "\n", encoding="utf-8")
+        _git(repo, "commit", "-qam", branch)
+    _git(repo, "switch", "-q", "main")
+    assert _pending_merge(repo).returncode != 0
+    with pytest.raises(
+        generated_merge.GeneratedMergeError,
+        match="tools/external.py: external oracle is absent",
+    ):
+        generated_merge.resolve_generated_merge(lambda args: _git(repo, *args))
+    assert "<<<<<<<" in (repo / "external.txt").read_text(encoding="utf-8")
+
+
+def test_clean_generated_merge_starts_no_resolver_or_producer(
+    generated_repo, monkeypatch, record_property
+):
+    from tools import generated_merge
+
+    repo, base, ledger, output = generated_repo
+    expected = output.read_bytes()
+    _git(repo, "switch", "-qc", "unrelated", base)
+    (repo / "source.txt").write_text("independent source\n", encoding="utf-8")
+    _git(repo, "add", "source.txt")
+    _git(repo, "commit", "-qm", "source only")
+    _git(repo, "switch", "-q", "main")
+
+    def forbidden(_run):
+        pytest.fail("clean merge invoked the generated resolver")
+
+    monkeypatch.setattr(generated_merge, "resolve_generated_merge", forbidden)
+    started = time.perf_counter()
+    candidate, calls = _landing_generated_candidate(repo, "unrelated")
+    elapsed = time.perf_counter() - started
+    assert len(candidate.included) == 1 and candidate.conflicted == ()
+    assert output.read_bytes() == expected
+    assert not any(args[0] in ("diff", "add", "commit") for args in calls)
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    record_property("merge_elapsed_seconds", elapsed)
+    record_property("producer_renders", 0)
+    record_property("resolver_calls", 0)
+    print(
+        f"clean landing merge: {elapsed:.6f}s; zero resolver/producer calls; {len(calls)} existing Git calls"
+    )
+
+
+@pytest.mark.parametrize("boundary", ["pin", "image"])
+def test_merge_regeneration_refuses_another_interpreter_identity(
+    tmp_path, monkeypatch, boundary
+):
+    from tools import generators, venv_exec
+
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    pin = ".".join(map(str, sys.version_info[:3]))
+    (tmp_path / ".python-version").write_text(
+        "3.12.0" if boundary == "pin" else pin, encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        venv_exec,
+        "resolve_venv",
+        lambda **kwargs: (
+            Path(sys.prefix) if boundary == "pin" else tmp_path / "foreign-image"
+        ),
+    )
+    with pytest.raises(ValueError, match="requires the selected CPython"):
+        generators.require_merge_python()
+
+
+def test_landing_generated_failure_keeps_its_error_and_restores_the_candidate(
+    generated_repo,
+):
+    repo, _base, _ledger_path, _output = generated_repo
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    producer = repo / "tools/gen_finding_ids.py"
+    source = producer.read_text(encoding="utf-8")
+    assert "return {_REPO_ROOT / OUTPUT: render()}" in source
+    producer.write_text(
+        source.replace(
+            "return {_REPO_ROOT / OUTPUT: render()}",
+            'raise ValueError("injected producer failure after source merge")',
+        ),
+        encoding="utf-8",
+    )
+    candidate, _calls = _landing_generated_candidate(repo)
+    assert candidate.included == ()
+    assert len(candidate.conflicted) == 1
+    assert "injected producer failure after source merge" in candidate.conflicted[0][1]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "status", "--porcelain").stdout == ""

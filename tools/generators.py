@@ -16,6 +16,11 @@ default full run. Generators with
 corpora, external checkouts, live interpreters); they run only when named
 with ``--only``.
 
+``merge --only TOOL --output-list PATH`` is the post-source-merge publication
+boundary. It uses the selected pinned interpreter, refuses non-reproducible or
+non-idempotent producers, and checks each published family against its one
+retained render before returning the complete staging path set.
+
 Usage:
     python tools/generators.py check            # exit 1 if any output is stale
     python tools/generators.py write            # rewrite stale outputs
@@ -28,6 +33,7 @@ import argparse
 from contextlib import AbstractContextManager, ExitStack, nullcontext
 import importlib
 import inspect
+import json
 import os
 import sys
 import time
@@ -51,7 +57,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 from molt.python_runtime_admission import BuildPythonAdmission  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
-from tools.generator_io import display_path, stale_outputs, write_outputs  # noqa: E402
+from tools.generator_io import (  # noqa: E402
+    display_path,
+    merge_eligible,
+    stale_outputs,
+    write_outputs,
+)
 from tools.import_file import tool_module_name  # noqa: E402
 from tools.scan_records import ScanRecords, open_scan_records  # noqa: E402
 from tools.proof_plan import (  # noqa: E402
@@ -195,11 +206,30 @@ def _generator_records(
     return open_scan_records(f"generator_{source.stem}", owner=source, enabled=True)
 
 
+def require_merge_python() -> None:
+    """Refuse regeneration outside the check gate's selected, pinned image."""
+    from tools.venv_exec import resolve_venv, venv_bin_dir
+
+    pin = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    version = ".".join(map(str, sys.version_info[:3]))
+    image = resolve_venv(repo_root=ROOT)
+    if (
+        sys.implementation.name != "cpython"
+        or version != pin
+        or Path(sys.executable).absolute().parent != venv_bin_dir(image).absolute()
+    ):
+        raise ValueError(
+            f"merge regeneration requires the selected CPython {pin} image {image}; "
+            f"running {sys.executable} ({version})"
+        )
+
+
 def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("action", choices=("check", "write"))
+    parser.add_argument("action", choices=("check", "write", "merge"))
+    parser.add_argument("--output-list", type=Path, help="merge output receipt")
     parser.add_argument(
         "--only",
         action="append",
@@ -209,6 +239,16 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
         "(repeatable); host-input tools must be named explicitly",
     )
     args = parser.parse_args(argv)
+    if args.action == "merge":
+        if not args.only or args.output_list is None:
+            parser.error("merge requires --only and --output-list")
+        try:
+            require_merge_python()
+        except (OSError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    elif args.output_list is not None:
+        parser.error("--output-list requires merge")
 
     generators = manifest_generators()
     unknown = sorted(set(args.only) - {g.tool for g in generators})
@@ -218,7 +258,7 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
         pending = list(dict.fromkeys(args.only))
         requested = set(pending)
         selected_names = requested.copy()
-        if args.action == "write":
+        if args.action in ("write", "merge"):
             consumers: dict[str, list[str]] = {}
             for generator in generators:
                 for upstream in generator.upstream:
@@ -247,6 +287,13 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
         if skipped:
             print("host-input generators skipped (use --only): " + ", ".join(skipped))
 
+    if args.action == "merge":
+        with MANIFEST.open("rb") as handle:
+            rows = {row["tool"]: row for row in tomllib.load(handle)["generator"]}
+        refused = [g.tool for g in selected if not merge_eligible(rows[g.tool])]
+        if refused:
+            parser.error("not reproducible and idempotent: " + ", ".join(refused))
+
     with ExitStack() as runtime_stack:
         try:
             admission = admit_generators(
@@ -260,6 +307,7 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
         runtime_bindings = admission.bindings
 
         stale_count = 0
+        merge_outputs: list[str] = []
         started = time.perf_counter()
         # One repository sentinel watches the whole run. Every guarded child the
         # generators start (rustfmt, mostly) would otherwise open and scan its own
@@ -294,6 +342,17 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
                 else:
                     for path in write_outputs(outputs):
                         print(f"wrote {display_path(path)} ({generator.tool})")
+                    if args.action == "merge":
+                        # Exactly the --check comparison, against the same render:
+                        # publication is checked without executing a producer twice.
+                        stale = stale_outputs(outputs)
+                        if stale:
+                            raise RuntimeError(
+                                f"generated merge publication is stale: {stale}"
+                            )
+                        merge_outputs.extend(
+                            path.relative_to(ROOT).as_posix() for path in outputs
+                        )
                 print(f"  {time.perf_counter() - tick:6.2f}s {generator.tool}")
         elapsed = time.perf_counter() - started
         if stale_count:
@@ -304,6 +363,10 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
             return 1
         verb = "current" if args.action == "check" else "written"
         print(f"{len(selected)} generator(s) {verb} in {elapsed:.1f}s")
+        if args.action == "merge":
+            args.output_list.write_text(
+                json.dumps(sorted(set(merge_outputs))), encoding="utf-8"
+            )
         return 0
 
 

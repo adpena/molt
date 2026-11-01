@@ -726,6 +726,18 @@ def build_candidate(
         # to resolve its change citations.
         replay = run_git(["merge", "--no-ff", "--no-edit", request.head])
         if replay.returncode != 0:
+            from tools.generated_merge import (
+                GeneratedMergeError,
+                resolve_generated_merge,
+            )
+
+            try:
+                if resolve_generated_merge(run_git):
+                    included.append(request)
+                    continue
+            except (GeneratedMergeError, OSError, ValueError) as exc:
+                replay = GitResult(replay.returncode, replay.stdout, str(exc))
+        if replay.returncode != 0:
             merging = run_git(["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
             if merging.returncode == 0:
                 git("merge", "--abort")
