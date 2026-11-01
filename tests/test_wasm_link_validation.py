@@ -1189,6 +1189,7 @@ def test_post_link_optimizer_projects_only_current_request_cost(
         optimize=status != "disabled",
         optimize_level="Oz",
         split_runtime=False,
+        freestanding=False,
         optimizer_attestation=attestation,
         optimizer_identity=None,
         operation_counts=counts,
@@ -12758,7 +12759,6 @@ def test_linked_resource_normalization_has_one_atomic_section_edit(
             split_runtime=False,
             app_identity_exports=("internal.identity",),
             preserved_output_exports=("molt_main", "internal.identity"),
-            freestanding=False,
         )
     assert artifact.data == expected
     assert artifact.revision == 1
@@ -12783,7 +12783,6 @@ def test_linked_resource_normalization_has_one_atomic_section_edit(
             split_runtime=False,
             app_identity_exports=("internal.identity",),
             preserved_output_exports=("molt_main",),
-            freestanding=False,
         )
     assert artifact.data is not initial
     assert artifact.data == expected
@@ -12840,7 +12839,6 @@ def test_wasm_section_edit_validation_failure_preserves_owner_and_disk(
         split_runtime=False,
         app_identity_exports=("internal.identity",),
         preserved_output_exports=("molt_main",),
-        freestanding=False,
     )
     assert artifact.data is initial
     assert artifact.facts() is initial_facts

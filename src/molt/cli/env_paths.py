@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.process_environment import ProcessEnvironmentBuilder
 
-import functools
 import os
 from pathlib import Path
 
@@ -77,7 +78,7 @@ def _base_env(
     return env
 
 
-@functools.lru_cache(maxsize=128)
+@typed_cache(maxsize=128)
 def _resolve_env_path_cached(var: str, raw: str, default_str: str) -> Path:
     if raw:
         path = Path(raw).expanduser()

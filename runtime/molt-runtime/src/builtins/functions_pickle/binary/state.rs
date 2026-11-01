@@ -12,7 +12,16 @@ pub(crate) struct PickleDumpState {
     pub(crate) persistent_id_bits: Option<u64>,
     pub(crate) buffer_callback_bits: Option<u64>,
     pub(crate) dispatch_table_bits: Option<u64>,
+    /// Protocol 4 framing (PEP 3154), as CPython's pickler frames output
+    /// (`Modules/_pickle.c`: _Pickler_Write, _Pickler_OpcodeBoundary,
+    /// _Pickler_CommitFrame, _Pickler_write_bytes).
+    framing: bool,
+    frame_start: Option<usize>,
 }
+
+const PICKLE_FRAME_HEADER_SIZE: usize = 9;
+const PICKLE_FRAME_SIZE_MIN: usize = 4;
+const PICKLE_FRAME_SIZE_TARGET: usize = 64 * 1024;
 
 impl PickleDumpState {
     pub(crate) fn new(
@@ -30,15 +39,72 @@ impl PickleDumpState {
             persistent_id_bits,
             buffer_callback_bits,
             dispatch_table_bits,
+            framing: false,
+            frame_start: None,
         }
     }
 
     pub(crate) fn push(&mut self, op: u8) {
+        self.open_frame();
         self.out.push(op);
     }
 
     pub(crate) fn extend(&mut self, bytes: &[u8]) {
+        self.open_frame();
         self.out.extend_from_slice(bytes);
+    }
+
+    /// Frame everything written after the protocol header from protocol 4.
+    pub(crate) fn start_framing(&mut self) {
+        self.framing = self.protocol >= PICKLE_PROTO_4;
+    }
+
+    fn open_frame(&mut self) {
+        if self.framing && self.frame_start.is_none() {
+            self.frame_start = Some(self.out.len());
+            self.out.extend_from_slice(&[0u8; PICKLE_FRAME_HEADER_SIZE]);
+        }
+    }
+
+    /// Called as each object's save starts: a frame that reached the target
+    /// size is committed, and the next write opens a new one.
+    pub(crate) fn opcode_boundary(&mut self) {
+        if let Some(start) = self.frame_start
+            && self.out.len() - start - PICKLE_FRAME_HEADER_SIZE >= PICKLE_FRAME_SIZE_TARGET
+        {
+            self.commit_frame();
+        }
+    }
+
+    /// Write the open frame's header, or drop it when the frame is too short
+    /// to be worth one.
+    pub(crate) fn commit_frame(&mut self) {
+        let Some(start) = self.frame_start.take() else {
+            return;
+        };
+        let frame_len = self.out.len() - start - PICKLE_FRAME_HEADER_SIZE;
+        if frame_len >= PICKLE_FRAME_SIZE_MIN {
+            self.out[start] = PICKLE_OP_FRAME;
+            self.out[start + 1..start + PICKLE_FRAME_HEADER_SIZE]
+                .copy_from_slice(&(frame_len as u64).to_le_bytes());
+        } else {
+            self.out.drain(start..start + PICKLE_FRAME_HEADER_SIZE);
+        }
+    }
+
+    /// A length-prefixed payload; one of at least the frame target size is
+    /// written outside any frame.
+    pub(crate) fn write_payload(&mut self, header: &[u8], data: &[u8]) {
+        if data.len() >= PICKLE_FRAME_SIZE_TARGET {
+            self.commit_frame();
+            let framing = std::mem::replace(&mut self.framing, false);
+            self.extend(header);
+            self.extend(data);
+            self.framing = framing;
+        } else {
+            self.extend(header);
+            self.extend(data);
+        }
     }
 }
 
@@ -58,10 +124,6 @@ pub(crate) fn pickle_option_callable_bits(
 }
 
 pub(crate) fn pickle_emit_u32_le(state: &mut PickleDumpState, value: u32) {
-    state.extend(&value.to_le_bytes());
-}
-
-pub(crate) fn pickle_emit_u64_le(state: &mut PickleDumpState, value: u64) {
     state.extend(&value.to_le_bytes());
 }
 

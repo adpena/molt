@@ -22712,3 +22712,27 @@ def test_put_file_republishes_identical_bytes_without_leftovers(tmp_path):
     assert one == two
     custody_cas.verify_file_ref(two.as_dict(), expected_root=cas)
     assert not list(cas.rglob(".custody-*"))
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX symlink boundary; reparse tests own Windows"
+)
+@pytest.mark.parametrize("existing", ["directory-link", "dangling-link", "file"])
+def test_custody_directory_materialization_refuses_non_directory_preimages(
+    tmp_path, existing
+):
+    boundary = tmp_path / "boundary"
+    external = tmp_path / "external"
+    if existing == "file":
+        boundary.write_bytes(b"preserve this preimage")
+    else:
+        if existing == "directory-link":
+            external.mkdir()
+        boundary.symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="not a real directory"):
+        custody_cas._durable_makedirs(boundary / "new-child")
+    assert not (external / "new-child").exists()
+    if existing == "file":
+        assert boundary.read_bytes() == b"preserve this preimage"
+    else:
+        assert boundary.is_symlink()

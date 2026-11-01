@@ -18,6 +18,8 @@ Three kinds of entry:
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 import difflib
@@ -426,7 +428,7 @@ def _trusted_registry(payload: Mapping[str, Any]) -> EnvironmentRegistry:
     )
 
 
-@functools.cache
+@typed_cache(maxsize=None)
 def load_registry() -> EnvironmentRegistry:
     """Load the shipped projection once per process (validated at generation)."""
 

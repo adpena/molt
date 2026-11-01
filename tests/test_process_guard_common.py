@@ -323,10 +323,46 @@ def test_invalid_owning_proof_timeout_fails_closed(raw: str) -> None:
         )
 
 
+def test_run_guarded_test_process_reports_guard_failure_not_a_child_status(
+    monkeypatch,
+) -> None:
+    """The guard's own 125 is never the child's exit status (HF-623, runner
+    20261031T153323883881Z blamed rustc for incomplete artifact custody)."""
+    from molt.process_guard import GuardInfrastructureError
+
+    memory_guard = process_guard_common.harness_memory_guard.memory_guard
+    guarded_result = subprocess.CompletedProcess(
+        ["rustc"], memory_guard.INFRASTRUCTURE_RETURN_CODE, "", "custody\n"
+    )
+    guarded_result.timed_out = False
+    guarded_result.child_returncode = 0
+    guarded_result.infrastructure_failure = memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody",
+        details=("temporary artifact terminal state is 'blocked'",),
+    )
+    monkeypatch.setattr(
+        process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: guarded_result,
+    )
+
+    with pytest.raises(GuardInfrastructureError) as raised:
+        process_guard_common.run_guarded_test_process(
+            ["rustc"], prefix="MOLT_PYTEST", check=True
+        )
+
+    assert not isinstance(raised.value, subprocess.CalledProcessError)
+    assert raised.value.child_returncode == 0
+    assert "temporary_artifact_custody" in str(raised.value)
+    assert "terminal state is 'blocked'" in str(raised.value)
+    assert raised.value.guarded_result is guarded_result
+
+
 def test_run_guarded_test_process_preserves_check_semantics(monkeypatch) -> None:
     guarded_result = subprocess.CompletedProcess(["false"], 17, "out", "err")
-    guarded_result.child_returncode = 0
-    guarded_result.infrastructure_failure = object()
+    guarded_result.timed_out = False
+    guarded_result.child_returncode = 17
+    guarded_result.infrastructure_failure = None
 
     def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
         del cmd, kwargs

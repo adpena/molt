@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import ctypes
 import sys
 from ctypes import wintypes
-from functools import lru_cache
 
 # A Windows process ID is a ``DWORD``.
 _WINDOWS_PID_MAX = 0xFFFFFFFF
@@ -38,7 +39,7 @@ def bind_process_query_api(api: ctypes.CDLL) -> None:
     api.GetProcessTimes.restype = wintypes.BOOL
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def process_query_api() -> ctypes.CDLL:
     """Reuse a query-only table; consumers adding other APIs own their DLL table."""
     if sys.platform != "win32":

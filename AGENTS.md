@@ -130,7 +130,7 @@ over stale prose or precedent.
   with validated `DispatchBounds` via `tools/dispatch_prompt.py`; record ownership and handoffs in
   coordination records. `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets,
   proofs, stop rules and parent-controlled expansion. Task messages and worktrees are not source locks.
-- Match effort to risk: Astra for complex architecture/correctness, faster workers for bounded mechanics.
+- Name Codex `gpt-6.1-sol` at `high` on each dispatch and resume; Astra for the hardest work; no `ultra`.
   Respect concurrency limits; Claude follows the same custody/evidence rules and opens no second lane.
 
 ## Verify the claim, not the ritual

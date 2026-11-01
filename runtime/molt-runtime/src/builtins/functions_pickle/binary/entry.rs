@@ -75,10 +75,12 @@ pub extern "C" fn molt_pickle_dumps_core(
             );
         }
         pickle_emit_proto_header(&mut state);
+        state.start_framing();
         if let Err(err_bits) = pickle_dump_obj_binary(_py, &mut state, obj_bits, true) {
             return err_bits;
         }
         state.push(PICKLE_OP_STOP);
+        state.commit_frame();
         let out_ptr = crate::alloc_bytes(_py, state.out.as_slice());
         if out_ptr.is_null() {
             MoltObject::none().bits()
@@ -553,9 +555,8 @@ pub extern "C" fn molt_pickle_loads_core(
                         Ok(v) => v,
                         Err(err_bits) => return err_bits,
                     };
-                    let _ = crate::molt_list_append(list_bits, item_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
+                    if let Err(err_bits) = pickle_vm_append_items(_py, list_bits, &[item_bits]) {
+                        return err_bits;
                     }
                     stack.push(PickleVmItem::Value(list_bits));
                 }
@@ -568,15 +569,15 @@ pub extern "C" fn molt_pickle_loads_core(
                         Ok(v) => v,
                         Err(err_bits) => return err_bits,
                     };
+                    let mut values: Vec<u64> = Vec::with_capacity(items.len());
                     for item in items {
-                        let bits = match pickle_vm_item_to_bits(_py, &item) {
-                            Ok(v) => v,
+                        match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(bits) => values.push(bits),
                             Err(err_bits) => return err_bits,
-                        };
-                        let _ = crate::molt_list_append(list_bits, bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
                         }
+                    }
+                    if let Err(err_bits) = pickle_vm_append_items(_py, list_bits, &values) {
+                        return err_bits;
                     }
                     stack.push(PickleVmItem::Value(list_bits));
                 }
@@ -623,18 +624,10 @@ pub extern "C" fn molt_pickle_loads_core(
                         Ok(v) => v,
                         Err(err_bits) => return err_bits,
                     };
-                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: setitem target is not dict");
-                    };
-                    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: setitem target is not dict");
-                    }
-                    let completed =
-                        unsafe { crate::dict_set_in_place(_py, dict_ptr, key_bits, value_bits) };
-                    if !completed {
-                        return MoltObject::none().bits();
+                    if let Err(err_bits) =
+                        pickle_vm_setitems(_py, dict_bits, &[key_bits, value_bits])
+                    {
+                        return err_bits;
                     }
                     stack.push(PickleVmItem::Value(dict_bits));
                 }
@@ -647,14 +640,6 @@ pub extern "C" fn molt_pickle_loads_core(
                         Ok(v) => v,
                         Err(err_bits) => return err_bits,
                     };
-                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: setitems target is not dict");
-                    };
-                    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: setitems target is not dict");
-                    }
                     let mut values: Vec<u64> = Vec::with_capacity(items.len());
                     for item in items {
                         let bits = match pickle_vm_item_to_bits(_py, &item) {
@@ -663,24 +648,8 @@ pub extern "C" fn molt_pickle_loads_core(
                         };
                         values.push(bits);
                     }
-                    if !values.len().is_multiple_of(2) {
-                        return PickleError::Unpickling
-                            .raise(_py, "pickle.loads: setitems has odd number of values");
-                    }
-                    let mut pair_idx = 0usize;
-                    while pair_idx + 1 < values.len() {
-                        let completed = unsafe {
-                            crate::dict_set_in_place(
-                                _py,
-                                dict_ptr,
-                                values[pair_idx],
-                                values[pair_idx + 1],
-                            )
-                        };
-                        if !completed {
-                            return MoltObject::none().bits();
-                        }
-                        pair_idx += 2;
+                    if let Err(err_bits) = pickle_vm_setitems(_py, dict_bits, &values) {
+                        return err_bits;
                     }
                     stack.push(PickleVmItem::Value(dict_bits));
                 }

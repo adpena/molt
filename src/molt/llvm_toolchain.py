@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Callable
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 import hashlib
 import json
 import os
@@ -290,7 +291,7 @@ def llvm_release_manifest_path(root: Path | None = None) -> Path:
     return resolved_root / "config" / "llvm_toolchain_releases.toml"
 
 
-@lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _load_llvm_releases_cached(
     path_text: str, _revision: tuple[int, int, int]
 ) -> LlvmReleaseManifest:
@@ -567,7 +568,7 @@ def canonical_llvm_build_type(root: Path | None = None) -> str:
     return load_llvm_releases(root).canonical_build_type
 
 
-@lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _load_llvm_architecture_contract_cached(
     path_text: str, _revision: tuple[int, int, int]
 ) -> LlvmArchitectureContract:

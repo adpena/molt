@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import enum
-import functools
 import hashlib
 import json
 import os
@@ -85,7 +86,7 @@ def _backend_source_identity_inputs(
     )
 
 
-@functools.lru_cache(maxsize=128)
+@typed_cache(maxsize=128)
 def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
     project_root = pathlib.Path(project_root_str)
     molt_root = _compiler_python_source_root(project_root) / "molt"
@@ -198,6 +199,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "builtin_callables.py": _P,
         "compat.py": _P,
         "exact_json.py": _P,
+        # Memoizes producer functions; its code sits on their result path.
+        "typed_cache.py": _P,
         # The path every emitted module location reports (HF-372).
         "logical_source_paths.py": _P,
         "native_callable_abi.py": _P,

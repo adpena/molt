@@ -12,16 +12,17 @@ file modes and external link targets are never changed during deletion.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import errno
 import os
 import shutil
 import stat
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _windows_delete_api() -> tuple[Any, Any, Any]:
     if os.name != "nt":
         raise OSError("Windows deletion API is unavailable on this platform")

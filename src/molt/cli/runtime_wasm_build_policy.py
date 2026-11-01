@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 import hashlib
 import os
 from dataclasses import dataclass, replace
@@ -36,7 +37,7 @@ def _runtime_build_profile_override() -> str:
     return ""
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _resolve_wasm_cargo_profile_cached(
     cargo_profile: str,
     override: str,
@@ -56,9 +57,13 @@ def _resolve_wasm_cargo_profile_cached(
     return cargo_profile
 
 
-def runtime_wasm_simd_policy(*, freestanding: bool) -> bool:
-    """Hosted WASM runtimes use SIMD128; freestanding runtimes stay scalar."""
-    return not freestanding
+def runtime_wasm_simd_policy() -> bool:
+    """Every WASM deployment uses the shipped SIMD128 runtime baseline.
+
+    WASI import rewriting supports SIMD instructions, so freestanding selects
+    host-service policy independently of the runtime's instruction set.
+    """
+    return True
 
 
 def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:

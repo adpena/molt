@@ -11,8 +11,9 @@ only an ``llvm-nm`` at least as new as the producer can read them.
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import contextlib
-import functools
 import hashlib
 import json
 import os
@@ -319,7 +320,7 @@ def nm_reader_family_from_banner(banner: str | None) -> NmReaderFamily | None:
     return None
 
 
-@functools.lru_cache(maxsize=16)
+@typed_cache(maxsize=16)
 def _cached_nm_reader_family(
     path_text: str,
     sha256: str,
@@ -391,7 +392,7 @@ def _in_process_reader_identity(
     )
 
 
-@functools.lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _cached_wasm_llvm_nm_verification(
     selected_path: Path,
     expected_version: str,
@@ -425,7 +426,7 @@ def _verified_wasm_llvm_nm(
     return verification
 
 
-@functools.lru_cache(maxsize=64)
+@typed_cache(maxsize=64)
 def _cached_symbol_reader_entrypoint_identity(
     path_text: str,
 ) -> tuple[Path, StableRegularFileIdentity]:

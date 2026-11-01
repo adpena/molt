@@ -430,7 +430,16 @@ _TERMINAL_SIZE = terminal_size
 class DirEntry:
     """Entry yielded by os.scandir()."""
 
-    __slots__ = ("name", "path", "_is_dir", "_is_file", "_is_symlink")
+    __slots__ = (
+        "name",
+        "path",
+        "_is_dir",
+        "_is_file",
+        "_is_symlink",
+        "_stat",
+        "_lstat",
+        "_inode",
+    )
 
     def __init__(
         self,
@@ -445,6 +454,11 @@ class DirEntry:
         self._is_dir = is_dir
         self._is_file = is_file
         self._is_symlink = is_symlink
+        # CPython caches each stat fact on the entry (Modules/posixmodule.c:
+        # DirEntry_get_lstat, os_DirEntry_stat_impl, os_DirEntry_inode_impl).
+        self._stat: "stat_result | None" = None
+        self._lstat: "stat_result | None" = None
+        self._inode: int | None = None
 
     def is_dir(self, *, follow_symlinks: bool = True) -> bool:
         return self._is_dir
@@ -456,19 +470,43 @@ class DirEntry:
         return self._is_symlink
 
     def stat(self, *, follow_symlinks: bool = True) -> "stat_result":
+        if not follow_symlinks:
+            return self._cached_lstat()
+        if self._stat is None:
+            if self._is_symlink:
+                _require_cap("fs.read")
+                intrinsic = _require_callable_intrinsic(
+                    _require_intrinsic("molt_os_stat"), "molt_os_stat"
+                )
+                self._stat = intrinsic(self.path)
+            else:
+                # A non-symlink's stat is the same object as its lstat.
+                self._stat = self._cached_lstat()
+        return self._stat
+
+    def inode(self) -> int:
+        if self._inode is None:
+            self._inode = self._query_lstat().st_ino
+        return self._inode
+
+    def _cached_lstat(self) -> "stat_result":
+        if self._lstat is None:
+            result = self._query_lstat()
+            if name == "nt":
+                # CPython answers lstat from the directory listing, which
+                # carries no file identity (find_data_to_file_info): st_ino,
+                # st_dev and st_nlink are zero. inode() still reads the file.
+                cls, (fields, extra) = result.__reduce__()
+                result = cls((fields[0], 0, 0, 0, *fields[4:]), extra)
+            self._lstat = result
+        return self._lstat
+
+    def _query_lstat(self) -> "stat_result":
         _require_cap("fs.read")
-        if follow_symlinks:
-            intrinsic = _require_callable_intrinsic(
-                _require_intrinsic("molt_os_stat"), "molt_os_stat"
-            )
-            return intrinsic(self.path)
         intrinsic = _require_callable_intrinsic(
             _require_intrinsic("molt_os_lstat"), "molt_os_lstat"
         )
         return intrinsic(self.path)
-
-    def inode(self) -> int:
-        return self.stat(follow_symlinks=False).st_ino
 
     def __repr__(self) -> str:
         return f"<DirEntry {self.name!r}>"
@@ -1138,6 +1176,15 @@ class _Path:
             _MOLT_OS_PATH_SAMEFILE, "molt_os_path_samefile"
         )
         return bool(intrinsic(path1, path2))
+
+    # Lib/genericpath.py: the same (st_ino, st_dev) pair names the same file.
+    @staticmethod
+    def samestat(s1: Any, s2: Any) -> bool:
+        return s1.st_ino == s2.st_ino and s1.st_dev == s2.st_dev
+
+    @staticmethod
+    def sameopenfile(fp1: Any, fp2: Any) -> bool:
+        return _Path.samestat(fstat(fp1), fstat(fp2))
 
     @staticmethod
     def realpath(path: Any, *, strict: bool = False) -> str | bytes:

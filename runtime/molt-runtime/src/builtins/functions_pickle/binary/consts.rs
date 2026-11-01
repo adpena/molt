@@ -68,3 +68,5 @@ pub(crate) const PICKLE_OP_NEXT_BUFFER: u8 = 0x97;
 pub(crate) const PICKLE_OP_READONLY_BUFFER: u8 = 0x98;
 
 pub(crate) const PICKLE_RECURSION_LIMIT: usize = 1_000;
+/// Items per MARK ... APPENDS/SETITEMS/ADDITEMS batch (`Modules/_pickle.c`, BATCHSIZE).
+pub(crate) const PICKLE_BATCH_SIZE: usize = 1_000;
