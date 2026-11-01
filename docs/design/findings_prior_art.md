@@ -536,6 +536,16 @@ maps with aliasing `&mut` (HF-208).
   in programs and strings passed to `sys.intern`. Sources:
   https://github.com/python/cpython/blob/v3.12.0/Objects/dictobject.c,
   https://docs.python.org/3/library/sys.html#sys.intern.
+- *Bounded release depth.* [F] CPython's trashcan counts nested deallocations
+  per thread. Past `_PyTrash_UNWIND_LEVEL` (50), `Py_TRASHCAN_BEGIN` deposits
+  the object on a per-thread list, and the outermost release drains it in a
+  loop, so the C stack never grows with nesting depth. A Rust list of `Box`
+  nodes overflows the stack under the compiler's recursive `Drop` unless the
+  list implements an iterative `Drop`. Sources:
+  https://github.com/python/cpython/blob/v3.12.0/Include/cpython/object.h,
+  https://github.com/python/cpython/blob/v3.12.0/Objects/object.c
+  (`_PyTrash_thread_deposit_object`),
+  https://rust-unofficial.github.io/too-many-lists/first-drop.html.
 - *cgroup v2 memory ownership.* [F] A memory area is charged to the cgroup
   that created it and stays charged until it is released, even if the process
   moves. Source: https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-ownership.
@@ -544,7 +554,8 @@ maps with aliasing `&mut` (HF-208).
 `gen_heap_kinds.py`, then delete the handle maps and their `__del__` methods
 (HF-208). Record the charged owner on each allocation and debit that owner on
 release, as memcg does (V1-19). Delete with tombstones and compact on resize
-(V1-27). Intern only what CPython interns (V1-20). Follow the steal and borrow
+(V1-27). Intern only what CPython interns (V1-20). Release past a depth bound
+through a per-thread deferred list, as the trashcan does (HF-660). Follow the steal and borrow
 conventions in aggregate builders (V1-14).
 
 **Refuse.** [I] Global maps keyed by integer handles: they outlive owners.

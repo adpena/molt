@@ -1015,21 +1015,20 @@ def _claims_context(
             "live": [],
             "stale": [],
         }
-    summary = claims_status.summarize(rows, datetime.now(UTC)).as_dict()
+    summary = claims_status.summarize(rows, datetime.now(UTC))
 
-    def active_claim(record: object) -> dict[str, object]:
-        if not isinstance(record, dict):
-            return {}
+    def active_claim(state: claims_status.LaneState) -> dict[str, object]:
+        record = state.as_dict()
         return {
-            key: record.get(key)
+            key: record[key]
             for key in ("lane", "agent", "utc", "status", "class", "age_hours")
         }
 
     return {
         "source": relative.as_posix(),
-        "counts": summary["counts"],
-        "live": [active_claim(record) for record in summary["live"]],
-        "stale": [active_claim(record) for record in summary["stale"]],
+        "counts": summary.as_dict()["counts"],
+        "live": [active_claim(state) for state in summary.live],
+        "stale": [active_claim(state) for state in summary.stale],
         "full_detail_command": (
             "uv run --python 3.12 python tools/claims_status.py --json"
         ),
@@ -1199,15 +1198,16 @@ def _documentation_context(
                 )
             )
     try:
-        instruction_audit = check_instruction_hierarchy.audit(repo_root).as_dict()
+        audit = check_instruction_hierarchy.audit(repo_root)
     except (OSError, UnicodeDecodeError) as exc:
-        instruction_audit = {"ok": False, "failures": [str(exc)]}
-    if not instruction_audit["ok"]:
+        audit = check_instruction_hierarchy.AuditResult((str(exc),))
+    instruction_audit = audit.as_dict()
+    if not audit.ok:
         errors.append(
             _context_error(
                 "documentation.instruction_authority",
                 "authority_drift",
-                "; ".join(str(item) for item in instruction_audit["failures"]),
+                "; ".join(audit.failures),
             )
         )
     return {
@@ -2467,28 +2467,10 @@ def create_task(
         base.mkdir(parents=True, exist_ok=True)
         artifacts.mkdir(parents=True, exist_ok=True)
         (base / "progress.log").touch()
-        session_env = dict(os.environ)
-        if not session and not session_env.get("MOLT_SESSION_ID"):
-            # init named this session itself. Only --session pins an isolated
-            # Cargo target; an unpinned task shares the warm persistent one.
-            session_env["MOLT_SESSION_ID"] = record["session_id"]
-            session_env["MOLT_SESSION_ID_GENERATED"] = "1"
-        dx_env = development_artifact_env(
-            source_root,
-            session_env,
-            session_prefix=f"agent-{task}",
-            session_id=session,
-            create_dirs=False,
+        record["dx_env"] = _task_environment(
+            source_root, task, session=session, session_id=record["session_id"]
         )
-        record["dx_env"] = {key: dx_env[key] for key in DX_ENV_KEYS if key in dx_env}
-        (base / "env.sh").write_text(
-            render_env(dx_env, DX_ENV_KEYS, "posix") + "\n",
-            encoding="utf-8",
-        )
-        (base / "env.ps1").write_text(
-            render_env(dx_env, DX_ENV_KEYS, "powershell") + "\n",
-            encoding="utf-8",
-        )
+        _publish_task_environment(base, record["dx_env"])
         report_path.write_text(render_report(record), encoding="utf-8")
         write_json(base / "coordination.json", record)
         with (base / "progress.log").open("a", encoding="utf-8") as progress:
@@ -2496,6 +2478,64 @@ def create_task(
                 f"{created_at} initialized task={task} session={record['session_id']}\n"
             )
         return record
+
+
+def refresh_task_environment(
+    *,
+    registry_root: Path,
+    source_root: Path,
+    task: str,
+    session: str | None = None,
+) -> dict[str, str]:
+    """Republish a task's env files and record environment from current state.
+
+    A lane records its task before it provisions the checkout, because the
+    record claims the slot. The uv environment does not exist until
+    provisioning selects it, so the lane republishes once provisioning ends.
+    """
+    registry_root = registry_root.resolve()
+    task = coordination_records.validate_task_name(task)
+    base = coordination_records.task_dir(registry_root, task)
+    with checkout_state_use(((base.parent, None), (base, None))):
+        record = json.loads((base / "coordination.json").read_text(encoding="utf-8"))
+        record["dx_env"] = _task_environment(
+            source_root.resolve(),
+            task,
+            session=session,
+            session_id=record["session_id"],
+        )
+        _publish_task_environment(base, record["dx_env"])
+        write_json(base / "coordination.json", record)
+    return record["dx_env"]
+
+
+def _task_environment(
+    source_root: Path, task: str, *, session: str | None, session_id: str
+) -> dict[str, str]:
+    """The DX environment that a task's env files and record publish."""
+    session_env = dict(os.environ)
+    if not session and not session_env.get("MOLT_SESSION_ID"):
+        # init named this session itself. Only --session pins an isolated
+        # Cargo target; an unpinned task shares the warm persistent one.
+        session_env["MOLT_SESSION_ID"] = session_id
+        session_env["MOLT_SESSION_ID_GENERATED"] = "1"
+    dx_env = development_artifact_env(
+        source_root,
+        session_env,
+        session_prefix=f"agent-{task}",
+        session_id=session,
+        create_dirs=False,
+    )
+    return {key: dx_env[key] for key in DX_ENV_KEYS if key in dx_env}
+
+
+def _publish_task_environment(base: Path, environment: Mapping[str, str]) -> None:
+    (base / "env.sh").write_text(
+        render_env(environment, DX_ENV_KEYS, "posix") + "\n", encoding="utf-8"
+    )
+    (base / "env.ps1").write_text(
+        render_env(environment, DX_ENV_KEYS, "powershell") + "\n", encoding="utf-8"
+    )
 
 
 def update_task(

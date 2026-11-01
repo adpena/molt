@@ -114,6 +114,17 @@ class LaneState:
     klass: str  # LIVE | STALE | RETIRED
     age_hours: float | None = None
 
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "lane": self.lane,
+            "agent": self.row.agent,
+            "utc": self.row.utc,
+            "status": self.row.status,
+            "class": self.klass,
+            "age_hours": (None if self.age_hours is None else round(self.age_hours, 2)),
+            "note": self.row.note,
+        }
+
 
 @dataclass
 class Summary:
@@ -122,26 +133,15 @@ class Summary:
     retired: list[LaneState] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
-        def _one(s: LaneState) -> dict[str, object]:
-            return {
-                "lane": s.lane,
-                "agent": s.row.agent,
-                "utc": s.row.utc,
-                "status": s.row.status,
-                "class": s.klass,
-                "age_hours": (None if s.age_hours is None else round(s.age_hours, 2)),
-                "note": s.row.note,
-            }
-
         return {
             "counts": {
                 "live": len(self.live),
                 "stale": len(self.stale),
                 "retired": len(self.retired),
             },
-            "live": [_one(s) for s in self.live],
-            "stale": [_one(s) for s in self.stale],
-            "retired": [_one(s) for s in self.retired],
+            "live": [s.as_dict() for s in self.live],
+            "stale": [s.as_dict() for s in self.stale],
+            "retired": [s.as_dict() for s in self.retired],
         }
 
 
@@ -252,10 +252,10 @@ def _read_claims(path: Path) -> str:
 
 
 def _print_report(summary: Summary) -> None:
-    c = summary.as_dict()["counts"]
+    live, stale, retired = len(summary.live), len(summary.stale), len(summary.retired)
     print(
-        f"CLAIMS custody: {c['live']} live, {c['stale']} stale, "
-        f"{c['retired']} retired ({c['live'] + c['stale'] + c['retired']} lanes)."
+        f"CLAIMS custody: {live} live, {stale} stale, "
+        f"{retired} retired ({live + stale + retired} lanes)."
     )
     if summary.stale:
         print(

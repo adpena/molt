@@ -399,6 +399,29 @@ def _unharvested_ignored_paths(git: Any) -> tuple[list[str], list[str]]:
     ]
     stale: list[str] = []
     unknown: list[str] = []
+    from tools.proof_plan import regenerable_pinned_asset_paths
+
+    regenerable = set(
+        regenerable_pinned_asset_paths(git.repo, lane_environment(os.environ))
+    )
+
+    def signal_paths(named: Path):
+        if named in regenerable:
+            return
+        if any(named in link.parents for link in regenerable):
+            # Git collapses ignored parents. Unknown siblings remain signal.
+            for child in named.iterdir():
+                yield from signal_paths(child)
+        else:
+            yield named.relative_to(git.repo).as_posix()
+
+    paths = list(
+        dict.fromkeys(
+            signal
+            for path in paths
+            for signal in signal_paths(git.repo / path.rstrip("/"))
+        )
+    )
     for path in paths:
         named = git.repo / path
         trees = [
@@ -881,14 +904,19 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
             done = provision_lane(worktree)
         except checkout_provisioning.ProvisioningError as exc:
             _fail(str(exc))
+            # A later start reuses the slot and republishes the env files.
             _say(
-                f"    the lane exists; finish provisioning with: cd {worktree} && "
-                "uv run python -m molt.checkout_provisioning ensure"
+                "    the lane exists; finish provisioning with: "
+                f"molt_dev.py lane retire --abandon {slug} && "
+                f"molt_dev.py lane start {slug}"
             )
             return EXIT_FAIL
         for item in done:
             action = "provisioned" if item.provisioned else "current"
             _ok(f"{item.name}: {action} ({item.seconds:.2f} s)")
+        agent_coordination.refresh_task_environment(
+            registry_root=main, source_root=worktree, task=lane_task(slug)
+        )
         print(worktree, flush=True)
         return EXIT_OK
 

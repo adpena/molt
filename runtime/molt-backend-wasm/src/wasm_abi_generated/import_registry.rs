@@ -10362,24 +10362,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "base64_decodebytes",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::CopyCopy,
-        name: "copy_copy",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::CopyDeepcopy,
         name: "copy_deepcopy",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::CopyMemoNew,
-        name: "copy_memo_new",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::CopyMemoDrop,
-        name: "copy_memo_drop",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::CopyError,
-        name: "copy_error",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PprintSafeRepr,
@@ -16936,16 +16920,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_base64_encodebytes" => Some(WasmRuntimeImport::Base64Encodebytes),
         "base64_decodebytes" => Some(WasmRuntimeImport::Base64Decodebytes),
         "molt_base64_decodebytes" => Some(WasmRuntimeImport::Base64Decodebytes),
-        "copy_copy" => Some(WasmRuntimeImport::CopyCopy),
-        "molt_copy_copy" => Some(WasmRuntimeImport::CopyCopy),
         "copy_deepcopy" => Some(WasmRuntimeImport::CopyDeepcopy),
         "molt_copy_deepcopy" => Some(WasmRuntimeImport::CopyDeepcopy),
-        "copy_memo_new" => Some(WasmRuntimeImport::CopyMemoNew),
-        "molt_copy_memo_new" => Some(WasmRuntimeImport::CopyMemoNew),
-        "copy_memo_drop" => Some(WasmRuntimeImport::CopyMemoDrop),
-        "molt_copy_memo_drop" => Some(WasmRuntimeImport::CopyMemoDrop),
-        "copy_error" => Some(WasmRuntimeImport::CopyError),
-        "molt_copy_error" => Some(WasmRuntimeImport::CopyError),
         "pprint_safe_repr" => Some(WasmRuntimeImport::PprintSafeRepr),
         "molt_pprint_safe_repr" => Some(WasmRuntimeImport::PprintSafeRepr),
         "pprint_isreadable" => Some(WasmRuntimeImport::PprintIsreadable),

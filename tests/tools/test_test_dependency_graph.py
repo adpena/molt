@@ -333,6 +333,33 @@ def test_a_foreign_portability_cell_owns_its_tests():
     assert others["tests/test_there.py"] == ("there",)
 
 
+def test_foreign_commands_reach_prerequisite_resolution_with_their_exact_scope(
+    landing_graph,
+):
+    command = {
+        "id": "foreign",
+        "tiers": ["main"],
+        "cell": "other-os",
+        "resource_class": "python-tests",
+        "toolchains": ["hosted-shell"],
+        "argv": ["python", "-m", "pytest", "-m", "not slow"],
+        "pytest": ["tests/test_direct.py::test_specific"],
+    }
+    selection = graph_selection(
+        landing_graph,
+        ["src/pkg/hub.py"],
+        [command],
+        foreign_cells=frozenset({"other-os"}),
+    )
+    assert "tests/test_direct.py" not in selection.run
+    assert "tests/test_direct.py" not in selection.deferred
+    assert len(selection.foreign) == 1
+    assert selection.foreign[0].targets == ("tests/test_direct.py::test_specific",)
+    assert selection.foreign[0].toolchains == ("hosted-shell",)
+    assert selection.foreign[0].cells == ("other-os",)
+    assert selection.foreign[0].select == ("-m", "not slow")
+
+
 def test_presubmit_selects_direct_readers_while_postsubmit_closes_imports(
     landing_graph,
 ):

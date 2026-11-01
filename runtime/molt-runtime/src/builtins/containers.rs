@@ -221,6 +221,12 @@ crate::builtins::methods::native_method_table!(set_method_bits, publish_set_meth
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Set, {
 
 }, {
+        "__reduce__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "__reduce__"),
+            fn_addr!(crate::molt_set_reduce),
+            1,
+        )),
         "__or__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__or__"),
             fn_addr!(crate::object::ops_arith::native_slots::set_or_slot), 2,
@@ -410,6 +416,12 @@ crate::builtins::methods::native_method_table!(frozenset_method_bits, publish_fr
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Frozenset, {
 
 }, {
+        "__reduce__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "__reduce__"),
+            fn_addr!(crate::molt_set_reduce),
+            1,
+        )),
         "__or__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__or__"),
             fn_addr!(crate::object::ops_arith::native_slots::set_or_slot), 2,
@@ -726,6 +738,12 @@ crate::builtins::methods::native_method_table!(tuple_method_bits, publish_tuple_
 
 
 }, {
+        "__getnewargs__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).tuple, "__getnewargs__"),
+            fn_addr!(crate::molt_tuple_getnewargs),
+            1,
+        )),
         "__mul__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__mul__"),
             fn_addr!(crate::object::ops_arith::native_slots::sequence_repeat_slot), 2,

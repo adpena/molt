@@ -156,7 +156,13 @@ def compose(
     sc = _import_contract()
     names = _resolve_sections(sections, sc)
     contract = sc.standard_contract(names)
-    body = f"{task.rstrip()}\n\n{bounds.render()}"
+    body = (
+        f"{task.rstrip()}\n\n{bounds.render()}\n\n"
+        "For an upstream merge, use the selected image's Python: "
+        "python -B tools/generated_merge.py merge origin/main. "
+        "It regenerates eligible generated conflicts after sources merge; "
+        "source conflicts still require resolution."
+    )
     return f"{body}\n\n{contract}" if contract else body
 
 

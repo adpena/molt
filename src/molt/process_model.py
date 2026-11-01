@@ -20,7 +20,7 @@ from collections.abc import (
     Set as AbcSet,
 )
 from dataclasses import MISSING, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 import os
 from pathlib import Path
@@ -766,16 +766,22 @@ def parse_process_table(text: str) -> dict[int, ProcessSample]:
     return samples
 
 
+# `ps` prints lstart as wall-clock text with no zone. In a zone's repeated
+# hour (a daylight-saving fall-back) that text names two instants an hour
+# apart, so the sampler asks `ps` for UTC and reads UTC back.
+_PS_LSTART_ENVIRONMENT = {"LC_ALL": "C", "TZ": "UTC0"}
+
+
 def _ps_lstart_ns(value: str) -> int | None:
     try:
-        local_start = datetime.strptime(value, "%a %b %d %H:%M:%S %Y")
-        return int(local_start.timestamp() * 1_000_000_000)
+        start = datetime.strptime(value, "%a %b %d %H:%M:%S %Y").replace(tzinfo=UTC)
+        return int(start.timestamp()) * 1_000_000_000
     except (OverflowError, ValueError):
         return None
 
 
 def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
-    """Parse one `ps` snapshot that includes its stable `lstart` field."""
+    """Parse one `ps` snapshot whose `lstart` field `ps` printed in UTC."""
 
     samples: dict[int, ProcessSample] = {}
     now_ns = time.time_ns()
@@ -1815,7 +1821,7 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
             text=True,
             timeout=2.0,
             check=False,
-            env={**os.environ, "LC_ALL": "C"},
+            env={**os.environ, **_PS_LSTART_ENVIRONMENT},
             encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired, TypeError) as exc:

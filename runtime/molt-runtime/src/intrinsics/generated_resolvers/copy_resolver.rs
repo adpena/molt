@@ -3,25 +3,9 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_copy_copy" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_copy_copy",
-            crate::molt_copy_copy as *const (),
-        )),
         "molt_copy_deepcopy" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_copy_deepcopy",
             crate::molt_copy_deepcopy as *const (),
-        )),
-        "molt_copy_memo_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_copy_memo_new",
-            crate::molt_copy_memo_new as *const (),
-        )),
-        "molt_copy_memo_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_copy_memo_drop",
-            crate::molt_copy_memo_drop as *const (),
-        )),
-        "molt_copy_error" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_copy_error",
-            crate::molt_copy_error as *const (),
         )),
         _ => None,
     }

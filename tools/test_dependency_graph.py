@@ -1256,6 +1256,7 @@ class LandingEnvelope:
     toolchains: tuple[str, ...]
     owners: tuple[str, ...]
     select: tuple[str, ...] = ()
+    cells: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1266,6 +1267,9 @@ class GraphSelection:
     run: Mapping[str, LandingEnvelope]
     # Selected tests whose proof cells need builds, or that no cell owns.
     deferred: Mapping[str, tuple[str, ...]]
+    # Foreign portability requests remain selected commands. GateConfig.prepare
+    # resolves their execution-cell prerequisite through the ordinary outcome.
+    foreign: tuple[LandingEnvelope, ...] = ()
 
 
 _SELECTOR_OPTIONS = frozenset({"-k", "-m"})
@@ -1361,6 +1365,11 @@ def landing_envelopes(
             ),
             tuple(dict.fromkeys(str(owner["id"]) for owner in owners)),
             next(iter(selectors)) if len(selectors) == 1 else (),
+            tuple(
+                dict.fromkeys(
+                    str(owner["cell"]) for owner in owners if owner.get("cell")
+                )
+            ),
         )
     return envelopes, {path: tuple(dict.fromkeys(ids)) for path, ids in others.items()}
 
@@ -1382,6 +1391,7 @@ def graph_selection(
     recent_failures: Iterable[str] = (),
     foreign_cells: frozenset[str] = frozenset(),
 ) -> GraphSelection:
+    commands = tuple(commands)
     envelopes, others = landing_envelopes(
         commands, mode=mode, foreign_cells=foreign_cells
     )
@@ -1420,11 +1430,39 @@ def graph_selection(
                 envelope.toolchains,
                 envelope.owners,
                 selector,
+                envelope.cells,
             )
         else:
             other = _owned_by(test, others)
             deferred[test] = others[other] if other is not None else ()
-    return GraphSelection(selected, run, deferred)
+    foreign = []
+    for command in commands:
+        if command.get("cell") not in foreign_cells:
+            continue
+        # Apply exactly the same tier/build eligibility as ordinary envelopes.
+        eligible, _ = landing_envelopes((command,), mode=mode)
+        targets = tuple(
+            dict.fromkeys(
+                target
+                for test in selected
+                if (owner := _owned_by(test, eligible)) is not None
+                for target in ((test,) if owner != test else eligible[owner].targets)
+            )
+        )
+        if not targets:
+            continue
+        foreign.append(
+            LandingEnvelope(
+                targets,
+                tuple(command["toolchains"]),
+                (str(command["id"]),),
+                cell_selector(command),
+                (str(command["cell"]),),
+            )
+        )
+        for target in targets:
+            deferred.pop(target.partition("::")[0], None)
+    return GraphSelection(selected, run, deferred, tuple(foreign))
 
 
 _GRAPHS: dict[tuple[Path, str | None], DependencyGraph] = {}

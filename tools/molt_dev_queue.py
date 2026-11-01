@@ -211,7 +211,7 @@ def _postsubmit_reverts(
 
 def _run_postsubmit_gates(
     git, head: str, green: str | None, cancelled, output: Path
-) -> None:
+) -> tuple[dict, ...]:
     """The ordinary selection, admission, executor and receipts, without publication."""
     from molt.dx import RunContext
     from tools.molt_dev_policy import select_landing_gates
@@ -234,6 +234,7 @@ def _run_postsubmit_gates(
             repo, baseline, requires_python=needed
         ),
     )
+    gates = prepared.runnable()
     outputs = config.cargo_outputs(prepared.environments, gates)
     requirements = admit_selected_output_capacity(outputs, prepared.environments)
     for environment in prepared.environments.values():
@@ -254,6 +255,7 @@ def _run_postsubmit_gates(
         receipt_kind="postsubmit",
         mode=LandingMode.POSTSUBMIT,
         cancelled=cancelled,
+        deferred=prepared.deferred,
     )
     runtime = replace(runtime, output_dir=output, receipt_path=output / "receipt.json")
     run_selected_gates(gates, runtime, [])
@@ -265,6 +267,7 @@ def _run_postsubmit_gates(
             raise DriverError(
                 f"passing pytest omitted its JUnit receipt: gate {ordinal}"
             )
+    return tuple(item.record() for item in prepared.deferred)
 
 
 def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitStatus:
@@ -303,9 +306,21 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
 
     error = None
     failed: tuple[str, ...] = ()
+    deferred: list[dict] = []
+
+    def read_deferred() -> list[dict]:
+        from tools.molt_dev_gates import prerequisite_receipt_path
+
+        selection = prerequisite_receipt_path(output / "receipt.json")
+        return (
+            json.loads(selection.read_text(encoding="utf-8"))["deferred"]
+            if selection.exists()
+            else []
+        )
+
     try:
         _step(f"postsubmit main {head} since {green or 'no known green (full source)'}")
-        _run_postsubmit_gates(sandbox, head, green, cancelled, output)
+        deferred = list(_run_postsubmit_gates(sandbox, head, green, cancelled, output))
         failed = _postsubmit_failures(output, sandbox.repo)
         if failed:
             raise DriverError("passing gates contain failing pytest reports")
@@ -323,6 +338,7 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
         state, error = PostsubmitStatus.RED, str(exc)
     if state is not PostsubmitStatus.GREEN:
         try:
+            deferred = read_deferred()
             failed = _postsubmit_failures(output, sandbox.repo)
         except (DriverError, OSError, ValueError) as exc:
             error = f"{error}; {exc}"
@@ -343,11 +359,14 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             "error": error,
             "receipt": str(receipt),
             "gate_output": str(output),
+            "deferred": deferred,
         },
     )
     match state:
         case PostsubmitStatus.GREEN:
-            _ok(f"postsubmit passed; {LAST_GREEN_REF} advanced to {head}")
+            _ok(
+                f"postsubmit runnable commands passed; {len(deferred)} deferred (unproven here); {LAST_GREEN_REF} advanced to {head}"
+            )
         case PostsubmitStatus.RED:
             _fail(
                 f"main red at {head}: {error}; failing tests: {', '.join(failed) or 'see gate receipts'}"
@@ -706,6 +725,18 @@ def build_candidate(
         # also keeps request.head ancestral when integrate amends the batch tip
         # to resolve its change citations.
         replay = run_git(["merge", "--no-ff", "--no-edit", request.head])
+        if replay.returncode != 0:
+            from tools.generated_merge import (
+                GeneratedMergeError,
+                resolve_generated_merge,
+            )
+
+            try:
+                if resolve_generated_merge(run_git):
+                    included.append(request)
+                    continue
+            except (GeneratedMergeError, OSError, ValueError) as exc:
+                replay = GitResult(replay.returncode, replay.stdout, str(exc))
         if replay.returncode != 0:
             merging = run_git(["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
             if merging.returncode == 0:
