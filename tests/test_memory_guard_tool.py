@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from collections.abc import Callable, Mapping
 import dataclasses
 import errno
@@ -1729,13 +1730,28 @@ def test_parse_process_table_reads_process_elapsed_age() -> None:
     assert samples[12].elapsed_sec == 183845
 
 
-def test_parse_process_table_with_start_produces_creation_identity() -> None:
-    samples = memory_guard.parse_process_table_with_start(
-        "10 1 10 2048 Thu Jul 17 07:15:01 2026 python worker.py --flag value\n"
-    )
+def test_parse_process_table_with_start_produces_creation_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tzset = getattr(time, "tzset", None)
+    if tzset is None:
+        pytest.skip("the host zone override needs POSIX time.tzset")
+    # 01:30 on 2026-11-01 occurs twice in this zone. The sampler asks ps for
+    # UTC, so the host zone cannot move the parsed birth by its offset.
+    monkeypatch.setenv("TZ", "CST6CDT,M3.2.0,M11.1.0")
+    tzset()
+    try:
+        samples = memory_guard.parse_process_table_with_start(
+            "10 1 10 2048 Sun Nov  1 01:30:01 2026 python worker.py --flag value\n"
+        )
+    finally:
+        monkeypatch.undo()
+        tzset()
 
     assert samples[10].command == "python worker.py --flag value"
-    assert samples[10].started_at_ns is not None
+    assert samples[10].started_at_ns == (
+        calendar.timegm((2026, 11, 1, 1, 30, 1, 0, 0, 0)) * 1_000_000_000
+    )
     assert memory_guard.process_identity(samples[10]).started_at_ns == (
         samples[10].started_at_ns
     )
@@ -2266,15 +2282,16 @@ def test_actual_darwin_kernel_table_matches_this_process_and_ps() -> None:
     assert table[os.getpid()] == row
     assert row.status != model._DARWIN_SZOMB
     assert (row.ppid, row.pgid, row.uid) == (os.getppid(), os.getpgrp(), os.geteuid())
-    # ps formats the same birth to the second through its own code path.
+    # ps formats the same birth to the second through its own code path. UTC
+    # text names one instant; local text is ambiguous in a fall-back hour.
     started = str(
         check_output_guarded_test_process(
             ["ps", "-o", "lstart=", "-p", str(os.getpid())],
-            env={**os.environ, "LC_ALL": "C"},
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"},
             timeout=30.0,
         )
     ).strip()
-    ps_started_s = time.mktime(time.strptime(started, "%a %b %d %H:%M:%S %Y"))
+    ps_started_s = calendar.timegm(time.strptime(started, "%a %b %d %H:%M:%S %Y"))
     assert abs(row.started_at_ns / 1_000_000_000 - ps_started_s) < 1.0
     assert row.started_at_ns == model._darwin_proc_started_at_ns(os.getpid())
 
