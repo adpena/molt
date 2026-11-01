@@ -4146,6 +4146,9 @@
         "pr",
         "main"
       ],
+      "timeout_env": [
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
       "timeout_seconds": 120,
       "toolchains": [
         "python",

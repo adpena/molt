@@ -2801,6 +2801,7 @@ cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
 timeout_seconds = 120
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
