@@ -21,6 +21,47 @@ from tools import runtime_wasm_final_preflight as preflight
 from tools.proof_queue_pkg import state as proof_queue_state
 
 
+def test_signature_rule_covers_canonical_runtime_identity_inputs():
+    from molt.cli.runtime_source_closure import runtime_source_paths
+    from molt.cli.runtime_identity_schema import (
+        RuntimePublicationTransform,
+        runtime_publication_executor_paths,
+    )
+    from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_features
+    from tools.dirty_tree_policy import is_ignored
+    from tools.molt_dev_policy import GateConfig
+
+    root = Path(__file__).resolve().parents[2]
+    owner = next(
+        rule
+        for rule in GateConfig.load(root / "tools/proof_plan.toml").rules
+        if rule.name == "runtime-wasm-signatures"
+    )
+    inputs = set(
+        runtime_source_paths(
+            root, runtime_wasm_distribution_features("full", freestanding=False)
+        )
+    )
+    inputs.update(
+        root / path
+        for transform in (
+            RuntimePublicationTransform.SHARED,
+            RuntimePublicationTransform.RELOC,
+        )
+        for path in runtime_publication_executor_paths(transform)
+    )
+    # The existing identity authority includes directory roots as well as files.
+    # Check their actual files, including external build inputs and patched crates.
+    files = {
+        child.relative_to(root).as_posix()
+        for path in inputs
+        for child in (path.rglob("*") if path.is_dir() else (path,))
+        if child.is_file()
+    }
+    assert files
+    assert not sorted(path for path in files if not is_ignored(path, owner.globs))
+
+
 @pytest.mark.parametrize(
     "changed",
     ["runtime/molt-runtime/src/process.rs", "src/molt/_wasm_abi_generated.py"],
