@@ -2,8 +2,9 @@
 """Bounded dispatch support; AGENTS.md owns standing project policy.
 
 Routing blocks do not add proof, research or landing obligations. The composer
-requires an outcome, deliverable, owners, write scope, proof commands, budget and
-stop condition. Historical doctrine is documented in the owning apparatus doc.
+requires an outcome, deliverable, owners, starting aperture, reserved paths,
+extra proof commands, budget and stop condition. Historical doctrine is documented
+in the owning apparatus doc.
 """
 
 from __future__ import annotations
@@ -45,11 +46,13 @@ GROUNDED_PROGRESS = (
 NO_ENDING_ON_PROMISES = (
     "COMPLETE THE ASSIGNMENT: check your last paragraph against the assigned deliverable and "
     "stop condition. Finish that deliverable and return it; a bounded audit or review ends with "
-    "its findings. The parent owns integration and scope expansion."
+    "its findings. The parent owns integration and resolves reserved-path conflicts and "
+    "unsettled semantic decisions."
 )
 
 VERIFY_CHANGED_CONTRACT = (
-    "VERIFY THE CHANGED CONTRACT: use the assigned proof owner and commands. Reuse matching "
+    "VERIFY THE CHANGED CONTRACT: use the assigned proof owner, standard proof families and "
+    "listed extras. Reuse matching "
     "evidence; no automatic full-suite run, repeated PASS, benchmark or extra verifier. A "
     "changed input, new failure or uncovered obligation must justify a rerun. Mandatory landing "
     "and release gates remain required once."
@@ -126,8 +129,8 @@ TRIALITY_WIRING = (
 
 PREMISE_VERIFICATION = (
     "PREMISE VERIFICATION: before your first Write, check the canonical owner, relevant history "
-    "and preserved WIP for an existing solution. Reuse or reconcile it. Return ownership "
-    "conflicts or new scope to the parent; do not open a competing lane."
+    "and preserved WIP for an existing solution. Reuse or reconcile it. Return reserved-path "
+    "conflicts or unsettled semantic decisions to the parent; do not open a competing lane."
 )
 
 # --- Registry (consumed by the anti-rot gate + the tests) ----------------------------------

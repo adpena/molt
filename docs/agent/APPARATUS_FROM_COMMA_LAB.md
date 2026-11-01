@@ -497,7 +497,13 @@ closures (no finding closes as "measured, not worth it") carries the intent.
 
 **Current contract:** `AGENTS.md` owns standing policy. `tools/dispatch_prompt.py`
 requires validated task bounds: outcome, deliverable, integration and proof
-owners, write scope, permitted proof commands, time budget and stop condition.
+owners, starting aperture, reserved paths, extra proof commands, time budget and
+stop condition. Implementation workers extend to canonical owners of their
+invariant with tests and generated outputs, report each extension and a class
+sweep, and return incomplete work only for reserved paths, unsettled semantics,
+budget or the explicit stop condition. Standard proof families remain available
+when the extra-command array is empty; the named proof owner selects affected
+obligations. See `docs/ops/MULTI_AGENT_COORDINATION.md` for dispatch details.
 `tools/subagent_contract.py` supplies optional routing blocks aligned with that
 policy. The former unconditional full-suite, reproduce-every-PASS and per-turn
 landing instructions are replaced by changed-contract proof, evidence reuse and
