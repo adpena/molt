@@ -147,6 +147,12 @@ impl<'a> DeepCopy<'a, '_> {
         {
             return Ok(Value::retain(self.py.core_token(), obj));
         }
+        // CPython charges each nested _deepcopy_list/_dict/_tuple frame to the
+        // recursion limit. Charge each native descent, so deep nesting raises
+        // RecursionError instead of overflowing the native stack.
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(self.py) else {
+            return Err(MoltObject::none().bits());
+        };
         let result = match kind {
             TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL if exact => {
                 self.list(obj, ptr, key.bits())?

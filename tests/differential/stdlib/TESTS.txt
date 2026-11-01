@@ -242,6 +242,7 @@ tests/differential/stdlib/contextvars_basic.py
 tests/differential/stdlib/contextvars_task_propagation.py
 tests/differential/stdlib/copy_basic.py
 tests/differential/stdlib/copy_class_hook.py
+tests/differential/stdlib/copy_deep_nesting.py
 tests/differential/stdlib/copy_protocol.py
 tests/differential/stdlib/copy_version_surface.py
 tests/differential/stdlib/copyreg_basic.py
