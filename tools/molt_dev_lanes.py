@@ -72,7 +72,7 @@ from tools.molt_dev_common import (
     _say,
     _step,
 )  # noqa: E402
-from tools import drift_harvest, molt_dev_controller, molt_dev_retire
+from tools import dag_dispatch, drift_harvest, molt_dev_controller, molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
 from tools.git_identity import immutable_git_environment
 
@@ -774,6 +774,84 @@ def _undo_lane_start(
     return done + "".join(f"; kept {item}" for item in kept)
 
 
+def _add_dispatch_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--rows",
+        help="comma-separated open finding rows this lane fixes (one family)",
+    )
+    parser.add_argument(
+        "--dispatch-reason",
+        default=dag_dispatch.DispatchReason.DAG_FRONTIER.value,
+        choices=[reason.value for reason in dag_dispatch.DispatchReason],
+        help="why the lane runs; any value but dag_frontier needs --reason",
+    )
+    parser.add_argument("--reason", help="text for a non-default dispatch reason")
+
+
+def _admit_dispatch(
+    git: Any, main: Path, base: str, args: argparse.Namespace, *, task: str = ""
+):
+    """Place the lane in the ledger's work order at ``base``, or refuse.
+
+    ``task`` names the lane's own record when it already exists, so its earlier
+    claim does not count against itself.
+    """
+    from tools import coordination_records, finding_status
+
+    ledger = git._run(["show", f"{base}:{finding_status.LEDGER_PATH}"]).stdout
+    rows = tuple(row.strip() for row in (args.rows or "").split(",") if row.strip())
+    records = [
+        record
+        for record in coordination_records.load_records(main)
+        if record.task != task
+    ]
+    try:
+        dispatch = dag_dispatch.plan_dispatch(
+            finding_status.project(ledger),
+            records,
+            rows,
+            reason=dag_dispatch.DispatchReason(args.dispatch_reason),
+            text=args.reason or "",
+        )
+    except dag_dispatch.DispatchRefused as exc:
+        raise DriverError(f"lane start refused by the work order: {exc}") from exc
+    where = (
+        f"family {dispatch.family}, level {dispatch.level} "
+        f"(frontier {dispatch.frontier})"
+        if dispatch.family is not None
+        else "the ledger itself"
+    )
+    _step(f"dispatch: {where}; reason {dispatch.reason.value}")
+    return dispatch
+
+
+def cmd_lane_dispatch(args: argparse.Namespace) -> int:
+    """Record an existing lane's place in the work order (re-admission)."""
+    from tools import agent_coordination, coordination_records
+
+    driver = _driver()
+    slug = lane_slug(args.slug)
+    repo = Path(args.repo).resolve()
+    git = driver.Git(repo)
+    main = _main_checkout(_worktrees(git))
+    status = _record_status(main, slug)
+    if status not in coordination_records.ACTIVE_STATUSES:
+        raise DriverError(f"{_record_path(main, slug)} is not an active lane record")
+    upstream = f"{args.remote}/{args.branch}"
+    if not args.no_fetch:
+        git.fetch(args.remote, args.branch)
+    dispatch = _admit_dispatch(git, main, upstream, args, task=lane_task(slug))
+    agent_coordination.update_task(
+        main,
+        lane_task(slug),
+        status=status,
+        fields={dag_dispatch.RECORD_KEY: dispatch.record()},
+        note=f"dispatch {dispatch.reason.value} family={dispatch.family}",
+    )
+    _ok(f"recorded the dispatch of {lane_task(slug)}")
+    return EXIT_OK
+
+
 def cmd_lane_start(args: argparse.Namespace) -> int:
     from tools import agent_coordination, coordination_records
 
@@ -835,6 +913,7 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
                 base_ref = green
                 _step(f"lane base: {LAST_GREEN_REF} ({green})")
         base = git.rev_parse(f"{base_ref}^{{commit}}")
+        dispatch = _admit_dispatch(git, main, base, args)
 
         worktree, reused = _choose_slot(
             _worktrees(git), root, ignore_globs, preferred_repo=repo
@@ -883,7 +962,8 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
                         "worktree": str(worktree),
                         "slot": True,
                         "controller": controller,
-                    }
+                    },
+                    dag_dispatch.RECORD_KEY: dispatch.record(),
                 },
             )
         except BaseException as exc:
@@ -1348,6 +1428,7 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
             )
         )
     repository = _repository_input_states(repo)
+    order = _work_order(git, main, upstream)
     if args.json:
         payload = {
             "upstream": upstream,
@@ -1355,6 +1436,7 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
             "lanes": [
                 {**asdict(state), "provisioned": state.provisioned} for state in states
             ],
+            "work_order": order,
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return EXIT_OK
@@ -1382,7 +1464,45 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
             f"{'landed' if state.landed else 'unlanded'} {where}"
             + (f" record={state.record_status}" if state.record_status else "")
         )
+    waiting = ", ".join(f"{w['family']} ({w['open']} open)" for w in order["waiting"])
+    print(
+        f"work order at {upstream}: frontier level {order['frontier']}"
+        + (f"; families with open rows and no lane: {waiting}" if waiting else "")
+    )
+    for task, dispatch in sorted(order["lanes"].items()):
+        if dispatch is None:
+            print(f"  {task}: no dispatch facts (started before HF-674)")
+        elif dispatch.get("family") is None:
+            print(f"  {task}: {dispatch.get('reason')} ({dispatch.get('text')})")
+        else:
+            print(
+                f"  {task}: family {dispatch['family']} level {dispatch['level']} "
+                f"{dispatch['reason']}"
+                + (f" ({dispatch['text']})" if dispatch.get("text") else "")
+            )
     return EXIT_OK
+
+
+def _work_order(git: Any, main: Path, upstream: str) -> dict[str, Any]:
+    """The frontier at ``upstream`` and each active lane's dispatch facts."""
+    from tools import coordination_records, finding_status
+
+    records = coordination_records.load_records(main)
+    status = finding_status.project(
+        git._run(["show", f"{upstream}:{finding_status.LEDGER_PATH}"]).stdout
+    )
+    lowest, waiting = dag_dispatch.frontier(
+        status, dag_dispatch.active_families(records)
+    )
+    return {
+        "frontier": lowest,
+        "waiting": [{"family": letter, "open": count} for letter, count in waiting],
+        "lanes": {
+            record.task: record.payload.get(dag_dispatch.RECORD_KEY)
+            for record in records
+            if record.active and record.task.startswith("lane-")
+        },
+    }
 
 
 def _add_controller_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1412,6 +1532,7 @@ def add_lane_arguments(
     start.add_argument(
         "--base", help="base ref (default: the fetched <remote>/<branch>)"
     )
+    _add_dispatch_arguments(start)
     start.add_argument(
         "--root",
         help="directory of the slot worktrees (default: <root>/worktrees beside "
@@ -1446,3 +1567,16 @@ def add_lane_arguments(
     add_repo_arg(listing)
     add_remote_branch(listing)
     listing.set_defaults(func=cmd_lane_list)
+
+    dispatching = commands.add_parser(
+        "dispatch",
+        help="admit an existing lane's rows against the work order and record them",
+    )
+    dispatching.add_argument("slug")
+    _add_dispatch_arguments(dispatching)
+    dispatching.add_argument(
+        "--no-fetch", action="store_true", help="judge against the current upstream ref"
+    )
+    add_repo_arg(dispatching)
+    add_remote_branch(dispatching)
+    dispatching.set_defaults(func=cmd_lane_dispatch)

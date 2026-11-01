@@ -301,7 +301,7 @@ integration speedup.
 | `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call using the published recovery command or JSON `verify_argv`. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
-| `lane start <slug>` | Create `lane/<slug>` at the fetched base in an admissible slot, preferring the checkout selected by `--repo`; write its coordination record and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
+| `lane start <slug>` | Create `lane/<slug>` at the fetched base in an admissible slot, preferring the checkout selected by `--repo`; write its coordination record and provision its checkout inputs. Admits the lane against the ledger's work order first (below). Runs main's pinned controller. `--rows`, `--dispatch-reason`, `--reason`, `--base`, `--root`, `--candidate-controller`. |
 | `lane retire <slug>` | Retire a landed lane's local and remote branches and close its record. Detach a managed slot and retain its checkout state; remove a legacy non-slot lane's worktree and checkout state. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
 | `lane list` | Each lane's tip, base, commits ahead and behind, landed, dirty and provisioned state. `--json`, `--no-fetch`. |
 
@@ -344,7 +344,16 @@ The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
 out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
 `_` or `-`.
 
-- **`lane start <slug>`** fetches `origin/main` (or `--base <ref>`), then
+- **`lane start <slug> --rows HF-n[,HF-m]`** fetches `origin/main` (or
+  `--base <ref>`) and admits the lane against the work order: the ledger's
+  edges table at that base commit (`tools/dag_dispatch.py`, HF-674). The rows
+  are open and in one family. A family above the frontier (the lowest level
+  that has open rows and no active lane), or a second lane in a claimed
+  family, is refused before any slot is touched, unless `--dispatch-reason`
+  (`needs_nothing`, `row_order_edge`, `owner_directed`, `landing_repair`)
+  comes with `--reason TEXT`. A ledger-only lane names no rows and uses
+  `--dispatch-reason integrator_ledger`. The record keeps the rows, family,
+  derived level, frontier and reason. The command then
   prefers the checkout selected by `--repo` when it is a registered, clean,
   detached, unlocked and non-prunable slot under the selected worktree root.
   Otherwise it takes the first such slot in path order. It runs `git switch --no-track -c
@@ -922,7 +931,7 @@ them and the doc records them so they are canonical, not tribal.
 - **One lane per change, from `origin/main`.** Each parallel agent works in
   its own lane:
   ```bash
-  uv run --python 3.12 python tools/molt_dev.py lane start <slug>
+  uv run --python 3.12 python tools/molt_dev.py lane start <slug> --rows HF-n
   ```
   It prints the worktree path. Retire the lane with `lane retire <slug>`
   once it lands.

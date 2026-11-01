@@ -100,6 +100,31 @@ def _fixture_checkout_input(
     )
 
 
+# The smallest real ledger: family A (level 0) and family B (level 1, A -> B).
+FIXTURE_LEDGER = """# Ledger
+
+## Release dependency and landing order
+
+### Family dependency order
+
+| Family | Shared cause or missing authority | Open rows |
+| --- | --- | --- |
+| A. First | a | HF-1 |
+| B. Second | b | HF-2 |
+
+| From | To | Reason |
+| --- | --- | --- |
+| A | B | b needs a |
+
+## Open: correctness and release blockers
+
+| ID | Defect | Evidence | Next |
+|----|--------|----------|------|
+| HF-1 | d | e | n |
+| HF-2 | d | e | n |
+"""
+
+
 @pytest.fixture(scope="session")
 def _family_origin_seed(
     tmp_path_factory: pytest.TempPathFactory, worker_id: str
@@ -117,7 +142,9 @@ def _family_origin_seed(
             ("pyproject.toml", "[tool.fixture]\n"),
             ("tools/install_git_hooks.py", _INSTALLER),
             (".gitignore", "*-tree/\n"),
+            ("docs/agent/V1_HANDOFF_FINDINGS.md", FIXTURE_LEDGER),
         ):
+            (seed / relative).parent.mkdir(parents=True, exist_ok=True)
             (seed / relative).write_text(text, encoding="utf-8")
         _git(seed, "add", "--", ".")
         _commit_file(seed, "README.md", "seed\n", "seed")
@@ -174,6 +201,11 @@ def _args(root: Path, **values) -> argparse.Namespace:
         "no_fetch": False,
         "candidate_controller": False,
         "pinned_controller": None,
+        # Lane-mechanics tests declare a typed out-of-order reason; the work
+        # order itself is tested in test_lane_start_admits_lanes_in_dag_order.
+        "rows": None,
+        "dispatch_reason": "integrator_ledger",
+        "reason": "lane mechanics fixture",
     }
     base.update(values)
     return argparse.Namespace(**base)
@@ -2496,3 +2528,81 @@ def test_old_in_lane_runner_repins_after_unlock_and_retires_without_gates(
         assert first_result["status"] == "landed"
         _assert_released(main, first)
     assert not paths.plan.exists()
+
+
+def test_lane_start_admits_lanes_in_dag_order(family: Path) -> None:
+    """The ledger's edges table orders lanes; a departure needs a recorded reason."""
+
+    def start(slug: str, rows: str, reason: str = "dag_frontier", text=None):
+        return lanes.cmd_lane_start(
+            _args(family, slug=slug, rows=rows, dispatch_reason=reason, reason=text)
+        )
+
+    # Family B (level 1) waits while level-0 family A has open rows and no lane;
+    # the refusal happens before any slot, branch or record exists.
+    with pytest.raises(
+        DriverError,
+        match=r"family B is level 1, but level 0 has families with open rows and "
+        r"no lane: A \(1 open\)",
+    ):
+        start("second", "HF-2")
+    assert not (family / "molt-src" / "logs" / "agents" / "lane-second").exists()
+
+    assert start("first", "HF-1") == EXIT_OK
+    assert _record(family, "first")["dispatch"] == {
+        "rows": ["HF-1"],
+        "family": "A",
+        "level": 0,
+        "frontier": 0,
+        "reason": "dag_frontier",
+        "text": "",
+    }
+    # One lane owns a family's cause; a second needs a typed reason and text.
+    with pytest.raises(DriverError, match="family A already has a lane"):
+        start("again", "HF-1")
+    with pytest.raises(DriverError, match="needs --reason TEXT"):
+        start("again", "HF-1", "owner_directed")
+    assert (
+        start("again", "HF-1", "owner_directed", "owner asked for a split") == EXIT_OK
+    )
+    assert _record(family, "again")["dispatch"]["text"] == "owner asked for a split"
+    # With A claimed, level 1 is the frontier and B is admitted in order.
+    assert start("second", "HF-2") == EXIT_OK
+    assert _record(family, "second")["dispatch"]["frontier"] == 1
+
+
+def test_lane_dispatch_records_an_existing_lane_in_the_work_order(family: Path) -> None:
+    """A lane started without rows claims its family once it is re-admitted."""
+    _start(family, "older")  # the fixture default: a lane with no rows
+    assert _record(family, "older")["dispatch"]["family"] is None
+
+    def dispatch(rows: str) -> int:
+        return lanes.cmd_lane_dispatch(
+            _args(
+                family,
+                slug="older",
+                rows=rows,
+                dispatch_reason="dag_frontier",
+                reason=None,
+                no_fetch=True,
+            )
+        )
+
+    # Re-admission runs the same gate; its own earlier record does not count.
+    with pytest.raises(DriverError, match="family B is level 1"):
+        dispatch("HF-2")
+    assert dispatch("HF-1") == EXIT_OK
+    assert dispatch("HF-1") == EXIT_OK
+    assert _record(family, "older")["dispatch"]["family"] == "A"
+    with pytest.raises(
+        DriverError, match=r"family A already has a lane \(lane-older\)"
+    ):
+        lanes.cmd_lane_start(
+            _args(
+                family,
+                slug="newer",
+                rows="HF-1",
+                dispatch_reason="dag_frontier",
+                reason=None,
+            )
+        )

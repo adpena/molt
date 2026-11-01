@@ -38,6 +38,10 @@ _RENAMED_FROM_RE = re.compile(r"was (?P<id>(?:HF|V1)-\d+)")
 _SECTION_RE = re.compile(r"^## (?P<title>.*\S)\s*$")
 _SUBSECTION_RE = re.compile(r"^### (?P<title>.*\S)\s*$")
 _DEPENDENCY_FAMILY_RE = re.compile(r"^(?P<letter>[A-Z])\. (?P<name>\S.*)$")
+_FAMILY_LETTER_RE = re.compile(r"[A-Z]")
+# Prose that states the order by hand ("Edges: A -> P ...", "Levels: 0 = A ...").
+# The edges table is the order, and levels derive from it.
+_PROSE_ORDER_RE = re.compile(r"^(?:Edges|Levels):")
 # The subsection whose table maps every open row to one root-cause family.
 DEPENDENCY_ORDER_SUBSECTION = "Family dependency order"
 _CELL_SEPARATOR_RE = re.compile(r"(?<!\\)\|")
@@ -72,12 +76,30 @@ class DependencyFamily:
 
 
 @dataclass(frozen=True, slots=True)
+class DependencyEdge:
+    """``source -> target``: the target family's fix depends on the source's."""
+
+    source: str
+    target: str
+    reason: str
+    line: int
+
+
+class DependencyCycleError(ValueError):
+    """The edges table orders some family after itself."""
+
+
+@dataclass(frozen=True, slots=True)
 class FindingStatus:
     """Every finding row of one ledger text, plus its structural defects."""
 
     rows: tuple[FindingRow, ...]
     problems: tuple[str, ...]
     dependency_families: tuple[DependencyFamily, ...] = ()
+    dependency_edges: tuple[DependencyEdge, ...] = ()
+    # Lines of the dependency-order subsection that state edges or levels in
+    # prose; the edges table is the order, so the coverage check refuses these.
+    prose_order_lines: tuple[int, ...] = ()
 
     @property
     def open_keys(self) -> tuple[str, ...]:
@@ -129,6 +151,8 @@ def project(text: str) -> FindingStatus:
     rows: list[FindingRow] = []
     problems: list[str] = []
     families: list[DependencyFamily] = []
+    edges: list[DependencyEdge] = []
+    prose_order: list[int] = []
     section = ""
     subsection = ""
     # The column count of the table the current line belongs to, from its
@@ -152,7 +176,24 @@ def project(text: str) -> FindingStatus:
             subsection = subheading["title"]
             continue
         if subsection.startswith(DEPENDENCY_ORDER_SUBSECTION):
+            if _PROSE_ORDER_RE.match(line):
+                prose_order.append(line_number)
+                continue
             row_cells = cells(line)
+            if (
+                len(row_cells) == 3
+                and _FAMILY_LETTER_RE.fullmatch(row_cells[0])
+                and _FAMILY_LETTER_RE.fullmatch(row_cells[1])
+            ):
+                edges.append(
+                    DependencyEdge(
+                        source=row_cells[0],
+                        target=row_cells[1],
+                        reason=row_cells[2],
+                        line=line_number,
+                    )
+                )
+                continue
             family = _DEPENDENCY_FAMILY_RE.match(row_cells[0]) if row_cells else None
             if family is not None and len(row_cells) == 3:
                 families.append(
@@ -203,7 +244,48 @@ def project(text: str) -> FindingStatus:
             )
         )
     problems.extend(_identity_problems(rows))
-    return FindingStatus(tuple(rows), tuple(problems), tuple(families))
+    return FindingStatus(
+        tuple(rows),
+        tuple(problems),
+        tuple(families),
+        tuple(edges),
+        tuple(prose_order),
+    )
+
+
+def dependency_levels(status: FindingStatus) -> dict[str, int]:
+    """Each family's level: the longest edge path from a family with no prerequisite.
+
+    The edges table is the one authority for work order; a level is derived,
+    never written. Raises ``DependencyCycleError`` when some family depends on
+    itself through the edges.
+    """
+    prerequisites: dict[str, set[str]] = {
+        family.letter: set() for family in status.dependency_families
+    }
+    for edge in status.dependency_edges:
+        prerequisites.setdefault(edge.target, set()).add(edge.source)
+        prerequisites.setdefault(edge.source, set())
+    levels: dict[str, int] = {}
+    visiting: list[str] = []
+
+    def level(letter: str) -> int:
+        if letter in levels:
+            return levels[letter]
+        if letter in visiting:
+            cycle = [*visiting[visiting.index(letter) :], letter]
+            raise DependencyCycleError("family dependency cycle: " + " -> ".join(cycle))
+        visiting.append(letter)
+        levels[letter] = max(
+            (1 + level(source) for source in sorted(prerequisites[letter])),
+            default=0,
+        )
+        visiting.pop()
+        return levels[letter]
+
+    for letter in sorted(prerequisites):
+        level(letter)
+    return levels
 
 
 def _identity_problems(rows: list[FindingRow]) -> list[str]:

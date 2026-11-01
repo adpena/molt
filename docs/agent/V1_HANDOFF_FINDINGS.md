@@ -3,8 +3,8 @@
 Open defects, gaps and blockers found while landing the all-WIP consolidation
 (PR 116) for the 2026-10-05 move to a new development machine. Each finding
 records its observed evidence and explicit acceptance obligations. Order work by
-the release dependencies below and register current ownership through
-`docs/ops/MULTI_AGENT_COORDINATION.md`; finding numbers are stable identities,
+the family dependency order below (`lane start` enforces it) and register
+current ownership through `docs/ops/MULTI_AGENT_COORDINATION.md`; finding numbers are stable identities,
 not execution priority. When a repair lands, retain its stable ID, dated evidence and exact qualification scope in the
 fixed history, with remaining family obligations linked to their existing open
 owners. Do not delete findings or discard earlier failure or measurement evidence
@@ -126,8 +126,11 @@ contradictions here from their owning evidence before selecting more work.
 
 ## Active integration
 
-The release dependency table below owns work order; the finding rows own scope
-and closure. Keep the current execution set small enough to finish complete
+The family dependency order owns work order, and `lane start` enforces it
+(`tools/dag_dispatch.py`); the finding rows own scope and closure. The table
+below records integration decisions for units in flight and orders nothing.
+Live lanes, with their rows, family, derived level and dispatch reason, are the
+active coordination records (`tools/molt_dev.py lane list`). Keep the current execution set small enough to finish complete
 consumer migrations. A source checkpoint is not a completed finding.
 
 | Complete unit | Current decision and remaining work |
@@ -698,22 +701,24 @@ Cargo/rustc compilation of the compiler/runtime; report their actual cache state
 
 The immediate product frontier is:
 
-1. Reliable standalone native/WASM programs through the shared module/import,
-   frame/async and codec/IO owners. Reconcile integrated repairs and retained
+1. (Families H, I, M.) Reliable standalone native/WASM programs through the
+   shared module/import, frame/async and codec/IO owners. Reconcile integrated repairs and retained
    qualification first. Interpreter-only invocations of a compiled application
    must refuse safely rather than recursively relaunching `main` (HF-519).
-2. Installed compile/edit/run and one accepted measurement through the existing
+2. (Families T, E.) Installed compile/edit/run and one accepted measurement
+   through the existing
    release producer/receiver. Bind actual consumed compiler/runtime identities
    and metric subjects; preserve omission/substitution controls. A full campaign
    needs a working positive admission path.
-3. Measured shared runtime/compiler performance repairs, resource budgets and an
+3. (Families E, J, K, W.) Measured shared runtime/compiler performance repairs,
+   resource budgets and an
    armed regression baseline, using the same conforming programs. Advance the
    current scientific witness and remaining matrix alongside disjoint work.
    Concrete safety defects precede optimization of their affected boundary.
 
-Select a small finishable execution set from this frontier. Broader findings
-remain required; shared causes, dependencies and earliest failing consumers set
-their order. Development capacity work is justified when it blocks the next
+These are release goals, not a second work order: they say which families the
+release needs, and the family dependency order says which comes first. Broader
+findings remain required. Development capacity work is justified when it blocks the next
 product closure. A prepared optimization or new checker alone sets no priority.
 
 | Work bucket | Next complete outcome and owning findings | Verification that changes the decision |
@@ -725,9 +730,9 @@ product closure. A prepared optimization or new checker alone sets no priority.
 | Performance | Complete the positive measured-metric producer/receiver path early, then remove measured bottlenecks in algorithms, runtime, startup, artifact size, memory and compilation (V1-07/V1-19–V1-21/V1-27/V1-29/V1-30, HF-26/HF-79/HF-132). | One representative authenticated measurement path first; matched before/after metrics for each load-bearing change. Measure scaling where complexity changes. Run the required performance matrix once the candidate and metric contract are stable; a microbenchmark cannot replace product acceptance. |
 | Release and developer experience | Close lossless output, effective differential/property/fuzz coverage, maintainable dependencies, bounded CI/build cost and reproducible authenticated publication (V1-03/V1-04/V1-06/V1-08/V1-12/V1-25 and the open CI/harness findings). | Test the actual changed automation boundary. Reuse valid evidence and existing commands; avoid another framework or full-suite fanout. Final current-candidate E1–E4 and authenticated H0 cover the declared matrix and all open obligations before v1.0 publication. |
 
-These are work buckets, not six serial phases or separate backlogs. Complete the
-current integration outcome first; keep disjoint safety/correctness repairs and
-the installed/performance acceptance paths moving as capacity permits. Findings
+These are work buckets, not six serial phases or separate backlogs, and not a
+work order: the family dependency order sets the order, and `lane start`
+records any departure from it. Findings
 retain their single owning rows even when a shared invariant crosses buckets.
 The dependencies do not require one giant patch or universal new capabilities
 beyond the declared support contract.
@@ -737,9 +742,10 @@ beyond the declared support contract.
 The open rows group into root-cause families: one shared cause or one missing
 authority each. Fix a family's cause, not its instances. An edge X -> Y means
 Y's fix depends on X, or X removes a class of Y's failures. Level 0 holds the
-multipliers; within a level, rank by compounding value per unit of effort. A
-row that needs nothing (for example HF-558 and HF-559) may start early;
-the level orders closing the whole family. Re-derive this map from the rows
+multipliers; within a level, rank by compounding value per unit of effort.
+The level orders closing the whole family, and `lane start` enforces it: a lane
+above the lowest open level that has no lane needs a recorded dispatch reason
+(for example a row that needs nothing, such as HF-558 and HF-559). Re-derive this map from the rows
 when it drifts; the rows stay the authority for each defect. Each family's
 sourced prior art and cheapest confirming experiment are in
 [findings_prior_art.md](../design/findings_prior_art.md).
@@ -749,7 +755,7 @@ sourced prior art and cheapest confirming experiment are in
 | A. Typed op and runtime-call ABI | Backends restate op kinds, runtime symbols, ownership and target legality by hand | HF-197, HF-485, HF-384, HF-553, HF-560, HF-262, HF-202, V1-26, HF-501, HF-124, HF-125, HF-211, HF-279, HF-287, HF-288, HF-596, HF-653 |
 | B. Binding-flow resolution | Worst-case rebinding and spelling-matched names in `python_binding_flow` | HF-203, HF-226, HF-181, HF-140, HF-126, HF-79 |
 | C. Proof coverage | Proof cells are named by hand, so whole trees, feature-gated targets, Lean modules and masked code run in no cell and their failures go unseen | HF-73, HF-99, HF-565, HF-314, HF-210, HF-509, HF-37, HF-42, HF-56, HF-63, HF-66, HF-186, HF-484, HF-87, HF-178, HF-533, HF-594, HF-626, HF-632 |
-| D. Verdict truth (executable ledger) | Expected failures and failure classes live in snapshots and prose | HF-563, HF-106, HF-295, HF-215, HF-488, HF-95, HF-530, V1-03, V1-04, HF-388, HF-422, HF-545, HF-577, HF-641, HF-652, HF-655 |
+| D. Verdict truth (executable ledger) | Expected failures and failure classes live in snapshots and prose | HF-563, HF-106, HF-295, HF-215, HF-488, HF-95, HF-530, V1-03, V1-04, HF-388, HF-422, HF-545, HF-577, HF-641, HF-652, HF-655, HF-674 |
 | E. Performance verdict truth | No armed baseline or deterministic axis | V1-07, HF-222, HF-459, HF-460, HF-245, HF-616 |
 | F. Observed inputs and content identity | What a build, test or proof reads, and that content's identity, are restated in about ten places (static whole-module reachability, hand-written closure lists, path-, environment- and device-keyed identities), so keys split, selection is near-total and nothing is reused | V1-01, V1-08, V1-09, V1-15, HF-372, HF-473, HF-244, HF-300, HF-78, HF-385, HF-491, HF-439, HF-522, HF-434, HF-363, HF-238, HF-50, HF-469, HF-586, HF-587, HF-604, HF-605, HF-601, HF-585, HF-433, HF-591, HF-334, HF-35, HF-617, HF-658 |
 | G. Fabricated support surfaces | Surfaces link and claim success where a build-time refusal belongs | HF-273, HF-195, HF-123, HF-268, HF-282, V1-11, V1-17, HF-574, HF-351, HF-120, HF-609 |
@@ -769,36 +775,48 @@ sourced prior art and cheapest confirming experiment are in
 | U. GPU device boundary | GPU work reaches a device through Molt-owned substitutes instead of upstream packages over `webgpu.h`, the buffer protocol and the C-API | HF-613, HF-614, HF-615, HF-650 |
 | V. Object reduction and serialization protocol | Pickle and copy restate CPython's reduce protocol privately (two pickle VMs, the encoder's own default reduce, globals written outside save_global, copy arms that return the original object) instead of consuming one object-model `__reduce_ex__` | HF-570, HF-643, HF-644, HF-645, HF-649 |
 
-Edges: A -> P (TypeGuard semantics before HF-573), A -> J (inline fast paths
-need the generated runtime-function row, and HF-653's typed names give inline
-method caches a key; B's version-guarded globals do not need them, since
-CPython's LOAD_GLOBAL caches key on dict-keys versions, so A and B compose
-without an edge), A -> G (stub refusal needs op ->
-runtime function -> feature reachability); B -> Q, B -> J, B -> H (precise
-bindings shrink closures, enable direct calls and drive admission); D -> G
-(refusals need build-failure pins, HF-563); B -> G (a build-time refusal needs precise reachability); G -> H (test.support reaches stubs);
-F -> Q, F -> E, F -> T (early cutoff, the metric receiver and installed delivery
-need content identity); E -> J and E -> P (an armed baseline removes silent
-performance regressions); K -> M (codec callbacks need reentrant ownership);
-J -> S (HF-206 before the HF-490 split); F -> S, F -> C and F -> every landing
-(observed input closures and result reuse make the merge gate small, and
-coverage cells select through the same graph); F -> R (reconciled records
-keep durable identity); C -> S (coverage moves heavy cells post-commit). L -> U, I -> U, O -> U (upstream GPU
-packages need the C ABI, the suspension bridge for asynchronous device waits,
-and declared target facts). V has no family prerequisite. Inside V, HF-646's
-`object.__reduce_ex__` precedes HF-643, HF-644 and HF-645 (the encoder moves
-onto it), and row HF-647 (H) precedes HF-644's by-reference pickling of
-intrinsic functions. V1-05 (K) qualifies the runtime ownership of copy
-reconstruction; HF-646's design reconciles with it rather than waiting on it.
-B and J bound V's performance, not its correctness (copy's per-object cost is
-mostly unbound globals, string-resolved methods and runtime entry), so they
+| From | To | Reason |
+| --- | --- | --- |
+| A | P | TypeGuard semantics before HF-573 |
+| A | J | direct runtime calls need the generated runtime-function row, and HF-653's typed names give each remaining lookup a compile-time slot |
+| A | G | a stub refusal needs op -> runtime function -> feature reachability |
+| B | Q | precise bindings shrink closures |
+| B | J | closed-world binding proofs enable direct calls |
+| B | H | precise bindings drive import admission |
+| B | G | a build-time refusal needs precise reachability |
+| D | G | refusals need build-failure pins (HF-563) |
+| G | H | test.support reaches stubs |
+| F | Q | early cutoff needs content identity |
+| F | E | the metric receiver needs content identity |
+| F | T | installed delivery needs content identity |
+| E | J | an armed instructions-retired baseline removes silent performance regressions |
+| E | P | an armed baseline removes silent performance regressions |
+| K | M | codec callbacks need reentrant ownership |
+| J | S | HF-206 before the HF-490 split |
+| F | S | observed input closures and result reuse make the merge gate (every landing) small |
+| F | C | coverage cells select through the same input graph |
+| F | R | reconciled records keep durable identity |
+| C | S | coverage moves heavy cells post-commit |
+| L | U | upstream GPU packages need the C ABI |
+| I | U | asynchronous device waits need the suspension bridge |
+| O | U | GPU packages need declared target facts |
+
+Levels derive from this table (`tools/finding_status.py`
+`dependency_levels`): a family's level is its longest edge path from a family
+with no prerequisite. Nothing states a level by hand, and
+`tools/finding_coverage.py --check` refuses prose that states edges or levels.
+
+Notes on rows inside and across families: V has no family prerequisite. Inside
+V, HF-646's `object.__reduce_ex__` precedes HF-643, HF-644 and HF-645 (the
+encoder moves onto it), and row HF-647 (H) precedes HF-644's by-reference
+pickling of intrinsic functions. V1-05 (K) qualifies the runtime ownership of
+copy reconstruction; HF-646's design reconciles with it rather than waiting on
+it. B and J bound V's performance, not its correctness (copy's per-object cost
+is mostly unbound globals, string-resolved methods and runtime entry), so they
 are not V's prerequisites. Row orders across families: HF-648 (F) precedes
 HF-106's recalibration (D), or the new baseline records identity flakes as
 verdicts; the primitive-cost benchmark armed as an instructions-retired
-baseline (HF-459, E) lets J, A and B work start under E -> J.
-
-Levels: 0 = A, B, C, D, F (multipliers) and I, K, L, N, O, V (no
-prerequisites); 1 = E, G, Q, M, R, U; 2 = J, P, H; 3 = S, T. Re-cut on
+baseline (HF-459, E) lets J, A and B work start under E -> J. Re-cut on
 2026-10-30: C, F, R and S were cut by symptom area; F now holds the one
 missing authority they shared (observed inputs and content identity).
 
@@ -979,6 +997,7 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-649 | The serialization surface ignores the target Python version. `src/molt/stdlib/pickle.py` fixes `DEFAULT_PROTOCOL = 4`, so a 3.14 or 3.15 target pickles at protocol 4 by default where CPython uses 5. `src/molt/stdlib/copy.py` defines `copy.replace` for every target, but CPython added it (and `__replace__`) in 3.13, so a 3.12 target exposes an API its CPython lacks; its comment also cites PEP 618, which is `zip(strict=)`. | Lane hf640-pickle-long, 2026-10-31: `pickle.py:140` `DEFAULT_PROTOCOL = 4`; `copy.py:45` `def replace` with no version gate. The 3.14 pickle docs state "Changed in version 3.14: The default protocol is 5." The stdlib gates other surfaces on the target through `sys.version_info` (121 sites, for example `base64.py:399`). Not yet checked: the 3.13 default `persistent_id` and `persistent_load` methods on the C Pickler and Unpickler. Lane hf646 (2026-11-01) did the copy half: `copy.replace` and its `__all__` entry exist only for 3.13+ targets, the PEP 618 comment is gone, the version projection is regenerated, and copy_version_surface.py runs in runtime.public-consumers (3.12) and r6.target-version-parity.py313 (3.13). `replace`'s non-CPython fallbacks and the missing `__replace__` producers are HF-661. | Gate `DEFAULT_PROTOCOL` (5 from 3.14) and `copy.replace` (from 3.13) on the target version through the existing `sys.version_info` mechanism, regenerate the CPython version-assumption projection, and add a differential that prints both under 3.12 and 3.14 targets against the matching CPython. The pickle lane owns the first, lane hf646 the second. Remaining: the pickle `DEFAULT_PROTOCOL` gate (5 from 3.14) and the 3.13 `persistent_id`/`persistent_load` check. |
 | HF-653 | Runtime name identity is spelled, not typed, the same defect HF-197 removed for op kinds. (1) 46 `native_method_table!` builtin method tables resolve a method with `match name: &str` over 916 string arms, after decoding the interned name object to UTF-8 on each lookup (`builtins/methods.rs`). (2) `RuntimeStaticNames` (`state/cache.rs`) declares a typed field for each of its 93 static names, but all 51 consumers reach a field through `runtime_static_name_slot(b"...")`, a byte-string `match` per call, and none names the field. (3) 179 `attr_name_bits_from_bytes(b"...")`, 33 `lookup_special_method(..., b"...")` and 47 pickle attribute lookups spell names in bytes. Class attribute lookup walks the MRO with string-keyed dict probes and no per-type cache. A typed name cannot lose its last consumer silently, and a hot path never decodes or compares name bytes. | Integrator, 2026-10-31, main 387bb5e8af, release build, macOS arm64, instructions retired per op (evidence `logs/agents/lane-integrator-tools/artifacts/primitive-costs-20261031/`): `DISPATCH.get(type(x))` 12,754 vs CPython 513 and `isinstance(x, str)` 7,054 vs 267. Profiles of both show `dict_exact_string_lookup`, `intern_static_name`, `core::str::from_utf8`, `class_namespace_lookup_mro`, `builtin_class_method_bits` and `bind_builtin_keywords` on every iteration. Counts from `rg` over `runtime/molt-runtime/src` at the same commit. | Extend the typed-identity authority (family A prior art): one declarative name registry generating a closed `NameId` and its interned objects at runtime start; generate the builtin method tables keyed by `NameId`; make `RuntimeStaticNames` consumers name typed fields and delete `slot_for`; dispatch special methods through typed slots; add a per-type lookup cache keyed by `(type version, interned name pointer)` as CPython's `_PyType_Lookup` does. Measure the two loops above before and after; the compiler-side binding of the same names is family B (HF-79, HF-226). |
 | HF-655 | An infrastructure stop turns into a red main verdict. By design (`docs/design/landing_queue.md`, 554b75694d) unresolved custody after a cancellation stays an error, so `tools/molt_dev_gates.py` stops the block with `DriverError` when a cancelled gate's guard cleanup is unresolved; postsubmit (`tools/molt_dev_queue.py`) then maps every `DriverError` to RED with suspect commits and revert commands, although no gate failed. Separately, the guard's Cargo quarantine has no terminal state for a kill before any rustc observation (`ownership_status: deferred`, "no birth-custodied rustc incremental observations; recovery deferred"), so every cancelled Cargo gate reports "Cargo quarantine ownership or recovery is unresolved". | Postsubmit on main 26daee2644 (2026-10-31) was marked RED with `failing_tests: []` for `tests/cli/test_cli_import_collection.py` "local.gate.114: executor cancellation" after a landing request preempted it (`26daee2644....postsubmit-result.json`); the next postsubmit (817eff2dd2) passed. The same unresolved quarantine appeared on maxfail-cancelled gates in HF-637's first landing and typed-cache's first and later landings (receipt `cbcf89e6....gates.heavy.json` commands[8]). Hypothesis, unproven: the guard's rustc birth observation misses births under load (`test_cargo_quarantine_custody.py::test_actual_cargo_held_profile_locks_defer_recovery` failed under landing load and passes alone in 0.9 s on main and the lane). | A typed postsubmit verdict (GREEN, RED, CANCELLED, INCONCLUSIVE): only a gate's own failure is RED with suspects; runner and custody stops are INCONCLUSIVE with no suspects (prior art: LUCI Buildbucket FAILURE vs INFRA_FAILURE, https://chromium.googlesource.com/infra/luci/luci-go/+/ad07866c5533/buildbucket/proto/common.proto). Give the quarantine an explicit terminal state for a kill before observation with a named recovery owner. Brief: logs/agents/lane-hf655-cancellation-verdict/artifacts/task.md (with HF-605 slices). |
+| HF-674 | The work order was prose. The DAG's edges and levels were hand-written and nothing parsed them; the stated levels already disagreed with the edges (C stated 0, derived 1 from F -> C; T stated 3, derived 1 from F -> T). `lane start` took no finding rows, so nothing compared a dispatch with the DAG, and three texts claimed to order work ("Active integration", the release dependency frontier and buckets, and the family DAG). | 2026-11-01: all three Codex seats ran level-2 family H while level-0 families B (7 open rows), C (19) and F (30) had no lane, and the integrator had planned HF-666 (S, level 3) and HF-667 (R, level 1) next; the owner asked whether work follows the DAG and said to prevent it. Lane dag-dispatch-gate: edges are a parsed table (`finding_status.DependencyEdge`), levels derive (`dependency_levels`), `finding_coverage --check` refuses prose order, unknown families, self, duplicate or reasonless edges and cycles; `ledger_edit` gains `family create` and `edge add`/`remove`; `lane start --rows` admits a lane through `tools/dag_dispatch.py` (frontier = lowest level with open rows and no active lane; one lane per family; typed out-of-order reasons with text stored in the record); `lane dispatch` re-admits an existing lane; `lane list` prints the frontier and each lane's dispatch. 1,273 reader tests pass (9 skipped) and 88 lane tests. | Land the lane, then backfill every active lane with `lane dispatch <slug> --rows ...`. Reconcile the open items of docs/design/meta_bug_taxonomy.md's "Fix queue" (a work queue outside the ledger) into rows. Decide with the owner how the release goals (frontier items mapped to families) weight dispatch within a level. |
 | HF-656 | No user-facing support claim states that Molt's WASM output, hosted and (since HF-639) freestanding, requires a SIMD128-capable engine. `runtime_wasm_simd_policy()` returns True for every deployment, and `docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md` records `+simd128` freestanding since 76aebc3a, but neither the README, getting-started nor a target support matrix says so, and a host without SIMD128 fails at load instead of at a declared refusal. | Integrator adversarial review, 2026-11-01: `rg -i simd128` over README.md, docs/getting-started.md and the compat contracts finds no host requirement; the only mentions are the WASM optimization plan and the perf spec. | State SIMD128 as a declared target fact in the canonical target support matrix, and refuse early with a typed diagnostic where a declared WASM host lacks it. |
 | HF-657 | Every compiled loop iteration calls `molt_async_work_poll_and_exception_pending`, a runtime entry per iteration, where CPython 3.12 tests one `eval_breaker` word with a relaxed atomic load and branches to `_Py_HandlePending` only when it is set (`Python/ceval_macros.h` CHECK_EVAL_BREAKER, `Python/ceval_gil.c`). A bare `total += i` loop costs about 580 instructions per iteration, about CPython's interpreter. | `tools/opt_explorer.py anatomy` on the integrator's primitive benchmark (main 387bb5e8af, release, macOS arm64; logs/agents/lane-integrator-tools/artifacts/primitive-costs-20261031/): one poll call per inner loop of `section_loop` and `section_isinstance`, beside refcount, `molt_lt`, `molt_is_truthy` and `molt_frame_set_col` calls. | Emit an inline flag test with a cold call from every backend (one pending-work word in the execution context, set by signal, async and GIL-drop producers), and measure the loop before and after. |
 | HF-658 | The landing sandbox's runtime-WASM expected-pair records are not keyed to the candidate's runtime source identity, so `tests/test_wasm_runtime_call_signature_authority.py::test_runtime_wasm_export_signatures_match_import_registry` compares a candidate's import registry with a runtime pair built for an earlier candidate and fails a correct lane. | 2026-10-31 22:37 CDT: HF-627 (adds `molt_process_ipc_spawn/streams/child`, none cfg-gated) failed in the sandbox with "missing runtime export molt_process_ipc_*" (runner-20261101T033437445932Z). After building HF-627's own WASM runtime pair in its slot, the same test passes (1 passed, 3.3 s; logs/agents/lane-mp-transport/artifacts/wasm-pair/). | Key expected pairs by the runtime source/input identity of the checkout that builds them; the gate builds the candidate's pair or skips with a named reason, never selecting another candidate's pair. |

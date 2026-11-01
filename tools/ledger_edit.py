@@ -16,6 +16,12 @@ release engineering" [--after HF-587] --defect ... --evidence ... --next ...
 [--evidence-note ...] [--next-note ...]
     ledger_edit.py note HF-185 [--defect-note ...] [--evidence-note ...] \
 [--next-note ...]
+    ledger_edit.py family create W --name ... --cause ...
+    ledger_edit.py edge add F W --reason ...
+    ledger_edit.py edge remove F W
+
+The edges table is the work order; each family's level derives from it
+(``finding_status.dependency_levels``) and is never written by hand.
 
 Cell text is Markdown; a literal ``|`` must be written ``\\|``.
 """
@@ -257,6 +263,55 @@ def describe_family(text: str, args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def create_family(text: str, args: argparse.Namespace) -> str:
+    """Add an empty family; the coverage check then requires its prior-art section."""
+    status = finding_status.project(text)
+    if any(f.letter == args.letter for f in status.dependency_families):
+        raise LedgerEditError(f"family {args.letter} already exists")
+    if not status.dependency_families:
+        raise LedgerEditError("the ledger has no family dependency order table")
+    lines = text.split("\n")
+    last = max(family.line for family in status.dependency_families) - 1
+    lines.insert(
+        last + 1, _row([f"{args.letter}. {args.name}", args.cause, ""], empty_last=True)
+    )
+    return "\n".join(lines)
+
+
+def _edge(status: finding_status.FindingStatus, source: str, target: str):
+    return next(
+        (
+            edge
+            for edge in status.dependency_edges
+            if (edge.source, edge.target) == (source, target)
+        ),
+        None,
+    )
+
+
+def add_edge(text: str, args: argparse.Namespace) -> str:
+    """Order ``target`` after ``source``; levels re-derive from the table."""
+    status = finding_status.project(text)
+    if not status.dependency_edges:
+        raise LedgerEditError("the dependency order has no edges table")
+    if _edge(status, args.source, args.target) is not None:
+        raise LedgerEditError(f"edge {args.source} -> {args.target} already exists")
+    lines = text.split("\n")
+    last = max(edge.line for edge in status.dependency_edges) - 1
+    lines.insert(last + 1, _row([args.source, args.target, args.reason]))
+    return "\n".join(lines)
+
+
+def remove_edge(text: str, args: argparse.Namespace) -> str:
+    status = finding_status.project(text)
+    edge = _edge(status, args.source, args.target)
+    if edge is None:
+        raise LedgerEditError(f"no edge {args.source} -> {args.target}")
+    lines = text.split("\n")
+    del lines[edge.line - 1]
+    return "\n".join(lines)
+
+
 def recut_families(text: str, args: argparse.Namespace) -> str:
     """Apply a re-cut (family renames, then row moves) as one checked edit.
 
@@ -346,6 +401,18 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     described.add_argument("--cause", required=True)
     recut = family_sub.add_parser("recut")
     recut.add_argument("--spec", required=True, help="JSON: describe and move lists")
+    created = family_sub.add_parser("create", help="add an empty family")
+    created.add_argument("letter")
+    created.add_argument("--name", required=True)
+    created.add_argument("--cause", required=True)
+    edge = sub.add_parser("edge", help="add or remove a family dependency edge")
+    edge_sub = edge.add_subparsers(dest="edge_command", required=True)
+    for name in ("add", "remove"):
+        command = edge_sub.add_parser(name)
+        command.add_argument("source")
+        command.add_argument("target")
+        if name == "add":
+            command.add_argument("--reason", required=True)
     args = parser.parse_args(argv)
 
     path = root / LEDGER
@@ -358,12 +425,17 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
             "move": move_to_family,
             "describe": describe_family,
             "recut": recut_families,
+            "create": create_family,
         }[args.family_command]
         subject = {
             "move": lambda: " ".join(args.keys) + f" -> {args.to}",
             "describe": lambda: f"family {args.letter}",
             "recut": lambda: f"re-cut {args.spec}",
+            "create": lambda: f"family {args.letter}",
         }[args.family_command]()
+    elif args.command == "edge":
+        edit = {"add": add_edge, "remove": remove_edge}[args.edge_command]
+        subject = f"{args.source} -> {args.target}"
     else:
         edit = {
             "open": open_row,

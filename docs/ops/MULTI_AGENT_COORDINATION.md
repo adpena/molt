@@ -415,7 +415,9 @@ parent record; `scan` reads the selected repository's records, not agent chat.
 
 `tools/molt_dev.py lane start <slug>` registers each lane it creates as task
 `lane-<slug>` in the main checkout's registry, with the lane worktree as the
-record's source checkout and a `lane` object (branch, base, worktree).
+record's source checkout, a `lane` object (branch, base, worktree) and a
+`dispatch` object (rows, family, derived level, frontier, reason and its
+text; `tools/dag_dispatch.py`).
 `lane retire` closes the record as `landed` or `abandoned` and records the
 retired tip and any bundle.
 

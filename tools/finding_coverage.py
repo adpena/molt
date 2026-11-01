@@ -293,6 +293,41 @@ def dependency_order_problems(
         for family in families
         if family.title not in headings
     )
+    problems.extend(_edge_problems(status))
+    return problems
+
+
+def _edge_problems(status: finding_status.FindingStatus) -> list[str]:
+    """The edges table is the one work order: well formed, acyclic, no prose copy."""
+    problems = [
+        f"line {line} states the family order in prose; the edges table is the "
+        "order and levels derive from it (tools/finding_status.py "
+        "dependency_levels)"
+        for line in status.prose_order_lines
+    ]
+    if not status.dependency_edges:
+        problems.append(
+            "the family dependency order has no edges table "
+            "(| From | To | Reason |); an empty order makes every family level 0"
+        )
+    letters = {family.letter for family in status.dependency_families}
+    seen: dict[tuple[str, str], int] = {}
+    for edge in status.dependency_edges:
+        where = f"edge {edge.source} -> {edge.target} (line {edge.line})"
+        for letter in (edge.source, edge.target):
+            if letter not in letters:
+                problems.append(f"{where} names family {letter}, which has no row")
+        if edge.source == edge.target:
+            problems.append(f"{where} orders a family after itself")
+        if not edge.reason:
+            problems.append(f"{where} gives no reason")
+        first = seen.setdefault((edge.source, edge.target), edge.line)
+        if first != edge.line:
+            problems.append(f"{where} repeats the edge on line {first}")
+    try:
+        finding_status.dependency_levels(status)
+    except finding_status.DependencyCycleError as exc:
+        problems.append(str(exc))
     return problems
 
 

@@ -23,6 +23,10 @@ _LEDGER = """\
 | A. Alpha | cause a | HF-1 |
 | B. Beta | cause b | HF-2 |
 
+| From | To | Reason |
+| --- | --- | --- |
+| A | B | beta needs alpha |
+
 ## Fixed after the handoff
 
 | ID | Defect | Fix |
@@ -298,3 +302,44 @@ def test_family_recut_refuses_a_malformed_spec(tmp_path: Path) -> None:
     spec.write_text('{"describe": [{"letter": "A"}]}', encoding="utf-8")
 
     assert ledger_edit.main(["family", "recut", "--spec", str(spec)], root=root) == 2
+
+
+def test_family_create_requires_its_prior_art(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    argv = ["family", "create", "C", "--name", "Gamma", "--cause", "cause g"]
+    # A family without a prior-art section is refused, and nothing is written.
+    assert ledger_edit.main(argv, root=root) == 1
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == before
+
+    ready = _root(tmp_path / "ready", _PRIOR_ART + "\n## C. Gamma\n\ntext\n")
+    assert ledger_edit.main(argv, root=ready) == 0
+    family = next(f for f in _status(ready).dependency_families if f.letter == "C")
+    assert (family.name, family.keys) == ("Gamma", ())
+    assert ledger_edit.main(argv, root=ready) == 2  # already exists
+
+
+def test_edges_change_only_through_the_table_and_levels_follow(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    assert finding_status.dependency_levels(_status(root)) == {"A": 0, "B": 1}
+
+    # Adding B -> A would order each family after itself; nothing is written.
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    assert ledger_edit.main(["edge", "add", "B", "A", "--reason", "x"], root=root) == 1
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == before
+    assert ledger_edit.main(["edge", "add", "A", "B", "--reason", "x"], root=root) == 2
+
+    # Removing the last edge leaves no edges table, which the check refuses.
+    assert ledger_edit.main(["edge", "remove", "A", "B"], root=root) == 1
+    assert ledger_edit.main(["edge", "remove", "B", "A"], root=root) == 2
+
+    ready = _root(tmp_path / "ready", _PRIOR_ART + "\n## C. Gamma\n\ntext\n")
+    create = ["family", "create", "C", "--name", "Gamma", "--cause", "cause g"]
+    assert ledger_edit.main(create, root=ready) == 0
+    assert (
+        ledger_edit.main(["edge", "add", "B", "C", "--reason", "c needs b"], root=ready)
+        == 0
+    )
+    assert finding_status.dependency_levels(_status(ready)) == {"A": 0, "B": 1, "C": 2}
+    assert ledger_edit.main(["edge", "remove", "A", "B"], root=ready) == 0
+    assert finding_status.dependency_levels(_status(ready)) == {"A": 0, "B": 0, "C": 1}
