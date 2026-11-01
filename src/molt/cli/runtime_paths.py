@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.cargo_execution_policy import cargo_profile_directory
 
-import functools
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -149,7 +150,7 @@ def _cargo_target_root(project_root: Path) -> Path:
     return target
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _build_state_root_cached(
     project_root_str: str,
     build_state_override: str | None,
@@ -190,7 +191,7 @@ def _build_state_root(project_root: Path, cargo_target: Path | None = None) -> P
     return root
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _runtime_lib_path_cached(
     cargo_target_str: str,
     cargo_profile: str,

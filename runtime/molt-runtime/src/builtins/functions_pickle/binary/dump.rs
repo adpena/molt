@@ -80,35 +80,53 @@ fn pickle_emit_global_ref(
         dec_ref_bits(_py, name_bits);
         return Ok(false);
     };
+    let emitted = pickle_emit_global_names(
+        _py,
+        state,
+        (module_bits, module_name.as_str()),
+        (name_bits, attr_name.as_str()),
+    );
     dec_ref_bits(_py, module_bits);
     dec_ref_bits(_py, name_bits);
+    emitted.map(|()| true)
+}
+
+/// The tail of CPython's save_global (`Modules/_pickle.c`): an extension code
+/// from protocol 2, else STACK_GLOBAL from protocol 4, whose module and name
+/// strings go through save() and so take memo entries, else GLOBAL.
+fn pickle_emit_global_names(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    (module_bits, module_name): (u64, &str),
+    (name_bits, global_name): (u64, &str),
+) -> Result<(), u64> {
     if state.protocol >= 2
-        && let Some(code) = pickle_lookup_extension_code(_py, &module_name, &attr_name)?
+        && let Some(code) = pickle_lookup_extension_code(_py, module_name, global_name)?
     {
         if code <= u8::MAX as i64 {
             state.push(PICKLE_OP_EXT1);
             state.push(code as u8);
-            return Ok(true);
+            return Ok(());
         }
         if code <= u16::MAX as i64 {
             state.push(PICKLE_OP_EXT2);
             state.extend(&(code as u16).to_le_bytes());
-            return Ok(true);
+            return Ok(());
         }
         if code <= u32::MAX as i64 {
             state.push(PICKLE_OP_EXT4);
             state.extend(&(code as u32).to_le_bytes());
-            return Ok(true);
+            return Ok(());
         }
     }
     if state.protocol >= PICKLE_PROTO_4 {
-        pickle_dump_unicode_binary(_py, state, module_name.as_str())?;
-        pickle_dump_unicode_binary(_py, state, attr_name.as_str())?;
+        pickle_dump_obj_binary(_py, state, module_bits, true)?;
+        pickle_dump_obj_binary(_py, state, name_bits, true)?;
         state.push(PICKLE_OP_STACK_GLOBAL);
-        return Ok(true);
+        return Ok(());
     }
-    pickle_emit_global_opcode(state, module_name.as_str(), attr_name.as_str());
-    Ok(true)
+    pickle_emit_global_opcode(state, module_name, global_name);
+    Ok(())
 }
 
 fn pickle_dump_unicode_binary(
@@ -118,21 +136,30 @@ fn pickle_dump_unicode_binary(
 ) -> Result<(), u64> {
     let raw = text.as_bytes();
     if raw.len() <= u8::MAX as usize && state.protocol >= PICKLE_PROTO_4 {
-        state.push(PICKLE_OP_SHORT_BINUNICODE);
-        state.push(raw.len() as u8);
-        state.extend(raw);
+        state.write_payload(&[PICKLE_OP_SHORT_BINUNICODE, raw.len() as u8], raw);
         return Ok(());
     }
     if raw.len() <= u32::MAX as usize {
-        state.push(PICKLE_OP_BINUNICODE);
-        pickle_emit_u32_le(state, raw.len() as u32);
-        state.extend(raw);
+        state.write_payload(
+            &pickle_payload_header_u32(PICKLE_OP_BINUNICODE, raw.len()),
+            raw,
+        );
         return Ok(());
     }
-    state.push(0x8d);
-    pickle_emit_u64_le(state, raw.len() as u64);
-    state.extend(raw);
+    state.write_payload(&pickle_payload_header_u64(0x8d, raw.len()), raw);
     Ok(())
+}
+
+fn pickle_payload_header_u32(op: u8, len: usize) -> [u8; 5] {
+    let mut header = [op, 0, 0, 0, 0];
+    header[1..].copy_from_slice(&(len as u32).to_le_bytes());
+    header
+}
+
+fn pickle_payload_header_u64(op: u8, len: usize) -> [u8; 9] {
+    let mut header = [op, 0, 0, 0, 0, 0, 0, 0, 0];
+    header[1..].copy_from_slice(&(len as u64).to_le_bytes());
+    header
 }
 
 fn pickle_dump_bytes_binary(
@@ -141,20 +168,20 @@ fn pickle_dump_bytes_binary(
     raw: &[u8],
 ) -> Result<(), u64> {
     if raw.len() <= u8::MAX as usize {
-        state.push(PICKLE_OP_SHORT_BINBYTES);
-        state.push(raw.len() as u8);
-        state.extend(raw);
+        state.write_payload(&[PICKLE_OP_SHORT_BINBYTES, raw.len() as u8], raw);
         return Ok(());
     }
     if raw.len() <= u32::MAX as usize {
-        state.push(PICKLE_OP_BINBYTES);
-        pickle_emit_u32_le(state, raw.len() as u32);
-        state.extend(raw);
+        state.write_payload(
+            &pickle_payload_header_u32(PICKLE_OP_BINBYTES, raw.len()),
+            raw,
+        );
         return Ok(());
     }
-    state.push(PICKLE_OP_BINBYTES8);
-    pickle_emit_u64_le(state, raw.len() as u64);
-    state.extend(raw);
+    state.write_payload(
+        &pickle_payload_header_u64(PICKLE_OP_BINBYTES8, raw.len()),
+        raw,
+    );
     Ok(())
 }
 
@@ -164,9 +191,10 @@ fn pickle_dump_bytearray_binary(
     raw: &[u8],
 ) -> Result<(), u64> {
     if state.protocol >= PICKLE_PROTO_5 {
-        state.push(PICKLE_OP_BYTEARRAY8);
-        pickle_emit_u64_le(state, raw.len() as u64);
-        state.extend(raw);
+        state.write_payload(
+            &pickle_payload_header_u64(PICKLE_OP_BYTEARRAY8, raw.len()),
+            raw,
+        );
         return Ok(());
     }
     // Protocols 2-4: bytearray(bytes(...)) reduce path.
@@ -216,15 +244,21 @@ fn pickle_dump_int_binary(state: &mut PickleDumpState, value: i64) {
         state.extend(&(value as i32).to_le_bytes());
         return;
     }
-    let raw = pickle_long_bytes_from_i64(value);
+    pickle_dump_long_bytes(state, &pickle_long_bytes_from_i64(value));
+}
+
+/// LONG1 or LONG4 over a minimal little-endian two's-complement payload, as
+/// CPython's save_long writes any int outside int32 from protocol 2
+/// (`Modules/_pickle.c`).
+fn pickle_dump_long_bytes(state: &mut PickleDumpState, raw: &[u8]) {
     if raw.len() <= u8::MAX as usize {
         state.push(PICKLE_OP_LONG1);
         state.push(raw.len() as u8);
-        state.extend(raw.as_slice());
+        state.extend(raw);
     } else {
         state.push(PICKLE_OP_LONG4);
         pickle_emit_u32_le(state, raw.len() as u32);
-        state.extend(raw.as_slice());
+        state.extend(raw);
     }
 }
 
@@ -469,6 +503,73 @@ fn pickle_reduce_value(
     Ok(None)
 }
 
+/// CPython's batch loop for exact dicts and sets: MARK, up to
+/// PICKLE_BATCH_SIZE items, `close`, repeated while the last batch was full,
+/// so a count that is a multiple of the batch size ends with an empty batch.
+fn pickle_dump_full_batches(
+    state: &mut PickleDumpState,
+    count: usize,
+    close: u8,
+    mut dump_at: impl FnMut(&mut PickleDumpState, usize) -> Result<(), u64>,
+) -> Result<(), u64> {
+    let mut at = 0usize;
+    loop {
+        state.push(PICKLE_OP_MARK);
+        let mut written = 0usize;
+        while at < count && written < PICKLE_BATCH_SIZE {
+            dump_at(state, at)?;
+            at += 1;
+            written += 1;
+        }
+        state.push(close);
+        if written != PICKLE_BATCH_SIZE {
+            return Ok(());
+        }
+    }
+}
+
+/// A dictitems element's key and value; anything but a 2-tuple is the
+/// TypeError CPython's batch_dict raises.
+fn pickle_dict_item_pair(_py: &crate::PyToken<'_>, item_bits: u64) -> Result<[u64; 2], u64> {
+    let refuse = || {
+        raise_exception(
+            _py,
+            BuiltinExc::TypeError,
+            "dict items iterator must return 2-tuples",
+        )
+    };
+    let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+        return Err(refuse());
+    };
+    if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
+        return Err(refuse());
+    }
+    let Some(fields) = (unsafe {
+        crate::object::seq_access::snapshot(_py, item_ptr, "sequence snapshot allocation failed")
+    }) else {
+        return Err(MoltObject::none().bits());
+    };
+    match fields[..] {
+        [key, value] => Ok([key, value]),
+        _ => Err(refuse()),
+    }
+}
+
+fn pickle_dump_iterator_item(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    item_bits: u64,
+    dict_items: bool,
+) -> Result<(), u64> {
+    if dict_items {
+        let [key, value] = pickle_dict_item_pair(_py, item_bits)?;
+        pickle_dump_obj_binary(_py, state, key, true)?;
+        pickle_dump_obj_binary(_py, state, value, true)
+    } else {
+        pickle_dump_obj_binary(_py, state, item_bits, true)
+    }
+}
+
 // save_reduce already admitted these slots with the canonical PyIter_Check
 // predicate. Consume that exact iterator; __iter__ is not part of this path.
 fn pickle_dump_items_from_iterator(
@@ -479,56 +580,49 @@ fn pickle_dump_items_from_iterator(
 ) -> Result<(), u64> {
     let iterator_owner =
         molt_runtime_core::OwnedRuntimeValue::retain(_py.core_token(), iterator_bits);
-    state.push(PICKLE_OP_MARK);
+    let next = || {
+        molt_runtime_core::iter_next_owned(_py.core_token(), &iterator_owner)
+            .map_err(|_| MoltObject::none().bits())
+    };
+    let (single, batch) = if dict_items {
+        (PICKLE_OP_SETITEM, PICKLE_OP_SETITEMS)
+    } else {
+        (PICKLE_OP_APPEND, PICKLE_OP_APPENDS)
+    };
+    // CPython's batch_list and batch_dict (`Modules/_pickle.c`): nothing for an
+    // empty iterator; a lone item at a batch start takes APPEND or SETITEM;
+    // otherwise MARK, up to PICKLE_BATCH_SIZE items and APPENDS or SETITEMS,
+    // repeated while a batch fills. The first item of a batch is validated
+    // before the next one is fetched; later items just before they are saved.
     loop {
-        let Some(item_owner) =
-            molt_runtime_core::iter_next_owned(_py.core_token(), &iterator_owner)
-                .map_err(|_| MoltObject::none().bits())?
-        else {
+        let Some(first) = next()? else {
             break;
         };
-        let item_bits = item_owner.bits();
         if dict_items {
-            let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
-                return Err(raise_exception(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "dict items iterator must return 2-tuples",
-                ));
-            };
-            if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
-                return Err(raise_exception(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "dict items iterator must return 2-tuples",
-                ));
-            }
-            let Some(fields) = (unsafe {
-                crate::object::seq_access::snapshot(
-                    _py,
-                    item_ptr,
-                    "sequence snapshot allocation failed",
-                )
-            }) else {
-                return Err(MoltObject::none().bits());
-            };
-            if fields.len() != 2 {
-                return Err(raise_exception(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "dict items iterator must return 2-tuples",
-                ));
-            }
-            pickle_dump_obj_binary(_py, state, fields[0], true)?;
-            pickle_dump_obj_binary(_py, state, fields[1], true)?;
-        } else {
-            pickle_dump_obj_binary(_py, state, item_bits, true)?;
+            pickle_dict_item_pair(_py, first.bits())?;
         }
-    }
-    if dict_items {
-        state.push(PICKLE_OP_SETITEMS);
-    } else {
-        state.push(PICKLE_OP_APPENDS);
+        let Some(second) = next()? else {
+            pickle_dump_iterator_item(_py, state, first.bits(), dict_items)?;
+            state.push(single);
+            break;
+        };
+        state.push(PICKLE_OP_MARK);
+        pickle_dump_iterator_item(_py, state, first.bits(), dict_items)?;
+        drop(first);
+        let mut written = 1usize;
+        let mut pending = Some(second);
+        while let Some(item) = pending.take() {
+            pickle_dump_iterator_item(_py, state, item.bits(), dict_items)?;
+            written += 1;
+            if written == PICKLE_BATCH_SIZE {
+                break;
+            }
+            pending = next()?;
+        }
+        state.push(batch);
+        if written != PICKLE_BATCH_SIZE {
+            break;
+        }
     }
     Ok(())
 }
@@ -565,14 +659,20 @@ fn pickle_dump_reduce_value(
                 PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple")
             );
         };
-        dec_ref_bits(_py, module_bits);
         let resolved_bits =
-            pickle_resolve_global_bits(_py, module_name.as_str(), global_name.as_str())?;
+            match pickle_resolve_global_bits(_py, module_name.as_str(), global_name.as_str()) {
+                Ok(bits) => bits,
+                Err(err_bits) => {
+                    dec_ref_bits(_py, module_bits);
+                    return Err(err_bits);
+                }
+            };
         let matches = resolved_bits == obj_bits;
         if !obj_from_bits(resolved_bits).is_none() {
             dec_ref_bits(_py, resolved_bits);
         }
         if !matches {
+            dec_ref_bits(_py, module_bits);
             let obj_type = type_name(_py, obj_from_bits(obj_bits));
             let msg = format!(
                 "Can't pickle {obj_type}: it's not the same object as {}.{}",
@@ -580,13 +680,14 @@ fn pickle_dump_reduce_value(
             );
             return Err(PickleError::Pickling.raise(_py, &msg));
         }
-        if state.protocol >= PICKLE_PROTO_4 {
-            pickle_dump_unicode_binary(_py, state, module_name.as_str())?;
-            pickle_dump_unicode_binary(_py, state, global_name.as_str())?;
-            state.push(PICKLE_OP_STACK_GLOBAL);
-        } else {
-            pickle_emit_global_opcode(state, module_name.as_str(), global_name.as_str());
-        }
+        let emitted = pickle_emit_global_names(
+            _py,
+            state,
+            (module_bits, module_name.as_str()),
+            (reduce_bits, global_name.as_str()),
+        );
+        dec_ref_bits(_py, module_bits);
+        emitted?;
         let _ = pickle_memo_store_if_absent(state, obj_bits);
         return Ok(());
     }
@@ -916,6 +1017,8 @@ pub(crate) fn pickle_dump_obj_binary(
     obj_bits: u64,
     allow_persistent_id: bool,
 ) -> Result<(), u64> {
+    // CPython's save() starts at an opcode boundary, where a full frame commits.
+    state.opcode_boundary();
     if state.depth >= PICKLE_RECURSION_LIMIT {
         return Err(
             PickleError::Pickling.raise(_py, "pickle.dumps: maximum recursion depth exceeded")
@@ -957,6 +1060,14 @@ pub(crate) fn pickle_dump_obj_binary(
             return Err(PickleError::Pickling.raise(_py, &msg));
         };
         let type_id = unsafe { object_type_id(ptr) };
+        if type_id == crate::TYPE_ID_BIGINT {
+            let big = unsafe { crate::builtins::numbers::bigint_ref(ptr) };
+            match num_traits::ToPrimitive::to_i64(big) {
+                Some(value) => pickle_dump_int_binary(state, value),
+                None => pickle_dump_long_bytes(state, &big.to_signed_bytes_le()),
+            }
+            return Ok(());
+        }
         if type_id == TYPE_ID_STRING {
             let text = string_obj_to_owned(obj).ok_or_else(|| {
                 PickleError::Pickling.raise(_py, "pickle.dumps: string conversion failed")
@@ -1060,12 +1171,19 @@ pub(crate) fn pickle_dump_obj_binary(
             }) else {
                 return Err(MoltObject::none().bits());
             };
-            if !values.is_empty() {
-                state.push(PICKLE_OP_MARK);
-                for &entry in values.iter() {
-                    pickle_dump_obj_binary(_py, state, entry, true)?;
+            // CPython's batch_list_exact: a one-item list takes APPEND; any
+            // other nonempty list takes MARK ... APPENDS per PICKLE_BATCH_SIZE.
+            if let [only] = values[..] {
+                pickle_dump_obj_binary(_py, state, only, true)?;
+                state.push(PICKLE_OP_APPEND);
+            } else {
+                for chunk in values.chunks(PICKLE_BATCH_SIZE) {
+                    state.push(PICKLE_OP_MARK);
+                    for &entry in chunk {
+                        pickle_dump_obj_binary(_py, state, entry, true)?;
+                    }
+                    state.push(PICKLE_OP_APPENDS);
                 }
-                state.push(PICKLE_OP_APPENDS);
             }
             return Ok(());
         }
@@ -1080,15 +1198,20 @@ pub(crate) fn pickle_dump_obj_binary(
                 )
             }
             .ok_or_else(|| MoltObject::none().bits())?;
-            if !pairs.is_empty() {
-                state.push(PICKLE_OP_MARK);
-                let mut idx = 0usize;
-                while idx + 1 < pairs.len() {
-                    pickle_dump_obj_binary(_py, state, pairs[idx], true)?;
-                    pickle_dump_obj_binary(_py, state, pairs[idx + 1], true)?;
-                    idx += 2;
-                }
-                state.push(PICKLE_OP_SETITEMS);
+            // CPython's batch_dict_exact: a one-entry dict takes SETITEM;
+            // otherwise MARK ... SETITEMS per PICKLE_BATCH_SIZE, repeated while
+            // a batch fills, so an exact multiple ends with an empty batch.
+            let (entries, _) = pairs.as_chunks::<2>();
+            if let [[key, value]] = entries {
+                pickle_dump_obj_binary(_py, state, *key, true)?;
+                pickle_dump_obj_binary(_py, state, *value, true)?;
+                state.push(PICKLE_OP_SETITEM);
+            } else if !entries.is_empty() {
+                pickle_dump_full_batches(state, entries.len(), PICKLE_OP_SETITEMS, |state, at| {
+                    let [key, value] = entries[at];
+                    pickle_dump_obj_binary(_py, state, key, true)?;
+                    pickle_dump_obj_binary(_py, state, value, true)
+                })?;
             }
             return Ok(());
         }
@@ -1098,12 +1221,15 @@ pub(crate) fn pickle_dump_obj_binary(
                 let _ = pickle_memo_store_if_absent(state, obj_bits);
                 let values = unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }
                     .ok_or_else(|| MoltObject::none().bits())?;
+                // CPython's save_set: MARK ... ADDITEMS per PICKLE_BATCH_SIZE,
+                // repeated while a batch fills.
                 if !values.is_empty() {
-                    state.push(PICKLE_OP_MARK);
-                    for &entry in values.iter() {
-                        pickle_dump_obj_binary(_py, state, entry, true)?;
-                    }
-                    state.push(PICKLE_OP_ADDITEMS);
+                    pickle_dump_full_batches(
+                        state,
+                        values.len(),
+                        PICKLE_OP_ADDITEMS,
+                        |state, at| pickle_dump_obj_binary(_py, state, values[at], true),
+                    )?;
                 }
                 return Ok(());
             }

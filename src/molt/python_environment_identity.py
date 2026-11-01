@@ -492,6 +492,7 @@ def python_capture_authority_paths(
         "input_report",
         "llvm_linker_roles",
         "file_hashing",
+        "typed_cache",
         "source_admission",
         "exact_json",
         "file_publication",

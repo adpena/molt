@@ -499,10 +499,16 @@ def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> N
 
     from tests.process_guard_common import run_guarded_test_process
 
+    from molt.python_environment_location import environment_bytecode_arguments
+
     source_root = Path(custody.__file__).resolve().parents[1]
+    # Isolation ignores PYTHONPYCACHEPREFIX, so the probe takes the image's
+    # bytecode arguments; without them it rewrote .pyc files in the source tree.
+    bytecode = environment_bytecode_arguments(Path(sys.prefix))
     result = run_guarded_test_process(
         [
             sys.executable,
+            *bytecode,
             "-I",
             "-S",
             "-c",
@@ -518,7 +524,13 @@ def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> N
     report = json.loads(result.stdout)
     assert report["self_alive"] is True
     # Native argv keeps its boundaries: the multi-line program is one argument.
-    assert report["self_argv"][1:5] == ["-I", "-S", "-c", _INSTALLED_DAEMON_PROBES]
+    assert report["self_argv"][1 : 5 + len(bytecode)] == [
+        *bytecode,
+        "-I",
+        "-S",
+        "-c",
+        _INSTALLED_DAEMON_PROBES,
+    ]
     assert report["self_argv"][-1] == str(tmp_path)
     assert type(report["self_birth"]) is int
     assert type(report["identity_birth"]) is int

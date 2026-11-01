@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 import os
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _backend_daemon_enabled_cached(os_name: str, raw: str) -> bool:
     if os_name != "posix":
         return False

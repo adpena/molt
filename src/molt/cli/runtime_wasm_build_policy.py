@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 import hashlib
 import os
 from dataclasses import dataclass, replace
@@ -36,7 +37,7 @@ def _runtime_build_profile_override() -> str:
     return ""
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _resolve_wasm_cargo_profile_cached(
     cargo_profile: str,
     override: str,

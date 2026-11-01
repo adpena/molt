@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import re
 from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
@@ -20,7 +21,7 @@ from molt._wasm_abi_generated import (
 )
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _wasm_runtime_backed_abi_symbols() -> frozenset[str]:
     symbols = set(WASM_LINK_ALLOWED_IMPORTS) | set(WASM_RUNTIME_HOST_EXPORTS)
     for import_name in WASM_IMPORT_REGISTRY:

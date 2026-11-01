@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from functools import cache
 import json
 import math
 import os
@@ -271,7 +272,7 @@ def _default_measure_free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
-@cache
+@typed_cache(maxsize=None)
 def _darwin_capacity_api() -> tuple[ctypes.CDLL, ctypes.c_void_p]:
     """Retain only immutable ABI bindings, never an observed capacity."""
     import ctypes

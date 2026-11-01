@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import argparse
 import heapq
 import os
@@ -10,7 +12,6 @@ import time
 from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -451,7 +452,7 @@ def _same_cache_generation(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _windows_timestamp_api() -> tuple[Any, Any, Any]:
     if os.name != "nt":
         raise OSError("Windows timestamp API is unavailable on this platform")

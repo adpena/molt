@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 import hashlib
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 from molt.cli.runtime_paths import _build_state_root
 
 
-@functools.lru_cache(maxsize=512)
+@typed_cache(maxsize=512)
 def _resolved_artifact_hash_key(path_str: str) -> str:
     return hashlib.sha256(str(Path(path_str).resolve()).encode("utf-8")).hexdigest()[
         :16
@@ -47,7 +48,7 @@ def _runtime_target_fingerprint_path(
     )
 
 
-@functools.lru_cache(maxsize=4096)
+@typed_cache(maxsize=4096)
 def _artifact_state_path_cached(
     build_state_root_str: str,
     artifact_path_str: str,

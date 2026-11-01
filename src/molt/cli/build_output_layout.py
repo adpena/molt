@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.native_target import NativeTargetSpec
 from molt.compilation_target import (
     ArtifactTarget,
@@ -19,7 +21,6 @@ from molt.cli.build_request import BuildProfile
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-import functools
 import hashlib
 import json
 import os
@@ -99,7 +100,7 @@ _DEPLOY_PROFILE_CHOICES = tuple(_DEPLOY_PROFILE_DEFAULTS)
 _BUILD_OR_DEPLOY_PROFILE_CHOICES = (*_BUILD_PROFILE_CHOICES, *_DEPLOY_PROFILE_CHOICES)
 
 
-@functools.lru_cache(maxsize=512)
+@typed_cache(maxsize=512)
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
@@ -127,7 +128,7 @@ def _wasm_runtime_root_from_env(project_root: Path, env: Mapping[str, str]) -> P
     return project_cargo_target_dir(project_root, env) / WASM_RUNTIME_TARGET_DIR
 
 
-@functools.lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _default_build_base_cached(home_root_str: str) -> Path:
     return Path(home_root_str) / "build"
 
@@ -285,7 +286,7 @@ def _replay_build_claim(claim: "RecordedBuildClaim") -> None:
         assert_never(claim.kind)
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _resolve_cache_root_cached(
     project_root_str: str, cache_dir: str | None, default_cache_str: str
 ) -> Path:
@@ -306,7 +307,7 @@ def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
     )
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _resolve_out_dir_cached(
     project_root_str: str,
     out_dir: str | None,
@@ -329,7 +330,7 @@ def _resolve_out_dir(project_root: Path, out_dir: str | Path | None) -> Path | N
     return path
 
 
-@functools.lru_cache(maxsize=256)
+@typed_cache(maxsize=256)
 def _resolve_sysroot_cached(
     project_root_str: str,
     sysroot: str | None,

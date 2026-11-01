@@ -1613,6 +1613,7 @@ tests/differential/stdlib/pickle_basic.py
 tests/differential/stdlib/pickle_class_dataclass_roundtrip.py
 tests/differential/stdlib/pickle_cpython_opcode_literals.py
 tests/differential/stdlib/pickle_hooks_surface_buffers.py
+tests/differential/stdlib/pickle_int_width.py
 tests/differential/stdlib/pickle_main_function_global_resolution.py
 tests/differential/stdlib/pickle_out_of_band_buffers.py
 tests/differential/stdlib/pickle_persistent_hooks.py

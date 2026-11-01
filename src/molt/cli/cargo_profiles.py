@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from molt.cargo_execution_policy import cargo_profile_directory
 
-import functools
 import os
 import re
 
@@ -11,7 +12,7 @@ from molt.cli.build_request import BuildProfile
 _CARGO_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _resolve_backend_profile_cached(
     raw: str | None,
 ) -> tuple[BuildProfile, str | None]:
@@ -30,7 +31,7 @@ def _resolve_backend_profile() -> tuple[BuildProfile, str | None]:
     )
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _resolve_cargo_profile_name_cached(
     build_profile: BuildProfile,
     raw: str,
@@ -80,7 +81,7 @@ def _resolve_cargo_profile_name(
     )
 
 
-@functools.lru_cache(maxsize=32)
+@typed_cache(maxsize=32)
 def _resolve_backend_cargo_profile_name_cached(
     build_profile: BuildProfile,
     backend_raw: str,

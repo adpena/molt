@@ -94,9 +94,20 @@ extend-exclude = [
 # on every upgrade. This is the set the tree is held to today; new rule
 # families are adopted one at a time through the gate-lifecycle ratchet in
 # tools/proof_plan.toml, never by inheriting a release's defaults.
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "TID251"]
+
+# functools' caches erase a function's signature for ty; src/molt uses
+# molt.typed_cache (tools/proof_plan.toml gate_flip "ruff_typed_cache").
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"functools.lru_cache".msg = "use molt.typed_cache.typed_cache: lru_cache erases the signature for ty"
+"functools.cache".msg = "use molt.typed_cache.typed_cache(maxsize=None): cache erases the signature for ty"
 
 [tool.ruff.lint.per-file-ignores]
+"src/molt/typed_cache.py" = ["TID251"]      # The one owner of functools' cache.
+"src/molt/custody_layout.py" = ["TID251"]   # Bootstrap release module: stdlib-only (packaging/bootstrap.py).
+"src/molt/default_paths.py" = ["TID251"]    # Bootstrap release module: stdlib-only (packaging/bootstrap.py).
+"tools/**/*.py" = ["TID251"]                # Follow-up: 23 tool sites, some stdlib-only by design.
+"tests/**/*.py" = ["TID251"]                # Follow-up: 11 test sites.
 "src/molt/cli/__init__.py" = ["F401"]         # Public CLI compatibility facade re-exports split-module symbols.
 "src/molt/stdlib/**/*.py" = ["E402"]
 "demos/tinygrad/**/*.py" = ["E402"]          # Molt-compiled modules bind runtime intrinsics or sys.path before imports.

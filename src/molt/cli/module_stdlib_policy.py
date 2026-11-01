@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import functools
+from molt.typed_cache import typed_cache
+
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from molt.source_root import compiler_source_root
 from molt.cli.python_import_topology import PythonImportTopology
 
 
-@functools.lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _stdlib_allowlist_cached(source_text: str) -> frozenset[str]:
     allowlist: set[str] = set()
     for line in source_text.splitlines():

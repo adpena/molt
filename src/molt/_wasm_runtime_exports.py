@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 import ast
-from functools import lru_cache
 from pathlib import Path
 from typing import Collection, Iterable
 
@@ -210,7 +211,7 @@ def wasm_cpython_abi_distribution_export_names() -> tuple[str, ...]:
     )
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def wasm_cpython_abi_data_symbol_names() -> tuple[str, ...]:
     """Full, app-independent set of CPython-ABI data symbols the runtime owns.
 
@@ -235,12 +236,12 @@ def wasm_cpython_abi_data_symbol_names() -> tuple[str, ...]:
     )
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def wasm_runtime_import_names() -> tuple[str, ...]:
     return tuple(sorted(set(WASM_IMPORT_REGISTRY)))
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _wasm_import_registry() -> frozenset[str]:
     return frozenset(WASM_IMPORT_REGISTRY)
 
@@ -378,7 +379,7 @@ def _all_dynamic_runtime_owned_intrinsic_exports() -> tuple[str, ...]:
     return _all_dynamic_runtime_owned_intrinsic_exports_for_root(compiler_source_root())
 
 
-@lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _all_dynamic_runtime_owned_intrinsic_exports_for_root(
     repo_root: Path,
 ) -> tuple[str, ...]:

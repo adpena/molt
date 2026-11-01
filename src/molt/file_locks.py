@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections.abc import Callable, Generator, Mapping
 import contextlib
 from dataclasses import dataclass, field
-from functools import lru_cache
 import errno
 import _thread
 import os
@@ -382,7 +383,7 @@ else:
         return _posix_handle_lock(fcntl, shared=True)
 
 
-@lru_cache(maxsize=1)
+@typed_cache(maxsize=1)
 def _shared_handle_lock() -> _HandleLock:
     return _HOST_SHARED_HANDLE_LOCK_FACTORY()
 

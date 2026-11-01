@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from collections import deque
-import functools
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 
 
-@functools.lru_cache(maxsize=4096)
+@typed_cache(maxsize=4096)
 def _expand_module_chain_cached(name: str) -> tuple[str, ...]:
     name = name.strip()
     if not name:

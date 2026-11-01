@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from molt.typed_cache import typed_cache
+
 from dataclasses import asdict, dataclass
-from functools import lru_cache
 import hashlib
 from pathlib import Path
 import platform
@@ -86,7 +87,7 @@ def binaryen_manifest_path(root: Path | None = None) -> Path:
     return resolved_root / "config" / "binaryen_releases.toml"
 
 
-@lru_cache(maxsize=8)
+@typed_cache(maxsize=8)
 def _load_binaryen_manifest_cached(
     path_text: str, _revision: tuple[int, int, int]
 ) -> BinaryenManifest:
