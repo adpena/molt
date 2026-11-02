@@ -72,8 +72,11 @@ def _driver() -> ModuleType:
 REQUEST_SCHEMA = "molt.landing-request.v2"
 RESULT_SCHEMA = "molt.landing-result.v2"
 PLAN_SCHEMA = "molt.landing-plan.v1"
-# A batch larger than this costs more in bisection than one more gate run.
-MAX_BATCH = 8
+# Batching pays only when most candidates pass: at a per-candidate pass rate p
+# a batch of k passes with probability p**k. On 2026-11-02 p was about 0.2 and
+# 24 failed batch blocks cost 7.6 h of bisection. Raise this only while p holds
+# at 0.85 or better.
+MAX_BATCH = 1
 # Retention: finished runner logs beyond the newest RUNNER_LOGS_KEPT, and
 # results older than RESULT_DAYS, retire when a runner starts.
 RUNNER_LOGS_KEPT = 20
