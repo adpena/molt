@@ -1640,8 +1640,12 @@ def _visit_unindexed(
     after the same locked verification as an indexed one; apply republishes
     their index. Every other block or interrupted transition, an unreadable
     owner and a link are held and reported with the bytes they keep,
-    measured after the lock is released. Nothing here writes.
+    measured after the lock is released. Nothing here writes. A generation
+    gone since the scan listed it was removed by its own reclaimed
+    transition, so it is skipped.
     """
+    if not os.path.lexists(generation):
+        return None
     if is_link_like(generation) or not generation.is_dir():
         return _HeldScratch(
             str(generation), None, "not a direct directory; not followed", None, None
@@ -1649,6 +1653,8 @@ def _visit_unindexed(
     try:
         owner = _owner(generation)
     except (OSError, ValueError) as error:
+        if not os.path.lexists(generation):
+            return None
         return _HeldScratch(str(generation), None, str(error), None, None)
     if owner["state"] in {"leased", "indeterminate"}:
         return None
@@ -1790,7 +1796,8 @@ def reclaim_terminal_scratch(
                 protected_count += 1
                 continue
             except (OSError, ValueError, RuntimeError) as error:
-                errors.append(f"{generation}: {error}")
+                if os.path.lexists(generation):
+                    errors.append(f"{generation}: {error}")
                 continue
             if isinstance(visit, _HeldScratch):
                 held.append(asdict(visit))

@@ -2865,6 +2865,9 @@ def test_explicit_cleanup_reports_every_unindexed_block_it_keeps(tmp_path):
         assert "undecodable" in held[str(unreadable)]["reason"]
         assert held[str(linked)]["reason"] == "not a direct directory; not followed"
         assert held[str(linked)]["payload_bytes"] is None
+    # A generation its own guard removed after the scan listed it is gone,
+    # not held.
+    assert scratch._visit_unindexed(root / ("a" * 32)) is None
     assert {
         path: path.read_bytes() for path in root.rglob("*") if path.is_file()
     } == before
