@@ -159,6 +159,10 @@ per-operation Molt medians decreased, but small changes and startup measurements
 remain subject to the recorded noise envelopes. These worker observations are
 not release qualification.
 
+The resulting primitive-ratchet calibration advances the methodology lock to
+v27 because its verdict limits change. The worker's v26 observations retain
+their original comparison class; they are not relabeled as a new release run.
+
 The cost is substantial executable text growth: the canonical loop artifact
 grew from 22,757,320 to 49,577,656 bytes. Retained anatomy emissions show native
 `__text` growing from 14,972,900 to 41,631,204 bytes. The loop function itself

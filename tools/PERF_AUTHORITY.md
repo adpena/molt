@@ -97,6 +97,12 @@ include startup, and do not alter instruction ratios or ratchet decisions.
 
 ## Scoreboard methodology
 
+Methodology v27 records HF-205's complete primitive-ratchet calibration. Updated
+ratios and per-axis measured noise limits can change verdicts, so they start a
+new comparison class. The paired worker observations retain their v26 scope;
+their workloads, counter and normalization did not change. This calibration
+does not qualify the release performance authority.
+
 Methodology v17 classifies failed executions from their actual semantic guest
 stderr instead of host diagnostics. Failed raw captures retain bounded diagnostic
 text and byte identity through cleanup. Failure classifications can therefore

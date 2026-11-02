@@ -15,8 +15,8 @@ schema = "molt-perf-methodology-v1"
 # whole store (toolchain_identity.FileDigestCache), and target facts resolve
 # once per process (compilation_target, native_target), so warm build samples
 # can move. Earlier reports retain their recorded class.
-version = 26
-content_sha256 = "4a23925a200676066744a0abac0d2af1e7fa2471b0732bd46e731899dde95760"
+version = 27
+content_sha256 = "4f3d82c45fbc4c593566533a20ddead357b8a9254436d63b87b43b9c5e202610"
 
 [[methodology]]
 path = "tools/safe_run.py"
