@@ -2857,7 +2857,12 @@ def run_guarded(
             scratch_failure_details.append(
                 "guarded descendant closure remained indeterminate"
             )
-        if scratch_state in {"blocked", "cleanup-error", "indeterminate"}:
+        if scratch_state in {"blocked", "cleanup-error", "indeterminate"} or (
+            # A clean run reclaims its own payload. A removal that failed
+            # stays retained and indexed for the next sweep, but it is this
+            # run's own custody failure.
+            scratch_clean_success and scratch_state == "retained"
+        ):
             scratch_failure_details.append(
                 f"temporary artifact terminal state is {scratch_state!r}"
             )

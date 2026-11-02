@@ -9251,6 +9251,93 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     assert ("SIGKILL" in diagnostic.getvalue()) is (child_returncode == 137)
 
 
+@pytest.mark.parametrize(
+    ("child_returncode", "expected_returncode"),
+    [(0, memory_guard.INFRASTRUCTURE_RETURN_CODE), (7, 7)],
+)
+def test_run_guarded_fails_a_clean_run_whose_own_payload_stays_retained(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int,
+    expected_returncode: int,
+) -> None:
+    """A clean run reclaims its own payload; a failed run retains it.
+
+    A removal that failed leaves the payload retained and indexed for the
+    next sweep, which is still this clean run's own custody failure.
+    """
+    if run_in_fresh_guard_observer(request):
+        return
+
+    class FakeLease:
+        target = tmp_path / "guard-scratch"
+        release_calls = 0
+
+        def release(self) -> None:
+            self.release_calls += 1
+
+    lease = FakeLease()
+    lease.target.mkdir()
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "acquire_guard_scratch",
+        lambda _root, _env: lease,
+    )
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "finish_guard_scratch",
+        lambda _lease, *, closed, success, evidence, timings: {
+            "state": "retained",
+            "receipt": str(tmp_path / "owner.json"),
+            "error": "payload removal deferred: fixture file in use"
+            if success
+            else None,
+            "retention": {
+                "reclaimed": [],
+                "retained_bytes": 0,
+                "retained_count": 1,
+                "protected_count": 0,
+                "errors": [],
+                "deferred": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_temporary_artifact_descendant_closure",
+        lambda **_kwargs: (
+            True,
+            {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "test-closed",
+                "closed": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
+    env = dict(os.environ)
+    env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "memory_guard")
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", f"raise SystemExit({child_returncode})"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+        cleanup_orphans=False,
+        env=env,
+    )
+
+    assert result.returncode == expected_returncode
+    assert result.child_returncode == child_returncode
+    assert (result.infrastructure_failure is not None) is (child_returncode == 0)
+    if child_returncode == 0:
+        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
+        assert "temporary artifact custody incomplete" in result.stderr
+    assert lease.release_calls == 1
+
+
 def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     from tools import disk_guard, harness_memory_guard
     from molt.checkout_state import RETIREMENT_WINDOW_S

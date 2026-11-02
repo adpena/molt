@@ -770,15 +770,53 @@ def test_interrupted_reclamation_repairs_receipt_but_never_retries_payload(
 
 def test_delete_failure_is_durable_and_not_silenced(tmp_path, monkeypatch):
     lease, _ = _lease(tmp_path)
-    monkeypatch.setattr(
-        scratch,
-        "delete_path",
-        lambda path, *, owning_root=None: (False, "fixture sharing violation"),
+    (lease.target / "output").write_bytes(b"regenerable")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            scratch,
+            "delete_path",
+            lambda path, *, owning_root=None: (False, "fixture sharing violation"),
+        )
+        result = _finish(lease)
+    # The run's own removal failed, so its finish reports a retained payload
+    # (the guard fails a clean run on it), yet the payload stays indexed:
+    # a deletion that failed is retried, never blocked forever.
+    assert result["state"] == "retained"
+    assert "sharing violation" in result["error"]
+    assert "sharing violation" in result["retention"]["deferred"][0]
+    assert scratch._index_path(lease.generation).is_file()
+    assert (lease.generation / "payload" / "output").read_bytes() == b"regenerable"
+    swept = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert swept["errors"] == [] and swept["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+def test_failed_eviction_delete_is_retried_by_a_later_sweep(tmp_path, monkeypatch):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "failure").write_bytes(b"regenerable")
+    assert _finish(lease, success=False)["state"] == "retained"
+    root = lease.generation.parent
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            scratch,
+            "delete_path",
+            lambda path, *, owning_root=None: (False, "fixture file in use"),
+        )
+        first = scratch.reclaim_terminal_scratch(
+            root, retention=scratch.ScratchRetention(0, 0)
+        )
+    assert first["errors"] == [] and first["reclaimed"] == []
+    assert "fixture file in use" in first["deferred"][0]
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "retained"
+    assert scratch._index_path(lease.generation).is_file()
+    assert (lease.generation / "payload" / "failure").read_bytes() == b"regenerable"
+    second = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0)
     )
-    result = _finish(lease)
-    assert result["state"] == "blocked"
-    assert "sharing violation" in _read(lease.generation / "owner.json")["error"]
-    assert (lease.generation / "payload").exists()
+    assert second["errors"] == [] and second["deferred"] == []
+    assert second["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
 
 
 @pytest.mark.parametrize("budget", [3, 4])

@@ -817,7 +817,10 @@ def _reclaim_locked(
     """Delete one retained payload; the caller removes a reclaimed generation.
 
     The pending index stays until ``_remove_reclaimed_generation`` commits, so
-    a removal that cannot run now is found again by the next sweep.
+    a removal that cannot run now is found again by the next sweep. A
+    deletion that reports failure is not an interrupted transition: the
+    payload stays retained, indexed and identity-bound, and the next sweep
+    retries it.
     """
     if not verify_only and (
         os.path.lexists(generation / "storage-index.json") or "evidence_index" in owner
@@ -844,10 +847,16 @@ def _reclaim_locked(
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
     # The generation owns its payload, which may hold sealed published images.
     ok, error = delete_path(target, owning_root=generation)
-    owner = {**owner, "state": "reclaimed" if ok else "blocked", "error": error or None}
+    owner = (
+        {**owner, "state": "reclaimed", "error": None}
+        if ok
+        else {
+            **owner,
+            "state": "retained",
+            "error": f"payload removal deferred: {error}",
+        }
+    )
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
-    if not ok:
-        _drop_index(generation)
     return owner
 
 
@@ -1589,7 +1598,7 @@ def reclaim_terminal_scratch(
                         reclaimed.append(str(generation))
                     removals.append(generation)
                 else:
-                    errors.append(f"{generation}: {result.get('error')}")
+                    deferred.append(f"{generation}: {result.get('error')}")
         except ScratchBusy:
             protected_count += 1
         except (OSError, ValueError, RuntimeError) as error:
