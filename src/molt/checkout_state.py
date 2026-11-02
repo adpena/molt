@@ -1916,8 +1916,6 @@ def compact_evidence(
         write_exact(
             index, {key: value for key, value in record.items() if key != "files"}
         )
-        if not remove_source:
-            return archive
         from .file_deletion import delete_path
 
         # Remove maximal represented subtrees through the canonical sealed-tree
