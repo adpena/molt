@@ -2870,6 +2870,51 @@ def test_explicit_cleanup_reports_every_unindexed_block_it_keeps(tmp_path):
     } == before
 
 
+def test_explicit_cleanup_leaves_a_live_unindexed_transition_alone(tmp_path):
+    import subprocess
+    import textwrap
+
+    lease, _ = _lease(tmp_path)
+    (lease.target / "kept").write_bytes(b"k")
+    _finish(lease, success=False)
+    owner = _read(lease.generation / "owner.json")
+    # A live guard between its owner commit and its index: unindexed, locked.
+    write_exact(lease.generation / "owner.json", {**owner, "state": "reclaiming"})
+    scratch._drop_index(lease.generation)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            textwrap.dedent(
+                f"""
+                import time
+                from pathlib import Path
+                from molt import temporary_artifacts as s
+                with s._locked(Path({str(lease.generation)!r})):
+                    print("locked", flush=True)
+                    time.sleep(60)
+                """
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "locked"
+        result = scratch.reclaim_terminal_scratch(
+            lease.generation.parent,
+            retention=scratch.ScratchRetention(0, 0),
+            dry_run=True,
+            resolve_legacy_archives=True,
+        )
+    finally:
+        holder.kill()
+        holder.wait()
+    assert result["protected_count"] == 1 and result["held"] == [], result
+
+
 def test_explicit_cleanup_command_reads_the_guard_bound(tmp_path, monkeypatch, capsys):
     leases = []
     for number in range(1, 4):

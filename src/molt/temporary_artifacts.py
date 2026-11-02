@@ -1634,12 +1634,13 @@ def _visit_unindexed(
 ) -> tuple[int, int, Path, str, bool] | _HeldScratch | None:
     """Classify one generation that has no pending index (explicit cleanup).
 
-    A lease belongs to its guard marker and is skipped. An old
-    archive-protocol block, and a retained or reclaimed payload whose index
-    was refused, become candidates after the same locked verification as an
-    indexed one; apply republishes their index. Every other block or
-    interrupted transition, an unreadable owner and a link are held and
-    reported with the bytes they keep. Nothing here writes.
+    A lease belongs to its guard marker and is skipped, and a busy lock is a
+    live owner (``ScratchBusy``). An old archive-protocol block, and a
+    retained or reclaimed payload whose index was refused, become candidates
+    after the same locked verification as an indexed one; apply republishes
+    their index. Every other block or interrupted transition, an unreadable
+    owner and a link are held and reported with the bytes they keep,
+    measured after the lock is released. Nothing here writes.
     """
     if is_link_like(generation) or not generation.is_dir():
         return _HeldScratch(
@@ -1651,9 +1652,11 @@ def _visit_unindexed(
         return _HeldScratch(str(generation), None, str(error), None, None)
     if owner["state"] in {"leased", "indeterminate"}:
         return None
-    if _is_legacy_archive_block(owner) or owner["state"] in {"retained", "reclaimed"}:
+    try:
         with _locked(generation):
             owner = _owner(generation)
+            if owner["state"] in {"leased", "indeterminate"}:
+                return None
             accepted = (
                 _legacy_blocked_failure(generation, owner)
                 if owner["state"] == "blocked"
@@ -1662,6 +1665,11 @@ def _visit_unindexed(
             if accepted is not None and accepted["state"] in {"retained", "reclaimed"}:
                 _reclaim_locked(generation, accepted, verify_only=True)
                 return _candidate(generation, accepted)
+    except _CrashResidue as residue:
+        # A crash took its lock or receipts; no owner can hold it. Report it.
+        return _HeldScratch(
+            str(generation), str(owner["state"]), str(residue), None, None
+        )
     payload, payload_bytes = _held_payload(generation, owner)
     return _HeldScratch(
         str(generation),
