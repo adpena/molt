@@ -73,12 +73,12 @@ use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 pub static ABI: u8 = 0;
 const NONE: u64 = @NONE@;
 const PTR_TAG: u64 = @PTR@;
-const CLOSURE: u64 = 0x101;
-const FIRST: u64 = 0x102;
-const SECOND: u64 = 0x103;
-const FUNCTION: u64 = 0x301;
-const WRAPPER: u64 = 0x302;
-const TOKEN: u64 = 0x401;
+const CLOSURE: u64 = 0x7ffc000000000101;
+const FIRST: u64 = 0x7ffc000000000102;
+const SECOND: u64 = 0x7ffc000000000103;
+const FUNCTION: u64 = 0x7ffc000000000301;
+const WRAPPER: u64 = 0x7ffc000000000302;
+const TOKEN: u64 = 0x7ffc000000000401;
 const GUARD: u64 = 0xa55a_55aa_5aa5_aa55;
 const ALLOC_ERROR: u64 = 0xa110c;
 const WRAP_ERROR: u64 = 0xa51c;
@@ -277,15 +277,19 @@ pub extern "C" fn fixed_live() -> u64 {
     (FUNCTIONS..=WRAPPERS).map(count).sum::<u64>()
         + INPUTS.iter().map(|refs| refs.load(SeqCst)).sum::<u64>()
 }
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
 "#;
 
 const HARNESS: &str = r#"
 const NONE: u64 = @NONE@;
-const CLOSURE: u64 = 0x101;
-const FIRST: u64 = 0x102;
-const SECOND: u64 = 0x103;
-const FUNCTION: u64 = 0x301;
-const WRAPPER: u64 = 0x302;
+const CLOSURE: u64 = 0x7ffc000000000101;
+const FIRST: u64 = 0x7ffc000000000102;
+const SECOND: u64 = 0x7ffc000000000103;
+const FUNCTION: u64 = 0x7ffc000000000301;
+const WRAPPER: u64 = 0x7ffc000000000302;
 extern "C" {
     fn fixed_reset(kind: u64, closure: u64, arity: u64, extent: u64, poll: u64, failure: u64);
     fn fixed_count(index: usize) -> u64;

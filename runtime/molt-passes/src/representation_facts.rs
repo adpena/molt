@@ -83,6 +83,7 @@ fn repr_by_value_with_types(
     {
         Some(TirType::Bool) => Repr::Bool,
         Some(TirType::F64) => Repr::FloatUnboxed,
+        Some(TirType::None) => Repr::BoxedImmortal,
         Some(ty) => Repr::default_for(ty),
         None => declared.map(Repr::default_for).unwrap_or(Repr::DynBox),
     };
@@ -103,6 +104,7 @@ fn repr_by_value_with_types(
     // No value-range supplied → the conservative floor stands. Every int is
     // `MaybeBigInt` (boxed, BigInt-safe); no raw-i64 carrier is minted.
     let Some(vr) = vr else {
+        propagate_boxed_immortal_carriers(tir_func, &mut repr_by_value);
         return repr_by_value;
     };
     // Seed the raw-i64-safe set from the value-range proof + the GPU-intrinsic
@@ -121,7 +123,130 @@ fn repr_by_value_with_types(
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
     constrain_boxed_binding_observations(tir_func, &mut repr_by_value);
+    propagate_boxed_immortal_carriers(tir_func, &mut repr_by_value);
     repr_by_value
+}
+
+/// Complete the physical boxed-word lattice in the same value-keyed authority.
+/// Boxing a safe scalar cannot create a heap credit. Owned aliases preserve
+/// that word without proving heap identity; phis require every incoming proof.
+/// The worklist visits only dependents of newly proven values, avoiding a
+/// repeated whole-function scan for long alias/CFG chains.
+fn propagate_boxed_immortal_carriers(func: &TirFunction, repr: &mut HashMap<ValueId, Repr>) {
+    if !repr
+        .values()
+        .any(|carrier| carrier.boxed_refcount_is_noop())
+    {
+        return;
+    }
+    enum Rule {
+        Box(ValueId),
+        Alias(ValueId),
+        Phi(Vec<ValueId>),
+    }
+    let mut rules: Vec<(ValueId, Rule)> = Vec::new();
+    let mut dependents: HashMap<ValueId, Vec<usize>> = HashMap::new();
+    let mut add = |result, rule: Rule| {
+        if !matches!(repr.get(&result), Some(Repr::DynBox | Repr::MaybeBigInt)) {
+            return;
+        }
+        let index = rules.len();
+        match &rule {
+            Rule::Box(source) | Rule::Alias(source) => {
+                dependents.entry(*source).or_default().push(index)
+            }
+            Rule::Phi(sources) => {
+                for source in sources {
+                    dependents.entry(*source).or_default().push(index);
+                }
+            }
+        }
+        rules.push((result, rule));
+    };
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if op.results.len() != 1 {
+                continue;
+            }
+            if op.opcode == OpCode::BoxVal && op.operands.len() == 1 {
+                add(op.results[0], Rule::Box(op.operands[0]));
+            } else if op.operands.len() == 1
+                && (op.opcode == OpCode::IncRef
+                    || (op.opcode == OpCode::Copy
+                        && op.origin.is_some_and(|kind| {
+                            crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(
+                                kind,
+                            ) || kind == molt_ir::OpKind::Borrow
+                        })))
+            {
+                add(op.results[0], Rule::Alias(op.operands[0]));
+            } else if let Some(source) =
+                crate::tir::passes::value_identity::no_heap_alias_source(op)
+            {
+                add(op.results[0], Rule::Alias(source));
+            }
+        }
+    }
+    for ((block, index), sources) in block_arg_incomings_for(func) {
+        if !sources.is_empty() {
+            add(func.blocks[&block].args[index].id, Rule::Phi(sources));
+        }
+    }
+    let mut remaining: Vec<usize> = rules
+        .iter()
+        .map(|(_, rule)| match rule {
+            Rule::Box(source) | Rule::Alias(source) => usize::from(
+                !repr
+                    .get(source)
+                    .is_some_and(|carrier| carrier.boxed_refcount_is_noop()),
+            ),
+            Rule::Phi(sources) => sources
+                .iter()
+                .filter(|source| {
+                    !repr
+                        .get(source)
+                        .is_some_and(|carrier| carrier.boxed_refcount_is_noop())
+                })
+                .count(),
+        })
+        .collect();
+    let mut pending: Vec<usize> = remaining
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &missing)| (missing == 0).then_some(index))
+        .collect();
+    while let Some(index) = pending.pop() {
+        let result = rules[index].0;
+        if repr
+            .get(&result)
+            .is_some_and(|carrier| carrier.boxed_refcount_is_noop())
+        {
+            continue;
+        }
+        let carrier = match &rules[index].1 {
+            Rule::Box(_) => Repr::BoxedImmortal,
+            Rule::Alias(source) => repr[source],
+            Rule::Phi(sources) => {
+                let first = repr[&sources[0]];
+                if sources.iter().all(|source| repr[source] == first) {
+                    first
+                } else {
+                    Repr::BoxedImmortal
+                }
+            }
+        };
+        repr.insert(result, carrier);
+        for &dependent in dependents.get(&result).into_iter().flatten() {
+            assert!(
+                remaining[dependent] > 0,
+                "boxed-word proof edge accounted twice"
+            );
+            remaining[dependent] -= 1;
+            if remaining[dependent] == 0 {
+                pending.push(dependent);
+            }
+        }
+    }
 }
 
 /// A scalar fact describes a mathematical value, not permission to mint another
@@ -482,6 +607,7 @@ pub fn native_projectable_scalar_reprs_for(
     let mut carrier_by_value: HashMap<ValueId, Repr> = repr_by_value
         .iter()
         .filter_map(|(&value, &repr)| match repr {
+            Repr::BoxedImmortal => Some((value, repr)),
             Repr::RawI64Safe | Repr::RawI64FullDeopt
                 if is_raw_i64_semantic_candidate(&value_types, value) =>
             {
@@ -646,10 +772,11 @@ fn non_heap_values_in_domain(
     repr_by_value_with_types(tir_func, Some(vr), &value_types)
         .into_iter()
         .filter_map(|(value, repr)| {
-            (matches!(repr, Repr::RawI64Safe | Repr::Bool | Repr::FloatUnboxed)
-                || (matches!(domain, RefcountDomain::Carrier) && repr == Repr::RawI64FullDeopt)
-                || value_types.get(&value) == Some(&TirType::None))
-            .then_some(value)
+            (matches!(
+                repr,
+                Repr::RawI64Safe | Repr::Bool | Repr::FloatUnboxed | Repr::BoxedImmortal
+            ) || (matches!(domain, RefcountDomain::Carrier) && repr == Repr::RawI64FullDeopt))
+                .then_some(value)
         })
         .collect()
 }

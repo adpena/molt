@@ -5432,6 +5432,7 @@
     "re_subject_view": "molt_re_subject_view",
     "recursion_enter_fast": "molt_recursion_enter_fast",
     "recursion_exit_fast": "molt_recursion_exit_fast",
+    "refcount_admission": "molt_refcount_admission",
     "repr_builtin": "molt_repr_builtin",
     "repr_from_obj": "molt_repr_from_obj",
     "require_intrinsic_runtime": "molt_require_intrinsic_runtime",

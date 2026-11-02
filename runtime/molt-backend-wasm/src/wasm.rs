@@ -18,6 +18,7 @@ mod local_analysis;
 mod module_abi;
 mod module_registry;
 mod op_loop;
+mod refcount;
 mod state_dispatch;
 mod task_runtime;
 #[cfg(test)]

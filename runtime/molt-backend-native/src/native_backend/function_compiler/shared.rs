@@ -15,6 +15,7 @@ pub(in crate::native_backend::function_compiler) fn bind_runtime_import_result(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
+    import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
     bind_runtime_import_result_name(
@@ -25,6 +26,7 @@ pub(in crate::native_backend::function_compiler) fn bind_runtime_import_result(
         module,
         import_ids,
         builder,
+        import_refs,
         vars,
     );
 }
@@ -39,6 +41,7 @@ fn bind_runtime_import_result_name(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
+    import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
     use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
@@ -47,7 +50,15 @@ fn bind_runtime_import_result_name(
         .result;
     match contract {
         RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue => {
-            bind_owned_runtime_result_name(out, result, module, import_ids, builder, vars);
+            bind_owned_runtime_result_name(
+                out,
+                result,
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                vars,
+            );
         }
         RuntimeBoxedReturn::BorrowedValue => {
             if let Some(out) = out {
@@ -59,7 +70,14 @@ fn bind_runtime_import_result_name(
                     &[],
                 );
                 let retain = module.declare_func_in_func(retain, builder.func);
-                builder.ins().call(retain, &[result]);
+                emit_refcount(
+                    builder,
+                    result,
+                    import_refs.refcount_site(
+                        retain,
+                        molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+                    ),
+                );
                 def_var_named(builder, vars, out, result);
             }
         }
@@ -223,7 +241,7 @@ impl<'op> NativeOperandTransaction<'op> {
         module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
-        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        import_refs: &mut NativeFunctionImports,
     ) {
         let arguments = op.args.as_deref().unwrap_or(&[]);
         for (&name, &owner) in &self.owners {
@@ -254,7 +272,14 @@ impl<'op> NativeOperandTransaction<'op> {
                 );
                 let word = self.materialized[name];
                 for _ in 0..retains {
-                    builder.ins().call(retain, &[word]);
+                    emit_refcount(
+                        builder,
+                        word,
+                        import_refs.refcount_site(
+                            retain,
+                            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+                        ),
+                    );
                 }
             }
             if !borrowed {
@@ -305,7 +330,7 @@ impl<'op> NativeOperandTransaction<'op> {
         module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
-        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        import_refs: &mut NativeFunctionImports,
     ) {
         if self.owners.is_empty() {
             return;
@@ -321,7 +346,14 @@ impl<'op> NativeOperandTransaction<'op> {
         );
         for &owner in self.owners.values().rev() {
             let word = builder.use_var(owner);
-            builder.ins().call(release, &[word]);
+            emit_refcount(
+                builder,
+                word,
+                import_refs.refcount_site(
+                    release,
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                ),
+            );
         }
     }
 
@@ -336,7 +368,7 @@ impl<'op> NativeOperandTransaction<'op> {
         module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
-        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
         vars: &BTreeMap<String, Variable>,
         representation_plan: &ScalarRepresentationPlan,
@@ -421,7 +453,7 @@ impl<'op> NativeOperandTransaction<'op> {
         module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
-        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
         vars: &BTreeMap<String, Variable>,
         representation_plan: &ScalarRepresentationPlan,
@@ -464,7 +496,7 @@ impl<'op> NativeOperandTransaction<'op> {
         module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
-        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
     ) {
         let pending = import_func_ref(
@@ -515,7 +547,7 @@ impl<'op> NativeOperandTransaction<'op> {
         module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
-        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        import_refs: &mut NativeFunctionImports,
         sealed_blocks: &mut BTreeSet<Block>,
         block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
         block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
@@ -537,7 +569,14 @@ impl<'op> NativeOperandTransaction<'op> {
                         &[types::I64],
                         &[],
                     );
-                    builder.ins().call(release, &[partial]);
+                    emit_refcount(
+                        builder,
+                        partial,
+                        import_refs.refcount_site(
+                            release,
+                            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                        ),
+                    );
                 }
                 jump_block(builder, join, &[self.none]);
                 switch_to_block_materialized(builder, join);
@@ -563,7 +602,7 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -619,7 +658,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -682,7 +721,14 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
             &[types::I64],
             &[],
         );
-        builder.ins().call(retain, &[result]);
+        emit_refcount(
+            builder,
+            result,
+            import_refs.refcount_site(
+                retain,
+                molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+            ),
+        );
     }
     let result = transaction.finish(
         result,
@@ -708,7 +754,15 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
             result,
         );
     } else if !borrowed {
-        bind_owned_runtime_result_name(None, result, module, import_ids, builder, vars);
+        bind_owned_runtime_result_name(
+            None,
+            result,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            vars,
+        );
     }
 }
 
@@ -727,7 +781,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -870,7 +924,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
         block_tracked_obj,
         block_tracked_ptr,
     );
-    bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
+    bind_owned_runtime_result(op, result, module, import_ids, builder, import_refs, vars);
     // Borrowed scalar views are valid only while the successfully constructed
     // tuple owns the elements. Publish None for every view on failure so no
     // consumer can retain an element whose source owner has already died.
@@ -898,7 +952,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -984,6 +1038,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
             module,
             import_ids,
             builder,
+            import_refs,
             vars,
         );
         transaction.continue_unless_pending(
@@ -1005,7 +1060,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
         block_tracked_obj,
         block_tracked_ptr,
     );
-    bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
+    bind_owned_runtime_result(op, result, module, import_ids, builder, import_refs, vars);
 }
 
 /// Consume a transferred runtime owner even when there is no named SSA result.
@@ -1017,6 +1072,7 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
+    import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
     bind_owned_runtime_result_name(
@@ -1025,6 +1081,7 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result(
         module,
         import_ids,
         builder,
+        import_refs,
         vars,
     );
 }
@@ -1038,6 +1095,7 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result_na
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
+    import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
     if let Some(out) = out.filter(|name| *name != "none") {
@@ -1051,7 +1109,14 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result_na
             &[],
         );
         let release = module.declare_func_in_func(release, builder.func);
-        builder.ins().call(release, &[result]);
+        emit_refcount(
+            builder,
+            result,
+            import_refs.refcount_site(
+                release,
+                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+            ),
+        );
     }
 }
 
@@ -1174,7 +1239,7 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
 ) {
     let Some(entered) = entered else {

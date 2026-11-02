@@ -8,7 +8,7 @@ fn with_list_storage_state(
         &mut FunctionBuilder<'_>,
         &mut ListIndexFastPathState,
         &NativeCleanupRoots,
-        cranelift_codegen::ir::FuncRef,
+        NativeRefcountSite,
     ),
 ) {
     let input = super::cleanup_roots::token_test_ir();
@@ -37,13 +37,15 @@ fn with_list_storage_state(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
-            &mut BTreeMap::new(),
+            &mut NativeFunctionImports::default(),
             "molt_dec_ref_obj",
             &[types::I64],
             &[],
         );
+        let release_site =
+            detached_refcount_site(&mut builder, release, RefcountOperation::Release);
         let mut state = ListIndexFastPathState::new(&roots);
-        check(&mut builder, &mut state, &roots, release);
+        check(&mut builder, &mut state, &roots, release_site);
         builder.ins().return_(&[]);
         builder.finalize(crate::test_support::host_frontend_config());
     }

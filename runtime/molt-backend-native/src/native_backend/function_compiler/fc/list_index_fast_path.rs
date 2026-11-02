@@ -337,7 +337,7 @@ fn list_storage_op_preserves_heap(
     let kind = op.kind;
     let opcode = kind_to_opcode_table(kind);
     let scalar_binding = simple_ir_binding(op).is_none_or(|binding| {
-        plan.name_is_non_heap_scalar(binding.destination)
+        plan.carrier_refcount_is_noop(binding.destination)
             && operand_types.iter().all(|ty| {
                 matches!(
                     ty,
@@ -424,7 +424,7 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
             // Native owner replacement may run last iteration's finalizer even
             // when this opcode itself is pure. TIR-owned drops stay explicit.
             may_finalize |=
-                cleanup.contains(name) && !representation_plan.name_is_non_heap_scalar(name);
+                cleanup.contains(name) && !representation_plan.carrier_refcount_is_noop(name);
         });
         if may_finalize {
             return (BTreeSet::new(), BTreeSet::new());
@@ -548,7 +548,7 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,

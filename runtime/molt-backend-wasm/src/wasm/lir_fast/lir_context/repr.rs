@@ -6,6 +6,6 @@ pub(in crate::wasm::lir_fast) fn lir_repr_to_val(repr: LirRepr) -> ValType {
         LirRepr::I64 => ValType::I64,
         LirRepr::F64 => ValType::F64,
         LirRepr::Bool1 => ValType::I32,
-        LirRepr::DynBox | LirRepr::Ref64 => ValType::I64,
+        LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64 => ValType::I64,
     }
 }

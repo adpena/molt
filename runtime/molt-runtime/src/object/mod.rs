@@ -222,7 +222,7 @@ fn trace_decref_zero_function_all() -> bool {
 /// those canonical knobs so each inlined `inc_ref_ptr`/`dec_ref_ptr` edge pays
 /// one cached branch; the outlined tracers still apply every knob's own filter.
 #[inline]
-fn rc_transition_trace_enabled() -> bool {
+pub(crate) fn rc_transition_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         trace_exception_rc()
@@ -1198,7 +1198,7 @@ pub(crate) const HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE: u32 = 1 << 26;
 pub(crate) const HEADER_FLAG_GC_COLLECTING: u32 = 1 << 25;
 /// A canonical CPython ABI view exists for this heap object. This is the
 /// lock-free negative membership authority for ordinary runtime RC/GC paths.
-pub(crate) const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
+pub(crate) use molt_codegen_abi::HEADER_FLAG_HAS_ABI_VIEW;
 /// This object is itself a registered weakref and owns its callback edge in
 /// the runtime registry. The Python shim carries no duplicate lifetime state.
 /// Transient cycle-collector pin for an ABI-rooted candidate.
@@ -1206,7 +1206,7 @@ pub(crate) const HEADER_FLAG_GC_PINNED: u32 = 1 << 28;
 pub(crate) const HEADER_FLAG_GC_UNPUBLISHED: u32 = molt_codegen_abi::HEADER_FLAG_GC_UNPUBLISHED;
 /// Terminal lifetime state: the object is untracked and every externally
 /// discoverable sidecar is being detached before any child edge is released.
-pub(crate) const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
+pub(crate) use molt_codegen_abi::HEADER_FLAG_DEALLOCATING;
 
 /// Lifetime-boundary bit: this object has had at least one weakref registered.
 /// It gates the finalizer resurrection window and subsequent weakref detach.

@@ -49,6 +49,7 @@ fn lir_repr_from_source(repr: LirReprSource<'_>, id: ValueId, ty: &TirType) -> L
         Repr::RawI64Safe | Repr::RawI64FullDeopt => LirRepr::I64,
         Repr::Bool => LirRepr::Bool1,
         Repr::FloatUnboxed => LirRepr::F64,
+        Repr::BoxedImmortal => LirRepr::Immortal64,
         // `MaybeBigInt` (unproven int), `DynBox`, `Never`: the universal NaN-box
         // carrier — no raw machine op is sound, so it lowers to `DynBox` and the
         // boxed runtime helpers (BigInt-correct) handle it.
@@ -151,8 +152,16 @@ fn lower_prepared_function_to_lir(
         // Scalar fact extraction must not recursively request scalar proof.
         LirReprSource::AnalysisFloor => HashMap::new(),
     };
+    let inline_i64_values = match repr {
+        LirReprSource::Proven(proven) => proven
+            .iter()
+            .filter_map(|(&id, &repr)| (repr == Repr::RawI64Safe).then_some(id))
+            .collect(),
+        LirReprSource::AnalysisFloor => Default::default(),
+    };
     LirFunction {
         container_storage,
+        inline_i64_values,
         name: refined.name,
         param_names,
         param_types: entry_param_types,
@@ -305,7 +314,7 @@ fn lower_op(
         }
     }
     if op.opcode == OpCode::BoxVal {
-        return lower_box_op(op, type_map);
+        return lower_box_op(op, type_map, repr);
     }
     if op.opcode == OpCode::UnboxVal {
         return lower_unbox_op(op, type_map, repr);
@@ -420,7 +429,11 @@ fn lower_object_new_bound_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -
     }
 }
 
-fn lower_box_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
+fn lower_box_op(
+    op: &TirOp,
+    type_map: &HashMap<ValueId, TirType>,
+    repr: LirReprSource<'_>,
+) -> LirOp {
     let operand_ty = op
         .operands
         .first()
@@ -438,7 +451,12 @@ fn lower_box_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| TirType::Box(Box::new(operand_ty.clone()))),
-                repr: LirRepr::DynBox,
+                repr: match repr {
+                    LirReprSource::Proven(map) if map.get(&id) == Some(&Repr::BoxedImmortal) => {
+                        LirRepr::Immortal64
+                    }
+                    _ => LirRepr::DynBox,
+                },
             })
             .collect(),
     }
@@ -681,7 +699,9 @@ fn materialize_value_for_type(
     if expected_repr == actual_repr {
         return value_id;
     }
-    if expected_repr == LirRepr::DynBox && actual_repr != LirRepr::DynBox {
+    if matches!(expected_repr, LirRepr::DynBox | LirRepr::Immortal64)
+        && !matches!(actual_repr, LirRepr::DynBox | LirRepr::Immortal64)
+    {
         let boxed_id = allocator.fresh();
         ops.push(LirOp {
             tir_op: TirOp {
@@ -696,7 +716,7 @@ fn materialize_value_for_type(
             result_values: vec![LirValue {
                 id: boxed_id,
                 ty: expected_ty,
-                repr: LirRepr::DynBox,
+                repr: expected_repr,
             }],
         });
         return boxed_id;
@@ -906,7 +926,7 @@ mod tests {
             for opcode in [OpCode::BoxVal, OpCode::UnboxVal] {
                 let op = make_op(opcode, vec![ValueId(0)], vec![]);
                 let lir = if opcode == OpCode::BoxVal {
-                    lower_box_op(&op, &types)
+                    lower_box_op(&op, &types, LirReprSource::AnalysisFloor)
                 } else {
                     lower_unbox_op(&op, &types, LirReprSource::AnalysisFloor)
                 };

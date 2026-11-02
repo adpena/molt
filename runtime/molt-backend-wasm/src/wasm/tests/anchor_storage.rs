@@ -159,7 +159,7 @@ for (const test of config.cases) {
     const memory = new WebAssembly.Memory({initial:test.pages + 1});
     const imports = {env:{memory, __indirect_function_table:new WebAssembly.Table({initial:test.entries,element:'anyfunc'})}};
     const contexts = [], regions = new Map(), owners = new Map();
-    let nextAddress = test.pages * 65536 + 64, nextOwner = 101n, frameDepth = 7, app;
+    let nextAddress = test.pages * 65536 + 64, nextOwner = 0x7ffc000000000065n, frameDepth = 7, app;
     const foreign = new WebAssembly.Exception(new WebAssembly.Tag({parameters:[]}), []);
     const wrongSlot = new WebAssembly.Exception(new WebAssembly.Tag({parameters:[]}), []);
     // Expected source payloads and use order are independent of emitted slots,
@@ -220,6 +220,8 @@ for (const test of config.cases) {
       return ctx;
     };
     const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
       scratch_alloc(size) {
         const ctx = current(); ctx.allocations++;
         assert.equal(size, BigInt(test.count * 8));

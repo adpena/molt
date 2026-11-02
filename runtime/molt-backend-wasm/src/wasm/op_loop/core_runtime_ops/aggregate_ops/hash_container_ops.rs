@@ -65,7 +65,7 @@ pub(super) fn emit_hash_container_op(
             func.instruction(&Instruction::LocalGet(out));
             func.instruction(&Instruction::LocalGet(locals[value]));
             emit_call(func, reloc, imports[insert]);
-            discard_runtime_result(func, imports, reloc, insert);
+            discard_runtime_result(func, imports, reloc, insert, ctx.locals.refcount());
             emit_call(func, reloc, imports[WasmRuntimeImport::ExceptionPending]);
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
@@ -73,7 +73,13 @@ pub(super) fn emit_hash_container_op(
             // Preserve the pending exception, retire the partial container,
             // and skip all remaining user-observable hash/equality calls.
             func.instruction(&Instruction::LocalGet(out));
-            emit_call(func, reloc, imports[WasmRuntimeImport::DecRefObj]);
+            crate::wasm::refcount::emit_refcount(
+                func,
+                reloc,
+                imports,
+                ctx.locals.refcount(),
+                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+            );
             func.instruction(&Instruction::I64Const(box_none()));
             func.instruction(&Instruction::LocalSet(out));
             func.instruction(&Instruction::Br(1));

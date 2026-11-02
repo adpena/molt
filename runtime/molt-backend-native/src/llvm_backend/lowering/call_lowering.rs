@@ -435,11 +435,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .unwrap_basic();
         self.bind_owned_runtime_result(op, result);
-        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-        self.backend
-            .builder
-            .build_call(release, &[receiver_word.into()], "")
-            .unwrap();
+        let release = self
+            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
+        release.emit(&self.backend.builder, receiver_word.into());
         self.backend
             .builder
             .build_unconditional_branch(join)

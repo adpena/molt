@@ -200,7 +200,7 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
             assert!(backend.module.get_function(&symbol).is_none());
             let ir = backend.module.print_to_string().to_string();
             assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
-            assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
+            assert!(!ir.contains("call void @__molt_inline_release("), "{ir}");
         }
     }
 }
@@ -281,7 +281,9 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
         let ir = lowered.print_to_string().to_string();
         assert!(ir.contains(&format!("call i64 @{symbol}(")), "{ir}");
         assert!(
-            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{symbol})")),
+            ir.contains(&format!(
+                "call void @__molt_inline_release(i64 %{symbol}, i64 %rc_admission)"
+            )),
             "{ir}"
         );
         backend
@@ -357,14 +359,14 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                     !inline_proven,
                     "{ir}"
                 );
-                let release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
+                let release = "call void @__molt_inline_release(i64 %boxed_call_owner_bits, i64 %rc_admission)";
                 assert_eq!(
                     ir.matches(release).count(),
                     usize::from(!inline_proven),
                     "{ir}"
                 );
                 assert_eq!(
-                    ir.matches("call void @molt_dec_ref_obj(").count(),
+                    ir.matches("call void @__molt_inline_release(").count(),
                     usize::from(!inline_proven) + usize::from(returns_value && !bound),
                     "{ir}"
                 );
@@ -485,7 +487,8 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
                 .module
                 .verify()
                 .unwrap_or_else(|error| panic!("{kind}: {error}"));
-            let release = format!("call void @molt_dec_ref_obj(i64 %{result_name})");
+            let release =
+                format!("call void @__molt_inline_release(i64 %{result_name}, i64 %rc_admission)");
             assert_eq!(
                 ir.matches(&release).count(),
                 usize::from(!bound),
@@ -552,8 +555,10 @@ fn compiled_call_results_use_semantic_ownership_without_boxing_discarded_scalars
                     .unwrap_or_else(|error| panic!("{kind}, {return_type:?}: {error}"));
                 let owned = return_type.as_ref().is_some_and(|ty| !ty.is_unboxed());
                 assert_eq!(
-                    ir.matches("call void @molt_dec_ref_obj(i64 %direct_call)")
-                        .count(),
+                    ir.matches(
+                        "call void @__molt_inline_release(i64 %direct_call, i64 %rc_admission)"
+                    )
+                    .count(),
                     usize::from(owned && !bound),
                     "{kind}, {return_type:?}, bound={bound}: {ir}",
                 );
@@ -645,7 +650,7 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
                 "{ir}"
             );
             assert_eq!(
-                ir.matches("call void @molt_dec_ref_obj(i64 %dictionary_owner_bits")
+                ir.matches("call void @__molt_inline_release(i64 %dictionary_owner_bits")
                     .count(),
                 1,
                 "the repeated operand owns one temporary on success and failure: {ir}"
@@ -665,13 +670,13 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
             "the value repeated in every entry is boxed once: {ir}"
         );
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj(i64 %aggregate_owner_bits")
+            ir.matches("call void @__molt_inline_release(i64 %aggregate_owner_bits")
                 .count(),
             1,
             "its one box is released once on both paths: {ir}"
         );
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj(i64 %aggregate)")
+            ir.matches("call void @__molt_inline_release(i64 %aggregate, i64 %rc_admission)")
                 .count(),
             1,
             "only the failure path releases the partial aggregate: {ir}"
@@ -708,7 +713,7 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
             "hash constructors have no scratch builder ABI: {ir}"
         );
         assert_eq!(
-            ir.contains("call void @molt_dec_ref_obj(i64 %aggregate_insert"),
+            ir.contains("call void @__molt_inline_release(i64 %aggregate_insert"),
             width == 1,
             "generated mutator ownership must dispose owned set/frozenset returns without releasing borrowed dict returns: {ir}"
         );
@@ -771,7 +776,7 @@ fn dictionary_full_pairs_materialize_once_before_the_constructor() {
         "the first identity supplies the first key and both values: {ir}"
     );
     assert_eq!(
-        ir.matches("call void @molt_dec_ref_obj(i64 %dictionary_owner_bits")
+        ir.matches("call void @__molt_inline_release(i64 %dictionary_owner_bits")
             .count(),
         2,
         "each distinct temporary retires once: {ir}"
@@ -817,14 +822,15 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
         let ir = llvm_fn.print_to_string().to_string();
         if boxed {
             let call = "call i64 @borrowing_target(i64 %boxed_int)";
-            let release = "call void @molt_dec_ref_obj(i64 %direct_call_owner_bits)";
+            let release =
+                "call void @__molt_inline_release(i64 %direct_call_owner_bits, i64 %rc_admission)";
             assert!(ir.contains(call), "a boxed parameter receives a box: {ir}");
             assert!(
                 ir.find(call).unwrap() < ir.find(release).unwrap(),
                 "the callee borrows its argument, so the box outlives the call: {ir}"
             );
             assert_eq!(
-                ir.matches("call void @molt_dec_ref_obj(").count(),
+                ir.matches("call void @__molt_inline_release(").count(),
                 1,
                 "{ir}"
             );
@@ -838,7 +844,7 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
                 "a raw parameter receives the raw word: {ir}"
             );
             assert!(
-                !ir.contains("@molt_int_from_i64(") && !ir.contains("@molt_dec_ref_obj("),
+                !ir.contains("@molt_int_from_i64(") && !ir.contains("@__molt_inline_release("),
                 "{ir}"
             );
         }
@@ -914,7 +920,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
                 };
                 if callee.get_name().to_bytes() == producer.as_bytes() {
                     produced.push(call.try_as_basic_value().unwrap_basic().into_int_value());
-                } else if callee.get_name().to_bytes() == b"molt_dec_ref_obj" {
+                } else if callee.get_name().to_bytes() == b"__molt_inline_release" {
                     let owner = instruction
                         .get_operand(0)
                         .unwrap()
@@ -1007,7 +1013,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
     let ir = llvm_fn.print_to_string().to_string();
     for result in ["iter_next_unboxed_value_load", "iter_next_unboxed"] {
         assert!(
-            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{result}")),
+            ir.contains(&format!("call void @__molt_inline_release(i64 %{result}")),
             "discarded unboxed iterator result {result} must be retired: {ir}"
         );
     }
@@ -1054,7 +1060,8 @@ fn iterator_calls_box_and_retire_raw_inputs() {
             .unwrap_or_else(|error| panic!("{opcode:?}: {error}"));
         let ir = llvm_fn.print_to_string().to_string();
         let call = format!("call i64 @{symbol}(i64 %boxed_int)");
-        let input_release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
+        let input_release =
+            "call void @__molt_inline_release(i64 %boxed_call_owner_bits, i64 %rc_admission)";
         assert!(
             ir.contains("call i64 @molt_int_from_i64(i64 9223372036854775807)"),
             "{ir}"
@@ -1072,7 +1079,9 @@ fn iterator_calls_box_and_retire_raw_inputs() {
             "iterator input must remain owned through the runtime borrow: {ir}"
         );
         assert!(
-            ir.contains("call void @molt_dec_ref_obj(i64 %boxed_call_result)"),
+            ir.contains(
+                "call void @__molt_inline_release(i64 %boxed_call_result, i64 %rc_admission)"
+            ),
             "discarded iterator result must be retired: {ir}"
         );
     }
@@ -1110,7 +1119,8 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         .expect("raw unboxed iterator input ownership");
     let ir = llvm_fn.print_to_string().to_string();
     let call = "call i64 @molt_iter_next_unboxed(i64 %boxed_int, i64 %iter_next_unboxed_value_ptr)";
-    let input_release = "call void @molt_dec_ref_obj(i64 %iter_next_unboxed_owner_bits)";
+    let input_release =
+        "call void @__molt_inline_release(i64 %iter_next_unboxed_owner_bits, i64 %rc_admission)";
     assert!(
         ir.contains(call),
         "mixed iterator input must be boxed: {ir}"
@@ -1125,7 +1135,9 @@ fn iterator_calls_box_and_retire_raw_inputs() {
     );
     for result in ["iter_next_unboxed_value_load", "iter_next_unboxed"] {
         assert!(
-            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{result})")),
+            ir.contains(&format!(
+                "call void @__molt_inline_release(i64 %{result}, i64 %rc_admission)"
+            )),
             "discarded mixed iterator result {result} must be retired: {ir}"
         );
     }
@@ -1365,7 +1377,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
     assert!(!ir.contains("call i64 @molt_dict_set"), "{ir}");
     assert!(ir.contains("call i64 @molt_set_add"), "{ir}");
     assert!(
-        ir.contains("aggregate_abort") && ir.contains("call void @molt_dec_ref_obj"),
+        ir.contains("aggregate_abort") && ir.contains("call void @__molt_inline_release"),
         "{ir}"
     );
     assert!(ir.contains("@molt_exception_pending()"), "{ir}");
@@ -1464,13 +1476,13 @@ fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
             "{ir}"
         );
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj").count(),
+            ir.matches("call void @__molt_inline_release").count(),
             1,
             "only the fresh raw-I64 box is released, never the borrowed text: {ir}"
         );
         let checked = ir.find("label %sequence_abort").unwrap();
         let construct = ir.find(&format!("@{constructor}(i64")).unwrap();
-        let release = ir.find("call void @molt_dec_ref_obj").unwrap();
+        let release = ir.find("call void @__molt_inline_release").unwrap();
         assert!(
             checked < construct && construct < release,
             "a failed box skips construction, and the sequence retains every word \
@@ -1632,7 +1644,7 @@ fn method_receiver_prefix_guards_the_null_and_ends_only_the_original_credit() {
         .find("call i64 @molt_callargs_push_pos(")
         .unwrap();
     let releases: Vec<_> = push_block
-        .match_indices("call void @molt_dec_ref_obj(")
+        .match_indices("call void @__molt_inline_release(")
         .collect();
     assert_eq!(
         releases.len(),
@@ -1644,7 +1656,8 @@ fn method_receiver_prefix_guards_the_null_and_ends_only_the_original_credit() {
         "retaining push precedes both releases: {ir}"
     );
     assert!(
-        push_block.contains("call void @molt_dec_ref_obj(i64 %prefix_receiver)"),
+        push_block
+            .contains("call void @__molt_inline_release(i64 %prefix_receiver, i64 %rc_admission)"),
         "{ir}"
     );
     assert!(
@@ -1729,7 +1742,9 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
         "a raw payload never enters a range: {ir}"
     );
     let define = ir.find("call i64 @molt_guarded_class_def(").unwrap();
-    let releases: Vec<_> = ir.match_indices("call void @molt_dec_ref_obj(").collect();
+    let releases: Vec<_> = ir
+        .match_indices("call void @__molt_inline_release(")
+        .collect();
     assert_eq!(
         releases.len(),
         1,

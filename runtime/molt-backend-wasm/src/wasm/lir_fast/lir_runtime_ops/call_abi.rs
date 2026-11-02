@@ -189,7 +189,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(
             LirRepr::I64 => Some(ValType::I64),
             LirRepr::F64 => Some(ValType::F64),
             LirRepr::Bool1 => Some(ValType::I32),
-            LirRepr::DynBox | LirRepr::Ref64 => None,
+            LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64 => None,
         };
         if raw_type.is_some_and(|ty| results == [ty]) {
             ctx.emit_set(result.id);
@@ -212,6 +212,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(
         ),
     };
     match result.repr {
+        LirRepr::Immortal64 => ctx.emit_set(result.id),
         LirRepr::DynBox | LirRepr::Ref64 => {
             ctx.emit_set(result.id);
             if !owned {

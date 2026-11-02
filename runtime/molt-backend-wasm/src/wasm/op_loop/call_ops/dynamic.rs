@@ -222,7 +222,13 @@ pub(super) fn emit_dynamic_call_op(
                 call_live_idx,
                 op.out.as_ref(),
             );
-            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            retain_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
             if args_names.len() == 3 && runtime_lookup_only_vars.contains(&args_names[0]) {
                 let name_bits = locals[&args_names[1]];
                 let namespace_bits = locals[&args_names[2]];
@@ -249,7 +255,13 @@ pub(super) fn emit_dynamic_call_op(
                     !call_adopts_arguments(op),
                     "runtime intrinsic lookup carries argument custody"
                 );
-                release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+                release_live_object_locals(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    &live_object_locals,
+                    call_ctx.locals.refcount(),
+                );
                 return CallOpEmission::Handled;
             }
             // Outlined: spill args to linear memory, then delegate
@@ -275,7 +287,13 @@ pub(super) fn emit_dynamic_call_op(
             };
             emit_call(func, reloc_enabled, import_ids[dispatch]);
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, dispatch);
-            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            release_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
         }
         molt_ir::OpKind::CallLoadedMethod => {
             // CPython's CALL after a method load: [callable, self_or_null,
@@ -294,7 +312,13 @@ pub(super) fn emit_dynamic_call_op(
                 call_live_idx,
                 op.out.as_ref(),
             );
-            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            retain_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
             let import = match args_names.len() - 2 {
                 0 => WasmRuntimeImport::CallLoadedMethod0,
                 1 => WasmRuntimeImport::CallLoadedMethod1,
@@ -319,7 +343,13 @@ pub(super) fn emit_dynamic_call_op(
             }
             emit_call(func, reloc_enabled, import_ids[import]);
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
-            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            release_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
         }
         molt_ir::OpKind::InvokeFfi => {
             if let Some(export_name) = op.native_callable_export.as_deref() {
@@ -344,7 +374,13 @@ pub(super) fn emit_dynamic_call_op(
                         call_live_idx,
                         op.out.as_ref(),
                     );
-                    retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+                    retain_live_object_locals(
+                        func,
+                        import_ids,
+                        reloc_enabled,
+                        &live_object_locals,
+                        call_ctx.locals.refcount(),
+                    );
                     let func_bits = locals[&args_names[0]];
                     let callargs_local = if abi_contract.uses_callargs() {
                         if args_names.len() != 2 {
@@ -392,6 +428,7 @@ pub(super) fn emit_dynamic_call_op(
                         import_ids,
                         reloc_enabled,
                         &live_object_locals,
+                        call_ctx.locals.refcount(),
                     );
                     return CallOpEmission::Handled;
                 }
@@ -411,7 +448,13 @@ pub(super) fn emit_dynamic_call_op(
                     call_live_idx,
                     op.out.as_ref(),
                 );
-                retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+                retain_live_object_locals(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    &live_object_locals,
+                    call_ctx.locals.refcount(),
+                );
                 match native_import.abi_contract.lowering() {
                     NativeCallableLowering::ForwardF32 => {
                         let out = locals.op_result_or_sink_slot(op);
@@ -464,7 +507,13 @@ pub(super) fn emit_dynamic_call_op(
                         store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
                     }
                 }
-                release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+                release_live_object_locals(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    &live_object_locals,
+                    call_ctx.locals.refcount(),
+                );
                 return CallOpEmission::Handled;
             }
             let args_names = op.args.as_ref().unwrap();
@@ -474,7 +523,13 @@ pub(super) fn emit_dynamic_call_op(
                 call_live_idx,
                 op.out.as_ref(),
             );
-            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            retain_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
             let func_bits = locals[&args_names[0]];
             let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             build_positional_callargs(
@@ -509,7 +564,13 @@ pub(super) fn emit_dynamic_call_op(
                 reloc_enabled,
                 WasmRuntimeImport::InvokeFfiIc,
             );
-            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            release_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
         }
         molt_ir::OpKind::CallBind | molt_ir::OpKind::CallIndirect => {
             let args_names = op.args.as_ref().unwrap();
@@ -521,7 +582,13 @@ pub(super) fn emit_dynamic_call_op(
                 call_live_idx,
                 op.out.as_ref(),
             );
-            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            retain_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
             let call_site_label = if op.kind == molt_ir::OpKind::CallIndirect {
                 "call_indirect"
             } else {
@@ -542,7 +609,13 @@ pub(super) fn emit_dynamic_call_op(
             };
             emit_call(func, reloc_enabled, import_ids[import]);
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
-            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            release_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
         }
         molt_ir::OpKind::CallMethod => {
             let args_names = op.args.as_ref().unwrap();
@@ -553,7 +626,13 @@ pub(super) fn emit_dynamic_call_op(
                 call_live_idx,
                 op.out.as_ref(),
             );
-            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            retain_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
 
             // Fast-path: dispatch known bound-method patterns
             // directly without callargs allocation or IC lookup.
@@ -620,7 +699,13 @@ pub(super) fn emit_dynamic_call_op(
                     1,
                 );
             }
-            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            release_live_object_locals(
+                func,
+                import_ids,
+                reloc_enabled,
+                &live_object_locals,
+                call_ctx.locals.refcount(),
+            );
         }
         _ => return CallOpEmission::NotHandled,
     }

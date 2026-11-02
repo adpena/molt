@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime_import_abi::{
     MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ,
-    MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
+    MOLT_REFCOUNT_ADMISSION, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
 };
 use molt_tir::trampolines::TaskCompletion;
 
@@ -81,6 +81,7 @@ impl SimpleBackend {
         let args_ptr = builder.block_params(entry_block)[1];
         let args_len = builder.block_params(entry_block)[2];
         let behavior = kind.behavior();
+        let admission = builder.ins().iconst(types::I64, 0);
 
         match behavior {
             TrampolineBehavior::Task(task_kind) => {
@@ -127,8 +128,11 @@ impl SimpleBackend {
                 if payload_slots > 0 {
                     let inc_ref_obj_callee =
                         Self::import_runtime_func_id_split(module, import_ids, MOLT_INC_REF_OBJ);
-                    let local_inc_ref_obj =
-                        module.declare_func_in_func(inc_ref_obj_callee, builder.func);
+                    let local_inc_ref_obj = NativeRefcountSite {
+                        slow: module.declare_func_in_func(inc_ref_obj_callee, builder.func),
+                        admission,
+                        operation: molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+                    };
                     let task_ptr = unbox_ptr_value(&mut builder, task_obj);
 
                     let mut offset = layout.payload_base_offset(GENERATOR_CONTROL_BYTES);
@@ -139,7 +143,7 @@ impl SimpleBackend {
                             task_ptr,
                             offset,
                         );
-                        builder.ins().call(local_inc_ref_obj, &[closure_bits]);
+                        emit_refcount(&mut builder, closure_bits, local_inc_ref_obj);
                         offset += 8;
                     }
                     for idx in 0..arity {
@@ -156,7 +160,7 @@ impl SimpleBackend {
                             task_ptr,
                             offset + arg_offset,
                         );
-                        builder.ins().call(local_inc_ref_obj, &[arg_val]);
+                        emit_refcount(&mut builder, arg_val, local_inc_ref_obj);
                     }
                 }
 
@@ -202,7 +206,16 @@ impl SimpleBackend {
                         );
                         let local_dec_ref =
                             module.declare_func_in_func(dec_ref_callee, builder.func);
-                        builder.ins().call(local_dec_ref, &[task_obj]);
+                        emit_refcount(
+                            &mut builder,
+                            task_obj,
+                            NativeRefcountSite {
+                                slow: local_dec_ref,
+                                admission,
+                                operation:
+                                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                            },
+                        );
                         asyncgen_obj
                     }
                 };
@@ -274,6 +287,11 @@ impl SimpleBackend {
             }
         }
 
+        materialize_refcount_admission(&mut builder, admission, |builder| {
+            let id =
+                Self::import_runtime_func_id_split(module, import_ids, MOLT_REFCOUNT_ADMISSION);
+            module.declare_func_in_func(id, builder.func)
+        });
         builder.seal_all_blocks();
         builder.finalize(module.target_config());
         inspect(&ctx);

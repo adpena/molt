@@ -103,6 +103,8 @@ mod op_dispatch;
 #[cfg(feature = "llvm")]
 mod preserved_ops;
 #[cfg(feature = "llvm")]
+mod refcount;
+#[cfg(feature = "llvm")]
 mod runtime_helpers;
 #[cfg(feature = "llvm")]
 mod state_machine_ops;
@@ -313,7 +315,6 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
                 )
                 .unwrap()
         }
-        TirType::None => i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
         TirType::F64 => {
             let float_val = operand.into_float_value();
             let raw_bits = builder
@@ -333,7 +334,10 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
                 .unwrap()
                 .into_int_value()
         }
-        TirType::DynBox
+        // None is a boxed carrier, including a parameter with an unproved
+        // annotation. Preserve its word; only ConstNone produces literal None.
+        TirType::None
+        | TirType::DynBox
         | TirType::BigInt
         | TirType::Str
         | TirType::Bytes
@@ -491,6 +495,8 @@ struct FunctionLowering<'ctx, 'func> {
     frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
+    refcount_admission: std::cell::Cell<Option<inkwell::values::IntValue<'ctx>>>,
+    owned_frame_entered: Option<inkwell::values::PointerValue<'ctx>>,
 }
 
 #[cfg(feature = "llvm")]
@@ -590,6 +596,8 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         frame_homes: None,
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
+        refcount_admission: std::cell::Cell::new(None),
+        owned_frame_entered: None,
     };
 
     // 2. Create LLVM basic blocks for each TIR block.
@@ -603,7 +611,9 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         lowering.block_map.insert(func.entry_block, entry_bb);
         lowering.all_llvm_blocks.push(entry_bb);
     }
-    for block_id in func.blocks.keys() {
+    let mut block_ids: Vec<_> = func.blocks.keys().copied().collect();
+    block_ids.sort_by_key(|block| block.0);
+    for block_id in &block_ids {
         if *block_id == func.entry_block {
             continue; // already created above
         }
@@ -639,6 +649,8 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
                 .unwrap();
         }
     }
+
+    lowering.initialize_owned_execution_frame();
 
     // 2c. Create synthetic resume blocks for stateful generator/coroutine ops.
 

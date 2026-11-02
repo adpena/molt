@@ -30,6 +30,13 @@ fn lower_lir_to_wasm_with_abi(func: &LirFunction, abi: LirWasmAbi) -> Option<Was
     emit_lir_function_body(&mut ctx, plan.return_abi);
 
     ctx.instructions.push(Instruction::End);
+    if let Some(scratch) = ctx.refcount_scratch {
+        let mut prologue = crate::wasm::body::WasmBodyOps::default();
+        prologue.push_runtime_import_call(super::LirRuntimeCall::RefcountAdmission);
+        prologue.push(Instruction::LocalSet(scratch.admission));
+        prologue.ops.append(&mut ctx.instructions.ops);
+        ctx.instructions = prologue;
+    }
     let locals = ctx.local_declarations_after(plan.local_decl_start);
     let instructions = peephole_set_get_to_tee(ctx.instructions);
     Some(WasmBody {

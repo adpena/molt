@@ -30,6 +30,20 @@ fn emit_conversion_alias(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Functi
     let src = call_ctx.locals[src_name];
     if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
         func.instruction(&Instruction::LocalGet(src));
-        store_borrowed_value(func, Some(out), call_ctx.import_ids, call_ctx.reloc_enabled);
+        if call_ctx
+            .frame
+            .scalar_plan()
+            .boxed_refcount_is_noop(src_name)
+        {
+            func.instruction(&Instruction::LocalSet(out));
+            return;
+        }
+        store_borrowed_value(
+            func,
+            Some(out),
+            call_ctx.import_ids,
+            call_ctx.reloc_enabled,
+            call_ctx.locals.refcount(),
+        );
     }
 }

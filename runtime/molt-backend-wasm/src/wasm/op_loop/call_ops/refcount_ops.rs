@@ -1,6 +1,5 @@
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_refcount_call_op(
@@ -27,12 +26,19 @@ fn emit_inc_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
         .first()
         .expect("inc_ref/borrow requires one source arg");
     let src = call_ctx.locals[src_name];
-    if !call_ctx.rc_skip_inc.contains(&call_ctx.op_idx) {
+    if !call_ctx.rc_skip_inc.contains(&call_ctx.op_idx)
+        && !call_ctx
+            .frame
+            .scalar_plan()
+            .boxed_refcount_is_noop(src_name)
+    {
         func.instruction(&Instruction::LocalGet(src));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             call_ctx.reloc_enabled,
-            call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            call_ctx.import_ids,
+            call_ctx.locals.refcount(),
+            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
         );
     }
     if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
@@ -51,15 +57,25 @@ fn emit_dec_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
         .expect("dec_ref/release/del_boundary requires one source arg");
     if call_ctx.rc_skip_inc.contains(&call_ctx.op_idx)
         || call_ctx.rc_skip_dec.contains(src_name.as_str())
+        || call_ctx
+            .frame
+            .scalar_plan()
+            .boxed_refcount_is_noop(src_name)
     {
+        if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
+            call_ctx.const_cache.emit_none(func);
+            func.instruction(&Instruction::LocalSet(out));
+        }
         return;
     }
     let src = call_ctx.locals[src_name];
     func.instruction(&Instruction::LocalGet(src));
-    emit_call(
+    crate::wasm::refcount::emit_refcount(
         func,
         call_ctx.reloc_enabled,
-        call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
+        call_ctx.import_ids,
+        call_ctx.locals.refcount(),
+        molt_codegen_abi::inline_refcount::RefcountOperation::Release,
     );
     if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
         call_ctx.const_cache.emit_none(func);

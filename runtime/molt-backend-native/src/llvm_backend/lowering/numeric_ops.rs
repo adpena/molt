@@ -871,11 +871,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             )
             .unwrap();
         if custody == RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue) {
-            let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(release, &[val.into()], "")
-                .unwrap();
+            let release = self.ensure_refcount_site(
+                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+            );
+            release.emit(&self.backend.builder, val.into());
         }
         self.values.insert(result_id, not_in.into());
         self.value_types.insert(result_id, TirType::Bool);
@@ -943,11 +942,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .build_select(cond, true_bits, false_bits, name)
                 .unwrap()
                 .into_int_value();
-            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(retain, &[selected.into()], "boolop_selected_inc_ref")
-                .unwrap();
+            if !op
+                .results
+                .first()
+                .is_some_and(|&result| self.repr_facts.boxed_refcount_is_noop(result))
+            {
+                let retain = self.ensure_refcount_site(
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+                );
+                retain.emit(&self.backend.builder, selected.into());
+            }
             selected
         } else {
             let suffix = self.synthetic_block_counter;

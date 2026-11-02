@@ -34,4 +34,5 @@ pub(super) struct LirLowerCtx<'a> {
     operation_owners: Option<LirOperationOwners>,
     pub(super) guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     pub(super) guard_profile_local: Option<u32>,
+    pub(super) refcount_scratch: Option<crate::wasm::refcount::WasmRefcountScratch>,
 }

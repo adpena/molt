@@ -232,7 +232,7 @@ fn constructor_operands_box_each_distinct_operand_once_and_stop_at_first_failure
         // when its allocation raised; boxing needs no exception poll.
         let checks = at(&format!("label %{label}_abort"));
         let construct = at(&format!("call i64 @{}(", constructor.symbol()));
-        let releases = at("call void @molt_dec_ref_obj(");
+        let releases = at("call void @__molt_inline_release(");
         assert_eq!(
             boxes.len(),
             2,
@@ -324,7 +324,9 @@ fn slice_bounds_are_direct_operands_padded_with_none() {
         "{start_ir}"
     );
     assert_eq!(
-        start_ir.matches("call void @molt_dec_ref_obj(").count(),
+        start_ir
+            .matches("call void @__molt_inline_release(")
+            .count(),
         1,
         "{start_ir}"
     );
@@ -338,7 +340,7 @@ fn slice_bounds_are_direct_operands_padded_with_none() {
         "alloca",
         "@molt_int_from_i64(",
         "@molt_exception_pending(",
-        "@molt_dec_ref_obj(",
+        "@__molt_inline_release(",
     ] {
         assert!(
             !empty_ir.contains(needle),
@@ -466,8 +468,8 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
     }
 }
 
-/// Runtime oracle for the real-link test. Two heap owners (0x101, 0x102) and one
-/// constructed object (0x200) are reference counted. Every constructor checks
+/// Runtime oracle for the real-link test. Two heap owners (0x7ffc000000000101, 0x7ffc000000000102) and one
+/// constructed object (0x7ffc000000000200) are reference counted. Every constructor checks
 /// its three words against the harness's expectation, retains them, and the
 /// constructed object releases what it retained when it dies.
 const PROVIDER: &str = r#"#![no_std]
@@ -498,7 +500,7 @@ pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {
     }
     assert!(attempt <= 2, "one box per distinct operand");
     if attempt == 1 { FIRST.store(1, SeqCst) } else { SECOND.store(1, SeqCst) }
-    0x100 + attempt
+    0x7ffc000000000100 + attempt
 }
 #[no_mangle]
 pub extern "C" fn molt_exception_pending() -> u64 {
@@ -506,15 +508,15 @@ pub extern "C" fn molt_exception_pending() -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn molt_inc_ref_obj(value: u64) {
-    let refs = match value { 0x101 => &FIRST, 0x102 => &SECOND, 0x200 => &RESULT, _ => return };
+    let refs = match value { 0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, 0x7ffc000000000200 => &RESULT, _ => return };
     assert!(refs.fetch_add(1, SeqCst) > 0, "retain after free");
 }
 #[no_mangle]
 pub extern "C" fn molt_dec_ref_obj(value: u64) {
-    let refs = match value { 0x101 => &FIRST, 0x102 => &SECOND, 0x200 => &RESULT, _ => return };
+    let refs = match value { 0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, 0x7ffc000000000200 => &RESULT, _ => return };
     let old = refs.fetch_sub(1, SeqCst);
     assert!(old > 0, "duplicate release");
-    if value == 0x200 && old == 1 {
+    if value == 0x7ffc000000000200 && old == 1 {
         for slot in &RETAINED[..RETAINED_LEN.load(SeqCst) as usize] {
             molt_dec_ref_obj(slot.load(SeqCst));
         }
@@ -528,7 +530,7 @@ fn construct(values: &[u64]) -> u64 {
     assert_eq!(molt_exception_pending(), 0, "no constructor runs after a failed box");
     let expected = [EXPECTED[0].load(SeqCst), EXPECTED[1].load(SeqCst), EXPECTED[2].load(SeqCst)];
     assert_eq!(values, &expected, "one box per distinct operand, in operand order");
-    for (word, refs) in [(0x101, &FIRST), (0x102, &SECOND)] {
+    for (word, refs) in [(0x7ffc000000000101, &FIRST), (0x7ffc000000000102, &SECOND)] {
         assert_eq!(
             refs.load(SeqCst),
             u64::from(values.contains(&word)),
@@ -545,7 +547,7 @@ fn construct(values: &[u64]) -> u64 {
     }
     RETAINED_LEN.store(values.len() as u64, SeqCst);
     RESULT.store(1, SeqCst);
-    0x200
+    0x7ffc000000000200
 }
 #[no_mangle]
 pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
@@ -614,11 +616,15 @@ pub extern "C" fn fixed_attempts() -> u64 {
 pub extern "C" fn fixed_calls() -> u64 {
     CALLS.load(SeqCst)
 }
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
 "#;
 
 const HARNESS: &str = r#"
 const NONE: u64 = @NONE@;
-const REPEATED: [u64; 3] = [0x101, 0x101, 0x102];
+const REPEATED: [u64; 3] = [0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102];
 const EVERY_FAILURE: [(u64, u64); 4] = [(0, 0), (1, 0), (2, 0), (0, 1)];
 
 extern "C" {
@@ -650,7 +656,7 @@ fn run(
     words: [u64; 3],
     failures: &[(u64, u64)],
 ) {
-    let boxes = [0x101_u64, 0x102].iter().filter(|word| words.contains(word)).count() as u64;
+    let boxes = [0x7ffc000000000101u64, 0x7ffc000000000102].iter().filter(|word| words.contains(word)).count() as u64;
     let retained = words.iter().filter(|&&word| word != NONE).count() as u64;
     for &(failure, ctor_failure) in failures {
         unsafe {
@@ -659,7 +665,7 @@ fn run(
             let result = construct();
             let success = failure == 0 && ctor_failure == 0;
             let case = (name, failure, ctor_failure);
-            assert_eq!(result, if success { 0x200 } else { NONE }, "{case:?}");
+            assert_eq!(result, if success { 0x7ffc000000000200 } else { NONE }, "{case:?}");
             assert_eq!(
                 fixed_attempts(),
                 if failure == 0 { boxes } else { failure },
@@ -700,7 +706,7 @@ fn main() {
     ] {
         run(name, construct, REPEATED, &EVERY_FAILURE);
     }
-    run("slice_start", fixed_slice_start, [0x101, NONE, NONE], &[(0, 0), (1, 0), (0, 1)]);
+    run("slice_start", fixed_slice_start, [0x7ffc000000000101, NONE, NONE], &[(0, 0), (1, 0), (0, 1)]);
     run("slice_empty", fixed_slice_empty, [NONE; 3], &[(0, 0), (0, 1)]);
     for (name, discard) in [
         ("tuple", fixed_tuple_discard as unsafe extern "C" fn()),
@@ -807,9 +813,9 @@ fn constructor_operands_execute_identity_failures_and_discarded_results() {
 }
 
 /// Runtime oracle for borrowed and adopted operands beyond fixed constructors.
-/// Heap words are counted handles: minted integers 0x101 (`FIRST_RAW`) and
-/// 0x102 (`SECOND_RAW`), a call result 0x200, a CallArgs builder 0x300, a dict
-/// 0x400, and a task whose handle boxes the address of `TASK_BUF`. Each entry
+/// Heap words are counted handles: minted integers 0x7ffc000000000101 (`FIRST_RAW`) and
+/// 0x7ffc000000000102 (`SECOND_RAW`), a call result 0x7ffc000000000200, a CallArgs builder 0x7ffc000000000300, a dict
+/// 0x7ffc000000000400, and a task whose handle boxes the address of `TASK_BUF`. Each entry
 /// point borrows, retains, consumes or returns exactly as the runtime entry it
 /// stands in for.
 const FAMILY_PROVIDER: &str = r#"#![no_std]
@@ -825,10 +831,10 @@ const POINTER_MASK: u64 = (1 << 48) - 1;
 const FIRST_RAW: i64 = 1 << 62;
 const SECOND_RAW: i64 = (1 << 62) + (1 << 31);
 const SLOT: usize = @SLOT@;
-const BUILDER: u64 = 0x300;
-const DICT: u64 = 0x400;
-const EXISTING: u64 = 0x501;
-const OTHER: u64 = 0x502;
+const BUILDER: u64 = 0x7ffc000000000300;
+const DICT: u64 = 0x7ffc000000000400;
+const EXISTING: u64 = 0x7ffc000000000501;
+const OTHER: u64 = 0x7ffc000000000502;
 static mut PENDING: u8 = 0;
 static PENDING_ERROR: AtomicU64 = AtomicU64::new(0);
 static mut TASK_BUF: [u64; 16] = [0; 16];
@@ -942,14 +948,14 @@ pub extern "C" fn fam_home_check(value: u64) {
 }
 #[no_mangle]
 pub extern "C" fn fam_home_rebound(old: u64, new: u64) {
-    assert_eq!((old, new), (0x101, 0x102));
+    assert_eq!((old, new), (0x7ffc000000000101, 0x7ffc000000000102));
     assert_eq!(HOME_HELD.load(SeqCst), old);
     assert_eq!(home_pair(), (HOME_PLAIN, new));
     assert_eq!((FIRST.load(SeqCst), SECOND.load(SeqCst)), (2, 1), "retained alias and observer survive old-home release");
 }
 #[no_mangle]
 pub extern "C" fn fam_home_taken(view: u64, taken: u64) {
-    assert_eq!((view, taken), (0x102, 0x102));
+    assert_eq!((view, taken), (0x7ffc000000000102, 0x7ffc000000000102));
     assert_eq!(home_pair(), (HOME_UNBOUND, 0));
     assert_eq!(SECOND.load(SeqCst), 1, "take transfers the persistent owner");
 }
@@ -980,7 +986,7 @@ pub extern "C" fn fam_home_store_check(view: u64) {
     assert!(!pending(), "the store's exception edge must skip the following effect");
     assert_eq!(HOME_REENTRIES.load(SeqCst), 1);
     assert_eq!(HOME_SUCCESSES.fetch_add(1, SeqCst), 0);
-    assert_eq!(view, 0x101);
+    assert_eq!(view, 0x7ffc000000000101);
     assert_eq!(home_pair(), (HOME_PLAIN, view));
     assert_eq!(FIRST.load(SeqCst), 1, "the home, not call preparation, owns the box");
 }
@@ -1019,9 +1025,9 @@ fn task_handle() -> u64 {
 }
 fn refs(word: u64) -> Option<&'static AtomicU64> {
     match word {
-        0x101 => Some(&FIRST),
-        0x102 => Some(&SECOND),
-        0x200 => Some(&RESULT),
+        0x7ffc000000000101 => Some(&FIRST),
+        0x7ffc000000000102 => Some(&SECOND),
+        0x7ffc000000000200 => Some(&RESULT),
         BUILDER => Some(&BUILDER_REFS),
         DICT => Some(&DICT_REFS),
         EXISTING => Some(&EXISTING_REFS),
@@ -1038,7 +1044,7 @@ fn release_all(words: &[AtomicU64; 4], len: &AtomicU64) {
 fn owned_result() -> u64 {
     CALLS.fetch_add(1, SeqCst);
     assert_eq!(RESULT.swap(1, SeqCst), 0, "one owned result per call");
-    0x200
+    0x7ffc000000000200
 }
 
 #[no_mangle]
@@ -1050,8 +1056,8 @@ pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {
         return raise();
     }
     let (word, refs) = match value {
-        FIRST_RAW => (0x101, &FIRST),
-        SECOND_RAW => (0x102, &SECOND),
+        FIRST_RAW => (0x7ffc000000000101, &FIRST),
+        SECOND_RAW => (0x7ffc000000000102, &SECOND),
         other => panic!("an inline integer never allocates: {other}"),
     };
     assert_eq!(refs.swap(1, SeqCst), 0, "one box per distinct operand");
@@ -1091,7 +1097,7 @@ pub extern "C" fn molt_dec_ref_obj(word: u64) {
             assert_eq!(home_pair(), (HOME_RAW, FIRST_RAW as u64));
             assert_eq!(PENDING_ERROR.load(SeqCst), 0xb001);
         } else {
-            assert_eq!(home_pair(), (HOME_PLAIN, 0x101));
+            assert_eq!(home_pair(), (HOME_PLAIN, 0x7ffc000000000101));
             assert_eq!(FIRST.load(SeqCst), 1);
         }
     } else if matches!(word, EXISTING | OTHER) && pending() {
@@ -1153,7 +1159,7 @@ pub extern "C" fn fam_owned_target(
     borrowed: u64, first: u64, again: u64, second: u64,
     existing: u64, existing_again: u64, other: u64, raw: i64, borrowed_second: u64,
 ) -> u64 {
-    assert_eq!((borrowed, first, again, second, raw), (0x101, 0x101, 0x101, 0x102, FIRST_RAW));
+    assert_eq!((borrowed, first, again, second, raw), (0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102, FIRST_RAW));
     assert_eq!(borrowed_second, second);
     let expected = if OWNED_CASE.load(SeqCst) == 7 { (NONE, NONE, NONE) } else { (EXISTING, EXISTING, OTHER) };
     assert_eq!((existing, existing_again, other), expected);
@@ -1180,7 +1186,7 @@ pub extern "C" fn molt_int_as_i64(word: u64) -> i64 {
 pub extern "C" fn fam_extracted_target(
     borrowed: u64, first: u64, second: u64, raw: i64, raw_again: i64, raw_other: i64,
 ) -> u64 {
-    assert_eq!((borrowed, first, second), (0x101, 0x101, 0x102));
+    assert_eq!((borrowed, first, second), (0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102));
     assert_eq!((raw, raw_again, raw_other), (FIRST_RAW, FIRST_RAW, SECOND_RAW));
     assert_eq!(EXTRACTS.load(SeqCst), 3);
     check_adopted_refs(2, 1);
@@ -1196,11 +1202,11 @@ pub extern "C" fn molt_call_func_owned(callable: u64, pointer: u64, count: u64, 
     assert_eq!(site, 0);
     let words = unsafe { argument_words(pointer, count) };
     if callable == EXISTING {
-        assert_eq!(words, &[0x101, 0x101, 0x102, EXISTING, OTHER]);
+        assert_eq!(words, &[0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102, EXISTING, OTHER]);
         check_adopted_refs(2, 1);
     } else {
-        assert_eq!(callable, 0x101);
-        assert_eq!(words, &[0x101, 0x101, 0x102, EXISTING, EXISTING, OTHER]);
+        assert_eq!(callable, 0x7ffc000000000101);
+        assert_eq!(words, &[0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102, EXISTING, EXISTING, OTHER]);
         check_adopted_refs(3, 1);
     }
     release_words(words);
@@ -1213,7 +1219,7 @@ pub extern "C" fn molt_call_loaded_method4(callable: u64, self_or_null: u64, a: 
     // The loaded call adopts its pair and every argument, as an ordinary CALL.
     assert_eq!(callable, EXISTING);
     let words = [self_or_null, a, b, c, d];
-    assert_eq!(words, [0x101, 0x101, 0x102, EXISTING, OTHER]);
+    assert_eq!(words, [0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102, EXISTING, OTHER]);
     check_adopted_refs(2, 1);
     release_words(&words);
     molt_dec_ref_obj(callable);
@@ -1229,13 +1235,13 @@ pub extern "C" fn molt_isinstance(object: u64, class: u64) -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn molt_abs_builtin(value: u64) -> u64 {
-    assert_eq!(value, 0x101);
+    assert_eq!(value, 0x7ffc000000000101);
     assert_eq!(FIRST.load(SeqCst), 1, "the argument is borrowed from its box owner");
     owned_result()
 }
 #[no_mangle]
 pub extern "C" fn fam_target(value: u64) -> u64 {
-    assert_eq!(value, 0x101);
+    assert_eq!(value, 0x7ffc000000000101);
     assert_eq!(FIRST.load(SeqCst), 1, "a compiled callee borrows its argument");
     owned_result()
 }
@@ -1245,7 +1251,7 @@ pub extern "C" fn fam_poll(_task: u64) -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn molt_dict_update_missing(target: u64, key: u64, value: u64) -> u64 {
-    assert_eq!((target, key, value), (0x101, NONE, NONE));
+    assert_eq!((target, key, value), (0x7ffc000000000101, NONE, NONE));
     assert_eq!(FIRST.load(SeqCst), 1, "the target is borrowed");
     CALLS.fetch_add(1, SeqCst);
     target
@@ -1288,7 +1294,7 @@ fn bind(callable: u64, builder: u64) -> u64 {
         NONE
     } else {
         if OWNED_CASE.load(SeqCst) == 5 {
-            assert_eq!(callable, 0x101);
+            assert_eq!(callable, 0x7ffc000000000101);
             assert_eq!(FIRST.load(SeqCst), 1, "the builder consumer borrows its callable");
         } else {
             assert_eq!(callable, NONE);
@@ -1322,7 +1328,7 @@ pub extern "C" fn molt_call_indirect_ic(_site: u64, callable: u64, builder: u64)
 pub extern "C" fn molt_call_bind_ic_owned(_site: u64, callable: u64, builder: u64) -> u64 {
     BINDS.fetch_add(1, SeqCst);
     assert!(!pending(), "a failed callable box skips the owned builder consumer");
-    assert_eq!((callable, builder), (0x101, BUILDER));
+    assert_eq!((callable, builder), (0x7ffc000000000101, BUILDER));
     assert_eq!((FIRST.load(SeqCst), BUILDER_REFS.load(SeqCst)), (1, 1));
     molt_dec_ref_obj(builder);
     molt_dec_ref_obj(callable);
@@ -1338,7 +1344,7 @@ pub unsafe extern "C" fn molt_dict_from_pairs(keys: *const u64, values: *const u
     ENTRIES_LEN.store(0, SeqCst);
     for index in 0..len as usize {
         let (key, value) = (*keys.add(index), *values.add(index));
-        assert_eq!((key, value), [(0x101, 0x101), (0x102, 0x101)][index],
+        assert_eq!((key, value), [(0x7ffc000000000101, 0x7ffc000000000101), (0x7ffc000000000102, 0x7ffc000000000101)][index],
             "the two borrowed ranges preserve repeated value identity");
         INSERTS.fetch_add(1, SeqCst);
         if INSERT_FAIL.load(SeqCst) == index as u64 + 1 {
@@ -1465,6 +1471,10 @@ pub extern "C" fn fam_aborts() -> u64 { ABORTS.load(SeqCst) }
 pub extern "C" fn fam_postcalls() -> u64 { POSTCALLS.load(SeqCst) }
 #[no_mangle]
 pub extern "C" fn fam_binds() -> u64 { BINDS.load(SeqCst) }
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
 "#;
 
 const FAMILY_HARNESS: &str = r#"
@@ -1560,7 +1570,7 @@ fn main() {
             let case = format!("abs {failure}");
             fam_reset(failure);
             let result = fam_abs();
-            assert_eq!(result, if success { 0x200 } else { NONE }, "{case}");
+            assert_eq!(result, if success { 0x7ffc000000000200 } else { NONE }, "{case}");
             assert_eq!(fam_calls(), u64::from(success), "{case}: a failed box skips the call");
             assert_eq!(fam_live(), u64::from(success), "{case}: the box dies after the call");
             settle(&case, result, success);
@@ -1576,9 +1586,9 @@ fn main() {
             let case = format!("dynamic call {failure}/{builder_failure}");
             fam_reset(failure);
             fam_inject(builder_failure, 0, 0);
-            fam_expect(3, 0x101, 0x101, 0x102);
+            fam_expect(3, 0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102);
             let result = fam_dynamic_call();
-            assert_eq!(result, if success { 0x200 } else { NONE }, "{case}");
+            assert_eq!(result, if success { 0x7ffc000000000200 } else { NONE }, "{case}");
             assert_eq!(
                 fam_attempts(),
                 if failure == 0 { 2 } else { failure },
@@ -1594,9 +1604,9 @@ fn main() {
             let success = failure == 0;
             let case = format!("call_bind {failure}");
             fam_reset(failure);
-            fam_expect(1, 0x101, 0, 0);
+            fam_expect(1, 0x7ffc000000000101, 0, 0);
             let result = fam_call_bind_pending();
-            assert_eq!(result, if success { 0x200 } else { NONE }, "{case}");
+            assert_eq!(result, if success { 0x7ffc000000000200 } else { NONE }, "{case}");
             assert_eq!(fam_news(), 1, "{case}");
             assert_eq!(fam_calls(), u64::from(success), "{case}: an incomplete builder never binds");
             settle(&case, result, success);
@@ -1611,7 +1621,7 @@ fn main() {
                 fam_reset(failure);
                 fam_inject(0, dict_failure, insert_failure);
                 let result = if discarded { fam_dict_discard(); NONE } else { fam_dict() };
-                assert_eq!(result, if success && !discarded { 0x400 } else { NONE }, "{case}");
+                assert_eq!(result, if success && !discarded { 0x7ffc000000000400 } else { NONE }, "{case}");
                 let attempts = if failure != 0 { failure } else { 2 };
                 assert_eq!(fam_attempts(), attempts,
                     "{case}: all distinct operands precede the full-pairs constructor");
@@ -1641,7 +1651,7 @@ fn main() {
             let case = format!("borrowed alias {failure}");
             fam_reset(failure);
             let result = fam_alias();
-            assert_eq!(result, if success { 0x101 } else { NONE }, "{case}");
+            assert_eq!(result, if success { 0x7ffc000000000101 } else { NONE }, "{case}");
             assert_eq!(
                 fam_first_refs(),
                 u64::from(success),
@@ -1661,7 +1671,7 @@ fn main() {
             fam_reset(failure);
             let task = fam_task();
             assert_eq!(task, fam_task_handle(), "{case}");
-            let word = if success { 0x101 } else { NONE };
+            let word = if success { 0x7ffc000000000101 } else { NONE };
             assert_eq!(
                 (fam_task_slot(SLOT), fam_task_slot(SLOT + 1)),
                 (word, word),
@@ -1681,7 +1691,7 @@ fn main() {
             let case = format!("direct call {failure}");
             fam_reset(failure);
             let result = fam_direct_call();
-            assert_eq!(result, if success { 0x200 } else { NONE }, "{case}");
+            assert_eq!(result, if success { 0x7ffc000000000200 } else { NONE }, "{case}");
             assert_eq!(fam_calls(), u64::from(success), "{case}: a failed argument box skips the callee");
             settle(&case, result, success);
         }
@@ -1703,8 +1713,8 @@ fn main() {
                     let case = format!("adopted {label} failure={failure} discard={discarded}");
                     fam_reset(failure);
                     fam_seed_owned(mode);
-                    let result = if discarded { discard(0x501, 0x502); NONE } else { invoke(0x501, 0x502) };
-                    assert_eq!(result, if success && !discarded { 0x200 } else { NONE }, "{case}");
+                    let result = if discarded { discard(0x7ffc000000000501, 0x7ffc000000000502); NONE } else { invoke(0x7ffc000000000501, 0x7ffc000000000502) };
+                    assert_eq!(result, if success && !discarded { 0x7ffc000000000200 } else { NONE }, "{case}");
                     assert_eq!(fam_attempts(), if success { 2 } else { failure }, "{case}: stop before later boxing");
                     assert_eq!(fam_calls(), u64::from(success), "{case}: no consumer after boxing failure");
                     assert_eq!(fam_aborts(), u64::from(!success), "{case}: one cleanup of preexisting adopted inputs");
@@ -1728,8 +1738,8 @@ fn main() {
                 let case = format!("{label} failure={failure}");
                 fam_reset(failure);
                 fam_seed_owned(mode);
-                let result = invoke(0x300, NONE);
-                assert_eq!(result, if success { 0x200 } else { NONE }, "{case}");
+                let result = invoke(0x7ffc000000000300, NONE);
+                assert_eq!(result, if success { 0x7ffc000000000200 } else { NONE }, "{case}");
                 assert_eq!(fam_attempts(), 1, "{case}");
                 assert_eq!(fam_binds(), u64::from(success), "{case}: a failed callable box skips even the consuming entry");
                 assert_eq!(fam_aborts(), u64::from(!success), "{case}: an unconsumed builder is released once");
@@ -1770,7 +1780,7 @@ fn main() {
         settle("producer-qualified raw home arithmetic", NONE, true);
         for failure in [0, 1] {
             fam_home_reset(failure, 1);
-            fam_home_reentry(0x501);
+            fam_home_reentry(0x7ffc000000000501);
             fam_home_route_check(failure);
             assert_eq!(fam_attempts(), 1, "store observation allocates at most once");
             assert_eq!(fam_pending_error(), if failure == 0 { 0 } else { 0xb001 });
@@ -1778,7 +1788,7 @@ fn main() {
         }
         for invoke in [fam_home_cell as unsafe extern "C" fn(u64), fam_home_private_cell] {
             fam_home_reset(0, 2);
-            invoke(0x501);
+            invoke(0x7ffc000000000501);
             assert_eq!(fam_attempts(), 0);
             settle("cell home move and clear", NONE, true);
         }

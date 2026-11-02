@@ -73,10 +73,22 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
                 assert!(matches!(ops[call + 4], wasmparser::Operator::I64Ne));
                 assert!(matches!(ops[call + 5], wasmparser::Operator::If { .. }));
                 let initialize = &ops[call + 6..];
+                let mut depth = 1;
                 let end = initialize
                     .iter()
-                    .position(|op| matches!(op, wasmparser::Operator::End))
-                    .unwrap();
+                    .position(|op| {
+                        match op {
+                            wasmparser::Operator::If { .. }
+                            | wasmparser::Operator::Block { .. }
+                            | wasmparser::Operator::Loop { .. } => depth += 1,
+                            wasmparser::Operator::End => depth -= 1,
+                            _ => {}
+                        }
+                        depth == 0
+                    })
+                    .expect(
+                        "allocation success scope must close after all nested checked transitions",
+                    );
                 assert!(
                     initialize[..end]
                         .iter()

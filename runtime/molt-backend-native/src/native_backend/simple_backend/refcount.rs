@@ -1,15 +1,214 @@
 use super::*;
+use molt_codegen_abi::inline_refcount::{
+    RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
+};
 
-/// Emit the canonical owned-reference transition.
-///
-/// The runtime call is deliberately opaque to generated code: GIL/default,
-/// native free-threaded, and future biased/deferred storage select different
-/// representations and zero-edge protocols behind the same ABI. The deleted
-/// inline lane hard-coded an unconditional `AtomicU32`, skipped overflow and
-/// terminal-death checks, and was permanently disabled after corrupting SSA
-/// across its hidden control-flow blocks.
+/// Function-local imports and the admission belonging to this exact body.
+/// Keeping the invocation fact here makes helpers consume the entry's value
+/// rather than rediscovering attachment or borrowing another function's fact.
+#[derive(Default)]
+pub(crate) struct NativeFunctionImports {
+    refs: BTreeMap<&'static str, FuncRef>,
+    refcount_admission: Option<Value>,
+}
+
+impl NativeFunctionImports {
+    pub(crate) fn get(&self, name: &str) -> Option<&FuncRef> {
+        self.refs.get(name)
+    }
+
+    pub(crate) fn insert(&mut self, name: &'static str, value: FuncRef) {
+        self.refs.insert(name, value);
+    }
+
+    pub(crate) fn set_refcount_admission(&mut self, value: Value) {
+        assert!(self.refcount_admission.replace(value).is_none());
+    }
+
+    pub(crate) fn refcount_site(
+        &self,
+        slow: FuncRef,
+        operation: RefcountOperation,
+    ) -> NativeRefcountSite {
+        NativeRefcountSite {
+            slow,
+            admission: self
+                .refcount_admission
+                .expect("refcount before invocation admission"),
+            operation,
+        }
+    }
+}
+
+/// One invocation's immutable admission and its authoritative cold transition.
+/// The entry's SSA value dominates all sites, including loop backedges. It is
+/// never a Cranelift Variable, so SSA repair cannot invent another admission.
+#[derive(Clone, Copy)]
+pub(crate) struct NativeRefcountSite {
+    pub(crate) slow: FuncRef,
+    pub(crate) admission: Value,
+    pub(crate) operation: RefcountOperation,
+}
+
 #[cfg(feature = "native-backend")]
-#[inline(always)]
-pub(crate) fn emit_inc_ref_obj(builder: &mut FunctionBuilder, value: Value, retain: FuncRef) {
-    builder.ins().call(retain, &[value]);
+pub(crate) fn emit_refcount(builder: &mut FunctionBuilder, value: Value, site: NativeRefcountSite) {
+    let storage = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
+        RefcountStorage::Atomic
+    } else {
+        RefcountStorage::Plain
+    };
+    let mut emitter = NativeRefcountBuilder {
+        builder,
+        site,
+        slow_block: None,
+    };
+    generate_refcount(&mut emitter, value, site.admission, site.operation, storage);
+    if let Some(slow) = emitter.slow_block {
+        let continuation = emitter.builder.create_block();
+        emitter.builder.ins().jump(continuation, &[]);
+        emitter.builder.switch_to_block(slow);
+        emitter.builder.seal_block(slow);
+        emitter.builder.set_cold_block(slow);
+        emitter.builder.ins().call(site.slow, &[value]);
+        emitter.builder.ins().jump(continuation, &[]);
+        emitter.builder.seal_block(continuation);
+        emitter.builder.switch_to_block(continuation);
+    }
+}
+
+struct NativeRefcountBuilder<'a, 'b> {
+    builder: &'a mut FunctionBuilder<'b>,
+    site: NativeRefcountSite,
+    slow_block: Option<Block>,
+}
+
+impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
+    type Word = Value;
+    type Predicate = Value;
+
+    fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
+        molt_codegen_abi::PointerWidth::Bits64
+    }
+
+    fn constant(&mut self, value: u64) -> Value {
+        self.builder.ins().iconst(types::I64, value as i64)
+    }
+    fn and(&mut self, value: Value, mask: u64) -> Value {
+        self.builder.ins().band_imm_s(value, mask as i64)
+    }
+    fn add(&mut self, value: Value, delta: i64) -> Value {
+        self.builder.ins().iadd_imm_s(value, delta)
+    }
+    fn shift_right(&mut self, value: Value, amount: Value) -> Value {
+        self.builder.ins().ushr(value, amount)
+    }
+    fn compare(&mut self, comparison: RefcountComparison, left: Value, right: Value) -> Value {
+        use cranelift_codegen::ir::condcodes::IntCC;
+        let condition = match comparison {
+            RefcountComparison::Equal => IntCC::Equal,
+            RefcountComparison::NotEqual => IntCC::NotEqual,
+            RefcountComparison::UnsignedLessThan => IntCC::UnsignedLessThan,
+        };
+        self.builder.ins().icmp(condition, left, right)
+    }
+    fn either(&mut self, left: Value, right: Value) -> Value {
+        self.builder.ins().bor(left, right)
+    }
+    fn both(&mut self, left: Value, right: Value) -> Value {
+        self.builder.ins().band(left, right)
+    }
+    fn load_header_u32(&mut self, pointer: Value, offset: i32) -> Value {
+        let value = if offset == molt_codegen_abi::HEADER_FLAGS_OFFSET
+            && molt_codegen_abi::MOLT_FLAGS_ATOMIC
+        {
+            let address = self.builder.ins().iadd_imm_s(pointer, offset as i64);
+            self.builder
+                .ins()
+                .atomic_load(types::I32, MemFlagsData::new(), address)
+        } else {
+            self.builder
+                .ins()
+                .load(types::I32, MemFlagsData::new(), pointer, offset)
+        };
+        self.builder.ins().uextend(types::I64, value)
+    }
+    fn store_header_u32(&mut self, pointer: Value, offset: i32, value: Value) {
+        let value = self.builder.ins().ireduce(types::I32, value);
+        self.builder
+            .ins()
+            .store(MemFlagsData::new(), value, pointer, offset);
+    }
+    fn slow_call(&mut self, operation: RefcountOperation, _bits: Value) {
+        assert_eq!(operation, self.site.operation);
+        let block = *self
+            .slow_block
+            .get_or_insert_with(|| self.builder.create_block());
+        self.builder.ins().jump(block, &[]);
+    }
+    fn if_else(
+        &mut self,
+        condition: Value,
+        yes: impl FnOnce(&mut Self),
+        no: impl FnOnce(&mut Self),
+    ) {
+        let yes_block = self.builder.create_block();
+        let no_block = self.builder.create_block();
+        let continuation = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(condition, yes_block, &[], no_block, &[]);
+        self.builder.seal_block(yes_block);
+        self.builder.seal_block(no_block);
+        self.builder.switch_to_block(yes_block);
+        yes(self);
+        if !self.terminated() {
+            self.builder.ins().jump(continuation, &[]);
+        }
+        self.builder.switch_to_block(no_block);
+        no(self);
+        if !self.terminated() {
+            self.builder.ins().jump(continuation, &[]);
+        }
+        self.builder.seal_block(continuation);
+        self.builder.switch_to_block(continuation);
+    }
+}
+
+impl NativeRefcountBuilder<'_, '_> {
+    fn terminated(&self) -> bool {
+        self.builder
+            .current_block()
+            .and_then(|block| self.builder.func.layout.last_inst(block))
+            .is_some_and(|inst| self.builder.func.dfg.insts[inst].opcode().is_terminator())
+    }
+}
+
+/// Resolve an entry SSA placeholder only if a generated transition consumes it.
+/// This is code-emission state, not a runtime/fact cache: a scalar-only body
+/// leaves no admission call. Replacement preserves the exact entry SSA value.
+pub(crate) fn materialize_refcount_admission(
+    builder: &mut FunctionBuilder<'_>,
+    admission: Value,
+    import: impl FnOnce(&mut FunctionBuilder<'_>) -> FuncRef,
+) {
+    if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
+        return;
+    }
+    let used = builder.func.layout.blocks().any(|block| {
+        builder
+            .func
+            .layout
+            .block_insts(block)
+            .any(|inst| builder.func.dfg.inst_args(inst).contains(&admission))
+    });
+    if used {
+        let callee = import(builder);
+        let inst = builder
+            .func
+            .dfg
+            .value_def(admission)
+            .inst()
+            .expect("entry admission placeholder");
+        builder.func.replace(inst).call(callee, &[]);
+    }
 }

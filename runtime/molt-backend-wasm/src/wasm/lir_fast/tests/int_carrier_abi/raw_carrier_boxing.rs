@@ -70,7 +70,27 @@ fn mixed_repr_int_add_boxes_both_operands_no_bare_i64_add() {
         &repr,
         &crate::representation_plan::value_range_for(&func),
     );
-    let output = lower_lir_to_wasm(&lir).test_view();
+    let body = lower_lir_to_wasm(&lir);
+    let output = body.test_view();
+    use crate::wasm::body::{WasmBodyOp, WasmCallTarget};
+    // Only instructions before the actual boxed arithmetic dispatch operate
+    // on operands. Subsequent RC cleanup legitimately adds header addresses.
+    let operand_instructions: Vec<_> = body
+        .ops
+        .iter()
+        .take_while(|op| {
+            !matches!(
+                op,
+                WasmBodyOp::Call(WasmCallTarget::RuntimeImport(
+                    crate::wasm::lir_fast::LirRuntimeCall::Add
+                ))
+            )
+        })
+        .filter_map(|op| match op {
+            WasmBodyOp::Instruction(inst) => Some(inst),
+            _ => None,
+        })
+        .collect();
 
     // No bare OPERAND i64.add: a raw machine add on a possibly-heap-BigInt
     // operand is exactly the truncation bug-class this phase makes
@@ -79,11 +99,11 @@ fn mixed_repr_int_add_boxes_both_operands_no_bare_i64_add() {
     // invariant is: every I64Add in the stream is a fits-check add —
     // immediately followed by the `2^47` window-limit const — never an
     // operand-pair add.
-    for (idx, inst) in output.instructions.iter().enumerate() {
+    for (idx, inst) in operand_instructions.iter().enumerate() {
         if matches!(inst, Instruction::I64Add) {
             assert!(
                 matches!(
-                    output.instructions.get(idx + 1),
+                    operand_instructions.get(idx + 1),
                     Some(Instruction::I64Const(c)) if *c == (1i64 << 47)
                 ),
                 "mixed-repr add emitted a bare operand i64.add at {idx} (operand may be a heap BigInt)"

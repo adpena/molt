@@ -129,7 +129,7 @@ fn finally_pending_observer_marker_selects_one_branchless_runtime_import() {
             );
 
             let calls = wasm_direct_call_indices_for_export(&wasm, "molt_main");
-            assert_eq!(calls, [selected]);
+            assert_eq!(calls, [imports["refcount_admission"], selected]);
             let ops = wasm_operator_debug_for_export(&wasm, "molt_main");
             let call = format!("Call {{ function_index: {selected} }}");
             let call_pos = ops

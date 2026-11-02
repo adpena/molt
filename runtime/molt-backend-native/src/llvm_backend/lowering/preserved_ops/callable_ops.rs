@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
+use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
 use molt_ir::OpKind;
 
 // Handler-owned routing slice. `code_new` and the CallArgs push/expand
@@ -310,11 +310,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_conditional_branch(holds, release_bb, done_bb)
             .unwrap();
         self.backend.builder.position_at_end(release_bb);
-        let dec_ref = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-        self.backend
-            .builder
-            .build_call(dec_ref, &[old_bits.into()], "frame_home_release")
-            .unwrap();
+        let dec_ref = self
+            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
+        dec_ref.emit(&self.backend.builder, old_bits);
         self.backend
             .builder
             .build_unconditional_branch(done_bb)
@@ -618,12 +616,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::TraceEnterSlot => {
+                let entered = self
+                    .owned_frame_entered
+                    .expect("trace_enter_slot requires local execution-context ownership");
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
                 let enter_fn = self.ensure_runtime_i64_fn("molt_trace_enter_slot", 1);
                 let _ = self
                     .backend
                     .builder
                     .build_call(enter_fn, &[code_id.into()], "trace_enter_slot")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_store(
+                        entered,
+                        self.backend.context.bool_type().const_int(1, false),
+                    )
                     .unwrap();
                 // The entry took the frame's binding homes: lend them before
                 // the entry's adjacent exception check, which leaves for the
@@ -634,12 +642,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::TraceExit => {
-                let exit_fn = self.ensure_runtime_i64_fn("molt_trace_exit", 0);
-                let _ = self
-                    .backend
-                    .builder
-                    .build_call(exit_fn, &[], "trace_exit")
-                    .unwrap();
+                // Like native/WASM, the invocation's guarded return owns the
+                // pop, including generated suspension and early-error returns.
                 true
             }
             OpKind::FrameHomeStore | OpKind::FrameHomeCell | OpKind::FrameHomePrivateCell => {

@@ -1,7 +1,8 @@
 #[cfg(feature = "llvm")]
 use super::fixed::fixed_runtime_import_return_abi;
 use crate::runtime_import_abi::{
-    MOLT_ASYNCGEN_NEW, MOLT_TASK_NEW, RuntimeImportSignature, RuntimeReturnAbi, runtime_sig,
+    MOLT_ASYNCGEN_NEW, MOLT_REFCOUNT_ADMISSION, MOLT_TASK_NEW, RuntimeImportSignature,
+    RuntimeReturnAbi, runtime_sig,
 };
 /// Residual runtime symbols that lowering may declare on demand.
 ///
@@ -12,6 +13,7 @@ use crate::runtime_import_abi::{
 /// the generated boxed authority to avoid mirrored signature ownership.
 #[cfg(feature = "llvm")]
 pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
+    MOLT_REFCOUNT_ADMISSION,
     runtime_sig("molt_builtin_type", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_class_set_definition", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_closure_load", 2, RuntimeReturnAbi::I64),

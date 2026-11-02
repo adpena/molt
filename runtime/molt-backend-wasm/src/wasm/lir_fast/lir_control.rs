@@ -86,7 +86,7 @@ fn emit_lir_return(ctx: &mut LirLowerCtx, values: &[ValueId], return_abi: LirRet
                 // The test-only native ABI uses raw carriers for scalars;
                 // boxed/reference carriers retain the semantic None tag.
                 match result_repr {
-                    LirRepr::DynBox | LirRepr::Ref64 => emit_box_none(ctx),
+                    LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64 => emit_box_none(ctx),
                     LirRepr::I64 => ctx.instructions.push(Instruction::I64Const(0)),
                     LirRepr::F64 => ctx.instructions.push(Instruction::F64Const(0.0.into())),
                     LirRepr::Bool1 => ctx.instructions.push(Instruction::I32Const(0)),

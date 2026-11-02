@@ -14,6 +14,7 @@ pub(super) struct RuntimeServiceOpContext<'a> {
     pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'a>,
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a WasmFrameLocals,
+    pub(super) scalar_plan: &'a crate::representation_plan::ScalarRepresentationPlan,
     pub(super) reloc_enabled: bool,
     pub(super) guard_profile_local: Option<u32>,
     pub(super) native_eh_enabled: bool,

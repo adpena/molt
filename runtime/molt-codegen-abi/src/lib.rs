@@ -19,6 +19,7 @@ mod heap_kinds_generated;
 pub use heap_kinds_generated::*;
 
 pub mod c_width;
+pub mod inline_refcount;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperatingSystem {
@@ -331,6 +332,8 @@ pub const HEADER_CLASS_WORD_BITS_MASK: u64 = !HEADER_CLASS_WORD_TAG_MASK;
 
 pub const HEADER_FLAG_HAS_PTRS: u32 = 1;
 pub const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
+pub const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
+pub const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
 pub const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 /// Two-phase lifecycle publication bit. Objects remain invisible to collector
 /// snapshots until initialization clears this bit with Release ordering.

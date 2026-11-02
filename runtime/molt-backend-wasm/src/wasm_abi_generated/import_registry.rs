@@ -1130,6 +1130,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "thread_record",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::RefcountAdmission,
+        name: "refcount_admission",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::TraceEnterSlot,
         name: "trace_enter_slot",
     },
@@ -11626,6 +11630,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_frame_locals_set" => Some(WasmRuntimeImport::FrameLocalsSet),
         "thread_record" => Some(WasmRuntimeImport::ThreadRecord),
         "molt_thread_record" => Some(WasmRuntimeImport::ThreadRecord),
+        "refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
+        "molt_refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
         "trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
         "molt_trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
         "trace_exit" => Some(WasmRuntimeImport::TraceExit),

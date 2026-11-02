@@ -175,7 +175,10 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
             }
             if task_kind == "async_generator" {
                 assert_eq!(
-                    ops[previous_completion + 1],
+                    *ops[(previous_completion + 1)..]
+                        .iter()
+                        .find(|op| op.as_str() != "End")
+                        .unwrap(),
                     "LocalGet { local_index: 5 }",
                     "asyncgen must restore exact wrapper/error after task release: {ops:?}"
                 );

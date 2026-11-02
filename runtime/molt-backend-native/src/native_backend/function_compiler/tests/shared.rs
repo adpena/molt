@@ -1,5 +1,5 @@
 use super::*;
-use cranelift_codegen::ir::{Block, ExternalName, FuncRef, Inst, InstructionData, ValueDef};
+use cranelift_codegen::ir::{Block, ExternalName, Inst, InstructionData, ValueDef};
 use cranelift_frontend::Variable;
 use molt_ir::OpKind;
 
@@ -27,7 +27,7 @@ fn lower_with_wide_operands(
     lower: impl FnOnce(
         &mut SimpleBackend,
         &mut FunctionBuilder<'_>,
-        &mut BTreeMap<&'static str, FuncRef>,
+        &mut NativeFunctionImports,
         &mut BTreeSet<Block>,
         &BTreeMap<String, Variable>,
         &ScalarRepresentationPlan,
@@ -80,7 +80,9 @@ fn lower_with_wide_operands(
         if let Some(out) = op.out.as_deref() {
             vars.insert(out.to_string(), builder.declare_var(types::I64));
         }
-        let mut refs = BTreeMap::new();
+        let mut refs = NativeFunctionImports::default();
+        let detached = builder.ins().iconst(types::I64, 0);
+        refs.set_refcount_admission(detached);
         let mut sealed = BTreeSet::from([entry]);
         lower(
             &mut backend,
@@ -259,7 +261,13 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
         function.dfg.inst_results(call)
     );
     let call_block = function.layout.inst_block(call);
-    assert_eq!(function.layout.inst_block(retain), call_block);
+    let cfg = cranelift_codegen::flowgraph::ControlFlowGraph::with_function(&function);
+    let dominators =
+        cranelift_codegen::dominator_tree::DominatorTree::with_function(&function, &cfg);
+    assert!(
+        dominators.dominates(call_block.unwrap(), retain, &function.layout),
+        "the original borrowed call must precede its checked retain"
+    );
     let releases = import_calls(&function, &ids, "molt_dec_ref_obj");
     assert_eq!(
         releases.len(),

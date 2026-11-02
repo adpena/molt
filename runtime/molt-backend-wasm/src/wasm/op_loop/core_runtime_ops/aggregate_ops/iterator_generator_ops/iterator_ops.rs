@@ -47,6 +47,7 @@ pub(super) fn emit_iterator_op(
                 locals.bound_result_slot(value_name),
                 import_ids,
                 reloc_enabled,
+                ctx.locals.refcount(),
             );
         }
         _ => return false,

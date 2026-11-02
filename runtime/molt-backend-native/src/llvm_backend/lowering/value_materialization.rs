@@ -61,6 +61,81 @@ impl BorrowedOperands<'_> {
 }
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    /// Match native/WASM invocation ownership: entry can fail before a frame
+    /// exists, and every return (including suspension) closes only its own.
+    pub(super) fn initialize_owned_execution_frame(&mut self) {
+        if self.func.execution_context != crate::ir::ExecutionContextPolicy::Local {
+            return;
+        }
+        assert!(self.owned_frame_entered.is_none());
+        let builder = self.backend.context.create_builder();
+        let entry = self
+            .llvm_fn
+            .get_first_basic_block()
+            .expect("function entry");
+        if let Some(first) = entry.get_first_instruction() {
+            builder.position_before(&first);
+        } else {
+            builder.position_at_end(entry);
+        }
+        let slot = builder
+            .build_alloca(self.backend.context.bool_type(), "owned_frame_entered")
+            .unwrap();
+        builder
+            .build_store(slot, self.backend.context.bool_type().const_zero())
+            .unwrap();
+        self.owned_frame_entered = Some(slot);
+    }
+
+    fn exit_owned_execution_frame(&mut self) {
+        let Some(slot) = self.owned_frame_entered else {
+            return;
+        };
+        let source = self
+            .backend
+            .builder
+            .get_insert_block()
+            .expect("return block");
+        let active = self
+            .backend
+            .builder
+            .build_load(self.backend.context.bool_type(), slot, "frame_entered")
+            .unwrap()
+            .into_int_value();
+        let pop = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "owned_frame_exit");
+        let done = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "owned_frame_exited");
+        self.all_llvm_blocks.extend([pop, done]);
+        self.backend
+            .builder
+            .build_conditional_branch(active, pop, done)
+            .unwrap();
+        self.record_llvm_edge(source, pop);
+        self.record_llvm_edge(source, done);
+        self.backend.builder.position_at_end(pop);
+        // Retire the credit before releasing homes can call Python again.
+        self.backend
+            .builder
+            .build_store(slot, self.backend.context.bool_type().const_zero())
+            .unwrap();
+        let exit = self.ensure_runtime_i64_fn("molt_trace_exit", 0);
+        self.backend
+            .builder
+            .build_call(exit, &[], "trace_exit")
+            .unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(done)
+            .unwrap();
+        self.record_llvm_edge(pop, done);
+        self.backend.builder.position_at_end(done);
+    }
+
     pub(super) fn program_slot_id(
         &self,
         kind: molt_ir::code_slots::ProgramSlotKind,
@@ -406,17 +481,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         let i64_ty = self.backend.context.i64_type();
-        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+        let release = self
+            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
         for &slot in custody.owners.values().rev() {
             let bits = self
                 .backend
                 .builder
                 .build_load(i64_ty, slot, &format!("{}_owner_bits", custody.label))
                 .unwrap();
-            self.backend
-                .builder
-                .build_call(release, &[bits.into()], "")
-                .unwrap();
+            release.emit(&self.backend.builder, bits);
         }
     }
 
@@ -494,11 +567,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             None => self.none_word(),
         };
         if retain_result && returns_word {
-            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(retain, &[value.into()], "")
-                .unwrap();
+            let retain = self
+                .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Retain);
+            retain.emit(&self.backend.builder, value.into());
         }
         self.finish_borrowed_operands(custody, value, &format!("{label}_result"), |_| {})
     }
@@ -562,6 +633,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let linkage_abi = require_function_linkage_abi(self.func, self.backend);
         match linkage_abi.return_type.clone() {
             None => {
+                self.exit_owned_execution_frame();
                 self.backend.builder.build_return(None).unwrap();
             }
             Some(return_type) => {
@@ -589,6 +661,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     lower_type(self.backend.context, &return_type),
                     current_bb,
                 );
+                self.exit_owned_execution_frame();
                 self.backend.builder.build_return(Some(&ret_val)).unwrap();
             }
         }
@@ -610,7 +683,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn owned_operand_word(
         &mut self,
         operand: ValueId,
-        retain_name: &str,
+        _retain_name: &str,
     ) -> inkwell::values::IntValue<'ctx> {
         let ty = self
             .value_types
@@ -618,12 +691,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .cloned()
             .unwrap_or(TirType::DynBox);
         let word = self.materialize_dynbox_bits(operand);
-        if Self::tir_type_is_dynbox_like(&ty) {
-            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(retain, &[word.into()], retain_name)
-                .unwrap();
+        if Self::tir_type_is_dynbox_like(&ty) && !self.repr_facts.boxed_refcount_is_noop(operand) {
+            let retain = self
+                .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Retain);
+            retain.emit(&self.backend.builder, word.into());
         }
         word
     }
@@ -664,12 +735,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let keep_owner = borrowed.contains(&operand);
             let retains = count - usize::from(!keep_owner);
             if retains > 0 {
-                let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+                let retain = self.ensure_refcount_site(
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+                );
                 for _ in 0..retains {
-                    self.backend
-                        .builder
-                        .build_call(retain, &[word.into()], "")
-                        .unwrap();
+                    retain.emit(&self.backend.builder, word.into());
                 }
             }
             if !keep_owner {
@@ -830,7 +900,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// RC consumes the lowered physical carrier, never an annotation or a
     /// freshly boxed view. In particular, extracting a full-width raw integer
     /// must not feed its payload bits to the object reference-count ABI.
-    pub(super) fn emit_refcount(&mut self, op: &TirOp, signature: RuntimeImportSignature) {
+    pub(super) fn emit_refcount(
+        &mut self,
+        op: &TirOp,
+        operation: molt_codegen_abi::inline_refcount::RefcountOperation,
+    ) {
         let operand = op.operands[0];
         let value = self.resolve(operand);
         let ty = self
@@ -838,17 +912,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .get(&operand)
             .cloned()
             .unwrap_or(TirType::DynBox);
-        if Self::tir_type_is_dynbox_like(&ty) {
-            let runtime = self.ensure_runtime_import(signature);
+        if Self::tir_type_is_dynbox_like(&ty) && !self.repr_facts.carrier_refcount_is_noop(operand)
+        {
+            let runtime = self.ensure_refcount_site(operation);
             let bits = self.ensure_i64(value);
-            self.backend
-                .builder
-                .build_call(runtime, &[bits.into()], "")
-                .unwrap();
+            runtime.emit(&self.backend.builder, bits.into());
         }
         if let Some(&result) = op.results.first() {
-            self.values.insert(result, value);
-            self.value_types.insert(result, ty);
+            if operation == molt_codegen_abi::inline_refcount::RefcountOperation::Retain {
+                self.values.insert(result, value);
+                self.value_types.insert(result, ty);
+            } else {
+                let none = self
+                    .backend
+                    .context
+                    .i64_type()
+                    .const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+                self.values.insert(result, none.into());
+                self.value_types.insert(result, TirType::None);
+            }
         }
     }
 
@@ -930,7 +1012,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
     }
 
-    fn entry_block_builder(
+    pub(super) fn entry_block_builder(
         &self,
         position: &inkwell::builder::Builder<'ctx>,
     ) -> inkwell::builder::Builder<'ctx> {
@@ -957,11 +1039,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // Boxing can allocate even without a result binding. Preserve
                 // that failure, then retire only the newly materialized owner.
                 let boxed = self.materialize_dynbox_bits(operand_id);
-                let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-                self.backend
-                    .builder
-                    .build_call(release, &[boxed.into()], "")
-                    .unwrap();
+                let release = self.ensure_refcount_site(
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                );
+                release.emit(&self.backend.builder, boxed.into());
             }
             return;
         };
@@ -1003,12 +1084,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         };
 
         let unboxed = self.unbox_from_dynbox(operand, &target_ty);
-        if Self::tir_type_is_dynbox_like(&target_ty) {
-            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(retain, &[unboxed.into()], "unbox_result_retain")
-                .unwrap();
+        if Self::tir_type_is_dynbox_like(&target_ty)
+            && !self.repr_facts.carrier_refcount_is_noop(result_id)
+        {
+            let retain = self
+                .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Retain);
+            retain.emit(&self.backend.builder, unboxed);
         }
 
         self.values.insert(result_id, unboxed);
@@ -1292,6 +1373,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         Some(values[0]),
                     );
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
+                    self.exit_owned_execution_frame();
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 } else {
                     // Multi-value return: pack into struct.
@@ -1322,6 +1404,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         Some(values[0]),
                     );
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
+                    self.exit_owned_execution_frame();
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 }
             }
@@ -1906,6 +1989,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.task_constructor_imports(layout),
             closure_size,
             (call_name, &init_name, &ready_name),
+            self.ensure_refcount_site(
+                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+            )
+            .admission,
         );
         self.all_llvm_blocks
             .extend([construction.initialized, construction.continuation]);
@@ -1923,12 +2010,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         for (idx, &arg_id) in payload_operands.iter().enumerate() {
             let arg_bits = match transferred.get(&arg_id).copied() {
                 Some(word) => {
-                    let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-                    let _ = self
-                        .backend
-                        .builder
-                        .build_call(inc_fn, &[word.into()], "task_payload_inc_ref")
-                        .unwrap();
+                    if !self.repr_facts.boxed_refcount_is_noop(arg_id) {
+                        let inc_fn = self.ensure_refcount_site(
+                            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+                        );
+                        inc_fn.emit(&self.backend.builder, word.into());
+                    }
                     word
                 }
                 None => {

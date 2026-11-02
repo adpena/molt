@@ -67,11 +67,31 @@ pub enum Repr {
     MaybeBigInt,
     /// Bare `f64` register. Float lane.
     FloatUnboxed,
+    /// A boxed word with no heap credit: a proven immortal singleton or a
+    /// boxed inline-safe integer, bool or float. Annotations never prove it.
+    BoxedImmortal,
     /// NaN-box with fully unknown tag. No raw op is sound.
     DynBox,
 }
 
 impl Repr {
+    pub const fn carrier_refcount_is_noop(self) -> bool {
+        matches!(
+            self,
+            Self::RawI64Safe
+                | Self::RawI64FullDeopt
+                | Self::Bool
+                | Self::FloatUnboxed
+                | Self::BoxedImmortal
+        )
+    }
+
+    pub const fn boxed_refcount_is_noop(self) -> bool {
+        matches!(
+            self,
+            Self::RawI64Safe | Self::Bool | Self::FloatUnboxed | Self::BoxedImmortal
+        )
+    }
     /// Conservative representation floor for a semantic type, including Python
     /// annotations that admit subclasses. No semantic type alone authorizes a
     /// raw scalar carrier; value-keyed producer/range proofs raise this floor.

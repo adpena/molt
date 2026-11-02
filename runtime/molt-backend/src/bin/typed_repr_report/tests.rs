@@ -11,6 +11,54 @@ use super::json_report::aggregate_functions;
 use super::stats::collect_function_stats;
 
 #[test]
+fn counts_immortal_words_as_boxed_transport() {
+    let entry = BlockId(0);
+    let value = ValueId(0);
+    let function = LirFunction {
+        container_storage: HashMap::new(),
+        inline_i64_values: Default::default(),
+        name: "none_word".into(),
+        param_names: vec![],
+        param_types: vec![],
+        return_types: vec![TirType::None],
+        blocks: HashMap::from([(
+            entry,
+            LirBlock {
+                id: entry,
+                args: vec![],
+                ops: vec![LirOp {
+                    tir_op: TirOp {
+                        origin: None,
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstNone,
+                        operands: vec![],
+                        results: vec![value],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                    result_values: vec![LirValue {
+                        id: value,
+                        ty: TirType::None,
+                        repr: LirRepr::Immortal64,
+                    }],
+                }],
+                terminator: LirTerminator::Return {
+                    values: vec![value],
+                },
+            },
+        )]),
+        entry_block: entry,
+        label_id_map: HashMap::new(),
+    };
+    let stats = collect_function_stats(&function);
+    assert_eq!(stats.scalar_values, 0);
+    assert_eq!(stats.boxed_values, 1);
+    assert_eq!(stats.reference_values, 1);
+    assert_eq!(stats.values_by_repr["immortal64"], 1);
+    assert_eq!(stats.opcodes["ConstNone"].result_reprs["immortal64"], 1);
+}
+
+#[test]
 fn counts_lir_scalar_representations() {
     let entry = BlockId(0);
     let mut blocks = HashMap::new();
@@ -53,6 +101,7 @@ fn counts_lir_scalar_representations() {
     );
     let lir_func = LirFunction {
         container_storage: std::collections::HashMap::new(),
+        inline_i64_values: Default::default(),
         name: "add_ints".into(),
         param_names: vec!["a".into(), "b".into()],
         param_types: vec![TirType::I64, TirType::I64],
@@ -110,6 +159,7 @@ fn counts_ref64_as_reference_not_semantic_scalar() {
     );
     let lir_func = LirFunction {
         container_storage: std::collections::HashMap::new(),
+        inline_i64_values: Default::default(),
         name: "alloc_point".into(),
         param_names: vec!["class".into()],
         param_types: vec![TirType::DynBox],
@@ -186,6 +236,7 @@ fn separates_plain_copy_from_fallback_semantic_copy() {
     );
     let lir_func = LirFunction {
         container_storage: std::collections::HashMap::new(),
+        inline_i64_values: Default::default(),
         name: "copy_kinds".into(),
         param_names: vec!["value".into()],
         param_types: vec![TirType::DynBox],

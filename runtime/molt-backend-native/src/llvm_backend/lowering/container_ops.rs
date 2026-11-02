@@ -246,7 +246,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mutation_return = runtime_boxed_abi(mutate_symbol, 2)
             .unwrap_or_else(|| panic!("hash aggregate mutator {mutate_symbol} has no boxed ABI"))
             .result;
-        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+        let release = self
+            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
         for &operand in &op.operands {
             let word = self.borrowed_operand(&mut custody, operand);
             let args = [aggregate.into(), word.into()];
@@ -261,14 +262,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap_basic();
             match mutation_return {
                 RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue => {
-                    self.backend
-                        .builder
-                        .build_call(
-                            release,
-                            &[mutation_result.into()],
-                            "aggregate_insert_release",
-                        )
-                        .unwrap();
+                    release.emit(&self.backend.builder, mutation_result);
                 }
                 RuntimeBoxedReturn::BorrowedValue => {}
                 RuntimeBoxedReturn::Void => {
@@ -279,11 +273,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
         let result =
             self.finish_borrowed_operands(custody, aggregate, "aggregate_result", |this| {
-                let release = this.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-                this.backend
-                    .builder
-                    .build_call(release, &[aggregate.into()], "aggregate_abort_release")
-                    .unwrap();
+                let release = this.ensure_refcount_site(
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                );
+                release.emit(&this.backend.builder, aggregate.into());
             });
         self.bind_owned_runtime_result(op, result.into());
     }
@@ -397,24 +390,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_load(i64_ty, val_ptr, "iter_next_unboxed_value_load")
             .unwrap();
-        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+        let release = self
+            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
         if let Some(&value_id) = op.results.first() {
             self.values.insert(value_id, value_bits);
             self.value_types.insert(value_id, TirType::DynBox);
         } else {
-            self.backend
-                .builder
-                .build_call(release, &[value_bits.into()], "iter_value_release")
-                .unwrap();
+            release.emit(&self.backend.builder, value_bits);
         }
         if let Some(&done_id) = op.results.get(1) {
             self.values.insert(done_id, done_bits.into());
             self.value_types.insert(done_id, TirType::DynBox);
         } else {
-            self.backend
-                .builder
-                .build_call(release, &[done_bits.into()], "iter_done_release")
-                .unwrap();
+            release.emit(&self.backend.builder, done_bits.into());
         }
         true
     }

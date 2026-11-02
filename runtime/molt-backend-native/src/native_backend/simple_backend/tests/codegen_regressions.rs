@@ -277,35 +277,50 @@ fn assert_guarded_continuation_sources(compiled: &CompiledFunctionClif, paramete
                 .resolve_aliases(function.dfg.block_params(entry)[index])
         })
         .collect();
-    let terminal = function.layout.last_inst(continuation).unwrap();
-    let InstructionData::Jump { destination, .. } = &function.dfg.insts[terminal] else {
-        panic!(
-            "successful call arm must reach its value return: {}",
-            function.display()
-        );
-    };
-    let args: Vec<_> = destination.args(&function.dfg.value_lists).collect();
-    let [BlockArg::Value(actual)] = args.as_slice() else {
-        panic!(
-            "successful return must carry one value: {}",
-            function.display()
-        );
-    };
-    if let [parameter] = parameters {
-        assert!(
-            value_originates_only_from(
-                function,
-                *actual,
-                function.dfg.block_params(entry)[*parameter]
+    // Inline RC adds transparent branches between recursion exit and return.
+    // Check every reachable return, not one assumed direct jump.
+    let mut pending = vec![continuation];
+    let mut seen = BTreeSet::new();
+    let mut return_values = Vec::new();
+    while let Some(block) = pending.pop() {
+        if !seen.insert(block) {
+            continue;
+        }
+        let terminal = function.layout.last_inst(block).unwrap();
+        match &function.dfg.insts[terminal] {
+            InstructionData::Jump { destination, .. } => {
+                pending.push(destination.block(&function.dfg.value_lists))
+            }
+            InstructionData::Brif { blocks, .. } => pending.extend(
+                blocks
+                    .iter()
+                    .map(|destination| destination.block(&function.dfg.value_lists)),
             ),
-            "{}",
-            function.display()
-        );
-    } else {
+            instruction if instruction.opcode() == cranelift_codegen::ir::Opcode::Return => {
+                let [actual] = function.dfg.inst_args(terminal) else {
+                    panic!(
+                        "return must carry exactly one value: {}",
+                        function.display()
+                    );
+                };
+                return_values.push(*actual);
+            }
+            _ => panic!(
+                "unexpected successful continuation terminator: {}",
+                function.display()
+            ),
+        }
+    }
+    assert_eq!(
+        return_values.len(),
+        1,
+        "all checked RC paths must rejoin the single value return"
+    );
+    for actual in return_values {
         assert_eq!(
-            canonical_value_sources(function, *actual),
+            canonical_value_sources_from(function, actual, Some(&seen)),
             expected,
-            "{}",
+            "the entire success subgraph preserves exactly the selected parameter(s): {}",
             function.display()
         );
     }

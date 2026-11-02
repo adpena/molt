@@ -31,13 +31,13 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    local_inc_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
@@ -46,7 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -216,7 +216,9 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     builder
                         .ins()
                         .store(MemFlagsData::trusted(), *val, obj_ptr, (idx * 8) as i32);
-                    emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj);
+                    if !representation_plan.boxed_refcount_is_noop(arg_name) {
+                        emit_refcount(&mut *builder, *val, local_inc_ref_obj);
+                    }
                 }
                 jump_block(builder, initialized, &[]);
                 switch_to_block_materialized(builder, initialized);

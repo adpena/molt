@@ -66,6 +66,7 @@ fn sink_body(
     };
     let function = LirFunction {
         container_storage: std::collections::HashMap::new(),
+        inline_i64_values: Default::default(),
         name: "runtime_return_sink".into(),
         param_names: (0..args.len()).map(|index| format!("arg{index}")).collect(),
         param_types: block.args.iter().map(|v| v.ty.clone()).collect(),
@@ -246,7 +247,7 @@ const EXECUTE: &str = r#"
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes);
-let owners = new Map(), next = 1000n, allocated = 0, retained = 0, released = 0;
+let owners = new Map(), next = 0x7ffc0000000003e8n, allocated = 0, retained = 0, released = 0;
 function fresh() { const value = ++next; owners.set(value, 1); allocated++; return value; }
 function retain(value) {
   if (!owners.has(value)) return;
@@ -265,7 +266,9 @@ function reset() {
   assert.equal([...owners.values()].reduce((a,b)=>a+b,0), 0, 'leaked owner');
   owners = new Map(); allocated = retained = released = 0;
 }
-const host = {module_new:fresh, dict_setitem:(value)=>value, int_from_i64:fresh,
+const host = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+module_new:fresh, dict_setitem:(value)=>value, int_from_i64:fresh,
   int_as_i64:()=>72n, handle_resolve:()=>1, inc_ref_obj:retain, dec_ref_obj:release, eq:()=>yes};
 function run(name, ...args) {
   const module = new WebAssembly.Module(fs.readFileSync(config.modules[name]));

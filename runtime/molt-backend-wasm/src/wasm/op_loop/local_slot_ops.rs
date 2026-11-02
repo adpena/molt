@@ -12,6 +12,7 @@ pub(super) fn emit_local_slot_op(
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
+    scalar_plan: &crate::representation_plan::ScalarRepresentationPlan,
 ) -> bool {
     match op.kind {
         molt_ir::OpKind::StoreVar => {
@@ -67,14 +68,21 @@ pub(super) fn emit_local_slot_op(
                 // load/copy/identity aliases share their source ownership root;
                 // binding_alias alone contributes +1.
                 if molt_tir::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(op.kind)
+                    && !scalar_plan.boxed_refcount_is_noop(src_name)
                 {
                     func.instruction(&Instruction::LocalGet(src));
-                    store_borrowed_value(func, Some(out), import_ids, reloc_enabled);
+                    store_borrowed_value(
+                        func,
+                        Some(out),
+                        import_ids,
+                        reloc_enabled,
+                        locals.refcount(),
+                    );
                 } else {
                     debug_assert!(
                         molt_tir::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
                             op.kind,
-                        ),
+                        ) || scalar_plan.boxed_refcount_is_noop(src_name),
                         "local alias '{}' lacks generated ownership classification",
                         op.kind
                     );

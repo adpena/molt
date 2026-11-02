@@ -153,6 +153,8 @@ fn make_dummy_lowering<'ctx, 'func>(
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
         frame_homes: None,
+        refcount_admission: std::cell::Cell::new(None),
+        owned_frame_entered: None,
     }
 }
 

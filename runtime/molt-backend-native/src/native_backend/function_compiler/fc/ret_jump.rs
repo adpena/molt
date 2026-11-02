@@ -36,7 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -61,8 +61,8 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     scalar_fast_paths_enabled: bool,
     debug_block_origins: Option<&str>,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
-    local_inc_ref_obj: FuncRef,
-    local_dec_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
+    local_dec_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
@@ -71,7 +71,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -477,11 +477,17 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             // One raw-to-boxed materialization supplies one credit. Additional
             // independent owners retain that same object, never box it again.
             // Acquire all credits before any displaced owner can be released.
-            if owns_destination && !incoming.take_boxed_owner() {
-                emit_inc_ref_obj(builder, value, local_inc_ref_obj);
+            if owns_destination
+                && !incoming.take_boxed_owner()
+                && !representation_plan.boxed_refcount_is_noop(source)
+            {
+                emit_refcount(builder, value, local_inc_ref_obj);
             }
-            if owns_result && !incoming.take_boxed_owner() {
-                emit_inc_ref_obj(
+            if owns_result
+                && !incoming.take_boxed_owner()
+                && !representation_plan.boxed_refcount_is_noop(source)
+            {
+                emit_refcount(
                     builder,
                     result.expect("snapshot owner").2,
                     local_inc_ref_obj,
@@ -530,7 +536,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 cleanup_roots.acquire(builder, local_dec_ref_obj, result, result_value);
             }
             if let Some(displaced) = displaced {
-                builder.ins().call(local_dec_ref_obj, &[displaced]);
+                emit_refcount(builder, displaced, local_dec_ref_obj);
             } else if owns_destination {
                 cleanup_roots.acquire(builder, local_dec_ref_obj, name, value);
             }
@@ -610,7 +616,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             }
             if rc_authority.native_value_tracking_enabled() {
                 if slot_backed_join_slots.contains_key(name) {
-                    builder.ins().call(local_dec_ref_obj, &[old_val]);
+                    emit_refcount(builder, old_val, local_dec_ref_obj);
                 } else {
                     cleanup_roots.release(builder, local_dec_ref_obj, name);
                 }
@@ -647,8 +653,11 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 && storage == MergeRebindStorageKind::BoxedI64
                 && cleanup_roots.contains(out)
                 && native_alias_mints_owner(alias_roots, source, out);
-            if owns_result && !incoming.take_boxed_owner() {
-                emit_inc_ref_obj(builder, value, local_inc_ref_obj);
+            if owns_result
+                && !incoming.take_boxed_owner()
+                && !representation_plan.boxed_refcount_is_noop(source)
+            {
+                emit_refcount(builder, value, local_inc_ref_obj);
             }
             def_var_from_merge_rebind_storage(
                 module,

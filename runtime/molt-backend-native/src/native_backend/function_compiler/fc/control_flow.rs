@@ -26,7 +26,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -48,8 +48,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     rc_authority: NativeRcAuthority,
     scalar_fast_paths_enabled: bool,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
-    local_inc_ref_obj: FuncRef,
-    local_dec_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
+    local_dec_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let op_prefers_bool_lane = |op: &OpIR| {
@@ -64,7 +64,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -1144,7 +1144,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 representation_plan,
                             )
                             .expect("phi output carrier");
-                            emit_inc_ref_obj(builder, *boxed, local_inc_ref_obj);
+                            if !representation_plan.boxed_refcount_is_noop(out) {
+                                emit_refcount(builder, *boxed, local_inc_ref_obj);
+                            }
                             cleanup_roots.acquire(builder, local_dec_ref_obj, out, *boxed);
                         }
                     }

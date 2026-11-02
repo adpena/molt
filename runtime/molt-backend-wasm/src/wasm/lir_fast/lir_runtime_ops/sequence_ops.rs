@@ -169,6 +169,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_membership(
         return;
     };
     match result.repr {
+        LirRepr::Immortal64 => panic!("predicate producer must use its proven boolean carrier"),
         LirRepr::Bool1 => {
             ctx.emit_get(result.id);
             ctx.instructions.push(Instruction::I32Eqz);

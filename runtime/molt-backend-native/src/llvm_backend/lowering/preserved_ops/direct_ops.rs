@@ -684,35 +684,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
                 };
+                if kind == OpKind::Borrow
+                    || crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
+                {
+                    self.emit_refcount(
+                        op,
+                        molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+                    );
+                    return true;
+                }
+                debug_assert!(
+                    crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(kind),
+                    "LLVM alias '{kind}' lacks generated ownership classification"
+                );
                 let src_val = self.resolve(src_id);
                 let ty = self
                     .value_types
                     .get(&src_id)
                     .cloned()
                     .unwrap_or(TirType::DynBox);
-                if kind == OpKind::Borrow
-                    || crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
-                {
-                    // Only a heap-capable carrier holds a reference, as the
-                    // Cranelift and WASM lowerings retain: a raw scalar's alias
-                    // owns nothing, and its payload bits must never reach the
-                    // object reference-count ABI.
-                    if Self::tir_type_is_dynbox_like(&ty) {
-                        let src_bits = self.ensure_i64(src_val);
-                        let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-                        self.backend
-                            .builder
-                            .build_call(inc_fn, &[src_bits.into()], "")
-                            .unwrap();
-                    }
-                } else {
-                    debug_assert!(
-                        crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
-                            kind
-                        ),
-                        "LLVM alias '{kind}' lacks generated ownership classification"
-                    );
-                }
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, src_val);
                     self.value_types.insert(result_id, ty);
@@ -727,23 +717,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // (`def_var_named(out, box_none())`), never to the released source.
             // We mirror that: emit the dec_ref, then bind any result to None.
             OpKind::Release => {
-                let Some(&src_id) = op.operands.first() else {
+                let Some(_) = op.operands.first() else {
                     return false;
                 };
-                let src_val = self.resolve(src_id);
-                let src_bits = self.ensure_i64(src_val);
-                let dec_fn = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-                self.backend
-                    .builder
-                    .build_call(dec_fn, &[src_bits.into()], "")
-                    .unwrap();
-                if let Some(&result_id) = op.results.first() {
-                    let none_val: BasicValueEnum<'ctx> = i64_ty
-                        .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-                        .into();
-                    self.values.insert(result_id, none_val);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_refcount(
+                    op,
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                );
                 true
             }
             OpKind::AllocClass => {

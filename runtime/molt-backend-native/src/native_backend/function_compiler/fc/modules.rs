@@ -40,12 +40,12 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
-    local_inc_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
     hoisted_str_slot: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
 ) {
     // Reconstruct the original op-local closure (captures representation_plan +
@@ -57,7 +57,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -156,7 +156,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             // module_import may return a borrowed reference from sys.modules —
             // inc_ref to ensure the caller owns it and dec_ref at last_use
             // doesn't free a module still in sys.modules.
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+            emit_refcount(&mut *builder, res, local_inc_ref_obj);
             if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }

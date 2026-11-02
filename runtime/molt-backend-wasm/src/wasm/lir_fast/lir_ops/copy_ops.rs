@@ -21,7 +21,10 @@ pub(super) fn emit_lir_box_value(ctx: &mut LirLowerCtx, op: &LirOp) {
         return;
     }
     if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
-        assert!(matches!(result.repr, LirRepr::DynBox | LirRepr::Ref64));
+        assert!(matches!(
+            result.repr,
+            LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64
+        ));
         emit_get_boxed_for_repr(ctx, src);
         ctx.emit_set(result.id);
         if matches!(ctx.repr_of(src), LirRepr::DynBox | LirRepr::Ref64) {
@@ -29,7 +32,7 @@ pub(super) fn emit_lir_box_value(ctx: &mut LirLowerCtx, op: &LirOp) {
             // authority: its result owns a reference distinct from its input.
             ctx.emit_get(result.id);
             ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
-        } else if ctx.repr_of(src) == LirRepr::I64 {
+        } else if ctx.repr_of(src) == LirRepr::I64 && !ctx.func.inline_i64_values.contains(&src) {
             // BoxVal owns the physical materialization, unlike a borrowed
             // runtime operand. Its SSA drop/return now controls that owner.
             let owner = ctx.boxed_operand_local(src);
@@ -51,8 +54,12 @@ pub(super) fn emit_lir_unbox_value(ctx: &mut LirLowerCtx, op: &LirOp) {
         .operands
         .first()
         .expect("UnboxVal requires operand");
-    assert!(matches!(ctx.repr_of(src), LirRepr::DynBox | LirRepr::Ref64));
+    assert!(matches!(
+        ctx.repr_of(src),
+        LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64
+    ));
     match result.repr {
+        LirRepr::Immortal64 => ctx.emit_get(src),
         LirRepr::I64 => {
             let local = ctx.get_local(src);
             emit_unbox_i64(ctx, local);
@@ -80,7 +87,11 @@ pub(super) fn emit_lir_unbox_value(ctx: &mut LirLowerCtx, op: &LirOp) {
 
 pub(super) fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
     if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
-        ctx.emit_get(src);
+        if result.repr == LirRepr::Immortal64 {
+            emit_get_boxed_for_repr(ctx, src);
+        } else {
+            ctx.emit_get(src);
+        }
         ctx.emit_set(result.id);
     }
 }
@@ -88,6 +99,9 @@ pub(super) fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
 pub(super) fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
     match original_kind(op) {
         Some(molt_ir::OpKind::BindingAlias) => emit_lir_binding_alias(ctx, op),
+        Some(molt_ir::OpKind::Borrow) if !op.result_values.is_empty() => {
+            emit_lir_binding_alias(ctx, op)
+        }
         _ if crate::tir::passes::value_identity::copy_value_source(&op.tir_op).is_some() => {
             emit_lir_identity_copy(ctx, op)
         }
@@ -124,11 +138,16 @@ pub(super) fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) 
 
 fn emit_lir_binding_alias(ctx: &mut LirLowerCtx, op: &LirOp) {
     if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
-        if matches!(result.repr, LirRepr::DynBox | LirRepr::Ref64) {
+        if matches!(
+            result.repr,
+            LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64
+        ) {
             emit_get_boxed_for_repr(ctx, src);
             ctx.instructions
                 .push(Instruction::LocalTee(ctx.get_local(result.id)));
-            ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
+            if result.repr != LirRepr::Immortal64 {
+                ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
+            }
         } else {
             assert_eq!(
                 ctx.repr_of(src),

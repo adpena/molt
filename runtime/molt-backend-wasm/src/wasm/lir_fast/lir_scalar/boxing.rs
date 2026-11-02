@@ -14,6 +14,7 @@ use wasm_encoder::{BlockType, Instruction, ValType};
 /// full-i64 `RawI64FullDeopt` values.
 pub(in crate::wasm::lir_fast) fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
     match ctx.repr_of(v) {
+        LirRepr::I64 if ctx.func.inline_i64_values.contains(&v) => emit_box_inline_i64(ctx, v),
         LirRepr::I64 => {
             let local = ctx.boxed_operand_local(v);
             ctx.instructions.push(Instruction::LocalGet(local));
@@ -42,7 +43,7 @@ pub(in crate::wasm::lir_fast) fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, 
             let scratch = ctx.alloc_scratch_local(ValType::I64);
             push_f64_to_i64_canonical(|instruction| ctx.instructions.push(instruction), scratch);
         }
-        LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_get(v),
+        LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64 => ctx.emit_get(v),
     }
 }
 
@@ -105,7 +106,9 @@ pub(in crate::wasm::lir_fast) fn emit_box_none(ctx: &mut LirLowerCtx) {
 }
 
 pub(in crate::wasm::lir_fast) fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
-    if ctx.repr_of(value) == LirRepr::I64 {
+    if ctx.repr_of(value) == LirRepr::I64 && ctx.func.inline_i64_values.contains(&value) {
+        emit_box_inline_i64(ctx, value);
+    } else if ctx.repr_of(value) == LirRepr::I64 {
         // Unlike a borrowed call argument, a return transfers the freshly
         // materialized owner to the caller (or None with pending MemoryError).
         emit_box_i64_overflow_safe(ctx, value);

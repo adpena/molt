@@ -290,10 +290,12 @@ impl WasmFunctionFrame {
         func.instruction(&Instruction::I64Store(bits_arg));
         func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
         func.instruction(&Instruction::LocalGet(homes.displaced));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[WasmRuntimeImport::DecRefObj],
+            import_ids,
+            self.locals.refcount(),
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
         );
         func.instruction(&Instruction::End);
     }
@@ -393,7 +395,7 @@ impl WasmFunctionFrame {
         reloc_enabled: bool,
     ) {
         if let Some(region) = self.const_anchor_region {
-            region.emit_release(func, import_ids, reloc_enabled);
+            region.emit_release(func, import_ids, reloc_enabled, self.locals.refcount());
         }
         if let Some(attempted) = self.owned_frame_attempt {
             func.instruction(&Instruction::LocalGet(attempted));
