@@ -18,10 +18,19 @@ _LEDGER = """\
 
 ### Family dependency order (2026-10-29)
 
-| Family | Cause | Keys |
-|---|---|---|
-| A. Alpha | cause a | HF-1 |
-| B. Beta | cause b | HF-2 |
+| Family | Stratum | HF-459 axes | Cause | Keys |
+| --- | --- | --- | --- | --- |
+| A. Alpha | engine | loop/per_op | cause a | HF-1 |
+| B. Beta | semantics | - | cause b | HF-2 |
+
+| From | To | Reason |
+| --- | --- | --- |
+| A | B | beta needs alpha |
+
+| Row | V1 class |
+| --- | --- |
+| HF-1 | release_blocking |
+| HF-2 | release_blocking |
 
 ## Fixed after the handoff
 
@@ -65,6 +74,8 @@ def test_open_inserts_the_row_joins_its_family_and_projects_it(tmp_path: Path) -
         [
             "open",
             "HF-3",
+            "--v1-class",
+            "release_blocking",
             "--family",
             "B",
             "--section",
@@ -148,14 +159,24 @@ def test_note_appends_to_an_open_row_and_keeps_its_family(tmp_path: Path) -> Non
     assert _family_keys(root) == {"A": ("HF-1",), "B": ("HF-2",)}
 
 
-_REQUIREMENT_LEDGER = _LEDGER.replace(
-    "## Open: release blockers",
-    "## Open release requirements\n\n"
-    "| ID | Open release requirement | Existing authority and acceptance boundary |\n"
-    "|----|--------------------------|--------------------------------------------|\n"
-    "| V1-1 | Requirement. | Boundary. |\n\n"
-    "## Open: release blockers",
-).replace("| A. Alpha | cause a | HF-1 |", "| A. Alpha | cause a | HF-1, V1-1 |")
+_REQUIREMENT_LEDGER = (
+    _LEDGER.replace(
+        "## Open: release blockers",
+        "## Open release requirements\n\n"
+        "| ID | Open release requirement | Existing authority and acceptance boundary |\n"
+        "|----|--------------------------|--------------------------------------------|\n"
+        "| V1-1 | Requirement. | Boundary. |\n\n"
+        "## Open: release blockers",
+    )
+    .replace(
+        "| A. Alpha | engine | loop/per_op | cause a | HF-1 |",
+        "| A. Alpha | engine | loop/per_op | cause a | HF-1, V1-1 |",
+    )
+    .replace(
+        "| HF-1 | release_blocking |",
+        "| HF-1 | release_blocking |\n| V1-1 | release_blocking |",
+    )
+)
 
 
 def test_note_appends_to_a_release_requirement_and_refuses_a_next_step(
@@ -194,6 +215,8 @@ def test_a_bare_bar_in_a_cell_is_refused(tmp_path: Path) -> None:
         [
             "open",
             "HF-3",
+            "--v1-class",
+            "release_blocking",
             "--family",
             "A",
             "--section",
@@ -298,3 +321,128 @@ def test_family_recut_refuses_a_malformed_spec(tmp_path: Path) -> None:
     spec.write_text('{"describe": [{"letter": "A"}]}', encoding="utf-8")
 
     assert ledger_edit.main(["family", "recut", "--spec", str(spec)], root=root) == 2
+
+
+def test_family_create_requires_its_prior_art(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    argv = [
+        "family",
+        "create",
+        "C",
+        "--name",
+        "Gamma",
+        "--cause",
+        "cause g",
+        "--stratum",
+        "apparatus",
+    ]
+    # A family without a prior-art section is refused, and nothing is written.
+    assert ledger_edit.main(argv, root=root) == 1
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == before
+
+    ready = _root(tmp_path / "ready", _PRIOR_ART + "\n## C. Gamma\n\ntext\n")
+    assert ledger_edit.main(argv, root=ready) == 0
+    family = next(f for f in _status(ready).dependency_families if f.letter == "C")
+    assert (family.name, family.keys) == ("Gamma", ())
+    assert ledger_edit.main(argv, root=ready) == 2  # already exists
+
+
+def test_edges_change_only_through_the_table_and_readiness_follows(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    assert finding_status.dependency_predecessors(_status(root))["HF-2"] == frozenset(
+        {"HF-1"}
+    )
+
+    # Adding B -> A would order each family after itself; nothing is written.
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    assert ledger_edit.main(["edge", "add", "B", "A", "--reason", "x"], root=root) == 1
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == before
+    assert ledger_edit.main(["edge", "add", "A", "B", "--reason", "x"], root=root) == 2
+
+    # An explicitly empty edge table means there are no prerequisites.
+    assert ledger_edit.main(["edge", "remove", "A", "B"], root=root) == 0
+    assert ledger_edit.main(["edge", "remove", "B", "A"], root=root) == 2
+
+    ready = _root(tmp_path / "ready", _PRIOR_ART + "\n## C. Gamma\n\ntext\n")
+    create = [
+        "family",
+        "create",
+        "C",
+        "--name",
+        "Gamma",
+        "--cause",
+        "cause g",
+        "--stratum",
+        "apparatus",
+    ]
+    assert ledger_edit.main(create, root=ready) == 0
+    assert (
+        ledger_edit.main(["edge", "add", "B", "C", "--reason", "c needs b"], root=ready)
+        == 0
+    )
+    assert finding_status.dependency_predecessors(_status(ready))["HF-2"] == frozenset(
+        {"HF-1"}
+    )
+    assert ledger_edit.main(["edge", "remove", "A", "B"], root=ready) == 0
+    assert finding_status.dependency_predecessors(_status(ready))["HF-2"] == frozenset()
+
+
+def test_merge_rewrites_row_edges_and_close_satisfies_named_prerequisites(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    assert (
+        ledger_edit.main(
+            [
+                "open",
+                "HF-3",
+                "--family",
+                "B",
+                "--v1-class",
+                "release_blocking",
+                "--section",
+                "Open: release blockers",
+                "--defect",
+                "Three.",
+                "--evidence",
+                "E3.",
+                "--next",
+                "N3.",
+            ],
+            root=root,
+        )
+        == 0
+    )
+    assert ledger_edit.main(["edge", "remove", "A", "B"], root=root) == 0
+    for source, target in (("HF-1", "HF-2"), ("HF-2", "HF-3")):
+        assert (
+            ledger_edit.main(
+                ["edge", "add", source, target, "--reason", "input producer"], root=root
+            )
+            == 0
+        )
+    assert ledger_edit.main(["merge", "HF-2", "--into", "HF-1"], root=root) == 0
+    status = _status(root)
+    assert [(edge.source, edge.target) for edge in status.dependency_edges] == [
+        ("HF-1", "HF-3")
+    ]
+    assert set(status.classes) == {"HF-1", "HF-3"}
+    assert status.open_keys == ("HF-1", "HF-3")
+    assert (
+        ledger_edit.main(["close", "HF-1", "--fix", "Independent proof."], root=root)
+        == 0
+    )
+    status = _status(root)
+    assert set(status.classes) == {"HF-3"}
+    assert status.open_keys == ("HF-3",)
+    assert finding_status.dependency_predecessors(status)["HF-3"] == frozenset({"HF-1"})
+    from tools import dag_dispatch
+    from types import SimpleNamespace
+
+    engine = SimpleNamespace(
+        active=True, task="engine-owner", payload={"dispatch": {"family": "A"}}
+    )
+    assert dag_dispatch.plan_dispatch(status, [engine], ["HF-3"]).waits == {"HF-3": ()}

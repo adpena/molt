@@ -162,6 +162,20 @@ rereading the entire board before each commit.
    by mechanism, sibling sites and paths; return at the deliverable or budget,
    or when the assignment's explicit stop condition holds.
 
+Each family has one typed stratum (`engine`, `semantics`, `delivery`, or
+`apparatus`) in the ledger family table. Dispatch refuses a new apparatus lane
+while another apparatus lane is active, and refuses a non-engine lane when no
+engine lane is active. Only `landing_repair` and `integrator_ledger` bypass these
+capacity rules; other departure reasons cannot. Refusals name the active lanes.
+The plan shows the recorded primitive geometric mean against CPython when
+`bench/primitive_ratchet.json` exists (one per-op axis per primitive plus the empty
+startup axis), and says unavailable when absent. Engine ready rows show the axes
+owned by their family table entries.
+
+While landing success over the last 24 hours is at least 80% and median landing
+latency is at most 1 hour, apparatus dispatch is limited to `landing_repair`.
+This budget is an orchestrator obligation; its automated check is a follow-up.
+
 ## Attest every optimization (binding)
 
 "Landed" and "effective" are separate claims. Performance/capability claims need
@@ -300,9 +314,20 @@ The shared checkout accumulates multiple hands' uncommitted WIP, which blocks
   <crate>`) so the author's compile-check transfers — no rebuild. This is how
   0f955df37 landed cleanly while the shared tree stayed dirty.
 - **Prefer per-lane worktrees for NEW build-heavy lanes** so the shared
-  checkout stays clean: `tools/molt_dev.py lane start <slug>` creates,
+  checkout stays clean: `tools/molt_dev.py lane start <slug> --rows HF-n`
+  admits rows whose predecessor rows are all closed, then creates,
   records and provisions one, and `lane retire <slug>` removes it after it
   lands (docs/ops/INTEGRATION.md).
+
+The ledger DAG's ready set owns dispatch order. `release_blocking` and
+`release_apparatus` are the v1 tier; `post_1_0` and `apparatus` remain outside
+that tier. Every open row has one ledger class. A family endpoint expands only
+to open rows in the same tier, so v1 never waits on a later-product sibling.
+An active lane claim does not close a prerequisite. `lane list` ranks ready v1
+rows by the longest downstream chain of open v1 rows including self, then the
+unique downstream v1 row count and finding ID. `lane dispatch --plan` reads the
+checkout without mutation and also shows open waits. A non-ready dispatch
+needs a non-default typed reason and text retained in its coordination record.
 
 ## 1000-Year End-State Roadmap (R0–R9) — the recipe
 

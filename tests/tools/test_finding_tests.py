@@ -444,10 +444,20 @@ _DAG_LEDGER = """# Ledger
 
 ### Family dependency order (2026-10-29)
 
-| Family | Shared cause or missing authority | Open rows |
+| Family | Stratum | HF-459 axes | Shared cause or missing authority | Open rows |
+| --- | --- | --- | --- | --- |
+| A. Typed ABI | engine | loop/per_op | Hand tables | HF-1, HF-2 |
+| B. Binding flow | semantics | - | Worst-case rebinding | {b_rows} |
+
+| From | To | Reason |
 | --- | --- | --- |
-| A. Typed ABI | Hand tables | HF-1, HF-2 |
-| B. Binding flow | Worst-case rebinding | {b_rows} |
+| A | B | binding facts need the typed ABI |
+
+| Row | V1 class |
+| --- | --- |
+| HF-1 | release_blocking |
+| HF-2 | release_blocking |
+| HF-3 | release_apparatus |
 
 ## Open: correctness and release blockers
 
@@ -498,3 +508,57 @@ def test_every_open_finding_sits_in_one_dependency_family_with_prior_art() -> No
     assert finding_coverage.dependency_order_problems(bare, _PRIOR_ART) == [
         "the ledger has no family dependency order table"
     ]
+
+
+def _dag_with(edges: str, extra: str = "") -> str:
+    table = "| From | To | Reason |\n| --- | --- | --- |\n" + edges if edges else ""
+    return _DAG_LEDGER.format(b_rows="HF-3").replace(
+        "| From | To | Reason |\n| --- | --- | --- |\n"
+        "| A | B | binding facts need the typed ABI |\n",
+        table + extra,
+    )
+
+
+def test_row_prerequisites_derive_from_the_edges_table() -> None:
+    from tools import finding_status
+
+    status = finding_status.project(_DAG_LEDGER.format(b_rows="HF-3"))
+    assert finding_status.dependency_predecessors(status)["HF-3"] == frozenset(
+        {"HF-1", "HF-2"}
+    )
+    chain = finding_status.project(
+        _dag_with("| A | HF-3 | b needs a |\n| HF-3 | HF-1 | a needs b |\n")
+    )
+    with pytest.raises(
+        finding_status.DependencyCycleError, match="row dependency cycle"
+    ):
+        finding_status.dependency_order(chain)
+
+
+@pytest.mark.parametrize(
+    ("edges", "extra", "expected"),
+    [
+        ("", "", "has no edges table"),
+        ("| A | Z | z needs a |\n", "", "names unknown endpoint Z"),
+        ("| A | A | itself |\n", "", "orders an endpoint after itself"),
+        ("| A | B |  |\n", "", "gives no reason"),
+        ("| A | B | x |\n| A | B | y |\n", "", "repeats the edge"),
+        ("| A | B | x |\n| B | A | y |\n", "", "row dependency cycle"),
+        (
+            "| A | B | x |\n",
+            "\nEdges: A -> B (prose copy).\n",
+            "states the family order in prose",
+        ),
+        (
+            "| A | B | x |\n",
+            "\nLevels: 0 = A; 1 = B.\n",
+            "states the family order in prose",
+        ),
+    ],
+)
+def test_edges_table_refuses_every_drift(edges: str, extra: str, expected: str) -> None:
+    from tools import finding_status
+
+    status = finding_status.project(_dag_with(edges, extra))
+    problems = finding_coverage.dependency_order_problems(status, _PRIOR_ART)
+    assert any(expected in problem for problem in problems), problems

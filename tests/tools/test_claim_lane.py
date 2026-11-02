@@ -74,7 +74,6 @@ def _build_integration_seed(root: Path, driver: GitFixture) -> None:
         driver, GitFixture(root / "remote.git", root / "work"), role=GitFixtureRole.SEED
     )
     w = root / "work"
-    (w / "docs/agent").mkdir(parents=True)
     (w / "docs/agent/CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
     (w / "tools/proof_plan.toml").write_text(
         'always = ["echo claim-policy"]\n', encoding="utf-8"

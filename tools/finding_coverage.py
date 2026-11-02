@@ -261,32 +261,9 @@ _PRIOR_ART_HEADING_RE = re.compile(r"^## (?P<title>[A-Z]\. \S.*?)\s*$", re.MULTI
 def dependency_order_problems(
     status: finding_status.FindingStatus, prior_art: str
 ) -> list[str]:
-    """Each open row sits in exactly one family, and each family has prior art."""
+    """The canonical graph is valid and every family has sourced prior art."""
+    problems = finding_status.dependency_problems(status)
     families = status.dependency_families
-    if not families:
-        return ["the ledger has no family dependency order table"]
-    problems: list[str] = []
-    open_keys = set(status.open_keys)
-    placed: dict[str, list[str]] = {}
-    for family in families:
-        for key in family.keys:
-            placed.setdefault(key, []).append(family.letter)
-            if key not in open_keys:
-                problems.append(
-                    f"dependency family {family.title} lists {key}, which is not "
-                    "an open finding"
-                )
-    problems.extend(
-        f"open finding {key} sits in families {', '.join(letters)}; place it in one"
-        for key, letters in sorted(placed.items())
-        if len(letters) > 1
-    )
-    problems.extend(
-        f"open finding {key} is in no dependency family; place it in the ledger's "
-        "family dependency order"
-        for key in status.open_keys
-        if key not in placed
-    )
     headings = set(_PRIOR_ART_HEADING_RE.findall(prior_art))
     problems.extend(
         f"dependency family {family.title} has no section in {PRIOR_ART_PATH}"

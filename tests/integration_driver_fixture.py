@@ -264,6 +264,58 @@ def copy_git_fixture(
     _fixture_git(destination.work, "update-index", "--refresh")
 
 
+# The smallest real ledger: family A (level 0) and family B (level 1, A -> B).
+# `lane start` admits a lane against the ledger at its base commit (HF-674),
+# so every fixture repository's main carries one.
+FIXTURE_LEDGER = """# Ledger
+
+## Release dependency and landing order
+
+### Family dependency order
+
+| Family | Stratum | HF-459 axes | Shared cause or missing authority | Open rows |
+| --- | --- | --- | --- | --- |
+| A. First | engine | loop/per_op | a | HF-1, HF-3, HF-4 |
+| B. Second | semantics | - | b | HF-2 |
+| C. Third | delivery | - | c | HF-5, HF-6 |
+| D. Fourth | apparatus | - | d | HF-7 |
+
+| From | To | Reason |
+| --- | --- | --- |
+| A | B | b needs a |
+| HF-2 | HF-5 | five consumes two |
+| HF-2 | HF-7 | seven consumes two |
+
+| Row | V1 class |
+| --- | --- |
+| HF-1 | release_blocking |
+| HF-2 | release_apparatus |
+| HF-3 | post_1_0 |
+| HF-4 | apparatus |
+| HF-5 | release_blocking |
+| HF-6 | release_blocking |
+| HF-7 | release_blocking |
+
+## Open: correctness and release blockers
+
+| ID | Defect | Evidence | Next |
+|----|--------|----------|------|
+| HF-1 | d | e | n |
+| HF-2 | d | e | n |
+| HF-3 | later product | e | n |
+| HF-4 | development apparatus | e | n |
+| HF-5 | d | e | n |
+| HF-6 | independent of five in the same family | e | n |
+| HF-7 | d | e | n |
+
+## Fixed after the handoff
+
+| ID | Defect | Fix |
+|----|--------|-----|
+| HF-9 | old prerequisite | fixed independently |
+"""
+
+
 def build_driver_history(root: Path, driver: Path) -> None:
     """Commit the complete driver once for every real-controller test family."""
     fixture = GitFixture(root / "origin.git", root / "work")
@@ -276,6 +328,9 @@ def build_driver_history(root: Path, driver: Path) -> None:
         'always = ["echo integration-policy"]\n', encoding="utf-8"
     )
     (fixture.work / "README.md").write_text("seed\n", encoding="utf-8")
+    ledger = fixture.work / "docs/agent/V1_HANDOFF_FINDINGS.md"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(FIXTURE_LEDGER, encoding="utf-8")
     _fixture_git(fixture.work, "add", "-A", "--", ".")
     _fixture_git(fixture.work, "commit", "-q", "--no-verify", "-m", "seed: main driver")
     publish_git_fixture(fixture)
