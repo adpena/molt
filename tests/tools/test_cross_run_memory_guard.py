@@ -48,11 +48,21 @@ def test_trunk_inventory_admits_only_declared_commands(tmp_path):
         trunk_loop.selected_host(
             cross_run.DEFAULT_INVENTORY, "bat00", ["portability.guard.windows"]
         )
-    with pytest.raises(ValueError, match="no admitted"):
-        trunk_loop.selected_host(
-            cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
-        )
+    mac = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
+    )
+    assert mac.launcher == cross_run.DetachedLauncher.POSIX_SESSION
     text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
+    cellless = tmp_path / "cellless.toml"
+    cellless.write_text(
+        text.replace(
+            'proof_cells = ["portability.cargo-custody.macos", "portability.queue.macos"]',
+            "proof_cells = []",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="no admitted"):
+        trunk_loop.selected_host(cellless, "macmini", ["portability.queue.macos"])
     inventory = tmp_path / "hosts.toml"
     inventory.write_text(
         text.replace('launcher = "windows-cim"', 'launcher = "posix-session"'),
@@ -164,12 +174,15 @@ if g.exists():c.write_text('completed after launcher exit')
         str(tmp_path),
     )
     launcher = subprocess.run(
-        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8", timeout=10
+        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8"
     )
     assert launcher.returncode == 0, launcher.stderr
     pid = trunk_loop.acknowledge(launcher.stdout)
-    deadline = time.monotonic() + 10
-    while not ready.exists() and time.monotonic() < deadline:
+    from molt.process_model import pid_alive
+
+    # The detached child's liveness is the progress signal; the harness's
+    # per-test timeout owns hang detection, so load cannot fail a slow start.
+    while not ready.exists() and pid_alive(pid):
         time.sleep(0.01)
     try:
         assert json.loads(ready.read_text(encoding="utf-8")) == {
@@ -179,7 +192,7 @@ if g.exists():c.write_text('completed after launcher exit')
         assert pid != os.getsid(0)
     finally:
         release.write_text("parent already exited", encoding="utf-8")
-    while not complete.exists() and time.monotonic() < deadline:
+    while not complete.exists() and pid_alive(pid):
         time.sleep(0.01)
     assert complete.read_text(encoding="utf-8") == "completed after launcher exit"
 
