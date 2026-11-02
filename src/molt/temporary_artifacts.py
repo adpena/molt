@@ -927,6 +927,25 @@ def _legacy_blocked_failure(
     return {**accepted, "state": "retained"}
 
 
+def _require_target_receipt(target: Path, owner: Mapping[str, object]) -> None:
+    """Refuse a retained payload that no longer proves its allocation.
+
+    A freed inode can be reused by another directory; the allocation's nonce,
+    carried inside the payload, tells them apart. Only this owner's own
+    recorded removal attempt may have deleted the receipt, so that alone
+    excuses an absent one. Anything else is residue: blocked and reported
+    once, never deleted.
+    """
+    if _holds_target_receipt(target, owner):
+        return
+    if (
+        not os.path.lexists(target / _TARGET_RECEIPT)
+        and _RemovalAttempts.of(owner).count
+    ):
+        return
+    raise _CrashResidue("scratch payload lacks its allocation receipt")
+
+
 def _reclaim_locked(
     generation: Path, owner: dict[str, object], *, verify_only: bool = False
 ) -> dict[str, object]:
@@ -955,6 +974,7 @@ def _reclaim_locked(
     target = _target(generation, owner)
     if not _same_identity(_payload_identity(target), owner["target_identity"]):
         raise ValueError("scratch target generation changed before reclamation")
+    _require_target_receipt(target, owner)
     if verify_only:
         return owner
     owner = {**owner, "state": "reclaiming"}
@@ -1617,10 +1637,10 @@ def _visit_pending_locked(
             return _PendingVisit(removal=True)
     if owner["state"] != "retained":
         return _PendingVisit()
-    if not _same_identity(
-        _payload_identity(_target(generation, owner)), owner["target_identity"]
-    ):
+    target = _target(generation, owner)
+    if not _same_identity(_payload_identity(target), owner["target_identity"]):
         raise ValueError("retained scratch payload identity changed")
+    _require_target_receipt(target, owner)
     return _PendingVisit(candidate=_candidate(generation, owner))
 
 

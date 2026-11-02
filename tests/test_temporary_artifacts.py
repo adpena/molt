@@ -816,6 +816,9 @@ def test_failed_eviction_delete_is_retried_by_a_later_sweep(tmp_path, monkeypatc
     assert owner["state"] == "retained"
     assert scratch._index_path(lease.generation).is_file()
     assert (lease.generation / "payload" / "failure").read_bytes() == b"regenerable"
+    # A partial removal can take the allocation receipt with it; the owner's
+    # recorded attempt excuses that absence, so the retry still runs.
+    (lease.generation / "payload" / scratch._TARGET_RECEIPT).unlink()
     second = scratch.reclaim_terminal_scratch(
         root, retention=scratch.ScratchRetention(0, 0)
     )
@@ -2979,6 +2982,45 @@ def test_explicit_apply_verifies_before_it_publishes_an_index(tmp_path, monkeypa
     assert not scratch._index_path(lease.generation).exists()
     assert (lease.generation / "owner.json").read_bytes() == owner_before
     assert scratch.reclaim_terminal_scratch(root)["errors"] == []
+
+
+@pytest.mark.parametrize("path", ["indexed", "unindexed", "own-success"])
+def test_every_deletion_path_checks_the_allocation_receipt(tmp_path, path):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "kept").write_bytes(b"not provably this allocation's")
+
+    def foreign_receipt(directory: Path) -> None:
+        # A directory that reused the freed inode carries another nonce.
+        write_exact(
+            directory / scratch._TARGET_RECEIPT,
+            {"schema": scratch.SCHEMA, "nonce": "0" * 32},
+        )
+
+    if path == "own-success":
+        foreign_receipt(lease.target)
+        with pytest.raises(ValueError, match="allocation receipt"):
+            _finish(lease)
+        assert (lease.generation / "payload" / "kept").exists()
+        return
+    assert _finish(lease, success=False)["state"] == "retained"
+    foreign_receipt(lease.generation / "payload")
+    if path == "unindexed":
+        scratch._drop_index(lease.generation)
+    root = lease.generation.parent
+    for sweep in range(2):
+        result = scratch.reclaim_terminal_scratch(
+            root,
+            retention=scratch.ScratchRetention(0, 0),
+            resolve_legacy_archives=path == "unindexed",
+        )
+        assert result["reclaimed"] == [], result
+        assert (lease.generation / "payload" / "kept").exists()
+        reports = result["errors"] + [item["reason"] for item in result["held"]]
+        if path == "indexed" and sweep:
+            # Blocked and reported once, like any other residue.
+            assert reports == [], result
+        else:
+            assert any("allocation receipt" in report for report in reports), result
 
 
 def test_explicit_cleanup_command_reads_the_guard_bound(tmp_path, monkeypatch, capsys):
