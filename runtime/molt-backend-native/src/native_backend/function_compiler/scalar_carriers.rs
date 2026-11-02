@@ -75,6 +75,61 @@ pub(in crate::native_backend::function_compiler) fn emit_exception_pending_condi
     builder.ins().icmp_imm_s(IntCC::NotEqual, pending, 0)
 }
 
+/// Service async work only when its runtime word is set. The fast result is
+/// still an exception observation: poll placement marks existing checks after
+/// raising operations; it does not make their exception predicate redundant.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
+    builder: &mut FunctionBuilder<'_>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    work_ptr_slot: cranelift_codegen::ir::StackSlot,
+    record_slot: cranelift_codegen::ir::StackSlot,
+    cold_observer: FuncRef,
+    fast_observer: Option<FuncRef>,
+) -> Value {
+    let ptr = builder
+        .ins()
+        .stack_load(types::I64, types::I64, work_ptr_slot, 0);
+    // Cranelift's atomic_load is SC (its only atomic-load ordering). A normal
+    // load is unsound here: GVN/LICM may reuse it across an external request.
+    let word = builder
+        .ins()
+        .atomic_load(types::I32, MemFlagsData::trusted(), ptr);
+    let pending = builder.ins().icmp_imm_s(IntCC::NotEqual, word, 0);
+    let cold = builder.create_block();
+    builder.set_cold_block(cold);
+    let fast = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    builder.ins().brif(pending, cold, &[], fast, &[]);
+    switch_to_block_materialized(builder, cold);
+    seal_block_once(builder, sealed_blocks, cold);
+    let call = builder.ins().call(cold_observer, &[]);
+    let result = builder.inst_results(call)[0];
+    jump_block(builder, done, &[result]);
+    switch_to_block_materialized(builder, fast);
+    seal_block_once(builder, sealed_blocks, fast);
+    let cond =
+        emit_exception_pending_condition(builder, types::I64, cold_observer, Some(record_slot));
+    let result = if let Some(observer) = fast_observer {
+        let capture = builder.create_block();
+        let none = builder
+            .ins()
+            .iconst(types::I64, molt_codegen_abi::QNAN_TAG_NONE_I64);
+        brif_block(builder, cond, capture, &[], done, &[none]);
+        switch_to_block_materialized(builder, capture);
+        seal_block_once(builder, sealed_blocks, capture);
+        let call = builder.ins().call(observer, &[]);
+        builder.inst_results(call)[0]
+    } else {
+        builder.ins().uextend(types::I64, cond)
+    };
+    jump_block(builder, done, &[result]);
+    switch_to_block_materialized(builder, done);
+    seal_block_once(builder, sealed_blocks, done);
+    builder.block_params(done)[0]
+}
+
 #[cfg(feature = "native-backend")]
 /// Preserve the boxed runtime result unless semantic representation facts prove
 /// an exact Boolean. Rich comparisons may return arbitrary Python objects.

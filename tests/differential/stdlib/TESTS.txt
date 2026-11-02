@@ -1100,6 +1100,7 @@ tests/differential/stdlib/future_module.py
 tests/differential/stdlib/gc_collect.py
 tests/differential/stdlib/gc_cycle_collector.py
 tests/differential/stdlib/gc_generational_control.py
+tests/differential/stdlib/gc_inline_poll_pressure.py
 tests/differential/stdlib/gc_public_authority.py
 tests/differential/stdlib/getpass_basic.py
 tests/differential/stdlib/gettext_basic.py
@@ -1690,6 +1691,7 @@ tests/differential/stdlib/shutil_basic.py
 tests/differential/stdlib/signal_basic.py
 tests/differential/stdlib/signal_constants_extended.py
 tests/differential/stdlib/signal_dispatch_safepoints.py
+tests/differential/stdlib/signal_inline_backedge.py
 tests/differential/stdlib/signal_keyboardinterrupt.py
 tests/differential/stdlib/signal_keyboardinterrupt_subclass_exit.py
 tests/differential/stdlib/signal_strsignal_valid.py
@@ -1905,6 +1907,7 @@ tests/differential/stdlib/test_support_import_helper_basic.py
 tests/differential/stdlib/test_unittest_basic.py
 tests/differential/stdlib/textwrap_basic.py
 tests/differential/stdlib/this_basic.py
+tests/differential/stdlib/thread_interrupt_inline_poll.py
 tests/differential/stdlib/thread_lock_basic.py
 tests/differential/stdlib/threading_active_count_intrinsic.py
 tests/differential/stdlib/threading_barrier_basic.py

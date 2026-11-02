@@ -1202,7 +1202,10 @@ pub(crate) fn op_loop_runtime_call(
         molt_ir::OpKind::ExceptionFinallyPendingObserver if marked => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending,
             args: &[],
-            required_imports: &[WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending],
+            required_imports: &[
+                WasmRuntimeImport::ExceptionLastPending,
+                WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending,
+            ],
             discard_result: false,
         }),
         molt_ir::OpKind::ExceptionFinallyPendingObserver => Some(OpLoopRuntimeCallSpec {

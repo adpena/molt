@@ -514,19 +514,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     );
                     return;
                 };
-                let pending_symbol = if op.is_async_work_poll() {
-                    "molt_async_work_poll_and_exception_pending"
+                let result = if op.is_async_work_poll() {
+                    self.emit_async_work_poll(false)
                 } else {
-                    "molt_exception_pending"
+                    let check_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
+                    self.backend
+                        .builder
+                        .build_call(check_fn, &[], "check_exc")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
                 };
-                let check_fn = self.ensure_runtime_i64_fn(pending_symbol, 0);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(check_fn, &[], "check_exc")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);

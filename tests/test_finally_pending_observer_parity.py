@@ -74,7 +74,9 @@ def _cpython_oracle_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def _run_cpython_oracle(artifact_root: Path, env: Mapping[str, str]) -> Outputs:
+def _run_cpython_oracle(
+    artifact_root: Path, env: Mapping[str, str], program: Path = PROGRAM
+) -> Outputs:
     oracle_root = artifact_root / "cpython"
     oracle_env = _cpython_oracle_env(env)
     build = run_native_test_process(
@@ -101,7 +103,7 @@ def _run_cpython_oracle(artifact_root: Path, env: Mapping[str, str]) -> Outputs:
             "import runpy, sys; sys.path.insert(0, sys.argv[1]); "
             "runpy.run_path(sys.argv[2], run_name='__main__')",
             str(oracle_root / "lib"),
-            str(PROGRAM),
+            str(program),
         ],
         cwd=ROOT,
         env=oracle_env,
@@ -140,6 +142,14 @@ def _build_extension(
     target: str,
     target_python: TargetPythonVersion,
 ) -> None:
+    names = ["arm_runtime_error"]
+    if target == "native":
+        names.extend(["arm_thread_callback", "thread_callback_count"])
+    export_args = [
+        arg
+        for name in names
+        for arg in ("--python-export", f"pending_call_probe._native.{name}")
+    ]
     build = run_native_test_process(
         [
             sys.executable,
@@ -156,6 +166,7 @@ def _build_extension(
             "--python-version",
             target_python.short,
             "--deterministic",
+            *export_args,
         ],
         cwd=ROOT,
         env=env,
@@ -175,17 +186,18 @@ def _build_extension(
     assert manifest["effects"] == ["write"]
     assert manifest["determinism"] == "deterministic"
     assert manifest["python_exports"] == [
-        "pending_call_probe._native.arm_runtime_error"
+        f"pending_call_probe._native.{name}" for name in names
     ]
     assert manifest["callable_exports"] == [
         {
             "module": "pending_call_probe._native",
-            "name": "arm_runtime_error",
+            "name": name,
             "binding": "module_attr",
             "abi": "molt.object_callargs_v1",
             "effects": ["write"],
             "deterministic": True,
         }
+        for name in names
     ]
 
 
@@ -193,6 +205,7 @@ def _run_native_program(
     artifact_root: Path,
     env: Mapping[str, str],
     target_python: TargetPythonVersion,
+    program: Path = PROGRAM,
 ) -> subprocess.CompletedProcess[str]:
     native_path = artifact_root / ("observer.exe" if os.name == "nt" else "observer")
     native_build = run_native_test_process(
@@ -207,7 +220,7 @@ def _run_native_program(
             target_python.short,
             "--output",
             str(native_path),
-            str(PROGRAM),
+            str(program),
         ],
         cwd=ROOT,
         env=env,
@@ -271,3 +284,17 @@ def test_finally_pending_observer_parity(
         f"{target} vs CPython {target_python.short}: {verdict.detail}\n"
         f"oracle={oracle!r}\nactual={actual!r}"
     )
+    if target == "native":
+        # WASM's admitted runtime has no native thread spawning. Exercise the
+        # real foreign C thread on native, using the same source-built extension
+        # and each interpreter's own call-return poll as the independent oracle.
+        program = FIXTURE / "thread_pending_call.py"
+        thread_oracle = _run_cpython_oracle(artifact_root, env, program)
+        thread_result = _run_native_program(artifact_root, env, target_python, program)
+        actual_thread = Outputs(
+            thread_result.stdout, thread_result.stderr, thread_result.returncode
+        )
+        thread_verdict = compare_outputs(
+            thread_oracle, actual_thread, stderr_mode="exception"
+        )
+        assert thread_verdict.equal, f"foreign thread: {thread_verdict.detail}"

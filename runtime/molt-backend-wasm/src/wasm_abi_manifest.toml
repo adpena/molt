@@ -6322,6 +6322,8 @@ args = ["local:0", "local:1"]
 [[op_loop_runtime_call]]
 kind = "exception_finally_pending_observer"
 import_name = "exception_last_pending"
+# Marked observers branch between this passive projection and the cold service
+# projection. Both imports are required; the runtime work word selects at run time.
 marked_import_name = "async_work_poll_and_exception_last_pending"
 args = []
 
@@ -6656,7 +6658,41 @@ prefix = "future_poll"
 prefix = "promise_"
 
 [[pure_skip_prefix]]
-prefix = "thread_"
+# Native-thread operations, not the core execution record used by every poll.
+prefix = "thread_current_"
+
+[[pure_skip_prefix]]
+prefix = "thread_drop"
+
+[[pure_skip_prefix]]
+prefix = "thread_ident"
+
+[[pure_skip_prefix]]
+prefix = "thread_is_alive"
+
+[[pure_skip_prefix]]
+prefix = "thread_join"
+
+[[pure_skip_prefix]]
+prefix = "thread_native_id"
+
+[[pure_skip_prefix]]
+prefix = "thread_poll"
+
+[[pure_skip_prefix]]
+prefix = "thread_spawn"
+
+[[pure_skip_prefix]]
+prefix = "thread_submit"
+
+[[pure_skip_prefix]]
+prefix = "thread_registry_"
+
+[[pure_skip_prefix]]
+prefix = "thread_stack_size_"
+
+[[pure_skip_prefix]]
+prefix = "thread_timeout_max"
 
 [[pure_skip_prefix]]
 prefix = "lock_"
