@@ -335,7 +335,10 @@ def select_counter(request: str) -> Counter:
         exposed = pmus.is_dir() and any(
             p.name == "cpu" or p.name.startswith("armv8_pmuv3") for p in pmus.iterdir()
         )
-        permitted = paranoid.is_file() and int(paranoid.read_text().strip()) <= 2
+        permitted = (
+            paranoid.is_file()
+            and int(paranoid.read_text(encoding="ascii").strip()) <= 2
+        )
         chosen = (
             Counter.PERF
             if exposed and permitted and shutil.which("perf")

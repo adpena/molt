@@ -16,7 +16,7 @@ schema = "molt-perf-methodology-v1"
 # once per process (compilation_target, native_target), so warm build samples
 # can move. Earlier reports retain their recorded class.
 version = 22
-content_sha256 = "542d5a642aebd97292f2e5bed3e62e43db0d41f5c8a5c3954e6cdaedd09bef5e"
+content_sha256 = "c10649137c9f344852682fe995c1840ba6abfa477415545a3d92951b1b69b174"
 
 [[methodology]]
 path = "tools/safe_run.py"
