@@ -147,3 +147,24 @@ runner precheck remain distinct evidence cells. Performance uses the exact
 primitive scoreboard identity, loop anatomy, 0 versus ten-million-iteration
 instruction slopes, and binary size. No performance or release verdict follows
 from type checking or the symbolic generator oracle alone.
+
+## Observed native tradeoff
+
+The November 2026 macOS arm64 worker measurement used the primitive authority's
+v26 release workload and exact CPython 3.12.16 image, with five paired samples.
+The int-loop slope fell from 567.48 to 421.95 retired instructions per iteration
+at the canonical one-million count. A separate zero/ten-million slope on retained
+emissions measured 568.20 to 423.67, against CPython's 528.23. All fourteen
+per-operation Molt medians decreased, but small changes and startup measurements
+remain subject to the recorded noise envelopes. These worker observations are
+not release qualification.
+
+The cost is substantial executable text growth: the canonical loop artifact
+grew from 22,757,320 to 49,577,656 bytes. Retained anatomy emissions show native
+`__text` growing from 14,972,900 to 41,631,204 bytes. The loop function itself
+grew from 1,537 to 4,456 static instructions. Its immediate path bypasses all six
+RC calls, while the full natural-loop region still includes their cold blocks
+and grows from 169 to 421 instructions. The checks have been duplicated at each
+dynamic site; retaining their invariants has a real size price. Integration must
+assess this tradeoff explicitly. Text reduction must preserve admission,
+exact header eligibility, diagnostics and the unchanged terminal transaction.
