@@ -1,5 +1,6 @@
 """Postsubmit input observation; loaded explicitly by the landing controller."""
 
+from enum import Enum, auto
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,17 @@ from tools.test_dependency_graph import OBSERVED_CONTEXT_OPTION, TestInputRecord
 _RECORDER = pytest.StashKey[TestInputRecorder]()
 _FIXTURES = pytest.StashKey[dict[pytest.FixtureDef, dict]]()
 _SUBJECTS = pytest.StashKey[frozenset[str]]()
+
+
+class _Protocol(Enum):
+    SETUP = auto()
+    CALL = auto()
+    TEARDOWN = auto()
+    COMPLETE = auto()
+    INCOMPLETE = auto()
+
+
+_PROTOCOL = pytest.StashKey[_Protocol]()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -48,12 +60,14 @@ def pytest_make_collect_report(collector):
     )
     if subject:
         recorder.start("collection:" + collector.nodeid)
+    completed = False
     try:
         outcome = yield
-        if subject and outcome.get_result().failed:
-            recorder.complete = False
+        if subject:
+            completed = outcome.get_result().passed
     finally:
         if subject:
+            recorder.complete = recorder.complete and completed
             recorder.finish()
 
 
@@ -115,12 +129,18 @@ def pytest_runtest_makereport(item: pytest.Item, call):
     outcome = yield
     report = outcome.get_result()
     recorder = item.config.stash.get(_RECORDER, None)
-    if (
-        recorder is not None
-        and recorder.node is not None
-        and (report.failed or report.skipped)
-    ):
-        recorder.complete = False
+    if recorder is not None and recorder.node is not None:
+        state = item.stash.get(_PROTOCOL, _Protocol.INCOMPLETE)
+        match state, report.when, report.passed:
+            case _Protocol.SETUP, "setup", True:
+                state = _Protocol.CALL
+            case _Protocol.CALL, "call", True:
+                state = _Protocol.TEARDOWN
+            case _Protocol.TEARDOWN, "teardown", True:
+                state = _Protocol.COMPLETE
+            case _:
+                state = _Protocol.INCOMPLETE
+        item.stash[_PROTOCOL] = state
 
 
 @pytest.hookimpl(hookwrapper=True, trylast=True)
@@ -129,9 +149,18 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem):
     # are harness inventory, not data read by every test.
     recorder = item.config.stash.get(_RECORDER, None)
     if recorder is not None and _subject(item.config, item.nodeid):
+        item.stash[_PROTOCOL] = _Protocol.SETUP
         recorder.start(item.nodeid)
+    completed = False
     try:
-        yield
+        outcome = yield
+        completed = outcome.excinfo is None
     finally:
         if recorder is not None and recorder.node is not None:
+            recorder.complete = (
+                recorder.complete
+                and completed
+                and item.stash.get(_PROTOCOL, _Protocol.INCOMPLETE)
+                is _Protocol.COMPLETE
+            )
             recorder.finish()

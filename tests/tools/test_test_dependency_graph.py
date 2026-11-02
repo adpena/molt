@@ -291,6 +291,81 @@ def test_observed_plugin_records_real_reads_and_shared_fixture_consumers(
     }
 
 
+@pytest.mark.parametrize("phase", ["collection", "setup", "call", "teardown"])
+def test_interrupted_observation_retains_static_readers(tmp_path, monkeypatch, phase):
+    from tools.test_dependency_graph import observation_directory
+
+    test = "tests/test_interrupt.py"
+    root = _repository(
+        tmp_path / "repo",
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\n",
+            "conftest.py": 'pytest_plugins = ["tests.conftest"]\n',
+            "runtime/later.rs": "later",
+            test: f"""
+            from pathlib import Path
+            import pytest
+            PHASE = {phase!r}
+            if PHASE == "collection":
+                raise KeyboardInterrupt
+            @pytest.fixture
+            def capture():
+                if PHASE == "setup":
+                    raise KeyboardInterrupt
+                yield
+                if PHASE == "teardown":
+                    raise KeyboardInterrupt
+            def test_interrupt(capture):
+                if PHASE == "call":
+                    raise KeyboardInterrupt
+                if False:
+                    Path("runtime/later.rs").read_text()
+            """,
+        },
+    )
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    context = "c" * 64
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "0",
+            "-c",
+            str(REPO_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(root),
+            "-p",
+            "tests.observed_inputs",
+            "--molt-observed-context",
+            context,
+            str(root / test),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    directory = observation_directory(context)
+    key = "collection:" + test if phase == "collection" else test + "::test_interrupt"
+    record = json.loads(_observation_path(directory, key).read_text())
+    assert record["complete"] is False
+    assert "runtime/later.rs" not in record["files"]
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    static = graph.direct_readers(["runtime/later.rs"])
+    assert test in static
+    selected = graph.direct_readers(
+        ["runtime/later.rs"], observations=ObservedTestInputs(directory)
+    )
+    # A missing report must never turn an unread path into qualified absence.
+    expected = test if phase == "collection" else test + "::test_interrupt"
+    assert expected in selected
+    assert {node.partition("::")[0] for node in selected} == set(static)
+
+
 def test_observed_cached_file_argument_and_opaque_child_stay_selected(
     tmp_path, monkeypatch
 ):

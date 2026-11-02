@@ -134,7 +134,10 @@ recorder changes select the actual CLI consumer through the static postsubmit cl
 The recorder retains every collected parameter before marker/deselection filtering, collection
 reads, file opens and directory listings, canonical `input_report` cached-use events, and shared-fixture reads for
 all later consumers. Unobserved subprocess/network activity, failed/skipped cases, incomplete
-inventories and malformed/missing records retain the existing static obligation. Observed reads
+inventories and malformed/missing records retain the existing static obligation. Observations
+qualify absence only after successful collection and, for a node, the ordered successful
+setup, call and teardown reports plus a normal protocol return. Interrupts and missing phases
+publish incomplete observations even when pytest produces no failure report. Observed reads
 also add data readers that static inference missed. A recent failure retains the whole file,
 absorbing any narrower node requests. Every node keeps its existing proof-cell envelope.
 Each inventory and node references an immutable guest-source snapshot in the same fact cache.
