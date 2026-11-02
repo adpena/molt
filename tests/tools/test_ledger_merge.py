@@ -237,13 +237,13 @@ def test_a_conflicting_row_stops_the_cherry_pick(tmp_path: Path) -> None:
 
 def _with_families(text: str, families: dict[str, tuple[str, str]]) -> str:
     rows = "".join(
-        f"| {letter}. {name} | cause | {keys} |\n"
+        f"| {letter}. {name} | apparatus | - | cause | {keys} |\n"
         for letter, (name, keys) in families.items()
     )
     return text.replace(
         "## Fixed\n",
         "### Family dependency order\n\n"
-        "| Family | Cause | Keys |\n|---|---|---|\n"
+        "| Family | Stratum | HF-459 axes | Cause | Keys |\n|---|---|---|---|---|\n"
         f"{rows}\n"
         "## Fixed\n",
     )
@@ -251,7 +251,7 @@ def _with_families(text: str, families: dict[str, tuple[str, str]]) -> str:
 
 def _family_keys(text: str, letter: str) -> str:
     line = next(line for line in text.splitlines() if line.startswith(f"| {letter}. "))
-    return line.split(" | ")[2].removesuffix(" |")
+    return line.strip().strip("|").split("|")[-1].strip()
 
 
 def test_family_keys_merge_as_a_set_when_both_sides_edit_one_family() -> None:
@@ -659,3 +659,62 @@ def test_merge_regeneration_names_an_unavailable_selected_image(tmp_path, monkey
         generated_merge.GeneratedMergeError, match="virtualenv Python not found"
     ):
         generated_merge.regenerate(ROOT, ("tools/gen_finding_ids.py",))
+
+
+def test_membership_edges_and_findings_have_distinct_merge_identity() -> None:
+    from tests.integration_driver_fixture import FIXTURE_LEDGER
+    from tools import finding_status
+
+    # One lane changes classification and an edge; the other fixes an
+    # unrelated row's prose. The same HF key occurs in all three tables.
+    base = FIXTURE_LEDGER
+    ours = base.replace("| HF-3 | post_1_0 |", "| HF-3 | apparatus |")
+    ours = ours.replace(
+        "| HF-2 | HF-7 | seven consumes two |",
+        "| HF-9 | HF-7 | seven consumes closed nine |",
+    )
+    theirs = base.replace("| HF-1 | d | e | n |", "| HF-1 | actual defect | e | n |")
+    result = _merge(base, ours, theirs)
+    assert result.conflicts == ()
+    status = finding_status.project(result.text)
+    assert status.problems == ()
+    assert status.classes["HF-3"] == finding_status.V1Class.APPARATUS
+    assert any(
+        e.source == "HF-9" and e.target == "HF-7" for e in status.dependency_edges
+    )
+    assert "| HF-1 | actual defect | e | n |" in result.text
+
+
+def test_first_membership_and_edge_insertions_stay_in_their_own_tables() -> None:
+    from tests.integration_driver_fixture import FIXTURE_LEDGER
+    from tools import finding_status
+
+    # Both sides add at the first row of a metadata table. There is no
+    # preceding metadata row to anchor either addition.
+    base = FIXTURE_LEDGER
+    ours = base.replace("| HF-1 | d | e | n |", "| HF-1 | changed defect | e | n |")
+    theirs = (
+        base.replace(
+            "| HF-1 | release_blocking |",
+            "| HF-8 | apparatus |\n| HF-1 | release_blocking |",
+        )
+        .replace(
+            "| A. First | engine | loop/per_op | a | HF-1, HF-3, HF-4 |",
+            "| A. First | engine | loop/per_op | a | HF-1, HF-3, HF-4, HF-8 |",
+        )
+        .replace(
+            "| HF-1 | d | e | n |",
+            "| HF-8 | independent apparatus | e | n |\n| HF-1 | d | e | n |",
+        )
+    )
+    theirs = theirs.replace(
+        "| A | B | b needs a |",
+        "| HF-9 | HF-6 | closed prerequisite |\n| A | B | b needs a |",
+    )
+    result = _merge(base, ours, theirs)
+    assert result.conflicts == ()
+    status = finding_status.project(result.text)
+    assert len(status.v1_membership) == 8
+    assert len(status.dependency_edges) == 4
+    assert finding_status.dependency_problems(status) == []
+    assert "| HF-1 | changed defect | e | n |" in result.text

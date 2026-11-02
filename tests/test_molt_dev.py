@@ -4890,7 +4890,16 @@ def test_lane_start_and_retire_run_through_mains_controller_by_default(
         assert "Traceback" not in output, output
         return result.returncode, output
 
-    returncode, output = lane("start", "handoff", "--root", str(work.parent / "lanes"))
+    returncode, output = lane(
+        "start",
+        "handoff",
+        "--root",
+        str(work.parent / "lanes"),
+        "--dispatch-reason",
+        "integrator_ledger",
+        "--reason",
+        "controller fixture",
+    )
     (controller,) = controller_source.controllers_root(work / ".git").iterdir()
     assert f"pinned controller {controller.name}" in output, output
     assert returncode in {EXIT_OK, EXIT_FAIL}, output
@@ -4898,6 +4907,11 @@ def test_lane_start_and_retire_run_through_mains_controller_by_default(
         # Only the inputs the fixture lacks may fail; a failed start prints
         # failures alone, so any other input's name means it failed.
         assert "the lane exists; finish provisioning" in output, output
+        # The restart hint repeats this start's dispatch (HF-674).
+        assert (
+            "lane start handoff --dispatch-reason integrator_ledger "
+            "--reason 'controller fixture'"
+        ) in output, output
         assert "uv-environment:" not in output, output
     record_path = work / "logs" / "agents" / "lane-handoff" / "coordination.json"
     assert record_path.is_file(), output

@@ -13,7 +13,7 @@ it. The ledger rows stay the authority for each defect.
 Labels: **[F]** fact, sourced in the same item; **[I]** inference from sourced
 facts and the ledger rows; **[H]** hypothesis that an experiment must test.
 Source files are pinned to a tag or commit unless only a living document
-exists. Every URL was fetched on 2026-10-29.
+exists. Original sources were fetched on 2026-10-29; revised sections record their later verification dates.
 
 Every choice must fit Molt: an AOT compiler with CPython as the semantic
 oracle, native and WASM as co-equal P0 targets, deterministic by default,
@@ -67,6 +67,37 @@ HF-288).
   https://peps.python.org/pep-0659/,
   https://mlir.llvm.org/docs/LangRef/#attributes.
 
+- *Typed symbol APIs and literal refusal (verified 2026-11-02, HF-687).* [F]
+  rustc 1.90's `Symbol` wraps `SymbolIndex`; its internal
+  `SYMBOL_INTERN_STRING_LITERAL` lint rejects string literals passed to
+  `Symbol::intern` and suggests preinterning. CPython's generator collects
+  `_Py_ID` uses and writes `pycore_global_strings.h`. V8's read-only root list
+  includes internalized strings and generates `RootIndex`. Sources:
+  https://github.com/rust-lang/rust/blob/1.90.0/compiler/rustc_span/src/symbol.rs,
+  https://github.com/rust-lang/rust/blob/1.90.0/compiler/rustc_lint/src/internal.rs,
+  https://github.com/python/cpython/blob/v3.12.0/Tools/build/generate_global_objects.py,
+  https://chromium.googlesource.com/v8/v8.git/+/refs/heads/13.1.57/src/roots/roots.h.
+  [I] A typed API closes Molt's registered-name boundary; a literal-refusal
+  census protects the migration until the type system excludes spelling.
+
+- *Dense IR entities and field arrays (verified 2026-11-02, HF-202).* [F]
+  Cranelift in Wasmtime v26.0.0 stores values in `PrimaryMap<Value, ValueDataPacked>` and
+  facts in `SecondaryMap<Value, Option<Fact>>`; PrimaryMap wraps a Vec with
+  typed keys. rustc 1.90's `IndexVec<I: Idx, T>` stores a Vec<T>. Zig 0.14
+  AIR and ZIR store instructions in `MultiArrayList(Inst).Slice`, separating
+  fields into arrays. Carbon SemIR uses typed instruction operands and keeps
+  locations separately from instructions. Sources:
+  https://github.com/bytecodealliance/wasmtime/blob/v26.0.0/cranelift/codegen/src/ir/dfg.rs,
+  https://github.com/bytecodealliance/wasmtime/blob/v26.0.0/cranelift/entity/src/primary.rs,
+  https://github.com/rust-lang/rust/blob/1.90.0/compiler/rustc_index/src/vec.rs,
+  https://github.com/ziglang/zig/blob/0.14.0/src/Air.zig,
+  https://github.com/ziglang/zig/blob/0.14.0/lib/std/zig/Zir.zig,
+  https://docs.carbon-lang.dev/toolchain/docs/check/#key-ir-concepts.
+  Andrew Kelley's author index dates *A Practical Guide to Applying
+  Data-Oriented Design* to 2021-11-23 (https://andrewkelley.me/,
+  https://vimeo.com/649009599). [I] HF-202 should use dense typed value ids,
+  field arrays and indexed fact tables; printed IR names are presentation.
+
 **Adopt.** [I] Extend the existing authority, `op_kinds.toml` with
 `tools/gen_op_kinds.py`. Each runtime-call op declares its symbol, arity,
 argument and result ownership, effects (may raise, may call Python) and
@@ -79,8 +110,10 @@ intrinsic ABI from the same rows (HF-262). Names get the same treatment
 name the compiler and runtime know (dunders, builtin method names, static
 names), interned once at runtime start; builtin method tables are keyed by
 `NameId`, special methods dispatch through typed slots, and dynamic lookups
-compare interned pointers through a per-type cache invalidated by a type
-version, so no hot path decodes or compares name bytes.
+use dense type/name slot tables and compile-time bindings. Truly dynamic
+protocol operations use interned handles; add no run-time cache to recover
+work the closed world can eliminate. HF-202 replaces string-keyed value facts
+with dense typed ids, field arrays and indexed fact tables.
 
 **Refuse.** [I] TableGen or MLIR as the registry engine: a C++ tool adds a
 toolchain for a job the TOML generator does. Legality callbacks: keep
@@ -91,7 +124,7 @@ closed enum, delete one backend's string arm, and confirm the crate fails to
 compile. Then run the dict-subclass `__setitem__` and `iter(1)` programs on
 native, LLVM and WASM.
 
-## B. Binding-flow resolution
+## B. Closed-world program model
 
 **Problem.** The binding flow matches decorators by spelling (HF-203). After
 any callback it assumes every module global may change, so discovery admits
@@ -372,8 +405,8 @@ failure, such as `ModuleNotFoundError` at import, not a stub that imports and
 fails later.
 
 **Refuse.** [I] Success-returning substitutes (V1-17). Build-time refusal over
-an imprecise closure: GraalVM's reversal shows its cost. So G also depends on
-B (precise reachability), an edge the ledger does not list.
+an imprecise closure: GraalVM's reversal shows its cost. The ledger names HF-181 -> HF-273 for the reached-stub refusal boundary;
+other G repairs do not require every B finding to close.
 
 **Experiment.** Declare `posixpath` unsupported and build a
 `mimetypes.guess_type` program (HF-123); expect a refusal that names the reach
@@ -472,12 +505,12 @@ temporaries.
 **Experiment.** Run HF-561's raise loop under the wall sampler and count frame
 materializations. If frames dominate, defer them and measure again.
 
-## J. Runtime execution context
+## J. Runtime boundary
 
 **Problem.** Compiled code enters the runtime through unchecked names and
-repeated thread-local lookups: several TLS reads per entry (HF-198), an opaque
-call per refcount (HF-205), heap literals rebuilt per call (HF-507) and four
-symbol-name bridges (HF-206).
+repeated thread-local lookups: several TLS reads per entry (HF-198), inline polls still cross the runtime (HF-657), and four
+symbol-name bridges remain (HF-206). Refcounts now belong to Z, static literals
+to W, and compiled call/frame costs to Y.
 
 **Prior art.**
 - *CPython thread state.* [F] CPython 3.12 keeps the current thread state in
@@ -491,10 +524,6 @@ symbol-name bridges (HF-206).
   https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/cpu/aarch64/assembler_aarch64.hpp,
   https://github.com/v8/v8/blob/12.0.1/src/codegen/x64/register-x64.h,
   https://docs.wasmtime.dev/contributing-architecture.html.
-- *Inline reference counts.* [F] PEP 683 immortal objects let `Py_INCREF`
-  skip the write; PEP 703 biased counting lets the owner thread use a
-  non-atomic local count. Sources: https://peps.python.org/pep-0683/,
-  https://peps.python.org/pep-0703/.
 - *Explicit service context.* [F] HPy passes an `HPyContext` to every API call
   instead of resolving global symbols. Source:
   https://docs.hpyproject.org/en/latest/overview.html. CPython holds literals
@@ -503,11 +532,12 @@ symbol-name bridges (HF-206).
 
 **Adopt.** [I] Pass one execution-context pointer through compiled code and
 runtime entry as an argument, as CPython and Wasmtime do. Stamp it with the
-runtime generation so one check covers every per-thread cache (HF-200).
-Generate inline refcount fast paths from `molt-codegen-abi`: immortal check,
-plain add, owner-thread check under free threading. Replace the bridges with
-generated typed service tables (HF-206). Materialize literals once per code
-object (HF-507).
+runtime generation for correct lifetime checks (HF-200). HF-688 inventories
+each cache with the lookup it saves: retire it with compile-time resolution,
+dense tables or emitted static data, or document a measured reason to retain
+it. Any retained runtime cache remains generation-bound. Content-addressed
+whole-artifact build caching is separate. Inline the common poll and replace the bridges with generated typed service
+tables (HF-206). Z owns refcount specialization and W owns static literals.
 
 **Refuse.** [I] A pinned context register before measurement: it costs a
 register in every function and differs per target.
@@ -851,7 +881,7 @@ version in the output identity.
 and diff the B.3 tables. The diff must equal the `str.lower` differences
 between those versions.
 
-## P. Mid-end fact soundness and pass firing
+## P. Typed facts and specialization
 
 **Problem.** Rewrites run without checked preconditions (HF-204, HF-214).
 Facts such as `bce_safe` outlive the pass that proved them, memory SSA keeps a
@@ -884,6 +914,18 @@ order from the canonical CFG (HF-555).
 
 **Refuse.** [I] Bail-outs on exception regions as a permanent state, and a
 stdlib skip with no stated exit.
+
+**AOT specialization sources (verified 2026-11-01).** [F] mypyc lists native
+range loops and direct calls within a compilation unit among its fast operations
+([performance guide](https://mypyc.readthedocs.io/en/latest/performance_tips_and_tricks.html)). Its source names the counted-loop helper `ForRange`
+([for_helpers.py](https://github.com/python/mypy/blob/master/mypyc/irbuild/for_helpers.py)).
+Cython's [early-binding guide](https://docs.cython.org/en/latest/src/userguide/early_binding_for_speed.html)
+shows typed calls avoiding runtime lookup and argument parsing. Codon's
+[compilation flow](https://docs.exaloop.io/developers/compilation/) lowers typed
+AST to its optimization IR and then LLVM IR; its fixed i64 integers differ
+from Python integers. [I] HF-678 uses binding proofs and checked bounds to
+compile counted loops while preserving Python overflow and observable lookup
+semantics; it borrows no host-interpreter fallback or narrowed integer policy.
 
 **Experiment.** Add the purity check to the generator and list every rule it
 rejects. Each rejection is a latent bug or a missing guard.
@@ -1217,9 +1259,128 @@ instructions to phases (runtime setup, each module body) with
 `tools/opt_explorer.py profile`; then emit one pure module's objects as static
 data and measure the instructions-retired delta at N=0.
 
+## X. Object model compilation
+
+**Problem.** Lookup misses allocate exceptions (HF-679), known receivers still
+resolve methods by name (HF-680), generic type protocols dominate type tests
+(HF-681), and construction/instance dictionaries need measured fixed layouts
+(HF-685). These costs belong to the object capability rather than late-bound
+runtime entry.
+
+**Prior art (primary sources checked 2026-11-01).**
+- [F] CPython 3.12's `_PyObject_LookupAttr` reports found, missing or error;
+  generic, type and module lookup can suppress a missing-attribute exception.
+  Custom attribute hooks still execute their Python semantics.
+  [Objects/object.c](https://github.com/python/cpython/blob/v3.12.0/Objects/object.c).
+- [F] PEP 659 specializes attribute/global access with guards and caches.
+  CPython 3.11's `specialize.c` validates type versions and chooses specialized
+  method/attribute paths. Sources: [PEP 659](https://peps.python.org/pep-0659/),
+  [specialize.c](https://github.com/python/cpython/blob/v3.11.0/Python/specialize.c).
+- [F] GraalVM Native Image's `TypeCheckBuilder` assigns closed-world range
+  metadata. Its source explicitly distinguishes a class-tree preorder from
+  multiple interface relations, which may need multiple type-ID slots; a
+  single interval is not generally sufficient.
+  [TypeCheckBuilder.java](https://github.com/oracle/graal/blob/master/substratevm/src/com.oracle.svm.hosted/src/com/oracle/svm/hosted/meta/TypeCheckBuilder.java).
+- [F] Rose and Click's author-hosted HotSpot design separates primary supertypes
+  (a tree/display) from secondary supertypes (cache and search).
+  [Fast and Decisive Class Checking, 2001](https://cr.openjdk.org/~jrose/jvm/checktype-2001.txt).
+- [F] Cython demonstrates early binding for typed extension objects; mypyc
+  binds native methods and attributes within compilation units. Sources:
+  [Cython early binding](https://docs.cython.org/en/latest/src/userguide/early_binding_for_speed.html),
+  [mypyc native classes](https://mypyc.readthedocs.io/en/latest/native_classes.html).
+
+**Adopt.** [I] One found/missing/error lookup protocol; proven exact receiver
+calls and fixed layouts; static subtype encodings with an explicit proof for
+multiple inheritance. A receiver not pinned to one class dispatches over
+closed-world class ids through a vtable slot or switch, with no run-time
+cache. A class created at run time outside the verified subset takes the
+generic protocol; this planned work does not widen the subset contract.
+HF-685 measures construction before choosing its representation.
+
+**Refuse.** [I] Name-matched method lowering, exceptions for ordinary misses,
+or applying a single-tree interval test to an arbitrary Python class DAG.
+
+**Experiment.** Measure HF-459's type-dispatch, isinstance, lookup-miss and
+construction axes; compare custom hooks, multiple-inheritance diamonds,
+missing descriptors and observable instance dictionaries with CPython.
+
+## Y. Calls and frames
+
+**Problem.** Compiled calls pack tuples (HF-670), eagerly build frame state
+(HF-683), store locations at runtime (HF-669/HF-261), cannot inline (HF-684),
+and pay excessive exception propagation cost (HF-561).
+
+**Prior art (primary sources checked 2026-11-01).**
+- [F] mypyc's [performance guide](https://mypyc.readthedocs.io/en/latest/performance_tips_and_tricks.html)
+  distinguishes direct compiled calls in one compilation unit from late-bound
+  callable values. Cython's [early-binding guide](https://docs.cython.org/en/latest/src/userguide/early_binding_for_speed.html)
+  shows native calls without Python method lookup. Codon lowers typed functions
+  through [LLVM](https://docs.exaloop.io/developers/compilation/).
+- [F] [PEP 590](https://peps.python.org/pep-0590/) passes argument arrays at the
+  Python/C boundary to avoid temporary positional tuples. It does not define
+  an AOT compiled-to-compiled ABI.
+- [F] CPython 3.12 separates `_PyInterpreterFrame` storage from `PyFrameObject`
+  and `_PyFrame_GetFrameObject` materializes the latter on demand.
+  [pycore_frame.h](https://github.com/python/cpython/blob/v3.12.0/Include/internal/pycore_frame.h).
+- [F] [PEP 626](https://peps.python.org/pep-0626/) defines precise executable
+  line mappings; [PEP 657](https://peps.python.org/pep-0657/) adds instruction
+  mappings to start/end line and column locations.
+- [F] HotSpot's author-maintained [optimization inventory](https://cr.openjdk.org/~jrose/jvm/hotspot-optimizations-2010.html)
+  describes inlining and scope/debug information. Native Image performs
+  [closed-world reachability analysis](https://www.graalvm.org/latest/reference-manual/native-image/basics/)
+  before code generation.
+
+**Adopt.** [I] One execution-context-bearing native calling convention;
+registers or a stack argument array; lazy Python frame objects; per-function
+location tables; backend and cross-module inlining with a code-size budget.
+Keep recursion limits, traceback locations, default/keyword binding and
+exception ownership observable across native, LLVM and WASM.
+
+**Refuse.** [I] A vectorcall wrapper as the internal AOT ABI, or dropping
+frame/location semantics to make a call benchmark pass.
+
+**Experiment.** Compare the HF-459 recursion and dynamic-call axes before and
+after each stage, with independent traceback, recursion, keyword/default and
+cross-module binding differentials and generated-code size measurements.
+
+## Z. Memory and allocation
+
+**Problem.** Refcount calls survive on immediate scalars (HF-205), suspension
+slots are boxed (HF-229), and short-lived aggregates reach the heap (HF-682).
+
+**Prior art (primary sources checked 2026-11-01).**
+- [F] [PEP 683](https://peps.python.org/pep-0683/) makes immortal CPython objects
+  bypass ordinary reference-count updates.
+- [F] Stadler, Würthinger and Mössenböck, CGO 2014, perform control-flow-sensitive
+  partial escape analysis and scalar replacement, allowing materialization only
+  on escaping paths. [Authors' institutional record](https://research.jku.at/en/publications/partial-escape-analysis-and-scalar-replacement-for-java/).
+- [F] Bolz et al., PEPM 2011, use partial evaluation to eliminate allocations
+  and runtime type checks in tracing Python execution.
+  [Author-hosted paper](https://stups.hhu-hosting.de/downloads/pdf/BoCuFiLePeRi2011.pdf).
+- [F] Reinking, Xie, de Moura and Leijen, PLDI 2021, insert precise reference
+  counts with reuse and specialization in Perceus's explicit-control-flow
+  calculus. Its guarantees require that model, not arbitrary Python aliasing.
+  [Microsoft Research](https://www.microsoft.com/en-us/research/publication/perceus-garbage-free-reference-counting-with-reuse-2/).
+- [F] mypyc's [tuple documentation](https://mypyc.readthedocs.io/en/latest/using_type_annotations.html#tuple-types)
+  distinguishes fixed-length native tuple representations; Codon's
+  [compilation flow](https://docs.exaloop.io/developers/compilation/) describes
+  allocation removal for known small sizes.
+
+**Adopt.** [I] Typed SSA facts drive immediate refcount elision, inline heap
+refcounts and partial escape/scalar replacement; typed suspension slots retain
+only needed values. Materialization preserves identity, ownership and aliasing.
+The old name-keyed escape pass and its switch retire with the replacement.
+
+**Refuse.** [I] Stack eligibility without allocation removal, name-keyed facts,
+or importing Perceus's functional-language guarantees without a Python proof.
+
+**Experiment.** Measure HF-459 tuple-unpack and loop instructions, actual
+allocation counts and peak live memory; compare escaping aliases, destructor
+order, cyclic aggregates, exceptions and generator suspension against CPython.
+
 ## Candidates not used
 
 Perry has only a README and blog posts, and no family needs a TypeScript
-compiler. Codon, Cython, Nuitka's optimizer, Lean and the K framework,
+compiler. Nuitka's optimizer, Lean and the K framework,
 mutation testing (cargo-mutants, mutmut) and Sigstore beyond PEP 740 did not
 fit a family's stated cause. HF-488 already cites λπ for semantic alignment.

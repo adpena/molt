@@ -35,10 +35,10 @@ from pathlib import Path
 
 # A findings row: ``| HF-73 |``, ``| HF-F170 (was HF-112) |``, ``| V1-28 |``.
 _ROW = re.compile(r"^\| (?P<key>[A-Z][A-Z0-9]*-[A-Z]?\d+(?: [^|]*?)?) \|")
-# A family row of the dependency order: ``| C. Proof cells ... | cause | keys |``.
+# Family metadata and its final key-list cell in the dependency order.
 _FAMILY = re.compile(r"^\| (?P<letter>[A-Z])\. [^|]*\|")
 _SECTION = re.compile(r"^#{1,6} ")
-_TABLE_RULE = re.compile(r"^\|-")
+_TABLE_RULE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$")
 
 
 @dataclass(frozen=True)
@@ -65,8 +65,20 @@ class _Unmergeable(Exception):
     """The rows cannot be keyed; merge the file as text."""
 
 
-def _row_key(line: str) -> str | None:
+def _row_key(line: str, table: str = "") -> str | None:
     """The merge key of a findings row or a family row, else None."""
+    if not line.startswith("| "):
+        return None
+    if table == "| Row | V1 class |":
+        match = _ROW.match(line)
+        return f"membership {match['key'].strip()}" if match else None
+    if table == "| From | To | Reason |":
+        columns, _ = _cells(line)
+        if columns == ["From", "To", "Reason"]:
+            return None
+        if len(columns) == 3:
+            return f"edge {columns[0]} -> {columns[1]}"
+        return None
     match = _ROW.match(line)
     if match is not None:
         return match.group("key").strip()
@@ -74,6 +86,30 @@ def _row_key(line: str) -> str | None:
     if family is not None:
         return f"family {family.group('letter')}"
     return None
+
+
+def _locations(lines: list[str] | tuple[str, ...]) -> list[tuple[str, str]]:
+    """Section and table coordinates, including repeated edge-table headers.
+
+    Git runs this stdlib-only reader during a merge, before repository imports
+    can be trusted. These are merge coordinates, not a second DAG projection.
+    """
+    locations: list[tuple[str, str]] = []
+    section = table = ""
+    occurrence: dict[tuple[str, str], int] = {}
+    location = ""
+    for index, line in enumerate(lines):
+        if _SECTION.match(line):
+            section = line.strip()
+            table = ""
+            location = section
+        elif _TABLE_RULE.match(line) and index:
+            table = lines[index - 1].strip()
+            coordinate = (section, table)
+            occurrence[coordinate] = occurrence.get(coordinate, 0) + 1
+            location = f"{section}\n{table}\n{occurrence[coordinate]}"
+        locations.append((location, table))
+    return locations
 
 
 def _merged_list(base: list[str], ours: list[str], theirs: list[str]) -> list[str]:
@@ -109,17 +145,17 @@ def _merged_family_row(base: _Row | None, ours: _Row, theirs: _Row) -> _Row | No
     if base is None or ours.section != theirs.section:
         return None
     (b, _), (o, ending), (t, _) = (_cells(r.line) for r in (base, ours, theirs))
-    if not len(b) == len(o) == len(t) == 3:
+    if not len(b) == len(o) == len(t) == 5:
         return None
     merged: list[str] = []
-    for base_cell, ours_cell, theirs_cell in zip(b[:2], o[:2], t[:2], strict=True):
+    for base_cell, ours_cell, theirs_cell in zip(b[:-1], o[:-1], t[:-1], strict=True):
         if ours_cell == theirs_cell or theirs_cell == base_cell:
             merged.append(ours_cell)
         elif ours_cell == base_cell:
             merged.append(theirs_cell)
         else:
             return None
-    keys = _merged_list(*(cell[2].split(", ") for cell in (b, o, t)))
+    keys = _merged_list(*(cell[-1].split(", ") for cell in (b, o, t)))
     merged.append(", ".join(keys))
     return _Row("| " + " | ".join(merged) + " |" + ending, ours.section)
 
@@ -128,12 +164,12 @@ def _parse(text: str) -> _Document:
     lines = tuple(text.splitlines(keepends=True))
     keys: dict[int, str] = {}
     rows: dict[str, _Row] = {}
-    section = ""
+    locations = _locations(lines)
     for index, line in enumerate(lines):
-        if _SECTION.match(line):
-            section = line.strip()
+        if _SECTION.match(line) or _TABLE_RULE.match(line):
             continue
-        key = _row_key(line)
+        section, table = locations[index]
+        key = _row_key(line, table)
         if key is None:
             continue
         if key in rows:
@@ -234,37 +270,29 @@ def _conflict_block(ours: _Row | None, theirs: _Row | None) -> list[str]:
 
 def _insertion_point(output: list[str], side: _Document, index: int) -> int:
     """Where a row of ``side`` at ``index`` goes in ``output``."""
+    output_locations = _locations(output)
+    side_locations = _locations(side.lines)
     for previous in range(index - 1, -1, -1):
         line = side.lines[previous]
         if previous in side.keys:
             # The preceding row's merged line may differ; find it by key.
             key = side.keys[previous]
             for position, out_line in enumerate(output):
-                if _row_key(out_line) == key:
+                if _SECTION.match(out_line) or _TABLE_RULE.match(out_line):
+                    continue
+                if _row_key(out_line, output_locations[position][1]) == key:
                     return position + 1
             continue
         if _TABLE_RULE.match(line) or _SECTION.match(line):
             # No preceding row: the first row after the table rule of the
             # same section, which the frame shares (its text is unchanged).
-            section = next(
-                (
-                    side.lines[i].strip()
-                    for i in range(previous, -1, -1)
-                    if _SECTION.match(side.lines[i])
-                ),
-                "",
-            )
-            return _first_row_position(output, section)
+            return _first_row_position(output, side_locations[index][0])
     raise _Unmergeable("a row has no anchor")
 
 
 def _first_row_position(output: list[str], section: str) -> int:
-    in_section = section == ""
-    for position, line in enumerate(output):
-        if _SECTION.match(line):
-            in_section = line.strip() == section
-            continue
-        if in_section and _TABLE_RULE.match(line):
+    for position, (line, location) in enumerate(zip(output, _locations(output))):
+        if location[0] == section and _TABLE_RULE.match(line):
             return position + 1
     raise _Unmergeable(f"no table in section {section!r}")
 

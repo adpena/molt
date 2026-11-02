@@ -3,8 +3,8 @@
 Open defects, gaps and blockers found while landing the all-WIP consolidation
 (PR 116) for the 2026-10-05 move to a new development machine. Each finding
 records its observed evidence and explicit acceptance obligations. Order work by
-the release dependencies below and register current ownership through
-`docs/ops/MULTI_AGENT_COORDINATION.md`; finding numbers are stable identities,
+the family dependency order below (`lane start` enforces it) and register
+current ownership through `docs/ops/MULTI_AGENT_COORDINATION.md`; finding numbers are stable identities,
 not execution priority. When a repair lands, retain its stable ID, dated evidence and exact qualification scope in the
 fixed history, with remaining family obligations linked to their existing open
 owners. Do not delete findings or discard earlier failure or measurement evidence
@@ -79,7 +79,7 @@ Small user-program cold builds, edits and unchanged rebuilds must be fast;
 additional compiler/distribution build work is preferable to repeated user work.
 A new row joins exactly one root-cause family of the family dependency order
 in the change that opens it, and a closed row leaves it; a row that fits no
-family opens a new family, with its edges, level and a section in
+family opens a new family, with its edges, v1 membership and a section in
 `docs/design/findings_prior_art.md`, before work on it starts.
 `tools/finding_coverage.py --check` enforces both, and `tools/ledger_edit.py`
 (`open`, `close`, `merge`, `next-key`) makes each row edit with its family and
@@ -126,8 +126,11 @@ contradictions here from their owning evidence before selecting more work.
 
 ## Active integration
 
-The release dependency table below owns work order; the finding rows own scope
-and closure. Keep the current execution set small enough to finish complete
+The family dependency order owns work order, and `lane start` enforces it
+(`tools/dag_dispatch.py`); the finding rows own scope and closure. The table
+below records integration decisions for units in flight and orders nothing.
+Live lanes, with their rows, family, open predecessor waits and dispatch reason, are the
+active coordination records (`tools/molt_dev.py lane list`). Keep the current execution set small enough to finish complete
 consumer migrations. A source checkpoint is not a completed finding.
 
 | Complete unit | Current decision and remaining work |
@@ -698,22 +701,24 @@ Cargo/rustc compilation of the compiler/runtime; report their actual cache state
 
 The immediate product frontier is:
 
-1. Reliable standalone native/WASM programs through the shared module/import,
-   frame/async and codec/IO owners. Reconcile integrated repairs and retained
+1. (Families H, I, M.) Reliable standalone native/WASM programs through the
+   shared module/import, frame/async and codec/IO owners. Reconcile integrated repairs and retained
    qualification first. Interpreter-only invocations of a compiled application
    must refuse safely rather than recursively relaunching `main` (HF-519).
-2. Installed compile/edit/run and one accepted measurement through the existing
+2. (Families T, E.) Installed compile/edit/run and one accepted measurement
+   through the existing
    release producer/receiver. Bind actual consumed compiler/runtime identities
    and metric subjects; preserve omission/substitution controls. A full campaign
    needs a working positive admission path.
-3. Measured shared runtime/compiler performance repairs, resource budgets and an
+3. (Families E, J, K, W.) Measured shared runtime/compiler performance repairs,
+   resource budgets and an
    armed regression baseline, using the same conforming programs. Advance the
    current scientific witness and remaining matrix alongside disjoint work.
    Concrete safety defects precede optimization of their affected boundary.
 
-Select a small finishable execution set from this frontier. Broader findings
-remain required; shared causes, dependencies and earliest failing consumers set
-their order. Development capacity work is justified when it blocks the next
+These are release goals, not a second work order: they say which families the
+release needs, and the family dependency order says which comes first. Broader
+findings remain required. Development capacity work is justified when it blocks the next
 product closure. A prepared optimization or new checker alone sets no priority.
 
 | Work bucket | Next complete outcome and owning findings | Verification that changes the decision |
@@ -725,86 +730,420 @@ product closure. A prepared optimization or new checker alone sets no priority.
 | Performance | Complete the positive measured-metric producer/receiver path early, then remove measured bottlenecks in algorithms, runtime, startup, artifact size, memory and compilation (V1-07/V1-19–V1-21/V1-27/V1-29/V1-30, HF-26/HF-79/HF-132). | One representative authenticated measurement path first; matched before/after metrics for each load-bearing change. Measure scaling where complexity changes. Run the required performance matrix once the candidate and metric contract are stable; a microbenchmark cannot replace product acceptance. |
 | Release and developer experience | Close lossless output, effective differential/property/fuzz coverage, maintainable dependencies, bounded CI/build cost and reproducible authenticated publication (V1-03/V1-04/V1-06/V1-08/V1-12/V1-25 and the open CI/harness findings). | Test the actual changed automation boundary. Reuse valid evidence and existing commands; avoid another framework or full-suite fanout. Final current-candidate E1–E4 and authenticated H0 cover the declared matrix and all open obligations before v1.0 publication. |
 
-These are work buckets, not six serial phases or separate backlogs. Complete the
-current integration outcome first; keep disjoint safety/correctness repairs and
-the installed/performance acceptance paths moving as capacity permits. Findings
+These are work buckets, not six serial phases or separate backlogs, and not a
+work order: the family dependency order sets the order, and `lane start`
+records any departure from it. Findings
 retain their single owning rows even when a shared invariant crosses buckets.
 The dependencies do not require one giant patch or universal new capabilities
 beyond the declared support contract.
 
 ### Family dependency order (2026-10-29)
 
-The open rows group into root-cause families: one shared cause or one missing
-authority each. Fix a family's cause, not its instances. An edge X -> Y means
-Y's fix depends on X, or X removes a class of Y's failures. Level 0 holds the
-multipliers; within a level, rank by compounding value per unit of effort. A
-row that needs nothing (for example HF-558 and HF-559) may start early;
-the level orders closing the whole family. Re-derive this map from the rows
-when it drifts; the rows stay the authority for each defect. Each family's
-sourced prior art and cheapest confirming experiment are in
+A row is a work node; a family groups one root cause under one owner. A row
+is ready only when every predecessor row is closed. Claiming a prerequisite in
+an active lane never closes it. `lane start` and `lane dispatch` admit ready
+rows in one unclaimed family; a departure requires a non-default typed
+`DispatchReason` and text retained in the coordination record. The restart hint
+repeats those arguments. `lane list` ranks ready v1 rows by longest chain of
+open v1 rows including the row itself, then by unique downstream v1 row count,
+then by finding ID. `lane dispatch --plan` reads this checkout without mutation;
+`lane list` reads the selected upstream commit.
+
+The membership table records exactly one closed class per open row:
+`release_blocking` (product), `release_apparatus` (release/landing machinery),
+`post_1_0` (later product) or `apparatus` (other development work). The first two
+share the v1 tier. Family endpoints expand only to open rows of the same tier;
+a v1 row never waits behind a post-1.0 or apparatus sibling. Use a family
+endpoint only when its reason holds for every row it expands to; otherwise
+name rows. Explicit row prerequisites preserve v1 closure. The edge tables alone
+own work order; no prose list restates it. The six HF-459 engine edges are the
+owner's temporary family-wide baseline admission exception, including soundness
+work, until HF-459 closes. Each family's prior art and experiment live in
 [findings_prior_art.md](../design/findings_prior_art.md).
 
-| Family | Shared cause or missing authority | Open rows |
+The family table owns each typed stratum and its HF-459 axis mapping. Capacity
+requires an active engine lane for non-engine dispatch and at most one active
+apparatus lane; only landing repair or integrator ledger reasons bypass capacity.
+The read-only plan reports recorded primitive ratios or their absence.
+
+| Family | Stratum | HF-459 axes | Shared cause or missing authority | Open rows |
+| --- | --- | --- | --- | --- |
+| A. Typed op and runtime-call ABI | semantics | - | Backends restate op kinds, runtime symbols, ownership and target legality by hand | HF-197, HF-485, HF-384, HF-553, HF-560, HF-262, HF-202, V1-26, HF-501, HF-124, HF-125, HF-211, HF-279, HF-287, HF-288, HF-596, HF-653, HF-672, HF-687 |
+| B. Closed-world program model | engine | dataclass_construction/per_op | Prove each binding, reachable module and decorator in the closed program | HF-203, HF-226, HF-181, HF-140, HF-126, HF-79, HF-668 |
+| C. Proof coverage | apparatus | - | Proof cells are named by hand, so whole trees, feature-gated targets, Lean modules and masked code run in no cell and their failures go unseen | HF-73, HF-99, HF-565, HF-314, HF-210, HF-509, HF-37, HF-42, HF-56, HF-63, HF-66, HF-186, HF-484, HF-87, HF-178, HF-533, HF-594, HF-626, HF-632, HF-677 |
+| D. Verdict truth (executable ledger) | apparatus | - | Expected failures and failure classes live in snapshots and prose | HF-563, HF-106, HF-295, HF-215, HF-488, HF-95, HF-530, V1-03, V1-04, HF-388, HF-422, HF-545, HF-577, HF-641, HF-652, HF-655, HF-676, HF-674 |
+| E. Performance verdict truth | apparatus | - | No armed baseline or deterministic axis | HF-222, HF-459, HF-460, HF-245, HF-616, HF-185, HF-686 |
+| F. Observed inputs and content identity | apparatus | - | What a build, test or proof reads, and that content's identity, are restated in about ten places (static whole-module reachability, hand-written closure lists, path-, environment- and device-keyed identities), so keys split, selection is near-total and nothing is reused | V1-01, V1-08, V1-09, V1-15, HF-372, HF-473, HF-244, HF-300, HF-78, HF-385, HF-491, HF-439, HF-522, HF-434, HF-363, HF-238, HF-50, HF-469, HF-586, HF-587, HF-604, HF-605, HF-601, HF-585, HF-433, HF-591, HF-334, HF-35, HF-617, HF-658 |
+| G. Fabricated support surfaces | semantics | - | Surfaces link and claim success where a build-time refusal belongs | HF-273, HF-195, HF-123, HF-268, HF-282, V1-11, V1-17, HF-574, HF-351, HF-120, HF-609 |
+| H. Import system and stdlib surface | semantics | - | Import-machinery and stdlib API gaps CPython's own tests reach | HF-558, HF-559, HF-383, HF-539, HF-276, HF-297, HF-247, HF-483, HF-569, HF-578, HF-579, HF-627, HF-647, HF-661 |
+| I. Frame, exception and coroutine model | semantics | - | One frame/exception/suspension model per backend | HF-442, HF-451, HF-452, HF-213, HF-492, HF-548, HF-235, HF-02, HF-156, HF-157, HF-158, HF-589, HF-593, HF-610, HF-611 |
+| J. Runtime boundary | engine | id/per_op, loop/per_op | One execution context carried by compiled code, inline polls and checked runtime symbols | HF-198, HF-206, HF-200, HF-657, HF-688 |
+| K. Runtime ownership and resources | semantics | - | Ownership, retention and charging contracts | V1-05, V1-14, V1-19, V1-20, V1-21, V1-27, V1-29, V1-34, HF-208, HF-06, HF-671 |
+| L. C extension boundary: C-API, ABI and FFI | semantics | - | Upstream extensions reach Molt through the recompiled C-API (libmolt headers), its stable-ABI tier, the buffer protocol and FFI (ctypes and cffi). The C-API bridge keeps two error channels and two headers, FFI is partial and capability-gated, and no Tier 1 cell runs an unmodified upstream extension or FFI binding. | HF-209, HF-174, HF-175, HF-527, HF-283, HF-61, HF-57, HF-12, HF-612, HF-621 |
+| M. Codec, text and IO state | semantics | - | Stateful codec and IO protocols | V1-18, V1-30, V1-33, HF-322, HF-329 |
+| N. OS, process and network boundary | semantics | - | Host-boundary semantics | HF-441, HF-455, HF-518, V1-10, V1-13, V1-36, HF-531, HF-177, HF-595, HF-636 |
+| O. Versioned target facts | semantics | - | Facts read from the build host instead of the declared version and target | V1-16, V1-22, V1-23, V1-35, HF-65, HF-122, HF-568, HF-554, HF-567, HF-628, HF-656 |
+| P. Typed facts and specialization | engine | loop/per_op | Sound facts on typed SSA values, passes on all code including the stdlib, representation choice, inline fast paths and counted loops | HF-201, HF-204, HF-214, HF-555, HF-572, HF-573, HF-678 |
+| Q. User compile and edit latency | delivery | - | No early cutoff on unchanged inputs; HF-26, HF-371 and HF-172 (first-link cost), HF-517 (guard overhead), HF-458 (PGO) and HF-225 (daemon admission) are first-build costs | HF-250, HF-252, HF-254, HF-266, HF-285, HF-357, HF-516, HF-173, HF-517, HF-26, HF-371, HF-172, HF-263, HF-458, HF-225, HF-631, HF-634 |
+| R. Development state ownership and reconciliation | apparatus | - | Molt-created processes and state have no declared-state reconciler: ownership is guessed, liveness has four implementations, and a crash or reboot leaves state nobody owns | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370, HF-583, HF-602, HF-606, HF-607, HF-630, HF-667, HF-675 |
+| S. Landing pipeline and self-build cost | apparatus | - | The merge gate tries to be complete and serial instead of a fast presubmit plus a continuous postsubmit farm, and building Molt repeats links, targets and toolchain work | HF-10, HF-22, HF-27, HF-190, HF-373, HF-291, HF-53, HF-93, HF-68, HF-170, HF-96, HF-599, HF-600, HF-603, HF-618, HF-623, HF-629, HF-633, HF-638, HF-635, HF-666, HF-490 |
+| T. Installed delivery and witnesses | delivery | - | The installed product and its end-to-end witnesses | V1-02, V1-06, V1-24, V1-28, HF-62, HF-64, HF-454, HF-576, HF-386, HF-04, HF-380, HF-510, HF-575, HF-620, HF-659, V1-07 |
+| U. GPU device boundary | delivery | - | GPU work reaches a device through Molt-owned substitutes instead of upstream packages over `webgpu.h`, the buffer protocol and the C-API | HF-613, HF-614, HF-615, HF-650 |
+| V. Object reduction and serialization protocol | semantics | - | Pickle and copy restate CPython's reduce protocol privately (two pickle VMs, the encoder's own default reduce, globals written outside save_global, copy arms that return the original object) instead of consuming one object-model `__reduce_ex__` | HF-570, HF-643, HF-644, HF-645, HF-649 |
+| W. Startup and build-time initialization | engine | empty/startup | Every start reruns runtime setup and every module body; nothing evaluates deterministic initialization at build time or emits its objects as static data | HF-673, HF-507 |
+| X. Object model compilation | engine | isinstance/per_op, type_dispatch/per_op, getattr_miss/per_op, memo_get/per_op, memo_set/per_op, plain_construction/per_op, new_and_update/per_op | Compile methods, attributes, type tests, fixed layouts and construction on proven types; a lookup miss creates no exception | HF-679, HF-680, HF-681, HF-685 |
+| Y. Calls and frames | engine | recursion/per_op, dynamic_call/per_op | Native register or stack-array calls, lazy frames, static locations, exception propagation and inlining | HF-261, HF-561, HF-669, HF-670, HF-683, HF-684 |
+| Z. Memory and allocation | engine | tuple_unpack/per_op, loop/per_op | Inline refcounts, eliminate scalar reference counting and short-lived allocations, and use typed suspension slots | HF-205, HF-229, HF-682 |
+
+| Row | V1 class |
+| --- | --- |
+| HF-02 | release_blocking |
+| HF-04 | release_blocking |
+| HF-06 | release_blocking |
+| HF-07 | release_apparatus |
+| HF-10 | apparatus |
+| HF-12 | release_blocking |
+| HF-22 | apparatus |
+| HF-23 | apparatus |
+| HF-26 | release_blocking |
+| HF-27 | apparatus |
+| HF-35 | apparatus |
+| HF-37 | release_blocking |
+| HF-42 | apparatus |
+| HF-50 | release_blocking |
+| HF-53 | release_blocking |
+| HF-56 | apparatus |
+| HF-57 | release_blocking |
+| HF-61 | release_blocking |
+| HF-62 | release_blocking |
+| HF-63 | apparatus |
+| HF-64 | post_1_0 |
+| HF-65 | apparatus |
+| HF-66 | apparatus |
+| HF-68 | release_apparatus |
+| HF-73 | apparatus |
+| HF-78 | post_1_0 |
+| HF-79 | release_blocking |
+| HF-87 | apparatus |
+| HF-93 | apparatus |
+| HF-95 | release_blocking |
+| HF-96 | apparatus |
+| HF-99 | apparatus |
+| HF-106 | release_blocking |
+| HF-120 | post_1_0 |
+| HF-122 | release_blocking |
+| HF-123 | release_blocking |
+| HF-124 | post_1_0 |
+| HF-125 | post_1_0 |
+| HF-126 | release_blocking |
+| HF-138 | apparatus |
+| HF-140 | release_blocking |
+| HF-156 | release_blocking |
+| HF-157 | release_blocking |
+| HF-158 | release_blocking |
+| HF-169 | release_apparatus |
+| HF-170 | release_apparatus |
+| HF-172 | release_blocking |
+| HF-173 | release_blocking |
+| HF-174 | release_blocking |
+| HF-175 | release_blocking |
+| HF-177 | release_blocking |
+| HF-178 | apparatus |
+| HF-181 | release_blocking |
+| HF-185 | release_blocking |
+| HF-186 | release_blocking |
+| HF-190 | apparatus |
+| HF-195 | release_blocking |
+| HF-197 | post_1_0 |
+| HF-198 | release_blocking |
+| HF-200 | apparatus |
+| HF-201 | release_blocking |
+| HF-202 | release_blocking |
+| HF-203 | release_blocking |
+| HF-204 | release_blocking |
+| HF-205 | release_blocking |
+| HF-206 | post_1_0 |
+| HF-208 | release_blocking |
+| HF-209 | post_1_0 |
+| HF-210 | apparatus |
+| HF-211 | apparatus |
+| HF-213 | release_blocking |
+| HF-214 | release_blocking |
+| HF-215 | release_blocking |
+| HF-222 | apparatus |
+| HF-225 | release_blocking |
+| HF-226 | release_blocking |
+| HF-229 | release_blocking |
+| HF-235 | release_blocking |
+| HF-238 | release_blocking |
+| HF-244 | release_blocking |
+| HF-245 | post_1_0 |
+| HF-247 | release_blocking |
+| HF-250 | release_blocking |
+| HF-252 | release_blocking |
+| HF-254 | release_blocking |
+| HF-261 | release_blocking |
+| HF-262 | post_1_0 |
+| HF-263 | apparatus |
+| HF-266 | release_blocking |
+| HF-268 | release_blocking |
+| HF-273 | release_blocking |
+| HF-276 | release_blocking |
+| HF-279 | post_1_0 |
+| HF-282 | post_1_0 |
+| HF-283 | apparatus |
+| HF-285 | release_blocking |
+| HF-287 | post_1_0 |
+| HF-288 | post_1_0 |
+| HF-291 | apparatus |
+| HF-295 | release_blocking |
+| HF-297 | release_blocking |
+| HF-300 | release_blocking |
+| HF-304 | apparatus |
+| HF-314 | apparatus |
+| HF-322 | release_blocking |
+| HF-329 | release_blocking |
+| HF-334 | apparatus |
+| HF-351 | post_1_0 |
+| HF-357 | release_blocking |
+| HF-363 | release_blocking |
+| HF-370 | apparatus |
+| HF-371 | release_blocking |
+| HF-372 | apparatus |
+| HF-373 | apparatus |
+| HF-379 | release_apparatus |
+| HF-380 | release_blocking |
+| HF-383 | release_blocking |
+| HF-384 | post_1_0 |
+| HF-385 | release_blocking |
+| HF-386 | release_blocking |
+| HF-387 | release_apparatus |
+| HF-388 | release_apparatus |
+| HF-422 | release_apparatus |
+| HF-433 | apparatus |
+| HF-434 | post_1_0 |
+| HF-439 | release_apparatus |
+| HF-441 | release_blocking |
+| HF-442 | release_blocking |
+| HF-444 | apparatus |
+| HF-451 | release_blocking |
+| HF-452 | release_blocking |
+| HF-454 | apparatus |
+| HF-455 | release_blocking |
+| HF-458 | post_1_0 |
+| HF-459 | release_blocking |
+| HF-460 | apparatus |
+| HF-469 | apparatus |
+| HF-473 | release_blocking |
+| HF-483 | release_blocking |
+| HF-484 | post_1_0 |
+| HF-485 | post_1_0 |
+| HF-488 | apparatus |
+| HF-490 | apparatus |
+| HF-491 | apparatus |
+| HF-492 | release_blocking |
+| HF-501 | release_blocking |
+| HF-507 | release_blocking |
+| HF-509 | release_blocking |
+| HF-510 | release_blocking |
+| HF-516 | release_blocking |
+| HF-517 | release_blocking |
+| HF-518 | release_blocking |
+| HF-522 | release_apparatus |
+| HF-527 | release_blocking |
+| HF-530 | release_blocking |
+| HF-531 | release_blocking |
+| HF-533 | apparatus |
+| HF-539 | release_blocking |
+| HF-544 | release_apparatus |
+| HF-545 | release_apparatus |
+| HF-548 | release_blocking |
+| HF-550 | release_apparatus |
+| HF-551 | apparatus |
+| HF-553 | release_blocking |
+| HF-554 | release_blocking |
+| HF-555 | release_blocking |
+| HF-558 | release_blocking |
+| HF-559 | release_blocking |
+| HF-560 | post_1_0 |
+| HF-561 | release_blocking |
+| HF-563 | release_apparatus |
+| HF-565 | apparatus |
+| HF-567 | release_blocking |
+| HF-568 | release_blocking |
+| HF-569 | release_blocking |
+| HF-570 | release_blocking |
+| HF-572 | release_blocking |
+| HF-573 | release_blocking |
+| HF-574 | apparatus |
+| HF-575 | release_blocking |
+| HF-576 | apparatus |
+| HF-577 | apparatus |
+| HF-578 | release_blocking |
+| HF-579 | release_blocking |
+| HF-583 | release_apparatus |
+| HF-585 | apparatus |
+| HF-586 | release_blocking |
+| HF-587 | apparatus |
+| HF-589 | release_blocking |
+| HF-591 | release_apparatus |
+| HF-593 | release_blocking |
+| HF-594 | apparatus |
+| HF-595 | release_blocking |
+| HF-596 | release_blocking |
+| HF-599 | apparatus |
+| HF-600 | apparatus |
+| HF-601 | release_apparatus |
+| HF-602 | release_blocking |
+| HF-603 | release_apparatus |
+| HF-604 | apparatus |
+| HF-605 | apparatus |
+| HF-606 | release_apparatus |
+| HF-607 | release_apparatus |
+| HF-609 | post_1_0 |
+| HF-610 | post_1_0 |
+| HF-611 | post_1_0 |
+| HF-612 | post_1_0 |
+| HF-613 | post_1_0 |
+| HF-614 | post_1_0 |
+| HF-615 | post_1_0 |
+| HF-616 | apparatus |
+| HF-617 | release_apparatus |
+| HF-618 | apparatus |
+| HF-620 | release_blocking |
+| HF-621 | release_blocking |
+| HF-623 | release_apparatus |
+| HF-626 | apparatus |
+| HF-627 | release_blocking |
+| HF-628 | release_blocking |
+| HF-629 | apparatus |
+| HF-630 | apparatus |
+| HF-631 | post_1_0 |
+| HF-632 | apparatus |
+| HF-633 | apparatus |
+| HF-634 | release_blocking |
+| HF-635 | release_apparatus |
+| HF-636 | release_blocking |
+| HF-638 | release_apparatus |
+| HF-641 | release_apparatus |
+| HF-643 | release_blocking |
+| HF-644 | release_blocking |
+| HF-645 | release_blocking |
+| HF-647 | release_blocking |
+| HF-649 | release_blocking |
+| HF-650 | post_1_0 |
+| HF-652 | apparatus |
+| HF-653 | release_blocking |
+| HF-655 | release_apparatus |
+| HF-656 | release_blocking |
+| HF-657 | release_blocking |
+| HF-658 | release_apparatus |
+| HF-659 | release_blocking |
+| HF-661 | release_blocking |
+| HF-666 | release_apparatus |
+| HF-667 | apparatus |
+| HF-668 | release_blocking |
+| HF-669 | release_blocking |
+| HF-670 | release_blocking |
+| HF-671 | post_1_0 |
+| HF-672 | release_blocking |
+| HF-673 | release_blocking |
+| HF-674 | release_apparatus |
+| HF-675 | release_apparatus |
+| HF-676 | apparatus |
+| HF-677 | release_apparatus |
+| V1-01 | release_blocking |
+| V1-02 | release_blocking |
+| V1-03 | release_blocking |
+| V1-04 | release_blocking |
+| V1-05 | release_blocking |
+| V1-06 | release_blocking |
+| V1-07 | release_blocking |
+| V1-08 | release_apparatus |
+| V1-09 | release_blocking |
+| V1-10 | release_blocking |
+| V1-11 | release_blocking |
+| V1-12 | release_blocking |
+| V1-13 | release_blocking |
+| V1-14 | release_blocking |
+| V1-15 | release_blocking |
+| V1-16 | release_blocking |
+| V1-17 | release_blocking |
+| V1-18 | release_blocking |
+| V1-19 | release_blocking |
+| V1-20 | release_blocking |
+| V1-21 | release_blocking |
+| V1-22 | release_blocking |
+| V1-23 | release_blocking |
+| V1-24 | release_blocking |
+| V1-25 | release_blocking |
+| V1-26 | release_blocking |
+| V1-27 | release_blocking |
+| V1-28 | release_blocking |
+| V1-29 | release_blocking |
+| V1-30 | release_blocking |
+| V1-33 | release_blocking |
+| V1-34 | release_blocking |
+| V1-35 | release_blocking |
+| V1-36 | release_blocking |
+| HF-678 | release_blocking |
+| HF-679 | release_blocking |
+| HF-680 | release_blocking |
+| HF-681 | release_blocking |
+| HF-682 | release_blocking |
+| HF-683 | release_blocking |
+| HF-684 | release_blocking |
+| HF-685 | release_blocking |
+| HF-686 | release_apparatus |
+| HF-687 | release_blocking |
+| HF-688 | release_blocking |
+
+| From | To | Reason |
 | --- | --- | --- |
-| A. Typed op and runtime-call ABI | Backends restate op kinds, runtime symbols, ownership and target legality by hand | HF-197, HF-485, HF-384, HF-553, HF-560, HF-262, HF-202, V1-26, HF-501, HF-124, HF-125, HF-211, HF-279, HF-287, HF-288, HF-596, HF-653, HF-672 |
-| B. Binding-flow resolution | The binding analysis assumes an open world (worst-case rebinding) and matches names by spelling, although spec 0216 closes the program, so whole-program analysis can prove each binding's writers | HF-203, HF-226, HF-181, HF-140, HF-126, HF-79, HF-668 |
-| C. Proof coverage | Proof cells are named by hand, so whole trees, feature-gated targets, Lean modules and masked code run in no cell and their failures go unseen | HF-73, HF-99, HF-565, HF-314, HF-210, HF-509, HF-37, HF-42, HF-56, HF-63, HF-66, HF-186, HF-484, HF-87, HF-178, HF-533, HF-594, HF-626, HF-632, HF-677 |
-| D. Verdict truth (executable ledger) | Expected failures and failure classes live in snapshots and prose | HF-563, HF-106, HF-295, HF-215, HF-488, HF-95, HF-530, V1-03, V1-04, HF-388, HF-422, HF-545, HF-577, HF-641, HF-652, HF-655, HF-676 |
-| E. Performance verdict truth | No armed baseline or deterministic axis | V1-07, HF-222, HF-459, HF-460, HF-245, HF-616 |
-| F. Observed inputs and content identity | What a build, test or proof reads, and that content's identity, are restated in about ten places (static whole-module reachability, hand-written closure lists, path-, environment- and device-keyed identities), so keys split, selection is near-total and nothing is reused | V1-01, V1-08, V1-09, V1-15, HF-372, HF-473, HF-244, HF-300, HF-78, HF-385, HF-491, HF-439, HF-522, HF-434, HF-363, HF-238, HF-50, HF-469, HF-586, HF-587, HF-604, HF-605, HF-601, HF-585, HF-433, HF-591, HF-334, HF-35, HF-617, HF-658 |
-| G. Fabricated support surfaces | Surfaces link and claim success where a build-time refusal belongs | HF-273, HF-195, HF-123, HF-268, HF-282, V1-11, V1-17, HF-574, HF-351, HF-120, HF-609 |
-| H. Import system and stdlib surface | Import-machinery and stdlib API gaps CPython's own tests reach | HF-558, HF-559, HF-383, HF-539, HF-276, HF-297, HF-247, HF-483, HF-569, HF-578, HF-579, HF-627, HF-647, HF-661 |
-| I. Frame, exception and coroutine model | One frame/exception/suspension model per backend | HF-442, HF-451, HF-452, HF-213, HF-492, HF-548, HF-261, HF-561, HF-229, HF-235, HF-02, HF-156, HF-157, HF-158, HF-589, HF-593, HF-610, HF-611, HF-669 |
-| J. Runtime execution context | Compiled code re-enters the runtime through unchecked names and repeated context lookups | HF-198, HF-205, HF-185, HF-507, HF-206, HF-200, HF-490, HF-657, HF-670 |
-| K. Runtime ownership and resources | Ownership, retention and charging contracts | V1-05, V1-14, V1-19, V1-20, V1-21, V1-27, V1-29, V1-34, HF-208, HF-06, HF-671 |
-| L. C extension boundary: C-API, ABI and FFI | Upstream extensions reach Molt through the recompiled C-API (libmolt headers), its stable-ABI tier, the buffer protocol and FFI (ctypes and cffi). The C-API bridge keeps two error channels and two headers, FFI is partial and capability-gated, and no Tier 1 cell runs an unmodified upstream extension or FFI binding. | HF-209, HF-174, HF-175, HF-527, HF-283, HF-61, HF-57, HF-12, HF-612, HF-621 |
-| M. Codec, text and IO state | Stateful codec and IO protocols | V1-18, V1-30, V1-33, HF-322, HF-329 |
-| N. OS, process and network boundary | Host-boundary semantics | HF-441, HF-455, HF-518, V1-10, V1-13, V1-36, HF-531, HF-177, HF-595, HF-636 |
-| O. Versioned target facts | Facts read from the build host instead of the declared version and target | V1-16, V1-22, V1-23, V1-35, HF-65, HF-122, HF-568, HF-554, HF-567, HF-628, HF-656 |
-| P. Mid-end fact soundness and pass firing | Unchecked rewrites, inert passes and a stdlib skip with no stated exit | HF-201, HF-204, HF-214, HF-555, HF-572, HF-573 |
-| Q. User compile and edit latency | No early cutoff on unchanged inputs; HF-26, HF-371 and HF-172 (first-link cost), HF-517 (guard overhead), HF-458 (PGO) and HF-225 (daemon admission) are first-build costs | HF-250, HF-252, HF-254, HF-266, HF-285, HF-357, HF-516, HF-173, HF-517, HF-26, HF-371, HF-172, HF-263, HF-458, HF-225, HF-631, HF-634 |
-| R. Development state ownership and reconciliation | Molt-created processes and state have no declared-state reconciler: ownership is guessed, liveness has four implementations, and a crash or reboot leaves state nobody owns | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370, HF-583, HF-602, HF-606, HF-607, HF-630, HF-667, HF-675 |
-| S. Landing pipeline and self-build cost | The merge gate tries to be complete and serial instead of a fast presubmit plus a continuous postsubmit farm, and building Molt repeats links, targets and toolchain work | HF-10, HF-22, HF-27, HF-190, HF-373, HF-291, HF-53, HF-93, HF-68, HF-170, HF-96, HF-599, HF-600, HF-603, HF-618, HF-623, HF-629, HF-633, HF-638, HF-635, HF-666 |
-| T. Installed delivery and witnesses | The installed product and its end-to-end witnesses | V1-02, V1-06, V1-24, V1-28, HF-62, HF-64, HF-454, HF-576, HF-386, HF-04, HF-380, HF-510, HF-575, HF-620, HF-659 |
-| U. GPU device boundary | GPU work reaches a device through Molt-owned substitutes instead of upstream packages over `webgpu.h`, the buffer protocol and the C-API | HF-613, HF-614, HF-615, HF-650 |
-| V. Object reduction and serialization protocol | Pickle and copy restate CPython's reduce protocol privately (two pickle VMs, the encoder's own default reduce, globals written outside save_global, copy arms that return the original object) instead of consuming one object-model `__reduce_ex__` | HF-570, HF-643, HF-644, HF-645, HF-649 |
-| W. Startup and build-time initialization | Every start reruns runtime setup and every module body; nothing evaluates deterministic initialization at build time or emits its objects as static data | HF-673 |
+| HF-459 | P | performance work starts on an armed instructions-retired baseline (closes when HF-459 lands) |
+| HF-459 | X | same |
+| HF-459 | Y | same |
+| HF-459 | Z | same |
+| HF-459 | J | same |
+| HF-459 | W | same |
+| HF-79 | HF-678 | a counted loop needs the guard that proves `range` is the builtin |
+| HF-226 | HF-680 | compile-time method resolution needs receiver proofs from the closed-world callback model |
+| HF-653 | HF-680 | typed names give each method and attribute site a compile-time key |
+| HF-226 | HF-681 | type-id ranges need the closed class hierarchy |
+| HF-681 | HF-573 | `isinstance` becomes a `TypeGuard` once it is a type-id range check |
+| V1-26 | HF-573 | a real `TypeGuard` needs the shared op's semantic role and fallibility |
+| HF-653 | HF-670 | keyword names cross the call as typed name ids |
+| HF-198 | HF-670 | the native calling convention carries the execution context (HF-198 stage 2) |
+| HF-670 | HF-684 | direct calls and inlining use the native calling convention |
+| HF-79 | HF-684 | a direct call needs the guard or proof that binds the callee |
+| HF-226 | HF-684 | cross-module inlining needs closed-world callee proofs |
+| HF-201 | HF-205 | scalar refcount elision reads the final typed facts paired with codegen |
+| HF-201 | HF-682 | scalar replacement reads the final typed facts |
+| HF-555 | HF-682 | escape analysis runs on memory SSA in the canonical block order |
+| HF-226 | HF-673 | build-time evaluation needs module code whose callbacks cannot rebind what it reads |
+| HF-181 | HF-673 | build-time initialization covers the proven reachable module set |
+| HF-628 | HF-673 | build-time evaluation must read the declared target's facts; HF-628's implicit-host target keys would leak the build host into the image heap |
+| HF-206 | HF-490 | checked satellite symbols before the runtime crate split |
 
-Edges: A -> P (TypeGuard semantics before HF-573), A -> J (inline fast paths
-need the generated runtime-function row, and HF-653's typed names give inline
-method caches a key; B's version-guarded globals do not need them, since
-CPython's LOAD_GLOBAL caches key on dict-keys versions, so A and B compose
-without an edge), A -> G (stub refusal needs op ->
-runtime function -> feature reachability); B -> Q, B -> J, B -> H (precise
-bindings shrink closures, enable direct calls and drive admission); D -> G
-(refusals need build-failure pins, HF-563); B -> G (a build-time refusal needs precise reachability); G -> H (test.support reaches stubs);
-F -> Q, F -> E, F -> T (early cutoff, the metric receiver and installed delivery
-need content identity); E -> J and E -> P (an armed baseline removes silent
-performance regressions); K -> M (codec callbacks need reentrant ownership);
-J -> S (HF-206 before the HF-490 split); F -> S, F -> C and F -> every landing
-(observed input closures and result reuse make the merge gate small, and
-coverage cells select through the same graph); F -> R (reconciled records
-keep durable identity); C -> S (coverage moves heavy cells post-commit). L -> U, I -> U, O -> U (upstream GPU
-packages need the C ABI, the suspension bridge for asynchronous device waits,
-and declared target facts). V has no family prerequisite. Inside V, HF-646's
-`object.__reduce_ex__` precedes HF-643, HF-644 and HF-645 (the encoder moves
-onto it), and row HF-647 (H) precedes HF-644's by-reference pickling of
-intrinsic functions. V1-05 (K) qualifies the runtime ownership of copy
-reconstruction; HF-646's design reconciles with it rather than waiting on it.
-B and J bound V's performance, not its correctness (copy's per-object cost is
-mostly unbound globals, string-resolved methods and runtime entry), so they
-are not V's prerequisites. O -> W and K -> W (build-time initialization must read the declared target, not
-the build host, and statically emitted objects need the immortal-ownership
-contract); F -> W (a build-time heap is keyed by the content identity of its
-inputs). Row orders across families: HF-648 (F) precedes
-HF-106's recalibration (D), or the new baseline records identity flakes as
-verdicts; the primitive-cost benchmark armed as an instructions-retired
-baseline (HF-459, E) lets J, A and B work start under E -> J.
-
-Levels: 0 = A, B, C, D, F (multipliers) and I, K, L, N, O, V (no
-prerequisites); 1 = E, G, Q, M, R, U, W; 2 = J, P, H; 3 = S, T. Re-cut on
-2026-10-30: C, F, R and S were cut by symptom area; F now holds the one
-missing authority they shared (observed inputs and content identity).
+| From | To | Reason |
+| --- | --- | --- |
+| HF-563 | HF-273 | a reached-stub build refusal needs an executable build-failure pin |
+| HF-563 | HF-195 | feature-family build refusals need executable build-failure pins |
+| HF-226 | HF-285 | namespace-premise dependency slicing needs the complete callback binding projection |
+| HF-181 | HF-273 | stub refusal must use the proven reachable module set |
+| HF-300 | HF-252 | identity-stage early cutoff must observe the complete Cargo input closure |
+| V1-09 | HF-252 | identity-stage reuse must bind the actual selected source inputs |
+| V1-01 | V1-07 | the release metric receiver must admit actual compiler and runtime used-byte identity |
+| V1-09 | V1-02 | installed compiler features and packaging must bind the selected compiler source generation |
+| V1-01 | V1-06 | authenticated delivery provenance must bind the actual executed compiler and runtime generation |
+| HF-621 | HF-613 | unmodified tinygrad loads Dawn through the ctypes/cffi boundary |
+| HF-610 | HF-614 | host-backed browser webgpu.h waits need the suspension bridge |
+| HF-628 | HF-613 | the Dawn device boundary must select declared target facts rather than implicit host facts |
+| HF-628 | HF-614 | browser webgpu.h must select declared target facts rather than implicit host facts |
+| HF-459 | HF-686 | runtime-call ratchet extends the armed primitive instructions baseline |
+| HF-653 | HF-687 | compile-time refusal migrates the typed runtime-name producer and every name-taking API consumer |
+| HF-680 | HF-688 | runtime cache retirement consumes closed-world method and binding resolution |
+| HF-226 | HF-688 | runtime cache retirement consumes closed-world method and binding resolution |
 
 Verification has a decision boundary. Before dispatch, name the changed
 invariant, the defect an independent oracle would detect, and the result needed
@@ -904,6 +1243,16 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 
 | ID | Finding | Evidence | Next step |
 |----|---------|----------|-----------|
+| HF-688 | The runtime holds 163 cache items (functions, structs, statics and thread-locals named for caches), mostly because compiled code resolves at run time what the closed world can resolve at build time. | Owner correction 2026-11-02 00:13 CST reports the 163-item inventory. HF-200 shows per-thread caches outliving the runtime generation that filled them; the type_dispatch profile spends samples on runtime_state lookups and lazily initialized name slots. The inventory count and profile observations are owner-reported snapshots, not fresh runtime measurements by this lane. | Inventory every cache and the lookup it saves. Delete each together with the redesign removing its reason: compile-time resolution in X and B, dense tables or statically emitted data in W. Keep an existing cache only with a measured reason recorded beside it. Content-addressed build caching of whole artifacts is out of scope. |
+| HF-687 | Spelled runtime names still have APIs, so prose rules do not prevent rebuilding or looking up names that have typed identities. | Owner correction 2026-11-01 23:49 CST: HF-653 typed runtime names as NameId, but its head still has 32 attr_name_bits_from_bytes calls, 114 alloc_string(py, b"...") literals and 38 string_from_bytes calls; the census only refuses intern_static_name-style calls. The identity lane added 31 string-keyed lookups and HF-668 spelled __init__ and __post_init__ despite the standing rule (Codex sessions 2026-11-01T07-33-15 and T22-14-10, record 7). These are owner-reported snapshots, not fresh counts from this lane. Prior art: rustc Symbol/sym:: and its literal-interning lint, CPython _Py_ID()/generate_global_objects.py, V8 read-only root strings; see findings_prior_art.md family A. | Name-taking runtime APIs accept only NameId or an interned runtime-string handle, so rustc refuses spelled names. Delete attr_name_bits_from_bytes and migrate every site, adding names at the one table. Refuse production runtime byte/str literals equal to registered names until types make them impossible. A clippy disallowed-methods entry backs any constructor retained for genuinely dynamic strings. |
+| HF-685 | object construction and instance namespaces cost 9.53x (plain_construction) and 17.25x (new_and_update: `Plain.__new__(Plain)` then `y.__dict__.update(state)`) CPython. Mechanism not yet measured; HF-668 round 2 measured plain construction at 24,682 instructions per call. | Design 2026-11-01, section 5; HF-459 primitive-cost observations and the source/profile cited in the defect. | measure the anatomy first; then allocate with the class's fixed layout, call a proven `__init__` directly, and materialize `__dict__` only on demand (CPython 3.11+ inline values and lazy instance dicts; V8 hidden classes). |
+| HF-684 | no compiled Python call can be inlined. No TIR pass inlines, and `TargetInfo::inline_budget` has no caller outside its own test; calls go through the runtime (HF-670), so LLVM's inliner never sees a callee. | Design 2026-11-01, section 5; HF-459 primitive-cost observations and the source/profile cited in the defect. | once calls between compiled functions are direct native calls, let the backend inline them (same module or LTO), and add a closed-world TIR inliner for small proven callees across modules, with code-size accounting (GraalVM and HotSpot inlining budgets). |
+| HF-683 | every compiled Python call builds frame state eagerly. HF-198's profile counts about 15 runtime entries per Python call (frame invocation, trace slot, column, frame context, recursion guard, polls, refcounts) and recursion runs 8.12x CPython. CPython 3.11 keeps `_PyInterpreterFrame` records in a per-thread stack and creates a frame object only when code asks for it; Go and HotSpot recover frames from the native stack and side tables. | Design 2026-11-01, section 5; HF-459 primitive-cost observations and the source/profile cited in the defect. | frame records live in the native frame or a thread data stack; a Python frame object materializes only for introspection, tracebacks or a generator; the recursion guard is a stack-bound compare (with HF-442). |
+| HF-682 | short-lived objects reach the heap. `rv = (i, None, i, None, None); a, b, c, d, e = rv` runs 3.08x CPython. The escape pass (`runtime/molt-tir/src/passes/escape.rs`, 160 lines) works on SimpleIR names, only marks `stack_eligible`, and an environment variable turns it off. | Design 2026-11-01, section 5; HF-459 primitive-cost observations and the source/profile cited in the defect. | partial escape analysis with scalar replacement on TIR SSA (Stadler, Wurthinger and Mossenbock, CGO 2014; LLVM SROA; PyPy virtuals, Bolz et al. PEPM 2011; mypyc `RTuple` value tuples) removes tuples, bound methods, iterator results and keyword dicts that do not escape; delete the name-keyed pass and its switch. |
+| HF-681 | `isinstance` and `issubclass` against a class the closed world fully knows run the generic protocol (global name lookups, `__instancecheck__` lookup, exception materialization; 9.62x CPython). | Design 2026-11-01, section 5; HF-459 primitive-cost observations and the source/profile cited in the defect. | assign type ids in preorder over a proven single-inheritance hierarchy so a type test is a range check; for closed multiple inheritance use multiple type-check slots or an equivalently proven static encoding, as GraalVM does (GraalVM Native Image type-check ranges; HotSpot primary/secondary subtype checks), fall back to the protocol only for a class that defines `__instancecheck__`/`__subclasscheck__` or is created at run time, and feed the result to HF-573's `TypeGuard`. |
+| HF-680 | methods and builtins resolve by name at run time on receivers whose type is known. `DISPATCH.get(type(obj))` runs 13.10x CPython against 2.32x for a plain `dict.get`: the profile (prof-type_dispatch.txt) shows `dict_exact_string_lookup` (18 samples), `builtin_class_method_bits` (10), MRO namespace lookups (18), `from_utf8` (6) and `bind_builtin_keywords` (7) for a call with no keywords. | Design 2026-11-01, section 5; HF-459 primitive-cost observations and the source/profile cited in the defect. | closed-world resolution binds a method on a proven exact type to a direct call at compile time; the closed world knows every class, so a receiver the analysis cannot pin to one class dispatches over class ids (a vtable slot index or a switch over the possible class ids), with no run-time cache; a class created at run time outside the verified subset takes the generic protocol; typed names (HF-653) give each site a compile-time key. |
+| HF-679 | an attribute or special-method lookup that misses builds an exception object and drops it. In `isinstance(objs[i & 63], str)` the hottest runtime symbols include `ExceptionValue::pin` and `ExceptionValue` drop beside `attribute_lookup_transaction` (sample-isinstance.txt, logs/agents/lane-integrator-tools/artifacts/primitive-costs-20261031); `getattr(o, "__deepcopy__", None)` runs 3.46x CPython. CPython 3.12 looks attributes up through `_PyObject_LookupAttr` and `_PyType_Lookup`, which report a miss without creating an AttributeError. | Design 2026-11-01, section 5; HF-459 primitive-cost observations and the source/profile cited in the defect. | one lookup protocol returns found, missing or error; only a real error, or a caller that must raise, creates an exception; sweep every caller of the raising lookup by mechanism. |
+| HF-678 | `for i in range(...)` steps through `molt_iter_next_unboxed`, a runtime call per iteration, in the hot block of `for i in range(n): total += i` (opt_explorer anatomy, main 2f7f81709e, release, macOS arm64), where Cython, mypyc (`ForRange`), Numba and Codon lower a proven builtin `range` to a counted i64 loop with no iterator object and no call. | the anatomy above (169 instructions and 8 runtime calls in the hot block; about 567 instructions per iteration against CPython 3.12's about 520). | when HF-79's binding guard proves `range` is the builtin and its arguments are ints, lower the loop to an induction variable whose bounds rule out overflow; the generic iterator stays the guard's slow path; measure the HF-459 `loop` axis before and after. |
 | HF-627 | A `multiprocessing` worker that prints corrupts its own IPC: `Process.start` spawns the child with stdin and stdout as pipes and frames IPC on them (`_core.py`, `_StreamTransport(stdout_stream, stdin_stream)`), so the parent reads the worker's text as a frame length and raises `ValueError: message too large`. CPython leaves the worker's stdout inherited and carries IPC on separate pipes (`Lib/multiprocessing/popen_spawn_posix.py`). | HF-519 probe, 2026-10-31: a worker that ran `print("worker ran")` failed the parent's `join` in `_stream_poll_frame`. 2026-10-31 night: landing failures were two clippy lints (fixed, 63920a6dda: one `SpawnRequest` instead of 11 arguments, `is_multiple_of`) and a stale expected-pair false failure (HF-658); lands on the re-homed artifact root. | Carry the transport on dedicated inherited descriptors and leave stdio to the program; add a differential case where workers print. |
 | HF-626 | No landing or postsubmit cell compiles `molt-runtime` for x86_64-pc-windows-msvc, a Tier 1 target, so main stopped compiling there unseen: six errors (`owns_process_group` defined only under `cfg(unix)` but passed by both spawn entry points; an untyped `collect` in the Windows glob path). The Windows lib-test build also warns in `env_support.rs:4`, `pwd.rs:4`, `signal_ext.rs:75` and `structseq.rs:396`. | bat00 `cargo check -p molt-runtime --lib` on `4b47d707a9` (6 errors); fixed by `aa2d62f568` in lane hf519-self-spawn, after which the check and the `self_spawn` tests pass on bat00. bat00 at main 62d1732de3 (2026-10-31): `cargo test -p molt-runtime-platform --lib errno_build_tests` fails 3 of 6; the compile lines hand cl.exe verbatim `\\?\E:\...` paths (`-Fo`, the source). `metadata_time_tests` failed there too until lane hf624-windows-file-identity made its pre-epoch step 100 ns (Windows SystemTime counts 100 ns ticks). | Add a Windows `cargo check --tests` cell for the runtime crates to the farm postsubmit (bat00), with warnings denied once the four warnings are fixed there. |
 | HF-636 | A Molt build on Windows fails at the backend capability probe with `[WinError 206] The filename or extension is too long`, and the guard then reports temporary-artifact custody blocked, so no Windows differential program runs. | bat00 scratch clone at lane hf624-windows-file-identity (2026-10-31): `uv run python tests/molt_diff.py tests/differential/stdlib/os_stat_file_identity.py` -> "Built Backend failed its capability probe", WinError 206, custody terminal state blocked, child_returncode=1 (incident 20261031T154958Z-1380-3baeb5167bc8). The longest recorded command line is the 10,618-character molt_runtime rustc line, under the 32,767 limit, so the over-long item is in the probe launch. | Find the probe launch that exceeds the Windows path or command-line limit, fix it at the path authority (verbatim long paths where the consumer accepts them), and add a Windows build cell that runs one differential program on bat00. |
@@ -956,11 +1305,11 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-186 | The weekly Sanitizers workflow has failed every run since at least 2026-09-08 (34214152081, 34958765521, 35716105963, 36563396276, 37462483757, 38402021943) and no row owned it. Run 38402021943 (02c0a71c0, 2026-10-13): AddressSanitizer reports a stack-buffer-overflow, an 8-byte READ on thread T2390, in the `molt-runtime` lib tests; the trace is unsymbolized and the tests run multithreaded, so the faulting test is unknown. The Miri job never reaches its tests: `cargo metadata --no-deps --format-version 1 --locked` exits 1. | Job logs 115311783818 (ASan) and 115311783397 (Miri), read 2026-10-14. | Symbolize the ASan job (llvm-symbolizer on PATH, `ASAN_SYMBOLIZER_PATH`) and rerun the lib tests with one test thread to name the faulting test, then fix the overflow at its owner. Repair the Miri job's locked metadata step. Make a scheduled-workflow red open or update a ledger row (see HF-73). |
 | HF-197 | Op kinds are strings at every layer, so a registered kind can lose its last producer while every consumer still compiles. 6cf681a1c removed the name-matched producers of `JSON_PARSE`, `MSGPACK_PARSE`, `CBOR_PARSE` and `BUFFER2D_*` (sound: they ignored rebinding) but left the registry rows, serializer arms, native `fc/parse_ops.rs`, LLVM `direct_ops.rs`, Luau `op_runtime_surface.rs`, WASM manifest rows and tests. `audit_op_kinds.py --check` stays green: it reads emission from serializer dicts, never from `MoltOp` construction, and Rust arms are `&str` patterns. | Literal scan (2026-10-14): 48 of 375 serializer arms have no producer literal; f-string kinds (`f"{prefix}_FROM_STR"`) make some false positives. Rust dispatch: 438 `kind.as_str()` matches, about 700 `kind == ".."` and 210 `matches!` in about 250 files; about 3,100 `OpIR {` constructions; 479 `_original_kind` string attrs in TIR. Python: 1,942 `MoltOp(kind=` sites, 529 string tests. The removed parse lowering was worth 2.8x: 3M `molt_msgpack.parse` calls take 3.68-4.07 s live and 1.30-1.57 s through the intrinsic; the cost is two thin wrapper calls, not the codec. Wire census at fd454bd38 (2026-10-16): of the 114 baseline kinds, 15 have a production producer (13 built by Rust passes, plus `get_attr`, used only inside the Rust backend, and `set_attr`, from `tools/luau_physics_to_ir.py`); tests alone build 80 and nothing builds 19. Many are spare spellings of live opcodes, and 21 opcodes are never created in production (Alloc, StackAlloc, Free, AllocTask, BitNot, the Build* family, DeleteVar, ForIter, GetIter, In, NotIn, IsNot and others), so the passes keyed on GetIter (`iter_devirt`) and AllocTask (`generator_fusion`) may never fire. Retired so far: `json_parse`, `msgpack_parse`, `cbor_parse`, `buffer2d_new/get/set/matmul`, `memoryview_cast`, the five `file_*` kinds, `getargv`, `sys_executable`, the context family (`context_null`, `context_closing`, `context_unwind`, `context_unwind_to`, `context_depth`), five exception kinds (`exception_enter_handler`, `exception_kind`, `exception_message`, `exception_resolve_captured`, `exception_set_value`) and the class family (`class_new`, `class_set_base`, `class_layout_version`, `class_apply_set_name`, `object_set_class`, `super_new`), with the stale SimpleIR schema rows. Open: `getframe` has no producer, but its `FRAME_INTROSPECTION` role carries six live runtime symbols (`molt_getframe`, `inspect.currentframe`, `sys.settrace` and others), so retiring it needs the role's kind table made optional; `exception_last`, `exception_active` and `exception_current` are test-only but `molt-passes` `exception_regions` matches all three. The retirements leave runtime ABI with no demand: `context_enter` and `context_exit` still `required_imports` the five context imports nothing calls, so every module with a `with` statement imports them; eight other imports have no demand (`exception_kind`, `exception_message`, `exception_resolve_captured`, `exception_set_value`, `class_layout_version`, `object_set_class`, `super_new`, `exception_enter_handler`); and `molt_context_closing`, `molt_context_depth`, `molt_context_unwind`, `molt_context_unwind_to`, `molt_exception_resolve_captured` and `molt_class_layout_version` have no caller. Luau's class arms were reachable only from synthetic tests. Of the `molt_buffer2d_*` intrinsics only `molt_buffer2d_matmul` lacks a caller: `src/molt_buffer` calls `new`, `get`, `rows`, `cols` and `set`. The retired file, `getargv` and `sys_executable` kinds leave `molt_file_{open,read,write,close,flush}`, `molt_getargv` and `molt_sys_executable` without a Python caller; the intrinsic census (HF-124, HF-125) owns them. | Stage 1 landed on main (3f5fc06ab): `tools/op_kinds/census.py` proves every frontend kind expression (no unresolved site) and `tests/test_frontend_op_kind_registry.py` fails on any registered kind spelled in compiler Python but never produced; 54 dead frontend kinds lost their serializer arms, midend set members, registry rows and tests, with byte-identical IR on 1,894 programs. The 42 wire kinds those arms hid are now in the audit's `mapped_never_emitted` and `ownedvalue_never_emitted` baseline. Step (4a) landed 2026-10-29 (lane/opkind-stage4), as specified in design 25, "Step 4 specification", after the owner made typed identity the top structural priority. `OpIR.kind` is a generated closed `#[repr(u16)]` `OpKind` over the 536 wire kinds with explicit serde spellings; decoding accepts only strings and rejects unknown spellings and numeric MessagePack indices. TIR carries `origin: Option<OpKind>` in place of the `_original_kind` string, `OpIR::default` is gone, exhaustive const methods replace the 36 `&str` predicates, and Cranelift, LLVM, WASM, Luau, Rust, MLIR and the JIT dispatch by typed kind with exhaustive refusal. After decoding, no Rust consumer compares a wire-kind string (baseline on 5dd3e873da: about 1,120 kind-string compares, 496 `_original_kind` references). The unregistered fact spellings `await`, `decorator`, `func_new_builtin`, `generator_send`, `super_call` and `task_new` and the unconstructible WASM selectors `memory_copy`, `memory_fill` and `errno_constants` were retired, and `audit_op_kinds.py` dropped the Rust scraper checks that rustc now enforces; the proof plan's `rust-source-scan-consumers` rule selects the shared lexer and Luau support-matrix tests for every structural-audit parser edit. One source-scraping test (`test_required_features_reachability.py`) still pinned the retired `simpleir_kind_references_defined_function(&op.kind)` spelling, which the landing did not select, and failed on main until lane hf564 made it assert the generated `OpKind` method; step (5) retires such scrapers. `OpIR` shrank from 560 to 536 bytes; decoding 10,000 `nop` operations went from 10,000 allocations to none. Emitted SimpleIR is byte-identical on 3,046 of 3,054 corpus programs (the 8 others fail identically in the frontend), and three native samples link byte-identical executables that match CPython. The nine crates pass all-target, all-feature checks, every changed-crate clippy cell and their own tests, with native LLVM 22.1.8, the JIT, Luau (Lune 0.11.1) and MLIR; the warm backend compile of `stdlib/re_parity` took 5.40 s before and 5.16 s after on a loaded host, which is not a causal speed claim. Step (4b) landed 2026-10-29 (lane/opkind-step4b-python). `gen_op_kinds.py` emits closed `FrontendOpKind` (530 members) and `WireOpKind` (536) `Literal` types, `Final` named constants and typed fact sets from `op_kinds.toml`; `MoltOp.kind` and every producer, mapper and serializer use them, and `ty check src tests/findings` rejects a misspelled kind at a producer, a comparison, a membership set or a wire dictionary (four seeded defects, all rejected). The Python emitter scraper in `audit_op_kinds.py` (`extract_frontend_kinds`, `unregistered_frontend_wire`, `unresolved_frontend`) and the reader-less `tools/op_kinds_baseline.json` are retired. Emitted SimpleIR is byte-identical on 3,049 of 3,057 corpus programs (the same 8 fail identically in the frontend); `compile_to_tir` of `stdlib/re_parity` took a median 1.64 s before and 1.59 s after on an unquiesced host, which is not a causal claim. Next: steps (2) and (3) as checked variant deletions. The original order was: (2) a wire census (serializer output of produced kinds, CLI IR, Rust producers) that retires each dead wire kind's backend arms, manifest rows and registry rows, keeping specialized codegen only when a proven or guarded binding reaches it; the IR spec inventory (`src/molt/debug/verify.py`, `0100_MOLT_IR.md`) must check produced kinds per layer, not the inflated registered set; (3) per-kind registry rows with a producer column; (4) a generated `OpKind` for `OpIR.kind` and the TIR carrier; (5) retire the scrapers rustc then enforces. Recover lost speed through general mechanisms (HF-205, HF-185), measured per family. HF-F208 removed the last producers of `GUARD_DICT_SHAPE` and `CLASS_VERSION` (only a user class named `dict` reached them) and deleted their frontend lane, the CFG redundant-guard pass and `enable_guard_hoist`; the native, LLVM, WASM and Luau arms of `guard_dict_shape` and `class_layout_version` and their manifest rows join the dead wire-kind baseline for stage 2. HF-F209 retired `guard_dict_shape`; its runtime deopt counters and runtime-feedback keys are still named `GUARD_DICT_SHAPE_LAYOUT_*`/`guard_dict_shape_layout_*` (`molt-runtime-constants/src/constants.rs:122-129`, `object/ops.rs:658-670`, `tests/test_check_runtime_feedback.py`); rename them to the layout guard with their schema consumers once the Codex WIP in `ops.rs` lands. |
 | HF-198 | Runtime entry from compiled code costs about a third of a call-heavy loop. Each entry reads several separate thread-locals (`RUNTIME_EXECUTION_LEASE_DEPTH`, `SHUTDOWN_DRAIN_EXECUTION_DEPTH`, `GIL_DEPTH` on entry and on drop, the runtime-state lookup); on macOS each distinct `thread_local!` is its own `_tlv_get_addr` call. `molt-runtime` declares 96 thread-local statics. | `tools/opt_explorer.py profile` on 6M `molt_msgpack.parse` calls (2026-10-14): runtime entry 32.4% of 3,083 samples; `_tlv_get_addr` 579 (19%), `enter_with_policy` 189, `GilGuard::drop` 82, `runtime_state_for_gil` 40. Stage 1 (lane/runtime-entry, 2026-10-22): instructions retired and cycles from `/usr/bin/time -l`, release build, macOS arm64, same base (main bb7691d02 runtime against the lane): 20M Python calls (`total = add(total, i)`) 121.18G to 89.76G instructions (-25.9%), 16.86G to 12.75G cycles (-24.4%); 6M generator `next` steps 96.34G to 78.76G (-18.2%), 15.83G to 12.92G cycles (-18.4%). One-key consolidation alone gave -13.7% and -10.0%; the inline nested path with cold slow paths gave the rest. Binary +1.3% (11,998,048 to 12,157,008 bytes), `__text` +2.5%. Profile after stage 1 (call loop): runtime entry still 30% of samples, because a Python call enters the runtime about 15 times (frame invocation, trace slot, column, frame context, recursion guard, exception and async polls, refcounts); frame bookkeeping about 14%; compiled code 6%. The whole loop still costs about 4,500 instructions per call against a few hundred in CPython. Same run: a Python call (recursion) retires 4,557 instructions vs CPython 561 (8.1x). `Lib/copy.py` compiled by Molt retires 24.98 G vs CPython 2.92 G on HF-646's builtin benchmark, so generic Python code runs slower than the interpreter; family B and J costs, not the copy algorithm, dominate HF-646. | Reuse existing RuntimeExecutionGuard/CoreGilGuard admission, then carry the actual attached execution context across internal calls while preserving isolate resolution, suspension, callbacks, shutdown and error custody. Native main already runs attached; a CoreGilToken proves only GIL ownership. Bind before/after measurements to exact source/image/feature/profile and the same workload on macOS/Linux; the recorded survey is not current-image qualification. Coordinate through the existing runtime-state owner. Entry-path map: compiled code runs with lease and GIL held, so every runtime call takes the re-entrant branch of `enter_with_policy` (`execution.rs:543-553`) yet still touches 2-5 thread-local keys (3-8 accesses); e458bccd3 caches state per `PyToken`, but every entry mints a new token; compiled-to-compiled calls add `molt_recursion_enter_fast`/`exit_fast` (4 keys, 5 accesses). Refcounts are opaque calls on all backends; Cranelift runtime imports are non-colocated (indirect calls); LLVM declarations are not `dso_local`. Staged plan in `~/Molt/tmp/runtime-boundary/design.md`: (0) in-repo baseline probe, (1) one plain-data per-thread context key, (2) compiled code holds the context, (3) inline refcount from one generated spec with explicit IR blocks, (4) direct calls from a typed static-link fact, (5) guarded builtins as direct calls. Stages 1-2 touch `runtime_state.rs`, `lifecycle.rs` and `isolates.rs`, where `codex/v1-wip-integration` holds the RuntimePolicy work (committed, not landed as of 2026-10-15); stages 0, 3 and 4 do not. Stage 1 is done: `ExecutionTls` holds the lease, GIL, drain and runtime-state facts in one const-initialized thread-local with no destructor (CPython reads one, `_Py_tss_tstate`); the nested entry is inline and its slow paths cold. Next: stage 2, compiled code carries the context and its runtime calls skip the per-call guard, as CPython passes `tstate` and HotSpot and V8 keep the thread or isolate in a register; then fewer runtime entries per Python call (frame bookkeeping, HF-261 line tables). |
-| HF-670 | Calls pack their arguments into a pinned tuple (`seq_access::pin_tuple`, `PinnedTuple::drop`) and re-enter the runtime for each call. CPython's vectorcall (PEP 590) passes a C array with no tuple, and CPython 3.11 runs Python-to-Python calls inside the eval loop. | Primitive costs (HF-79's table, main 387bb5e8af): a call through a local function value 2,669 instructions against CPython 339. The HF-668 profile: `pin_tuple` 30 and `PinnedTuple::drop` 29 of 2,510 samples. | One calling convention for compiled-to-compiled and compiled-to-runtime calls: arguments in registers or a stack array, keyword names as typed name IDs (HF-653), no tuple for a fixed-arity call, and a direct call when the callee is bound (HF-79). Prior art: PEP 590, mypyc native calls, HotSpot compiled calling convention. Oracle: the local-call primitive within 2x of CPython in instructions per call, with differential cases for defaults, keywords, `*args` and `**kwargs`. AOT prior art first: mypyc native calls, Codon, the Swift and Rust ABIs; PEP 590 vectorcall applies only at the C-API boundary. |
+| HF-670 | Calls pack their arguments into a pinned tuple (`seq_access::pin_tuple`, `PinnedTuple::drop`) and re-enter the runtime for each call. CPython's vectorcall (PEP 590) passes a C array with no tuple, and CPython 3.11 runs Python-to-Python calls inside the eval loop. | Primitive costs (HF-79's table, main 387bb5e8af): a call through a local function value 2,669 instructions against CPython 339. The HF-668 profile: `pin_tuple` 30 and `PinnedTuple::drop` 29 of 2,510 samples. | One calling convention for compiled-to-compiled and compiled-to-runtime calls: arguments in registers or a stack array, keyword names as typed name IDs (HF-653), no tuple for a fixed-arity call. Prior art: PEP 590, mypyc native calls, HotSpot compiled calling convention. Oracle: the local-call primitive at or below 1.0x CPython in instructions per call, with differential cases for defaults, keywords, `*args` and `**kwargs`. AOT prior art first: mypyc native calls, Codon, the Swift and Rust ABIs; PEP 590 vectorcall applies only at the C-API boundary. |
 | HF-671 | The cycle collector still hashes with std `RandomState` SipHash: its scratch index `GcScratch.index: HashMap<GcNode, usize>` and `api_value_membership: HashSet<u64>` (runtime/molt-runtime/src/object/gc.rs). HF-475 removed SipHash from the tracking registry and missed these siblings. CPython keeps `gc_refs` in each object's `PyGC_Head` (`update_refs`, `subtract_refs` in Modules/gcmodule.c), so a collection visits an edge with no lookup. | The HF-668 dataclass profile (2026-11-01): `RandomState::hash_one::<&GcNode>` 30 of 2,510 samples; the construction loop triggers collections through its per-call allocations. | Keep each candidate's collection index or `gc_refs` in its GC header for the collection's duration, as CPython does, so an edge visit is a load. Sweep by mechanism: every `HashMap` or `HashSet` with the default hasher on a molt-runtime hot path, and list each site. Oracle: gc differential cases unchanged, and no `RandomState` symbol in a construction-loop profile. |
 | HF-200 | Per-thread runtime caches outlive the runtime generation that filled them. When a test runtime shuts down on another thread and the next test restarts it, the first thread's attribute caches still hold references from the old generation; `clear_attr_tls_caches` at that thread's teardown released them and lldb showed a use-after-free. Production cannot restart a runtime (`molt_runtime_init` refuses after Shutdown), so only `molt_runtime_reset_for_testing` reaches it today, but nothing in the cache design forbids it. | lldb backtrace during HF-194 (2026-10-14): teardown of the test thread ran `clear_attr_tls_caches` on R1 references after R1 shut down; removing the retire step from the test epilogue avoided it without fixing the caches. | Stamp every per-thread cache with the runtime generation and drop, without releasing, entries from a dead generation; fold this into the single per-thread context of HF-198 so one generation check covers all caches. Add a test that restarts the runtime with warm caches on a second thread. |
 | HF-201 | Final typed facts must remain paired with the codegen body through every transformation. Native and WASM now retain final TIR and retire codegen fact reconstruction; remaining source backends also normalize fresh or rewritten inputs. Copy carriers preserve semantic spellings whose effect/ownership consumers must migrate. Source-name projections need explicit identity and ambiguity rules. | The original 74c60f66b explorer reported 27 lifts and 387/570 preserved kinds. An explicit pre-migration census at cff0ccf03 finds 11 direct production lift sites and 409/570 registered Copy-plus-original-kind names; wrappers amplify calls and vocabulary counts do not measure dynamic op mix. LLVM already consumes owned final TIR. Shared demanded representation analyses and cold-function optimizer avoidance are landed. | Follow Century/architecture convergence through one final typed owner. Native copy-alias, split-field and direct-raise transformations now run under that owner and all normal/skip/batch consumers require final body/fact pairs. WASM typed operation reachability now precedes release insertion, final projection pairs scalar/LIR decisions, and frame planning no longer re-lifts or re-optimizes source operations. The scoped source review, host and actual target qualification are recorded above. Carry typed control flow and identity through machine lowering; genuine fresh-source phases retain explicit separate obligations. Earlier cached facts are insufficient across rewrites. Preserve generated effect, callback, overflow, range, ownership and diagnostic contracts; actual consumer and cold/warm cost evidence are required. |
-| HF-202 | Operations are grab-bag structs with string-keyed facts. `OpIR` has 35 public fields and `var` has five kind-dependent roles (`ir.rs:486`); `TirOp.attrs` is `HashMap<String, AttrValue>` read through 815 literal keys (`value` 311, `s_value` 79, `bce_safe` 21); `MoltOp.args` is `list[Any]` unpacked by position at 228 sites. Type hints are strings: `TirType::from_type_hint` maps 11 of 25 frontend tags (`types.rs:231`), `frozenset` and `iter` become `UserClass`, and qualified class names fall back to DynBox. | Compiler explorer survey (2026-10-14). | Operand formats and typed properties per op in `op_kinds.toml`, generating Rust structs and Python builders (Cranelift `InstructionData`, MLIR properties); the type vocabulary generated from `runtime/heap_kinds.toml`. First slice: the constant family's immediates. HF-F208 typed the class lane: `exact_class` is `ClassId \| None`, declared classes are `DeclaredClass(ClassId, ReceiverKind)`, bound methods `BoundMethodHint`; `type_hint` keeps strings only for builtin and transport spellings. |
+| HF-202 | Operations are grab-bag structs with string-keyed facts. `OpIR` has 35 public fields and `var` has five kind-dependent roles (`ir.rs:486`); `TirOp.attrs` is `HashMap<String, AttrValue>` read through 815 literal keys (`value` 311, `s_value` 79, `bce_safe` 21); `MoltOp.args` is `list[Any]` unpacked by position at 228 sites. Type hints are strings: `TirType::from_type_hint` maps 11 of 25 frontend tags (`types.rs:231`), `frozenset` and `iter` become `UserClass`, and qualified class names fall back to DynBox. | Compiler explorer survey (2026-10-14). Owner correction 2026-11-02 00:13 CST reports about 630 string-keyed ordered maps across native, WASM and TIR (including 365 BTreeMap<String, ...> and 249 BTreeMap<&'static str, ...>, origin/main 2f7f81709e); these are attributed source counts, not fresh measurements by this lane. | Operand formats and typed properties per op in `op_kinds.toml`, generating Rust structs and Python builders (Cranelift `InstructionData`, MLIR properties); the type vocabulary generated from `runtime/heap_kinds.toml`. First slice: the constant family's immediates. HF-F208 typed the class lane: `exact_class` is `ClassId \| None`, declared classes are `DeclaredClass(ClassId, ReceiverKind)`, bound methods `BoundMethodHint`; `type_hint` keeps strings only for builtin and transport spellings. SimpleIR values become dense typed ids instead of String names (TIR already has ValueId(u32)). Store ops as structures of arrays for kind, operand range and typed per-kind properties, with value facts in side tables indexed by value id; remove string-keyed attribute maps. Use Cranelift DataFlowGraph/PrimaryMap/SecondaryMap, rustc IndexVec, Zig AIR/ZIR MultiArrayList and Carbon SemIR as prior art (family A). |
 | HF-672 | The WASM hosts restate the linked-module admission protocol, with silent fallbacks. `run_wasm.js` skips publishing the callable table base when none is detected and skips the call when `molt_set_wasm_table_base` is missing (`typeof ... === 'function'`); `loader_bridge.extractWasmTableBase` returns null for a malformed attestation inside `try`; HF-627's lane made `browser_host.js` require a positive base, which refuses a module with an empty callable-table attestation. | HF-627's landing (runner 20261101T133714955848Z) failed `tests/test_wasm_runner_table_base.py::test_public_node_and_browser_deliver_declared_policy_to_wasi` (both cases): "linked wasm missing a positive callable table base". The test passes on main (slot-10 at bddc7704cb) and fails on the lane, reproduced in 3 s. | One host-neutral admission authority in `wasm/loader_bridge.js` decides the table-base contract from the callable-table attestation with typed outcomes (empty: nothing to publish; non-empty: a positive base and the canonical export, called before runtime admission; missing or malformed: named errors). Node, browser and every other host loader call it; delete each host's private rule and each silent fallback. Oracle: one parametrized test runs the same cases through Node and browser with the same verdicts. Dispatched into HF-627's lane (slot-03) on 2026-11-01. |
 | HF-673 | Every start of a compiled program reruns runtime setup and every module body. An almost empty program costs 217.4M instructions retired at startup against CPython 3.12's 88.8M (`-I -S`); a program that imports `dataclasses` 402.1M against 167.2M. No row owned startup cost, so a lane that added 14.6M to 17.4M startup instructions (HF-661) had no budget to answer to. | 2026-11-01, main bddc7704cb, release, macOS arm64, PYTHONHASHSEED=0, `/usr/bin/time -l` at N=0 of HF-668's probes (logs/agents/lane-integrator-tools/artifacts/construction-costs-20261101/). HF-661's slope runs: startup +14.6M (dataclass program) and +17.4M (namedtuple program) with per-call cost flat. | Attribute the 217.4M to phases (runtime setup, each module body); evaluate deterministic module bodies at build time and emit their objects as immortal static data keyed by input content identity and declared target, as family W's prior art adopts (CPython 3.11 static code objects, GraalVM build-time initialization, V8 snapshots, JEP 483). Arm startup instructions at N=0 as an HF-459 axis so a startup regression fails a gate. Oracle: startup within 1.5x of CPython for the empty and dataclass programs, differential output unchanged. |
 | HF-203 | Decorators are matched by spelling, not by binding (`classes.py`, `functions.py:37,60`, `function_lifecycle.py:273`): a user `dataclass` decorator gets the stdlib transform (repr, `__init__`, `__eq__`, `is_dataclass` all differ from CPython) or fails with `ModuleNotFoundError: dataclasses`; a user `overload` decorator drops the function (`NameError`); a user `kernel` decorator breaks the link (`_molt_gpu_kernel_descriptor_set` undefined). On the Rust side `TirType::UserClass(String)` still keys a user class by its bare name (representation and LIR signature checks only). The class-identity half is fixed as HF-F208. | Reproduced against CPython 3.12 on 74c60f66b (2026-10-14): `~/Molt/tmp/verify-claims/c2e_dataclass_with_import.py`, `c2a_dataclass.py`, `c2_importdeco.py`, `c2b_overload.py`, `c2c_kernel.py`. A local `contextmanager` did not diverge (its spelling check has no caller). Family B landed in main `d6c2706b4` (lane family-b-binding-flow, 2026-10-31; `bench_etl_orders` -0.29% instructions retired, binary 21.70 -> 20.94 MB). The declined-proof dataclass constructor now calls the class through CALL_BIND, so the metaclass __call__ and __new__ run; the orphaned `dataclass_new` op kind is retired from the frontend, TIR and all five backends. Before/after finding qualification remains. | Resolve decorators through `python_binding_flow` (mypyc compares resolved full names) and add the repro programs as differential tests in the same change; carry `ClassId` into `TirType::UserClass`. |
@@ -989,6 +1338,7 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-649 | The serialization surface ignores the target Python version. `src/molt/stdlib/pickle.py` fixes `DEFAULT_PROTOCOL = 4`, so a 3.14 or 3.15 target pickles at protocol 4 by default where CPython uses 5. `src/molt/stdlib/copy.py` defines `copy.replace` for every target, but CPython added it (and `__replace__`) in 3.13, so a 3.12 target exposes an API its CPython lacks; its comment also cites PEP 618, which is `zip(strict=)`. | Lane hf640-pickle-long, 2026-10-31: `pickle.py:140` `DEFAULT_PROTOCOL = 4`; `copy.py:45` `def replace` with no version gate. The 3.14 pickle docs state "Changed in version 3.14: The default protocol is 5." The stdlib gates other surfaces on the target through `sys.version_info` (121 sites, for example `base64.py:399`). Not yet checked: the 3.13 default `persistent_id` and `persistent_load` methods on the C Pickler and Unpickler. Lane hf646 (2026-11-01) did the copy half: `copy.replace` and its `__all__` entry exist only for 3.13+ targets, the PEP 618 comment is gone, the version projection is regenerated, and copy_version_surface.py runs in runtime.public-consumers (3.12) and r6.target-version-parity.py313 (3.13). `replace`'s non-CPython fallbacks and the missing `__replace__` producers are HF-661. | Gate `DEFAULT_PROTOCOL` (5 from 3.14) and `copy.replace` (from 3.13) on the target version through the existing `sys.version_info` mechanism, regenerate the CPython version-assumption projection, and add a differential that prints both under 3.12 and 3.14 targets against the matching CPython. The pickle lane owns the first, lane hf646 the second. Remaining: the pickle `DEFAULT_PROTOCOL` gate (5 from 3.14) and the 3.13 `persistent_id`/`persistent_load` check. |
 | HF-653 | Runtime name identity is spelled, not typed, the same defect HF-197 removed for op kinds. (1) 46 `native_method_table!` builtin method tables resolve a method with `match name: &str` over 916 string arms, after decoding the interned name object to UTF-8 on each lookup (`builtins/methods.rs`). (2) `RuntimeStaticNames` (`state/cache.rs`) declares a typed field for each of its 93 static names, but all 51 consumers reach a field through `runtime_static_name_slot(b"...")`, a byte-string `match` per call, and none names the field. (3) 179 `attr_name_bits_from_bytes(b"...")`, 33 `lookup_special_method(..., b"...")` and 47 pickle attribute lookups spell names in bytes. Class attribute lookup walks the MRO with string-keyed dict probes and no per-type cache. A typed name cannot lose its last consumer silently, and a hot path never decodes or compares name bytes. | Integrator, 2026-10-31, main 387bb5e8af, release build, macOS arm64, instructions retired per op (evidence `logs/agents/lane-integrator-tools/artifacts/primitive-costs-20261031/`): `DISPATCH.get(type(x))` 12,754 vs CPython 513 and `isinstance(x, str)` 7,054 vs 267. Profiles of both show `dict_exact_string_lookup`, `intern_static_name`, `core::str::from_utf8`, `class_namespace_lookup_mro`, `builtin_class_method_bits` and `bind_builtin_keywords` on every iteration. Counts from `rg` over `runtime/molt-runtime/src` at the same commit. | Extend the typed-identity authority (family A prior art): one declarative name registry generating a closed `NameId` and its interned objects at runtime start; generate the builtin method tables keyed by `NameId`; make `RuntimeStaticNames` consumers name typed fields and delete `slot_for`; dispatch special methods through typed slots; add a per-type lookup cache keyed by `(type version, interned name pointer)` as CPython's `_PyType_Lookup` does. Measure the two loops above before and after; the compiler-side binding of the same names is family B (HF-79, HF-226). |
 | HF-655 | An infrastructure stop turns into a red main verdict. By design (`docs/design/landing_queue.md`, 554b75694d) unresolved custody after a cancellation stays an error, so `tools/molt_dev_gates.py` stops the block with `DriverError` when a cancelled gate's guard cleanup is unresolved; postsubmit (`tools/molt_dev_queue.py`) then maps every `DriverError` to RED with suspect commits and revert commands, although no gate failed. Separately, the guard's Cargo quarantine has no terminal state for a kill before any rustc observation (`ownership_status: deferred`, "no birth-custodied rustc incremental observations; recovery deferred"), so every cancelled Cargo gate reports "Cargo quarantine ownership or recovery is unresolved". | Postsubmit on main 26daee2644 (2026-10-31) was marked RED with `failing_tests: []` for `tests/cli/test_cli_import_collection.py` "local.gate.114: executor cancellation" after a landing request preempted it (`26daee2644....postsubmit-result.json`); the next postsubmit (817eff2dd2) passed. The same unresolved quarantine appeared on maxfail-cancelled gates in HF-637's first landing and typed-cache's first and later landings (receipt `cbcf89e6....gates.heavy.json` commands[8]). Hypothesis, unproven: the guard's rustc birth observation misses births under load (`test_cargo_quarantine_custody.py::test_actual_cargo_held_profile_locks_defer_recovery` failed under landing load and passes alone in 0.9 s on main and the lane). 2026-11-01: the first landing attempt (runner 20261101T062650994262Z) crashed in the candidate controller: `precheck_landing` imported `_pytest`, which the `uv sync --no-dev` controller image lacks, and the result was recorded as plain `failed`, not a typed controller fault. Integrator fixes on the lane: 3c1e9edfd2 (encoding gate), 045ab63c01 (`IndexedArgument.index` shadowed `str.index`). | A typed postsubmit verdict (GREEN, RED, CANCELLED, INCONCLUSIVE): only a gate's own failure is RED with suspects; runner and custody stops are INCONCLUSIVE with no suspects (prior art: LUCI Buildbucket FAILURE vs INFRA_FAILURE, https://chromium.googlesource.com/infra/luci/luci-go/+/ad07866c5533/buildbucket/proto/common.proto). Give the quarantine an explicit terminal state for a kill before observation with a named recovery owner. Brief: logs/agents/lane-hf655-cancellation-verdict/artifacts/task.md (with HF-605 slices). |
+| HF-674 | The work order was prose. The DAG's edges and levels were hand-written and nothing parsed them; the stated levels already disagreed with the edges (C stated 0, derived 1 from F -> C; T stated 3, derived 1 from F -> T). `lane start` took no finding rows, so nothing compared a dispatch with the DAG, and three texts claimed to order work ("Active integration", the release dependency frontier and buckets, and the family DAG). | 2026-11-01: all three Codex seats ran level-2 family H while level-0 families B (7 open rows), C (19) and F (30) had no lane, and the integrator had planned HF-666 (S, level 3) and HF-667 (R, level 1) next; the owner asked whether work follows the DAG and said to prevent it. Lane dag-dispatch-gate: edges are a parsed table (`finding_status.DependencyEdge`), the original implementation derived family levels (replaced by row readiness in round 2), `finding_coverage --check` refuses prose order, unknown families, self, duplicate or reasonless edges and cycles; `ledger_edit` gains `family create` and `edge add`/`remove`; `lane start --rows` admits a lane through `tools/dag_dispatch.py` (frontier = lowest level with open rows and no active lane; one lane per family; typed out-of-order reasons with text stored in the record); `lane dispatch` re-admits an existing lane; `lane list` prints the frontier and each lane's dispatch. 1,273 reader tests pass (9 skipped) and 88 lane tests. Round 2 replaces family levels with the typed row graph and one v1 class per open row; the same canonical validation rejects malformed authorities in coverage, dispatch and plan. Dispatch requires closed predecessors, preserves family custody and records waits/reasons; ready v1 rows rank by downstream critical path then unique reach. X/Y/Z, HF-678–HF-688, strata, capacity rules, primitive-axis view, membership, row prerequisites and prior art migrate together. Development and landing receipts remain with the lane report until integration. | Integrate the qualified round-2 lane, then re-admit active lanes against the row ready set. The parent owns landing, pending ledger reconciliation, release/H0 gate policy alignment and lane retirement. No family-level work order remains. |
 | HF-656 | No user-facing support claim states that Molt's WASM output, hosted and (since HF-639) freestanding, requires a SIMD128-capable engine. `runtime_wasm_simd_policy()` returns True for every deployment, and `docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md` records `+simd128` freestanding since 76aebc3a, but neither the README, getting-started nor a target support matrix says so, and a host without SIMD128 fails at load instead of at a declared refusal. | Integrator adversarial review, 2026-11-01: `rg -i simd128` over README.md, docs/getting-started.md and the compat contracts finds no host requirement; the only mentions are the WASM optimization plan and the perf spec. | State SIMD128 as a declared target fact in the canonical target support matrix, and refuse early with a typed diagnostic where a declared WASM host lacks it. |
 | HF-657 | Every compiled loop iteration calls `molt_async_work_poll_and_exception_pending`, a runtime entry per iteration, where CPython 3.12 tests one `eval_breaker` word with a relaxed atomic load and branches to `_Py_HandlePending` only when it is set (`Python/ceval_macros.h` CHECK_EVAL_BREAKER, `Python/ceval_gil.c`). A bare `total += i` loop costs about 580 instructions per iteration, about CPython's interpreter. | `tools/opt_explorer.py anatomy` on the integrator's primitive benchmark (main 387bb5e8af, release, macOS arm64; logs/agents/lane-integrator-tools/artifacts/primitive-costs-20261031/): one poll call per inner loop of `section_loop` and `section_isinstance`, beside refcount, `molt_lt`, `molt_is_truthy` and `molt_frame_set_col` calls. | Emit an inline flag test with a cold call from every backend (one pending-work word in the execution context, set by signal, async and GIL-drop producers), and measure the loop before and after. |
 | HF-658 | The landing sandbox's runtime-WASM expected-pair records are not keyed to the candidate's runtime source identity, so `tests/test_wasm_runtime_call_signature_authority.py::test_runtime_wasm_export_signatures_match_import_registry` compares a candidate's import registry with a runtime pair built for an earlier candidate and fails a correct lane. | 2026-10-31 22:37 CDT: HF-627 (adds `molt_process_ipc_spawn/streams/child`, none cfg-gated) failed in the sandbox with "missing runtime export molt_process_ipc_*" (runner-20261101T033437445932Z). After building HF-627's own WASM runtime pair in its slot, the same test passes (1 passed, 3.3 s; logs/agents/lane-mp-transport/artifacts/wasm-pair/). 2026-11-01: landing failures and fixes: the first rule matched all of `runtime/**` (narrowed to the runtime closure, 2888a0c261); the new `wasm.test.runtime-signatures` row lacked `timeout_env` (8b32e48413). Three later failures were the HF-638 capture timeout: run concurrently, main and this lane fail the same proof-queue test at the same 164 s. | Key expected pairs by the runtime source/input identity of the checkout that builds them; the gate builds the candidate's pair or skips with a named reason, never selecting another candidate's pair. |
@@ -1010,6 +1360,7 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 
 | ID | Finding | Evidence | Next step |
 |----|---------|----------|-----------|
+| HF-686 | The primitive performance ratchet counts instructions but not runtime calls, so speeding up runtime calls can pass while generated code still executes through the runtime per operation. | Owner correction 2026-11-01: main 2f7f81709e opt_explorer anatomy finds 8 runtime calls per hot int-loop iteration; a compiled counted loop needs none. HF-459 owns the instructions-per-op baseline; this row adds the independent runtime-boundary obligation. | Record runtime calls per hot-block iteration for every HF-459 primitive using the anatomy tool, beside instructions per op in bench/primitive_ratchet.json. Refuse landing when either increases; preserve the primitive semantics and independent CPython oracle. |
 | HF-632 | `tools/` (23 sites) and `tests/` (11 sites) still use raw `functools.lru_cache`/`functools.cache`, which erase signatures for `ty`; ruff TID251 exempts them while `src/molt` is strict (gate_flip `ruff_typed_cache`). The two bootstrap release modules (`custody_layout`, `default_paths`, 3 cached functions) also keep functools' cache: they load into the isolated bootstrap package, which imports nothing from molt; a typed form there needs a stdlib-only wrapper. | Lane typed-cache moved all 69 `src/molt` sites to `molt.typed_cache`; the restored checking found one wrong annotation (`session_id`). | Move the tool and test sites to `molt.typed_cache` (keep stdlib-only tools stdlib-only with their own typed wrapper) and drop the exemptions. |
 | HF-631 | HF-519's self-spawn admission repeats the `PATH` search that exec performs again, so a spawn of a bare program name costs about 96k extra instructions retired. | Release A/B, 300 spawns of `/usr/bin/true` and `true`: 952.1M -> 981.1M instructions retired (+3.0%), wall unchanged at 0.35 s (`d6c2706b4d` vs `9a6ac7e454`). | Resolve the program once in the admission and exec the resolved path with `argv[0]` preserved (`CommandExt::arg0` on POSIX). |
 | HF-630 | A landed lane's coordination record can stay `running`: `molt_dev.py lane list` shows `lane/hf559-bootstrap-external` landed with no worktree and `record=running`. | `lane list` on 2026-10-31. The branch has no commits of its own (0 ahead, 347 behind main); `lane list` calls a zero-commit branch "landed". `lane retire` refuses because the record names slot-03, which hf519 reused and released ("exists outside its managed Git registration"). 2026-10-31: `molt_dev.py lane retire hf559-bootstrap-external` (controller 20a3429807dc) refuses with "slot-03 exists outside its managed Git registration": the stale record still names slot-03, which `lane/mp-transport` now owns. No path closes a landed record once its slot was reused; retire should close the record without touching a worktree another lane holds. | Find why that landing did not close the record, close it in the landing transaction, and retire the stale record. |

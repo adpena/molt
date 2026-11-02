@@ -4,7 +4,8 @@
 Use --task-file or --task-text with --bounds bounds.json. Every DispatchBounds
 field is required; owned_paths is the starting aperture (empty means read only),
 reserved_paths names other lanes' paths, and proof_commands adds extras to the
-standard proof families. --list-sections lists optional routing blocks.
+standard proof families. Every brief starts with the mandatory project identity;
+--list-sections lists only optional routing blocks.
 """
 
 from __future__ import annotations
@@ -159,7 +160,7 @@ def _resolve_sections(sections: list[str] | None, sc) -> tuple[str, ...]:
 def compose(
     task: str, *, bounds: DispatchBounds, sections: list[str] | None = None
 ) -> str:
-    """Assemble a spawn prompt: the task body followed by the selected contract blocks.
+    """Prefix project identity, then the task and selected routing blocks.
 
     Args:
         task: the task-specific body.
@@ -168,7 +169,7 @@ def compose(
             every block in canonical order.
 
     Returns:
-        ``"<task>\\n\\n<block>\\n\\n<block>..."``. Raises ``KeyError`` on an unknown section.
+        ``"<identity>\\n\\n<task>\\n\\n<block>..."``. Raises ``KeyError`` on an unknown section.
     """
     if not isinstance(bounds, DispatchBounds):
         raise ValueError("dispatch requires validated DispatchBounds")
@@ -178,7 +179,7 @@ def compose(
     names = _resolve_sections(sections, sc)
     contract = sc.standard_contract(names)
     body = (
-        f"{task.rstrip()}\n\n{bounds.render()}\n\n"
+        f"{sc.PROJECT_IDENTITY}\n\n{task.rstrip()}\n\n{bounds.render()}\n\n"
         "For an upstream merge, use the selected image's Python: "
         "python -B tools/generated_merge.py merge origin/main. "
         "It regenerates eligible generated conflicts after sources merge; "
@@ -251,11 +252,13 @@ def main(argv: list[str] | None = None) -> int:
         bounds = DispatchBounds.from_payload(
             json.loads(args.bounds.read_text(encoding="utf-8"))
         )
+        if args.out is not None:
+            task = f"{BRIEF_HEADER}\n\n{task}"
         prompt = compose(task, bounds=bounds, sections=sections)
         if args.out is None:
             print(prompt)
         else:
-            args.out.write_text(f"{BRIEF_HEADER}\n\n{prompt}\n", encoding="utf-8")
+            args.out.write_text(f"{prompt}\n", encoding="utf-8")
             print(launch_prompt(args.out))
     except (KeyError, TypeError, ValueError, OSError) as exc:
         ap.error(str(exc))
