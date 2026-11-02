@@ -8,6 +8,7 @@ compilation. Counts include loop/control work; no empty-loop subtraction.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -447,6 +448,21 @@ def _dump(path: Path, value: Any) -> None:
     _atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def primitive_build_env(
+    base: Mapping[str, str], lane_env: Mapping[str, str], program_dir: Path
+) -> dict[str, str]:
+    """The build environment of one primitive program.
+
+    The program's own directory is its project. Otherwise the build adopts the
+    nearest enclosing project (a checkout holding ``--out-dir``) and compiles
+    the primitive against that project's sources and environment.
+    """
+    env = dict(base, PYTHONHASHSEED="0", MOLT_KEEP_SYMBOLS="1")
+    env.update(lane_env)
+    env["MOLT_PROJECT_ROOT"] = str(program_dir)
+    return env
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -566,10 +582,9 @@ def run(args: argparse.Namespace) -> int:
         )
         source = out / f"{primitive.name}.py"
         source.write_text(primitive.program(), encoding="utf-8")
-        build_env = dict(os.environ, PYTHONHASHSEED="0", MOLT_KEEP_SYMBOLS="1")
         if lane.backend != "native":
             raise ValueError("primitive build must use native backend")
-        build_env.update(lane.environment())
+        build_env = primitive_build_env(os.environ, lane.environment(), out)
         binary = bench.prepare_molt_binary(
             str(source),
             extra_args=["--python-version", "3.12", "--backend", lane.codegen_backend],
