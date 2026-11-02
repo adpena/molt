@@ -116,7 +116,32 @@ is explicit, and say when they fall back to `origin/main`. A failure retains las
 every commit since it as a suspect and prints the exact revert command for the integrator. The
 runner never reverts. The integrator restores green within about an hour. If transitive misses
 exceed about one landing in five, retain the cases for an owner decision about widening presubmit.
-Observed-input selection and verdict reuse remain deferred stages 4-6, not implemented by this slice.
+Presubmit guest-input edges of a qualified whole-file command can now be refined to pytest
+node IDs by postsubmit observations (`tools/test_dependency_graph.py`, HF-633). The command's
+`pytest_observed_inputs = true` opts in; initially only the import-collection owner does so.
+The controller issues a context through
+the existing build-request key: host Python sources, configuration, command declarations,
+interpreter and launch environment must match. Runtime, stdlib and differential guest sources
+remain individual inputs. Host Python and configuration bind the context; other data changes
+retain their static requests. Changes to host code, tests or their harness
+retain the file-level obligation. Postsubmit still uses the full static transitive closure and
+loads `tests.observed_inputs` explicitly; ordinary pytest startup gains no observer.
+
+The recorder retains every collected parameter before marker/deselection filtering, collection
+reads, file opens and directory listings, canonical `input_report` cached-use events, and shared-fixture reads for
+all later consumers. Unobserved subprocess/network activity, failed/skipped cases, incomplete
+inventories and malformed/missing records retain the existing static obligation. Observed reads
+also add data readers that static inference missed. A recent failure retains the whole file,
+absorbing any narrower node requests. Every node keeps its existing proof-cell envelope.
+Each inventory and node names the capture's guest-source snapshot. A changed recorded input
+or directory retains its reader even when that change predates the current diff: an old
+dependency set cannot hide a newly conditional read. Mixed capture generations remain unknown.
+
+Records live beside the existing dependency-fact cache. Atomic publication never changes a
+verdict; the existing cache-recency and build-record retention authorities govern their use and
+retirement. A cold or incompatible context therefore runs the static readers until postsubmit
+has captured it. No passing verdict is reused. General action-store migration and verdict reuse
+remain deferred stages 4-6; this refinement does not qualify unobserved target cells.
 
 Before execution, `GateConfig.prepare` resolves each selected command to the closed
 `Runnable | Deferred` outcome. A deferred command names its missing declared

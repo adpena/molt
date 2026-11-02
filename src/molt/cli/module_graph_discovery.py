@@ -1447,9 +1447,17 @@ def _load_module_import_scan(
                 None,
                 snapshot,
             )
-    # Explicit source or AST is operation-local and must not be overridden by disk.
-    if tree is not None or source is not None:
-        project_root = None
+    # Stdlib requests have the same source/namespace/tooling/target admission
+    # without an application root. Rootless graph consumers must not redo the
+    # same binding fixpoint for every test or wrapper operation. Explicit source
+    # or AST remains operation-local and can never be overridden by disk.
+    persist_scan = (tree is None and source is None) and (
+        project_root is not None
+        or (
+            stdlib_root is not None
+            and resolution_cache.is_stdlib_path(path, stdlib_root)
+        )
+    )
     snapshot = source_snapshot
     if snapshot is not None:
         if snapshot.path != path:
@@ -1488,7 +1496,7 @@ def _load_module_import_scan(
             target_python=target_python,
         )
 
-    if project_root is not None:
+    if persist_scan:
         persisted = _module_graph_cache._read_persisted_import_scan_record(
             path,
             module_name=module_name,
@@ -1568,7 +1576,7 @@ def _load_module_import_scan(
         target_sys_platform=resolution_cache.target_sys_platform,
         purpose=purpose,
     )
-    if project_root is not None and snapshot is not None:
+    if persist_scan and snapshot is not None:
         with contextlib.suppress(OSError):
             _module_graph_cache._write_persisted_import_scan(
                 path,

@@ -981,6 +981,22 @@ def test_pytest_memory_units_read_the_declared_unit_and_targets(tmp_path) -> Non
         (
             {
                 "argv": ["python", "-m", "pytest"],
+                "pytest": ["tests/test_proof_plan.py"],
+                "pytest_observed_inputs": 1,
+            },
+            "pytest_observed_inputs requires a boolean and whole Python test files",
+        ),
+        (
+            {
+                "argv": ["python", "-m", "pytest"],
+                "pytest": ["tests/test_proof_plan.py::test_one"],
+                "pytest_observed_inputs": True,
+            },
+            "pytest_observed_inputs requires a boolean and whole Python test files",
+        ),
+        (
+            {
+                "argv": ["python", "-m", "pytest"],
                 "pytest": ["tests/test_proof_plan.py", "tests/test_proof_plan.py"],
             },
             "targets must be unique",
@@ -9035,6 +9051,8 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
         )
     else:
         command = next(command for command in PLAN.commands if command.id == owner)
+        if owner == "python.unit.cli.import-collection":
+            assert command.data["pytest_observed_inputs"] is True
         if owner == "wasm.host.runner-fixtures":
             # This relocated case compiles both empty and nonempty C objects.
             assert (

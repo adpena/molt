@@ -144,6 +144,7 @@ COMMAND_FIELDS = frozenset(REQUIRED_COMMAND_FIELDS) | {
     "evidence_outputs",
     "pytest",
     "pytest_worker_memory_gb",
+    "pytest_observed_inputs",
     "timeout_budget",
     "timeout_env",
     "timeout_seconds",
@@ -333,6 +334,18 @@ def pytest_declaration_errors(
                 "finite byte count"
             )
     targets = data.get("pytest")
+    if "pytest_observed_inputs" in data and (
+        type(data["pytest_observed_inputs"]) is not bool
+        or not isinstance(targets, list)
+        or not targets
+        or any(
+            not isinstance(target, str) or "::" in target or not target.endswith(".py")
+            for target in targets
+        )
+    ):
+        errors.append(
+            f"{label}: pytest_observed_inputs requires a boolean and whole Python test files"
+        )
     if targets is None:
         if unit is not None:
             errors.append(f"{label}: pytest_worker_memory_gb requires pytest targets")

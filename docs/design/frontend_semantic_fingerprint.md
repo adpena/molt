@@ -87,7 +87,16 @@ function of its keyed inputs and the producer code. The lowering context
 payload (`_module_lowering_context_payload`) carries target Python, parse
 codec, type-hint policy, known and direct-call modules, the stdlib allowlist,
 native exports and support roots, scoped classes and defaults. Import-scan keys
-carry the scan mode and the namespace premise. So:
+carry the scan mode and the namespace premise.
+
+Disk-backed stdlib import scans use the shared source-record store even when
+the caller has no application project root (HF-633). The existing admission
+still checks source bytes, tooling identity, scan purpose, namespace premise,
+target and demanded bodies; filesystem edges are resolved in the current
+operation. Explicit source/AST requests and rootless application sources remain
+uncached at this boundary. A helper that continues one graph shares its
+operation and resolver instead of recapturing the tooling and parsing its
+common modules again.
 
 - `cli/external_native.py` builds the import admission policy from
   `MOLT_EXTERNAL_STATIC_PACKAGES` and custody checks. Discovery applies it live;

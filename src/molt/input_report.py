@@ -2,7 +2,8 @@
 (docs/design/build_early_cutoff.md).
 
 Readers call these functions whether or not a build is recorded; with no
-recording they cost one global read. While `molt.build_record` records a
+recording they emit a metadata-only input-use audit event and check the sink.
+While `molt.build_record` records a
 build, facts go to its ledger in this process and to a per-process log in each
 worker. An audit hook observes the reads no reader reports.
 
@@ -17,6 +18,7 @@ import errno
 import json
 import os
 import stat
+import sys
 import threading
 from enum import IntFlag, StrEnum
 from collections.abc import Mapping
@@ -51,6 +53,16 @@ class WorkerFactKind(StrEnum):
     READ_STARTED = "read_started"
     READ_FINISHED = "read_finished"
     CONSUMED_FILE = "consumed_file"
+
+
+def report_use(path: Path | str, *, kind: WorkerFactKind = WorkerFactKind.FILE) -> None:
+    """Observe an input use even when its value came from a content cache.
+
+    This metadata-only audit event neither activates build recording nor
+    reopens, stats or hashes an input. The existing sink still owns byte and
+    custody evidence; dependency observers need the path on every use.
+    """
+    sys.audit("molt.input_use", kind, path)
 
 
 def stat_token(
@@ -624,6 +636,7 @@ def report_consumed_buffer(
 
     This covers no filesystem open. Other reads keep their own obligations.
     """
+    report_use(path, kind=WorkerFactKind.CONSUMED_FILE)
     if not active():
         return None
     import hashlib
@@ -649,6 +662,7 @@ def report_consumed_buffer(
 
 def report_file(path: Path | str, sha256: str | None = None) -> None:
     """Report a file whose bytes the build used without a captured read token."""
+    report_use(path)
     if active():
         _report_file_fact(path, stat_token(path), sha256)
 
@@ -657,6 +671,7 @@ def report_captured_file(path: Path | str, token: StatToken, sha256: str) -> Non
     """Report a file by the token captured with its digest. The pair stays
     consistent even if the file changes later; a later change only makes the
     next build's check fail."""
+    report_use(path)
     if active():
         _report_file_fact(path, token, sha256)
 
@@ -679,6 +694,7 @@ def report_data_file(path: Path | str) -> None:
     Loaders behind process-global caches call this on every use, so a cached
     answer still names its input; a repeat costs a set lookup.
     """
+    report_use(path)
     if not active():
         return
     name = os.fspath(path)
@@ -695,6 +711,7 @@ def report_data_file(path: Path | str) -> None:
 def report_directory(path: Path | str) -> None:
     """Report a directory the build listed or searched. An absent directory is
     an absent lookup, so creating it later is a change."""
+    report_use(path, kind=WorkerFactKind.DIRECTORY)
     if not active():
         return
     token = stat_token(path)
@@ -711,6 +728,7 @@ def report_directory(path: Path | str) -> None:
 
 
 def report_probe(path: Path | str) -> None:
+    report_use(path, kind=WorkerFactKind.PROBE)
     if active():
         _report_probe_fact(path, resolved_probe(path))
 

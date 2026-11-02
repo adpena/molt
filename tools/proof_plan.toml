@@ -3341,6 +3341,9 @@ tiers = ["pr", "main"]
 resource_class = "python-tests"
 # The hashseed proof runs eight fresh processes, each with a cold/warm CLI
 # pair (16 builds across worker modes and fixed/independent random seeds).
+# HF-633: this remains the whole-file oracle owner. Local postsubmit observes
+# individual reads; presubmit may refine data/guest-source edges to its nodes.
+# Missing observations retain this envelope and the static postsubmit closure.
 # It used 24 process configurations until 2026-10-17,
 # when hosted Linux (run 38515158046) needed about 10 min for them at -n 2.
 timeout_seconds = 1320
@@ -3349,6 +3352,7 @@ dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
 pytest = ["tests/cli/test_cli_import_collection.py"]
 pytest_worker_memory_gb = 6.25
+pytest_observed_inputs = true
 toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang"]
 
 # Library and surface contracts that need only Python: public API and stub

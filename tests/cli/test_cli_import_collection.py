@@ -4515,11 +4515,13 @@ def test_static_backend_ir_module_call_closure_allows_lazy_missing_import() -> N
     )
 
 
+@_source_tree_fingerprint_transaction()
 def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
+    resolver_cache = cli_module_resolution._ModuleResolutionCache()
     discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
@@ -4528,6 +4530,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         ROOT,
         stdlib_allowlist,
         stub_parents=cli_module_graph.STUB_PARENT_MODULES,
+        resolver_cache=resolver_cache,
     )
     module_graph = discovery_result.graph
     cli_module_graph._collect_package_parents(
@@ -4555,6 +4558,8 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
             stdlib_allowlist,
             full_scan_roots=False,
             stub_parents=cli_module_graph.STUB_PARENT_MODULES,
+            resolver_cache=resolver_cache,
+            discovery=discovery_result.discovery,
         )
         core_graph = discovery_result.graph
         for name, path in core_graph.items():
@@ -14309,6 +14314,63 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     explicit_imports = discovery_result.explicit_imports
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    "generation", ["disk", "application", "inline", "ast", "changed"]
+)
+def test_rootless_stdlib_scan_reuses_only_admitted_disk_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, generation: str
+) -> None:
+    stdlib_root = tmp_path / "stdlib"
+    application = tmp_path / "app"
+    stdlib_root.mkdir()
+    application.mkdir()
+    for name in ("support", "changed"):
+        (stdlib_root / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    path = (application if generation == "application" else stdlib_root) / "mod.py"
+    path.write_text("import support\n", encoding="utf-8")
+
+    def scan(**overrides):
+        return cli_module_graph_discovery._load_module_import_scan(
+            path,
+            module_name="mod",
+            is_package=False,
+            import_scan_mode="module_init",
+            purpose=SourceImportPurpose.EXECUTION,
+            resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+            project_root=None,
+            roots=[application, stdlib_root],
+            stdlib_root=stdlib_root,
+            stdlib_allowlist={"support", "changed", "mod"},
+            **overrides,
+        )
+
+    first = scan()
+    assert first.scan.source_requests.imports == ("support",)
+    assert not first.cache_hit
+    overrides = {}
+    if generation == "changed":
+        _rewrite_preserving_mtime(path, "import changed\n", path.stat())
+    elif generation == "inline":
+        overrides["source"] = "import changed\n"
+    elif generation == "ast":
+        overrides["tree"] = ast.parse("import changed\n")
+    extracted = []
+    collect = _source_import_scan._collect_import_scan_requests
+
+    def count(*args, **kwargs):
+        extracted.append(True)
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", count)
+    second = scan(**overrides)
+    assert second.scan.source_requests.imports == (
+        ("support",) if generation in {"disk", "application"} else ("changed",)
+    )
+    assert second.cache_hit is (generation == "disk")
+    assert bool(extracted) is (generation != "disk")
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")

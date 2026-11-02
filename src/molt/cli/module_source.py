@@ -590,6 +590,7 @@ def _source_content_sha256(
 ) -> str | None:
     from molt import input_report
 
+    input_report.report_use(path)
     if input_report.active():
         try:
             return _sha256_file(path)

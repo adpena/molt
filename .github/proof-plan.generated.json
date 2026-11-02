@@ -6105,6 +6105,7 @@
       "pytest": [
         "tests/cli/test_cli_import_collection.py"
       ],
+      "pytest_observed_inputs": true,
       "pytest_worker_memory_gb": 6.25,
       "resource_class": "python-tests",
       "tiers": [
