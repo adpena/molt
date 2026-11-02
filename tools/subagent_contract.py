@@ -38,6 +38,12 @@ Build it the way leading compilers are built (LLVM and MLIR, Cranelift, rustc, G
 mypyc, Codon). Prove facts at compile and build time in the closed world (spec 0216); compiled code
 calls the runtime only for work it cannot do itself.
 
+Work the way an early-stage, world-class AOT compiler project works (Bun's early years, Zig, Go
+2009-2012, early LLVM): before each decision, ask what such a project would do, and do it. Keep
+trunk green and moving with small changes; delete instead of keeping compatibility; prefer
+differential end-to-end tests over tests that pin an implementation; add process only for a
+measured bottleneck.
+
 Typing is our friend. Identity is typed, never spelled: runtime names are `NameId`; op kinds,
 exceptions and intrinsics are generated closed types; facts live on typed SSA values. Never compare,
 intern, allocate or look up a name that the compiler or the runtime can know: no

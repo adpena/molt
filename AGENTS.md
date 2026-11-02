@@ -4,6 +4,19 @@ Use expert judgment and first-principles reasoning. These are outcome and invari
 not a fixed implementation recipe. Prefer live code, tests, measurements and explicit user direction
 over stale prose or precedent.
 
+## Work as an early-stage, world-class AOT compiler project
+
+- Before each design, dispatch, review, landing decision or report, ask what an early-stage,
+  world-class AOT compiler project would do (Bun's early years, Zig, Go 2009-2012, early LLVM,
+  GraalVM Native Image, Codon, mypyc). Act on the answer without being asked; say so when it
+  changes the plan.
+- The product is compiled-program speed, compile speed, binary size and correctness. Process
+  exists only to keep trunk green and moving.
+- Defaults: trunk-based development, a short presubmit, fix forward or revert within an hour, few
+  lanes in flight, differential end-to-end tests over tests that pin an implementation, deletion
+  over compatibility, a closed world by default, and gates on hardware apart from development
+  load. Add mature-project process only for a measured bottleneck.
+
 ## Own the outcome
 
 - Own the authorized outcome: choose the design and undertake necessary cross-layer refactors,

@@ -48,11 +48,21 @@ def test_trunk_inventory_admits_only_declared_commands(tmp_path):
         trunk_loop.selected_host(
             cross_run.DEFAULT_INVENTORY, "bat00", ["portability.guard.windows"]
         )
-    with pytest.raises(ValueError, match="no admitted"):
-        trunk_loop.selected_host(
-            cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
-        )
+    mac = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
+    )
+    assert mac.launcher == cross_run.DetachedLauncher.POSIX_SESSION
     text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
+    cellless = tmp_path / "cellless.toml"
+    cellless.write_text(
+        text.replace(
+            'proof_cells = ["portability.cargo-custody.macos", "portability.queue.macos"]',
+            "proof_cells = []",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="no admitted"):
+        trunk_loop.selected_host(cellless, "macmini", ["portability.queue.macos"])
     inventory = tmp_path / "hosts.toml"
     inventory.write_text(
         text.replace('launcher = "windows-cim"', 'launcher = "posix-session"'),
