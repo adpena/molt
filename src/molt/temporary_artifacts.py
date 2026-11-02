@@ -99,6 +99,9 @@ _RECORDS = PublicationDurability.RECONSTRUCTIBLE
 # Only explicit cleanup reads them (``_legacy_blocked_failure``); no current
 # producer writes them.
 _LEGACY_ARCHIVE_AWAITED = "failure evidence awaits archive"
+# Guard exits retry a failed payload removal this many times; then sweeps
+# report it as an error and only explicit cleanup retries it.
+_REMOVAL_ATTEMPTS = 3
 _LEGACY_ARCHIVE_UNAVAILABLE = "failure evidence preserved; archive unavailable: "
 
 
@@ -707,6 +710,25 @@ def _publish_index(generation: Path, terminal_digest: str) -> None:
     namespace_move_exclusive(staged, destination)
 
 
+def _removal_errors(owner: Mapping[str, object]) -> list[str]:
+    """One error per failed removal attempt; its length is the attempt count."""
+    errors = owner.get("removal_errors", [])
+    if not isinstance(errors, list) or not all(isinstance(e, str) for e in errors):
+        raise ValueError("scratch removal attempt record is malformed")
+    return errors
+
+
+def _removal_failed(owner: dict[str, object], error: str) -> dict[str, object]:
+    """The retained, indexed owner after one more failed removal attempt."""
+    errors = [*_removal_errors(owner), error]
+    return {
+        **owner,
+        "state": "retained",
+        "removal_errors": errors,
+        "error": f"payload removal failed {len(errors)} time(s): {error}",
+    }
+
+
 def _recover_transition_locked(
     generation: Path, owner: dict[str, object]
 ) -> dict[str, object]:
@@ -715,14 +737,17 @@ def _recover_transition_locked(
         target = _target(generation, owner)
         if not os.path.lexists(target):
             _require_move_committed(owner, terminal)
+        intact = target.exists() and _same_identity(
+            _identity(target), owner["target_identity"]
+        )
         if owner["state"] == "reclaiming" and not target.exists():
             owner = {**owner, "state": "reclaimed", "error": None}
-        elif (
-            owner["state"] == "retiring"
-            and target.exists()
-            and _same_identity(_identity(target), owner["target_identity"])
-        ):
+        elif owner["state"] == "retiring" and intact:
             owner = {**owner, "state": "retained"}
+        elif owner["state"] == "reclaiming" and intact and _removal_errors(owner):
+            # A retry of a removal that already failed is the same retained,
+            # indexed payload; its interruption is one more failed attempt.
+            owner = _removal_failed(owner, "removal interrupted while reclaiming")
         else:
             owner = {
                 **owner,
@@ -875,8 +900,8 @@ def _reclaim_locked(
     The pending index stays until ``_remove_reclaimed_generation`` commits, so
     a removal that cannot run now is found again by the next sweep. A
     deletion that reports failure is not an interrupted transition: the
-    payload stays retained, indexed and identity-bound, and the next sweep
-    retries it.
+    payload stays retained, indexed and identity-bound, the owner records
+    the attempt's error, and a later sweep retries it (``_REMOVAL_ATTEMPTS``).
     """
     if not verify_only and _has_legacy_archive(generation, owner):
         raise ValueError(
@@ -904,11 +929,7 @@ def _reclaim_locked(
     owner = (
         {**owner, "state": "reclaimed", "error": None}
         if ok
-        else {
-            **owner,
-            "state": "retained",
-            "error": f"payload removal deferred: {error}",
-        }
+        else _removal_failed(owner, str(error))
     )
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
     return owner
@@ -1728,6 +1749,12 @@ def reclaim_terminal_scratch(
                     kept_count += 1
                     kept_bytes += size
                     continue
+                attempts = _removal_errors(owner)
+                if len(attempts) >= _REMOVAL_ATTEMPTS and not resolve_legacy_archives:
+                    raise ValueError(
+                        f"payload removal failed {len(attempts)} times; explicit "
+                        "cleanup retries it: " + "; ".join(attempts)
+                    )
                 archive_paths = _legacy_archive_paths(generation, owner)
                 if archive_paths and not resolve_legacy_archives:
                     raise ValueError(
@@ -1768,6 +1795,12 @@ def reclaim_terminal_scratch(
                     if not was_reclaimed:
                         reclaimed.append(str(generation))
                     removals.append(generation)
+                elif len(_removal_errors(result)) >= _REMOVAL_ATTEMPTS:
+                    errors.append(
+                        f"{generation}: payload removal failed "
+                        f"{len(_removal_errors(result))} times: "
+                        + "; ".join(_removal_errors(result))
+                    )
                 else:
                     deferred.append(f"{generation}: {result.get('error')}")
         except ScratchBusy:

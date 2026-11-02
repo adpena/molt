@@ -2694,6 +2694,85 @@ def test_reconciliation_leaves_a_legacy_archive_to_explicit_cleanup(
     assert not archive.exists() and not index.exists()
 
 
+def _stuck_removal(tmp_path, monkeypatch, count=2):
+    """Failed payloads over the bound whose removal always fails."""
+    leases = []
+    for number in range(1, count + 1):
+        lease, _ = _lease(tmp_path, number)
+        (lease.target / "failure").write_bytes(b"x" * 10)
+        _finish(lease, success=False)
+        leases.append(lease)
+    attempts: list[Path] = []
+
+    def stuck(path, *, owning_root=None):
+        attempts.append(path)
+        return False, f"fixture ACL deny {len(attempts)}"
+
+    monkeypatch.setattr(scratch, "delete_path", stuck)
+    return leases, attempts
+
+
+def test_a_removal_that_keeps_failing_becomes_a_loud_error_and_stops(
+    tmp_path, monkeypatch
+):
+    from tools.memory_guard_core import reporting
+
+    (lease,), attempts = _stuck_removal(tmp_path, monkeypatch, count=1)
+    root = lease.generation.parent
+    bound = scratch.ScratchRetention(0, 0)
+    for number in (1, 2):
+        sweep = scratch.reclaim_terminal_scratch(root, retention=bound)
+        assert sweep["errors"] == [] and len(sweep["deferred"]) == 1, sweep
+        assert reporting.retention_warning({"retention": sweep}) is None
+        assert len(attempts) == number
+    third = scratch.reclaim_terminal_scratch(root, retention=bound)
+    # The third failure is an error that names every attempt, and the
+    # guard prints it; later guard exits report without retrying.
+    assert third["deferred"] == [] and len(third["errors"]) == 1, third
+    for number in (1, 2, 3):
+        assert f"fixture ACL deny {number}" in third["errors"][0]
+    assert "retention sweep reported errors" in reporting.retention_warning(
+        {"retention": third}
+    )
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "retained"
+    assert owner["removal_errors"] == [f"fixture ACL deny {n}" for n in (1, 2, 3)]
+    assert scratch._index_path(lease.generation).is_file()
+    later = scratch.reclaim_terminal_scratch(root, retention=bound)
+    assert len(attempts) == 3 and len(later["errors"]) == 1, later
+    # Explicit cleanup still retries it once the cause is fixed.
+    monkeypatch.undo()
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=bound, resolve_legacy_archives=True
+    )
+    assert applied["errors"] == [] and applied["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+def test_an_interrupted_removal_retry_stays_retained_and_indexed(tmp_path, monkeypatch):
+    (lease,), _ = _stuck_removal(tmp_path, monkeypatch, count=1)
+    root = lease.generation.parent
+    scratch.reclaim_terminal_scratch(root, retention=scratch.ScratchRetention(0, 0))
+    monkeypatch.undo()
+    # The guard running the retry died after it recorded reclaiming.
+    owner = _read(lease.generation / "owner.json")
+    write_exact(lease.generation / "owner.json", {**owner, "state": "reclaiming"})
+    swept = scratch.reclaim_terminal_scratch(root)
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "retained", owner
+    assert owner["removal_errors"] == [
+        "fixture ACL deny 1",
+        "removal interrupted while reclaiming",
+    ]
+    assert scratch._index_path(lease.generation).is_file()
+    assert (lease.generation / "payload" / "failure").is_file()
+    assert not any("interrupted scratch transition" in e for e in swept["errors"])
+    final = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert final["reclaimed"] == [str(lease.generation)], final
+
+
 def test_explicit_cleanup_command_reads_the_guard_bound(tmp_path, monkeypatch, capsys):
     leases = []
     for number in range(1, 4):
