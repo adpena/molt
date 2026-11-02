@@ -25,6 +25,7 @@ import time
 from typing import Any
 
 from tools import bench, harness_memory_guard, opt_explorer
+from tools.perf_authority import non_canonical_provenance
 from tools.perf_scoreboard_measure import _cpython_run_env
 from tools.perf_scoreboard_build_profiles import (
     profile_binding_problems,
@@ -77,6 +78,19 @@ OBJS = [Plain() for _ in range(64)]
 NIL = []
 """
 
+_ID_ORACLE = """
+def check_checksum(total, n):
+    ids = [id(obj) for obj in OBJS]
+    if len(set(ids)) != len(OBJS):
+        return False
+    expected = 0
+    # The 64-object cycle cancels after two passes. Calculate the reference
+    # outside the measured loop, retaining the full loop result as an input.
+    for i in range(n % 128):
+        expected ^= ids[i & 63]
+    return total == expected
+"""
+
 # One declaration owns the complete set, workload bytes and normalization.
 # reduce_ex/new_and_update count outer operations, recursion counts a depth-100
 # traversal. Each legacy loop retains its original body and loop divisor.
@@ -89,8 +103,8 @@ PRIMITIVES = (
     Primitive(
         "id",
         "total = 0\nobjs = OBJS\nfor i in range(n):\n    total ^= id(objs[i & 63])\nreturn total",
-        setup=_COPY_SETUP,
-        result="run(n) >= 0",
+        setup=_COPY_SETUP + _ID_ORACLE,
+        result="check_checksum(run(n), n)",
     ),
     Primitive(
         "memo_get",
@@ -291,6 +305,9 @@ def make_ratchet(axes: list[Axis], identity: dict, repeats: int) -> dict:
         }
     return {
         "schema": SCHEMA,
+        "provenance": non_canonical_provenance(
+            requested_profile="release", source="tools/perf_scoreboard.py primitives"
+        ),
         "identity": identity,
         "repeats": repeats,
         "noise_bound": max(row["noise_bound"] for row in rows.values()),
@@ -308,8 +325,10 @@ def parse_count(counter: Counter, text: str) -> int:
         for line in text.splitlines():
             fields = line.split(";")
             if len(fields) >= 5 and fields[2] == "instructions:u":
-                if float(fields[4].strip().rstrip("%")) < 100:
-                    raise ValueError("multiplexed instruction count is not admissible")
+                if float(fields[4].strip().rstrip("%")) != 100:
+                    raise ValueError(
+                        "multiplexed or invalid instruction count is not admissible"
+                    )
                 values.append(fields[0].strip())
     else:
         events = re.findall(r"^events:\s*(.+)$", text, re.M)
@@ -671,6 +690,9 @@ def run(args: argparse.Namespace) -> int:
         problems = compare_ratchet(axes, ratchet, identity)
     payload = {
         "schema": SCHEMA,
+        "provenance": non_canonical_provenance(
+            requested_profile="release", source="tools/perf_scoreboard.py primitives"
+        ),
         "identity": identity,
         "axes": [asdict(a) for a in axes],
         "programs": rows,
@@ -685,17 +707,17 @@ def run(args: argparse.Namespace) -> int:
     }
     _dump(out / "table.json", payload)
     lines = [
-        "| Primitive / axis | Molt instructions | CPython instructions | Molt / CPython |",
-        "|---|---:|---:|---:|",
+        "| Primitive / axis | Molt instructions | CPython instructions | Molt / CPython | Noise bound |",
+        "|---|---:|---:|---:|---:|",
     ]
     for axis in axes:
         lines.append(
-            f"| {axis.key} | {axis.molt:,.2f} | {axis.cpython:,.2f} | {axis.ratio:.4f} |"
+            f"| {axis.key} | {axis.molt:,.2f} | {axis.cpython:,.2f} | {axis.ratio:.4f} | {ratchet['axes'][axis.key]['noise_bound']:.1%} |"
         )
     lines.extend(
         [
             "",
-            f"{args.repeats} paired repeats; measured noise bound {ratchet['noise_bound']:.3%}; elapsed {payload['elapsed_s']:.1f}s.",
+            f"{args.repeats} paired repeats; maximum axis noise bound {ratchet['noise_bound']:.3%}; elapsed {payload['elapsed_s']:.1f}s.",
         ]
     )
     if args.profile_costs:

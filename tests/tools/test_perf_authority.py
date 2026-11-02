@@ -76,6 +76,7 @@ def test_primitive_noise_calibration_and_positive_slopes():
     assert axis.relative_spread == pytest.approx(0.01)
     axes = [replace(a, relative_spread=0.0099) for a in _primitive_axes()]
     baseline = primitive_axis.make_ratchet(axes, {}, 5)
+    assert pa.is_non_canonical_provenance(baseline["provenance"])
     assert baseline["noise_bound"] == 0.02
     assert all(row["noise_bound"] == 0.02 for row in baseline["axes"].values())
     exact = primitive_axis.make_ratchet(_primitive_axes(), {}, 5)
@@ -122,10 +123,11 @@ def test_primitive_missing_or_ambiguous_counters_refuse(text):
         primitive_axis.parse_count(primitive_axis.Counter.MACOS, text)
 
 
-def test_primitive_perf_multiplexing_refuses():
+@pytest.mark.parametrize("percent", ["99.99", "nan", "inf", "100.01"])
+def test_primitive_perf_multiplexing_refuses(percent):
     with pytest.raises(ValueError, match="multiplexed"):
         primitive_axis.parse_count(
-            primitive_axis.Counter.PERF, "100;;instructions:u;300;99.99;;\n"
+            primitive_axis.Counter.PERF, f"100;;instructions:u;300;{percent};;\n"
         )
 
 
@@ -156,6 +158,18 @@ def test_declared_primitive_programs_have_independent_cpython_oracles(
             {"__name__": "__main__"},
         )
         assert capsys.readouterr().out == expected[primitive.name] + "\n"
+
+
+def test_id_witness_rejects_a_nonunique_identity_provider(monkeypatch, capsys):
+    primitive = next(p for p in primitive_axis.PRIMITIVES if p.name == "id")
+    monkeypatch.setattr("sys.argv", ["primitive.py", "100"])
+    # Wire-level negative: 64 distinct live objects cannot all have identity 1.
+    # Keep this shadow local to the executed witness, never patch builtins.id.
+    exec(
+        compile(primitive.program(), "primitive.py", "exec"),
+        {"__name__": "__main__", "id": lambda obj: 1},
+    )
+    assert capsys.readouterr().out == "False\n"
 
 
 # --- safe_speedup: a build failure can never become a ratio ------------------

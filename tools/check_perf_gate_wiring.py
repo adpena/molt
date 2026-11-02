@@ -525,13 +525,13 @@ def primitive_problems(path: Path = PRIMITIVE_GATE) -> list[str]:
     except (OSError, KeyError, TypeError, ValueError) as exc:
         return [f"primitive instruction workflow is unavailable: {exc}"]
     problems = []
-    if set(triggers) != {"push", "pull_request", "workflow_dispatch"}:
+    if set(triggers) != {"push", "pull_request", "merge_group", "workflow_dispatch"}:
         problems.append(
-            "primitive instructions must run postsubmit with a declared PR trigger"
+            "primitive instructions must run postsubmit with declared PR/merge-queue triggers"
         )
     if (
         job.get("if")
-        != "github.event_name != 'pull_request' || vars.MOLT_PRIMITIVE_PRESUBMIT == 'true'"
+        != "github.event_name == 'push' || github.event_name == 'workflow_dispatch' || vars.MOLT_PRIMITIVE_PRESUBMIT == 'true'"
     ):
         problems.append(
             "primitive presubmit activation must use only MOLT_PRIMITIVE_PRESUBMIT"

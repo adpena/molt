@@ -22,7 +22,10 @@ The same scoreboard owns the primitive instruction axis (HF-459):
 python tools/perf_scoreboard.py primitives --cpython 3.12.16 --out-dir <new-evidence-directory>
 ```
 
-Methodology v22 adds this diagnostic axis and its ratio ratchet. It does not
+Methodology v25 publishes the shared non-citable diagnostic provenance; v24
+rejects nonfinite or invalid perf running percentages;
+v23 strengthened the identity witness's observable checksum, and v22 introduced
+this diagnostic axis and its ratio ratchet. This mode does not
 change the cold/warm release acceptance scope above. Table count columns are
 medians of each runtime's observations; the ratio is the median of paired
 Molt/CPython ratios, so it need not equal the quotient of those two medians.
@@ -35,8 +38,10 @@ N=0 startup is a separate axis for every program, including an empty witness.
 Loop/control work stays in the slope. The `reduce_ex` and `new_and_update`
 programs execute K/10 operations; recursion executes K/100 depth-100 traversals.
 Other copy primitives use K=1,000,000; construction uses K=100,000. Programs
-retain the original loop bodies; the `id` result prints a nonnegative predicate
-to avoid comparing address-dependent output. CPython `-I -S` is probed as
+retain the original loop bodies. The `id` witness compares the full loop checksum
+with an independently calculated cycle checksum and verifies 64 distinct live
+identities, so process-specific addresses are not compared across runtimes.
+Its bounded reference calculation stays outside the measured loop. CPython `-I -S` is probed as
 exactly 3.12.16, independently of the slot's frontend interpreter. Guest stdout,
 stderr and completion must agree before a pair can enter the table.
 
@@ -47,6 +52,8 @@ retains the program bytes, raw counters, guest streams, observed build products,
 per-pair data and the JSON/Markdown table. A failed child stops the batch and
 cannot become a cheap operation. This diagnostic axis does not publish release
 qualification or replace the native+LLVM cold/warm release authority above.
+The ratchet and tables carry the existing `non_canonical_provenance` record,
+so a diagnostic limit can never masquerade as current E2 release evidence.
 
 `--update-ratchet` calibrates from a complete run. Each axis's bound is twice its
 largest paired-ratio deviation from its median, rounded upward to 0.001;
@@ -64,7 +71,7 @@ The `primitive_instructions` executable proof family runs on main pushes through
 catalog (`scheduled` is its execution tier, not its workflow trigger). The sole
 presubmit activation flag is the repository variable
 `MOLT_PRIMITIVE_PRESUBMIT=true`, owned by the integrator. Once enabled, selected
-PR runs execute the same failing ratchet. Making that check required in branch
+PR and merge-queue runs execute the same failing ratchet. Making that check required in branch
 protection remains an integrator operation. No workflow uses `--update-ratchet`.
 Hosted-runner calibration and successful postsubmit execution require actual
 receipts; a local Mac table establishes neither.
