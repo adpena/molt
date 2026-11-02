@@ -1507,17 +1507,11 @@ print(json.dumps([str(selected.root), selected.source]))
 
 
 @pytest.mark.parametrize(
-    "contents",
-    ["{}", '{"schema":1,"schema":2}', "x" * (16 * 1024 + 1)],
-    ids=["missing-schema", "duplicate-schema", "oversized"],
+    "contents", ["{}", '{"schema":1,"schema":2}', "x" * (16 * 1024 + 1)]
 )
-def test_invalid_binding_refuses_and_can_be_cleared(
-    tmp_path, tmp_path_factory, contents
-):
-    # Binding admission is process-scoped. Keep each synthetic checkout for
-    # that lifetime: failed-only tmp_path cleanup can recycle a numbered name
-    # between these cases, which would reuse another checkout's admission.
-    clone = tmp_path_factory.mktemp("binding-checkout")
+def test_invalid_binding_refuses_and_can_be_cleared(tmp_path, contents):
+    clone = tmp_path / "clone"
+    clone.mkdir()
     _git(clone, "init", "-q", "-b", "main")
     record = clone / ".git" / "molt" / "artifact-root.v2.json"
     record.parent.mkdir()
