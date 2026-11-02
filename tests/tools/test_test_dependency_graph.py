@@ -131,8 +131,10 @@ def test_observed_context_binds_host_configuration_environment_and_source(
     assert observation_context(graph.tree, ()) != context
 
 
+@pytest.mark.parametrize("complete", [True, False])
 def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelopes(
     tmp_path,
+    complete,
 ):
     root = _repository(
         tmp_path / "repo",
@@ -157,7 +159,7 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
     _observed(
         tmp_path / "reads",
         "tests/test_assets.py::test_left",
-        complete=True,
+        complete=complete,
         files=["runtime/crate/src/a.rs"],
         directories=[],
     )
@@ -358,11 +360,11 @@ def test_observed_dependency_drift_and_mixed_generations_retain_readers(tmp_path
     _observed_pair(tmp_path, test)
     guest = {"runtime/a.rs": "first", "runtime/b.rs": "second"}
     snapshot = hashlib.sha256(json.dumps(guest, sort_keys=True).encode()).hexdigest()
+    _observed(tmp_path, "snapshot:" + snapshot, guest_inputs=guest)
     _observed(
         tmp_path,
         test,
         nodes=[test + "::test_left", test + "::test_right"],
-        guest_inputs=guest,
         snapshot=snapshot,
         collection=dict(complete=True, files=[], directories=[], snapshot=snapshot),
     )
@@ -394,6 +396,34 @@ def test_observed_dependency_drift_and_mixed_generations_retain_readers(tmp_path
         snapshot="different capture",
     )
     assert observed.readers(test, ["runtime/new.rs"]) == (test + "::test_right",)
+
+
+def test_partial_postsubmit_preserves_valid_older_node_snapshots(tmp_path):
+    test = "tests/test_assets.py"
+    old = {"runtime/a.rs": "first", "runtime/b.rs": "second"}
+    new = {**old, "runtime/a.rs": "changed"}
+    generations = []
+    for guest in (old, new):
+        snapshot = hashlib.sha256(
+            json.dumps(guest, sort_keys=True).encode()
+        ).hexdigest()
+        _observed(tmp_path, "snapshot:" + snapshot, guest_inputs=guest)
+        generations.append(snapshot)
+    before, current = generations
+    nodes = [test + "::test_left", test + "::test_right"]
+    for node, path in zip(nodes, old):
+        _observed(
+            tmp_path, node, complete=True, files=[path], directories=[], snapshot=before
+        )
+    collection = dict(complete=True, files=[], directories=[], snapshot=current)
+    _observed(tmp_path, test, nodes=nodes, snapshot=current, collection=collection)
+    observed = ObservedTestInputs(tmp_path, current_inputs=new)
+    # A new collection must not discard an older unchanged nonreader.
+    assert observed.readers(test, ["runtime/other.rs"]) == (nodes[0],)
+    # A changed module-level guest input can change both nodes' demand.
+    collection["files"] = ["runtime/a.rs"]
+    _observed(tmp_path, test, nodes=nodes, snapshot=current, collection=collection)
+    assert observed.readers(test, ["runtime/other.rs"]) == tuple(nodes)
 
 
 def _git(root: Path, *arguments: str) -> str:

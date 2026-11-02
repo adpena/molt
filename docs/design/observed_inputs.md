@@ -135,9 +135,12 @@ all later consumers. Unobserved subprocess/network activity, failed/skipped case
 inventories and malformed/missing records retain the existing static obligation. Observed reads
 also add data readers that static inference missed. A recent failure retains the whole file,
 absorbing any narrower node requests. Every node keeps its existing proof-cell envelope.
-Each inventory and node names the capture's guest-source snapshot. A changed recorded input
-or directory retains its reader even when that change predates the current diff: an old
-dependency set cannot hide a newly conditional read. Mixed capture generations remain unknown.
+Each inventory and node references an immutable guest-source snapshot in the same fact cache.
+A changed recorded input or directory retains its reader even when it predates the current diff:
+an old dependency set cannot hide a newly conditional read. Partial postsubmit preserves older
+node records whose reads and current collection inputs are unchanged; missing snapshot facts
+stay unknown. Completeness proves absence only: a known positive read is retained even for an
+opaque node that the static graph missed.
 
 Records live beside the existing dependency-fact cache. Atomic publication never changes a
 verdict; the existing cache-recency and build-record retention authorities govern their use and

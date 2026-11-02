@@ -216,84 +216,109 @@ class ObservedTestInputs:
         ):
             return (test,) if retain_unknown else ()
         changed = frozenset(changed)
-        stale = frozenset()
-        if self.current_inputs is not None:
-            captured = inventory.get("guest_inputs")
-            if (
-                not isinstance(captured, dict)
-                or any(
-                    not isinstance(k, str) or not isinstance(v, str)
-                    for k, v in captured.items()
-                )
-                or inventory.get("snapshot") != _guest_snapshot(captured)
-            ):
-                return (test,) if retain_unknown else ()
-            stale = frozenset(
-                path
-                for path in captured.keys() | self.current_inputs.keys()
-                if path.startswith(GUEST_INPUT_PREFIXES)
-                and captured.get(path) != self.current_inputs.get(path)
-            )
-        stale_parents = {
-            str(parent) for path in stale for parent in PurePosixPath(path).parents
-        }
-
-        def changed_since_capture(record: Mapping) -> bool:
-            return bool(
-                stale.intersection(record.get("files", ()))
-                or stale_parents.intersection(record.get("directories", ()))
-            )
-
         parents = {
             str(parent) for path in changed for parent in PurePosixPath(path).parents
         }
-        collection = inventory.get("collection")
-        if (
-            not isinstance(collection, dict)
-            or collection.get("complete") is not True
-            or (
-                self.current_inputs is not None
-                and collection.get("snapshot") != inventory.get("snapshot")
-            )
-            or any(
-                not isinstance(collection.get(key), list)
-                or any(not isinstance(path, str) for path in collection[key])
+
+        def paths(record):
+            if not isinstance(record, dict) or any(
+                not isinstance(record.get(key), list)
+                or any(not isinstance(path, str) for path in record[key])
                 for key in ("files", "directories")
+            ):
+                return None
+            return frozenset(record["files"]), frozenset(record["directories"])
+
+        def intersects(values, files, directories):
+            return bool(
+                files.intersection(values[0]) or directories.intersection(values[1])
             )
-        ):
-            return (test,) if retain_unknown else ()
-        if (
-            changed_since_capture(collection)
-            or changed.intersection(collection.get("files", ()))
-            or parents.intersection(collection.get("directories", ()))
-        ):
+
+        # A partial postsubmit can publish a new inventory while older nodes
+        # still have valid read sets. Each immutable snapshot is the sole
+        # authority for that capture's guest bytes; missing facts stay unknown.
+        snapshots = {}
+
+        def changes(snapshot):
+            if self.current_inputs is None:
+                return frozenset(), frozenset()
+            if not isinstance(snapshot, str):
+                return None
+            if snapshot not in snapshots:
+                record = _read_observation(self.directory, "snapshot:" + snapshot)
+                captured = None if record is None else record.get("guest_inputs")
+                if (
+                    not isinstance(captured, dict)
+                    or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in captured.items()
+                    )
+                    or _guest_snapshot(captured) != snapshot
+                ):
+                    snapshots[snapshot] = None
+                else:
+                    stale = frozenset(
+                        path
+                        for path in captured.keys() | self.current_inputs.keys()
+                        if path.startswith(GUEST_INPUT_PREFIXES)
+                        and captured.get(path) != self.current_inputs.get(path)
+                    )
+                    snapshots[snapshot] = (
+                        stale,
+                        frozenset(
+                            str(parent)
+                            for path in stale
+                            for parent in PurePosixPath(path).parents
+                        ),
+                    )
+            return snapshots[snapshot]
+
+        collection = inventory.get("collection")
+        shared = paths(collection)
+        if shared is not None and intersects(shared, changed, parents):
+            return (test,)
+        shared_changes = changes(inventory.get("snapshot"))
+        shared_complete = (
+            shared is not None
+            and collection.get("complete") is True
+            and (
+                self.current_inputs is None
+                or collection.get("snapshot") == inventory.get("snapshot")
+            )
+            and shared_changes is not None
+        )
+        if shared_complete and intersects(shared, *shared_changes):
+            return (test,)
+        if not shared_complete and retain_unknown:
             return (test,)
         result = []
         for node in nodes:
             record = _read_observation(self.directory, node)
+            used = paths(record)
+            # Completeness qualifies absence, never an already observed read.
+            if used is not None and intersects(used, changed, parents):
+                result.append(node)
+                continue
+            captured_changes = (
+                changes(record.get("snapshot")) if record is not None else None
+            )
             if (
-                record is None
-                or record.get("complete") is not True
-                or (
-                    self.current_inputs is not None
-                    and record.get("snapshot") != inventory.get("snapshot")
+                used is not None
+                and captured_changes is not None
+                and (
+                    intersects(used, *captured_changes)
+                    or (shared is not None and intersects(shared, *captured_changes))
                 )
             ):
-                if retain_unknown:
-                    result.append(node)
-                continue
-            files, directories = record.get("files"), record.get("directories")
-            if any(
-                not isinstance(values, list)
-                or any(not isinstance(path, str) for path in values)
-                for values in (files, directories)
-            ):
-                if retain_unknown:
-                    result.append(node)
-            elif (
-                changed_since_capture(record)
-                or changed.intersection(files)
-                or parents.intersection(directories)
+                # Current collection inputs are part of every node's premise,
+                # including a node retained from a prior capture generation.
+                result.append(node)
+            elif retain_unknown and (
+                not shared_complete
+                or record is None
+                or record.get("complete") is not True
+                or used is None
+                or captured_changes is None
             ):
                 result.append(node)
         return tuple(result)
@@ -319,12 +344,17 @@ class TestInputRecorder:
 
         self.directory.parent.mkdir(parents=True, exist_ok=True)
         trim_if_due(self.directory.parent)
-        self.guest_inputs = {
+        guest_inputs = {
             path: blob
             for path, blob in RepositoryTree.from_worktree(self.root).blobs.items()
             if path.startswith(GUEST_INPUT_PREFIXES)
         }
-        self.snapshot = _guest_snapshot(self.guest_inputs)
+        self.snapshot = _guest_snapshot(guest_inputs)
+        _write_observation(
+            self.directory,
+            "snapshot:" + self.snapshot,
+            {"guest_inputs": guest_inputs},
+        )
         self.cwd = os.getcwd()
         self.node: str | None = None
         self.reads: set[str] = set()
@@ -351,7 +381,6 @@ class TestInputRecorder:
                     test,
                     {
                         "nodes": sorted(set(groups[test])),
-                        "guest_inputs": self.guest_inputs,
                         "snapshot": self.snapshot,
                         "collection": _read_observation(
                             self.directory, "collection:" + test
