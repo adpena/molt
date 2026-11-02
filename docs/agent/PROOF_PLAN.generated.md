@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 445 |
+| Hashed executable authority inputs | 1 | 448 |
 | Local path rules | 35 | 82 |
 | Unique local commands | 73 | 82 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -72,6 +72,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | 0 s | `scheduled-suite` | 1 |
 | `nightly_determinism` | `determinism-sweep` | 5700 s | 5400 s | 300 s | 0 s | `scheduled-suite` | 5 |
 | `nightly_verification_t3` | `verification-gate-t3` | 6300 s | 5700 s | 600 s | 0 s | `scheduled-suite` | 7 |
+| `primitive_instructions` | `primitive-instructions` | 9600 s | 9000 s | 600 s | 0 s | `compiler-build-resource` | 1 |
 | `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | 0 s | `compiler-build-resource` | 1 |
 
 ## Matrix cells
@@ -104,6 +105,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `macos-arm64-py312-queue-portability` | `macos-14` | `macos` | `aarch64` | `3.12` | `proof-queue` | `host` | `portability` |
 | `macos-arm64-py312-rust-native-dev` | `macos-14` | `macos` | `aarch64` | `3.12` | `rust` | `aarch64-apple-darwin` | `dev` |
 | `windows-x86_64-py312-queue-portability` | `windows-2022` | `windows` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
+| `macos-arm64-py312-native-release-output` | `macos-14` | `macos` | `aarch64` | `3.12` | `native` | `native` | `release-output` |
 | `linux-x86_64-rust-native-release` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release` |
 
 ## Toolchain contracts
@@ -344,6 +346,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 1 |
 | `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 1200 s | `formal-tools` | 0 |
 | `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 0 |
+| `performance.primitive-instructions` | `primitive_instructions` | `macos-arm64-py312-native-release-output` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
 | `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
@@ -403,7 +406,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `ci-wiring` | 53 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
-| `performance-measurement` | 36 | 1 |
+| `performance-measurement` | 39 | 1 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 14 | 2 |
 | `import-symbol-gate` | 2 | 1 |

@@ -14,6 +14,36 @@ from tools import check_perf_gate_wiring as w  # noqa: E402
 CONTROLLED_EVENTS = '  workflow_dispatch:\n  schedule:\n    - cron: "0 6 * * 1"\n'
 
 
+def test_primitive_postsubmit_workflow_has_one_fail_closed_activation_flag(tmp_path):
+    source = w.PRIMITIVE_GATE.read_text(encoding="utf-8")
+    assert w.primitive_problems() == []
+    for old, new, expected in (
+        ("vars.MOLT_PRIMITIVE_PRESUBMIT == 'true'", "true", "activation"),
+        ("--run-family primitive_instructions", "--run-family unrelated", "proof-plan"),
+        (
+            "    timeout-minutes:",
+            "    continue-on-error: true\n    timeout-minutes:",
+            "continue-on-error",
+        ),
+        ("  push:", "  pull_request_target:", "postsubmit"),
+    ):
+        changed = _write(tmp_path, source.replace(old, new))
+        assert any(expected in p for p in w.primitive_problems(changed))
+
+
+def test_primitive_proof_cannot_update_the_ratchet_in_ci():
+    import tomllib
+
+    with (REPO / "tools/proof_plan.toml").open("rb") as stream:
+        commands = tomllib.load(stream)["command"]
+    assert w.primitive_command_problems(commands) == []
+    row = next(row for row in commands if row["family"] == "primitive_instructions")
+    assert w.primitive_command_problems(
+        [{**row, "argv": [*row["argv"], "--update-ratchet"]}]
+    )
+    assert w.primitive_command_problems([{**row, "argv": ["true"]}])
+
+
 def _write(tmp: Path, body: str) -> Path:
     path = tmp / "perf-gate.yml"
     path.write_text(body, encoding="utf-8")

@@ -178,6 +178,9 @@
     "tools/perf_calibration.py",
     "tools/perf_schema.py",
     "tools/perf_scoreboard.py",
+    "tools/perf_scoreboard_primitives.py",
+    "bench/primitive_ratchet.json",
+    ".github/workflows/primitive-instructions.yml",
     "tools/perf_scoreboard_build_profiles.py",
     "tools/perf_scoreboard_cli.py",
     "tools/perf_scoreboard_measure.py",
@@ -8991,6 +8994,44 @@
     },
     {
       "argv": [
+        "python",
+        "tools/perf_scoreboard.py",
+        "primitives",
+        "--cpython",
+        "3.12.16",
+        "--out-dir",
+        "proof-receipts/evidence/primitive-instructions"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "macos-arm64-py312-native-release-output",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/primitive-instructions"
+      ],
+      "family": "primitive_instructions",
+      "id": "performance.primitive-instructions",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_budget": "shipping",
+      "timeout_seconds": 9000,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang"
+      ]
+    },
+    {
+      "argv": [
         "uv",
         "run",
         "--active",
@@ -9556,6 +9597,17 @@
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
           "scheduled-suite": 3675
+        }
+      },
+      "primitive_instructions": {
+        "budget_seconds": 9600,
+        "critical_path_seconds": 9000,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 600,
+        "projected_makespan_seconds": 9000,
+        "required_job_seconds": 9600,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 9000
         }
       },
       "runtime_candidate_costs": {
@@ -11944,7 +11996,10 @@
           "tests/tools/test_perf_profile_selection.py",
           "tests/tools/test_perf_release_integrity.py",
           "tests/tools/test_perf_scoreboard.py",
-          "tests/tools/test_perf_methodology.py"
+          "tests/tools/test_perf_methodology.py",
+          "tools/perf_scoreboard_primitives.py",
+          "bench/primitive_ratchet.json",
+          ".github/workflows/primitive-instructions.yml"
         ],
         "name": "performance-measurement",
         "pytest_select": [
@@ -14017,6 +14072,16 @@
       "target": "host"
     },
     {
+      "arch": "aarch64",
+      "backend": "native",
+      "id": "macos-arm64-py312-native-release-output",
+      "os": "macos",
+      "profile": "release-output",
+      "python": "3.12",
+      "runner": "macos-14",
+      "target": "native"
+    },
+    {
       "arch": "x86_64",
       "backend": "rust",
       "id": "linux-x86_64-rust-native-release",
@@ -14140,6 +14205,18 @@
       ],
       "timeout_minutes": 105,
       "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Postsubmit CPython 3.12.16 primitive instruction slopes and startup ratchet.",
+      "job": "primitive-instructions",
+      "job_reserve_seconds": 600,
+      "name": "primitive_instructions",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_minutes": 160,
+      "workflow": ".github/workflows/primitive-instructions.yml"
     },
     {
       "description": "Controlled candidate-only numeric/list/shared-storage measurements; no comparative or release PASS.",

@@ -1,0 +1,145 @@
+{
+  "axes": {
+    "dataclass_construction/per_op": {
+      "noise_bound": 0.024,
+      "ratio": 269.0820217752243
+    },
+    "dataclass_construction/startup": {
+      "noise_bound": 0.137,
+      "ratio": 2.227047483206587
+    },
+    "dynamic_call/per_op": {
+      "noise_bound": 0.008,
+      "ratio": 3.8134614861381415
+    },
+    "dynamic_call/startup": {
+      "noise_bound": 0.17,
+      "ratio": 2.2396472296242216
+    },
+    "empty/startup": {
+      "noise_bound": 0.144,
+      "ratio": 2.2254559741010147
+    },
+    "getattr_miss/per_op": {
+      "noise_bound": 0.012,
+      "ratio": 3.4610197766383277
+    },
+    "getattr_miss/startup": {
+      "noise_bound": 0.203,
+      "ratio": 2.2184997053338718
+    },
+    "id/per_op": {
+      "noise_bound": 0.03,
+      "ratio": 1.0820567017529235
+    },
+    "id/startup": {
+      "noise_bound": 0.2,
+      "ratio": 2.227669641242174
+    },
+    "isinstance/per_op": {
+      "noise_bound": 0.007,
+      "ratio": 9.629399929041773
+    },
+    "isinstance/startup": {
+      "noise_bound": 0.21,
+      "ratio": 2.215922693446651
+    },
+    "loop/per_op": {
+      "noise_bound": 0.077,
+      "ratio": 1.0940147933012612
+    },
+    "loop/startup": {
+      "noise_bound": 0.205,
+      "ratio": 2.2174023901537177
+    },
+    "memo_get/per_op": {
+      "noise_bound": 0.013,
+      "ratio": 2.3225448065256855
+    },
+    "memo_get/startup": {
+      "noise_bound": 0.188,
+      "ratio": 2.2352533547233504
+    },
+    "memo_set/per_op": {
+      "noise_bound": 0.021,
+      "ratio": 1.7586205963105495
+    },
+    "memo_set/startup": {
+      "noise_bound": 0.189,
+      "ratio": 2.2411838423397885
+    },
+    "new_and_update/per_op": {
+      "noise_bound": 0.012,
+      "ratio": 17.2679916736934
+    },
+    "new_and_update/startup": {
+      "noise_bound": 0.222,
+      "ratio": 2.218589015730681
+    },
+    "plain_construction/per_op": {
+      "noise_bound": 0.023,
+      "ratio": 9.364092805035359
+    },
+    "plain_construction/startup": {
+      "noise_bound": 0.2,
+      "ratio": 2.236156406785733
+    },
+    "recursion/per_op": {
+      "noise_bound": 0.009,
+      "ratio": 8.125238430543817
+    },
+    "recursion/startup": {
+      "noise_bound": 0.203,
+      "ratio": 2.2313632495983526
+    },
+    "reduce_ex/per_op": {
+      "noise_bound": 0.022,
+      "ratio": 26.27698861196567
+    },
+    "reduce_ex/startup": {
+      "noise_bound": 0.235,
+      "ratio": 2.246654624503513
+    },
+    "tuple_unpack/per_op": {
+      "noise_bound": 0.008,
+      "ratio": 3.079983974867369
+    },
+    "tuple_unpack/startup": {
+      "noise_bound": 0.215,
+      "ratio": 2.217642797546233
+    },
+    "type_dispatch/per_op": {
+      "noise_bound": 0.067,
+      "ratio": 12.973795217647618
+    },
+    "type_dispatch/startup": {
+      "noise_bound": 0.187,
+      "ratio": 2.2415538357447686
+    }
+  },
+  "identity": {
+    "arch": "arm64",
+    "counter": "macos-ri_instructions",
+    "cpython": "3.12.16",
+    "cpython_image": {
+      "content_filename": "python3.12",
+      "entrypoint": "python3.12",
+      "sha256": "7a427de7a538c033f821bae69d18dba1fcf01e1947f8fdfece0d9654f680a787",
+      "size": 18134832
+    },
+    "os": "Darwin",
+    "profile": "release",
+    "selected_profiles": {
+      "backend": "native",
+      "compiler_profile": "release",
+      "guest_profile": "release",
+      "runtime_profile": "release-output",
+      "target": "native"
+    },
+    "workloads_sha256": "94a636842ba22dddef757b8f23e32806a5723619f3a26652a55526a7722e7535"
+  },
+  "noise_bound": 0.235,
+  "noise_rule": "per axis: 2 * maximum paired-ratio deviation from median, rounded up to 0.001; zero is exact",
+  "repeats": 5,
+  "schema": "molt-primitive-instructions-v1"
+}

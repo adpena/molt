@@ -27,6 +27,135 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 from tools import perf_authority as pa  # noqa: E402
 from tools import check_perf_freshness as freshness  # noqa: E402
+from tools import perf_scoreboard_primitives as primitive_axis  # noqa: E402
+
+
+def _primitive_axes():
+    # An independent arithmetic example: N=100, Molt increment 400 and CPython
+    # increment 200, each above different startup offsets, means ratio 2.
+    return [
+        primitive_axis.summarize(*key.split("/"), [(4.0, 2.0)] * 5)
+        for key in sorted(primitive_axis.expected_keys())
+    ]
+
+
+def test_primitive_ratchet_same_input_regression_and_improvement():
+    from dataclasses import replace
+
+    axes = _primitive_axes()
+    baseline = {
+        "schema": primitive_axis.SCHEMA,
+        "identity": {"counter": "fixture"},
+        "repeats": 5,
+        "noise_bound": 0.01,
+        "axes": {a.key: {"ratio": 2.0, "noise_bound": 0.01} for a in axes},
+    }
+    assert primitive_axis.compare_ratchet(axes, baseline, baseline["identity"]) == []
+    injected = [replace(axes[0], ratio=2.04), *axes[1:]]
+    assert primitive_axis.compare_ratchet(injected, baseline, baseline["identity"]) == [
+        f"REGRESSION {axes[0].key}: 2.04 > 2 + 1.000%"
+    ]
+    improved = [replace(axes[0], ratio=1.9), *axes[1:]]
+    assert primitive_axis.compare_ratchet(improved, baseline, baseline["identity"]) == [
+        f"UPDATE_REQUIRED {axes[0].key}: 1.9 improved from 2"
+    ]
+    with pytest.raises(ValueError, match="exact primitive"):
+        primitive_axis.compare_ratchet(axes[:-1], baseline, baseline["identity"])
+    with pytest.raises(ValueError, match="identity differs"):
+        primitive_axis.compare_ratchet(axes, baseline, {"counter": "different"})
+
+
+def test_primitive_noise_calibration_and_positive_slopes():
+    from dataclasses import replace
+
+    # Repeated ratios: 1.98, 2, 2, 2, 2.02; 1% envelope -> 2% bound.
+    axis = primitive_axis.summarize(
+        "loop", "per_op", [(v, 1) for v in (1.98, 2, 2, 2, 2.02)]
+    )
+    assert axis.ratio == 2
+    assert axis.relative_spread == pytest.approx(0.01)
+    axes = [replace(a, relative_spread=0.0099) for a in _primitive_axes()]
+    baseline = primitive_axis.make_ratchet(axes, {}, 5)
+    assert baseline["noise_bound"] == 0.02
+    assert all(row["noise_bound"] == 0.02 for row in baseline["axes"].values())
+    exact = primitive_axis.make_ratchet(_primitive_axes(), {}, 5)
+    assert exact["noise_bound"] == 0
+    assert primitive_axis.compare_ratchet(_primitive_axes(), exact, {}) == []
+    for bad in (0, -1, float("nan"), float("inf"), True):
+        with pytest.raises(ValueError, match="positive"):
+            primitive_axis.summarize("loop", "per_op", [(bad, 2)] * 5)
+    with pytest.raises(ValueError, match="at least 5"):
+        primitive_axis.summarize("loop", "per_op", [(4, 2)] * 4)
+
+
+@pytest.mark.parametrize(
+    "counter,text,expected",
+    [
+        (
+            primitive_axis.Counter.MACOS,
+            "   123456 instructions retired\n 43 cycles elapsed\n",
+            123456,
+        ),
+        (primitive_axis.Counter.PERF, "98765;;instructions:u;123;100.00;;\n", 98765),
+        (
+            primitive_axis.Counter.CALLGRIND,
+            "events: Dr Ir Dw\nsummary: 12 345 67\n",
+            345,
+        ),
+    ],
+)
+def test_primitive_counter_protocols(counter, text, expected):
+    assert primitive_axis.parse_count(counter, text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "0 instructions retired",
+        "3 instructions retired\n4 instructions retired",
+        "nan instructions retired",
+    ],
+)
+def test_primitive_missing_or_ambiguous_counters_refuse(text):
+    with pytest.raises(ValueError):
+        primitive_axis.parse_count(primitive_axis.Counter.MACOS, text)
+
+
+def test_primitive_perf_multiplexing_refuses():
+    with pytest.raises(ValueError, match="multiplexed"):
+        primitive_axis.parse_count(
+            primitive_axis.Counter.PERF, "100;;instructions:u;300;99.99;;\n"
+        )
+
+
+def test_declared_primitive_programs_have_independent_cpython_oracles(
+    monkeypatch, capsys
+):
+    expected = {
+        "loop": "4950",
+        "id": "True",
+        "memo_get": "100",
+        "memo_set": "64",
+        "type_dispatch": "100",
+        "getattr_miss": "100",
+        "dynamic_call": "4950",
+        "isinstance": "0",
+        "tuple_unpack": "9900",
+        "reduce_ex": "50",
+        "new_and_update": "10",
+        "recursion": "100",
+        "plain_construction": "(99, 2)",
+        "dataclass_construction": "(99, 2)",
+    }
+    assert {p.name for p in primitive_axis.PRIMITIVES} == set(expected)
+    monkeypatch.setattr("sys.argv", ["primitive.py", "100"])
+    for primitive in primitive_axis.PRIMITIVES:
+        exec(
+            compile(primitive.program(), "primitive.py", "exec"),
+            {"__name__": "__main__"},
+        )
+        assert capsys.readouterr().out == expected[primitive.name] + "\n"
 
 
 # --- safe_speedup: a build failure can never become a ratio ------------------

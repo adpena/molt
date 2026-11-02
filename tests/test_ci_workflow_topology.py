@@ -4445,7 +4445,10 @@ def test_nightly_contains_correctness_jobs() -> None:
         assert f"--run-family {family} --receipt" in nightly_text
     assert "nightly-verdict:" in nightly_text
     assert "uses: actions/download-artifact@" in nightly_text
-    assert "--verify-scheduled --receipt-dir nightly-artifacts" in nightly_text
+    assert (
+        "--verify-scheduled .github/workflows/nightly.yml --receipt-dir nightly-artifacts"
+        in nightly_text
+    )
     assert "tools/guarded_exec.py" not in nightly_text
     assert "tests/harness/run_molt_conformance.py" not in nightly_text
     assert "tests/molt_diff.py" not in nightly_text

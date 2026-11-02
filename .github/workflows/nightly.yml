@@ -492,4 +492,4 @@ jobs:
           merge-multiple: true
 
       - name: Verify complete scheduled receipt closure
-        run: python3 tools/proof_plan.py --verify-scheduled --receipt-dir nightly-artifacts
+        run: python3 tools/proof_plan.py --verify-scheduled .github/workflows/nightly.yml --receipt-dir nightly-artifacts

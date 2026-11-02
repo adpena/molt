@@ -187,6 +187,9 @@ authority_inputs = [
   "tools/perf_calibration.py",
   "tools/perf_schema.py",
   "tools/perf_scoreboard.py",
+  "tools/perf_scoreboard_primitives.py",
+  "bench/primitive_ratchet.json",
+  ".github/workflows/primitive-instructions.yml",
   "tools/perf_scoreboard_build_profiles.py",
   "tools/perf_scoreboard_cli.py",
   "tools/perf_scoreboard_measure.py",
@@ -5748,6 +5751,8 @@ globs = [
   "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_cold_start_decompose.py",
   "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_release_integrity.py",
   "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_methodology.py",
+  "tools/perf_scoreboard_primitives.py", "bench/primitive_ratchet.json",
+  ".github/workflows/primitive-instructions.yml",
 ]
 gates = [
   "python tools/perf_methodology.py --check",
@@ -5773,6 +5778,43 @@ pytest_select = [
     "tests/tools/test_perf_authority.py",
   ] },
 ]
+
+# Uses the existing out-of-admission executable-family catalog. The workflow
+# runs on main pushes now; MOLT_PRIMITIVE_PRESUBMIT is the sole activation flag
+# for PR runs. No new tier or optional-success receipt is introduced.
+[[scheduled_family]]
+name = "primitive_instructions"
+description = "Postsubmit CPython 3.12.16 primitive instruction slopes and startup ratchet."
+workflow = ".github/workflows/primitive-instructions.yml"
+job = "primitive-instructions"
+tiers = ["scheduled"]
+timeout_minutes = 160
+job_reserve_seconds = 600
+resource_class = "compiler-build-resource"
+
+[[matrix_cell]]
+id = "macos-arm64-py312-native-release-output"
+runner = "macos-14"
+os = "macos"
+arch = "aarch64"
+python = "3.12"
+backend = "native"
+target = "native"
+profile = "release-output"
+
+[[command]]
+id = "performance.primitive-instructions"
+cargo_native_units = { target = ["c", "c++"] }
+family = "primitive_instructions"
+cell = "macos-arm64-py312-native-release-output"
+tiers = ["scheduled"]
+resource_class = "compiler-build-resource"
+timeout_budget = "shipping"
+cache_domain = "cargo-workspace"
+dependencies = []
+evidence_outputs = ["proof-receipts/evidence/primitive-instructions"]
+argv = ["python", "tools/perf_scoreboard.py", "primitives", "--cpython", "3.12.16", "--out-dir", "proof-receipts/evidence/primitive-instructions"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang"]
 
 # --- APPARATUS Wave 4 A11 claims custody + preflight + commit serializer ---
 [[rule]]

@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parent.parent
 PERF_GATE = REPO / ".github" / "workflows" / "perf-gate.yml"
+PRIMITIVE_GATE = REPO / ".github" / "workflows" / "primitive-instructions.yml"
 SCOREBOARD_CMD = "perf_scoreboard.py"
 MEASUREMENT_EVENTS = {"workflow_dispatch", "schedule"}
 
@@ -514,8 +516,66 @@ def check() -> list[str]:
     return problems
 
 
+def primitive_problems(path: Path = PRIMITIVE_GATE) -> list[str]:
+    """The postsubmit axis must have one explicit PR activation flag."""
+    try:
+        doc = _load_yaml(path)
+        triggers = _triggers(doc)
+        job = doc["jobs"]["primitive-instructions"]
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        return [f"primitive instruction workflow is unavailable: {exc}"]
+    problems = []
+    if set(triggers) != {"push", "pull_request", "workflow_dispatch"}:
+        problems.append(
+            "primitive instructions must run postsubmit with a declared PR trigger"
+        )
+    if (
+        job.get("if")
+        != "github.event_name != 'pull_request' || vars.MOLT_PRIMITIVE_PRESUBMIT == 'true'"
+    ):
+        problems.append(
+            "primitive presubmit activation must use only MOLT_PRIMITIVE_PRESUBMIT"
+        )
+    if _nonblocking_continue_on_error(job.get("continue-on-error")):
+        problems.append("primitive instruction job cannot continue-on-error")
+    runs = [
+        step
+        for step in job.get("steps", [])
+        if "--run-family primitive_instructions" in step.get("run", "")
+    ]
+    if len(runs) != 1:
+        problems.append(
+            "primitive instruction job must execute its proof-plan family once"
+        )
+    elif runs[0].get("if") or _nonblocking_continue_on_error(
+        runs[0].get("continue-on-error")
+    ):
+        problems.append(
+            "primitive instruction proof step must always block selected runs"
+        )
+    return problems
+
+
+def primitive_command_problems(commands: list[dict]) -> list[str]:
+    selected = [
+        row for row in commands if row.get("family") == "primitive_instructions"
+    ]
+    if len(selected) != 1:
+        return ["primitive instruction family must own exactly one measurement command"]
+    argv = selected[0].get("argv", [])
+    if (
+        "tools/perf_scoreboard.py" not in argv
+        or "primitives" not in argv
+        or "--update-ratchet" in argv
+    ):
+        return ["primitive proof must check the scoreboard ratchet without updating it"]
+    return []
+
+
 def main() -> int:
-    problems = check()
+    problems = check() + primitive_problems()
+    with (REPO / "tools" / "proof_plan.toml").open("rb") as stream:
+        problems.extend(primitive_command_problems(tomllib.load(stream)["command"]))
     if problems:
         print("perf-gate-wiring: FAIL -- controlled perf authority drifted:")
         for p in problems:

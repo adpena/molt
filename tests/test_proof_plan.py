@@ -288,7 +288,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
     assert len(PLAN.families) == 13
-    assert len(PLAN.scheduled_families) == 8
+    assert len(PLAN.scheduled_families) == 9
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
@@ -3570,6 +3570,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "nightly_shard_prepare",
         "nightly_verification_t3",
         "platform_portability",
+        "primitive_instructions",
         "python_unit",
         "python_unit_collection",
         "repository_policy",
@@ -5058,7 +5059,12 @@ def test_scheduled_verdict_requires_every_command_and_evidence_output(
     tmp_path: Path,
     capsys,
 ) -> None:
-    scheduled_names = [family.name for family in PLAN.scheduled_families]
+    workflow = ".github/workflows/nightly.yml"
+    scheduled_names = [
+        family.name
+        for family in PLAN.scheduled_families
+        if family.data["workflow"] == workflow
+    ]
     scheduled_commands = [
         command for command in PLAN.commands if command.family in scheduled_names
     ]
@@ -5068,7 +5074,33 @@ def test_scheduled_verdict_requires_every_command_and_evidence_output(
         )
 
     assert _verify_receipts(PLAN, scheduled_names, tmp_path) == []
-    argv = ["--verify-scheduled", "--receipt-dir", str(tmp_path)]
+    argv = ["--verify-scheduled", workflow, "--receipt-dir", str(tmp_path)]
+    # Other out-of-admission workflows own their own results; Nightly must
+    # neither require their receipts nor supply evidence on their behalf.
+    assert (
+        proof_plan.main(
+            [
+                "--verify-scheduled",
+                ".github/workflows/primitive-instructions.yml",
+                "--receipt-dir",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+    capsys.readouterr()
+    assert (
+        proof_plan.main(
+            [
+                "--verify-scheduled",
+                ".github/workflows/nonexistent.yml",
+                "--receipt-dir",
+                str(tmp_path),
+            ]
+        )
+        == 2
+    )
+    capsys.readouterr()
     # Artifact downloads can merge any JSON value alongside proof receipts.
     for index, value in enumerate(
         ([{"evidence": 1}], None, "evidence", 7, 1.5, True, False, {})
@@ -9363,6 +9395,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "native.integration.capability-manifest",
                 "native.integration.cli-smoke",
                 "native.integration.metamorphic",
+                "performance.primitive-instructions",
                 "nightly.determinism.checkout-independence",
                 "nightly.determinism.compiler-prewarm",
                 "nightly.determinism.runtime",

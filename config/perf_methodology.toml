@@ -15,8 +15,8 @@ schema = "molt-perf-methodology-v1"
 # whole store (toolchain_identity.FileDigestCache), and target facts resolve
 # once per process (compilation_target, native_target), so warm build samples
 # can move. Earlier reports retain their recorded class.
-version = 21
-content_sha256 = "ff90c3faa741e60855c6ffb115423c8596d87287cd0c9d7af78dc0017f610820"
+version = 22
+content_sha256 = "542d5a642aebd97292f2e5bed3e62e43db0d41f5c8a5c3954e6cdaedd09bef5e"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -33,6 +33,26 @@ role = "finalizes typed measurements into each cell verdict"
 [[methodology]]
 path = "tools/perf_scoreboard.py"
 role = "classifies cells against CPython and the repeat interval"
+
+[[methodology]]
+path = "tools/perf_scoreboard_primitives.py"
+role = "declares primitive programs, instruction counters, slope normalization and the repeated-ratio ratchet"
+
+[[methodology]]
+path = "bench/primitive_ratchet.json"
+role = "measured instruction-ratio limits and noise calibration for the declared primitive axes"
+
+[[mechanics]]
+path = "tools/opt_explorer.py"
+reason = "optional diagnostic cost buckets; samples never change the instruction ratchet"
+
+[[mechanics]]
+path = "src/molt/python_environment_identity.py"
+reason = "verifies the selected exact CPython denominator before samples"
+
+[[mechanics]]
+path = "src/molt/python_interpreter.py"
+reason = "canonical physical interpreter selection; the observed denominator image is recorded"
 
 [[methodology]]
 path = "src/molt/backend_executable_names.py"

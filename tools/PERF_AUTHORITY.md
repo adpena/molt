@@ -14,6 +14,79 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+## Primitive instruction axis
+
+The same scoreboard owns the primitive instruction axis (HF-459):
+
+```text
+python tools/perf_scoreboard.py primitives --cpython 3.12.16 --out-dir <new-evidence-directory>
+```
+
+Methodology v22 adds this diagnostic axis and its ratio ratchet. It does not
+change the cold/warm release acceptance scope above. Table count columns are
+medians of each runtime's observations; the ratio is the median of paired
+Molt/CPython ratios, so it need not equal the quotient of those two medians.
+
+This mode builds each declared program once with logical `release`, observed
+native `release-output` runtime and release compiler, matching the integrator's
+original primitive experiment. It measures five paired process observations at
+N=0 and N=K for each runtime. Instructions per operation are `(I(K)-I(0))/ops`;
+N=0 startup is a separate axis for every program, including an empty witness.
+Loop/control work stays in the slope. The `reduce_ex` and `new_and_update`
+programs execute K/10 operations; recursion executes K/100 depth-100 traversals.
+Other copy primitives use K=1,000,000; construction uses K=100,000. Programs
+retain the original loop bodies; the `id` result prints a nonnegative predicate
+to avoid comparing address-dependent output. CPython `-I -S` is probed as
+exactly 3.12.16, independently of the slot's frontend interpreter. Guest stdout,
+stderr and completion must agree before a pair can enter the table.
+
+`tools/perf_scoreboard_primitives.py` is the scoreboard's single declaration of
+programs and normalization. `bench/primitive_ratchet.json` contains measured
+ratios and calibration, not a second workload registry. A new evidence directory
+retains the program bytes, raw counters, guest streams, observed build products,
+per-pair data and the JSON/Markdown table. A failed child stops the batch and
+cannot become a cheap operation. This diagnostic axis does not publish release
+qualification or replace the native+LLVM cold/warm release authority above.
+
+`--update-ratchet` calibrates from a complete run. Each axis's bound is twice its
+largest paired-ratio deviation from its median, rounded upward to 0.001;
+the record states the repeat count and largest bound for display. A deterministic
+model can have an exact zero bound. Startup noise cannot loosen a per-operation
+bound. Default checking rejects increased ratios
+outside that bound, excessive within-run spread, identity mismatches and missing
+axes. Improvements outside the bound fail with `UPDATE_REQUIRED`: review the
+evidence and update the ratchet in the same change. The v1 target remains at
+most 1.0 Molt/CPython per operation and 1.5 for startup; retaining a current high
+ratio does not qualify that target.
+
+The `primitive_instructions` executable proof family runs on main pushes through
+`primitive-instructions.yml`. It uses the existing out-of-admission family
+catalog (`scheduled` is its execution tier, not its workflow trigger). The sole
+presubmit activation flag is the repository variable
+`MOLT_PRIMITIVE_PRESUBMIT=true`, owned by the integrator. Once enabled, selected
+PR runs execute the same failing ratchet. Making that check required in branch
+protection remains an integrator operation. No workflow uses `--update-ratchet`.
+Hosted-runner calibration and successful postsubmit execution require actual
+receipts; a local Mac table establishes neither.
+
+On macOS the counter is `/usr/bin/time -l`'s `ri_instructions`, including user
+and kernel work ([Apple source](https://github.com/apple-oss-distributions/shell_cmds/blob/main/time/time.c)).
+Linux uses `perf stat`'s `instructions:u`, backed by `perf_event_open`, when a
+PMU and unprivileged access are declared by the host. Otherwise auto-selection
+requires Callgrind and explicitly labels its `Ir` instruction-read model.
+Counter kind is part of ratchet identity; hardware and model counts cannot be
+mixed. See [Linux perf access controls](https://www.kernel.org/doc/html/latest/admin-guide/perf-security.html)
+and [Callgrind's event format](https://valgrind.org/docs/manual/cl-format.html).
+An unavailable selected counter refuses before compilation; measurement failure
+never retries using another counter. Linux/model cells remain unverified until
+their actual guest receipts exist. `--counter` makes selection explicit.
+
+`--profile-costs` optionally runs `opt_explorer`'s existing sampler and cost
+buckets on the same symbolized release binary. These samples are diagnostic,
+include startup, and do not alter instruction ratios or ratchet decisions.
+
+## Scoreboard methodology
+
 Methodology v17 classifies failed executions from their actual semantic guest
 stderr instead of host diagnostics. Failed raw captures retain bounded diagnostic
 text and byte identity through cleanup. Failure classifications can therefore

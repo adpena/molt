@@ -167,8 +167,8 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--verify-scheduled",
-        action="store_true",
-        help="Verify receipts for every scheduled family.",
+        metavar="WORKFLOW",
+        help="Verify receipts for every executable family owned by this workflow.",
     )
     parser.add_argument("--receipt-dir", type=Path)
     parser.add_argument("--run-family")
@@ -346,7 +346,17 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        selected = [family.name for family in plan.scheduled_families]
+        selected = [
+            family.name
+            for family in plan.scheduled_families
+            if family.data["workflow"] == args.verify_scheduled
+        ]
+        if not selected:
+            print(
+                f"proof-plan scheduled verdict: no families own workflow {args.verify_scheduled!r}",
+                file=sys.stderr,
+            )
+            return 2
         errors = proof_receipts.verify_receipts(
             plan,
             selected,
