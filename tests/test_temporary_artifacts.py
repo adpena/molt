@@ -1520,7 +1520,7 @@ def test_process_scratch_skips_fsync_for_success_failure_and_adoption(
 def test_a_terminal_receipt_its_owner_never_committed_blocks_adoption_once(
     tmp_path, monkeypatch
 ):
-    """The finisher wrote its terminal receipt, then failed before its index.
+    """The finisher wrote its terminal receipt, then died before its index.
 
     A dead guard's reconciliation then met that receipt on every pass: its
     adoption tried to publish a second terminal receipt and failed, so the
@@ -1530,11 +1530,12 @@ def test_a_terminal_receipt_its_owner_never_committed_blocks_adoption_once(
     lease, env = _lease(tmp_path)
     (lease.target / "output").write_bytes(b"kept")
 
-    def fail_index(generation, digest):
-        raise OSError("fixture index publication failure")
+    def interrupt_index(generation, digest):
+        # A refused index is a whole-root diagnostic; a kill is not.
+        raise KeyboardInterrupt("fixture guard killed before its index")
 
-    monkeypatch.setattr(scratch, "_publish_index", fail_index)
-    with pytest.raises(OSError, match="index publication failure"):
+    monkeypatch.setattr(scratch, "_publish_index", interrupt_index)
+    with pytest.raises(KeyboardInterrupt, match="killed before its index"):
         _finish(lease)
     monkeypatch.undo()
     assert (lease.generation / "terminal.json").is_file()
@@ -2362,27 +2363,59 @@ def test_dry_run_does_not_repair_crash_residue_or_delete_payload(tmp_path, state
         assert len(result["would_reclaim"]) == 1
 
 
+_OWNER_PERMISSIONS = pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="POSIX directory permission bits bind only a non-root owner",
+)
+
+
+@_OWNER_PERMISSIONS
+@pytest.mark.parametrize("mode", [0o300, 0o000], ids=["unlistable", "inaccessible"])
 @pytest.mark.parametrize("success", [False, True])
 def test_whole_root_scan_error_is_diagnostic_after_current_finalization(
-    tmp_path, monkeypatch, success
+    tmp_path, success, mode
 ):
     lease, _ = _lease(tmp_path)
+    (lease.target / "output").write_bytes(b"regenerable")
     pending = lease.generation.parent / "pending"
-    resolve = scratch.resolve_owned_path
-
-    class UnreadablePending(type(tmp_path)):
-        def iterdir(self):
-            raise PermissionError("prior runs pending directory unreadable")
-
-    def selected(path):
-        result = resolve(path)
-        return UnreadablePending(result) if result == pending else result
-
-    monkeypatch.setattr(scratch, "resolve_owned_path", selected)
-    outcome = _finish(lease, success=success)
-    assert outcome["state"] == ("reclaimed" if success else "retained")
+    pending.mkdir()
+    pending.chmod(mode)
+    try:
+        outcome = _finish(lease, success=success)
+    finally:
+        pending.chmod(0o755)
+    # An unlistable namespace still takes this run's index, so a failure is
+    # retained. An inaccessible one refuses it: nothing could find the
+    # payload later, so the run reclaims it now. Neither fails the run.
+    retained = not success and mode == 0o300
+    assert outcome["state"] == ("retained" if retained else "reclaimed")
     assert outcome["error"] is None
-    assert (
-        "prior runs pending directory unreadable" in outcome["retention"]["errors"][0]
-    )
+    errors = outcome["retention"]["errors"]
+    assert errors and all("Permission denied" in error for error in errors), errors
+    assert (lease.generation / "payload" / "output").exists() is retained
+    assert lease.lock is None
+
+
+@pytest.mark.parametrize("success", [False, True])
+@pytest.mark.parametrize("namespace", ["pending", "removing"])
+def test_a_linked_shared_namespace_is_diagnostic_not_this_runs_failure(
+    tmp_path, namespace, success
+):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "output").write_bytes(b"regenerable")
+    shared = lease.generation.parent / namespace
+    shared.mkdir()
+    _plant_link(tmp_path, shared)
+    outcome = _finish(lease, success=success)
+    # A linked pending namespace refuses this run's index, so the run
+    # reclaims its payload now; a linked removing namespace only defers its
+    # receipts. A retained failure touches neither.
+    reclaimed = success or namespace == "pending"
+    assert outcome["state"] == ("reclaimed" if reclaimed else "retained")
+    assert outcome["error"] is None
+    linked = [
+        error for error in outcome["retention"]["errors"] if "traverses a link" in error
+    ]
+    assert bool(linked) is reclaimed, outcome["retention"]
+    assert (lease.generation / "payload" / "output").exists() is not reclaimed
     assert lease.lock is None

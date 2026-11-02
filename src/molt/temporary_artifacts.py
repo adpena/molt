@@ -189,6 +189,9 @@ class GuardScratchLease:
     lock: _FileLockHandle | None
     # Set by the owner's finish when its generation reached reclaimed.
     reclaimed: bool = False
+    # Set by the owner's finish when the shared pending namespace refused
+    # its index: a whole-root diagnostic, never this run's failure.
+    unindexed: str | None = None
 
     def release(self) -> None:
         if self.lock is not None:
@@ -924,6 +927,10 @@ def _remove_reclaimed_generation(generation: Path) -> str | None:
     a contender that locked it just before finds it absent, which means
     removed. Windows cannot move a directory while a contender holds its lock
     file open. The pending index then stays, and the next sweep removes it.
+    The tombstone goes before the index: an index that outlives its
+    generation is resolved by the next sweep, so a shared pending namespace
+    that refuses the drop strands no receipts. Raises OSError or ValueError
+    only for whole-root namespace failures; callers report them.
     """
     removing = resolve_owned_path(generation.parent / _REMOVING_DIRNAME)
     removing.mkdir(exist_ok=True)
@@ -938,10 +945,10 @@ def _remove_reclaimed_generation(generation: Path) -> str | None:
         # Another remover committed this final transition and owns the
         # tombstone; it also drops the index.
         return None
-    _drop_index(generation)
     ok, error = delete_path(tombstone)
     if not ok:
         raise OSError(f"reclaimed scratch receipts remain at {tombstone}: {error}")
+    _drop_index(generation)
     return None
 
 
@@ -953,8 +960,16 @@ def _retire_locked(
     success: bool,
     closure: Mapping[str, object],
     finished_ns: int,
-) -> dict[str, object]:
-    """Move a closed run's payload into its generation and index the work."""
+) -> tuple[dict[str, object], str | None]:
+    """Move a closed run's payload into its generation and index the work.
+
+    Returns the owner and a whole-root diagnostic. Every run shares the
+    pending namespace. When it refuses this index, nothing rediscovers the
+    payload after the lock is released, so the owner's finish reclaims it at
+    once (it is regenerable) and reports the refusal; the refusal is never
+    this run's custody failure. A dead guard's marker stays active until
+    resolution republishes the index, so adoption keeps its payload.
+    """
     destination = resolve_owned_path(generation / "payload")
     terminal = {
         "schema": SCHEMA,
@@ -980,7 +995,11 @@ def _retire_locked(
     }
     # The pending-work index is a projection, not deletion authority.
     # Index first: interruption must not leave a retired payload undiscoverable.
-    _publish_index(generation, owner["terminal_digest"])
+    unindexed: str | None = None
+    try:
+        _publish_index(generation, owner["terminal_digest"])
+    except (OSError, ValueError) as error:
+        unindexed = f"{generation}: pending index refused; payload reclaimed: {error}"
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
     try:
         # Both resolved absolute paths are bound to this allocation and
@@ -989,11 +1008,12 @@ def _retire_locked(
     except OSError as error:
         owner = {**owner, "state": "blocked", "error": str(error)}
         write_exact(generation / "owner.json", owner, durability=_RECORDS)
-        _drop_index(generation)
-        return owner
+        if unindexed is None:
+            _drop_index(generation)
+        return owner, unindexed
     owner = {**owner, "state": "retained"}
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
-    return owner
+    return owner, unindexed
 
 
 def _closure_facts(closure: Mapping[str, object]) -> dict[str, object]:
@@ -1109,9 +1129,12 @@ def _adopt_locked(
         }
         write_exact(generation / "owner.json", owner, durability=_RECORDS)
         return owner
-    return _retire_locked(
+    # A refused index leaves the payload retained; resolution republishes the
+    # index, and the guard marker stays active until it can.
+    owner, _unindexed = _retire_locked(
         generation, owner, target, success=False, closure=closure, finished_ns=0
     )
+    return owner
 
 
 def scratch_generation(token: str, outcome: Mapping[str, object]) -> Path | None:
@@ -1206,7 +1229,7 @@ def resolve_guard_scratch(
     if state == "reclaimed":
         try:
             outcome["deferred"] = _remove_reclaimed_generation(generation)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             outcome["error"] = str(error)
     return outcome
 
@@ -1258,23 +1281,28 @@ def finish_guard_scratch(
                 lease.release()
     if early is not None:
         return early
-    removal: tuple[str, str] | None = None
+    # Shared-namespace failures below are whole-root diagnostics: this
+    # run's payload already reached its terminal state under its own lock.
+    diagnostics: list[tuple[str, str]] = []
+    if lease.unindexed is not None:
+        diagnostics.append(("errors", lease.unindexed))
     if lease.reclaimed:
         # The owner verified reclaimed under its own lock, and that state is
         # final: remove the receipts now instead of through a sweep's lock.
         try:
             with timings.measure(ScratchFinalizationPhase.RECEIPT_REMOVAL):
                 deferral = _remove_reclaimed_generation(generation)
-        except OSError as error:
-            removal = ("errors", str(error))
+        except (OSError, ValueError) as error:
+            diagnostics.append(("errors", f"{generation}: {error}"))
         else:
-            removal = None if deferral is None else ("deferred", deferral)
+            if deferral is not None:
+                diagnostics.append(("deferred", deferral))
     with timings.measure(ScratchFinalizationPhase.RETENTION_SWEEP):
         sweep = reclaim_terminal_scratch(root, retention=retention)
-    if removal is not None:
-        entries = sweep[removal[0]]
+    for key, diagnostic in diagnostics:
+        entries = sweep[key]
         assert isinstance(entries, list)
-        entries.append(removal[1])
+        entries.append(diagnostic)
     try:
         final_owner = _owner(generation)
     except (OSError, ValueError):
@@ -1325,7 +1353,7 @@ def _finish_guard_scratch_owned(
                     "state": "indeterminate",
                     "receipt": str(generation / "owner.json"),
                 }
-            owner = _retire_locked(
+            owner, lease.unindexed = _retire_locked(
                 generation,
                 owner,
                 target,
@@ -1339,7 +1367,8 @@ def _finish_guard_scratch_owned(
                     "receipt": str(generation / "owner.json"),
                     "error": owner.get("error"),
                 }
-        if success:
+        # A failed payload waits for retention only where the sweep can find it.
+        if success or lease.unindexed is not None:
             with timings.measure(ScratchFinalizationPhase.PAYLOAD_RECLAMATION):
                 lease.reclaimed = (
                     _reclaim_locked(generation, owner)["state"] == "reclaimed"
@@ -1475,13 +1504,18 @@ def reclaim_terminal_scratch(
 
     A generation whose directory is gone was removed by its own reclaimed
     transition; its index entry is resolved, not an error. Crash residue
-    blocks its generation and is reported once (module docstring).
+    blocks its generation and is reported once (module docstring). The
+    namespaces every run shares (the root, ``pending`` and ``removing``)
+    report their failures here, raised or not, as diagnostics.
     """
-    root = resolve_owned_path(root)
-    pending = resolve_owned_path(root / "pending")
     try:
-        entries = sorted(pending.iterdir())
-    except OSError as error:
+        root = resolve_owned_path(root)
+        pending = resolve_owned_path(root / "pending")
+        try:
+            entries = sorted(pending.iterdir())
+        except FileNotFoundError:
+            entries = []
+    except (OSError, ValueError) as error:
         # Discovery belongs to other completed runs. Its failure is a
         # diagnostic result, never failure of this child's own finalization.
         return {
@@ -1490,9 +1524,7 @@ def reclaim_terminal_scratch(
             "retained_bytes": 0,
             "retained_count": 0,
             "protected_count": 0,
-            "errors": []
-            if isinstance(error, FileNotFoundError)
-            else [f"{pending}: {error}"],
+            "errors": [f"{Path(root) / 'pending'}: {error}"],
             "deferred": [],
         }
     candidates: list[tuple[int, int, Path, str, bool]] = []
@@ -1521,7 +1553,10 @@ def reclaim_terminal_scratch(
         except (OSError, ValueError, RuntimeError) as error:
             if generation is not None and not os.path.lexists(generation):
                 if not dry_run:
-                    _drop_index(generation)
+                    try:
+                        _drop_index(generation)
+                    except (OSError, ValueError) as drop_error:
+                        errors.append(f"{entry}: {drop_error}")
                 continue
             errors.append(f"{entry}: {error}")
             continue
@@ -1620,8 +1655,8 @@ def reclaim_terminal_scratch(
             continue
         try:
             deferral = _remove_reclaimed_generation(generation)
-        except OSError as error:
-            errors.append(str(error))
+        except (OSError, ValueError) as error:
+            errors.append(f"{generation}: {error}")
             continue
         if deferral is not None:
             deferred.append(deferral)
