@@ -1,9 +1,9 @@
 use super::{
     ExecutionRequest, GuestModuleEntrypoint, GuestTermination, HostState, LoadedGuestKind,
     LoadedGuestOptions, ParsedHostArgs, ProcessManager, ResolvedExecution, SocketManager,
-    WebSocketManager, build_engine, define_isolate_host_imports, execute_loaded_guest,
-    parse_host_args, resolve_execution, resolve_execution_modules, select_manifest_path,
-    validate_execution_imports, validate_guest_module_entrypoint,
+    WasmTableAdmission, WebSocketManager, build_engine, define_isolate_host_imports,
+    execute_loaded_guest, parse_host_args, resolve_execution, resolve_execution_modules,
+    select_manifest_path, validate_execution_imports, validate_guest_module_entrypoint,
 };
 use molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
 use molt_wasm_host::sha256_hex;
@@ -56,7 +56,7 @@ fn execute_test_guest(
     runtime: Option<&Module>,
     kind: LoadedGuestKind<'_>,
     guest_args: &[String],
-    wasm_table_base: Option<u64>,
+    wasm_table_admission: WasmTableAdmission,
 ) -> wasmtime::Result<GuestTermination> {
     execute_loaded_guest(
         engine,
@@ -67,7 +67,7 @@ fn execute_test_guest(
             launch_environment: &[],
             vfs_envs: &[],
             guest_args,
-            wasm_table_base,
+            wasm_table_admission,
         },
     )
 }
@@ -366,7 +366,7 @@ fn deployment_environment_overwrites_once_and_preserves_omitted_optional_policy(
         ("MOLT_IO_MODE", "callback"),
         ("MOLT_EXECUTION_TARGET", "browser"),
     ]);
-    let environment = super::wasi_environment(ambient.clone(), &launch, &[], Some("wasi"));
+    let environment = super::wasi_environment(ambient.clone(), &launch, &[], Some("wasi"), None);
     let expected = entries(&[
         ("Z_UNRELATED", "first"),
         ("MOLT_CAPABILITIES", "fs.read"),
@@ -397,13 +397,49 @@ fn deployment_environment_overwrites_once_and_preserves_omitted_optional_policy(
         ("NEW_VALUE", "last"),
     ]);
     assert_eq!(
-        super::wasi_environment(ambient, &launch, &extra, None),
+        super::wasi_environment(ambient, &launch, &extra, None, None),
         raw_expected
     );
     let empty_grants = entries(&[("MOLT_CAPABILITIES", ""), ("MOLT_CAPABILITY_TIER", "none")]);
-    let restricted = super::wasi_environment(launch, &empty_grants, &[], Some("wasi"));
+    let restricted = super::wasi_environment(launch, &empty_grants, &[], Some("wasi"), None);
     assert!(restricted.contains(&("MOLT_CAPABILITIES".into(), String::new())));
     assert!(restricted.contains(&("MOLT_CAPABILITY_TIER".into(), "none".into())));
+}
+
+#[test]
+fn callable_table_environment_cannot_be_inherited_or_declared_by_guest_policy() {
+    let stale = vec![("MOLT_WASM_TABLE_BASE".into(), "999".into())];
+    let empty = super::wasi_environment(
+        stale.clone(),
+        &stale,
+        &stale,
+        Some("wasi"),
+        Some(&WasmTableAdmission::Empty),
+    );
+    assert!(!empty.iter().any(|(name, _)| name == "MOLT_WASM_TABLE_BASE"));
+    let admission = WasmTableAdmission::Publish {
+        base: std::num::NonZeroU32::new(4).unwrap(),
+        export_name: "publish_base".into(),
+    };
+    let published = super::wasi_environment(
+        stale.clone(),
+        &stale,
+        &stale,
+        Some("wasi"),
+        Some(&admission),
+    );
+    let values = published
+        .iter()
+        .filter(|(name, _)| name == "MOLT_WASM_TABLE_BASE")
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(values, ["4"]);
+    assert_eq!(
+        super::wasi_environment(stale.clone(), &[], &[], None, None),
+        stale
+    );
+    let command = super::wasi_environment(stale.clone(), &[], &[], Some("wasi"), None);
+    assert!(command.contains(&stale[0]));
 }
 
 #[test]
@@ -468,7 +504,7 @@ fn manifest_bound_command_receives_admitted_launch_environment() {
                 launch_environment: command.launch_environment(),
                 vfs_envs: &[],
                 guest_args: &[],
-                wasm_table_base: None,
+                wasm_table_admission: WasmTableAdmission::Empty,
             },
         )
         .unwrap(),
@@ -503,7 +539,7 @@ fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
                     None,
                     LoadedGuestKind::WasiCommand,
                     &[],
-                    None
+                    WasmTableAdmission::Empty
                 )
                 .unwrap(),
                 GuestTermination::Returned,
@@ -539,7 +575,7 @@ fn explicit_wasi_command_cannot_import_molt_without_current_manifest() {
             None,
             LoadedGuestKind::WasiCommand,
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap_err();
         assert!(
@@ -585,7 +621,7 @@ fn command_indirect_dispatch_cannot_admit_manifest_bound_services() {
             None,
             LoadedGuestKind::WasiCommand,
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap_err();
         let diagnostic = format!("{error:#}");
@@ -860,7 +896,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
         None,
         LoadedGuestKind::WasiCommand,
         &[],
-        None,
+        WasmTableAdmission::Empty,
     )
     .expect_err("malformed command ABI must fail before its core start section");
     assert!(error.to_string().contains("malformed _start"));
@@ -920,7 +956,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             None,
             LoadedGuestKind::MoltApplication { linked: true },
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .expect_err("malformed application ABI must fail before its core start section");
         assert!(error.to_string().contains(malformed_export));
@@ -957,7 +993,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
         Some(&runtime),
         LoadedGuestKind::MoltApplication { linked: false },
         &[],
-        None,
+        WasmTableAdmission::Empty,
     )
     .expect_err("malformed split runtime ABI must fail before its core start section");
     assert!(error.to_string().contains("molt_exception_pending"));
@@ -1030,7 +1066,7 @@ fn command_execution_calls_only_typed_start() {
             None,
             LoadedGuestKind::WasiCommand,
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap(),
         GuestTermination::Returned
@@ -1048,7 +1084,7 @@ fn command_entrypoint_preserves_wasm_traps() {
         None,
         LoadedGuestKind::WasiCommand,
         &[],
-        None,
+        WasmTableAdmission::Empty,
     )
     .unwrap_err();
     assert!(
@@ -1114,7 +1150,7 @@ fn command_core_start_wasi_exit_uses_command_termination_semantics() {
                 None,
                 LoadedGuestKind::WasiCommand,
                 &[],
-                None,
+                WasmTableAdmission::Empty,
             )
             .unwrap(),
             GuestTermination::WasiExit(status),
@@ -1135,7 +1171,7 @@ fn command_exported_start_wasi_exit_uses_command_termination_semantics() {
                 None,
                 LoadedGuestKind::WasiCommand,
                 &[],
-                None,
+                WasmTableAdmission::Empty,
             )
             .unwrap(),
             GuestTermination::WasiExit(status),
@@ -1154,7 +1190,7 @@ fn command_wasi_exit_rejects_status_outside_preview1_range() {
             None,
             LoadedGuestKind::WasiCommand,
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .expect_err("invalid WASIp1 exit status must remain a host error");
         assert!(
@@ -1194,7 +1230,7 @@ fn command_core_start_non_exit_trap_keeps_instantiation_context() {
         None,
         LoadedGuestKind::WasiCommand,
         &[],
-        None,
+        WasmTableAdmission::Empty,
     )
     .expect_err("non-exit core start trap must remain a host error");
     assert!(error.to_string().contains("instantiate WASI command"));
@@ -1235,7 +1271,7 @@ fn wasi_argv_is_explicit_even_without_a_guest_tail() {
             None,
             LoadedGuestKind::WasiCommand,
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap(),
         GuestTermination::Returned
@@ -1264,7 +1300,10 @@ fn command_mode_never_configures_molt_table_base() {
             None,
             LoadedGuestKind::WasiCommand,
             &[],
-            Some(37),
+            WasmTableAdmission::Publish {
+                base: std::num::NonZeroU32::new(37).unwrap(),
+                export_name: "molt_set_wasm_table_base".into()
+            },
         )
         .unwrap(),
         GuestTermination::Returned
@@ -1291,7 +1330,7 @@ fn standalone_command_memory_and_table_imports_need_no_runtime_module() {
             None,
             LoadedGuestKind::WasiCommand,
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap(),
         GuestTermination::Returned
@@ -1323,7 +1362,7 @@ fn loaded_guest_primitive_executes_linked_application_contract() {
             None,
             LoadedGuestKind::MoltApplication { linked: true },
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap(),
         GuestTermination::Returned
@@ -1365,7 +1404,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
             Some(&runtime),
             LoadedGuestKind::MoltApplication { linked: false },
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap(),
         GuestTermination::ApplicationExit(7)
@@ -1430,7 +1469,7 @@ fn execute_split_import_fixture(
         Some(&runtime),
         LoadedGuestKind::MoltApplication { linked: false },
         &[],
-        None,
+        WasmTableAdmission::Empty,
     )
 }
 
@@ -1999,7 +2038,7 @@ fn manifest_command_captures_source_and_cannot_admit_an_unrelated_module() {
             None,
             LoadedGuestKind::WasiCommandManifest(&command),
             &[],
-            None
+            WasmTableAdmission::Empty
         )
         .unwrap(),
         GuestTermination::Returned
@@ -2015,7 +2054,7 @@ fn manifest_command_captures_source_and_cannot_admit_an_unrelated_module() {
         None,
         LoadedGuestKind::WasiCommandManifest(&command),
         &[],
-        None,
+        WasmTableAdmission::Empty,
     )
     .unwrap_err();
     assert!(
@@ -2065,7 +2104,7 @@ fn split_reporter_admission_rejects_runtime_defect_despite_valid_app_shadow() {
             Some(&runtime),
             LoadedGuestKind::MoltApplication { linked: false },
             &[],
-            None,
+            WasmTableAdmission::Empty,
         )
         .unwrap_err();
         assert!(

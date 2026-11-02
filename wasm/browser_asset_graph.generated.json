@@ -72,7 +72,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "18b7beb6865a55dd131611b6ccd47bbe29b5b13967bbd1a30930acd19922edeb",
+      "sha256": "09d64d0041b2d2044cb21ee2935d4f4c75377d766e1acc09e728879312b07c5a",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -199,7 +199,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "7a42f659ef660ce73b9b68a98bb6eebe84f70fe2e9b875f2ceedc6ad20180e09",
+      "sha256": "8c62d5d6fa7c191623e7a93f7289f4320f8c67280d41a703d255b7301928bc02",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -255,7 +255,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "ab0b2602ea8f48e00b7bb836d604b1c44b3eb038598bdd950dcec37839b2222d",
+      "sha256": "c4399f56748bf4cdcef31d8b7934f51d2a46bfacb777a7cbb501e89e6dcd196a",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -311,14 +311,14 @@
         {
           "column": 20,
           "kind": "require",
-          "line": 489,
+          "line": 492,
           "request": "./socket_abi_generated.js",
           "target": "socket_abi_generated.js"
         },
         {
           "column": 98,
           "kind": "require",
-          "line": 487,
+          "line": 490,
           "request": "./synthetic_errno_generated.js",
           "target": "synthetic_errno_generated.js"
         },
@@ -337,7 +337,7 @@
           "target": "wasm_abi_generated.json"
         },
         {
-          "column": 33,
+          "column": 19,
           "kind": "require",
           "line": 8,
           "request": "child_process",
@@ -381,7 +381,7 @@
         {
           "column": 32,
           "kind": "require",
-          "line": 488,
+          "line": 491,
           "request": "node:util",
           "target": "node:util"
         },
@@ -437,7 +437,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "79c97f7247e0a5764b65f2129768e27923c4bc3e5e732972e6d391e88cf52bab",
+      "sha256": "6e5c65538bad0c1440f226cd6c2ce2b25edd56358796006352e6585fde024bed",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -500,7 +500,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "7d8fbacad9698c09968cecf6e273d70a131f0bcec180e8bb3393c509c6f4a1e5",
+      "sha256": "69892aa9e0f8dfe76158669f03b0894f3849cc96d63a4aef6a3fedb22b296fda",
       "source_type": "data"
     }
   },

@@ -5,6 +5,10 @@ use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 
 mod child_resources;
+#[cfg(not(target_arch = "wasm32"))]
+mod inheritance;
+#[cfg(not(target_arch = "wasm32"))]
+mod ipc;
 #[cfg(unix)]
 pub(crate) use child_resources::child_memory_rlimit_bytes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -196,134 +200,181 @@ fn trace_process_spawn() -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+enum SpawnTransport {
+    ProgramStdio,
+    DedicatedPipes,
+}
+
+/// One process-spawn request, as runtime-encoded objects from the extern ABI.
+#[cfg(not(target_arch = "wasm32"))]
+struct SpawnRequest {
+    args: u64,
+    env: u64,
+    cwd: u64,
+    stdin: u64,
+    stdout: u64,
+    stderr: u64,
+    start_new_session: u64,
+    process_group: u64,
+    close_fds: u64,
+    pass_fds: u64,
+    transport: SpawnTransport,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SpawnRequest {
+    /// `subprocess.Popen`'s defaults for the options the plain spawn does not take.
+    fn with_default_options(
+        [args, env, cwd, stdin, stdout, stderr]: [u64; 6],
+        transport: SpawnTransport,
+    ) -> Self {
+        Self {
+            args,
+            env,
+            cwd,
+            stdin,
+            stdout,
+            stderr,
+            start_new_session: MoltObject::from_bool(false).bits(),
+            process_group: MoltObject::none().bits(),
+            close_fds: MoltObject::from_bool(true).bits(),
+            pass_fds: MoltObject::none().bits(),
+            transport,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// # Safety
-/// `args_bits`, `env_bits`, and `cwd_bits` must be valid runtime-encoded objects.
-/// The runtime must be initialized and the call must be allowed to enter the GIL.
+/// Arguments must be runtime-encoded objects from this runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_process_spawn(
-    args_bits: u64,
-    env_bits: u64,
-    cwd_bits: u64,
-    stdin_bits: u64,
-    stdout_bits: u64,
-    stderr_bits: u64,
+    args: u64,
+    env: u64,
+    cwd: u64,
+    stdin: u64,
+    stdout: u64,
+    stderr: u64,
 ) -> u64 {
+    unsafe {
+        spawn_native(SpawnRequest::with_default_options(
+            [args, env, cwd, stdin, stdout, stderr],
+            SpawnTransport::ProgramStdio,
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// # Safety
+/// Arguments must be runtime-encoded objects from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_process_spawn_ex(
+    args: u64,
+    env: u64,
+    cwd: u64,
+    stdin: u64,
+    stdout: u64,
+    stderr: u64,
+    start_new_session: u64,
+    process_group: u64,
+    close_fds: u64,
+    pass_fds: u64,
+) -> u64 {
+    unsafe {
+        spawn_native(SpawnRequest {
+            args,
+            env,
+            cwd,
+            stdin,
+            stdout,
+            stderr,
+            start_new_session,
+            process_group,
+            close_fds,
+            pass_fds,
+            transport: SpawnTransport::ProgramStdio,
+        })
+    }
+}
+
+/// # Safety
+/// Arguments must be runtime-encoded objects from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_process_ipc_spawn(args: u64, env: u64, cwd: u64) -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe {
+        spawn_native(SpawnRequest::with_default_options(
+            [
+                args,
+                env,
+                cwd,
+                MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_DEVNULL)).bits(),
+                MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_INHERIT)).bits(),
+                MoltObject::from_int(i64::from(stdio::PROCESS_STDIO_INHERIT)).bits(),
+            ],
+            SpawnTransport::DedicatedPipes,
+        ))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (args, env, cwd);
+        multiprocessing_ipc_unsupported()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn multiprocessing_ipc_unsupported() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        ignore_sigpipe();
-        if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
-            return MoltObject::none().bits();
-        }
-        let args = match argv_from_bits(_py, args_bits) {
-            Ok(val) => val,
-            Err(bits) => return bits,
-        };
-        if args.is_empty() {
-            return raise_exception::<_>(_py, BuiltinExc::ValueError, "args must not be empty");
-        }
-        if trace_process_spawn() {
-            let head = args
-                .iter()
-                .take(3)
-                .map(|s| s.to_string_lossy().into_owned())
-                .collect::<Vec<_>>();
-            eprintln!("molt_process_spawn args_head={head:?}");
-        }
-        let mut cmd = std::process::Command::new(&args[0]);
-        if args.len() > 1 {
-            cmd.args(&args[1..]);
-        }
-        let mut env_entries = match env_from_bits(_py, env_bits) {
-            Ok(val) => val,
-            Err(bits) => return bits,
-        };
-        let mut overlay_env = false;
-        if let Some(entries) = env_entries.as_mut() {
-            entries.retain(|(key, value)| {
-                if key == RuntimeFlag::MOLT_ENV_OVERLAY.name() && value == "1" {
-                    overlay_env = true;
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-        if let Some(env_entries) = env_entries.as_ref() {
-            if !overlay_env {
-                cmd.env_clear();
-            }
-            if trace_process_io() {
-                let mut has_entry = false;
-                let mut has_spawn = false;
-                let mut has_capability_tier = false;
-                for (key, _value) in env_entries {
-                    if key == "MOLT_ENTRY_MODULE" {
-                        has_entry = true;
-                    } else if key == RuntimeFlag::MOLT_MP_SPAWN.name() {
-                        has_spawn = true;
-                    } else if key == "MOLT_CAPABILITY_TIER" {
-                        has_capability_tier = true;
-                    }
-                }
-                eprintln!(
-                    "molt_process_env overlay={overlay_env} entry={has_entry} spawn={has_spawn} capability_tier={has_capability_tier}"
-                );
-            }
-            for (key, value) in env_entries {
-                cmd.env(key, value);
-            }
-        }
-        apply_child_resource_env(
-            &mut cmd,
-            env_entries.as_deref(),
-            runtime_state(_py).policy().resources.as_ref(),
-        );
-        if !obj_from_bits(cwd_bits).is_none() {
-            let cwd = match path_from_bits(_py, cwd_bits) {
-                Ok(path) => path,
-                Err(bits) => return bits,
-            };
-            cmd.current_dir(cwd);
-        }
-        if let Err(refusal) = self_spawn::admit_child(&mut cmd) {
-            return refusal.raise(_py, &args[0]);
-        }
-        #[cfg(unix)]
-        let owns_process_group = configure_unix_owned_process_group(&mut cmd, false, None);
-        // Process groups are a POSIX process-model fact; other hosts own none.
-        #[cfg(not(unix))]
-        let owns_process_group = false;
-        #[cfg(unix)]
-        apply_child_memory_rlimit(
-            &mut cmd,
-            runtime_state(_py).policy().child_memory_rlimit_bytes,
-        );
-        let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
-        let stdout_mode = process_stdio_mode(_py, stdout_bits, "stdout");
-        let stderr_mode = process_stdio_mode(_py, stderr_bits, "stderr");
-        if trace_process_io() {
-            eprintln!(
-                "molt_process_stdio stdin={stdin_mode} stdout={stdout_mode} stderr={stderr_mode}"
-            );
-        }
-
-        let process_stdio =
-            match configure_native_stdio(_py, &mut cmd, stdin_mode, stdout_mode, stderr_mode) {
-                Ok(stdio) => stdio,
-                Err(err) => return err,
-            };
-
-        let state = match runtime_state(_py).process_registry.spawn(
+        raise_exception::<u64>(
             _py,
-            &mut cmd,
-            process_stdio,
-            owns_process_group,
-        ) {
-            Ok(state) => state,
-            Err(err) => return raise_os_error::<u64>(_py, err, "spawn"),
-        };
-        let handle = Box::new(MoltProcessHandle { state });
-        opaque_handle_bits(Box::into_raw(handle) as *mut u8)
+            BuiltinExc::RuntimeError,
+            "multiprocessing IPC is unavailable: this WASM host has no descriptor-passing process model",
+        )
     })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn child_descriptors_from_bits(
+    py: &PyToken<'_>,
+    bits: u64,
+) -> Result<Vec<inheritance::ChildDescriptor>, u64> {
+    let object = obj_from_bits(bits);
+    if object.is_none() {
+        return Ok(Vec::new());
+    }
+    let pointer = object
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_TUPLE)
+        .ok_or_else(|| {
+            raise_exception::<u64>(py, BuiltinExc::TypeError, "pass_fds must be a tuple")
+        })?;
+    let elements = unsafe {
+        crate::object::seq_access::snapshot(py, pointer, "pass_fds snapshot allocation failed")
+    }
+    .ok_or_else(|| MoltObject::none().bits())?;
+    let mut descriptors = Vec::with_capacity(elements.len());
+    for &element in elements.iter() {
+        let fd = crate::builtins::numbers::index_c_int_from_obj(py, element)
+            .ok_or_else(|| MoltObject::none().bits())?;
+        if fd < 0 {
+            return Err(raise_exception::<u64>(
+                py,
+                BuiltinExc::ValueError,
+                "bad value(s) in fds_to_keep",
+            ));
+        }
+        descriptors.push(inheritance::ChildDescriptor(fd));
+    }
+    #[cfg(windows)]
+    if !descriptors.is_empty() {
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::ValueError,
+            "pass_fds is not supported on Windows",
+        ));
+    }
+    Ok(descriptors)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -331,17 +382,20 @@ pub unsafe extern "C" fn molt_process_spawn(
 /// All arguments must be valid runtime-encoded objects.
 /// `start_new_session_bits` should be a bool (truthy → setsid).
 /// `process_group_bits` should be int or None (None → ignore, int → setpgid(0, pgid)).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_spawn_ex(
-    args_bits: u64,
-    env_bits: u64,
-    cwd_bits: u64,
-    stdin_bits: u64,
-    stdout_bits: u64,
-    stderr_bits: u64,
-    start_new_session_bits: u64,
-    process_group_bits: u64,
-) -> u64 {
+unsafe fn spawn_native(request: SpawnRequest) -> u64 {
+    let SpawnRequest {
+        args: args_bits,
+        env: env_bits,
+        cwd: cwd_bits,
+        stdin: stdin_bits,
+        stdout: stdout_bits,
+        stderr: stderr_bits,
+        start_new_session: start_new_session_bits,
+        process_group: process_group_bits,
+        close_fds: close_fds_bits,
+        pass_fds: pass_fds_bits,
+        transport,
+    } = request;
     crate::with_gil_entry_nopanic!(_py, {
         ignore_sigpipe();
         if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
@@ -401,6 +455,26 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             };
             cmd.current_dir(cwd);
         }
+        let pass_fds = match child_descriptors_from_bits(_py, pass_fds_bits) {
+            Ok(descriptors) => descriptors,
+            Err(error) => return error,
+        };
+        let prepared_ipc = match transport {
+            SpawnTransport::DedicatedPipes => match ipc::PreparedIpc::new(&mut cmd) {
+                Ok(ipc) => Some(ipc),
+                Err(error) => {
+                    return raise_os_error::<u64>(_py, error, "multiprocessing IPC setup");
+                }
+            },
+            SpawnTransport::ProgramStdio => {
+                let close_fds =
+                    is_truthy(_py, obj_from_bits(close_fds_bits)) || !pass_fds.is_empty();
+                if let Err(error) = inheritance::configure(&mut cmd, close_fds, pass_fds) {
+                    return raise_os_error::<u64>(_py, error, "descriptor inheritance");
+                }
+                None
+            }
+        };
         if let Err(refusal) = self_spawn::admit_child(&mut cmd) {
             return refusal.raise(_py, &args[0]);
         }
@@ -465,11 +539,18 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             runtime_state(_py).policy().child_memory_rlimit_bytes,
         );
 
-        let process_stdio =
+        let mut process_stdio =
             match configure_native_stdio(_py, &mut cmd, stdin_mode, stdout_mode, stderr_mode) {
                 Ok(stdio) => stdio,
                 Err(err) => return err,
             };
+
+        if let Some(ipc) = prepared_ipc {
+            process_stdio.set_ipc(
+                ipc,
+                runtime_state(_py).policy().process_pipe_max_queued_bytes,
+            );
+        }
 
         let state = match runtime_state(_py).process_registry.spawn(
             _py,
@@ -712,6 +793,83 @@ pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
     }
 }
 
+/// # Safety
+/// `proc_bits` must reference a live process handle from this runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_process_ipc_streams(proc_bits: u64) -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe {
+        crate::with_gil_entry_nopanic!(_py, {
+            let pointer = ptr_from_bits(proc_bits);
+            if pointer.is_null() {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid multiprocessing process handle",
+                );
+            }
+            let state = &(*(pointer as *mut MoltProcessHandle)).state;
+            if state.ipc_recv_stream == 0 || state.ipc_send_stream == 0 {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "process has no dedicated IPC channel",
+                );
+            }
+            let reader = molt_stream_clone(state.ipc_recv_stream);
+            let writer = molt_stream_clone(state.ipc_send_stream);
+            let tuple = alloc_tuple(_py, &[reader, writer]);
+            if tuple.is_null() {
+                molt_stream_drop(reader);
+                molt_stream_drop(writer);
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(tuple).bits()
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = proc_bits;
+        multiprocessing_ipc_unsupported()
+    }
+}
+
+/// Claim the dedicated bootstrap pipes, closing partial initialization on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_process_ipc_child() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::with_gil_entry_nopanic!(_py, {
+            if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
+                return MoltObject::none().bits();
+            }
+            let (reader, writer) = match ipc::accept_child() {
+                Ok(pipes) => pipes,
+                Err(error) => {
+                    return raise_os_error::<u64>(_py, error, "multiprocessing IPC bootstrap");
+                }
+            };
+            let tuple = alloc_tuple(
+                _py,
+                &[
+                    MoltObject::from_int(i64::from(reader.raw())).bits(),
+                    MoltObject::from_int(i64::from(writer.raw())).bits(),
+                ],
+            );
+            if tuple.is_null() {
+                return MoltObject::none().bits();
+            }
+            reader.into_raw();
+            writer.into_raw();
+            MoltObject::from_ptr(tuple).bits()
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        multiprocessing_ipc_unsupported()
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
@@ -748,6 +906,8 @@ pub(crate) struct ProcessState {
     stdin_stream: u64,
     stdout_stream: u64,
     stderr_stream: u64,
+    ipc_recv_stream: u64,
+    ipc_send_stream: u64,
     pub(crate) condvar: Condvar,
 }
 
@@ -943,6 +1103,8 @@ impl ProcessRegistry {
             stdin_stream: stdio.stdin_stream,
             stdout_stream: stdio.stdout_stream,
             stderr_stream: stdio.stderr_stream,
+            ipc_recv_stream: stdio.ipc_recv_stream,
+            ipc_send_stream: stdio.ipc_send_stream,
             condvar: Condvar::new(),
         });
         let entry = inner
@@ -953,7 +1115,9 @@ impl ProcessRegistry {
                 workers: Vec::with_capacity(
                     1 + usize::from(stdio.stdin_stream != 0)
                         + usize::from(stdio.stdout_stream != 0)
-                        + usize::from(stdio.stderr_stream != 0),
+                        + usize::from(stdio.stderr_stream != 0)
+                        + usize::from(stdio.ipc_recv_stream != 0)
+                        + usize::from(stdio.ipc_send_stream != 0),
                 ),
             });
         // Publish the allocation before the first native spawn. If a later
@@ -1179,7 +1343,13 @@ impl ProcessState {
     }
 
     fn close_owned_streams(&self) {
-        for stream_bits in [self.stdin_stream, self.stdout_stream, self.stderr_stream] {
+        for stream_bits in [
+            self.stdin_stream,
+            self.stdout_stream,
+            self.stderr_stream,
+            self.ipc_recv_stream,
+            self.ipc_send_stream,
+        ] {
             if stream_bits == 0 {
                 continue;
             }
@@ -1199,6 +1369,8 @@ impl ProcessState {
         self.close_and_drop_stream(self.stdin_stream);
         self.close_and_drop_stream(self.stdout_stream);
         self.close_and_drop_stream(self.stderr_stream);
+        self.close_and_drop_stream(self.ipc_recv_stream);
+        self.close_and_drop_stream(self.ipc_send_stream);
     }
 
     fn close_and_drop_stream(&self, stream_bits: u64) {
@@ -1375,11 +1547,14 @@ impl ProcessState {
             eprintln!("molt_process_wait exit_code={code}");
         }
         let publication = self.publish_exit(code);
-        if self.stdin_stream != 0 {
-            let ptr = ptr_from_bits(self.stdin_stream);
+        for stream_bits in [self.stdin_stream, self.ipc_send_stream] {
+            if stream_bits == 0 {
+                continue;
+            }
+            let ptr = ptr_from_bits(stream_bits);
             if !ptr.is_null() {
                 // A terminal child cannot consume more input. Stop its writer
-                // without truncating still-readable stdout/stderr queues.
+                // without truncating still-readable stdout/stderr/IPC queues.
                 let stream = unsafe { &*(ptr as *mut MoltStream) };
                 super::channels::stream_close_local(stream);
             }
@@ -1900,6 +2075,8 @@ mod process_wait_state_tests {
             stdin_stream: 0,
             stdout_stream: 0,
             stderr_stream: 0,
+            ipc_recv_stream: 0,
+            ipc_send_stream: 0,
             condvar: Condvar::new(),
         })
     }
@@ -2129,6 +2306,9 @@ mod process_worker_lifetime_tests {
             stdout_stream: stream,
             stderr_stream: 0,
             merged_stdout_reader: Some(reader),
+            ipc: None,
+            ipc_recv_stream: 0,
+            ipc_send_stream: 0,
         };
         let mut inner = registry.inner.lock().unwrap();
         assert!(!inner.closed);
@@ -2148,6 +2328,8 @@ mod process_worker_lifetime_tests {
             stdin_stream: 0,
             stdout_stream: stream,
             stderr_stream: 0,
+            ipc_recv_stream: 0,
+            ipc_send_stream: 0,
             condvar: Condvar::new(),
         });
         let entry = inner
@@ -2237,6 +2419,8 @@ mod process_worker_lifetime_tests {
             stdin_stream: 0,
             stdout_stream: 0,
             stderr_stream: 0,
+            ipc_recv_stream: 0,
+            ipc_send_stream: 0,
             condvar: Condvar::new(),
         });
         let handle = opaque_handle_bits(Box::into_raw(Box::new(MoltProcessHandle {
@@ -2474,8 +2658,15 @@ mod process_worker_lifetime_tests {
         let registry = ProcessRegistry::new();
         let mut command =
             std::process::Command::new("molt-does-not-exist-process-admission-oracle");
-        let stdio = configure_native_stdio(&execution.token(), &mut command, 1, 1, 1).unwrap();
-        let streams = [stdio.stdin_stream, stdio.stdout_stream, stdio.stderr_stream];
+        let mut stdio = configure_native_stdio(&execution.token(), &mut command, 1, 1, 1).unwrap();
+        stdio.set_ipc(ipc::PreparedIpc::new(&mut command).unwrap(), 4096);
+        let streams = [
+            stdio.stdin_stream,
+            stdio.stdout_stream,
+            stdio.stderr_stream,
+            stdio.ipc_recv_stream,
+            stdio.ipc_send_stream,
+        ];
         assert!(
             registry
                 .spawn(&execution.token(), &mut command, stdio, false)

@@ -276,7 +276,7 @@ fn lifetime_export_admission_precedes_any_guest_start() {
                     launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
-                    wasm_table_base: None,
+                    wasm_table_admission: WasmTableAdmission::Empty,
                 },
             )
             .unwrap_err();
@@ -338,7 +338,14 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
                 launch_environment: &[],
                 vfs_envs: &[],
                 guest_args: &[],
-                wasm_table_base: fail_table_setup.then_some(4096),
+                wasm_table_admission: if fail_table_setup {
+                    WasmTableAdmission::Publish {
+                        base: std::num::NonZeroU32::new(4096).unwrap(),
+                        export_name: "molt_set_wasm_table_base".to_string(),
+                    }
+                } else {
+                    WasmTableAdmission::Empty
+                },
             },
         )
         .unwrap_err();

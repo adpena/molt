@@ -395,20 +395,14 @@ def _select_runtime_wasm_generation(
     generation: RuntimeWasmGeneration,
 ) -> bool:
     """Publish the expected-pair receipt final link admits, then select."""
-    expected_path = (
-        _build_state_root(project_root)
-        / "runtime_wasm_generations"
-        / (
-            f"{generation.shared_identity.family_digest}."
-            f"{generation.receipt_role.value}.expected.json"
-        )
+    expected = RuntimeWasmExpectedPair(
+        generation.shared_identity,
+        generation.reloc_identity,
+        generation.receipt_role,
     )
+    expected_path = expected.path(_build_state_root(project_root))
     try:
-        RuntimeWasmExpectedPair(
-            generation.shared_identity,
-            generation.reloc_identity,
-            generation.receipt_role,
-        ).write(expected_path)
+        expected.write(expected_path)
     except (OSError, ValueError):
         return False
     runtime_state.runtime_wasm_generation = generation.manifest
@@ -625,18 +619,19 @@ class _RuntimeWasmPairBuild:
             return self.fail("member-publication", str(exc))
 
 
-def _resolve_runtime_wasm_pair_identity(
-    ctx: _RuntimeWasmPairBuild,
+def resolve_runtime_wasm_pair_identity(
+    project_root: Path,
     shared_spec: _RuntimeWasmBuildSpec,
     reloc_spec: _RuntimeWasmBuildSpec,
     *,
-    mode: Literal["pre_build", "post_build"],
+    mode: Literal["pre_build", "post_build"] = "pre_build",
 ) -> _RuntimeWasmPairIdentity:
+    """Capture a checkout's resolved inputs without building either member."""
     shared, reloc = _timed_runtime_identity_phase(
         phase="runtime_family_identity",
         mode=mode,
         operation=lambda: _resolved_runtime_wasm_family_identities(
-            ctx.project_root,
+            project_root,
             shared_spec,
             reloc_spec,
         ),
@@ -721,8 +716,8 @@ def _prepare_runtime_wasm_pair_build(
             freestanding=freestanding,
         )
         ctx.shared_spec, ctx.reloc_spec = shared_spec, reloc_spec
-        ctx.pre_identity = _resolve_runtime_wasm_pair_identity(
-            ctx,
+        ctx.pre_identity = resolve_runtime_wasm_pair_identity(
+            project_root,
             shared_spec,
             reloc_spec,
             mode="pre_build",
@@ -811,8 +806,8 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
             raise ValueError("runtime WASM build lost its resolved Cargo plan")
         post_shared = post_shared.with_cargo_plan(plan)
         post_reloc = post_reloc.with_cargo_plan(plan)
-        post_identity = _resolve_runtime_wasm_pair_identity(
-            ctx, post_shared, post_reloc, mode="post_build"
+        post_identity = resolve_runtime_wasm_pair_identity(
+            ctx.project_root, post_shared, post_reloc, mode="post_build"
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return ctx.fail(

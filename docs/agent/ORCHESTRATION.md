@@ -144,17 +144,23 @@ and current coordination custody govern; stale board prose cannot grant ownershi
 Read relevant live assignments when starting work or when custody changes, without
 rereading the entire board before each commit.
 
-1. Edit only assigned paths recorded in the board, claim or coordination record.
-   A worktree name or an announced intention is not an ownership grant.
+1. Use the assigned paths as the starting discovery aperture. Implementation
+   extends to the canonical owners of the changed invariant, their tests and
+   generated outputs; list each extension in the report. Reserved paths held by
+   other lanes remain excluded. Read-only assignments authorize no source edits.
+   A worktree name or an announced intention is not an ownership grant. Dispatch
+   bounds and reports follow `docs/ops/MULTI_AGENT_COORDINATION.md`.
 2. A reclaim or stand-down stops competing work immediately. Preserve WIP and
    evidence for its integration owner; do not discard it or land over that owner.
 3. Before each commit, assert checkout/branch/HEAD, ownership and the exact staged
    path set. Review the scoped diff; never broadly stage unrelated work.
 4. Preserve parallel work. Never force-push, reset shared refs, overwrite another
    lane's WIP or drop its commits. A publication conflict returns to the integrator.
-5. Raise disputed assignments with evidence through existing coordination custody;
-   workers do not override or silently expand them. The orchestrator resolves the
-   assignment and may explicitly expand a complete migration's scope.
+5. Raise reserved-path conflicts and unsettled semantic decisions with evidence
+   through existing coordination custody; workers do not override disputed
+   assignments. The orchestrator resolves those conflicts. Report the class sweep
+   by mechanism, sibling sites and paths; return at the deliverable or budget,
+   or when the assignment's explicit stop condition holds.
 
 ## Attest every optimization (binding)
 

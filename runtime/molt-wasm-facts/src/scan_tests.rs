@@ -1201,6 +1201,62 @@ fn validates_matching_callable_table_attestation() {
 }
 
 #[test]
+fn host_admission_requires_valid_attestation_and_positive_published_region() {
+    use crate::{CallableTableAdmission as Admission, CallableTableAdmissionError as Error};
+    let valid = module_with_callable_table(&[callable_table_attestation(7, 0, 0)]);
+    assert_eq!(
+        crate::admit_callable_table(&valid, None),
+        Ok(Admission::Publish {
+            base: std::num::NonZeroU32::new(7).unwrap()
+        })
+    );
+    assert_eq!(
+        crate::admit_callable_table(&valid, Some(0)),
+        Err(Error::BaseRequired)
+    );
+    assert_eq!(
+        crate::admit_callable_table(&valid, Some(8)),
+        Err(Error::BaseAboveBinary {
+            declared: 8,
+            binary: 7
+        })
+    );
+    assert_eq!(
+        crate::admit_callable_table(&module_with_callable_table(&[]), None),
+        Err(Error::Missing)
+    );
+    let malformed = module_with_callable_table(&[vec![0x80]]);
+    assert!(matches!(
+        crate::admit_callable_table(&malformed, None),
+        Err(Error::Malformed(_))
+    ));
+
+    let mut empty = Module::new();
+    empty.section(&CustomSection {
+        name: Cow::Borrowed(CALLABLE_TABLE_SECTION_NAME),
+        data: Cow::Owned(
+            [
+                CALLABLE_TABLE_SECTION_VERSION,
+                CALLABLE_TABLE_VALUE_TYPE_FORMAT,
+                0,
+                0,
+            ]
+            .into_iter()
+            .flat_map(|value| {
+                let mut encoded = Vec::new();
+                value.encode(&mut encoded);
+                encoded
+            })
+            .collect(),
+        ),
+    });
+    assert_eq!(
+        crate::admit_callable_table(&empty.finish(), Some(999)),
+        Ok(Admission::Empty)
+    );
+}
+
+#[test]
 fn rejects_stale_or_duplicate_callable_table_attestations() {
     let stale = module_with_callable_table(&[callable_table_attestation(7, 1, 0)]);
     assert!(

@@ -74,9 +74,45 @@ def interpreter(env):
 
 
 def worker():
-    # Molt's multiprocessing carries its frames on the worker's stdout, so the
-    # worker reports only through its exit status.
-    pass
+    print("worker stdin", repr(sys.stdin.read()), flush=True)
+    print("worker stdout", flush=True)
+    print("worker stderr", file=sys.stderr, flush=True)
+
+
+def descriptor_inheritance():
+    if sys.platform == "win32":
+        report("pass-fds", lambda: subprocess.Popen([os.environ["HF519_OTHER_EXE"]], pass_fds=(3,)))
+        return
+    path = os.environ["HF627_FD_FILE"]
+    with open(path, "wb") as stream:
+        stream.write(b"descriptor witness")
+    with open(path, "rb") as stream:
+        fd = stream.fileno()
+        os.set_inheritable(fd, True)
+        env = dict(os.environ)
+        env["HF627_FD"] = str(fd)
+        # This child is an explicitly selected external interpreter, not a
+        # compiled application's attempt to interpret Python source itself.
+        source = "import os; fd=int(os.environ['HF627_FD']); path=os.environ['HF627_FD_FILE']; "
+        source += "\ntry:\n s=os.fstat(fd); p=os.stat(path); print('open' if (s.st_dev,s.st_ino)==(p.st_dev,p.st_ino) else 'closed')"
+        source += "\nexcept OSError:\n print('closed')"
+        command = [os.environ["HF519_OTHER_EXE"], "-c", source]
+        for name, close_fds, passed in (
+            ("keep", True, (fd, fd)),
+            ("close", True, ()),
+            ("inherit", False, ()),
+        ):
+            with subprocess.Popen(command, env=env, close_fds=close_fds,
+                                  pass_fds=passed, stdout=subprocess.PIPE, text=True) as proc:
+                out, _ = proc.communicate()
+            print(name, proc.returncode, out.strip(), flush=True)
+        # Inheritance changes belong to the child, including on spawn failure.
+        print("parent-inheritable", os.get_inheritable(fd), flush=True)
+        try:
+            subprocess.Popen([path + ".missing"], pass_fds=(fd,))
+        except OSError as exc:
+            print("missing", exc.errno, flush=True)
+        print("parent-after-failure", os.get_inheritable(fd), flush=True)
 
 
 def main():
@@ -101,6 +137,8 @@ def main():
         proc.start()
         proc.join()
         print("multiprocessing exit", proc.exitcode, flush=True)
+    elif mode == "descriptors":
+        descriptor_inheritance()
 
 
 if __name__ == "__main__":
@@ -154,17 +192,30 @@ def probe(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return binary
 
 
-def _run(binary: Path, *args: str) -> list[str]:
+def _run(
+    binary: Path,
+    *args: str,
+    expected_stderr: str | None = None,
+    input_data: str | None = None,
+) -> list[str]:
     env = {
         key: value for key, value in os.environ.items() if key != "MOLT_SYS_EXECUTABLE"
     }
     env.pop("HF519_PROBE_CHILD", None)
     env.pop("MOLT_SELF_SPAWN_DEPTH", None)
     env["HF519_OTHER_EXE"] = sys.executable
+    env["HF627_FD_FILE"] = str(binary.parent / "descriptor-witness")
     result = run_native_test_process(
-        [str(binary), *args], capture_output=True, text=True, timeout=120, env=env
+        [str(binary), *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        input=input_data,
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    if expected_stderr is not None:
+        assert result.stderr == expected_stderr
     return result.stdout.splitlines()
 
 
@@ -194,4 +245,26 @@ def test_a_self_spawn_runs_at_depth_zero_and_is_refused_without_a_role_at_depth_
 @pytest.mark.slow
 def test_another_executable_and_multiprocessing_still_launch(probe: Path) -> None:
     assert _run(probe, "other") == ["other ran (0, 'other')"]
-    assert _run(probe, "multiprocessing") == ["multiprocessing exit 0"]
+    assert _run(
+        probe,
+        "multiprocessing",
+        expected_stderr="worker stderr\n",
+        input_data="parent program input must not reach the worker\n",
+    ) == [
+        "worker stdin ''",
+        "worker stdout",
+        "multiprocessing exit 0",
+    ]
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform == "win32", reason="pass_fds is a POSIX interface")
+def test_pass_fds_and_close_fds_preserve_parent_descriptor_state(probe: Path) -> None:
+    assert _run(probe, "descriptors", expected_stderr="") == [
+        "keep 0 open",
+        "close 0 closed",
+        "inherit 0 open",
+        "parent-inheritable True",
+        f"missing {errno.ENOENT}",
+        "parent-after-failure True",
+    ]

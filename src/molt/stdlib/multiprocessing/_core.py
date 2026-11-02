@@ -34,10 +34,6 @@ __all__ = [
     "set_start_method",
 ]
 
-_STDIO_INHERIT = 0
-_STDIO_PIPE = 1
-_STDIO_DEVNULL = 2
-
 _ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 _MP_ENTRY_ENV = "MOLT_MP_ENTRY"
 _MP_MAIN_PATH_ENV = "MOLT_MP_MAIN_PATH"
@@ -45,13 +41,14 @@ _MP_SPAWN_ENV = "MOLT_MP_SPAWN"
 _MP_START_METHOD_ENV = "MOLT_MP_START_METHOD"
 _MP_ENTRY_OVERRIDE = "multiprocessing.spawn"
 
-_MOLT_PROCESS_SPAWN = _intrinsics_require("molt_process_spawn", globals())
+_MOLT_PROCESS_SPAWN = _intrinsics_require("molt_process_ipc_spawn", globals())
+_MOLT_PROCESS_IPC_STREAMS = _intrinsics_require("molt_process_ipc_streams", globals())
+_MOLT_PROCESS_IPC_CHILD = _intrinsics_require("molt_process_ipc_child", globals())
 _MOLT_PROCESS_PID = _intrinsics_require("molt_process_pid", globals())
 _MOLT_PROCESS_RETURN = _intrinsics_require("molt_process_returncode", globals())
 _MOLT_PROCESS_KILL = _intrinsics_require("molt_process_kill", globals())
 _MOLT_PROCESS_TERM = _intrinsics_require("molt_process_terminate", globals())
-_MOLT_PROCESS_STDIN = _intrinsics_require("molt_process_stdin", globals())
-_MOLT_PROCESS_STDOUT = _intrinsics_require("molt_process_stdout", globals())
+_MOLT_PROCESS_DROP = _intrinsics_require("molt_process_drop", globals())
 _MOLT_STREAM_SEND = _intrinsics_require("molt_stream_send_obj", globals())
 _MOLT_STREAM_RECV = _intrinsics_require("molt_stream_recv", globals())
 _MOLT_STREAM_CLOSE = _intrinsics_require("molt_stream_close", globals())
@@ -737,80 +734,27 @@ def _bind_hub(value: Any, hub: "_Hub", depth: int, seen: set[int]) -> None:
         return
 
 
-def _stream_send_frame(stream: Any, payload: bytes) -> None:
-    if _MOLT_STREAM_SEND is None:
-        raise RuntimeError("stream send unavailable")
-    if not callable(_MOLT_STREAM_SEND):
-        raise TypeError("stream send unavailable")
-    length = len(payload)
-    if length > _MAX_MESSAGE:
-        raise ValueError("message too large")
-    header = length.to_bytes(4, "big")
-    data = header + payload
-    while True:
-        res = _MOLT_STREAM_SEND(stream, data)
-        if not _is_pending(res):
-            return
-        time.sleep(0)
-
-
-def _stream_poll_frame(stream: Any, buf: bytearray) -> bytes | None:
-    if len(buf) >= 4:
-        length = int.from_bytes(buf[:4], "big")
-        if length > _MAX_MESSAGE:
-            raise ValueError("message too large")
-        if len(buf) >= 4 + length:
-            payload = bytes(buf[4 : 4 + length])
-            del buf[: 4 + length]
-            return payload
-    if _MOLT_STREAM_RECV is None:
-        raise RuntimeError("stream recv unavailable")
-    chunk = _MOLT_STREAM_RECV(stream)
-    if chunk is None or _is_pending(chunk):
-        return None
-    if isinstance(chunk, (bytes, bytearray)):
-        buf.extend(chunk)
-        return _stream_poll_frame(stream, buf)
-    return None
-
-
-def _stream_recv_frame(
-    stream: Any, buf: bytearray, timeout: float | None
-) -> bytes | None:
-    deadline = None if timeout is None else _now() + timeout
-    while True:
-        payload = _stream_poll_frame(stream, buf)
-        if payload is not None:
-            return payload
-        if deadline is not None and _now() >= deadline:
-            return None
-        time.sleep(0.001)
-
-
-class _StreamTransport:
+class _PipeTransport:
     def __init__(self, recv_stream: Any, send_stream: Any) -> None:
         self._recv = recv_stream
         self._send = send_stream
         self._buf = bytearray()
 
     def close(self) -> None:
-        if _MOLT_STREAM_CLOSE is not None:
+        send, recv = self._send, self._recv
+        self._send = None
+        self._recv = None
+        if send is not None:
             try:
-                _MOLT_STREAM_CLOSE(self._send)
-            except Exception:
-                pass
-        if _MOLT_STREAM_DROP is not None:
-            try:
-                _MOLT_STREAM_DROP(self._send)
-            except Exception:
-                pass
-        if _MOLT_STREAM_DROP is not None:
-            try:
-                _MOLT_STREAM_DROP(self._recv)
-            except Exception:
-                pass
+                _MOLT_STREAM_CLOSE(send)
+            finally:
+                _MOLT_STREAM_DROP(send)
+        if recv is not None:
+            _MOLT_STREAM_DROP(recv)
 
     def _send_bytes(self, data: bytes) -> None:
+        if self._send is None:
+            raise OSError("multiprocessing IPC channel is closed")
         if _MOLT_STREAM_SEND is None:
             raise RuntimeError("stream send unavailable")
         if not callable(_MOLT_STREAM_SEND):
@@ -832,6 +776,8 @@ class _StreamTransport:
         self._send_bytes(header + payload)
 
     def _try_recv_chunk(self) -> bool:
+        if self._recv is None:
+            return False
         if _MOLT_STREAM_RECV is None:
             raise RuntimeError("stream recv unavailable")
         chunk = _MOLT_STREAM_RECV(self._recv)
@@ -845,17 +791,17 @@ class _StreamTransport:
         return False
 
     def poll_frame(self) -> bytes | None:
-        if len(self._buf) >= 4:
-            length = int.from_bytes(self._buf[:4], "big")
-            if length > _MAX_MESSAGE:
-                raise ValueError("message too large")
-            if len(self._buf) >= 4 + length:
-                payload = bytes(self._buf[4 : 4 + length])
-                del self._buf[: 4 + length]
-                return payload
-        if not self._try_recv_chunk():
-            return None
-        return self.poll_frame()
+        while True:
+            if len(self._buf) >= 4:
+                length = int.from_bytes(self._buf[:4], "big")
+                if length > _MAX_MESSAGE:
+                    raise ValueError("message too large")
+                if len(self._buf) >= 4 + length:
+                    payload = bytes(self._buf[4 : 4 + length])
+                    del self._buf[: 4 + length]
+                    return payload
+            if not self._try_recv_chunk():
+                return None
 
     def recv_frame(self, timeout: float | None) -> bytes | None:
         deadline = None if timeout is None else _now() + timeout
@@ -868,11 +814,45 @@ class _StreamTransport:
             time.sleep(0.001)
 
 
-class _FdTransport:
+def _start_child(args: Any, env: Any, cwd: Any, message: Any) -> Any:
+    spawn_proc = _require_intrinsic(_MOLT_PROCESS_SPAWN, "molt_process_ipc_spawn")
+    handle = spawn_proc(args, env, cwd)
+    if handle is None:
+        raise RuntimeError("multiprocessing process spawn failed")
+    transport = None
+    try:
+        recv_stream, send_stream = _MOLT_PROCESS_IPC_STREAMS(handle)
+        transport = _PipeTransport(recv_stream, send_stream)
+        hub = _Hub(transport, "parent")
+        hub.send(message)
+        return handle, transport, hub
+    except BaseException:
+        # A serialization or stream-claim failure must not leave a child
+        # waiting forever for its first message.
+        try:
+            _MOLT_PROCESS_KILL(handle)
+            while _MOLT_PROCESS_RETURN(handle) is None:
+                time.sleep(0.001)
+        finally:
+            try:
+                if transport is not None:
+                    transport.close()
+            finally:
+                _MOLT_PROCESS_DROP(handle)
+        raise
+
+
+class _ChildPipeTransport:
     def __init__(self, reader: Any, writer: Any) -> None:
         self._reader = reader
         self._writer = writer
         self._buf = bytearray()
+
+    def close(self) -> None:
+        try:
+            self._writer.close()
+        finally:
+            self._reader.close()
 
     def send_frame(self, payload: bytes) -> None:
         length = len(payload)
@@ -910,8 +890,6 @@ class _Hub:
         self,
         transport: Any,
         role: str,
-        recv_stream: Any | None = None,
-        send_stream: Any | None = None,
     ) -> None:
         self._transport = transport
         self._role = role
@@ -921,15 +899,6 @@ class _Hub:
         self._values: dict[int, SharedValue] = {}
         self._arrays: dict[int, SharedArray] = {}
         self._task_error: BaseException | None = None
-        self._recv_stream = recv_stream
-        self._send_stream = send_stream
-        self._stream_buf = bytearray()
-
-    def _transport_ref(self) -> Any:
-        try:
-            return getattr(self, "_transport")
-        except Exception:
-            return self._transport
 
     def register_queue(self, queue: "_Queue") -> int:
         if queue._hub is None:
@@ -1040,39 +1009,21 @@ class _Hub:
 
     def send(self, message: Any) -> None:
         _bind_hub(message, self, 0, set())
-        payload = _encode_message(message, self)
-        if self._send_stream is not None:
-            _stream_send_frame(self._send_stream, payload)
-            return
-        self._transport_ref().send_frame(payload)
+        self._transport.send_frame(_encode_message(message, self))
 
     def recv(self, timeout: float | None = None) -> Any | None:
-        if self._recv_stream is not None:
-            payload = _stream_recv_frame(self._recv_stream, self._stream_buf, timeout)
+        if isinstance(self._transport, _PipeTransport):
+            payload = self._transport.recv_frame(timeout)
             if payload is None:
                 return None
         else:
-            transport = self._transport_ref()
-            if isinstance(transport, _StreamTransport):
-                payload = transport.recv_frame(timeout)
-                if payload is None:
-                    return None
-            else:
-                payload = transport.recv_frame()
+            payload = self._transport.recv_frame()
         return _decode_message(payload, self)
 
     def poll(self) -> Any | None:
-        if self._recv_stream is not None:
-            payload = _stream_poll_frame(self._recv_stream, self._stream_buf)
-        else:
-            transport = self._transport_ref()
-            if isinstance(transport, _StreamTransport):
-                payload = transport.poll_frame()
-            else:
-                poller = getattr(transport, "poll_frame", None)
-                if not callable(poller):
-                    return None
-                payload = poller()
+        if not isinstance(self._transport, _PipeTransport):
+            return None
+        payload = self._transport.poll_frame()
         if payload is None:
             return None
         return _decode_message(payload, self)
@@ -1117,9 +1068,7 @@ class _Hub:
         return False
 
     def close(self) -> None:
-        transport = self._transport_ref()
-        if isinstance(transport, _StreamTransport):
-            transport.close()
+        self._transport.close()
 
 
 class _Queue:
@@ -1375,13 +1324,12 @@ class Process:
         self._exitcode: int | None = None
         self._handle: Any | None = None
         self._hub: _Hub | None = None
-        self._transport: _StreamTransport | None = None
+        self._transport: _PipeTransport | None = None
 
     def start(self) -> None:
         if self._started:
             raise RuntimeError("process already started")
         _require_spawn_operation()
-        spawn_proc = _require_intrinsic(_MOLT_PROCESS_SPAWN, "molt_process_spawn")
         method = _effective_start_method(self._ctx)
         if method != "spawn":
             _mp_debug(f"mp: start method {method!r} uses spawn semantics")
@@ -1422,33 +1370,13 @@ class Process:
             cwd = os.getcwd()
         except Exception:
             cwd = None
-        handle = spawn_proc(
+        self._handle, self._transport, self._hub = _start_child(
             args,
             env,
             cwd,
-            _STDIO_PIPE,
-            _STDIO_PIPE,
-            _STDIO_INHERIT,
+            (_MSG_RUN, self._target, self._args, self._kwargs),
         )
-        if handle is None:
-            raise RuntimeError("process spawn failed")
-        self._handle = handle
         self._started = True
-        stdin_stream = _require_intrinsic(_MOLT_PROCESS_STDIN, "molt_process_stdin")(
-            handle
-        )
-        stdout_stream = _require_intrinsic(_MOLT_PROCESS_STDOUT, "molt_process_stdout")(
-            handle
-        )
-        self._transport = _StreamTransport(stdout_stream, stdin_stream)
-        self._hub = _Hub(
-            self._transport,
-            "parent",
-            recv_stream=stdout_stream,
-            send_stream=stdin_stream,
-        )
-        message = (_MSG_RUN, self._target, self._args, self._kwargs)
-        self._hub.send(message)
 
     def join(self, timeout: float | None = None) -> None:
         if not self._started:
@@ -1642,14 +1570,19 @@ class Pool:
         self._start_workers()
 
     def _start_workers(self) -> None:
-        for _ in range(self._processes):
-            worker = _Worker(
-                self._initializer,
-                self._initargs,
-                self._maxtasksperchild,
-                self._start_method,
-            )
-            self._workers.append(worker)
+        try:
+            for _ in range(self._processes):
+                worker = _Worker(
+                    self._initializer,
+                    self._initargs,
+                    self._maxtasksperchild,
+                    self._start_method,
+                )
+                self._workers.append(worker)
+        except BaseException:
+            self.terminate()
+            self.join()
+            raise
 
     def _refresh_workers(self) -> None:
         if self._closing:
@@ -1899,7 +1832,7 @@ class _Worker:
     ) -> None:
         self._handle: Any | None = None
         self._hub: _Hub | None = None
-        self._transport: _StreamTransport | None = None
+        self._transport: _PipeTransport | None = None
         self._maxtasksperchild = maxtasksperchild
         self._tasks_sent = 0
         self._tasks_completed = 0
@@ -1913,7 +1846,6 @@ class _Worker:
         start_method: str,
     ) -> None:
         _require_spawn_operation()
-        spawn_proc = _require_intrinsic(_MOLT_PROCESS_SPAWN, "molt_process_spawn")
         entry_module = _resolve_entry_module_name()
         env = _build_spawn_env()
         env[_ENTRY_OVERRIDE_ENV] = _MP_ENTRY_OVERRIDE
@@ -1948,32 +1880,11 @@ class _Worker:
             cwd = os.getcwd()
         except Exception:
             cwd = None
-        handle = spawn_proc(
+        self._handle, self._transport, self._hub = _start_child(
             args,
             env,
             cwd,
-            _STDIO_PIPE,
-            _STDIO_PIPE,
-            _STDIO_INHERIT,
-        )
-        if handle is None:
-            raise RuntimeError("worker spawn failed")
-        self._handle = handle
-        stdin_stream = _require_intrinsic(_MOLT_PROCESS_STDIN, "molt_process_stdin")(
-            handle
-        )
-        stdout_stream = _require_intrinsic(_MOLT_PROCESS_STDOUT, "molt_process_stdout")(
-            handle
-        )
-        self._transport = _StreamTransport(stdout_stream, stdin_stream)
-        self._hub = _Hub(
-            self._transport,
-            "parent",
-            recv_stream=stdout_stream,
-            send_stream=stdin_stream,
-        )
-        self._hub.send(
-            (_MSG_WORKER, initializer, tuple(initargs), self._maxtasksperchild)
+            (_MSG_WORKER, initializer, tuple(initargs), self._maxtasksperchild),
         )
 
     def send(self, message: Any) -> None:
@@ -2024,12 +1935,17 @@ class _Worker:
         )
         while proc_return(self._handle) is None:
             time.sleep(0.001)
-        if self._transport is not None:
-            self._transport.close()
+        self.close()
 
     def close(self) -> None:
-        if self._transport is not None:
-            self._transport.close()
+        try:
+            if self._transport is not None:
+                self._transport.close()
+        finally:
+            handle = self._handle
+            if handle is not None and _MOLT_PROCESS_RETURN(handle) is not None:
+                self._handle = None
+                _MOLT_PROCESS_DROP(handle)
 
 
 ProcessType = Process
@@ -2158,6 +2074,30 @@ def Array(typecode: str, values: Iterable[Any]) -> SharedArray:
 
 
 def _spawn_main() -> None:
+    # Claim the dedicated endpoints before importing program modules. Windows
+    # acknowledges ownership here, allowing the parent to release its sources.
+    read_fd, write_fd = _MOLT_PROCESS_IPC_CHILD()
+    try:
+        reader = open(read_fd, "rb", closefd=True)
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
+    try:
+        writer = open(write_fd, "wb", closefd=True)
+    except BaseException:
+        reader.close()
+        os.close(write_fd)
+        raise
+    transport = _ChildPipeTransport(reader, writer)
+    hub = _Hub(transport, "child")
+    try:
+        _serve_child(hub)
+    finally:
+        hub.close()
+
+
+def _serve_child(hub: _Hub) -> None:
     _mp_debug("mp: spawn_main start")
     start_method = _get_env_value(_MP_START_METHOD_ENV, "")
     if start_method:
@@ -2187,10 +2127,6 @@ def _spawn_main() -> None:
                 f"mp: spawn_main module import failed {module_name!r}: "
                 + f"{type(exc).__name__}: {exc}"
             )
-    reader = open(0, "rb", closefd=False)
-    writer = open(1, "wb", closefd=False)
-    transport = _FdTransport(reader, writer)
-    hub = _Hub(transport, "child")
     try:
         msg = hub.recv(timeout=None)
         _mp_debug(f"mp: spawn_main received msg_type={type(msg).__name__}")

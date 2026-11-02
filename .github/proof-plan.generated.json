@@ -777,6 +777,7 @@
         "vendor/rust/regalloc2/**",
         "tests/test_wasm_runner_table_base.py/**",
         "tests/cli/test_cli_import_collection.py/**",
+        "tests/test_wasm_runtime_call_signature_authority.py/**",
         "tests/test_wasm_startup_failures.py/**",
         "tests/test_wasm_optimization_imported_memory.py/**",
         "tests/test_generate_worker.py/**",
@@ -4015,7 +4016,8 @@
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.build.backend"
+        "wasm.build.backend",
+        "wasm.build.host"
       ],
       "family": "wasm",
       "id": "wasm.host.runner-fixtures",
@@ -4113,6 +4115,44 @@
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
       "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.shared-runtime"
+      ],
+      "family": "wasm",
+      "id": "wasm.test.runtime-signatures",
+      "pytest": [
+        "tests/test_wasm_runtime_call_signature_authority.py"
+      ],
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_env": [
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 120,
       "toolchains": [
         "python",
         "uv",
@@ -6415,7 +6455,6 @@
         "tests/test_wasm_pickle_protocol01.py",
         "tests/test_wasm_print_keywords.py",
         "tests/test_wasm_reserved_callable_arity.py",
-        "tests/test_wasm_runtime_call_signature_authority.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
         "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
@@ -6786,7 +6825,6 @@
         "tests/test_wasm_pickle_protocol01.py",
         "tests/test_wasm_print_keywords.py",
         "tests/test_wasm_reserved_callable_arity.py",
-        "tests/test_wasm_runtime_call_signature_authority.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
         "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
@@ -9294,7 +9332,7 @@
         "required_job_seconds": 19980,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 19800,
-          "python-tests": 420,
+          "python-tests": 480,
           "wasm-runtime": 450
         }
       }
@@ -9719,6 +9757,8 @@
       "local.runtime-vfs.0": "shared",
       "local.runtime-vfs.1": "shared",
       "local.runtime-vfs.pytest": "none",
+      "local.runtime-wasm-signatures.0": "shared",
+      "local.runtime-wasm-signatures.pytest": "shared",
       "local.rust-clippy-changed.0": "shared",
       "local.rust-source-scan-consumers.pytest": "none",
       "local.rust-toolchain.0": "none",
@@ -9874,6 +9914,8 @@
       "local.runtime-vfs.0": "cargo clippy --config 'build.warnings=\"deny\"' --locked -p molt-runtime-vfs --all-targets --all-features",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_browser_vfs.py",
+      "local.runtime-wasm-signatures.0": "python -m molt.cli internal-runtime-wasm-build --build-profile dev --stdlib-profile full --kind both --json",
+      "local.runtime-wasm-signatures.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_wasm_runtime_call_signature_authority.py",
       "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
       "local.rust-source-scan-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_rust_source_scan.py tests/tools/test_gen_luau_support_matrix.py",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
@@ -9897,7 +9939,7 @@
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
-      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ main_tests::deployment_environment_ main_tests::manifest_bound_command_ --nocapture --test-threads=1",
+      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host --test host_diagnostics --no-fail-fast -- --nocapture --test-threads=1",
       "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
     "pinned_assets": {
@@ -11312,6 +11354,60 @@
         ]
       },
       {
+        "cargo_target_access": "shared",
+        "command_ids": [
+          "local.runtime-wasm-signatures.0",
+          "local.runtime-wasm-signatures.pytest"
+        ],
+        "description": "Build and compare only the candidate's dev/full runtime WASM input family.",
+        "gates": [
+          "python -m molt.cli internal-runtime-wasm-build --build-profile dev --stdlib-profile full --kind both --json"
+        ],
+        "globs": [
+          "runtime/molt-runtime/**",
+          "runtime/molt-runtime-*/**",
+          "runtime/molt-stdlib-*/**",
+          "runtime/molt-obj-model/**",
+          "runtime/molt-codegen-abi/**",
+          "runtime/molt-cpython-abi/**",
+          "runtime/molt-gpu/**",
+          "runtime/molt-gpu-runtime/**",
+          "runtime/build_support/**",
+          "runtime/wasm_table_layout.inc",
+          "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+          "tools/wasm_abi_gen/**",
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          ".cargo/**",
+          "LICENSE",
+          "include/molt/**",
+          "vendor/rust/**",
+          "src/molt/wasi_c_abi_protocol.txt",
+          "src/molt/wasm_artifact.py",
+          "src/molt/cli/runtime_*.py",
+          "src/molt/_wasm*.py",
+          "src/molt/cli/cargo_*.py",
+          "src/molt/cli/wasm_link_args.py",
+          "wasm/browser_embed.js",
+          "wasm/run_wasm.js",
+          "tests/test_wasm_runtime_call_signature_authority.py"
+        ],
+        "name": "runtime-wasm-signatures",
+        "pytest": [
+          "tests/test_wasm_runtime_call_signature_authority.py"
+        ],
+        "toolchains": [
+          "python",
+          "uv",
+          "rustc",
+          "cargo",
+          "wasm-ld",
+          "wasm-tools",
+          "wasi-clang"
+        ]
+      },
+      {
         "command_ids": [
           "local.runtime-cargo-input-custody.pytest-select-0",
           "local.runtime-cargo-input-custody.pytest-select-1"
@@ -12462,10 +12558,10 @@
           "local.wasm-host.0",
           "local.wasm-host.1"
         ],
-        "description": "Wasmtime host Rust: release-fast link build and actual host-error ABI binary tests.",
+        "description": "Wasmtime host Rust: release-fast link build, complete host tests and the dev-fast deployment producer.",
         "gates": [
           "cargo build --locked --profile release-fast -p molt-wasm-host",
-          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ main_tests::deployment_environment_ main_tests::manifest_bound_command_ --nocapture --test-threads=1"
+          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host --test host_diagnostics --no-fail-fast -- --nocapture --test-threads=1"
         ],
         "globs": [
           "runtime/molt-wasm-host/**/*.rs",
@@ -13546,6 +13642,26 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.runtime-wasm-signatures.0": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ],
+      "local.runtime-wasm-signatures.pytest": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
       ],
       "local.rust-clippy-changed.0": [
         "python",

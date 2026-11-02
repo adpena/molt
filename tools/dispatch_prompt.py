@@ -2,8 +2,9 @@
 """Compose bounded subagent assignments under the canonical AGENTS.md policy.
 
 Use --task-file or --task-text with --bounds bounds.json. Every DispatchBounds
-field is required; empty owned_paths means read only and empty proof_commands
-means no command launches. --list-sections lists optional routing blocks.
+field is required; owned_paths is the starting aperture (empty means read only),
+reserved_paths names other lanes' paths, and proof_commands adds extras to the
+standard proof families. --list-sections lists optional routing blocks.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ class DispatchBounds:
     integration_owner: str
     proof_owner: str
     owned_paths: tuple[str, ...]
+    reserved_paths: tuple[str, ...]
     proof_commands: tuple[str, ...]
     budget_minutes: int
     stop_when: str
@@ -47,7 +49,7 @@ class DispatchBounds:
                 raise ValueError(f"{name} must be explicit and nonempty")
         if type(self.budget_minutes) is not int or self.budget_minutes <= 0:
             raise ValueError("budget_minutes must be a positive integer")
-        for name in ("owned_paths", "proof_commands"):
+        for name in ("owned_paths", "reserved_paths", "proof_commands"):
             value = getattr(self, name)
             if not isinstance(value, tuple) or any(
                 not isinstance(item, str) or not item.strip() for item in value
@@ -61,7 +63,7 @@ class DispatchBounds:
         if not isinstance(payload, dict):
             raise ValueError("dispatch bounds must be a JSON object")
         fields = dict(payload)
-        for name in ("owned_paths", "proof_commands"):
+        for name in ("owned_paths", "reserved_paths", "proof_commands"):
             if not isinstance(fields.get(name), list):
                 raise ValueError(f"{name} must be an explicit JSON array")
             fields[name] = tuple(fields[name])
@@ -75,13 +77,32 @@ class DispatchBounds:
                 f"Assigned deliverable: {self.deliverable}",
                 f"Integration owner: {self.integration_owner}",
                 f"Proof owner: {self.proof_owner}",
-                f"Write scope: {json.dumps(self.owned_paths) if self.owned_paths else 'read only'}",
-                f"Permitted proof commands: {json.dumps(self.proof_commands) if self.proof_commands else 'none; inspect retained evidence only'}",
+                f"Starting aperture: {json.dumps(self.owned_paths) if self.owned_paths else 'read only; inspect retained evidence and return findings'}",
+                f"Reserved paths (held by other lanes): {json.dumps(self.reserved_paths)}",
+                (
+                    "Extend to the canonical owners of each invariant you change, with their "
+                    "tests and generated outputs; list each extension in the report. The "
+                    "starting aperture bounds discovery, not the end state. Reserved paths "
+                    "remain excluded, including their descendants."
+                    if self.owned_paths
+                    else "This read-only assignment authorizes no source changes."
+                ),
+                "For implementation work, standard proof families are: "
+                "python -B tools/molt_dev.py land --repo <checkout> --precheck-only; "
+                "pytest of changed readers at -n 4 or lower; owning differentials on native "
+                "and WASM; cargo build/test/clippy for touched crates; generators write/check; "
+                "cost runs with /usr/bin/time -l on macOS or the owning platform's equivalent. "
+                "Select affected families under the proof plan and reuse matching receipts; "
+                "this is not an allowlist or a requirement to run unaffected families.",
+                f"Additional proof commands: {json.dumps(self.proof_commands)}",
                 "Only the named proof owner may launch proof commands; other workers inspect receipts.",
                 f"Work budget: {self.budget_minutes} minutes",
                 f"Stop condition: {self.stop_when}",
                 "Return at the deliverable or budget, whichever comes first. Close any owned commands canonically.",
-                "Return new scope, hypotheses, proof needs or budget needs to the parent before expanding work.",
+                "Return only for a reserved path, an unsettled semantic decision or the budget "
+                "when the deliverable remains incomplete; report overturn evidence under the stop condition.",
+                "Class sweep: report the mechanism of each defect fixed, siblings found by "
+                "mechanism, and paths, including unverified cells.",
             )
         )
 

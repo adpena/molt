@@ -148,19 +148,19 @@ pub(super) fn admit_application_host_imports(
 pub(super) fn configure_wasm_table_base(
     store: &mut Store<HostState>,
     instance: &Instance,
-    wasm_table_base: Option<u64>,
+    admission: &WasmTableAdmission,
 ) -> Result<()> {
-    let Some(base) = wasm_table_base else {
-        return Ok(());
-    };
-    let Some(func) = instance.get_func(&mut *store, "molt_set_wasm_table_base") else {
-        return Ok(());
-    };
-    log::debug!("setting wasm table base to {base}");
-    let mut results = alloc_results(&func.ty(&*store), "molt_set_wasm_table_base")?;
-    func.call(&mut *store, &[Val::I64(base as i64)], &mut results)
-        .context("call molt_set_wasm_table_base")?;
-    Ok(())
+    match admission {
+        WasmTableAdmission::Empty => Ok(()),
+        WasmTableAdmission::Publish { base, export_name } => {
+            let setter = instance.get_typed_func::<i64, ()>(&mut *store, export_name)
+                .with_context(|| format!("MOLT_WASM_TABLE_EXPORT_REQUIRED: missing or malformed canonical molt_set_wasm_table_base export {export_name}"))?;
+            log::debug!("setting wasm table base to {base}");
+            setter
+                .call(&mut *store, i64::from(base.get()))
+                .context("call molt_set_wasm_table_base")
+        }
+    }
 }
 
 pub(super) fn merge_limits(
@@ -577,17 +577,6 @@ pub(super) fn register_call_indirect_exports(
         .map_err(|_| wasmtime::Error::msg("indirect-call application exports already registered"))
 }
 
-pub(super) fn alloc_results(ty: &FuncType, export_name: &str) -> Result<Vec<Val>> {
-    let mut results = Vec::new();
-    for val_ty in ty.results() {
-        let Some(val) = Val::default_for_ty(&val_ty) else {
-            bail!("unsupported {export_name} return type: {val_ty:?}");
-        };
-        results.push(val);
-    }
-    Ok(results)
-}
-
 #[cfg(test)]
 mod indirect_dispatch_tests {
     use super::*;
@@ -604,7 +593,7 @@ mod indirect_dispatch_tests {
                 launch_environment: &[],
                 vfs_envs: &[],
                 guest_args: &[],
-                wasm_table_base: None,
+                wasm_table_admission: WasmTableAdmission::Empty,
             },
         )
     }
@@ -810,7 +799,7 @@ mod indirect_dispatch_tests {
                         launch_environment: &[],
                         vfs_envs: &[],
                         guest_args: &[],
-                        wasm_table_base: None,
+                        wasm_table_admission: WasmTableAdmission::Empty,
                     },
                 )
                 .unwrap_err();
@@ -952,7 +941,7 @@ mod indirect_dispatch_tests {
                     launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
-                    wasm_table_base: None,
+                    wasm_table_admission: WasmTableAdmission::Empty,
                 },
             )
             .unwrap(),
@@ -1002,7 +991,7 @@ mod indirect_dispatch_tests {
                     launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
-                    wasm_table_base: None,
+                    wasm_table_admission: WasmTableAdmission::Empty,
                 }
             )
             .unwrap(),

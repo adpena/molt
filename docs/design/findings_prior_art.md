@@ -98,6 +98,13 @@ any callback it assumes every module global may change, so discovery admits
 unreachable modules (HF-181, HF-140, HF-126) and calls stay late-bound (HF-79).
 
 **Prior art.**
+- *GraalVM Native Image closed-world analysis.* [F] "Once a native image is built, no new
+  elements can be added at run time"; a reachability analysis scans each method for what it
+  can reach, and "only reachable elements are included in the final image". Spec 0216 gives
+  Molt the same closed world, so a binding's writer set is provable over the whole program and
+  a single-writer binding needs no run-time guard (owner direction 2026-11-01: an AOT compiler,
+  not an interpreter). Source:
+  https://www.graalvm.org/latest/reference-manual/native-image/basics/, fetched 2026-11-01.
 - *mypyc.* [F] References to functions, types and most attributes in one
   compilation unit use early binding, and monkeypatching compiled definitions
   is not supported. Source:
@@ -1163,6 +1170,10 @@ HF-668's probes). Nothing owns startup cost, so a change that adds 14.6M to
 17.4M startup instructions had no row to answer to (HF-661 review).
 
 **Prior art.**
+- *Go static initialization.* [F] The Go compiler decomposes package-level assignments into
+  static and dynamic parts; static initialization works by "populating variables' linker
+  symbol data", and only the dynamic statements run at startup. Source:
+  https://pkg.go.dev/cmd/compile/internal/staticinit (`Schedule`), fetched 2026-11-01.
 - *CPython frozen core modules.* [F] Python 3.11 statically allocates the code
   objects of the core startup modules, so their execution skips reading
   `__pycache__` and unmarshalling; interpreter startup is 10-15% faster than
@@ -1187,7 +1198,9 @@ HF-668's probes). Nothing owns startup cost, so a change that adds 14.6M to
   42% (`HelloStream` 0.031 s to 0.018 s, Spring PetClinic 4.486 s to
   2.604 s). Source: https://openjdk.org/jeps/483, fetched 2026-11-01.
 
-**Adopt.** [I] Molt sees the whole program at build time. Evaluate each module
+**Adopt.** [I] AOT models lead (GraalVM's image heap, Go's static initialization);
+V8 snapshots and JEP 483 are JIT-world evidence for the same idea. Molt sees the whole
+program at build time. Evaluate each module
 body whose initialization is deterministic at build time, under GraalVM's
 safety rule restated for Python: no foreign or native call, no unresolved
 dynamic dispatch, no read of the environment, clock, randomness, filesystem or

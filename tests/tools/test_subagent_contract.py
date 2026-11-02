@@ -10,7 +10,7 @@ M05/M06/M12/M14/M17-M20/M23/M28/M33/M62/M63/M70.
 """
 
 from __future__ import annotations
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from tests.process_guard_common import run_guarded_test_process
 
@@ -31,6 +31,7 @@ _BOUNDS = dp.DispatchBounds(
     integration_owner="parent",
     proof_owner="parent",
     owned_paths=(),
+    reserved_paths=(),
     proof_commands=(),
     budget_minutes=5,
     stop_when="The retained profile identifies the dominant cost or evidence is insufficient",
@@ -45,6 +46,7 @@ _BOUNDS = dp.DispatchBounds(
         "integration_owner",
         "proof_owner",
         "owned_paths",
+        "reserved_paths",
         "proof_commands",
         "budget_minutes",
         "stop_when",
@@ -86,11 +88,12 @@ def test_bounds_are_required_even_without_routing_sections() -> None:
     with pytest.raises(TypeError, match="bounds"):
         dp.compose("Inspect retained profile", sections=[])
     prompt = dp.compose("Inspect retained profile", bounds=_BOUNDS, sections=[])
-    assert "Write scope: read only" in prompt
-    assert "none; inspect retained evidence only" in prompt
+    assert "Starting aperture: read only" in prompt
+    assert "This read-only assignment authorizes no source changes" in prompt
+    assert "Additional proof commands: []" in prompt
     assert "Proof owner: parent" in prompt
     assert "Work budget: 5 minutes" in prompt
-    assert "Return new scope" in prompt
+    assert "Return only for a reserved path" in prompt
     assert "AGENTS.md" in prompt
 
 
@@ -107,6 +110,92 @@ def test_cli_requires_and_renders_explicit_bounds(tmp_path, capsys) -> None:
         "Assigned deliverable: Identify the dominant repeated harness cost"
         in capsys.readouterr().out
     )
+
+
+@pytest.mark.parametrize("sections", [None, []])
+def test_implementation_brief_extends_to_canonical_owners(sections) -> None:
+    bounds = replace(
+        _BOUNDS,
+        owned_paths=("tools/dispatch_prompt.py",),
+        reserved_paths=("runtime/molt-runtime/src/arena.rs",),
+    )
+    prompt = dp.compose("Fix dispatch scope", bounds=bounds, sections=sections)
+    assert 'Starting aperture: ["tools/dispatch_prompt.py"]' in prompt
+    assert (
+        'Reserved paths (held by other lanes): ["runtime/molt-runtime/src/arena.rs"]'
+        in prompt
+    )
+    assert "Reserved paths remain excluded, including their descendants" in prompt
+    assert "Extend to the canonical owners of each invariant you change" in prompt
+    assert "tests and generated outputs" in prompt
+    assert "list each extension in the report" in prompt
+    assert (
+        "Return only for a reserved path, an unsettled semantic decision or the budget"
+        in prompt
+    )
+    assert "Class sweep" in prompt
+    assert (
+        "mechanism of each defect fixed, siblings found by mechanism, and paths"
+        in prompt
+    )
+    for contradiction in (
+        "Return new scope",
+        "Permitted proof commands",
+        "parent owns integration and scope expansion",
+        "conflicts or new scope",
+    ):
+        assert contradiction not in prompt
+
+
+@pytest.mark.parametrize(
+    "extras", [(), ("python -B tools/check_subagent_contract.py",)]
+)
+def test_standard_proof_families_do_not_depend_on_extras(extras) -> None:
+    bounds = replace(_BOUNDS, owned_paths=("tools",), proof_commands=extras)
+    prompt = dp.compose("Fix dispatch scope", bounds=bounds, sections=[])
+    for family in (
+        "land --repo <checkout> --precheck-only",
+        "pytest of changed readers at -n 4 or lower",
+        "owning differentials on native and WASM",
+        "cargo build/test/clippy for touched crates",
+        "generators write/check",
+        "/usr/bin/time -l",
+    ):
+        assert family in prompt
+    assert f"Additional proof commands: {json.dumps(extras)}" in prompt
+    assert "not an allowlist" in prompt
+    assert "Only the named proof owner may launch proof commands" in prompt
+
+
+@pytest.mark.parametrize("invalid", [None, "runtime/", [""], [" "], [3]])
+def test_dispatch_refuses_invalid_reserved_paths(invalid) -> None:
+    payload = json.loads(json.dumps(asdict(_BOUNDS)))
+    payload["reserved_paths"] = invalid
+    with pytest.raises(ValueError, match="reserved_paths"):
+        dp.DispatchBounds.from_payload(payload)
+
+
+def test_cli_refuses_missing_reserved_paths_with_named_error(tmp_path, capsys) -> None:
+    payload = json.loads(json.dumps(asdict(_BOUNDS)))
+    payload.pop("reserved_paths", None)
+    path = tmp_path / "bounds.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    brief = tmp_path / "brief.md"
+    brief.write_text("preserved brief", encoding="utf-8")
+    with pytest.raises(SystemExit) as error:
+        dp.main(
+            [
+                "--task-text",
+                "Fix dispatch scope",
+                "--bounds",
+                str(path),
+                "--out",
+                str(brief),
+            ]
+        )
+    assert error.value.code == 2
+    assert "reserved_paths must be an explicit JSON array" in capsys.readouterr().err
+    assert brief.read_text(encoding="utf-8") == "preserved brief"
 
 
 def test_cli_out_writes_a_live_brief_and_prints_only_its_pointer(

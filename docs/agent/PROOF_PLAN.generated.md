@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 445 |
-| Local path rules | 35 | 81 |
-| Unique local commands | 73 | 81 |
+| Local path rules | 35 | 82 |
+| Unique local commands | 73 | 82 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -46,7 +46,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 237 |
-| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 55 |
+| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
@@ -252,9 +252,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.agent-coordination` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.build.native-backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
-| `wasm.host.runner-fixtures` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 600 s | `python-tests` | 1 |
+| `wasm.host.runner-fixtures` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 600 s | `python-tests` | 2 |
 | `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.test.runtime-signatures` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 120 s | `python-tests` | 1 |
 | `wasm.build.split-runtime-release` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
@@ -391,6 +392,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `rust-source-scan-consumers` | 5 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `build-early-cutoff` | 10 | 0 |
+| `runtime-wasm-signatures` | 28 | 1 |
 | `runtime-cargo-input-custody` | 58 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |

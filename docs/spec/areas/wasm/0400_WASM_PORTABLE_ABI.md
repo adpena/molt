@@ -95,6 +95,35 @@ Molt additionally preserves result ownership, which machine types alone cannot
 express. Wasm receiver tests execute all four actual host binders against real
 modules; product startup tests cover runtime/app initialization ordering.
 
+### Callable-table execution-state admission
+
+`prepareWasmTableAdmission` and `publishWasmTableAdmission` in
+`wasm/loader_bridge.js` own this protocol for Node, browser, minimal embeds and
+both Worker generators, in linked and split-runtime modes. The Rust deployment
+host uses `molt_wasm_facts::admit_callable_table` with the same generated ABI
+constants and final-module attestation validator; its typed empty/publish outcome
+owns setter selection and `MOLT_WASM_TABLE_BASE` publication, overriding ambient
+and launch-policy values only for Molt applications. Raw and manifest-bound WASI
+commands retain their separate environment contract. Byte consumers and
+precompiled `WebAssembly.Module` consumers read the same generated callable-table
+attestation and layout. An explicit zero-entry attestation yields `empty`: no
+reserved callable region needs publication, even if the module exposes a table.
+A non-empty attestation yields `publish` only with a positive resolved base and
+the canonical setter identity named by the runtime import ABI. The base comes
+from the published layout or the first attested callable slot, with a manifest
+base constrained by that binary authority; element-segment guesses are forbidden.
+The host must call that export immediately after runtime instantiation, before runtime lifetime
+admission, WASI/libc initialization or application execution. Missing setters
+never select an environment-only fallback.
+
+Missing or malformed attestations fail with
+`MOLT_WASM_TABLE_ATTESTATION_MISSING` or
+`MOLT_WASM_TABLE_ATTESTATION_MALFORMED`. Missing positive bases and canonical
+exports fail with `MOLT_WASM_TABLE_BASE_REQUIRED` and
+`MOLT_WASM_TABLE_EXPORT_REQUIRED`. Parser failures cannot become absent metadata.
+The host-parity guest oracle in `tests/test_wasm_runner_table_base.py` exercises
+these verdicts and checks publication ordering with actual Wasm globals and traps.
+
 ---
 
 ## 2.5 Host lifetime and buffered output
