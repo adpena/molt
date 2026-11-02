@@ -36,6 +36,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
 
 
+def test_observed_owner_includes_its_dynamic_plugin():
+    from tools.test_dependency_graph import load_graph
+
+    inputs = load_graph(REPO_ROOT).dependencies(
+        "tests/cli/test_cli_import_collection.py"
+    )
+    assert {
+        "tests/observed_inputs.py",
+        "tools/test_dependency_graph.py",
+        "tools/molt_dev_policy.py",
+    } <= inputs
+
+
 def _observed(directory: Path, key: str, **record) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     _observation_path(directory, key).write_text(

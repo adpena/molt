@@ -955,6 +955,7 @@ class GateConfig:
             from tools.proof_command_argv import pytest_arguments, pytest_run_selections
             from tools.test_dependency_graph import (
                 OBSERVED_CONTEXT_OPTION,
+                OBSERVED_PLUGIN,
                 observation_context,
                 observed_test_targets,
             )
@@ -990,7 +991,7 @@ class GateConfig:
                 if subjects:
                     options = (
                         "-p",
-                        "tests.observed_inputs",
+                        OBSERVED_PLUGIN,
                         OBSERVED_CONTEXT_OPTION,
                         context,
                         *("--molt-observed-target=" + path for path in subjects),

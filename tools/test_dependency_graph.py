@@ -91,6 +91,7 @@ _IMPORT_CALLS = frozenset({"import_module", "__import__", "find_spec"})
 
 OBSERVED_SCHEMA = "molt.test-observed-inputs.v1"
 OBSERVED_CONTEXT_OPTION = "--molt-observed-context"
+OBSERVED_PLUGIN = "tests.observed_inputs"
 GUEST_INPUT_PREFIXES = ("runtime/", "src/molt/stdlib/", "tests/differential/")
 
 
@@ -1651,7 +1652,9 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
                 reached.execs | calls, reached.files, reached.directories
             )
     configuration = tree.read(
-        path for path in (PYPROJECT, GENERATOR_MANIFEST) if path in tree.blobs
+        path
+        for path in (PYPROJECT, GENERATOR_MANIFEST, "tools/proof_plan.toml")
+        if path in tree.blobs
     )
     sync_edges, output_edges = _generator_edges(
         configuration.get(GENERATOR_MANIFEST), resolver.files
@@ -1662,6 +1665,11 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
             current.execs | frozenset(tools), current.files, current.directories
         )
     plugins = _pytest_plugins(configuration.get(PYPROJECT))
+    observed_targets = observed_test_targets(
+        tomllib.loads(configuration.get("tools/proof_plan.toml", b"").decode()).get(
+            "command", ()
+        )
+    )
     pytest_configuration = frozenset(
         path for path in (PYPROJECT,) if path in configuration
     )
@@ -1676,7 +1684,13 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
         )
         conftests[test] = chain
         inputs[test] = _test_inputs(
-            resolver, test, nodes, chain, facts, plugins, pytest_configuration
+            resolver,
+            test,
+            nodes,
+            chain,
+            facts,
+            (*plugins, OBSERVED_PLUGIN) if test in observed_targets else plugins,
+            pytest_configuration,
         )
     stats["graph_seconds"] = round(time.perf_counter() - started, 4)
     stats["tests"] = len(tests)

@@ -128,6 +128,8 @@ authority (`CODEX_TOOL_CALL_ID`, like terminal-session IDs), without a selector-
 Changes to host code, tests or their harness
 retain the file-level obligation. Postsubmit still uses the full static transitive closure and
 loads `tests.observed_inputs` explicitly; ordinary pytest startup gains no observer.
+The opt-in also supplies that plugin as a dependency of its owning test file, so plugin and
+recorder changes select the actual CLI consumer through the static postsubmit closure.
 
 The recorder retains every collected parameter before marker/deselection filtering, collection
 reads, file opens and directory listings, canonical `input_report` cached-use events, and shared-fixture reads for
