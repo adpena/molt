@@ -80,6 +80,24 @@ HF-288).
   [I] A typed API closes Molt's registered-name boundary; a literal-refusal
   census protects the migration until the type system excludes spelling.
 
+- *Dense IR entities and field arrays (verified 2026-11-02, HF-202).* [F]
+  Cranelift in Wasmtime v26.0.0 stores values in `PrimaryMap<Value, ValueDataPacked>` and
+  facts in `SecondaryMap<Value, Option<Fact>>`; PrimaryMap wraps a Vec with
+  typed keys. rustc 1.90's `IndexVec<I: Idx, T>` stores a Vec<T>. Zig 0.14
+  AIR and ZIR store instructions in `MultiArrayList(Inst).Slice`, separating
+  fields into arrays. Carbon SemIR uses typed instruction operands and keeps
+  locations separately from instructions. Sources:
+  https://github.com/bytecodealliance/wasmtime/blob/v26.0.0/cranelift/codegen/src/ir/dfg.rs,
+  https://github.com/bytecodealliance/wasmtime/blob/v26.0.0/cranelift/entity/src/primary.rs,
+  https://github.com/rust-lang/rust/blob/1.90.0/compiler/rustc_index/src/vec.rs,
+  https://github.com/ziglang/zig/blob/0.14.0/src/Air.zig,
+  https://github.com/ziglang/zig/blob/0.14.0/lib/std/zig/Zir.zig,
+  https://docs.carbon-lang.dev/toolchain/docs/check/#key-ir-concepts.
+  Andrew Kelley's author index dates *A Practical Guide to Applying
+  Data-Oriented Design* to 2021-11-23 (https://andrewkelley.me/,
+  https://vimeo.com/649009599). [I] HF-202 should use dense typed value ids,
+  field arrays and indexed fact tables; printed IR names are presentation.
+
 **Adopt.** [I] Extend the existing authority, `op_kinds.toml` with
 `tools/gen_op_kinds.py`. Each runtime-call op declares its symbol, arity,
 argument and result ownership, effects (may raise, may call Python) and
@@ -92,8 +110,10 @@ intrinsic ABI from the same rows (HF-262). Names get the same treatment
 name the compiler and runtime know (dunders, builtin method names, static
 names), interned once at runtime start; builtin method tables are keyed by
 `NameId`, special methods dispatch through typed slots, and dynamic lookups
-compare interned pointers through a per-type cache invalidated by a type
-version, so no hot path decodes or compares name bytes.
+use dense type/name slot tables and compile-time bindings. Truly dynamic
+protocol operations use interned handles; add no run-time cache to recover
+work the closed world can eliminate. HF-202 replaces string-keyed value facts
+with dense typed ids, field arrays and indexed fact tables.
 
 **Refuse.** [I] TableGen or MLIR as the registry engine: a C++ tool adds a
 toolchain for a job the TOML generator does. Legality callbacks: keep
@@ -512,8 +532,11 @@ to W, and compiled call/frame costs to Y.
 
 **Adopt.** [I] Pass one execution-context pointer through compiled code and
 runtime entry as an argument, as CPython and Wasmtime do. Stamp it with the
-runtime generation so one check covers every per-thread cache (HF-200).
-Inline the common poll and replace the bridges with generated typed service
+runtime generation for correct lifetime checks (HF-200). HF-688 inventories
+each cache with the lookup it saves: retire it with compile-time resolution,
+dense tables or emitted static data, or document a measured reason to retain
+it. Any retained runtime cache remains generation-bound. Content-addressed
+whole-artifact build caching is separate. Inline the common poll and replace the bridges with generated typed service
 tables (HF-206). Z owns refcount specialization and W owns static literals.
 
 **Refuse.** [I] A pinned context register before measurement: it costs a
@@ -1268,7 +1291,10 @@ runtime entry.
 
 **Adopt.** [I] One found/missing/error lookup protocol; proven exact receiver
 calls and fixed layouts; static subtype encodings with an explicit proof for
-multiple inheritance. On unproven receivers retain semantic guards and caches.
+multiple inheritance. A receiver not pinned to one class dispatches over
+closed-world class ids through a vtable slot or switch, with no run-time
+cache. A class created at run time outside the verified subset takes the
+generic protocol; this planned work does not widen the subset contract.
 HF-685 measures construction before choosing its representation.
 
 **Refuse.** [I] Name-matched method lowering, exceptions for ordinary misses,

@@ -429,6 +429,12 @@ intern, allocate or look up a name that the compiler or the runtime can know: no
 the typed form does not exist yet, add it at its one authority (for example the runtime name table)
 and use it; do not spell the name.
 
+Design data first. Prefer flat arrays indexed by dense typed ids over hash tables, indices over
+pointers, structures of arrays over arrays of structures, and hot bits packed into the index or the
+value word. A cache is a sign of a slow design: do not add one; redesign so the work is done once at
+build time or is cheap enough to repeat. (Content-addressed build caching of whole artifacts is not
+such a cache.)
+
 On a hot path, measure instructions retired and runtime calls per iteration before and after."""
     assert sc.PROJECT_IDENTITY == expected
     prompt = dp.compose("TASK BODY", bounds=_BOUNDS, sections=sections)
