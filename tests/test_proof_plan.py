@@ -7767,11 +7767,11 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
-    # Windows Job lifetime accounting fences unseen births through termination.
-    # Ordinary POSIX snapshots cannot establish that stronger negative fact.
-    assert record["failure_scope"] == (
-        "partition" if sys.platform == "win32" else "global"
-    ), record
+    # No compiler ran in the timed partition. Windows Job lifetime accounting
+    # fences unseen births and records recovery as unnecessary; a POSIX
+    # snapshot cannot, but with no observed compiler there is nothing to
+    # recover (`unobserved`, HF-655). Either way the deadline is the command's.
+    assert record["failure_scope"] == "partition", record
     # The kill leaves the completed incremental cache exactly as it was.
     assert sorted(path.name for path in incremental.iterdir()) == compiled
 
