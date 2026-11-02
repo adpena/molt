@@ -235,10 +235,12 @@ Failed guard scratch payloads are regenerable (HF-694). Closure and exact
 payload identity, not a successful exit, grant retirement. The existing
 newest-first policy keeps at most three failed payloads and 2 GiB; excess is
 deleted directly after last use. A dead guard follows the same path without
-archival. The retired guard marker, the guard summary and the landing's
-existing bounded stream tails carry the failure result; deleting a scratch
-generation does not delete the landing receipt. A failed deletion keeps the
-payload retained and indexed for the next sweep, never blocked. Errors in the
+archival. The retired guard marker's `temporary_artifacts` outcome and the
+landing's existing bounded stream tails carry the failure result; deleting a
+scratch generation does not delete the landing receipt. No tool reads a
+retained payload. A failed deletion keeps the payload retained and indexed,
+records each attempt, and is retried by at most three guard exits, then
+reported as an error until explicit cleanup retries it. Errors in the
 shared root, `pending/` and `removing/` namespaces are diagnostic whether
 raised or returned, and cannot change that child's exit or become
 infrastructure failure. A run whose own index the shared namespace refuses
@@ -254,7 +256,8 @@ rules, outside guard exit. A legacy block is a retained failure only after its
 terminal receipt, payload identity and allocation receipt verify; evidence in
 the record decides, not the owner's schema. Cleanup uses the bounded source
 index for coordinates without reading or copying archive content. Unknown
-coordinates stay protected and are reported; other blocks stay untouched. The
+coordinates stay protected and are reported. Every other unindexed block is
+held and listed with its bytes, never deleted. The
 `scratch-evidence` storage class remains for the distinct legacy-temp
 migration producer; it is not guard scratch. Sccache server leftovers retain
 their separate evidence contract.
