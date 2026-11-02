@@ -1818,6 +1818,11 @@ def reclaim_terminal_scratch(
                     if resolve_legacy_archives
                     else None
                 )
+                if accepted is not None:
+                    owner = accepted
+                # Verify before any write: a payload that changed since the
+                # scan gets no index and keeps its old owner record.
+                _reclaim_locked(generation, owner, verify_only=True)
                 if resolve_legacy_archives and not dry_run:
                     # Bring an old block or an unindexed payload into the
                     # current lifecycle, index first, kept or not.
@@ -1825,11 +1830,8 @@ def reclaim_terminal_scratch(
                         _publish_index(generation, digest)
                     if accepted is not None:
                         write_exact(
-                            generation / "owner.json", accepted, durability=_RECORDS
+                            generation / "owner.json", owner, durability=_RECORDS
                         )
-                if accepted is not None:
-                    owner = accepted
-                _reclaim_locked(generation, owner, verify_only=True)
                 if (
                     owner["state"] == "retained"
                     and not success

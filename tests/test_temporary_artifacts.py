@@ -2923,6 +2923,36 @@ def test_explicit_cleanup_leaves_a_live_unindexed_transition_alone(tmp_path):
     assert result["protected_count"] == 1 and result["held"] == [], result
 
 
+def test_explicit_apply_verifies_before_it_publishes_an_index(tmp_path, monkeypatch):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "failure").write_bytes(b"regenerable")
+    _finish(lease, success=False)
+    scratch._drop_index(lease.generation)
+    root = lease.generation.parent
+    owner_before = (lease.generation / "owner.json").read_bytes()
+    scan = scratch._visit_unindexed
+
+    def changed_after_scan(generation):
+        visit = scan(generation)
+        # Another directory takes the payload's place before apply.
+        payload = lease.generation / "payload"
+        shutil.rmtree(payload)
+        payload.mkdir()
+        return visit
+
+    monkeypatch.setattr(scratch, "_visit_unindexed", changed_after_scan)
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    monkeypatch.undo()
+    assert applied["reclaimed"] == [] and applied["errors"], applied
+    # No index and no rewritten owner for a payload that failed verification,
+    # so guard exits do not report it on every sweep.
+    assert not scratch._index_path(lease.generation).exists()
+    assert (lease.generation / "owner.json").read_bytes() == owner_before
+    assert scratch.reclaim_terminal_scratch(root)["errors"] == []
+
+
 def test_explicit_cleanup_command_reads_the_guard_bound(tmp_path, monkeypatch, capsys):
     leases = []
     for number in range(1, 4):
