@@ -22,6 +22,8 @@ The same scoreboard owns the primitive instruction axis (HF-459):
 python tools/perf_scoreboard.py primitives --cpython 3.12.16 --out-dir <new-evidence-directory>
 ```
 
+Methodology v26 records the HF-657 primitive ratio/noise recalibration, which
+changes diagnostic verdicts without changing workloads or release acceptance.
 Methodology v25 publishes the shared non-citable diagnostic provenance; v24
 rejects nonfinite or invalid perf running percentages;
 v23 strengthened the identity witness's observable checksum, and v22 introduced
