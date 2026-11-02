@@ -9620,6 +9620,53 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
     assert ("independent owner cleanup failure" in log) is cleanup_fails
 
 
+def test_pinned_controller_environment_reads_gate_pytest_arguments(
+    tmp_path, driver_seed
+):
+    """The `--no-dev` controller closure runs postsubmit's pytest reader (HF-655).
+
+    Postsubmit selection reads each pytest gate's targets with pytest's own
+    parser inside the pinned controller. A runner died there with
+    `No module named '_pytest'` after a landing. The development image has
+    pytest, so this probe runs the reader under the controller's interpreter
+    and isolated startup. `--testrunuid` is an xdist option: its separate value
+    names an existing directory, which reads as a target without xdist.
+    """
+    from molt.dx import RunContext
+    from tools import molt_dev_controller
+    from tools.venv_exec import venv_python
+
+    cache = tmp_path / "controller"
+    copy_driver_trees(cache, seed=driver_seed)
+    molt_dev_controller._sync_environment(
+        cache, environment=RunContext(REPO_ROOT).canonical_env(os.environ)
+    )
+    probe = f"""
+import sys
+from pathlib import Path
+sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
+from tools.proof_command_argv import pytest_run_selections
+print(pytest_run_selections(
+    ("-q", "-n", "auto", "--testrunuid", "tests", "tests/test_molt_dev.py"),
+    root=Path({str(REPO_ROOT)!r}),
+))
+"""
+    completed = run_guarded_test_process(
+        [
+            str(venv_python(cache / molt_dev_controller.ENVIRONMENT_NAME)),
+            "-I",
+            "-B",
+            "-c",
+            probe,
+        ],
+        cwd=tmp_path,
+        env=ProcessEnvironment(os.environ),
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == "('tests/test_molt_dev.py',)"
+
+
 @pytest.mark.parametrize("outcome", [0, 1])
 def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_cwd(
     origin_and_clone, tmp_path, driver_seed, outcome

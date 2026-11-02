@@ -924,6 +924,10 @@ bench = [
     { name = "pyperformance" },
     { name = "setuptools" },
 ]
+controller = [
+    { name = "pytest" },
+    { name = "pytest-xdist" },
+]
 demo = [
     { name = "django" },
     { name = "gunicorn" },
@@ -993,6 +997,10 @@ provides-extras = ["accel"]
 bench = [
     { name = "pyperformance", specifier = "==1.14.0" },
     { name = "setuptools", specifier = ">=84.2.1" },
+]
+controller = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
 ]
 demo = [
     { name = "django", specifier = ">=6.1.1" },

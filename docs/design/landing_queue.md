@@ -177,8 +177,11 @@ The code that decides whether a change lands is never the change.
   the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
   and `.python-version` extracts into
   `<artifact-root>/molt-state/controllers/<repository>/<key>`, where the key is the digest of
-  those tree and blob ids. `uv sync --frozen --no-dev` builds the
-  controller's environment from main's lock, and the driver runs there as
+  those tree and blob ids. `uv sync --frozen --no-dev --group controller`
+  builds the controller's environment from main's lock. The `controller`
+  group holds pytest and pytest-xdist: gate selection reads pytest arguments
+  with pytest's own parser and installed plugin options (HF-179, HF-655). A
+  source from before that group syncs without it. The driver runs there as
   `python -I`, so no module, dependency version or `PYTHON*` setting comes
   from the candidate. The candidate still supplies its declared data: gate
   selection from its `tools/proof_plan.toml`, and its tests. A change to the
