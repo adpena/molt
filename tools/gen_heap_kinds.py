@@ -381,7 +381,9 @@ def render_constants(kinds: list[dict[str, object]], visibility: str = "pub") ->
         base = min(dense_ids)
         span = max(dense_ids) - base + 1
         if span > 64:
-            raise ValueError("inline heap membership needs a multiword projection above 64 ids")
+            raise ValueError(
+                "inline heap membership needs a multiword projection above 64 ids"
+            )
         mask = sum(1 << (value - base) for value in dense_ids)
         lines.append(f"pub const HEAP_TYPE_ID_SPAN: u64 = {span};\n")
         lines.append(f"pub const HEAP_TYPE_ID_VALID_MASK: u64 = 0x{mask:016x};\n")
