@@ -2554,6 +2554,7 @@ def test_an_old_adopters_block_on_a_new_lease_yields_to_explicit_cleanup(
         "protected_count": 0,
         "errors": [],
         "deferred": [],
+        "held": [],
     }
     # The terminal receipt, payload identity and allocation receipt decide,
     # not the owner's schema; an absent-source receipt had no payload.
@@ -2771,6 +2772,102 @@ def test_an_interrupted_removal_retry_stays_retained_and_indexed(tmp_path, monke
         root, retention=scratch.ScratchRetention(0, 0)
     )
     assert final["reclaimed"] == [str(lease.generation)], final
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_a_refused_index_with_a_failed_removal_stays_findable(
+    tmp_path, monkeypatch, success
+):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "out").write_bytes(b"x" * 4096)
+    root = lease.generation.parent
+    pending = root / "pending"
+    pending.mkdir()
+    _plant_link(tmp_path, pending)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            scratch,
+            "delete_path",
+            lambda path, *, owning_root=None: (False, "fixture file in use"),
+        )
+        result = _finish(lease, success=success)
+    # The diagnostic states what happened: no index, and no reclaim.
+    assert result["state"] == "retained"
+    diagnostics = result["retention"]["errors"]
+    assert not any("payload reclaimed" in error for error in diagnostics), diagnostics
+    assert any(
+        "retained without an index until explicit cleanup" in error
+        for error in diagnostics
+    ), diagnostics
+    pending.unlink()
+    pending.mkdir()
+    assert not scratch._index_path(lease.generation).exists()
+    # Explicit cleanup finds the unindexed payload and applies the bound.
+    preview = scratch.reclaim_terminal_scratch(
+        root,
+        retention=scratch.ScratchRetention(0, 0),
+        dry_run=True,
+        resolve_legacy_archives=True,
+    )
+    assert [item["generation"] for item in preview["would_reclaim"]] == [
+        str(lease.generation)
+    ]
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    assert applied["errors"] == [] and applied["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+def test_explicit_cleanup_reports_every_unindexed_block_it_keeps(tmp_path):
+    blocked = []
+    for number, reason in (
+        (1, "interrupted scratch transition; payload preserved without retry"),
+        (2, "interrupted before the terminal owner commit; payload preserved"),
+    ):
+        lease, _ = _lease(tmp_path, number)
+        (lease.target / "kept").write_bytes(b"k" * 100 * number)
+        _finish(lease, success=False)
+        owner = _read(lease.generation / "owner.json")
+        write_exact(
+            lease.generation / "owner.json",
+            {**owner, "state": "blocked", "error": reason},
+        )
+        scratch._drop_index(lease.generation)
+        blocked.append((lease, reason))
+    root = blocked[0][0].generation.parent
+    unreadable = root / ("e" * 32)
+    unreadable.mkdir()
+    (unreadable / "owner.json").write_bytes(b"{torn")
+    outside = tmp_path / "outside-generation"
+    outside.mkdir()
+    linked = root / ("f" * 32)
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"host does not permit symlinks: {exc}")
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    for dry_run in (True, False):
+        result = scratch.reclaim_terminal_scratch(
+            root,
+            retention=scratch.ScratchRetention(0, 0),
+            dry_run=dry_run,
+            resolve_legacy_archives=True,
+        )
+        assert result["reclaimed"] == [] and result.get("would_reclaim", []) == []
+        held = {item["generation"]: item for item in result["held"]}
+        for lease, reason in blocked:
+            item = held[str(lease.generation)]
+            assert (item["state"], item["reason"]) == ("blocked", reason)
+            assert item["payload"] == str(lease.generation / "payload")
+            assert item["payload_bytes"] == 100 * int(lease.generation.name[-1])
+        assert held[str(unreadable)]["state"] is None
+        assert "undecodable" in held[str(unreadable)]["reason"]
+        assert held[str(linked)]["reason"] == "not a direct directory; not followed"
+        assert held[str(linked)]["payload_bytes"] is None
+    assert {
+        path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+    } == before
 
 
 def test_explicit_cleanup_command_reads_the_guard_bound(tmp_path, monkeypatch, capsys):
