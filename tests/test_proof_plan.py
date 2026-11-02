@@ -7329,6 +7329,19 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
         )
 
 
+# The guard's record of a Cargo command killed before any compiler
+# observation, with an incomplete interruption inventory (HF-655).
+_UNOBSERVED_QUARANTINE = {
+    "ownership_status": "unobserved",
+    "errors": [],
+    "moved_paths": [],
+    "ownership_observations": [],
+    "recovery_observations": [],
+    "interruption_inventory_complete": False,
+    "interruption_inventory_error": "interruption snapshot unavailable",
+}
+
+
 @pytest.mark.parametrize(
     "metrics, returncode, expected",
     [
@@ -7424,6 +7437,35 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
             124,
             "global",
         ),
+        # HF-655: a kill before any compiler observation is terminal without
+        # an inventory; the deadline stays the command's own failure.
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+                "cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE,
+            },
+            124,
+            "partition",
+        ),
+        # An observed compiler or a move is never "unobserved".
+        *(
+            (
+                {
+                    "timed_out": True,
+                    "termination_reports": [
+                        {"remaining_pids": [], "remaining_pgids": []}
+                    ],
+                    "cargo_incremental_quarantine": {
+                        **_UNOBSERVED_QUARANTINE,
+                        field: [{"rustc_pid": 1}],
+                    },
+                },
+                124,
+                "global",
+            )
+            for field in ("ownership_observations", "moved_paths")
+        ),
     ],
 )
 def test_executor_failure_scope_uses_guard_and_quarantine_authority(
@@ -7512,6 +7554,7 @@ def test_executor_missing_guard_outcome_is_a_global_stop() -> None:
             },
             "Cargo quarantine ownership or recovery is unresolved",
         ),
+        ({"cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE}, None),
     ],
 )
 @pytest.mark.parametrize(

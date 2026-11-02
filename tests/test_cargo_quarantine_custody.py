@@ -234,7 +234,9 @@ def test_waiting_unobserved_cargo_preserves_all_incremental_state(tmp_path):
     sibling = unit(target, "debug")
     receipt = recover(target, ())
     assert owned.exists() and sibling.exists()
-    assert receipt.ownership_status == "deferred" and receipt.moved_paths == ()
+    # Terminal without an inventory (HF-655): nothing was observed to recover.
+    assert receipt.ownership_status == "unobserved" and receipt.moved_paths == ()
+    assert receipt.errors == () and receipt.receipt_path is None
 
 
 @pytest.mark.parametrize(

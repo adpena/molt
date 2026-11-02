@@ -5237,20 +5237,31 @@ def _guard_closure_failure(
     ):
         return "guard job closure is uncertain"
     quarantine = metrics.get("cargo_incremental_quarantine")
+    status = (
+        quarantine.get("ownership_status") if isinstance(quarantine, dict) else None
+    )
     if quarantine is not None and (
         not isinstance(quarantine, dict)
-        or quarantine.get("ownership_status") not in {"quarantined", "not_required"}
+        or status not in {"quarantined", "not_required", "unobserved"}
         or not isinstance(quarantine.get("errors"), list)
         or quarantine.get("errors")
-        or quarantine.get("interruption_inventory_complete") is not True
-        or quarantine.get("interruption_inventory_error") is not None
         or (
-            quarantine.get("ownership_status") == "not_required"
+            # A kill before any rustc observation leaves nothing to recover,
+            # so it needs no interruption inventory (HF-655).
+            status != "unobserved"
+            and (
+                quarantine.get("interruption_inventory_complete") is not True
+                or quarantine.get("interruption_inventory_error") is not None
+            )
+        )
+        or (
+            status in {"not_required", "unobserved"}
             and (
                 quarantine.get("recovery_observations") != []
                 or quarantine.get("moved_paths") != []
             )
         )
+        or (status == "unobserved" and quarantine.get("ownership_observations") != [])
     ):
         return "Cargo quarantine ownership or recovery is unresolved"
     return None
