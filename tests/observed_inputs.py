@@ -7,7 +7,7 @@ import pytest
 from tools.test_dependency_graph import OBSERVED_CONTEXT_OPTION, TestInputRecorder
 
 _RECORDER = pytest.StashKey[TestInputRecorder]()
-_FIXTURES = pytest.StashKey[dict[str, dict]]()
+_FIXTURES = pytest.StashKey[dict[pytest.FixtureDef, dict]]()
 _SUBJECTS = pytest.StashKey[frozenset[str]]()
 
 
@@ -65,23 +65,28 @@ def pytest_fixture_setup(fixturedef, request):
         return
     with recorder.fixture_reads() as captured:
         yield
-    fixtures = request.config.stash[_FIXTURES]
-    prior = fixtures.setdefault(
-        request.fixturename, {"files": set(), "directories": set(), "complete": True}
-    )
-    prior["files"].update(captured["files"])
-    prior["directories"].update(captured["directories"])
-    prior["complete"] = prior["complete"] and captured["complete"]
+    # FixtureDef owns the current cached instance. A new parameter/setup
+    # replaces it; an unrelated invocation with the same name cannot donate
+    # reads or opacity. Values are never retained by this recorder.
+    request.config.stash[_FIXTURES][fixturedef] = captured
 
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_call(item: pytest.Item) -> None:
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item):
+    yield
     recorder = item.config.stash.get(_RECORDER, None)
-    if recorder is not None and recorder.node is not None:
+    if (
+        recorder is not None
+        and recorder.node is not None
+        and isinstance(item, pytest.Function)
+    ):
         fixtures = item.config.stash[_FIXTURES]
-        for name in item.fixturenames:
-            if name in fixtures:
-                recorder.add_reads(fixtures[name])
+        # Pytest clears the request after teardown hooks return. Its active
+        # definitions include cached fixtures requested dynamically in the
+        # body/finalizers, which fixturenames alone cannot describe.
+        for definition in item._request._fixture_defs.values():
+            if isinstance(definition, pytest.FixtureDef) and definition in fixtures:
+                recorder.add_reads(fixtures[definition])
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)

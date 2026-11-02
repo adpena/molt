@@ -222,6 +222,13 @@ def test_observed_plugin_records_real_reads_and_shared_fixture_consumers(
                 assert shared == "a"
             def test_other():
                 assert (ROOT / "runtime/b.rs").read_text() == "b"
+            def test_dynamic(request):
+                assert request.getfixturevalue("shared") == "a"
+            @pytest.fixture(params=["a", "b"])
+            def per_case(request):
+                return (ROOT / ("runtime/" + request.param + ".rs")).read_text()
+            def test_per_case(per_case):
+                assert per_case in {"a", "b"}
         """,
         },
     )
@@ -258,10 +265,13 @@ def test_observed_plugin_records_real_reads_and_shared_fixture_consumers(
     assert set(observed.readers("tests/test_reads.py", ["runtime/a.rs"])) == {
         "tests/test_reads.py::test_shared[first]",
         "tests/test_reads.py::test_shared[second]",
+        "tests/test_reads.py::test_per_case[a]",
+        "tests/test_reads.py::test_dynamic",
     }
-    assert observed.readers("tests/test_reads.py", ["runtime/b.rs"]) == (
+    assert set(observed.readers("tests/test_reads.py", ["runtime/b.rs"])) == {
         "tests/test_reads.py::test_other",
-    )
+        "tests/test_reads.py::test_per_case[b]",
+    }
 
 
 def test_observed_cached_file_argument_and_opaque_child_stay_selected(
