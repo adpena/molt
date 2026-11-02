@@ -44,11 +44,15 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
 import sys
+import threading
 import time
 import tomllib
+import weakref
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import assert_never
@@ -84,6 +88,429 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _GLOB_OR_FORMAT = re.compile(r"[*?\[{]")
 _PATH_CALLS = frozenset({"Path", "PurePath", "PurePosixPath", "PureWindowsPath"})
 _IMPORT_CALLS = frozenset({"import_module", "__import__", "find_spec"})
+
+OBSERVED_SCHEMA = "molt.test-observed-inputs.v1"
+OBSERVED_CONTEXT_OPTION = "--molt-observed-context"
+OBSERVED_PLUGIN = "tests.observed_inputs"
+GUEST_INPUT_PREFIXES = ("runtime/", "src/molt/stdlib/", "tests/differential/")
+
+
+def observation_context(tree: RepositoryTree, commands: Iterable[Mapping]) -> str:
+    """Bind observations to host code, configuration and the launch environment.
+
+    Guest sources remain inputs of individual tests. Any host-code change
+    invalidates this refinement, including helpers, fixtures and this recorder.
+    The existing request-key authority owns environment and interpreter identity.
+    The controller passes this key through pytest's guard re-exec and xdist.
+    """
+    from molt.build_record import request_key
+
+    sources = {
+        path: oid
+        for path, oid in tree.blobs.items()
+        if not path.startswith(GUEST_INPUT_PREFIXES)
+        and (
+            path.endswith((".py", ".toml", ".lock"))
+            or path.startswith("config/")
+            or path == ".python-version"
+        )
+    }
+    key = request_key(
+        {"schema": OBSERVED_SCHEMA, "sources": sources, "commands": list(commands)},
+        environment=os.environ,
+        cwd=str(tree.root),
+        interpreter=sys.executable,
+        interpreter_version=sys.version,
+        host={"platform": sys.platform},
+    )
+    assert key is not None
+    return key
+
+
+def observation_directory(context: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{64}", context):
+        raise ValueError("observed test context must be a SHA-256 request key")
+    return default_cache_path().parent / OBSERVED_SCHEMA / context
+
+
+def _observation_path(directory: Path, key: str) -> Path:
+    return directory / (hashlib.sha256(key.encode()).hexdigest() + ".json")
+
+
+def _read_observation(directory: Path, key: str) -> dict | None:
+    path = _observation_path(directory, key)
+    try:
+        metadata = path.lstat()
+        value = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("schema") != OBSERVED_SCHEMA:
+        return None
+    if value.get("key") != key:
+        return None
+    from molt.cache_eviction import refresh_cache_entry_recency
+
+    refresh_cache_entry_recency(path, cache_root=directory.parent, observed=metadata)
+    return value
+
+
+def _write_observation(directory: Path, key: str, value: Mapping) -> None:
+    from molt.file_publication import atomic_write_bytes
+
+    directory.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(
+        _observation_path(directory, key),
+        json.dumps(
+            {"schema": OBSERVED_SCHEMA, "key": key, **value}, sort_keys=True
+        ).encode(),
+    )
+
+
+def observed_test_targets(commands: Iterable[Mapping]) -> frozenset[str]:
+    """Only proof cohorts whose owning command opts into this qualified reader."""
+    return frozenset(
+        target
+        for command in commands
+        if command.get("pytest_observed_inputs") is True
+        for target in command.get("pytest", ())
+    )
+
+
+class ObservedTestInputs:
+    """A complete collection inventory plus conservative per-node read records.
+
+    Missing, failed, opaque or malformed observations retain their node. They
+    are never passing verdicts. Only data edges may be refined; host imports,
+    changed tests and their harness always retain the whole-file obligation.
+    """
+
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        targets: frozenset[str] | None = None,
+        guest_only: bool = False,
+        current_inputs: Mapping[str, str] | None = None,
+    ) -> None:
+        self.directory = directory
+        self.targets = targets
+        self.guest_only = guest_only
+        self.current_inputs = current_inputs
+
+    def refines(self, path: str) -> bool:
+        return not self.guest_only or path.startswith(GUEST_INPUT_PREFIXES)
+
+    def readers(
+        self, test: str, changed: Iterable[str], *, retain_unknown: bool = True
+    ) -> tuple[str, ...]:
+        if self.targets is not None and test not in self.targets:
+            return (test,) if retain_unknown else ()
+        inventory = _read_observation(self.directory, test)
+        nodes = None if inventory is None else inventory.get("nodes")
+        if (
+            not isinstance(nodes, list)
+            or not nodes
+            or any(
+                not isinstance(node, str) or not node.startswith(test + "::")
+                for node in nodes
+            )
+        ):
+            return (test,) if retain_unknown else ()
+        changed = frozenset(changed)
+        parents = {
+            str(parent) for path in changed for parent in PurePosixPath(path).parents
+        }
+
+        def paths(record):
+            if not isinstance(record, dict) or any(
+                not isinstance(record.get(key), list)
+                or any(not isinstance(path, str) for path in record[key])
+                for key in ("files", "directories")
+            ):
+                return None
+            return frozenset(record["files"]), frozenset(record["directories"])
+
+        def intersects(values, files, directories):
+            return bool(
+                files.intersection(values[0]) or directories.intersection(values[1])
+            )
+
+        # A partial postsubmit can publish a new inventory while older nodes
+        # still have valid read sets. Each immutable snapshot is the sole
+        # authority for that capture's guest bytes; missing facts stay unknown.
+        snapshots = {}
+
+        def changes(snapshot):
+            if self.current_inputs is None:
+                return frozenset(), frozenset()
+            if not isinstance(snapshot, str):
+                return None
+            if snapshot not in snapshots:
+                record = _read_observation(self.directory, "snapshot:" + snapshot)
+                captured = None if record is None else record.get("guest_inputs")
+                if (
+                    not isinstance(captured, dict)
+                    or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in captured.items()
+                    )
+                    or _guest_snapshot(captured) != snapshot
+                ):
+                    snapshots[snapshot] = None
+                else:
+                    stale = frozenset(
+                        path
+                        for path in captured.keys() | self.current_inputs.keys()
+                        if path.startswith(GUEST_INPUT_PREFIXES)
+                        and captured.get(path) != self.current_inputs.get(path)
+                    )
+                    snapshots[snapshot] = (
+                        stale,
+                        frozenset(
+                            str(parent)
+                            for path in stale
+                            for parent in PurePosixPath(path).parents
+                        ),
+                    )
+            return snapshots[snapshot]
+
+        collection = inventory.get("collection")
+        shared = paths(collection)
+        if shared is not None and intersects(shared, changed, parents):
+            return (test,)
+        shared_changes = changes(inventory.get("snapshot"))
+        shared_complete = (
+            shared is not None
+            and collection.get("complete") is True
+            and (
+                self.current_inputs is None
+                or collection.get("snapshot") == inventory.get("snapshot")
+            )
+            and shared_changes is not None
+        )
+        if shared_complete and intersects(shared, *shared_changes):
+            return (test,)
+        if not shared_complete and retain_unknown:
+            return (test,)
+        result = []
+        for node in nodes:
+            record = _read_observation(self.directory, node)
+            used = paths(record)
+            # Completeness qualifies absence, never an already observed read.
+            if used is not None and intersects(used, changed, parents):
+                result.append(node)
+                continue
+            captured_changes = (
+                changes(record.get("snapshot")) if record is not None else None
+            )
+            if (
+                used is not None
+                and captured_changes is not None
+                and (
+                    intersects(used, *captured_changes)
+                    or (shared is not None and intersects(shared, *captured_changes))
+                )
+            ):
+                # Current collection inputs are part of every node's premise,
+                # including a node retained from a prior capture generation.
+                result.append(node)
+            elif retain_unknown and (
+                not shared_complete
+                or record is None
+                or record.get("complete") is not True
+                or used is None
+                or captured_changes is None
+            ):
+                result.append(node)
+        return tuple(result)
+
+
+def _guest_snapshot(inputs: Mapping[str, str]) -> str:
+    return hashlib.sha256(json.dumps(dict(inputs), sort_keys=True).encode()).hexdigest()
+
+
+class TestInputRecorder:
+    """Postsubmit observation of I/O and canonical cached-input use reports.
+
+    No Python call tracing is needed. New threads receive a one-shot ownership
+    callback; existing background observers are excluded. Unobserved children,
+    escaping threads and network activity leave the node opaque and selected.
+    """
+
+    def __init__(self, root: Path, context: str) -> None:
+        self.root = root.resolve()
+        self.prefix = str(self.root) + os.sep
+        self.directory = observation_directory(context)
+        from molt.build_record import trim_if_due
+
+        self.directory.parent.mkdir(parents=True, exist_ok=True)
+        trim_if_due(self.directory.parent)
+        guest_inputs = {
+            path: blob
+            for path, blob in RepositoryTree.from_worktree(self.root).blobs.items()
+            if path.startswith(GUEST_INPUT_PREFIXES)
+        }
+        self.snapshot = _guest_snapshot(guest_inputs)
+        _write_observation(
+            self.directory,
+            "snapshot:" + self.snapshot,
+            {"guest_inputs": guest_inputs},
+        )
+        self.cwd = os.getcwd()
+        self.node: str | None = None
+        self.reads: set[str] = set()
+        self.directories: set[str] = set()
+        self.threads: set[int] = set()
+        self.complete = True
+        self._busy = threading.local()
+        self._previous_thread_profile = None
+        self._profile_callback = self._thread_enter
+        self._started = weakref.WeakKeyDictionary()
+        self._epoch = object()
+        self._thread_start = None
+        self._start_wrapper = None
+        sys.addaudithook(self._audit)
+
+    def inventory(self, nodeids: Iterable[str], whole_files: Iterable[str]) -> None:
+        groups: dict[str, list[str]] = {}
+        for node in nodeids:
+            groups.setdefault(node.partition("::")[0], []).append(node)
+        for test in whole_files:
+            if test in groups:
+                _write_observation(
+                    self.directory,
+                    test,
+                    {
+                        "nodes": sorted(set(groups[test])),
+                        "snapshot": self.snapshot,
+                        "collection": _read_observation(
+                            self.directory, "collection:" + test
+                        ),
+                    },
+                )
+
+    def add_reads(self, record: Mapping) -> None:
+        self.reads.update(record["files"])
+        self.directories.update(record["directories"])
+        self.complete = self.complete and record["complete"]
+
+    @contextmanager
+    def fixture_reads(self):
+        """Attribute cached fixtures to every later consumer, including nesting."""
+        prior = self.reads, self.directories, self.complete
+        self.reads, self.directories, self.complete = set(), set(), True
+        captured = {}
+        try:
+            yield captured
+        finally:
+            captured.update(
+                files=self.reads, directories=self.directories, complete=self.complete
+            )
+            self.reads, self.directories, self.complete = prior
+            self.add_reads(captured)
+
+    def _relative(self, value: object) -> str | None:
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            return None
+        try:
+            raw = os.fsdecode(value)
+            absolute = os.path.normpath(os.path.join(self.cwd, raw))
+            if absolute == str(self.root):
+                return "."
+            if absolute.startswith(self.prefix):
+                return Path(absolute).relative_to(self.root).as_posix()
+        except (OSError, ValueError, TypeError):
+            pass
+        return None
+
+    def _thread_enter(self, frame, event, argument):
+        # Disable profiling at the first event, before executing the thread's
+        # body. The weak ownership map neither retains threads nor changes GC.
+        sys.setprofile(None)
+        if self._started.get(threading.current_thread()) is self._epoch:
+            self.threads.add(threading.get_ident())
+
+    def _audit(self, event: str, args: tuple) -> None:
+        if (
+            self.node is None
+            or threading.get_ident() not in self.threads
+            or getattr(self._busy, "active", False)
+        ):
+            return
+        self._busy.active = True
+        try:
+            if event in {
+                "subprocess.Popen",
+                "os.system",
+                "os.fork",
+                "os.forkpty",
+                "os.posix_spawn",
+                "os.exec",
+                "os.chdir",
+            } or event.startswith("socket."):
+                self.complete = False
+            elif event == "molt.input_use" and len(args) == 2:
+                kind, value = args
+                path = self._relative(value)
+                if path is not None:
+                    self.reads.add(path)
+                    if kind in {"directory", "probe"}:
+                        self.directories.add(path)
+            elif event in {"open", "os.listdir", "os.scandir"} and args:
+                path = self._relative(args[0])
+                if path is not None:
+                    if event == "open":
+                        self.reads.add(path)
+                    else:
+                        self.directories.add(path or ".")
+        finally:
+            self._busy.active = False
+
+    def start(self, nodeid: str) -> None:
+        self.node = nodeid
+        self.cwd = os.getcwd()
+        self.reads, self.directories = set(), set()
+        self.threads = {threading.get_ident()}
+        self.complete = not any(thread.is_alive() for thread in self._started)
+        self._epoch = object()
+        self._previous_thread_profile = threading.getprofile()
+        if self._previous_thread_profile is not None:
+            self.complete = False
+            return
+        self._thread_start = threading.Thread.start
+
+        def start_thread(thread, *args, **kwargs):
+            if threading.get_ident() in self.threads:
+                self._started[thread] = self._epoch
+            return self._thread_start(thread, *args, **kwargs)
+
+        self._start_wrapper = start_thread
+        threading.Thread.start = start_thread
+        threading.setprofile(self._profile_callback)
+
+    def finish(self) -> dict:
+        node = self.node
+        if threading.getprofile() is self._profile_callback:
+            threading.setprofile(self._previous_thread_profile)
+        else:
+            self.complete = False
+        if threading.Thread.start is self._start_wrapper:
+            threading.Thread.start = self._thread_start
+        elif self._start_wrapper is not None:
+            self.complete = False
+        if any(thread.is_alive() for thread in self._started):
+            self.complete = False
+        self._start_wrapper = None
+        self.node = None
+        record = {
+            "complete": self.complete,
+            "snapshot": self.snapshot,
+            "files": sorted(self.reads),
+            "directories": sorted(self.directories),
+        }
+        if node is not None:
+            _write_observation(self.directory, node, record)
+        return record
 
 
 # --------------------------------------------------------------------------
@@ -977,7 +1404,9 @@ class DependencyGraph:
                 selected.append(test)
         return tuple(selected)
 
-    def direct_readers(self, changed: Iterable[str]) -> tuple[str, ...]:
+    def direct_readers(
+        self, changed: Iterable[str], *, observations: ObservedTestInputs | None = None
+    ) -> tuple[str, ...]:
         """Tests at the first hop, without walking their import closure.
 
         The existing scanner already records each test's direct data reads,
@@ -989,6 +1418,14 @@ class DependencyGraph:
         directories = {
             str(parent) for path in read for parent in PurePosixPath(path).parents
         }
+        coarse = frozenset(
+            path
+            for path in read
+            if observations is not None and not observations.refines(path)
+        )
+        coarse_directories = {
+            str(parent) for path in coarse for parent in PurePosixPath(path).parents
+        }
         selected = []
         for test in self.tests:
             inputs = self.inputs[test]
@@ -996,14 +1433,32 @@ class DependencyGraph:
                 node_path(node)
                 for node in inputs.roots | self.nodes.get(test, Dependencies()).execs
             }
-            if (
+            source_change = (
                 test in changed
-                or sources & changed
+                or any(
+                    not path.startswith("src/molt/stdlib/")
+                    for path in sources & changed
+                )
                 or any(conftest in changed for conftest in self.conftests[test])
-                or inputs.files & read
-                or inputs.directories & directories
-            ):
+                or bool(
+                    inputs.files & coarse or inputs.directories & coarse_directories
+                )
+            )
+            if source_change:
                 selected.append(test)
+            else:
+                static_reader = bool(
+                    sources & changed
+                    or inputs.files & read
+                    or inputs.directories & directories
+                )
+                selected.extend(
+                    observations.readers(test, read, retain_unknown=static_reader)
+                    if observations is not None
+                    else (test,)
+                    if static_reader
+                    else ()
+                )
         return tuple(selected)
 
     def dependencies(self, test: str) -> frozenset[str]:
@@ -1197,7 +1652,9 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
                 reached.execs | calls, reached.files, reached.directories
             )
     configuration = tree.read(
-        path for path in (PYPROJECT, GENERATOR_MANIFEST) if path in tree.blobs
+        path
+        for path in (PYPROJECT, GENERATOR_MANIFEST, "tools/proof_plan.toml")
+        if path in tree.blobs
     )
     sync_edges, output_edges = _generator_edges(
         configuration.get(GENERATOR_MANIFEST), resolver.files
@@ -1208,6 +1665,11 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
             current.execs | frozenset(tools), current.files, current.directories
         )
     plugins = _pytest_plugins(configuration.get(PYPROJECT))
+    observed_targets = observed_test_targets(
+        tomllib.loads(configuration.get("tools/proof_plan.toml", b"").decode()).get(
+            "command", ()
+        )
+    )
     pytest_configuration = frozenset(
         path for path in (PYPROJECT,) if path in configuration
     )
@@ -1222,7 +1684,13 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
         )
         conftests[test] = chain
         inputs[test] = _test_inputs(
-            resolver, test, nodes, chain, facts, plugins, pytest_configuration
+            resolver,
+            test,
+            nodes,
+            chain,
+            facts,
+            (*plugins, OBSERVED_PLUGIN) if test in observed_targets else plugins,
+            pytest_configuration,
         )
     stats["graph_seconds"] = round(time.perf_counter() - started, 4)
     stats["tests"] = len(tests)
@@ -1390,6 +1858,7 @@ def graph_selection(
     mode: LandingMode = LandingMode.PRESUBMIT,
     recent_failures: Iterable[str] = (),
     foreign_cells: frozenset[str] = frozenset(),
+    observations: ObservedTestInputs | None = None,
 ) -> GraphSelection:
     commands = tuple(commands)
     envelopes, others = landing_envelopes(
@@ -1410,7 +1879,7 @@ def graph_selection(
                     (
                         *recent,
                         *(path for path in changed if path in graph.tests),
-                        *graph.direct_readers(changed),
+                        *graph.direct_readers(changed, observations=observations),
                     )
                 )
             )
@@ -1418,8 +1887,14 @@ def graph_selection(
             selected = graph.select(changed)
         case _:
             assert_never(mode)
+    whole_files = {target for target in selected if "::" not in target}
+    selected = tuple(
+        target
+        for target in selected
+        if "::" not in target or target.partition("::")[0] not in whole_files
+    )
     for test in selected:
-        owner = _owned_by(test, envelopes)
+        owner = _owned_by(test.partition("::")[0], envelopes)
         if owner is not None:
             envelope = envelopes[owner]
             # Every presubmit graph target is a changed test, direct reader or
@@ -1433,7 +1908,7 @@ def graph_selection(
                 envelope.cells,
             )
         else:
-            other = _owned_by(test, others)
+            other = _owned_by(test.partition("::")[0], others)
             deferred[test] = others[other] if other is not None else ()
     foreign = []
     for command in commands:
@@ -1445,7 +1920,7 @@ def graph_selection(
             dict.fromkeys(
                 target
                 for test in selected
-                if (owner := _owned_by(test, eligible)) is not None
+                if (owner := _owned_by(test.partition("::")[0], eligible)) is not None
                 for target in ((test,) if owner != test else eligible[owner].targets)
             )
         )

@@ -359,15 +359,36 @@ class GateConfig:
         """The tests that read a touched path, and where each one runs."""
         if self.dependency_graph is None or not (touched or recent_failures):
             return None
-        from tools.test_dependency_graph import graph_selection
+        from tools.test_dependency_graph import (
+            ObservedTestInputs,
+            graph_selection,
+            observation_context,
+            observation_directory,
+            observed_test_targets,
+        )
+
+        graph = self.dependency_graph()
+        qualified = observed_test_targets(self.commands)
 
         return graph_selection(
-            self.dependency_graph(),
+            graph,
             touched,
             self.commands,
             mode=mode,
             recent_failures=recent_failures,
             foreign_cells=self.foreign_cells(),
+            observations=(
+                ObservedTestInputs(
+                    observation_directory(
+                        observation_context(graph.tree, self.commands)
+                    ),
+                    targets=qualified,
+                    guest_only=True,
+                    current_inputs=graph.tree.blobs,
+                )
+                if mode is LandingMode.PRESUBMIT and qualified
+                else None
+            ),
         )
 
     def foreign_cells(self) -> frozenset[str]:
@@ -930,6 +951,60 @@ class GateConfig:
             )
             phase.append(gate)
         selected = explicit + graph_consumers + consumers
+        if mode is LandingMode.POSTSUBMIT and self.dependency_graph is not None:
+            from tools.proof_command_argv import pytest_arguments, pytest_run_selections
+            from tools.test_dependency_graph import (
+                OBSERVED_CONTEXT_OPTION,
+                OBSERVED_PLUGIN,
+                observation_context,
+                observed_test_targets,
+            )
+
+            qualified = observed_test_targets(self.commands)
+            if not qualified:
+                return selected, matched_rules
+            context = observation_context(self.dependency_graph().tree, self.commands)
+            observed_gates = []
+            for gate in selected:
+                argv = (
+                    tuple(shlex.split(gate.command))
+                    if isinstance(gate.command, str)
+                    else gate.command
+                )
+                arguments = (
+                    pytest_arguments(argv, root=self.root) if gate.pytest else None
+                )
+                targets = (
+                    pytest_run_selections(arguments, root=self.root)
+                    if arguments is not None
+                    else ()
+                )
+                subjects = sorted(
+                    path
+                    for path in qualified
+                    if any(
+                        path == target.partition("::")[0]
+                        or path.startswith(target.rstrip("/") + "/")
+                        for target in targets
+                    )
+                )
+                if subjects:
+                    options = (
+                        "-p",
+                        OBSERVED_PLUGIN,
+                        OBSERVED_CONTEXT_OPTION,
+                        context,
+                        *("--molt-observed-target=" + path for path in subjects),
+                    )
+                    gate = replace(
+                        gate,
+                        command=(*argv, *options),
+                        collection_command=(*gate.collection_command, *options)
+                        if gate.collection_command is not None
+                        else None,
+                    )
+                observed_gates.append(gate)
+            selected = observed_gates
         return selected, matched_rules
 
     def cargo_outputs(

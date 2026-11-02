@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import textwrap
 import tomllib
+import json
+import sys
+import hashlib
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 
@@ -21,10 +25,493 @@ from tools.test_dependency_graph import (
     build_graph,
     graph_selection,
     landing_envelopes,
+    ObservedTestInputs,
+    OBSERVED_SCHEMA,
+    TestInputRecorder as InputRecorder,
+    _observation_path,
+    observation_context,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
+
+
+def test_observed_owner_includes_its_dynamic_plugin():
+    from tools.test_dependency_graph import load_graph
+
+    inputs = load_graph(REPO_ROOT).dependencies(
+        "tests/cli/test_cli_import_collection.py"
+    )
+    assert {
+        "tests/observed_inputs.py",
+        "tools/test_dependency_graph.py",
+        "tools/molt_dev_policy.py",
+    } <= inputs
+
+
+def _observed(directory: Path, key: str, **record) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    _observation_path(directory, key).write_text(
+        json.dumps({"schema": OBSERVED_SCHEMA, "key": key, **record}), encoding="utf-8"
+    )
+
+
+def _observed_pair(directory: Path, test: str) -> ObservedTestInputs:
+    nodes = [test + "::test_left", test + "::test_right"]
+    _observed(
+        directory,
+        test,
+        nodes=nodes,
+        collection={"complete": True, "files": [], "directories": []},
+    )
+    for node, path in zip(
+        nodes, ("config/data.toml", "config/other.toml"), strict=True
+    ):
+        _observed(directory, node, complete=True, files=[path], directories=[])
+    return ObservedTestInputs(directory)
+
+
+def test_observed_data_readers_keep_unknown_nodes_and_collection_inputs(tmp_path):
+    test = "tests/test_assets.py"
+    observed = _observed_pair(tmp_path, test)
+    assert observed.readers(test, ["config/data.toml"]) == (test + "::test_left",)
+    assert observed.readers(test, ["config/other.toml"]) == (test + "::test_right",)
+    _observation_path(tmp_path, test + "::test_right").unlink()
+    assert observed.readers(test, ["config/data.toml"]) == (
+        test + "::test_left",
+        test + "::test_right",
+    )
+    _observed(
+        tmp_path,
+        test,
+        nodes=[test + "::test_left"],
+        collection={"complete": True, "files": ["config/data.toml"], "directories": []},
+    )
+    assert observed.readers(test, ["config/data.toml"]) == (test,)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,
+        {},
+        {"complete": False},
+        {"complete": True, "files": [3], "directories": []},
+    ],
+)
+def test_observed_incomplete_or_malformed_node_cannot_be_dropped(tmp_path, record):
+    test = "tests/test_assets.py"
+    observed = _observed_pair(tmp_path, test)
+    path = _observation_path(tmp_path, test + "::test_left")
+    if record is None:
+        path.unlink()
+    else:
+        _observed(tmp_path, test + "::test_left", **record)
+    assert test + "::test_left" in observed.readers(test, ["unrelated.dat"])
+
+
+def test_observed_directory_reads_cover_added_and_deleted_children(tmp_path):
+    test = "tests/test_assets.py"
+    observed = _observed_pair(tmp_path, test)
+    _observed(
+        tmp_path,
+        test + "::test_left",
+        complete=True,
+        files=[],
+        directories=["runtime/pkg"],
+    )
+    assert observed.readers(test, ["runtime/pkg/new.rs"]) == (test + "::test_left",)
+    assert observed.readers(test, ["runtime/pkg/sub/deleted.rs"]) == (
+        test + "::test_left",
+    )
+    assert observed.readers(test, ["runtime/other/new.rs"]) == ()
+
+
+def test_observed_context_binds_host_configuration_environment_and_source(
+    graph, monkeypatch
+):
+    context = observation_context(graph.tree, ())
+    monkeypatch.setenv("CODEX_TOOL_CALL_ID", "another-shell-call")
+    assert observation_context(graph.tree, ()) == context
+    blobs = dict(graph.tree.blobs)
+    blobs["runtime/crate/src/a.rs"] = "guest-edited"
+    assert observation_context(replace(graph.tree, blobs=blobs), ()) == context
+    blobs["docs/agent/V1_HANDOFF_FINDINGS.md"] = "ledger-edited"
+    assert observation_context(replace(graph.tree, blobs=blobs), ()) == context
+    blobs["config/data.toml"] = "configuration-edited"
+    assert observation_context(replace(graph.tree, blobs=blobs), ()) != context
+    monkeypatch.setenv("HF633_CONTEXT_INPUT", "different")
+    assert observation_context(graph.tree, ()) != context
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelopes(
+    tmp_path,
+    complete,
+):
+    root = _repository(
+        tmp_path / "repo",
+        {
+            **_FILES,
+            "tests/test_assets.py": "from pathlib import Path\ndef test_left():\n    return Path('config/data.toml').read_text()\ndef test_right():\n    return Path('config/other.toml').read_text()\n",
+        },
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    observed = _observed_pair(tmp_path / "reads", "tests/test_assets.py")
+    assert "tests/test_assets.py" in graph.direct_readers(["config/data.toml"])
+    selected = graph.direct_readers(["config/data.toml"], observations=observed)
+    assert "tests/test_assets.py::test_left" in selected
+    assert "tests/test_assets.py::test_right" not in selected
+    assert "tests/test_assets.py" in graph.direct_readers(
+        ["tests/test_assets.py"], observations=observed
+    )
+    scoped = ObservedTestInputs(tmp_path / "reads", guest_only=True)
+    assert "tests/test_assets.py" in graph.direct_readers(
+        ["config/data.toml"], observations=scoped
+    )
+    _observed(
+        tmp_path / "reads",
+        "tests/test_assets.py::test_left",
+        complete=complete,
+        files=["runtime/crate/src/a.rs"],
+        directories=[],
+    )
+    assert "tests/test_assets.py::test_left" in graph.direct_readers(
+        ["runtime/crate/src/a.rs"], observations=observed
+    )
+    _observed_pair(tmp_path / "reads", "tests/test_assets.py")
+    command = {
+        "id": "fixture",
+        "tiers": ["pre-push"],
+        "pytest": ["tests/test_assets.py"],
+        "toolchains": ["python"],
+        "argv": ["python", "-m", "pytest"],
+        "cell": "fixture-cell",
+    }
+    selection = graph_selection(
+        graph, ["config/data.toml"], [command], observations=observed
+    )
+    envelope = selection.run["tests/test_assets.py::test_left"]
+    assert envelope.targets == ("tests/test_assets.py::test_left",)
+    assert envelope.cells == ("fixture-cell",)
+    assert envelope.toolchains == ("python",)
+    recent = graph_selection(
+        graph,
+        ["config/data.toml"],
+        [command],
+        observations=observed,
+        recent_failures=["tests/test_assets.py::test_left"],
+    )
+    assert "tests/test_assets.py" in recent.selected
+    assert "tests/test_assets.py::test_left" not in recent.selected
+    postsubmit = graph_selection(
+        graph,
+        ["config/data.toml"],
+        [command],
+        mode=LandingMode.POSTSUBMIT,
+        observations=observed,
+    )
+    assert postsubmit.run["tests/test_assets.py"].targets == ("tests/test_assets.py",)
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_observed_plugin_records_real_reads_and_shared_fixture_consumers(
+    tmp_path, monkeypatch, workers
+):
+    from tools.test_dependency_graph import observation_directory
+
+    root = _repository(
+        tmp_path / "repo",
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\n",
+            "conftest.py": 'pytest_plugins = ["tests.conftest"]\n',
+            "runtime/a.rs": "a",
+            "runtime/b.rs": "b",
+            "tests/test_reads.py": """
+            from pathlib import Path
+            import pytest
+            ROOT = Path(__file__).resolve().parents[1]
+            @pytest.fixture(scope="session")
+            def shared():
+                return (ROOT / "runtime/a.rs").read_text()
+            @pytest.mark.parametrize("tag", ["first", "second"])
+            def test_shared(shared, tag):
+                assert shared == "a"
+            def test_other():
+                assert (ROOT / "runtime/b.rs").read_text() == "b"
+            def test_dynamic(request):
+                assert request.getfixturevalue("shared") == "a"
+            @pytest.fixture(params=["a", "b"])
+            def per_case(request):
+                return (ROOT / ("runtime/" + request.param + ".rs")).read_text()
+            def test_per_case(per_case):
+                assert per_case in {"a", "b"}
+        """,
+        },
+    )
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    context = "a" * 64
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            str(workers),
+            "-c",
+            str(REPO_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(root),
+            "-p",
+            "tests.observed_inputs",
+            "--molt-observed-context",
+            context,
+            str(root / "tests/test_reads.py"),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = ObservedTestInputs(
+        observation_directory(context),
+        current_inputs=RepositoryTree.from_worktree(root).blobs,
+    )
+    assert set(observed.readers("tests/test_reads.py", ["runtime/a.rs"])) == {
+        "tests/test_reads.py::test_shared[first]",
+        "tests/test_reads.py::test_shared[second]",
+        "tests/test_reads.py::test_per_case[a]",
+        "tests/test_reads.py::test_dynamic",
+    }
+    assert set(observed.readers("tests/test_reads.py", ["runtime/b.rs"])) == {
+        "tests/test_reads.py::test_other",
+        "tests/test_reads.py::test_per_case[b]",
+    }
+
+
+@pytest.mark.parametrize("phase", ["collection", "setup", "call", "teardown"])
+def test_interrupted_observation_retains_static_readers(tmp_path, monkeypatch, phase):
+    from tools.test_dependency_graph import observation_directory
+
+    test = "tests/test_interrupt.py"
+    root = _repository(
+        tmp_path / "repo",
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\n",
+            "conftest.py": 'pytest_plugins = ["tests.conftest"]\n',
+            "runtime/later.rs": "later",
+            test: f"""
+            from pathlib import Path
+            import pytest
+            PHASE = {phase!r}
+            if PHASE == "collection":
+                raise KeyboardInterrupt
+            @pytest.fixture
+            def capture():
+                if PHASE == "setup":
+                    raise KeyboardInterrupt
+                yield
+                if PHASE == "teardown":
+                    raise KeyboardInterrupt
+            def test_interrupt(capture):
+                if PHASE == "call":
+                    raise KeyboardInterrupt
+                if False:
+                    Path("runtime/later.rs").read_text()
+            """,
+        },
+    )
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    context = "c" * 64
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "0",
+            "-c",
+            str(REPO_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(root),
+            "-p",
+            "tests.observed_inputs",
+            "--molt-observed-context",
+            context,
+            str(root / test),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    directory = observation_directory(context)
+    key = "collection:" + test if phase == "collection" else test + "::test_interrupt"
+    record = json.loads(_observation_path(directory, key).read_text(encoding="utf-8"))
+    assert record["complete"] is False
+    assert "runtime/later.rs" not in record["files"]
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    static = graph.direct_readers(["runtime/later.rs"])
+    assert test in static
+    selected = graph.direct_readers(
+        ["runtime/later.rs"], observations=ObservedTestInputs(directory)
+    )
+    # A missing report must never turn an unread path into qualified absence.
+    expected = test if phase == "collection" else test + "::test_interrupt"
+    assert expected in selected
+    assert {node.partition("::")[0] for node in selected} == set(static)
+
+
+def test_observed_cached_file_argument_and_opaque_child_stay_selected(
+    tmp_path, monkeypatch
+):
+    from molt.cli.module_source import _source_content_sha256
+
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    source = REPO_ROOT / "runtime/molt-runtime/src/lib.rs"
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert _source_content_sha256(source) == expected
+    recorder = InputRecorder(REPO_ROOT, "b" * 64)
+    recorder.start("tests/test_reads.py::test_cached")
+    try:
+        assert _source_content_sha256(source) == expected
+        assert (
+            _source_content_sha256(REPO_ROOT / "runtime/hf633_not_created.rs") is None
+        )
+    finally:
+        record = recorder.finish()
+    assert "runtime/molt-runtime/src/lib.rs" in record["files"]
+    assert "runtime/hf633_not_created.rs" in record["files"]
+    recorder.start("tests/test_reads.py::test_child")
+    try:
+        sys.audit("subprocess.Popen", "unobserved-child", [], None, None)
+    finally:
+        opaque = recorder.finish()
+    assert opaque["complete"] is False
+
+
+def test_observed_thread_ownership_excludes_existing_observers(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    go, done = threading.Event(), threading.Event()
+    source = REPO_ROOT / "runtime/molt-runtime/src/lib.rs"
+
+    def background():
+        go.wait()
+        source.read_bytes()
+        done.set()
+
+    unrelated = threading.Thread(target=background)
+    unrelated.start()
+    recorder = InputRecorder(REPO_ROOT, "c" * 64)
+    recorder.start("tests/test_reads.py::test_thread")
+    try:
+        go.set()
+        assert done.wait(10)
+        assert "runtime/molt-runtime/src/lib.rs" not in recorder.reads
+        owned = threading.Thread(target=source.read_bytes)
+        owned.start()
+        owned.join(10)
+        assert not owned.is_alive()
+    finally:
+        unrelated.join(10)
+        record = recorder.finish()
+    assert record["complete"] is True
+    assert "runtime/molt-runtime/src/lib.rs" in record["files"]
+
+
+def test_cached_use_report_does_not_activate_or_reopen_inputs(tmp_path, monkeypatch):
+    from molt import input_report
+
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    recorder = InputRecorder(REPO_ROOT, "d" * 64)
+    source = REPO_ROOT / "runtime/not-created-hf633.rs"
+    prior = input_report.active()
+    recorder.start("tests/test_reads.py::test_metadata")
+    try:
+        input_report.report_use(source)
+        assert input_report.active() == prior
+    finally:
+        record = recorder.finish()
+    assert record["files"] == ["runtime/not-created-hf633.rs"]
+    assert record["directories"] == []
+    assert record["complete"] is True
+
+
+def test_observed_dependency_drift_and_mixed_generations_retain_readers(tmp_path):
+    test = "tests/test_assets.py"
+    _observed_pair(tmp_path, test)
+    guest = {"runtime/a.rs": "first", "runtime/b.rs": "second"}
+    snapshot = hashlib.sha256(json.dumps(guest, sort_keys=True).encode()).hexdigest()
+    _observed(tmp_path, "snapshot:" + snapshot, guest_inputs=guest)
+    _observed(
+        tmp_path,
+        test,
+        nodes=[test + "::test_left", test + "::test_right"],
+        snapshot=snapshot,
+        collection=dict(complete=True, files=[], directories=[], snapshot=snapshot),
+    )
+    for name, path in (("left", "runtime/a.rs"), ("right", "runtime/b.rs")):
+        _observed(
+            tmp_path,
+            test + "::test_" + name,
+            complete=True,
+            files=[path],
+            directories=[],
+            snapshot=snapshot,
+        )
+    observed = ObservedTestInputs(tmp_path, current_inputs=guest)
+    assert observed.readers(test, ["runtime/new.rs"]) == ()
+    # A prior edit to a.rs may have introduced a conditional read of new.rs.
+    drifted = ObservedTestInputs(
+        tmp_path, current_inputs={**guest, "runtime/a.rs": "new"}
+    )
+    assert drifted.readers(test, ["runtime/new.rs"]) == (test + "::test_left",)
+    assert drifted.readers(test, ["runtime/new.rs"], retain_unknown=False) == (
+        test + "::test_left",
+    )
+    _observed(
+        tmp_path,
+        test + "::test_right",
+        complete=True,
+        files=[],
+        directories=[],
+        snapshot="different capture",
+    )
+    assert observed.readers(test, ["runtime/new.rs"]) == (test + "::test_right",)
+
+
+def test_partial_postsubmit_preserves_valid_older_node_snapshots(tmp_path):
+    test = "tests/test_assets.py"
+    old = {"runtime/a.rs": "first", "runtime/b.rs": "second"}
+    new = {**old, "runtime/a.rs": "changed"}
+    generations = []
+    for guest in (old, new):
+        snapshot = hashlib.sha256(
+            json.dumps(guest, sort_keys=True).encode()
+        ).hexdigest()
+        _observed(tmp_path, "snapshot:" + snapshot, guest_inputs=guest)
+        generations.append(snapshot)
+    before, current = generations
+    nodes = [test + "::test_left", test + "::test_right"]
+    for node, path in zip(nodes, old):
+        _observed(
+            tmp_path, node, complete=True, files=[path], directories=[], snapshot=before
+        )
+    collection = dict(complete=True, files=[], directories=[], snapshot=current)
+    _observed(tmp_path, test, nodes=nodes, snapshot=current, collection=collection)
+    observed = ObservedTestInputs(tmp_path, current_inputs=new)
+    # A new collection must not discard an older unchanged nonreader.
+    assert observed.readers(test, ["runtime/other.rs"]) == (nodes[0],)
+    # A changed module-level guest input can change both nodes' demand.
+    collection["files"] = ["runtime/a.rs"]
+    _observed(tmp_path, test, nodes=nodes, snapshot=current, collection=collection)
+    assert observed.readers(test, ["runtime/other.rs"]) == tuple(nodes)
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -442,6 +929,35 @@ def test_graph_pytest_is_failure_first_and_maxfail_one(landing_graph):
         for argument in gate.command
         if argument.startswith("tests/")
     ] == ["tests/test_recent.py", "tests/test_changed.py", "tests/test_direct.py"]
+
+
+def test_postsubmit_observes_only_the_qualified_command_cohort(
+    landing_graph, monkeypatch
+):
+    # Use the real pytest parser/config while keeping the graph obligation tiny.
+    qualified = "tests/cli/test_cli_import_collection.py"
+    commands = [
+        {"id": "qualified", "pytest": [qualified], "pytest_observed_inputs": True}
+    ]
+    config = GateConfig.load(COMMITTED_GATES)
+    config.commands = tuple(commands)
+    config.dependency_graph = lambda: landing_graph
+    # The real rule is allowed to absorb the graph's request; recording must
+    # still be attached to that retained command, never only to graph batches.
+    config.rules = [
+        rule for rule in config.rules if rule.name == "backend-environment-contract"
+    ]
+    gates, _ = config.select(
+        ["src/molt/cli/backend_daemon_logs.py"], mode=LandingMode.POSTSUBMIT
+    )
+    observing = [gate for gate in gates if "--molt-observed-context" in gate.command]
+    assert observing
+    assert all(
+        "--molt-observed-target=" + qualified in gate.command for gate in observing
+    )
+    assert all("tests.observed_inputs" in gate.command for gate in observing)
+    pre, _ = config.select(["src/molt/cli/backend_daemon_logs.py"])
+    assert all("--molt-observed-context" not in gate.command for gate in pre)
 
 
 def test_a_changed_test_runs_its_slow_cases_and_recent_failure_needs_no_path_change(
