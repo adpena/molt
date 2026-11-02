@@ -383,6 +383,9 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
         "cas-race",
         "bootstrap",
         "deferred",
+        "invalid-policy",
+        "runner-fault",
+        "unresolved-cancellation",
     ],
 )
 def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
@@ -410,6 +413,20 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         assert selected.head_sha() == head == commit and green == starting_green
         assert queue.last_green(selected) == starting_green
         output.mkdir(parents=True)
+        if outcome == "invalid-policy":
+            # Main's own gate policy is invalid: its commits decided this.
+            raise CandidateFailure("invalid local gate binding; executed=0")
+        if outcome == "runner-fault":
+            raise OSError("runner storage unavailable")
+        if outcome == "unresolved-cancellation":
+            # HF-655: a landing preempted postsubmit, and the cancelled gate's
+            # guard left its Cargo custody unresolved. No gate failed.
+            queue.enqueue(paths, head=head, worktree=repo, branch="lane/next")
+            assert cancelled()
+            raise DriverError(
+                "gate block stopped at cargo test: Cargo quarantine ownership "
+                "or recovery is unresolved"
+            )
         if outcome == "deferred":
             selection = molt_dev_gates.prerequisite_receipt_path(
                 output / "receipt.json"
@@ -469,7 +486,9 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     (record,) = queue.postsubmit_results(paths)
     expected = (
         "red"
-        if outcome == "cas-race"
+        if outcome == "invalid-policy"
+        else "inconclusive"
+        if outcome in {"cas-race", "runner-fault", "unresolved-cancellation"}
         else "cancelled"
         if outcome.startswith("cancelled")
         else "green"
@@ -478,10 +497,14 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     )
     assert record["status"] == state.value == expected
     assert record["commit"] == head and record["last_green"] == starting_green
-    assert record["suspects"] == ([head, base] if starting_green is None else [head])
+    # Only a candidate failure implicates commits or proposes a restoration.
+    assert record["suspects"] == ([head] if expected == "red" else [])
     assert record["revert_commands"] == (
-        [] if starting_green is None else [f"git revert --no-edit {head}"]
+        [f"git revert --no-edit {head}"] if expected == "red" else []
     )
+    if expected == "inconclusive":
+        assert record["error"]
+        assert queue.recent_postsubmit_failures(paths) == ()
     assert git.head_sha() == head, "postsubmit never reverts main on its own"
     assert queue.last_green(git) == (
         head if outcome in {"green", "cas-race", "bootstrap", "deferred"} else base

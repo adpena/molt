@@ -102,9 +102,16 @@ class LandingStatus(StrEnum):
 
 
 class PostsubmitStatus(StrEnum):
+    """Main's health verdict (docs/design/landing_queue.md, HF-655).
+
+    Only RED implicates main's commits: a ``CandidateFailure``, such as a
+    gate's own failure. A runner, guard or storage stop is INCONCLUSIVE.
+    """
+
     GREEN = "green"
     RED = "red"
     CANCELLED = "cancelled"
+    INCONCLUSIVE = "inconclusive"
 
 
 def last_green(git) -> str | None:
@@ -154,7 +161,11 @@ def recent_postsubmit_failures(
         match PostsubmitStatus(record["status"]):
             case PostsubmitStatus.RED:
                 failed.update(dict.fromkeys(record["failing_tests"]))
-            case PostsubmitStatus.GREEN | PostsubmitStatus.CANCELLED:
+            case (
+                PostsubmitStatus.GREEN
+                | PostsubmitStatus.CANCELLED
+                | PostsubmitStatus.INCONCLUSIVE
+            ):
                 pass
             case state:
                 assert_never(state)
@@ -334,16 +345,23 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             state = PostsubmitStatus.GREEN
     except GateCancellation as exc:
         state, error = PostsubmitStatus.CANCELLED, str(exc)
-    except (DriverError, OSError, ValueError) as exc:
+    except CandidateFailure as exc:
+        # Main's own commits decided this failure (a gate failed for its own
+        # reason, or main's gate policy is invalid).
         state, error = PostsubmitStatus.RED, str(exc)
+    except (DriverError, OSError, ValueError) as exc:
+        # A runner, guard or storage stop cannot implicate main's commits.
+        state, error = PostsubmitStatus.INCONCLUSIVE, str(exc)
     if state is not PostsubmitStatus.GREEN:
         try:
             deferred = read_deferred()
             failed = _postsubmit_failures(output, sandbox.repo)
         except (DriverError, OSError, ValueError) as exc:
+            # The receipt records the read error; the verdict stands.
             error = f"{error}; {exc}"
-            if state is not PostsubmitStatus.CANCELLED:
-                state = PostsubmitStatus.RED
+    if state is not PostsubmitStatus.RED:
+        # Only a candidate failure implicates commits or proposes reverts.
+        suspects, reverts = [], []
     _write_json(
         receipt,
         {
@@ -379,6 +397,8 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             )
         case PostsubmitStatus.CANCELLED:
             _step("postsubmit cancelled; landing takes priority")
+        case PostsubmitStatus.INCONCLUSIVE:
+            _warn(f"postsubmit inconclusive at {head}: {error}; receipt {receipt}")
         case _:
             assert_never(state)
     return state
@@ -1313,7 +1333,9 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
                 case PostsubmitStatus.GREEN:
                     _ok("landing queue is empty; main is green")
                     return EXIT_OK
-                case PostsubmitStatus.RED:
+                case PostsubmitStatus.RED | PostsubmitStatus.INCONCLUSIVE:
+                    # An inconclusive run waits for an explicit `queue run`;
+                    # the runner does not retry infrastructure in a loop.
                     return EXIT_FAIL
                 case PostsubmitStatus.CANCELLED:
                     # A request may have withdrawn, or upstream may have moved
