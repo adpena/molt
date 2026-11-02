@@ -178,17 +178,11 @@ if g.exists():c.write_text('completed after launcher exit')
     )
     assert launcher.returncode == 0, launcher.stderr
     pid = trunk_loop.acknowledge(launcher.stdout)
-
-    def child_alive() -> bool:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        return True
+    from molt.process_model import pid_alive
 
     # The detached child's liveness is the progress signal; the harness's
     # per-test timeout owns hang detection, so load cannot fail a slow start.
-    while not ready.exists() and child_alive():
+    while not ready.exists() and pid_alive(pid):
         time.sleep(0.01)
     try:
         assert json.loads(ready.read_text(encoding="utf-8")) == {
@@ -198,7 +192,7 @@ if g.exists():c.write_text('completed after launcher exit')
         assert pid != os.getsid(0)
     finally:
         release.write_text("parent already exited", encoding="utf-8")
-    while not complete.exists() and child_alive():
+    while not complete.exists() and pid_alive(pid):
         time.sleep(0.01)
     assert complete.read_text(encoding="utf-8") == "completed after launcher exit"
 
