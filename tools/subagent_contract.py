@@ -24,11 +24,28 @@ __all__ = [
     "NO_ENDING_ON_PROMISES",
     "NO_FAKES",
     "PREMISE_VERIFICATION",
+    "PROJECT_IDENTITY",
     "TRIALITY_WIRING",
     "VERIFY_CHANGED_CONTRACT",
     "WEB_AUTHORITY",
     "standard_contract",
 ]
+
+# Mandatory identity is outside the selectable routing-block registry.
+PROJECT_IDENTITY = """\
+Molt is a world-class, early-stage ahead-of-time (AOT) compiler for Python, not an interpreter.
+Build it the way leading compilers are built (LLVM and MLIR, Cranelift, rustc, GraalVM Native Image,
+mypyc, Codon). Prove facts at compile and build time in the closed world (spec 0216); compiled code
+calls the runtime only for work it cannot do itself.
+
+Typing is our friend. Identity is typed, never spelled: runtime names are `NameId`; op kinds,
+exceptions and intrinsics are generated closed types; facts live on typed SSA values. Never compare,
+intern, allocate or look up a name that the compiler or the runtime can know: no
+`attr_name_bits_from_bytes`, no byte or str literal of a registered name, no string-keyed fact. When
+the typed form does not exist yet, add it at its one authority (for example the runtime name table)
+and use it; do not spell the name.
+
+On a hot path, measure instructions retired and runtime calls per iteration before and after."""
 
 # --- The named contract blocks -------------------------------------------------------------
 #

@@ -67,6 +67,19 @@ HF-288).
   https://peps.python.org/pep-0659/,
   https://mlir.llvm.org/docs/LangRef/#attributes.
 
+- *Typed symbol APIs and literal refusal (verified 2026-11-02, HF-687).* [F]
+  rustc 1.90's `Symbol` wraps `SymbolIndex`; its internal
+  `SYMBOL_INTERN_STRING_LITERAL` lint rejects string literals passed to
+  `Symbol::intern` and suggests preinterning. CPython's generator collects
+  `_Py_ID` uses and writes `pycore_global_strings.h`. V8's read-only root list
+  includes internalized strings and generates `RootIndex`. Sources:
+  https://github.com/rust-lang/rust/blob/1.90.0/compiler/rustc_span/src/symbol.rs,
+  https://github.com/rust-lang/rust/blob/1.90.0/compiler/rustc_lint/src/internal.rs,
+  https://github.com/python/cpython/blob/v3.12.0/Tools/build/generate_global_objects.py,
+  https://chromium.googlesource.com/v8/v8.git/+/refs/heads/13.1.57/src/roots/roots.h.
+  [I] A typed API closes Molt's registered-name boundary; a literal-refusal
+  census protects the migration until the type system excludes spelling.
+
 **Adopt.** [I] Extend the existing authority, `op_kinds.toml` with
 `tools/gen_op_kinds.py`. Each runtime-call op declares its symbol, arity,
 argument and result ownership, effects (may raise, may call Python) and

@@ -218,7 +218,7 @@ def test_cli_out_writes_a_live_brief_and_prints_only_its_pointer(
         == 0
     )
     text = brief.read_text(encoding="utf-8")
-    assert text.startswith(dp.BRIEF_HEADER)
+    assert text.startswith(sc.PROJECT_IDENTITY + "\n\n" + dp.BRIEF_HEADER + "\n\n")
     assert "Assigned deliverable: Identify the dominant repeated harness cost" in text
     out = capsys.readouterr().out
     assert out.strip() == dp.launch_prompt(brief)
@@ -257,7 +257,7 @@ def test_gate_required_set_matches_module_registry() -> None:
 
 def test_compose_all_contains_every_block() -> None:
     prompt = dp.compose("TASK BODY", bounds=_BOUNDS, sections=None)
-    assert prompt.startswith("TASK BODY")
+    assert prompt.startswith(sc.PROJECT_IDENTITY + "\n\nTASK BODY")
     for name in sc.CONTRACT_CONSTANT_NAMES:
         assert getattr(sc, name) in prompt, f"compose(all) missing {name}"
 
@@ -398,8 +398,8 @@ def test_example_real_lane_prompt_renders() -> None:
         bounds=_BOUNDS,
         sections=["verify", "fakes", "git", "build", "landing", "triality"],
     )
-    # Task body first, then the selected blocks, blank-line separated.
-    assert prompt.startswith(task)
+    # Mandatory identity first, then task and selected routing blocks.
+    assert prompt.startswith(sc.PROJECT_IDENTITY + "\n\n" + task)
     assert "\n\n" in prompt
     # The lane inherits the exact clauses it needs, mechanically:
     assert "Reuse matching evidence" in prompt  # VERIFY_CHANGED_CONTRACT (M05)
@@ -412,3 +412,49 @@ def test_example_real_lane_prompt_renders() -> None:
     assert (
         "Respect operator concurrency limits" not in prompt
     )  # MODEL_TIER not selected
+
+
+@pytest.mark.parametrize("sections", [None, [], ["all"], ["web"], ["git", "verify"]])
+def test_project_identity_is_verbatim_first_and_unselectable(sections) -> None:
+    expected = """\
+Molt is a world-class, early-stage ahead-of-time (AOT) compiler for Python, not an interpreter.
+Build it the way leading compilers are built (LLVM and MLIR, Cranelift, rustc, GraalVM Native Image,
+mypyc, Codon). Prove facts at compile and build time in the closed world (spec 0216); compiled code
+calls the runtime only for work it cannot do itself.
+
+Typing is our friend. Identity is typed, never spelled: runtime names are `NameId`; op kinds,
+exceptions and intrinsics are generated closed types; facts live on typed SSA values. Never compare,
+intern, allocate or look up a name that the compiler or the runtime can know: no
+`attr_name_bits_from_bytes`, no byte or str literal of a registered name, no string-keyed fact. When
+the typed form does not exist yet, add it at its one authority (for example the runtime name table)
+and use it; do not spell the name.
+
+On a hot path, measure instructions retired and runtime calls per iteration before and after."""
+    assert sc.PROJECT_IDENTITY == expected
+    prompt = dp.compose("TASK BODY", bounds=_BOUNDS, sections=sections)
+    assert prompt.startswith(expected + "\n\nTASK BODY")
+    assert prompt.count(expected) == 1
+    assert "PROJECT_IDENTITY" not in sc.CONTRACT_CONSTANT_NAMES
+    assert all("PROJECT_IDENTITY" not in names for names in dp.SECTIONS.values())
+
+
+@pytest.mark.parametrize("sections", ["", "web", "all"])
+def test_cli_sections_cannot_drop_project_identity(tmp_path, capsys, sections) -> None:
+    bounds = tmp_path / "bounds.json"
+    bounds.write_text(json.dumps(asdict(_BOUNDS)), encoding="utf-8")
+    assert (
+        dp.main(
+            [
+                "--task-text",
+                "TASK BODY",
+                "--bounds",
+                str(bounds),
+                "--sections",
+                sections,
+            ]
+        )
+        == 0
+    )
+    prompt = capsys.readouterr().out
+    assert prompt.startswith(sc.PROJECT_IDENTITY + "\n\nTASK BODY")
+    assert prompt.count(sc.PROJECT_IDENTITY) == 1

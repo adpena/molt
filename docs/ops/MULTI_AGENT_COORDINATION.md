@@ -157,6 +157,11 @@ tooling rules and add no work to emitted programs.
 
 ## Startup Discovery
 
+Every composed brief begins with `tools/subagent_contract.py`'s one
+`PROJECT_IDENTITY` constant, including file briefs before their live-file header.
+It is mandatory and cannot be removed with `--sections`; optional routing blocks
+follow the task and validated bounds.
+
 Every dispatch uses `tools.dispatch_prompt.DispatchBounds` (or the CLI's required
 `--bounds` JSON file). Specify `outcome`, `deliverable`, `integration_owner`,
 `proof_owner`, `owned_paths`, `reserved_paths`, `proof_commands`, `budget_minutes`
