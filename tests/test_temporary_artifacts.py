@@ -2737,6 +2737,7 @@ def test_a_removal_that_keeps_failing_becomes_a_loud_error_and_stops(
     )
     owner = _read(lease.generation / "owner.json")
     assert owner["state"] == "retained"
+    assert owner["removal_attempts"] == 3
     assert owner["removal_errors"] == [f"fixture ACL deny {n}" for n in (1, 2, 3)]
     assert scratch._index_path(lease.generation).is_file()
     later = scratch.reclaim_terminal_scratch(root, retention=bound)
@@ -2748,6 +2749,33 @@ def test_a_removal_that_keeps_failing_becomes_a_loud_error_and_stops(
     )
     assert applied["errors"] == [] and applied["reclaimed"] == [str(lease.generation)]
     assert not lease.generation.exists()
+
+
+def test_repeated_explicit_retries_keep_a_bounded_attempt_record(tmp_path, monkeypatch):
+    (lease,), attempts = _stuck_removal(tmp_path, monkeypatch, count=1)
+    root = lease.generation.parent
+    for _ in range(11):
+        scratch.reclaim_terminal_scratch(
+            root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+        )
+    monkeypatch.setattr(
+        scratch,
+        "delete_path",
+        lambda path, *, owning_root=None: (False, "e" * 100_000),
+    )
+    last = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    # The receipt stays readable under the 64 KiB reader: the count is
+    # exact, the first and the last three errors are kept, each cut short.
+    owner = _read(lease.generation / "owner.json")
+    assert owner["removal_attempts"] == 12 and len(attempts) == 11
+    assert owner["removal_errors"][:5] == [
+        f"fixture ACL deny {n}" for n in (1, 2, 3, 10, 11)
+    ]
+    assert owner["removal_errors"][5] == "e" * 512
+    assert "failed 12 times" in last["errors"][0] and "; ...; " in last["errors"][0]
+    assert (lease.generation / "owner.json").stat().st_size < 8192
 
 
 def test_an_interrupted_removal_retry_stays_retained_and_indexed(tmp_path, monkeypatch):

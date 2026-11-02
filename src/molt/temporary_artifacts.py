@@ -102,6 +102,10 @@ _LEGACY_ARCHIVE_AWAITED = "failure evidence awaits archive"
 # Guard exits retry a failed payload removal this many times; then sweeps
 # report it as an error and only explicit cleanup retries it.
 _REMOVAL_ATTEMPTS = 3
+# The owner keeps the first and the last few removal errors, each cut to a
+# bound, so repeated explicit retries cannot outgrow the receipt reader.
+_REMOVAL_ERRORS_KEPT = 3
+_REMOVAL_ERROR_CHARS = 512
 _LEGACY_ARCHIVE_UNAVAILABLE = "failure evidence preserved; archive unavailable: "
 
 
@@ -710,22 +714,49 @@ def _publish_index(generation: Path, terminal_digest: str) -> None:
     namespace_move_exclusive(staged, destination)
 
 
-def _removal_errors(owner: Mapping[str, object]) -> list[str]:
-    """One error per failed removal attempt; its length is the attempt count."""
-    errors = owner.get("removal_errors", [])
-    if not isinstance(errors, list) or not all(isinstance(e, str) for e in errors):
-        raise ValueError("scratch removal attempt record is malformed")
-    return errors
+@dataclass(frozen=True, slots=True)
+class _RemovalAttempts:
+    """Failed removal attempts: their count and a bounded error sample."""
+
+    count: int
+    errors: tuple[str, ...]
+
+    @classmethod
+    def of(cls, owner: Mapping[str, object]) -> _RemovalAttempts:
+        count = owner.get("removal_attempts", 0)
+        errors = owner.get("removal_errors", [])
+        if (
+            type(count) is not int
+            or count < 0
+            or not isinstance(errors, list)
+            or not all(isinstance(error, str) for error in errors)
+            or len(errors) > min(count, 2 * _REMOVAL_ERRORS_KEPT)
+        ):
+            raise ValueError("scratch removal attempt record is malformed")
+        return cls(count, tuple(errors))
+
+    def summary(self) -> str:
+        shown = "; ".join(self.errors)
+        if self.count > len(self.errors):
+            first = "; ".join(self.errors[:_REMOVAL_ERRORS_KEPT])
+            last = "; ".join(self.errors[_REMOVAL_ERRORS_KEPT:])
+            shown = f"{first}; ...; {last}"
+        return f"payload removal failed {self.count} times: {shown}"
 
 
 def _removal_failed(owner: dict[str, object], error: str) -> dict[str, object]:
     """The retained, indexed owner after one more failed removal attempt."""
-    errors = [*_removal_errors(owner), error]
+    attempts = _RemovalAttempts.of(owner)
+    error = error[:_REMOVAL_ERROR_CHARS]
+    errors = [*attempts.errors, error]
+    if len(errors) > 2 * _REMOVAL_ERRORS_KEPT:
+        errors = errors[:_REMOVAL_ERRORS_KEPT] + errors[-_REMOVAL_ERRORS_KEPT:]
     return {
         **owner,
         "state": "retained",
+        "removal_attempts": attempts.count + 1,
         "removal_errors": errors,
-        "error": f"payload removal failed {len(errors)} time(s): {error}",
+        "error": f"payload removal failed {attempts.count + 1} time(s): {error}",
     }
 
 
@@ -744,7 +775,11 @@ def _recover_transition_locked(
             owner = {**owner, "state": "reclaimed", "error": None}
         elif owner["state"] == "retiring" and intact:
             owner = {**owner, "state": "retained"}
-        elif owner["state"] == "reclaiming" and intact and _removal_errors(owner):
+        elif (
+            owner["state"] == "reclaiming"
+            and intact
+            and _RemovalAttempts.of(owner).count
+        ):
             # A retry of a removal that already failed is the same retained,
             # indexed payload; its interruption is one more failed attempt.
             owner = _removal_failed(owner, "removal interrupted while reclaiming")
@@ -1843,11 +1878,10 @@ def reclaim_terminal_scratch(
                     kept_count += 1
                     kept_bytes += size
                     continue
-                attempts = _removal_errors(owner)
-                if len(attempts) >= _REMOVAL_ATTEMPTS and not resolve_legacy_archives:
+                attempts = _RemovalAttempts.of(owner)
+                if attempts.count >= _REMOVAL_ATTEMPTS and not resolve_legacy_archives:
                     raise ValueError(
-                        f"payload removal failed {len(attempts)} times; explicit "
-                        "cleanup retries it: " + "; ".join(attempts)
+                        attempts.summary() + "; only explicit cleanup retries it"
                     )
                 archive_paths = _legacy_archive_paths(generation, owner)
                 if archive_paths and not resolve_legacy_archives:
@@ -1889,11 +1923,9 @@ def reclaim_terminal_scratch(
                     if not was_reclaimed:
                         reclaimed.append(str(generation))
                     removals.append(generation)
-                elif len(_removal_errors(result)) >= _REMOVAL_ATTEMPTS:
+                elif _RemovalAttempts.of(result).count >= _REMOVAL_ATTEMPTS:
                     errors.append(
-                        f"{generation}: payload removal failed "
-                        f"{len(_removal_errors(result))} times: "
-                        + "; ".join(_removal_errors(result))
+                        f"{generation}: {_RemovalAttempts.of(result).summary()}"
                     )
                 else:
                     deferred.append(f"{generation}: {result.get('error')}")
