@@ -853,6 +853,10 @@ class FileDigestCache:
         if "dev" in columns or "volume" in columns:
             connection.close()
             raise ValueError("legacy digest namespace requires the canonical v3 store")
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version not in {0, 3}:
+            connection.close()
+            raise ValueError("unsupported file digest cache schema version")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute(
             "CREATE TABLE IF NOT EXISTS digests (path TEXT PRIMARY KEY,"
@@ -864,7 +868,10 @@ class FileDigestCache:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS digests_recorded ON digests (recorded_ns)"
         )
-        connection.execute("PRAGMA user_version=3")
+        # Setting an unchanged user_version still commits a WAL transaction.
+        # A digest lookup must not turn every 64-key page into a synced write.
+        if version == 0:
+            connection.execute("PRAGMA user_version=3")
         return connection
 
     def _row(self, key: str) -> tuple[StatToken, str, int] | None:
