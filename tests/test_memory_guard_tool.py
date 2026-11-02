@@ -9119,11 +9119,8 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
 @pytest.mark.parametrize(
     ("child_returncode", "retention_errors", "expected_returncode"),
     [
-        (
-            0,
-            ["prior generation receipt unreadable"],
-            memory_guard.INFRASTRUCTURE_RETURN_CODE,
-        ),
+        # Other runs' retention errors never change this command's result.
+        (0, ["prior generation receipt unreadable"], 0),
         (7, ["prior generation receipt unreadable"], 7),
         (137, ["prior generation receipt unreadable"], 137),
         (0, [], 0),
@@ -9204,19 +9201,13 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     assert result.temporary_artifacts is not None
     assert result.temporary_artifacts["state"] == "reclaimed"
     assert result.temporary_artifacts["retention"]["protected_count"] == 3
+    assert result.infrastructure_failure is None
+    assert "temporary artifact custody incomplete" not in result.stderr
     if retention_errors:
-        assert result.infrastructure_failure is not None
-        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
-        incident = memory_guard._incident_payload(result)
-        assert incident["reason"] == "infrastructure_error"
-        assert incident["child_returncode"] == child_returncode
-        assert "signal" not in incident
         assert "prior generation receipt unreadable" in result.stderr
         assert "retention sweep reported errors" in result.stderr
-    else:
-        assert result.infrastructure_failure is None
+    if child_returncode == 0:
         assert memory_guard._incident_payload(result) is None
-        assert "temporary artifact custody incomplete" not in result.stderr
     assert lease.release_calls == 1
 
     summary = tmp_path / "outcome.json"
@@ -9251,7 +9242,12 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
         signal_payload=memory_guard.exit_signal_payload,
         stderr=diagnostic,
     )
-    assert ("infrastructure_error" in diagnostic.getvalue()) is bool(retention_errors)
+    assert "infrastructure_error" not in diagnostic.getvalue()
+    assert ("retention sweep reported errors" in diagnostic.getvalue()) is bool(
+        retention_errors
+    )
+    assert payload["infrastructure_failure"] is None
+    assert payload["temporary_artifacts"]["retention"]["errors"] == retention_errors
     assert ("SIGKILL" in diagnostic.getvalue()) is (child_returncode == 137)
 
 

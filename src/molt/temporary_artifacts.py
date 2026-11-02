@@ -26,9 +26,9 @@ from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field
 from functools import partial
-from typing import Literal
 from pathlib import Path
 import errno
+import hashlib
 from enum import StrEnum
 import json
 import os
@@ -73,7 +73,6 @@ from molt.dx import (
     proof_scratch_root,
     scratch_dir,
     scratch_storage,
-    storage_path,
 )
 from molt.memory_guard_paths import STATE_ROOT_ENV, memory_guard_state_root
 from molt.toolchain_identity import StableRegularFileError
@@ -510,7 +509,6 @@ def acquire_guard_scratch(
             "target_identity": _identity(target),
             "target_receipt": nonce,
             "state": "leased",
-            "evidence_root": str(storage_path(repo_root, "scratch-evidence", environ)),
         }
         write_exact(
             generation / "owner.json", owner, exclusive=True, durability=_RECORDS
@@ -723,12 +721,6 @@ def _recover_transition_locked(
                 "state": "blocked",
                 "error": "interrupted scratch transition; payload preserved without retry",
             }
-        if not terminal.success and owner["state"] in {"retained", "reclaimed"}:
-            return _publish_archived_failure(
-                generation,
-                owner,
-                state="retained" if owner["state"] == "retained" else "reclaimed",
-            )
         write_exact(generation / "owner.json", owner, durability=_RECORDS)
     return owner
 
@@ -766,139 +758,79 @@ def _block_uncommitted_retirement_locked(
     return blocked
 
 
-class ScratchEvidencePending(RuntimeError):
-    """Failed evidence has no admitted archive placement; preserve its bytes."""
+def _legacy_archive_paths(
+    generation: Path, owner: Mapping[str, object]
+) -> tuple[Path, ...]:
+    """Locate only the old producer's indexed archive, without reading its manifest.
 
-
-def _archive_failed_scratch(generation: Path, owner: dict[str, object]) -> Path:
-    archive_root = owner.get("evidence_root")
-    if archive_root is None:
-        raise ScratchEvidencePending(
-            "legacy failed scratch lacks evidence placement; preserved"
-        )
-    if not isinstance(archive_root, str) or not Path(archive_root).is_absolute():
-        raise ValueError("invalid scratch evidence placement; payload preserved")
-    if "evidence_index" in owner:
-        import hashlib
-
-        raw_index = owner["evidence_index"]
-        if not isinstance(raw_index, str):
-            raise ValueError("invalid failed scratch evidence index")
-        index = resolve_owned_path(Path(raw_index))
-        if index.parent != resolve_owned_path(Path(archive_root)):
-            raise ValueError("failed scratch index escaped its evidence volume")
-        record = read_exact(
-            index, max_bytes=16 * 1024 * 1024, label="scratch evidence index"
-        )
-        if (
-            not isinstance(record, dict)
-            or record.get("schema") != "molt.evidence-index.v1"
-            or record.get("class") != "scratch-evidence"
-            or record.get("source") != str(generation)
-            or not isinstance(record.get("archive"), str)
-            or not isinstance(record.get("files"), dict)
-        ):
-            raise ValueError("invalid failed scratch evidence index")
-        archive = resolve_owned_path(Path(record["archive"]))
-        if (
-            archive.parent != index.parent
-            or archive.with_suffix(".index.json") != index
-        ):
-            raise ValueError("invalid failed scratch archive coordinate")
-        with archive.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != record.get(
-                "archive_sha256"
-            ):
-                raise ValueError("failed scratch archive changed; receipts preserved")
-        changed = False
-        for path in generation.rglob("*"):
-            relative = path.relative_to(generation).as_posix()
-            if relative in {"owner.json", "lock", "storage-index.json"} or (
-                path.is_dir() and not path.is_symlink()
-            ):
-                continue
-            entry = record["files"].get(relative)
-            if path.is_symlink():
-                matches = entry == {"link": os.readlink(path)}
-            else:
-                with path.open("rb") as stream:
-                    matches = entry == {
-                        "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
-                        "bytes": path.stat().st_size,
-                    }
-            if not matches:
-                if not _target(generation, owner).exists():
-                    raise ValueError(
-                        "scratch diagnostics changed after archive; preserved"
-                    )
-                changed = True
-                break
-        if not changed:
-            return archive
-    from molt.checkout_state import compact_evidence
-
-    # Producer custody pins every byte through independent archive validation
-    # and durable external-index publication. Metadata stays until finalization.
-    return compact_evidence(
-        generation,
-        Path(archive_root),
-        kind="scratch-evidence",
-        remove_source=False,
-        index_retained_source=True,
-    )
-
-
-def _publish_archived_failure(
-    generation: Path,
-    owner: dict[str, object],
-    *,
-    state: Literal["retained", "reclaimed"],
-) -> dict[str, object]:
-    """Never grant even an older collector retirement before durable evidence.
-
-    The caller holds the generation lease. An interrupted or unavailable
-    archive leaves the existing blocked state, understood by older readers.
+    The bounded source index carries coordinates; the external per-file manifest
+    can exceed 16 MiB. Neither hashing nor copying regenerable bytes is needed.
+    Keep malformed/foreign coordinates as a loud retention error.
     """
-    owner = {**owner, "state": "blocked", "error": "failure evidence awaits archive"}
-    write_exact(generation / "owner.json", owner, durability=_RECORDS)
-    try:
-        archive = _archive_failed_scratch(generation, owner)
-    except (ScratchEvidencePending, OSError, ValueError) as error:
-        owner = {
-            **owner,
-            "error": f"failure evidence preserved; archive unavailable: {error}",
-        }
-        write_exact(generation / "owner.json", owner, durability=_RECORDS)
-        _drop_index(generation)
-        return owner
-    owner = {
-        **owner,
-        "state": state,
-        "error": None,
-        "evidence_index": str(archive.with_suffix(".index.json")),
-    }
-    write_exact(generation / "owner.json", owner, durability=_RECORDS)
-    return owner
+    source_index = generation / "storage-index.json"
+    if not os.path.lexists(source_index):
+        if "evidence_index" in owner:
+            raise ValueError("failed scratch archive lacks its source index")
+        return ()
+    record = _read_receipt(source_index, label="legacy scratch archive index")
+    if (
+        not isinstance(record, dict)
+        or record.get("schema") != "molt.evidence-index.v1"
+        or record.get("class") != "scratch-evidence"
+        or not _same_owned_path(record.get("source"), str(generation))
+        or not isinstance(record.get("archive"), str)
+        or not isinstance(owner.get("evidence_root"), str)
+    ):
+        raise ValueError("invalid legacy scratch archive coordinates")
+    archive = Path(record["archive"])
+    root = Path(str(owner["evidence_root"]))
+    if (
+        not archive.is_absolute()
+        or not root.is_absolute()
+        or resolve_owned_path(archive.parent) != resolve_owned_path(root)
+        or not re.fullmatch(
+            hashlib.sha256(os.fsencode(generation)).hexdigest()[:16]
+            + r"-[0-9a-f]{32}\.tar\.gz",
+            archive.name,
+        )
+        or root == generation
+        or generation in root.parents
+    ):
+        raise ValueError("legacy scratch archive escaped its evidence root")
+    index = archive.with_suffix(".index.json")
+    if "evidence_index" in owner and not _same_owned_path(
+        owner["evidence_index"], str(index)
+    ):
+        raise ValueError("legacy scratch archive indices disagree")
+    paths = (archive, index)
+    for path in paths:
+        if os.path.lexists(path) and (
+            not stat.S_ISREG(path.lstat().st_mode) or is_link_like(path)
+        ):
+            raise ValueError("legacy scratch archive must be a direct regular file")
+    return paths
 
 
-def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, object]:
+def _reclaim_locked(
+    generation: Path, owner: dict[str, object], *, verify_only: bool = False
+) -> dict[str, object]:
     """Delete one retained payload; the caller removes a reclaimed generation.
 
     The pending index stays until ``_remove_reclaimed_generation`` commits, so
     a removal that cannot run now is found again by the next sweep.
     """
+    if not verify_only and (
+        os.path.lexists(generation / "storage-index.json") or "evidence_index" in owner
+    ):
+        raise ValueError(
+            "legacy scratch archive requires explicit dry-run/apply cleanup"
+        )
     if owner["state"] == "reclaimed":
         terminal = _terminal(generation, owner)
         if os.path.lexists(_target(generation, owner)):
             # The owner's reclaimed record outlived the deletion it follows.
             raise _CrashResidue("reclaimed scratch payload survives its deletion")
         _require_move_committed(owner, terminal)
-        if not terminal.success:
-            # An old reclaimed payload may be gone already. Its remaining
-            # diagnostic records are still evidence, never generic garbage.
-            archive = _archive_failed_scratch(generation, owner)
-            owner = {**owner, "evidence_index": str(archive.with_suffix(".index.json"))}
-            write_exact(generation / "owner.json", owner, durability=_RECORDS)
         return owner
     if owner["state"] != "retained":
         raise ValueError("scratch is not terminal and reclaimable")
@@ -906,25 +838,7 @@ def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, obj
     target = _target(generation, owner)
     if not _same_identity(_payload_identity(target), owner["target_identity"]):
         raise ValueError("scratch target generation changed before reclamation")
-    if not terminal.success:
-        try:
-            archive = _archive_failed_scratch(generation, owner)
-        except (OSError, ValueError) as error:
-            # Closed, exclusively pinned evidence remains recoverable. A soft
-            # retention budget does not turn this into a failed user command.
-            raise ScratchEvidencePending(
-                f"evidence archive deferred: {error}"
-            ) from error
-        removed, error = delete_path(target, owning_root=generation)
-        if not removed:
-            raise ScratchEvidencePending(f"archived raw removal deferred: {error}")
-        owner = {
-            **owner,
-            "state": "reclaimed",
-            "error": None,
-            "evidence_index": str(archive.with_suffix(".index.json")),
-        }
-        write_exact(generation / "owner.json", owner, durability=_RECORDS)
+    if verify_only:
         return owner
     owner = {**owner, "state": "reclaiming"}
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
@@ -1052,7 +966,7 @@ def _retire_locked(
     owner = {
         **owner,
         "target": str(destination),
-        "state": "retiring" if success else "blocked",
+        "state": "retiring",
         "terminal_digest": canonical_json_sha256(terminal),
     }
     # The pending-work index is a projection, not deletion authority.
@@ -1068,8 +982,6 @@ def _retire_locked(
         write_exact(generation / "owner.json", owner, durability=_RECORDS)
         _drop_index(generation)
         return owner
-    if not success:
-        return _publish_archived_failure(generation, owner, state="retained")
     owner = {**owner, "state": "retained"}
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
     return owner
@@ -1171,11 +1083,13 @@ def _adopt_locked(
         owner = {
             **owner,
             "target": str(destination),
-            "state": "blocked",
+            "state": "reclaimed",
             "terminal_digest": canonical_json_sha256(terminal),
             "error": None,
         }
-        return _publish_archived_failure(generation, owner, state="reclaimed")
+        _publish_index(generation, owner["terminal_digest"])
+        write_exact(generation / "owner.json", owner, durability=_RECORDS)
+        return owner
     if not _same_identity(
         identity, owner["target_identity"]
     ) or not _holds_target_receipt(target, owner):
@@ -1256,13 +1170,6 @@ def resolve_guard_scratch(
         resolution, residue = _locked_resolution(generation, resolve_locked)
     except ScratchBusy:
         return {"generation": str(generation), "state": "busy", "resolved": False}
-    except ScratchEvidencePending as error:
-        return {
-            "generation": str(generation),
-            "state": "retained-evidence",
-            "resolved": True,
-            "error": str(error),
-        }
     except (OSError, ValueError, RuntimeError) as error:
         if not os.path.lexists(generation):
             return {"generation": str(generation), "state": "absent", "resolved": True}
@@ -1472,7 +1379,9 @@ class _PendingVisit:
     candidate: tuple[int, int, Path, str, bool] | None = None
 
 
-def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
+def _visit_pending_locked(
+    generation: Path, entry: Path, *, dry_run: bool = False
+) -> _PendingVisit:
     """Classify one indexed generation while the caller holds its lock."""
     owner = _owner(generation)
     # A directory snapshot is discovery, not a lease on an index. Its owner
@@ -1480,10 +1389,20 @@ def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
     # transition only from the locked, verified terminal authority; a
     # missing retained owner's index is still an error.
     if owner["state"] == "reclaimed":
-        _reclaim_locked(generation, owner)
-        return _PendingVisit(removal=True)
+        _reclaim_locked(generation, owner, verify_only=True)
+        terminal = _terminal(generation, owner)
+        return _PendingVisit(
+            candidate=(
+                terminal.finished_ns,
+                0,
+                generation,
+                terminal.digest,
+                terminal.success,
+            )
+        )
     if owner["state"] == "blocked":
-        _drop_index(generation)
+        if not dry_run:
+            _drop_index(generation)
         return _PendingVisit(error=f"{generation}: {owner.get('error')}")
     index = _read_receipt(entry, label="scratch pending index", absent_is_residue=False)
     if (
@@ -1492,6 +1411,8 @@ def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
         and "terminal_digest" not in owner
         and owner["state"] in {"leased", "indeterminate"}
     ):
+        if dry_run:
+            return _PendingVisit(error=f"{generation}: uncommitted terminal owner")
         owner = _block_uncommitted_retirement_locked(
             generation, owner, index.get("terminal_digest")
         )
@@ -1503,6 +1424,8 @@ def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
     ):
         raise ValueError("scratch pending index differs from terminal owner")
     if owner["state"] in {"retiring", "reclaiming"}:
+        if dry_run:
+            return _PendingVisit(error=f"{generation}: interrupted transition")
         # Repair only the receipt of an already-completed namespace
         # transition; never retry an interrupted payload deletion.
         owner = _recover_transition_locked(generation, owner)
@@ -1530,9 +1453,16 @@ def _visit_pending_locked(generation: Path, entry: Path) -> _PendingVisit:
 
 
 def reclaim_terminal_scratch(
-    root: Path, *, retention: ScratchRetention = ScratchRetention()
+    root: Path,
+    *,
+    retention: ScratchRetention = ScratchRetention(),
+    dry_run: bool = False,
+    resolve_legacy_archives: bool = False,
 ) -> dict[str, object]:
-    """Bound completed failure scratch; legacy, active and blocked data stay put.
+    """Bound completed failure scratch; active and blocked data stay put.
+
+    Dry runs do not repair or remove receipts. Legacy archive deletion is an
+    explicit operation only, never work added to a guard's exit path.
 
     A generation whose directory is gone was removed by its own reclaimed
     transition; its index entry is resolved, not an error. Crash residue
@@ -1540,13 +1470,20 @@ def reclaim_terminal_scratch(
     """
     root = resolve_owned_path(root)
     pending = resolve_owned_path(root / "pending")
-    if not pending.exists():
+    try:
+        entries = sorted(pending.iterdir())
+    except OSError as error:
+        # Discovery belongs to other completed runs. Its failure is a
+        # diagnostic result, never failure of this child's own finalization.
         return {
+            **({"would_reclaim": []} if dry_run else {}),
             "reclaimed": [],
             "retained_bytes": 0,
             "retained_count": 0,
             "protected_count": 0,
-            "errors": [],
+            "errors": []
+            if isinstance(error, FileNotFoundError)
+            else [f"{pending}: {error}"],
             "deferred": [],
         }
     candidates: list[tuple[int, int, Path, str, bool]] = []
@@ -1554,25 +1491,28 @@ def reclaim_terminal_scratch(
     deferred: list[str] = []
     removals: list[Path] = []
     protected_count = 0
-    for entry in sorted(pending.iterdir()):
+    for entry in entries:
         if entry.suffix != ".json" or _TOKEN.fullmatch(entry.stem) is None:
             errors.append(f"{entry}: invalid scratch pending entry")
             continue
         generation: Path | None = None
         try:
             generation = _generation(root, entry.stem)
-            visit, residue = _locked_resolution(
-                generation, partial(_visit_pending_locked, generation, entry)
-            )
+            if dry_run:
+                with _locked(generation):
+                    visit = _visit_pending_locked(generation, entry, dry_run=True)
+                residue = None
+            else:
+                visit, residue = _locked_resolution(
+                    generation, partial(_visit_pending_locked, generation, entry)
+                )
         except ScratchBusy:
             protected_count += 1
             continue
-        except ScratchEvidencePending as error:
-            deferred.append(f"{entry}: {error}")
-            continue
         except (OSError, ValueError, RuntimeError) as error:
             if generation is not None and not os.path.lexists(generation):
-                _drop_index(generation)
+                if not dry_run:
+                    _drop_index(generation)
                 continue
             errors.append(f"{entry}: {error}")
             continue
@@ -1589,16 +1529,14 @@ def reclaim_terminal_scratch(
     kept_bytes = 0
     kept_count = 0
     reclaimed: list[str] = []
+    planned: list[dict[str, object]] = []
     for _, size, generation, digest, success in sorted(candidates, reverse=True):
         try:
             with _locked(generation):
                 owner = _owner(generation)
                 if owner.get("terminal_digest") != digest:
                     raise ValueError("scratch terminal generation changed")
-                if owner["state"] == "reclaimed":
-                    _reclaim_locked(generation, owner)
-                    removals.append(generation)
-                    continue
+                _reclaim_locked(generation, owner, verify_only=True)
                 if (
                     owner["state"] == "retained"
                     and not success
@@ -1606,24 +1544,52 @@ def reclaim_terminal_scratch(
                         kept_count=kept_count, kept_bytes=kept_bytes, size=size
                     )
                 ):
-                    _terminal(generation, owner)
-                    if not _same_identity(
-                        _identity(_target(generation, owner)), owner["target_identity"]
-                    ):
-                        raise ValueError("retained scratch payload identity changed")
+                    # The same locked verification above covers kept entries.
                     kept_count += 1
                     kept_bytes += size
                     continue
+                archive_paths = _legacy_archive_paths(generation, owner)
+                if archive_paths and not resolve_legacy_archives:
+                    raise ValueError(
+                        "legacy scratch archive requires explicit dry-run/apply cleanup"
+                    )
+                if dry_run:
+                    planned.append(
+                        {
+                            "generation": str(generation),
+                            "payload_bytes": size,
+                            "archives": [str(path) for path in archive_paths],
+                            "archive_bytes": sum(
+                                path.stat().st_size
+                                for path in archive_paths
+                                if path.exists()
+                            ),
+                        }
+                    )
+                    continue
+                for path in archive_paths:
+                    if os.path.lexists(path):
+                        ok, error = delete_path(path, owning_root=path.parent)
+                        if not ok:
+                            raise OSError(
+                                f"legacy scratch archive removal deferred: {error}"
+                            )
+                if archive_paths:
+                    owner = {
+                        key: value
+                        for key, value in owner.items()
+                        if key != "evidence_index"
+                    }
+                    write_exact(generation / "owner.json", owner, durability=_RECORDS)
+                    (generation / "storage-index.json").unlink()
+                was_reclaimed = owner["state"] == "reclaimed"
                 result = _reclaim_locked(generation, owner)
                 if result["state"] == "reclaimed":
-                    reclaimed.append(str(generation))
+                    if not was_reclaimed:
+                        reclaimed.append(str(generation))
                     removals.append(generation)
                 else:
                     errors.append(f"{generation}: {result.get('error')}")
-        except ScratchEvidencePending as error:
-            kept_count += 1
-            kept_bytes += size
-            deferred.append(f"{generation}: {error}")
         except ScratchBusy:
             protected_count += 1
         except (OSError, ValueError, RuntimeError) as error:
@@ -1633,6 +1599,16 @@ def reclaim_terminal_scratch(
     # Remove receipts only after each generation lock is released: Windows
     # cannot move a directory while this process holds a file inside it.
     for generation in removals:
+        if dry_run:
+            planned.append(
+                {
+                    "generation": str(generation),
+                    "payload_bytes": 0,
+                    "archives": [],
+                    "archive_bytes": 0,
+                }
+            )
+            continue
         try:
             deferral = _remove_reclaimed_generation(generation)
         except OSError as error:
@@ -1641,6 +1617,7 @@ def reclaim_terminal_scratch(
         if deferral is not None:
             deferred.append(deferral)
     return {
+        **({"would_reclaim": planned} if dry_run else {}),
         "reclaimed": reclaimed,
         "retained_bytes": kept_bytes,
         "retained_count": kept_count,
@@ -1671,3 +1648,30 @@ def new_guarded_directory(environ: Mapping[str, str], *, prefix: str) -> Path:
     if resolve_owned_path(path).parent != root:
         raise ValueError("scratch helper escaped its owning allocation")
     return path
+
+
+def _main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Reclaim terminal guard scratch, including indexed legacy archives."
+    )
+    parser.add_argument("--root", type=Path, required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    parser.add_argument("--count", type=int, default=3)
+    parser.add_argument("--bytes", type=int, default=2 * 1024**3)
+    args = parser.parse_args()
+    result = reclaim_terminal_scratch(
+        args.root,
+        retention=ScratchRetention(args.count, args.bytes),
+        dry_run=args.dry_run,
+        resolve_legacy_archives=True,
+    )
+    print(json.dumps(result, sort_keys=True, indent=2))
+    return 1 if result["errors"] or result["deferred"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

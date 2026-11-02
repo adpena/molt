@@ -675,9 +675,39 @@ startup socket overflow declines the generated cache with one warning, leaving
 no `SCCACHE_DIR`, wrapper or endpoint default. Explicit enablement or an explicit
 unfittable `SCCACHE_DIR` raises `SccacheSocketPathError` before launch. Select a
 shorter artifact root or an explicit short `SCCACHE_DIR` to enable caching.
-Coordination records and recovery indices stay in the checkout. Evidence never
+Coordination records and recovery indices stay in the checkout. Other evidence never
 expires into deletion: compaction verifies an archive, publishes its external
 manifest and source index, then removes only represented raw payloads.
+
+Failed guard scratch is regenerable (HF-694). The guard keeps its terminal
+receipt; landing gates already retain their result and bounded stream tails.
+After proven process-tree closure, the existing scratch collector keeps the
+newest three failed payloads within 2 GiB, then deletes older payloads and their
+generation receipts. A dead guard uses the same closure and identity checks,
+without archiving. Active, indeterminate, foreign and malformed custody stays
+protected. Whole-root retention errors are diagnostics: they never change the
+child exit or create an infrastructure failure. Failure of the current run's
+own closure or scratch finalization still does.
+
+Old indexed scratch archives require explicit cleanup, outside guard exit.
+Using the selected image's Python, inspect the same count/byte policy first:
+
+```sh
+python -B -m molt.temporary_artifacts --root /artifact/tmp/gs/v2 --dry-run
+python -B -m molt.temporary_artifacts --root /artifact/tmp/gs/v2 --apply
+```
+
+`--count` and `--bytes` select an explicit tighter bound, including zero for
+an approved terminal backlog. The dry run changes no receipts and reports
+payload and archive bytes. Apply revalidates custody under each generation
+lock and deletes its indexed archive and sidecar with the payload. Missing
+already-deleted archive files are accepted on resume; interrupted payload
+transitions retain the existing blocked-custody policy. Cleanup reads only the
+bounded source index, never the unbounded external file manifest.
+Malformed or foreign coordinates remain with an error;
+no archive is copied or regenerated. Pytest also uses its standard
+`tmp_path_retention_count=3` and `tmp_path_retention_policy=failed`; a guarded
+session's basetemp remains within its parent scratch lifetime.
 
 Existing state moves only through a separately reviewed operation:
 

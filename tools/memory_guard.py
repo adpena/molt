@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import replace
 from functools import partial
-import json
 import os
 import platform
 from pathlib import Path
@@ -2851,15 +2850,6 @@ def run_guarded(
         scratch_state = (
             None if temporary_artifacts is None else temporary_artifacts.get("state")
         )
-        retention_errors: tuple[str, ...] = ()
-        if temporary_artifacts is not None:
-            retention = temporary_artifacts.get("retention")
-            if isinstance(retention, Mapping):
-                raw_errors = retention.get("errors")
-                if isinstance(raw_errors, Sequence) and not isinstance(
-                    raw_errors, (str, bytes)
-                ):
-                    retention_errors = tuple(str(error) for error in raw_errors)
         scratch_failure_details: list[str] = []
         if cleanup_error:
             scratch_failure_details.append(cleanup_error)
@@ -2871,11 +2861,10 @@ def run_guarded(
             scratch_failure_details.append(
                 f"temporary artifact terminal state is {scratch_state!r}"
             )
-        if retention_errors:
-            scratch_failure_details.append(
-                "temporary artifact retention sweep reported errors: "
-                + json.dumps(list(retention_errors), sort_keys=True)
-            )
+        # The whole-root retention sweep may reclaim other runs' scratch.
+        # Preserve its warning without poisoning this command's custody result.
+        if warning := _reporting.retention_warning(temporary_artifacts):
+            stderr = _append_guard_message(stderr, warning + "\n", text=text)
         infrastructure_failure = (
             GuardInfrastructureFailure(
                 phase="temporary_artifact_custody",

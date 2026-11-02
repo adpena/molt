@@ -142,6 +142,8 @@ exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 cache_dir = "tmp/pytest-cache"
+tmp_path_retention_count = 3
+tmp_path_retention_policy = "failed"
 # The import path is `src`, then the repository root: the order that
 # tools.import_file.bind_repository_imports admits. The importlib import mode
 # never edits sys.path afterwards, so every test sees the same path whatever
