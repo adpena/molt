@@ -208,19 +208,23 @@ def _checkout_expected_runtime_pair(project_root: Path, runtime_artifact: Path):
         freestanding=False,
     )
     identity = resolve_runtime_wasm_pair_identity(project_root, shared_spec, reloc_spec)
-    return RuntimeWasmExpectedPair(
-        identity.shared, identity.reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
+    if shared_spec.cargo_plan is None:
+        pytest.fail("the dev/full runtime WASM spec resolved no Cargo plan")
+    # Admission verifies the build's own resolved Cargo environment, as the
+    # pair builder does, not the developer environment of this process.
+    return (
+        RuntimeWasmExpectedPair(
+            identity.shared, identity.reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
+        ),
+        shared_spec.cargo_plan.environment,
     )
 
 
 def _runtime_signature_generation(project_root: Path):
     from molt.cli.artifact_state import _build_state_root
     from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
-    from molt.cli.runtime_wasm_generation import (
-        RuntimeWasmExpectedPair,
-        read_runtime_wasm_generation,
-        runtime_wasm_generation_path,
-    )
+    from molt.cli.runtime_wasm_cache import admit_runtime_wasm_pair_from_shared_cache
+    from molt.cli.runtime_wasm_generation import RuntimeWasmExpectedPair
     from molt.dx import development_artifact_env
 
     runtime_env = development_artifact_env(
@@ -234,7 +238,9 @@ def _runtime_signature_generation(project_root: Path):
         "molt_runtime.wasm",
         runtime_env,
     )
-    expected = _checkout_expected_runtime_pair(project_root, runtime_artifact)
+    expected, cargo_environment = _checkout_expected_runtime_pair(
+        project_root, runtime_artifact
+    )
     expected_path = expected.path(_build_state_root(project_root))
     reason = (
         "candidate-runtime-wasm-pair-unavailable: build this checkout's dev/full "
@@ -247,13 +253,18 @@ def _runtime_signature_generation(project_root: Path):
         pytest.fail(f"{reason}: {exc}")
     if recorded != expected:
         pytest.fail(f"{reason}: expected-pair receipt differs from checkout inputs")
-    generation = read_runtime_wasm_generation(
-        runtime_wasm_generation_path(runtime_artifact),
-        expected_shared_identity=expected.shared,
-        expected_reloc_identity=expected.reloc,
+    # Admit this checkout's input-keyed family, as codegen does. The host
+    # selection beside the runtime artifact is shared by every checkout of the
+    # artifact root, so another checkout's build can replace it (HF-658).
+    generation = admit_runtime_wasm_pair_from_shared_cache(
+        shared_identity=expected.shared,
+        reloc_identity=expected.reloc,
+        environment=cargo_environment,
     )
     if generation is None:
-        pytest.fail(f"{reason}: selection or members do not match checkout inputs")
+        pytest.fail(
+            f"{reason}: no admitted generation for family {expected.shared.family_digest}"
+        )
     return generation
 
 
