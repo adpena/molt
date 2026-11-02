@@ -384,6 +384,7 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
         "bootstrap",
         "deferred",
         "invalid-policy",
+        "passing-gate-failing-junit",
         "runner-fault",
         "unresolved-cancellation",
     ],
@@ -446,6 +447,16 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
                 ),
                 encoding="utf-8",
             )
+        if outcome == "passing-gate-failing-junit":
+            # The gate's command passed, but this run's own JUnit lists a
+            # failing test: a failing test is a failure.
+            (output / "gate-001.junit.xml").write_text(
+                '<testsuites><testsuite><testcase file="tests/test_value.py" '
+                'classname="tests.test_value" name="test_value">'
+                '<failure message="independent assertion"/></testcase></testsuite></testsuites>',
+                encoding="utf-8",
+            )
+            return ()
         if outcome == "red":
             (output / "gate-001.junit.xml").write_text(
                 '<testsuites><testsuite><testcase file="tests/test_value.py" '
@@ -486,7 +497,7 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     (record,) = queue.postsubmit_results(paths)
     expected = (
         "red"
-        if outcome == "invalid-policy"
+        if outcome in {"invalid-policy", "passing-gate-failing-junit"}
         else "inconclusive"
         if outcome in {"cas-race", "runner-fault", "unresolved-cancellation"}
         else "cancelled"
@@ -505,6 +516,9 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     if expected == "inconclusive":
         assert record["error"]
         assert queue.recent_postsubmit_failures(paths) == ()
+    if outcome == "passing-gate-failing-junit":
+        assert record["failing_tests"] == ["tests/test_value.py::test_value"]
+        assert queue.recent_postsubmit_failures(paths) == tuple(record["failing_tests"])
     assert git.head_sha() == head, "postsubmit never reverts main on its own"
     assert queue.last_green(git) == (
         head if outcome in {"green", "cas-race", "bootstrap", "deferred"} else base

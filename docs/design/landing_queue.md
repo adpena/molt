@@ -144,9 +144,11 @@ head. A passing run re-fetches main before `git update-ref refs/molt/last-green
 the result, and a failed compare-and-swap cannot overwrite another writer.
 
 `PostsubmitStatus` is the verdict authority. RED requires a
-`CandidateFailure`: a gate failed for its own reason, or main's own gate policy
-is invalid. Any other driver, guard or storage stop is INCONCLUSIVE, with its
-error in the receipt; so is a failed last-green compare-and-swap. CANCELLED
+`CandidateFailure`: a gate failed for its own reason, this run's own JUnit lists
+a failing test (even when its gate's command passed), or main's own gate policy
+is invalid. Any other driver, guard or storage stop, with no evidence of a
+candidate failure, is INCONCLUSIVE, with its error in the receipt; so is a
+failed last-green compare-and-swap. CANCELLED
 requires a closed cancellation. Only RED lists suspects and restoration
 commands, and only RED orders later presubmits. An inconclusive run exits
 unsuccessfully and waits for an explicit `queue run`. LUCI Buildbucket makes

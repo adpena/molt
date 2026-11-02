@@ -105,7 +105,8 @@ class PostsubmitStatus(StrEnum):
     """Main's health verdict (docs/design/landing_queue.md, HF-655).
 
     Only RED implicates main's commits: a ``CandidateFailure``, such as a
-    gate's own failure. A runner, guard or storage stop is INCONCLUSIVE.
+    gate's own failure or a failing test in this run's JUnit. A runner, guard
+    or storage stop with no such evidence is INCONCLUSIVE.
     """
 
     GREEN = "green"
@@ -334,7 +335,9 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
         deferred = list(_run_postsubmit_gates(sandbox, head, green, cancelled, output))
         failed = _postsubmit_failures(output, sandbox.repo)
         if failed:
-            raise DriverError("passing gates contain failing pytest reports")
+            # This run's own JUnit lists failing tests: a failing test is a
+            # failure of main, even when its gate's command passed.
+            raise CandidateFailure("passing gates contain failing pytest reports")
         git.fetch(args.remote, args.branch)
         if cancelled() or git.rev_parse(f"{args.remote}/{args.branch}") != head:
             state = PostsubmitStatus.CANCELLED
