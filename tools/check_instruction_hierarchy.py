@@ -11,8 +11,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOT_AGENT_MAX_BYTES = 16 * 1024
-ROOT_AGENT_MAX_LINES = 200
+# Codex reads at most 32 KiB of AGENTS.md text (`project_doc_max_bytes`, pinned in
+# .codex/config.toml; also codex-cli's default): the root file plus each nested
+# AGENTS.md on the way to the working directory. Text past the limit is dropped
+# silently, and the root file ends with its safety rules. The root keeps a 4 KiB
+# reserve for nested files; tests/test_agent_contract_budget.py checks every chain.
+CODEX_PROJECT_DOC_MAX_BYTES = 32 * 1024
+NESTED_AGENT_RESERVE_BYTES = 4 * 1024
+ROOT_AGENT_MAX_BYTES = CODEX_PROJECT_DOC_MAX_BYTES - NESTED_AGENT_RESERVE_BYTES
 CLAUDE_IMPORT = "@AGENTS.md\n"
 ARCHIVES = (
     "docs/agent/AGENTS.full.md",
@@ -78,14 +84,9 @@ def audit(root: Path = ROOT) -> AuditResult:
     agents_text = _read(agents_path, failures)
     if agents_text:
         byte_count = len(agents_text.encode("utf-8"))
-        line_count = len(agents_text.splitlines())
         if byte_count > ROOT_AGENT_MAX_BYTES:
             failures.append(
                 f"AGENTS.md: {byte_count} bytes exceeds {ROOT_AGENT_MAX_BYTES}-byte budget"
-            )
-        if line_count > ROOT_AGENT_MAX_LINES:
-            failures.append(
-                f"AGENTS.md: {line_count} lines exceeds {ROOT_AGENT_MAX_LINES}-line budget"
             )
         for label, pattern in _MACHINE_STATE_PATTERNS:
             if match := pattern.search(agents_text):
