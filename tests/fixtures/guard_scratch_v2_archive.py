@@ -1,7 +1,9 @@
 # Frozen production authority from cd27e1a690b6e104a456a54d6c416e5a9dabc48b.
-# Source: src/molt/temporary_artifacts.py (the inline failed-scratch archive producer).
-# Compatibility oracle only; never imported by production. Delete it with
-# molt.temporary_artifacts._legacy_blocked_failure.
+# Source: src/molt/temporary_artifacts.py (the inline failed-scratch archive
+# producer), with that commit's compact_evidence from src/molt/checkout_state.py
+# frozen at the end as _compact_evidence: the live one lost index_retained_source.
+# The one edit is that call site. Compatibility oracle only; never imported by
+# production. Delete it with molt.temporary_artifacts._legacy_blocked_failure.
 """Guard-owned scratch: terminal receipts, never age or PID, permit deletion.
 
 The parent allocates and binds the target before exposing it to the child.
@@ -839,11 +841,9 @@ def _archive_failed_scratch(generation: Path, owner: dict[str, object]) -> Path:
                 break
         if not changed:
             return archive
-    from molt.checkout_state import compact_evidence
-
     # Producer custody pins every byte through independent archive validation
     # and durable external-index publication. Metadata stays until finalization.
-    return compact_evidence(
+    return _compact_evidence(
         generation,
         Path(archive_root),
         kind="scratch-evidence",
@@ -1675,3 +1675,241 @@ def new_guarded_directory(environ: Mapping[str, str], *, prefix: str) -> Path:
     if resolve_owned_path(path).parent != root:
         raise ValueError("scratch helper escaped its owning allocation")
     return path
+
+
+# --- Frozen from cd27e1a690:src/molt/checkout_state.py ------------------------
+from collections.abc import Iterable, Sequence  # noqa: E402
+import hashlib  # noqa: E402
+
+from molt.checkout_state import evidence_index_path, is_evidence_index  # noqa: E402
+from molt.custody_layout import EvidenceClass  # noqa: E402
+
+
+def _compact_evidence(
+    root: Path,
+    archive_root: Path,
+    *,
+    kind: EvidenceClass,
+    keep: Iterable[Path] = (),
+    companions: Sequence[Path] = (),
+    remove_source: bool = True,
+    index_retained_source: bool = False,
+    preserve_leaf_link: bool = False,
+) -> Path:
+    """Losslessly compact evidence, publishing its recovery index before removal.
+
+    The caller holds exclusive producer custody. Every archived regular file
+    is independently hashed from the archive before any source is removed.
+    A crash can leave duplicate bytes, never unindexed lost evidence. This is
+    deliberately separate from regenerable-state retirement. Retained snapshots
+    opt into a source recovery index with index_retained_source; checkout
+    retirement snapshots otherwise publish only the external recovery index.
+    preserve_leaf_link is namespace custody: archive/unlink the leaf itself,
+    without reading or granting custody over its target.
+    """
+    import tarfile
+    import uuid
+
+    from molt.file_publication import resolve_owned_path
+
+    # A lane may own an ignored namespace entry while its target belongs to a
+    # provider. Preserve that link itself, never traverse or adopt its target.
+    root = (
+        resolve_owned_path(root.parent) / root.name
+        if preserve_leaf_link and root.is_symlink()
+        else resolve_owned_path(root)
+    )
+    archive_root = resolve_owned_path(archive_root)
+    if archive_root == root or root in archive_root.parents:
+        raise ValueError("evidence archive must be outside its source")
+    kept = {str(path) for path in keep}
+    root_metadata = root.lstat()
+    is_directory = stat.S_ISDIR(root_metadata.st_mode)
+    if not is_directory and is_evidence_index(root):
+        raise ValueError("durable recovery index cannot be compacted as raw payload")
+    index = evidence_index_path(root)
+    previous_index = None
+    if index.exists():
+        previous = read_exact(
+            index, max_bytes=64 * 1024, label="evidence recovery index"
+        )
+        if (
+            not isinstance(previous, dict)
+            or previous.get("schema") != "molt.evidence-index.v1"
+            or previous.get("source") != str(root)
+            or previous.get("class") != kind
+            or not isinstance(previous.get("archive"), str)
+        ):
+            raise ValueError(
+                f"unrecognized evidence index; preserve and reconcile {index}"
+            )
+        old_archive = Path(previous["archive"])
+        if old_archive.parent != archive_root or not old_archive.name.endswith(
+            ".tar.gz"
+        ):
+            raise ValueError(
+                f"previous archive is outside its evidence authority: {old_archive}"
+            )
+        previous_index = str(old_archive.with_suffix(".index.json"))
+        if not Path(previous_index).is_file():
+            raise ValueError(f"missing previous evidence manifest: {previous_index}")
+    paths = (
+        [path for path in sorted(root.rglob("*")) if path != index]
+        if is_directory
+        else [root]
+    )
+    base = root if is_directory else root.parent
+    for companion in companions:
+        companion = resolve_owned_path(companion)
+        if is_directory or companion.parent != root.parent:
+            raise ValueError("evidence companions must share the file's parent")
+        if companion.exists():
+            paths.extend(
+                [companion, *sorted(companion.rglob("*"))]
+                if companion.is_dir()
+                else [companion]
+            )
+    # rglob does not descend directory symlinks. Reject non-file payloads;
+    # neither devices nor sockets are durable portable evidence.
+    manifest = {}
+    signatures = {}
+    if is_directory:
+        signatures[root] = (
+            root_metadata.st_dev,
+            root_metadata.st_ino,
+            root_metadata.st_size,
+            root_metadata.st_mtime_ns,
+        )
+    for path in paths:
+        metadata = path.lstat()
+        relative = path.relative_to(base).as_posix()
+        if stat.S_ISLNK(metadata.st_mode):
+            manifest[relative] = {"link": os.readlink(path)}
+        elif stat.S_ISREG(metadata.st_mode):
+            manifest[relative] = {"sha256": "", "bytes": metadata.st_size}
+        elif not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"nonportable evidence: {path}")
+        signatures[path] = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        )
+    from molt.disk_capacity import require_storage_capacity
+
+    require_storage_capacity(
+        (archive_root,),
+        kind=kind,
+        additional_bytes=sum(entry[2] for entry in signatures.values())
+        + 2048 * len(signatures),
+    )
+    archive_root.mkdir(parents=True, exist_ok=True)
+    archive = (
+        archive_root
+        / f"{hashlib.sha256(os.fsencode(root)).hexdigest()[:16]}-{uuid.uuid4().hex}.tar.gz"
+    )
+    staging = archive.with_suffix(".pending")
+    try:
+        with (
+            os.fdopen(
+                os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+            ) as archive_output,
+            tarfile.open(
+                fileobj=archive_output, mode="w:gz", dereference=False
+            ) as stream,
+        ):
+            for path in paths:
+                relative = path.relative_to(base).as_posix()
+                if "sha256" in manifest.get(relative, {}):
+
+                    class HashingReader:
+                        def read(self, size: int = -1) -> bytes:
+                            data = source.read(size)
+                            digest.update(data)
+                            return data
+
+                    with path.open("rb") as source:
+                        digest = hashlib.sha256()
+                        info = stream.gettarinfo(str(path), arcname=relative)
+                        info.type, info.linkname = tarfile.REGTYPE, ""
+                        info.size = signatures[path][2]
+                        stream.addfile(info, HashingReader())
+                        manifest[relative]["sha256"] = digest.hexdigest()
+                else:
+                    stream.add(path, arcname=relative, recursive=False)
+        with tarfile.open(staging, "r:gz") as stream:
+            observed = {}
+            for member in stream:
+                if member.isfile():
+                    payload = stream.extractfile(member)
+                    assert payload is not None
+                    with payload:
+                        archived_digest = hashlib.sha256()
+                        while block := payload.read(1024 * 1024):
+                            archived_digest.update(block)
+                    observed[member.name] = {
+                        "sha256": archived_digest.hexdigest(),
+                        "bytes": member.size,
+                    }
+                elif member.issym():
+                    observed[member.name] = {"link": member.linkname}
+            if observed != manifest:
+                raise ValueError("evidence changed during compaction")
+        for path, expected in signatures.items():
+            metadata = path.lstat()
+            if (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+            ) != expected:
+                raise ValueError(f"evidence changed during compaction: {path}")
+        with staging.open("rb") as source:
+            os.fsync(source.fileno())
+        from molt.file_publication import durable_namespace_replace
+
+        durable_namespace_replace(staging, archive)
+        with archive.open("rb") as stream:
+            archive_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        record = {
+            "schema": "molt.evidence-index.v1",
+            "class": kind,
+            "source": str(root),
+            "archive": str(archive),
+            "archive_sha256": archive_digest,
+            "files": manifest,
+        }
+        if previous_index is not None:
+            record["previous_index"] = previous_index
+        # External sidecar survives even a failed checkout-index publication.
+        external_index = archive.with_suffix(".index.json")
+        write_exact(external_index, record)
+        if not remove_source and not index_retained_source:
+            return archive
+        write_exact(
+            index, {key: value for key, value in record.items() if key != "files"}
+        )
+        if not remove_source:
+            return archive
+        from molt.file_deletion import delete_path
+
+        # Remove maximal represented subtrees through the canonical sealed-tree
+        # boundary. Never chmod files or follow links to external images.
+        preserved = {base / relative for relative in kept}
+        preserved.update(
+            parent
+            for path in tuple(preserved)
+            for parent in path.parents
+            if parent.is_relative_to(base)
+        )
+        removals: set[Path] = set()
+        for path in paths:
+            if path in preserved or any(parent in removals for parent in path.parents):
+                continue
+            removals.add(path)
+            removed, error = delete_path(path, owning_root=base)
+            if not removed:
+                raise OSError(f"archived source removal deferred: {path}: {error}")
+        return archive
+    finally:
+        staging.unlink(missing_ok=True)
