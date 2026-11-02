@@ -39,7 +39,7 @@ jobs:
           sync-groups: bench, dev
       - name: Install the declared denominator
         run: |
-          oracle=$(python3 -c 'from tools.perf_scoreboard_primitives import CPYTHON_SELECTOR; print(CPYTHON_SELECTOR)')
+          oracle=$(python3 tools/venv_exec.py python -c 'from tools.perf_scoreboard_primitives import CPYTHON_SELECTOR; print(CPYTHON_SELECTOR)')
           UV_PYTHON_DOWNLOADS=manual uv python install "$oracle"
       - name: Measure and check the instruction ratchet
         run: >-

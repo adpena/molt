@@ -7,7 +7,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 69
-- `operational-tooling` files: 68
+- `operational-tooling` files: 69
 - `scattered-assumption` files: 351
 
 ## Files
@@ -476,11 +476,12 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard.py` | 23 | authority-routed | `3.8` |
 | `tools/perf_scoreboard_cli.py` | 3 | authority-routed | `3.14` |
 | `tools/perf_scoreboard_model.py` | 1 | scattered-assumption | `3.182` |
+| `tools/perf_scoreboard_primitives.py` | 3 | operational-tooling | `3.12` |
 | `tools/perf_scoreboard_profile.py` | 1 | authority-routed | `3.0` |
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
 | `tools/proof_command_argv.py` | 2 | operational-tooling | `3.12` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
-| `tools/proof_plan.toml` | 85 | authority-routed | `3.12` |
+| `tools/proof_plan.toml` | 88 | authority-routed | `3.12` |
 | `tools/public_contract_gate.py` | 2 | authority-routed | `3.12` |
 | `tools/pyperformance_adapter.py` | 1 | scattered-assumption | `3.12` |
 | `tools/quint_trace_to_tests.py` | 8 | operational-tooling | `3.12` |
