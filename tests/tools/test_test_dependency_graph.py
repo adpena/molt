@@ -351,7 +351,7 @@ def test_interrupted_observation_retains_static_readers(tmp_path, monkeypatch, p
     assert result.returncode == 2, result.stdout + result.stderr
     directory = observation_directory(context)
     key = "collection:" + test if phase == "collection" else test + "::test_interrupt"
-    record = json.loads(_observation_path(directory, key).read_text())
+    record = json.loads(_observation_path(directory, key).read_text(encoding="utf-8"))
     assert record["complete"] is False
     assert "runtime/later.rs" not in record["files"]
     graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
