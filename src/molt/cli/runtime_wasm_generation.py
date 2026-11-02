@@ -504,6 +504,14 @@ class RuntimeWasmExpectedPair:
     def write(self, path: Path) -> None:
         _atomic_write_json(path, self.to_dict(), sort_keys=True, skip_if_unchanged=True)
 
+    def path(self, build_state_root: Path) -> Path:
+        """Name only this input family and receipt role, never an ambient pair."""
+        return (
+            build_state_root
+            / "runtime_wasm_generations"
+            / f"{self.shared.family_digest}.{self.receipt_role.value}.expected.json"
+        )
+
 
 def runtime_wasm_generation_path(shared: Path) -> Path:
     return shared.with_name(_RUNTIME_WASM_GENERATION_NAME)

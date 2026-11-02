@@ -159,13 +159,35 @@ tooling rules and add no work to emitted programs.
 
 Every dispatch uses `tools.dispatch_prompt.DispatchBounds` (or the CLI's required
 `--bounds` JSON file). Specify `outcome`, `deliverable`, `integration_owner`,
-`proof_owner`, `owned_paths`, `proof_commands`, `budget_minutes` and `stop_when`.
-There are no inferred defaults: empty path and command arrays explicitly mean
-read-only work and no proof launches. Workers return when their deliverable or
-budget is reached, closing owned commands through their existing custody owner.
-Only the parent can assign expanded scope, research, proofs or delegation after
-reassessing the critical path. These are validated dispatch inputs and supervisory
-rules, not a sandbox or a mechanism that terminates arbitrary agent processes.
+`proof_owner`, `owned_paths`, `reserved_paths`, `proof_commands`, `budget_minutes`
+and `stop_when`. Every field is required; a missing `reserved_paths` array is an
+error, while an explicit empty array reserves no paths. `owned_paths` is the
+starting aperture for discovery, not the final write set. For implementation work,
+extend to the canonical owners of each changed invariant, including their tests
+and generated outputs, and list each extension in the report. An empty
+`owned_paths` array still means read-only work.
+
+`reserved_paths` names paths held by other lanes, including their descendants;
+keep reservations as narrow as the actual custody. Read current assignments and
+their `owned_paths` from the existing coordination records when preparing bounds;
+do not create a second ownership registry. The parent resolves reserved-path
+conflicts and unsettled semantic decisions and assigns any delegation. Workers
+return when the deliverable or budget is reached, closing owned commands through
+their existing custody owner. Before completion, return only for a reserved path,
+an unsettled semantic decision, the budget, or evidence meeting the explicit stop
+condition. Report a class sweep: each defect's mechanism, siblings found by that
+mechanism, their paths, and unverified cells.
+
+`proof_commands` lists extras to the standard proof families, not an allowlist;
+an empty array adds no extras. Standard families are `land --precheck-only`, pytest
+of changed readers at `-n 4` or lower, owning native and WASM differentials, Cargo
+build/test/clippy for touched crates, generator write/check, and cost runs with
+`/usr/bin/time -l` on macOS or the owning platform's equivalent. Only the named
+proof owner launches them, selecting affected obligations under the proof plan
+and reusing matching evidence. This does not require unaffected proofs or turn a
+read-only review into an implementation lane. These are validated dispatch inputs
+and supervisory rules, not a sandbox or a mechanism that terminates arbitrary
+agent processes.
 
 ### Brief review
 

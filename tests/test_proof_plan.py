@@ -2777,6 +2777,7 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
         "wasm.test.startup-lifecycle",
         "wasm.test.linker-admission",
         "wasm.test.control-flow",
+        "wasm.test.runtime-signatures",
         "wasm.integration.split-runtime",
         "wasm.integration.host-exports.gpu-kernel",
         "wasm.integration.host-boundaries",
