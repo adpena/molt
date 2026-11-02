@@ -235,28 +235,29 @@ Failed guard scratch payloads are regenerable (HF-694). Closure and exact
 payload identity, not a successful exit, grant retirement. The existing
 newest-first policy keeps at most three failed payloads and 2 GiB; excess is
 deleted directly after last use. A dead guard follows the same path without
-archival. Guard receipts and the landing's existing bounded stream tails carry
-the failure result; deleting a scratch generation does not delete the landing
-receipt. Whole-root retention errors are diagnostic and cannot change that
-child's exit or become infrastructure failure. Current-run custody failures
-remain failures.
+archival. The retired guard marker, the guard summary and the landing's
+existing bounded stream tails carry the failure result; deleting a scratch
+generation does not delete the landing receipt. A failed deletion keeps the
+payload retained and indexed for the next sweep, never blocked. Errors in the
+shared root, `pending/` and `removing/` namespaces are diagnostic whether
+raised or returned, and cannot change that child's exit or become
+infrastructure failure. A run whose own index the shared namespace refuses
+deletes its payload at once. Current-run custody failures remain failures.
 
 The removed inline compactor traversed, compressed, reread and hashed the whole
 scratch tree before a failed guard could exit, then wrote an unbounded file
 manifest that its 16 MiB reader could refuse forever. No such archive or source
 recovery index is produced now. Explicit dry-run/apply collection in
-`molt.temporary_artifacts` resolves old indexed archives under the same custody
-and retention rules, outside guard exit. It uses the bounded source index for
-coordinates without reading or copying archive content. Unknown coordinates
-stay protected and are reported. The `scratch-evidence` storage class remains
-for the distinct legacy-temp migration producer; it is not guard scratch.
-Sccache server leftovers retain their separate evidence contract.
-
-[Pytest's temporary-directory retention](https://docs.pytest.org/en/stable/how-to/tmp_path.html#temporary-directory-location-and-retention)
-owns `tmp_path_retention_count=3` and `tmp_path_retention_policy=failed`.
-These standard settings add no second temp collector. Within a guarded run,
-pytest basetemp is still subordinate to parent process-tree closure and the
-scratch byte bound. No emitted-program work or runtime behavior changes.
+`molt.temporary_artifacts` resolves old indexed archives and the old
+producer's two archive block reasons under the same custody and retention
+rules, outside guard exit. A legacy block is a retained failure only after its
+terminal receipt, payload identity and allocation receipt verify; evidence in
+the record decides, not the owner's schema. Cleanup uses the bounded source
+index for coordinates without reading or copying archive content. Unknown
+coordinates stay protected and are reported; other blocks stay untouched. The
+`scratch-evidence` storage class remains for the distinct legacy-temp
+migration producer; it is not guard scratch. Sccache server leftovers retain
+their separate evidence contract.
 
 Recovery-index names are reserved durable control coordinates. Collectors skip
 them, and the compactor refuses to treat an index itself as raw payload.

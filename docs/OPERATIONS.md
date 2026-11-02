@@ -679,35 +679,47 @@ Coordination records and recovery indices stay in the checkout. Other evidence n
 expires into deletion: compaction verifies an archive, publishes its external
 manifest and source index, then removes only represented raw payloads.
 
-Failed guard scratch is regenerable (HF-694). The guard keeps its terminal
-receipt; landing gates already retain their result and bounded stream tails.
-After proven process-tree closure, the existing scratch collector keeps the
-newest three failed payloads within 2 GiB, then deletes older payloads and their
-generation receipts. A dead guard uses the same closure and identity checks,
-without archiving. Active, indeterminate, foreign and malformed custody stays
-protected. Whole-root retention errors are diagnostics: they never change the
-child exit or create an infrastructure failure. Failure of the current run's
-own closure or scratch finalization still does.
+Failed guard scratch is regenerable (HF-694). What persists of a failed run is
+its guard marker record, which moves to `retired/` (newest 256 records), the
+guard summary, and the landing gates' result and bounded stream tails. The
+scratch generation and its receipts do not persist. After proven process-tree
+closure, the scratch collector keeps the newest three failed payloads within
+2 GiB and deletes older payloads with their generation receipts. A failed
+payload larger than the byte bound is deleted by its own guard's exit sweep. A
+dead guard uses the same closure and identity checks, without archiving. A
+deletion that fails leaves the payload retained and indexed; a later sweep
+retries it. Active, indeterminate, foreign and malformed custody stays
+protected. Errors in the namespaces every run shares (the root, `pending/` and
+`removing/`) are diagnostics, raised or returned: they never change the child
+exit or create an infrastructure failure. When `pending/` refuses a run's own
+index, that run deletes its payload at once. A failure of the current run's own
+closure or scratch finalization still fails the run, and so does a clean run
+whose own payload removal failed.
 
-Old indexed scratch archives require explicit cleanup, outside guard exit.
-Using the selected image's Python, inspect the same count/byte policy first:
+The removed archive producer left two kinds of state that only explicit
+cleanup resolves, never guard exit: indexed archives, and failed generations
+blocked with `failure evidence awaits archive` or `failure evidence preserved;
+archive unavailable: ...`, which ordinary sweeps no longer see. Using the
+selected image's Python, inspect the same count/byte policy first:
 
 ```sh
 python -B -m molt.temporary_artifacts --root /artifact/tmp/gs/v2 --dry-run
 python -B -m molt.temporary_artifacts --root /artifact/tmp/gs/v2 --apply
 ```
 
-`--count` and `--bytes` select an explicit tighter bound, including zero for
-an approved terminal backlog. The dry run changes no receipts and reports
-payload and archive bytes. Apply revalidates custody under each generation
-lock and deletes its indexed archive and sidecar with the payload. Missing
-already-deleted archive files are accepted on resume; interrupted payload
-transitions retain the existing blocked-custody policy. Cleanup reads only the
-bounded source index, never the unbounded external file manifest.
-Malformed or foreign coordinates remain with an error;
-no archive is copied or regenerated. Pytest also uses its standard
-`tmp_path_retention_count=3` and `tmp_path_retention_policy=failed`; a guarded
-session's basetemp remains within its parent scratch lifetime.
+The defaults are the guard's own bound. `--count` and `--bytes` select an
+explicit tighter bound, including zero for an approved terminal backlog. The
+dry run changes no receipts and reports payload and archive bytes. Apply
+revalidates custody under each generation lock. It accepts a legacy block only
+when its terminal receipt, payload identity and allocation receipt verify, and
+then applies the bound: a kept payload rejoins ordinary retention with a
+pending index, and an expired one is deleted with its indexed archive and
+sidecar. Missing already-deleted archive files are accepted on resume. Other
+blocked generations, interrupted payload transitions, and malformed or foreign
+coordinates remain, with an error where cleanup meets them. Cleanup reads only
+the bounded source index, never the unbounded external file manifest, and
+copies or regenerates no archive. Marker reconciliation leaves a generation
+with legacy archive coordinates in place for this command.
 
 Existing state moves only through a separately reviewed operation:
 
