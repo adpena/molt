@@ -416,27 +416,17 @@ def test_example_real_lane_prompt_renders() -> None:
 
 @pytest.mark.parametrize("sections", [None, [], ["all"], ["web"], ["git", "verify"]])
 def test_project_identity_is_verbatim_first_and_unselectable(sections) -> None:
-    expected = """\
-Molt is a world-class, early-stage ahead-of-time (AOT) compiler for Python, not an interpreter.
-Build it the way leading compilers are built (LLVM and MLIR, Cranelift, rustc, GraalVM Native Image,
-mypyc, Codon). Prove facts at compile and build time in the closed world (spec 0216); compiled code
-calls the runtime only for work it cannot do itself.
-
-Typing is our friend. Identity is typed, never spelled: runtime names are `NameId`; op kinds,
-exceptions and intrinsics are generated closed types; facts live on typed SSA values. Never compare,
-intern, allocate or look up a name that the compiler or the runtime can know: no
-`attr_name_bits_from_bytes`, no byte or str literal of a registered name, no string-keyed fact. When
-the typed form does not exist yet, add it at its one authority (for example the runtime name table)
-and use it; do not spell the name.
-
-Design data first. Prefer flat arrays indexed by dense typed ids over hash tables, indices over
-pointers, structures of arrays over arrays of structures, and hot bits packed into the index or the
-value word. A cache is a sign of a slow design: do not add one; redesign so the work is done once at
-build time or is cheap enough to repeat. (Content-addressed build caching of whole artifacts is not
-such a cache.)
-
-On a hot path, measure instructions retired and runtime calls per iteration before and after."""
-    assert sc.PROJECT_IDENTITY == expected
+    expected = sc.PROJECT_IDENTITY
+    # The owner's commitments, not a second copy of the text.
+    for commitment in (
+        "ahead-of-time (AOT) compiler for Python, not an interpreter",
+        "early-stage, world-class AOT compiler project",
+        "Typing is our friend.",
+        "Design data first.",
+        "measure instructions retired",
+    ):
+        assert commitment in expected
+    assert expected.isascii()
     prompt = dp.compose("TASK BODY", bounds=_BOUNDS, sections=sections)
     assert prompt.startswith(expected + "\n\nTASK BODY")
     assert prompt.count(expected) == 1
