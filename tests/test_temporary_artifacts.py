@@ -2874,6 +2874,11 @@ def test_explicit_cleanup_leaves_a_live_unindexed_transition_alone(tmp_path):
     import subprocess
     import textwrap
 
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
     lease, _ = _lease(tmp_path)
     (lease.target / "kept").write_bytes(b"k")
     _finish(lease, success=False)
@@ -2881,7 +2886,7 @@ def test_explicit_cleanup_leaves_a_live_unindexed_transition_alone(tmp_path):
     # A live guard between its owner commit and its index: unindexed, locked.
     write_exact(lease.generation / "owner.json", {**owner, "state": "reclaiming"})
     scratch._drop_index(lease.generation)
-    holder = subprocess.Popen(
+    holder = start_owned_test_process(
         [
             sys.executable,
             "-B",
@@ -2899,6 +2904,7 @@ def test_explicit_cleanup_leaves_a_live_unindexed_transition_alone(tmp_path):
         ],
         stdout=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
     )
     try:
         assert holder.stdout is not None
@@ -2910,8 +2916,7 @@ def test_explicit_cleanup_leaves_a_live_unindexed_transition_alone(tmp_path):
             resolve_legacy_archives=True,
         )
     finally:
-        holder.kill()
-        holder.wait()
+        close_owned_test_process(holder)
     assert result["protected_count"] == 1 and result["held"] == [], result
 
 
