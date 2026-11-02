@@ -3,7 +3,6 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-from tests.findings import finding
 from tests.wasm_linked_runner import (
     build_wasm_linked,
     require_wasm_toolchain,
@@ -11,7 +10,6 @@ from tests.wasm_linked_runner import (
 )
 
 
-@finding("HF-715")
 def test_wasm_pickle_class_dataclass_roundtrip(tmp_path: Path) -> None:
     require_wasm_toolchain()
 
