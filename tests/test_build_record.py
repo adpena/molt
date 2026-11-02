@@ -884,6 +884,9 @@ def test_the_request_key_binds_arguments_environment_cwd_and_host() -> None:
 
     first = key()
     assert first == key(environment={"MOLT_X": "1", "TERM_SESSION_ID": "s2"})
+    assert first == key(environment={"MOLT_X": "1", "CODEX_TOOL_CALL_ID": "call-a"})
+    assert first == key(environment={"MOLT_X": "1", "CODEX_TOOL_CALL_ID": "call-b"})
+    assert first != key(environment={"MOLT_X": "1", "CODEX_PRODUCT_MODE": "a"})
     assert first != key(environment={"MOLT_X": "2", "TERM_SESSION_ID": "s1"})
     assert first != key(
         arguments={"file_path": "/a.py", "profile": "release", "output": "/o/app"}

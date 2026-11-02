@@ -118,6 +118,8 @@ def test_observed_context_binds_host_configuration_environment_and_source(
     graph, monkeypatch
 ):
     context = observation_context(graph.tree, ())
+    monkeypatch.setenv("CODEX_TOOL_CALL_ID", "another-shell-call")
+    assert observation_context(graph.tree, ()) == context
     blobs = dict(graph.tree.blobs)
     blobs["runtime/crate/src/a.rs"] = "guest-edited"
     assert observation_context(replace(graph.tree, blobs=blobs), ()) == context

@@ -123,7 +123,9 @@ The controller issues a context through
 the existing build-request key: host Python sources, configuration, command declarations,
 interpreter and launch environment must match. Runtime, stdlib and differential guest sources
 remain individual inputs. Host Python and configuration bind the context; other data changes
-retain their static requests. Changes to host code, tests or their harness
+retain their static requests. Execution-control IDs use the existing build-request session-noise
+authority (`CODEX_TOOL_CALL_ID`, like terminal-session IDs), without a selector-private whitelist.
+Changes to host code, tests or their harness
 retain the file-level obligation. Postsubmit still uses the full static transitive closure and
 loads `tests.observed_inputs` explicitly; ordinary pytest startup gains no observer.
 
