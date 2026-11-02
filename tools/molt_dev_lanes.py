@@ -39,7 +39,7 @@ from contextlib import contextmanager
 import argparse
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 import json
 import os
@@ -593,11 +593,12 @@ def work_in_progress_refusal(repo: Path, *, now: float) -> str | None:
 
 @contextmanager
 def _lane_slug_lock(repo: Path, slug: str, *, wait_s: float = 0.0) -> Generator[None]:
-    """Hold ``slug``'s lock, or refuse: a start or retirement of it is running.
+    """Serialize a slug's start, dispatch and retirement.
 
     `lane start` holds it from its checks through provisioning and `lane
-    retire` for its whole run, so neither meets the other's half-made or
-    half-removed lane (HF-468 reviews v4 and v5). A command refuses at once;
+    dispatch` across re-admission and `lane retire` for its whole run, so none
+    meets another command's half-made or half-removed lane (HF-468 reviews
+    v4 and v5). A command refuses at once;
     the landing runner's retirement waits up to ``wait_s``.
     """
     common = _driver()._git_common_directory(repo)
@@ -606,7 +607,7 @@ def _lane_slug_lock(repo: Path, slug: str, *, wait_s: float = 0.0) -> Generator[
     path = common / "molt" / "lane-start" / f"{slug}.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     refusal = (
-        f"another `lane start {slug}` or `lane retire {slug}` is running in "
+        f"another `lane start {slug}`, `lane dispatch {slug}` or `lane retire {slug}` is running in "
         "this repository"
         + (f" (waited {wait_s:g} s)" if wait_s > 0 else "")
         + "; wait for it, or choose another slug"
@@ -623,7 +624,7 @@ def _lane_slug_lock(repo: Path, slug: str, *, wait_s: float = 0.0) -> Generator[
 
 @contextmanager
 def _lane_slots_lock(repo: Path) -> Generator[None]:
-    """Hold the slot table while one start chooses and claims its slot."""
+    """Serialize slot allocation and dispatch claim admission together."""
     common = _driver()._git_common_directory(repo)
     if common is None:
         raise DriverError(f"cannot resolve the Git common directory of {repo}")
@@ -633,7 +634,7 @@ def _lane_slots_lock(repo: Path) -> Generator[None]:
         handle = _acquire_file_lock(
             path,
             timeout_s=_SLOT_LOCK_WAIT_S,
-            timeout_message="another `lane start` held the slot table for "
+            timeout_message="another `lane start` or `lane dispatch` held the slot/claim table for "
             f"{_SLOT_LOCK_WAIT_S:g} s",
         )
     except FileLockTimeout as exc:
@@ -782,9 +783,9 @@ def _add_dispatch_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--dispatch-reason",
-        default=dag_dispatch.DispatchReason.DAG_FRONTIER.value,
+        default=dag_dispatch.DispatchReason.DAG_READY.value,
         choices=[reason.value for reason in dag_dispatch.DispatchReason],
-        help="why the lane runs; any value but dag_frontier needs --reason",
+        help="why the lane runs; any value but dag_ready needs --reason",
     )
     parser.add_argument("--reason", help="text for a non-default dispatch reason")
 
@@ -817,8 +818,7 @@ def _admit_dispatch(
     except dag_dispatch.DispatchRefused as exc:
         raise DriverError(f"lane start refused by the work order: {exc}") from exc
     where = (
-        f"family {dispatch.family}, level {dispatch.level} "
-        f"(frontier {dispatch.frontier})"
+        f"family {dispatch.family}, waits {dispatch.waits}"
         if dispatch.family is not None
         else "the ledger itself"
     )
@@ -831,7 +831,7 @@ def _dispatch_argv(dispatch: dag_dispatch.Dispatch) -> str:
     words = []
     if dispatch.rows:
         words.append(f"--rows {','.join(dispatch.rows)}")
-    if dispatch.reason is not dag_dispatch.DispatchReason.DAG_FRONTIER:
+    if dispatch.reason is not dag_dispatch.DispatchReason.DAG_READY:
         words.append(f"--dispatch-reason {dispatch.reason.value}")
         words.append(f"--reason {shlex.quote(dispatch.text)}")
     return " ".join(words)
@@ -842,24 +842,58 @@ def cmd_lane_dispatch(args: argparse.Namespace) -> int:
     from tools import agent_coordination, coordination_records
 
     driver = _driver()
-    slug = lane_slug(args.slug)
     repo = Path(args.repo).resolve()
     git = driver.Git(repo)
     main = _main_checkout(_worktrees(git))
-    status = _record_status(main, slug)
-    if status not in coordination_records.ACTIVE_STATUSES:
-        raise DriverError(f"{_record_path(main, slug)} is not an active lane record")
-    upstream = f"{args.remote}/{args.branch}"
-    if not args.no_fetch:
-        git.fetch(args.remote, args.branch)
-    dispatch = _admit_dispatch(git, main, upstream, args, task=lane_task(slug))
-    agent_coordination.update_task(
-        main,
-        lane_task(slug),
-        status=status,
-        fields={dag_dispatch.RECORD_KEY: dispatch.record()},
-        note=f"dispatch {dispatch.reason.value} family={dispatch.family}",
-    )
+    if args.plan:
+        from tools import coordination_records, finding_status
+
+        ledger = finding_status.read_ledger(repo)
+        try:
+            plan = dag_dispatch.row_plan(
+                ledger, coordination_records.load_records(main)
+            )
+        except dag_dispatch.DispatchRefused as exc:
+            raise DriverError(str(exc)) from exc
+        ratchet_path = repo / "bench/primitive_ratchet.json"
+        ratchet = (
+            dag_dispatch.parse_ratchet(ratchet_path.read_text(encoding="utf-8"))
+            if ratchet_path.exists()
+            else None
+        )
+        star = dag_dispatch.north_star(ratchet)
+        if args.json:
+            print(
+                json.dumps(
+                    {"north_star": star, "rows": [asdict(row) for row in plan]},
+                    indent=2,
+                )
+            )
+        else:
+            print(dag_dispatch.render_plan(plan, ratchet))
+        return EXIT_OK
+    if args.slug is None:
+        raise DriverError("lane dispatch needs a slug or --plan")
+    slug = lane_slug(args.slug)
+    # Start and re-admission share one claim boundary: two readers cannot both
+    # observe spare capacity and then publish conflicting family claims.
+    with _lane_slug_lock(repo, slug), _lane_slots_lock(repo):
+        status = _record_status(main, slug)
+        if status not in coordination_records.ACTIVE_STATUSES:
+            raise DriverError(
+                f"{_record_path(main, slug)} is not an active lane record"
+            )
+        upstream = f"{args.remote}/{args.branch}"
+        if not args.no_fetch:
+            git.fetch(args.remote, args.branch)
+        dispatch = _admit_dispatch(git, main, upstream, args, task=lane_task(slug))
+        agent_coordination.update_task(
+            main,
+            lane_task(slug),
+            status=status,
+            fields={dag_dispatch.RECORD_KEY: dispatch.record()},
+            note=f"dispatch {dispatch.reason.value} family={dispatch.family}",
+        )
     _ok(f"recorded the dispatch of {lane_task(slug)}")
     return EXIT_OK
 
@@ -1477,19 +1511,25 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
             f"{'landed' if state.landed else 'unlanded'} {where}"
             + (f" record={state.record_status}" if state.record_status else "")
         )
-    waiting = ", ".join(f"{w['family']} ({w['open']} open)" for w in order["waiting"])
+    print(f"work order at {upstream}:")
     print(
-        f"work order at {upstream}: frontier level {order['frontier']}"
-        + (f"; families with open rows and no lane: {waiting}" if waiting else "")
+        dag_dispatch.render_plan(
+            tuple(dag_dispatch.PlannedRow(**row) for row in order["rows"]),
+            order["primitive_ratchet"],
+        )
     )
     for task, dispatch in sorted(order["lanes"].items()):
         if dispatch is None:
             print(f"  {task}: no dispatch facts (started before HF-674)")
+        elif dispatch.get("requires_readmission"):
+            print(
+                f"  {task}: needs re-admission with lane dispatch; row waits are unknown"
+            )
         elif dispatch.get("family") is None:
             print(f"  {task}: {dispatch.get('reason')} ({dispatch.get('text')})")
         else:
             print(
-                f"  {task}: family {dispatch['family']} level {dispatch['level']} "
+                f"  {task}: family {dispatch['family']} waits={dispatch['waits']} "
                 f"{dispatch['reason']}"
                 + (f" ({dispatch['text']})" if dispatch.get("text") else "")
             )
@@ -1497,21 +1537,45 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
 
 
 def _work_order(git: Any, main: Path, upstream: str) -> dict[str, Any]:
-    """The frontier at ``upstream`` and each active lane's dispatch facts."""
+    """The row plan at ``upstream`` and each active lane's dispatch facts."""
     from tools import coordination_records, finding_status
 
     records = coordination_records.load_records(main)
     status = finding_status.project(
         git._run(["show", f"{upstream}:{finding_status.LEDGER_PATH}"]).stdout
     )
-    lowest, waiting = dag_dispatch.frontier(
-        status, dag_dispatch.active_families(records)
+    try:
+        rows = dag_dispatch.row_plan(status, records)
+    except dag_dispatch.DispatchRefused as exc:
+        raise DriverError(f"work order at {upstream}: {exc}") from exc
+    ratchet_ref = f"{upstream}:bench/primitive_ratchet.json"
+    present = git._run(["cat-file", "-e", ratchet_ref], check=False)
+    ratchet = (
+        dag_dispatch.parse_ratchet(git._run(["show", ratchet_ref]).stdout)
+        if present.returncode == 0
+        else None
     )
+
+    def dispatch_facts(record: Any) -> dict[str, Any] | None:
+        payload = record.payload.get(dag_dispatch.RECORD_KEY)
+        if not isinstance(payload, Mapping):
+            return None
+        # Project the current record authority, never an obsolete work order.
+        facts = {
+            field.name: payload[field.name]
+            for field in fields(dag_dispatch.Dispatch)
+            if field.name in payload
+        }
+        if "waits" not in facts:
+            facts["requires_readmission"] = True
+        return facts
+
     return {
-        "frontier": lowest,
-        "waiting": [{"family": letter, "open": count} for letter, count in waiting],
+        "primitive_ratchet": ratchet,
+        "north_star": dag_dispatch.north_star(ratchet),
+        "rows": [asdict(row) for row in rows],
         "lanes": {
-            record.task: record.payload.get(dag_dispatch.RECORD_KEY)
+            record.task: dispatch_facts(record)
             for record in records
             if record.active and record.task.startswith("lane-")
         },
@@ -1585,7 +1649,13 @@ def add_lane_arguments(
         "dispatch",
         help="admit an existing lane's rows against the work order and record them",
     )
-    dispatching.add_argument("slug")
+    dispatching.add_argument("slug", nargs="?")
+    dispatching.add_argument(
+        "--plan",
+        action="store_true",
+        help="read the selected checkout's ready and waiting v1 rows without recording a dispatch",
+    )
+    dispatching.add_argument("--json", action="store_true")
     _add_dispatch_arguments(dispatching)
     dispatching.add_argument(
         "--no-fetch", action="store_true", help="judge against the current upstream ref"

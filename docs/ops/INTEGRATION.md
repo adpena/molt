@@ -339,6 +339,22 @@ the lane. The record's environment wires the sccache the running driver pins
 for a `--base` lane whose sccache pin differs, and either sccache serves its
 builds.
 
+Each family has one typed stratum (`engine`, `semantics`, `delivery`, or
+`apparatus`) in the ledger family table. Dispatch refuses a new apparatus lane
+while another apparatus lane is active, and refuses a non-engine lane when no
+engine lane is active. Only `landing_repair` and `integrator_ledger` bypass these
+capacity rules; other departure reasons cannot. Refusals name the active lanes.
+Start and re-admission serialize their claim check and record update under the
+existing slot/claim lock; the slug lock also excludes concurrent retirement.
+The plan shows the recorded primitive geometric mean against CPython when
+`bench/primitive_ratchet.json` exists (one per-op axis per primitive plus the empty
+startup axis), and says unavailable when absent. Engine ready rows show the axes
+owned by their family table entries.
+
+While landing success over the last 24 hours is at least 80% and median landing
+latency is at most 1 hour, apparatus dispatch is limited to `landing_repair`.
+This budget is an orchestrator obligation; its automated check is a follow-up.
+
 The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
 "Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` checked
 out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
@@ -347,13 +363,21 @@ out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
 - **`lane start <slug> --rows HF-n[,HF-m]`** fetches `origin/main` (or
   `--base <ref>`) and admits the lane against the work order: the ledger's
   edges table at that base commit (`tools/dag_dispatch.py`, HF-674). The rows
-  are open and in one family. A family above the frontier (the lowest level
-  that has open rows and no active lane), or a second lane in a claimed
-  family, is refused before any slot is touched, unless `--dispatch-reason`
+  are open, in one family, and ready: every predecessor row is closed.
+  Claiming a prerequisite in another lane does not close it. A waiting row,
+  or a second lane in a claimed family, is refused before any slot is touched,
+  unless a non-default `--dispatch-reason`
   (`needs_nothing`, `row_order_edge`, `owner_directed`, `landing_repair`)
   comes with `--reason TEXT`. A ledger-only lane names no rows and uses
   `--dispatch-reason integrator_ledger`. The record keeps the rows, family,
-  derived level, frontier and reason. The command then
+  open predecessor waits and reason. `lane list` prints ready v1 rows ordered
+  by longest downstream chain of open v1 rows (including the row), then by
+  unique downstream v1 row count and finding ID. `lane dispatch --plan` reads
+  the selected checkout without mutation. The ledger records exactly one class
+  per open row: `release_blocking`, `release_apparatus`, `post_1_0`, or
+  `apparatus`. The two release classes share the v1 tier; family endpoints
+  expand only within the same tier, and named v1 prerequisites cannot depend
+  on non-v1 rows. The command then
   prefers the checkout selected by `--repo` when it is a registered, clean,
   detached, unlocked and non-prunable slot under the selected worktree root.
   Otherwise it takes the first such slot in path order. It runs `git switch --no-track -c

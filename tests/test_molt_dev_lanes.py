@@ -175,6 +175,7 @@ def _args(root: Path, **values) -> argparse.Namespace:
         "ignore": None,
         "json": False,
         "no_fetch": False,
+        "plan": False,
         "candidate_controller": False,
         "pinned_controller": None,
         # Lane-mechanics tests declare a typed out-of-order reason; the work
@@ -559,7 +560,7 @@ def test_a_second_start_of_a_slug_refuses_while_the_first_runs(
     try:
         with pytest.raises(
             DriverError,
-            match="another `lane start twin` or `lane retire twin` is running",
+            match="another `lane start twin`, `lane dispatch twin` or `lane retire twin` is running",
         ):
             lanes.cmd_lane_start(_args(family, slug="twin"))
         assert _ref(main, "refs/heads/lane/twin") is None
@@ -694,7 +695,7 @@ def test_a_retirement_refuses_while_another_process_provisions_the_lane(
         _await_hold(start, signals[0], "provisioning")
         with pytest.raises(
             DriverError,
-            match="another `lane start busy` or `lane retire busy` is running",
+            match="another `lane start busy`, `lane dispatch busy` or `lane retire busy` is running",
         ):
             lanes.cmd_lane_retire(_args(family, slug="busy"))
         signals[1].write_text("go", encoding="utf-8")
@@ -728,7 +729,7 @@ def test_two_processes_retiring_one_slug_never_meet(
         _await_hold(first, signals[0], "its retirement")
         with pytest.raises(
             DriverError,
-            match="another `lane start dup` or `lane retire dup` is running",
+            match="another `lane start dup`, `lane dispatch dup` or `lane retire dup` is running",
         ):
             lanes.cmd_lane_retire(_args(family, slug="dup"))
         assert worktree.is_dir()
@@ -2509,17 +2510,16 @@ def test_old_in_lane_runner_repins_after_unlock_and_retires_without_gates(
 def test_lane_start_admits_lanes_in_dag_order(family: Path) -> None:
     """The ledger's edges table orders lanes; a departure needs a recorded reason."""
 
-    def start(slug: str, rows: str, reason: str = "dag_frontier", text=None):
+    def start(slug: str, rows: str, reason: str = "dag_ready", text=None):
         return lanes.cmd_lane_start(
             _args(family, slug=slug, rows=rows, dispatch_reason=reason, reason=text)
         )
 
-    # Family B (level 1) waits while level-0 family A has open rows and no lane;
+    # Family B waits until its predecessor closes;
     # the refusal happens before any slot, branch or record exists.
     with pytest.raises(
         DriverError,
-        match=r"family B is level 1, but level 0 has families with open rows and "
-        r"no lane: A \(1 open\)",
+        match=r"engine capacity rule.*active lanes: none",
     ):
         start("second", "HF-2")
     assert not (family / "molt-src" / "logs" / "agents" / "lane-second").exists()
@@ -2528,9 +2528,8 @@ def test_lane_start_admits_lanes_in_dag_order(family: Path) -> None:
     assert _record(family, "first")["dispatch"] == {
         "rows": ["HF-1"],
         "family": "A",
-        "level": 0,
-        "frontier": 0,
-        "reason": "dag_frontier",
+        "waits": {"HF-1": []},
+        "reason": "dag_ready",
         "text": "",
     }
     # One lane owns a family's cause; a second needs a typed reason and text.
@@ -2542,9 +2541,11 @@ def test_lane_start_admits_lanes_in_dag_order(family: Path) -> None:
         start("again", "HF-1", "owner_directed", "owner asked for a split") == EXIT_OK
     )
     assert _record(family, "again")["dispatch"]["text"] == "owner asked for a split"
-    # With A claimed, level 1 is the frontier and B is admitted in order.
-    assert start("second", "HF-2") == EXIT_OK
-    assert _record(family, "second")["dispatch"]["frontier"] == 1
+    # A claimed prerequisite is still open. An explicit departure records it.
+    with pytest.raises(DriverError, match="HF-2 waits on HF-1"):
+        start("second", "HF-2")
+    assert start("second", "HF-2", "owner_directed", "co-design the callers") == EXIT_OK
+    assert _record(family, "second")["dispatch"]["waits"] == {"HF-2": ["HF-1"]}
 
 
 def test_lane_dispatch_records_an_existing_lane_in_the_work_order(family: Path) -> None:
@@ -2558,14 +2559,14 @@ def test_lane_dispatch_records_an_existing_lane_in_the_work_order(family: Path) 
                 family,
                 slug="older",
                 rows=rows,
-                dispatch_reason="dag_frontier",
+                dispatch_reason="dag_ready",
                 reason=None,
                 no_fetch=True,
             )
         )
 
     # Re-admission runs the same gate; its own earlier record does not count.
-    with pytest.raises(DriverError, match="family B is level 1"):
+    with pytest.raises(DriverError, match="engine capacity rule"):
         dispatch("HF-2")
     assert dispatch("HF-1") == EXIT_OK
     assert dispatch("HF-1") == EXIT_OK
@@ -2578,7 +2579,164 @@ def test_lane_dispatch_records_an_existing_lane_in_the_work_order(family: Path) 
                 family,
                 slug="newer",
                 rows="HF-1",
-                dispatch_reason="dag_frontier",
+                dispatch_reason="dag_ready",
                 reason=None,
             )
         )
+
+
+def test_lane_dispatch_plan_reads_checkout_without_recording(
+    family: Path, capsys
+) -> None:
+    from tools import molt_dev
+
+    main = family / "molt-src"
+
+    def records():
+        return {
+            path.relative_to(main): path.read_bytes()
+            for path in (main / "logs/agents").rglob("coordination.json")
+        }
+
+    before_records = records()
+    before = _git(main, "status", "--porcelain").stdout
+    args = molt_dev.build_parser().parse_args(
+        [
+            "lane",
+            "dispatch",
+            "--repo",
+            str(family / "molt-src"),
+            "--plan",
+            "--json",
+        ]
+    )
+    assert args.func(args) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert "unavailable" in payload["north_star"]
+    plan = payload["rows"]
+    assert [(row["row"], row["waits"]) for row in plan] == [
+        ("HF-1", []),
+        ("HF-2", ["HF-1"]),
+        ("HF-5", ["HF-2"]),
+        ("HF-6", []),
+        ("HF-7", ["HF-2"]),
+    ]
+    assert _git(main, "status", "--porcelain").stdout == before
+    assert records() == before_records
+    ratchet = main / "bench/primitive_ratchet.json"
+    ratchet.parent.mkdir()
+    ratchet.write_text(
+        json.dumps(
+            {
+                "schema": "molt-primitive-instructions-v1",
+                "axes": {"loop/per_op": {"ratio": 9}, "empty/startup": {"ratio": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert args.func(args) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert "3.00x CPython over 2 axes" in payload["north_star"]
+    assert records() == before_records
+    ratchet.write_text("null", encoding="utf-8")
+    with pytest.raises(ValueError, match="ratchet must be an object"):
+        args.func(args)
+    assert records() == before_records
+
+
+def test_lane_list_requires_readmission_of_old_dispatch_facts(
+    family: Path, capsys
+) -> None:
+    _start(family, "legacy")
+    main = family / "molt-src"
+    path = main / "logs/agents/lane-legacy/coordination.json"
+    record = _record(family, "legacy")
+    record["dispatch"] = {
+        "rows": ["HF-1"],
+        "family": "A",
+        "level": 700,
+        "frontier": 900,
+        "reason": "dag_frontier",
+        "text": "",
+    }
+    path.write_text(json.dumps(record), encoding="utf-8")
+    capsys.readouterr()
+    assert lanes.cmd_lane_list(_args(family, json=True, no_fetch=True)) == EXIT_OK
+    order = json.loads(capsys.readouterr().out)["work_order"]
+    facts = order["lanes"]["lane-legacy"]
+    assert facts["requires_readmission"] is True
+    assert "waits" not in facts and "level" not in facts and "frontier" not in facts
+    one = next(row for row in order["rows"] if row["row"] == "HF-1")
+    assert one["claimed_by"] == ["lane-legacy"]
+    assert lanes.cmd_lane_list(_args(family, no_fetch=True)) == EXIT_OK
+    text = capsys.readouterr().out
+    assert "lane-legacy: needs re-admission" in text
+    assert "row waits are unknown" in text
+    assert "level 700" not in text
+
+
+@pytest.mark.parametrize("held", ["slot", "slug"])
+def test_lane_dispatch_serializes_claims_and_retirement(
+    family: Path, monkeypatch, held: str
+) -> None:
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    _start(family, "older")
+    main = family / "molt-src"
+    common = Path(_git(main, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = main / common
+    lock = (
+        common / "molt/lane-start" / ("slots.lock" if held == "slot" else "older.lock")
+    )
+    before = _record(family, "older")
+    handle = _try_acquire_file_lock(lock)
+    assert handle is not None
+    monkeypatch.setattr(lanes, "_SLOT_LOCK_WAIT_S", 0.0)
+    args = _args(
+        family,
+        slug="older",
+        rows="HF-1",
+        dispatch_reason="dag_ready",
+        reason=None,
+        no_fetch=True,
+    )
+    try:
+        with pytest.raises(
+            DriverError,
+            match="slot/claim table" if held == "slot" else "lane dispatch older",
+        ):
+            lanes.cmd_lane_dispatch(args)
+        assert _record(family, "older") == before
+    finally:
+        _release_file_lock(handle)
+    assert lanes.cmd_lane_dispatch(args) == EXIT_OK
+    assert _record(family, "older")["dispatch"]["family"] == "A"
+
+
+def test_lane_list_binds_ratchet_to_selected_upstream(family: Path, capsys) -> None:
+    main = family / "molt-src"
+    ratchet = {
+        "schema": "molt-primitive-instructions-v1",
+        "axes": {"loop/per_op": {"ratio": 9}, "empty/startup": {"ratio": 1}},
+    }
+    _commit_file(
+        main,
+        "bench/primitive_ratchet.json",
+        json.dumps(ratchet),
+        "record primitive ratios",
+    )
+    _git(main, "push", "-q", "origin", "main")
+    # A different uncommitted ratio must not leak into the upstream view.
+    ratchet["axes"]["loop/per_op"]["ratio"] = 81
+    (main / "bench/primitive_ratchet.json").write_text(
+        json.dumps(ratchet), encoding="utf-8"
+    )
+    assert lanes.cmd_lane_list(_args(family, json=True, no_fetch=True)) == EXIT_OK
+    order = json.loads(capsys.readouterr().out)["work_order"]
+    assert "3.00x CPython over 2 axes" in order["north_star"]
+    assert order["primitive_ratchet"]["axes"]["loop/per_op"]["ratio"] == 9
+    _commit_file(main, "bench/primitive_ratchet.json", "null", "invalid primitive data")
+    _git(main, "push", "-q", "origin", "main")
+    with pytest.raises(ValueError, match="ratchet must be an object"):
+        lanes.cmd_lane_list(_args(family, json=True, no_fetch=True))

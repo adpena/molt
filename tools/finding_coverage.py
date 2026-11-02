@@ -261,73 +261,15 @@ _PRIOR_ART_HEADING_RE = re.compile(r"^## (?P<title>[A-Z]\. \S.*?)\s*$", re.MULTI
 def dependency_order_problems(
     status: finding_status.FindingStatus, prior_art: str
 ) -> list[str]:
-    """Each open row sits in exactly one family, and each family has prior art."""
+    """The canonical graph is valid and every family has sourced prior art."""
+    problems = finding_status.dependency_problems(status)
     families = status.dependency_families
-    if not families:
-        return ["the ledger has no family dependency order table"]
-    problems: list[str] = []
-    open_keys = set(status.open_keys)
-    placed: dict[str, list[str]] = {}
-    for family in families:
-        for key in family.keys:
-            placed.setdefault(key, []).append(family.letter)
-            if key not in open_keys:
-                problems.append(
-                    f"dependency family {family.title} lists {key}, which is not "
-                    "an open finding"
-                )
-    problems.extend(
-        f"open finding {key} sits in families {', '.join(letters)}; place it in one"
-        for key, letters in sorted(placed.items())
-        if len(letters) > 1
-    )
-    problems.extend(
-        f"open finding {key} is in no dependency family; place it in the ledger's "
-        "family dependency order"
-        for key in status.open_keys
-        if key not in placed
-    )
     headings = set(_PRIOR_ART_HEADING_RE.findall(prior_art))
     problems.extend(
         f"dependency family {family.title} has no section in {PRIOR_ART_PATH}"
         for family in families
         if family.title not in headings
     )
-    problems.extend(_edge_problems(status))
-    return problems
-
-
-def _edge_problems(status: finding_status.FindingStatus) -> list[str]:
-    """The edges table is the one work order: well formed, acyclic, no prose copy."""
-    problems = [
-        f"line {line} states the family order in prose; the edges table is the "
-        "order and levels derive from it (tools/finding_status.py "
-        "dependency_levels)"
-        for line in status.prose_order_lines
-    ]
-    if not status.dependency_edges:
-        problems.append(
-            "the family dependency order has no edges table "
-            "(| From | To | Reason |); an empty order makes every family level 0"
-        )
-    letters = {family.letter for family in status.dependency_families}
-    seen: dict[tuple[str, str], int] = {}
-    for edge in status.dependency_edges:
-        where = f"edge {edge.source} -> {edge.target} (line {edge.line})"
-        for letter in (edge.source, edge.target):
-            if letter not in letters:
-                problems.append(f"{where} names family {letter}, which has no row")
-        if edge.source == edge.target:
-            problems.append(f"{where} orders a family after itself")
-        if not edge.reason:
-            problems.append(f"{where} gives no reason")
-        first = seen.setdefault((edge.source, edge.target), edge.line)
-        if first != edge.line:
-            problems.append(f"{where} repeats the edge on line {first}")
-    try:
-        finding_status.dependency_levels(status)
-    except finding_status.DependencyCycleError as exc:
-        problems.append(str(exc))
     return problems
 
 

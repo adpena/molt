@@ -9,19 +9,19 @@ family-coverage check (``tools/finding_coverage.py``) passes afterwards, so a
 row never lands outside the DAG.
 
     ledger_edit.py next-key
-    ledger_edit.py open HF-590 --family F --section "Open: CI, harness and \
+    ledger_edit.py open HF-590 --family F --v1-class release_apparatus --section "Open: CI, harness and \
 release engineering" [--after HF-587] --defect ... --evidence ... --next ...
     ledger_edit.py close HF-506 --fix ... [--defect ...]
     ledger_edit.py merge HF-477 --into HF-442 [--defect-note ...] \
 [--evidence-note ...] [--next-note ...]
     ledger_edit.py note HF-185 [--defect-note ...] [--evidence-note ...] \
 [--next-note ...]
-    ledger_edit.py family create W --name ... --cause ...
+    ledger_edit.py family create W --stratum engine --axes empty/startup --name ... --cause ...
     ledger_edit.py edge add F W --reason ...
     ledger_edit.py edge remove F W
 
-The edges table is the work order; each family's level derives from it
-(``finding_status.dependency_levels``) and is never written by hand.
+The edges table owns row readiness and critical-path priority. Each open row
+also has exactly one v1 class; row edits maintain that membership together.
 
 Cell text is Markdown; a literal ``|`` must be written ``\\|``.
 """
@@ -57,9 +57,9 @@ class LedgerEditError(ValueError):
 
 def _row_index(lines: list[str], key: str) -> int:
     found = [
-        index
-        for index, line in enumerate(lines)
-        if finding_status.cells(line)[:1] == [key]
+        row.line - 1
+        for row in finding_status.project("\n".join(lines)).rows
+        if row.key == key
     ]
     if len(found) != 1:
         raise LedgerEditError(f"{key} is in {len(found)} rows, not one")
@@ -90,8 +90,8 @@ def _edit_family(
     lines: list[str], index: int, edit: Callable[[list[str]], list[str]]
 ) -> None:
     cells = finding_status.cells(lines[index])
-    keys = [key.strip() for key in cells[2].split(",") if key.strip()]
-    cells[2] = ", ".join(edit(keys))
+    keys = [key.strip() for key in cells[-1].split(",") if key.strip()]
+    cells[-1] = ", ".join(edit(keys))
     lines[index] = _row(cells, empty_last=True)
 
 
@@ -125,6 +125,25 @@ def open_row(text: str, args: argparse.Namespace) -> str:
     _edit_family(
         lines, _family_index(lines, status, args.family), lambda k: [*k, args.key]
     )
+    membership = [
+        entry.line for entry in finding_status.project("\n".join(lines)).v1_membership
+    ]
+    if membership:
+        position = max(membership)
+    else:
+        try:
+            position = lines.index("| Row | V1 class |") + 2
+        except ValueError as exc:
+            raise LedgerEditError("the ledger has no v1 membership table") from exc
+    lines.insert(position, _row([args.key, args.v1_class]))
+    return "\n".join(lines)
+
+
+def _remove_membership(text: str, key: str) -> str:
+    lines = text.split("\n")
+    for entry in reversed(finding_status.project(text).v1_membership):
+        if entry.key == key:
+            del lines[entry.line - 1]
     return "\n".join(lines)
 
 
@@ -144,7 +163,7 @@ def close_row(text: str, args: argparse.Namespace) -> str:
         )
     del lines[index]
     lines.insert(_table_top(lines, FIXED_HEADING), _row([args.key, defect, args.fix]))
-    return "\n".join(lines)
+    return _remove_membership("\n".join(lines), args.key)
 
 
 def _append_notes(
@@ -218,6 +237,17 @@ def merge_rows(text: str, args: argparse.Namespace) -> str:
             lambda keys: [k for k in keys if k != args.key],
         )
     del lines[_row_index(lines, args.key)]
+    merged = _remove_membership("\n".join(lines), args.key)
+    lines = merged.split("\n")
+    for edge in reversed(finding_status.project(merged).dependency_edges):
+        if args.key not in (edge.source, edge.target):
+            continue
+        source = args.into if edge.source == args.key else edge.source
+        target = args.into if edge.target == args.key else edge.target
+        if source == target:
+            del lines[edge.line - 1]
+        else:
+            lines[edge.line - 1] = _row([source, target, edge.reason])
     return "\n".join(lines)
 
 
@@ -258,7 +288,7 @@ def describe_family(text: str, args: argparse.Namespace) -> str:
     index = _family_index(lines, status, args.letter)
     cells = finding_status.cells(lines[index])
     cells[0] = f"{args.letter}. {args.name}"
-    cells[1] = args.cause
+    cells[-2] = args.cause
     lines[index] = _row(cells, empty_last=True)
     return "\n".join(lines)
 
@@ -273,7 +303,11 @@ def create_family(text: str, args: argparse.Namespace) -> str:
     lines = text.split("\n")
     last = max(family.line for family in status.dependency_families) - 1
     lines.insert(
-        last + 1, _row([f"{args.letter}. {args.name}", args.cause, ""], empty_last=True)
+        last + 1,
+        _row(
+            [f"{args.letter}. {args.name}", args.stratum, args.axes, args.cause, ""],
+            empty_last=True,
+        ),
     )
     return "\n".join(lines)
 
@@ -290,15 +324,19 @@ def _edge(status: finding_status.FindingStatus, source: str, target: str):
 
 
 def add_edge(text: str, args: argparse.Namespace) -> str:
-    """Order ``target`` after ``source``; levels re-derive from the table."""
+    """Order a row or family after another row or family."""
     status = finding_status.project(text)
-    if not status.dependency_edges:
+    if not status.edge_table_lines:
         raise LedgerEditError("the dependency order has no edges table")
     if _edge(status, args.source, args.target) is not None:
         raise LedgerEditError(f"edge {args.source} -> {args.target} already exists")
     lines = text.split("\n")
-    last = max(edge.line for edge in status.dependency_edges) - 1
-    lines.insert(last + 1, _row([args.source, args.target, args.reason]))
+    position = (
+        max(edge.line for edge in status.dependency_edges)
+        if status.dependency_edges
+        else status.edge_table_lines[0] + 1
+    )
+    lines.insert(position, _row([args.source, args.target, args.reason]))
     return "\n".join(lines)
 
 
@@ -350,10 +388,7 @@ def next_key(text: str) -> str:
 def _checked(root: Path, text: str) -> list[str]:
     status = finding_status.project(text)
     prior_art = (root / finding_coverage.PRIOR_ART_PATH).read_text(encoding="utf-8")
-    return [
-        *status.problems,
-        *finding_coverage.dependency_order_problems(status, prior_art),
-    ]
+    return finding_coverage.dependency_order_problems(status, prior_art)
 
 
 def _references(text: str, key: str) -> list[str]:
@@ -371,6 +406,11 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     opened = sub.add_parser("open")
     opened.add_argument("key")
     opened.add_argument("--family", required=True)
+    opened.add_argument(
+        "--v1-class",
+        required=True,
+        choices=[value.value for value in finding_status.V1Class],
+    )
     opened.add_argument("--section", required=True)
     opened.add_argument("--after")
     for name in ("defect", "evidence", "next"):
@@ -405,6 +445,14 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     created.add_argument("letter")
     created.add_argument("--name", required=True)
     created.add_argument("--cause", required=True)
+    created.add_argument(
+        "--stratum", required=True, choices=list(finding_status.FamilyStratum)
+    )
+    created.add_argument(
+        "--axes",
+        default="-",
+        help="comma-separated HF-459 ratchet axis keys (required for engine families)",
+    )
     edge = sub.add_parser("edge", help="add or remove a family dependency edge")
     edge_sub = edge.add_subparsers(dest="edge_command", required=True)
     for name in ("add", "remove"):

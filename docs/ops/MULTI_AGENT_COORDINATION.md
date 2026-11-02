@@ -438,8 +438,18 @@ parent record; `scan` reads the selected repository's records, not agent chat.
 `tools/molt_dev.py lane start <slug>` registers each lane it creates as task
 `lane-<slug>` in the main checkout's registry, with the lane worktree as the
 record's source checkout, a `lane` object (branch, base, worktree) and a
-`dispatch` object (rows, family, derived level, frontier, reason and its
+`dispatch` object (rows, family, open predecessor waits, reason and its
 text; `tools/dag_dispatch.py`).
+A row is ready only when every predecessor row is closed; an active lane
+claim does not satisfy an edge. Family endpoints expand within the same tier:
+`release_blocking` and `release_apparatus` share v1, while `post_1_0` and
+`apparatus` stay outside it. Each open row has one class in the ledger.
+`lane list` and `lane dispatch --plan` rank ready v1 rows by longest downstream
+chain of open v1 rows (including self), then unique downstream v1 row count
+and finding ID. Waiting rows require a non-default typed reason and text.
+Stored records without row waits require `lane dispatch` re-admission; their
+known family still retains custody, and the list view reports unknown waits.
+
 `lane retire` closes the record as `landed` or `abandoned` and records the
 retired tip and any bundle.
 
@@ -763,3 +773,8 @@ command should be treated as stale context, not an active lock.
 - [ ] Broad proof was run by one coordinator when required.
 - [ ] Spec/status/roadmap/matrix docs moved with any changed claim.
 - [ ] No partner work was reverted or silently overwritten.
+
+Dispatch capacity follows the typed family strata in the V1 ledger: non-engine
+work requires an active engine lane, and a second active apparatus lane is refused.
+Only `landing_repair` or `integrator_ledger` reasons bypass capacity; see the
+[canonical integration procedure](INTEGRATION.md) for the apparatus budget.

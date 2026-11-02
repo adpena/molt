@@ -4,8 +4,8 @@
 module is its one reader. The docs checker, the pin-freshness holds and the
 release exit gate consume this projection; none of them parses the ledger.
 
-A finding row is a Markdown table row whose first cell starts with a stable ID
-(`HF-n`, `HF-Fn` or `V1-n`). The `## ` section that holds a row sets its state:
+A finding row outside DAG metadata is a Markdown table row whose first cell
+starts with a stable ID (`HF-n`, `HF-Fn` or `V1-n`). The `## ` section sets its state:
 a section whose title starts with "Fixed" closes its rows, and every other row
 is open. Open is the default, so a row cannot leave the release scope by its
 position alone.
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
 LEDGER_PATH = PurePosixPath("docs/agent/V1_HANDOFF_FINDINGS.md")
@@ -38,9 +39,8 @@ _RENAMED_FROM_RE = re.compile(r"was (?P<id>(?:HF|V1)-\d+)")
 _SECTION_RE = re.compile(r"^## (?P<title>.*\S)\s*$")
 _SUBSECTION_RE = re.compile(r"^### (?P<title>.*\S)\s*$")
 _DEPENDENCY_FAMILY_RE = re.compile(r"^(?P<letter>[A-Z])\. (?P<name>\S.*)$")
-_FAMILY_LETTER_RE = re.compile(r"[A-Z]")
 # Prose that states the order by hand ("Edges: A -> P ...", "Levels: 0 = A ...").
-# The edges table is the order, and levels derive from it.
+# The edges table alone owns the order.
 _PROSE_ORDER_RE = re.compile(r"^(?:Edges|Levels):")
 # The subsection whose table maps every open row to one root-cause family.
 DEPENDENCY_ORDER_SUBSECTION = "Family dependency order"
@@ -61,6 +61,13 @@ class FindingRow:
     evidence: str
 
 
+class FamilyStratum(StrEnum):
+    ENGINE = "engine"
+    SEMANTICS = "semantics"
+    DELIVERY = "delivery"
+    APPARATUS = "apparatus"
+
+
 @dataclass(frozen=True, slots=True)
 class DependencyFamily:
     """One root-cause family of the ledger's family dependency order."""
@@ -69,6 +76,8 @@ class DependencyFamily:
     name: str
     keys: tuple[str, ...]
     line: int
+    stratum: FamilyStratum
+    axes: tuple[str, ...]
 
     @property
     def title(self) -> str:
@@ -77,7 +86,7 @@ class DependencyFamily:
 
 @dataclass(frozen=True, slots=True)
 class DependencyEdge:
-    """``source -> target``: the target family's fix depends on the source's."""
+    """``source -> target``: row or family prerequisites, with a reason."""
 
     source: str
     target: str
@@ -86,7 +95,29 @@ class DependencyEdge:
 
 
 class DependencyCycleError(ValueError):
-    """The edges table orders some family after itself."""
+    """The expanded row graph orders a row after itself."""
+
+
+class V1Class(StrEnum):
+    RELEASE_BLOCKING = "release_blocking"
+    RELEASE_APPARATUS = "release_apparatus"
+    POST_1_0 = "post_1_0"
+    APPARATUS = "apparatus"
+
+    @property
+    def tier(self) -> str:
+        return (
+            "v1"
+            if self in (self.RELEASE_BLOCKING, self.RELEASE_APPARATUS)
+            else self.value
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class V1Membership:
+    key: str
+    classification: V1Class
+    line: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +128,15 @@ class FindingStatus:
     problems: tuple[str, ...]
     dependency_families: tuple[DependencyFamily, ...] = ()
     dependency_edges: tuple[DependencyEdge, ...] = ()
-    # Lines of the dependency-order subsection that state edges or levels in
+    # Lines of the dependency-order subsection that restate work order in
     # prose; the edges table is the order, so the coverage check refuses these.
     prose_order_lines: tuple[int, ...] = ()
+    v1_membership: tuple[V1Membership, ...] = ()
+    edge_table_lines: tuple[int, ...] = ()
+
+    @property
+    def classes(self) -> dict[str, V1Class]:
+        return {entry.key: entry.classification for entry in self.v1_membership}
 
     @property
     def open_keys(self) -> tuple[str, ...]:
@@ -153,6 +190,9 @@ def project(text: str) -> FindingStatus:
     families: list[DependencyFamily] = []
     edges: list[DependencyEdge] = []
     prose_order: list[int] = []
+    membership: list[V1Membership] = []
+    edge_tables: list[int] = []
+    dependency_table = ""
     section = ""
     subsection = ""
     # The column count of the table the current line belongs to, from its
@@ -174,17 +214,49 @@ def project(text: str) -> FindingStatus:
         subheading = _SUBSECTION_RE.match(line)
         if subheading is not None:
             subsection = subheading["title"]
+            dependency_table = ""
             continue
         if subsection.startswith(DEPENDENCY_ORDER_SUBSECTION):
             if _PROSE_ORDER_RE.match(line):
                 prose_order.append(line_number)
                 continue
             row_cells = cells(line)
-            if (
-                len(row_cells) == 3
-                and _FAMILY_LETTER_RE.fullmatch(row_cells[0])
-                and _FAMILY_LETTER_RE.fullmatch(row_cells[1])
-            ):
+            if line.lstrip().startswith("|") and not row_cells:
+                problems.append(
+                    f"dependency table line {line_number} needs a closing |"
+                )
+                continue
+            if row_cells == ["From", "To", "Reason"]:
+                dependency_table = "edges"
+                edge_tables.append(line_number)
+                continue
+            if row_cells == ["Row", "V1 class"]:
+                dependency_table = "membership"
+                continue
+            family = _DEPENDENCY_FAMILY_RE.match(row_cells[0]) if row_cells else None
+            if dependency_table == "membership" and row_cells:
+                if len(row_cells) != 2:
+                    problems.append(
+                        f"v1 membership line {line_number} needs Row and V1 class"
+                    )
+                    continue
+                try:
+                    classification = V1Class(row_cells[1])
+                except ValueError:
+                    problems.append(
+                        f"v1 membership {row_cells[0]} (line {line_number}) has unknown class {row_cells[1]!r}"
+                    )
+                    continue
+                membership.append(
+                    V1Membership(row_cells[0], classification, line_number)
+                )
+                continue
+            if dependency_table == "edges" and row_cells and family is None:
+                if len(row_cells) != 3:
+                    problems.append(
+                        f"dependency edge line {line_number} needs From, To and Reason"
+                    )
+                    continue
                 edges.append(
                     DependencyEdge(
                         source=row_cells[0],
@@ -194,18 +266,36 @@ def project(text: str) -> FindingStatus:
                     )
                 )
                 continue
-            family = _DEPENDENCY_FAMILY_RE.match(row_cells[0]) if row_cells else None
-            if family is not None and len(row_cells) == 3:
+            if family is not None:
+                dependency_table = "families"
+                if len(row_cells) != 5:
+                    problems.append(
+                        f"family {family['letter']} needs Family, Stratum, HF-459 axes, cause and open rows"
+                    )
+                    continue
+                try:
+                    stratum = FamilyStratum(row_cells[1])
+                except ValueError:
+                    problems.append(
+                        f"family {family['letter']} has missing or invalid stratum {row_cells[1]!r}"
+                    )
+                    continue
                 families.append(
                     DependencyFamily(
                         letter=family["letter"],
                         name=family["name"],
                         keys=tuple(
                             key.strip()
-                            for key in row_cells[2].split(",")
+                            for key in row_cells[4].split(",")
                             if key.strip()
                         ),
                         line=line_number,
+                        stratum=stratum,
+                        axes=tuple(
+                            axis.strip()
+                            for axis in row_cells[2].split(",")
+                            if axis.strip() and axis.strip() != "-"
+                        ),
                     )
                 )
             continue
@@ -250,42 +340,155 @@ def project(text: str) -> FindingStatus:
         tuple(families),
         tuple(edges),
         tuple(prose_order),
+        tuple(membership),
+        tuple(edge_tables),
     )
 
 
-def dependency_levels(status: FindingStatus) -> dict[str, int]:
-    """Each family's level: the longest edge path from a family with no prerequisite.
+def dependency_predecessors(status: FindingStatus) -> dict[str, frozenset[str]]:
+    """Expand family endpoints into open rows of the same tier.
 
-    The edges table is the one authority for work order; a level is derived,
-    never written. Raises ``DependencyCycleError`` when some family depends on
-    itself through the edges.
+    The two release classes share the v1 tier. Named closed rows remain nodes
+    (and satisfy their dependents); a closed row has no class to filter by.
+    dependency_problems validates endpoints and membership for every consumer.
     """
-    prerequisites: dict[str, set[str]] = {
-        family.letter: set() for family in status.dependency_families
-    }
+    prerequisites: dict[str, set[str]] = {row.key: set() for row in status.rows}
+    families = {family.letter: family.keys for family in status.dependency_families}
+    classes = status.classes
+    open_keys = set(status.open_keys)
+
+    def expand(endpoint: str) -> tuple[str, ...]:
+        if endpoint in families:
+            return tuple(key for key in families[endpoint] if key in open_keys)
+        return (endpoint,) if endpoint in prerequisites else ()
+
     for edge in status.dependency_edges:
-        prerequisites.setdefault(edge.target, set()).add(edge.source)
-        prerequisites.setdefault(edge.source, set())
-    levels: dict[str, int] = {}
+        for source in expand(edge.source):
+            for target in expand(edge.target):
+                if edge.source in families or edge.target in families:
+                    if (
+                        source in classes
+                        and target in classes
+                        and classes[source].tier != classes[target].tier
+                    ):
+                        continue
+                prerequisites[target].add(source)
+    return {key: frozenset(values) for key, values in prerequisites.items()}
+
+
+def dependency_order(status: FindingStatus) -> tuple[str, ...]:
+    """A topological row order; refuse cycles through any mix of endpoints."""
+    prerequisites = dependency_predecessors(status)
+    ordered: list[str] = []
+    visited: set[str] = set()
     visiting: list[str] = []
 
-    def level(letter: str) -> int:
-        if letter in levels:
-            return levels[letter]
-        if letter in visiting:
-            cycle = [*visiting[visiting.index(letter) :], letter]
-            raise DependencyCycleError("family dependency cycle: " + " -> ".join(cycle))
-        visiting.append(letter)
-        levels[letter] = max(
-            (1 + level(source) for source in sorted(prerequisites[letter])),
-            default=0,
-        )
+    def visit(key: str) -> None:
+        if key in visited:
+            return
+        if key in visiting:
+            cycle = [*visiting[visiting.index(key) :], key]
+            raise DependencyCycleError("row dependency cycle: " + " -> ".join(cycle))
+        visiting.append(key)
+        for source in sorted(prerequisites[key], key=finding_sort_key):
+            visit(source)
         visiting.pop()
-        return levels[letter]
+        visited.add(key)
+        ordered.append(key)
 
-    for letter in sorted(prerequisites):
-        level(letter)
-    return levels
+    for key in sorted(prerequisites, key=finding_sort_key):
+        visit(key)
+    return tuple(ordered)
+
+
+def dependency_problems(status: FindingStatus) -> list[str]:
+    """Validate the row graph and its membership once for every consumer."""
+    families = status.dependency_families
+    if not families:
+        return [*status.problems, "the ledger has no family dependency order table"]
+    problems: list[str] = list(status.problems)
+    open_keys = set(status.open_keys)
+    placed: dict[str, list[str]] = {}
+    for family in families:
+        if family.stratum is FamilyStratum.ENGINE and not family.axes:
+            problems.append(f"engine family {family.title} needs HF-459 axes")
+        for key in family.keys:
+            placed.setdefault(key, []).append(family.letter)
+            if key not in open_keys:
+                problems.append(
+                    f"dependency family {family.title} lists {key}, which is not "
+                    "an open finding"
+                )
+    problems.extend(
+        f"open finding {key} sits in families {', '.join(letters)}; place it in one"
+        for key, letters in sorted(placed.items())
+        if len(letters) > 1
+    )
+    problems.extend(
+        f"open finding {key} is in no dependency family; place it in the ledger's "
+        "family dependency order"
+        for key in status.open_keys
+        if key not in placed
+    )
+    classified: dict[str, list[V1Membership]] = {}
+    for entry in status.v1_membership:
+        classified.setdefault(entry.key, []).append(entry)
+        if entry.key not in open_keys:
+            problems.append(
+                f"v1 class on closed or unknown row {entry.key} (line {entry.line})"
+            )
+    for key in status.open_keys:
+        count = len(classified.get(key, ()))
+        if count != 1:
+            problems.append(
+                f"open finding {key} has {count} v1 classes; needs exactly one"
+            )
+    problems.extend(_dependency_edge_problems(status))
+    return problems
+
+
+def _dependency_edge_problems(status: FindingStatus) -> list[str]:
+    """The edges table is the one work order: well formed, acyclic, no prose copy."""
+    problems = [
+        f"line {line} states the family order in prose; the edges table alone owns the order"
+        for line in status.prose_order_lines
+    ]
+    letters = {family.letter for family in status.dependency_families}
+    if not status.edge_table_lines:
+        problems.append(
+            "the family dependency order has no edges table (| From | To | Reason |)"
+        )
+    endpoints = letters | {row.key for row in status.rows}
+    if len(letters) != len(status.dependency_families):
+        problems.append("duplicate dependency family letter")
+    seen: dict[tuple[str, str], int] = {}
+    for edge in status.dependency_edges:
+        where = f"edge {edge.source} -> {edge.target} (line {edge.line})"
+        for endpoint in (edge.source, edge.target):
+            if endpoint not in endpoints:
+                problems.append(f"{where} names unknown endpoint {endpoint}")
+        if edge.source == edge.target:
+            problems.append(f"{where} orders an endpoint after itself")
+        if not edge.reason:
+            problems.append(f"{where} gives no reason")
+        first = seen.setdefault((edge.source, edge.target), edge.line)
+        if first != edge.line:
+            problems.append(f"{where} repeats the edge on line {first}")
+    try:
+        dependency_order(status)
+    except DependencyCycleError as exc:
+        problems.append(str(exc))
+    classes = status.classes
+    for target, sources in dependency_predecessors(status).items():
+        for source in sorted(sources, key=finding_sort_key):
+            if (
+                target in classes
+                and classes[target].tier == "v1"
+                and source in classes
+                and classes[source].tier != "v1"
+            ):
+                problems.append(f"v1 row {target} depends on non-v1 row {source}")
+    return problems
 
 
 def _identity_problems(rows: list[FindingRow]) -> list[str]:

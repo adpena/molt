@@ -1,4 +1,4 @@
-"""The lane work-order gate (`tools/dag_dispatch.py`) over a fixture ledger."""
+"""Ready-row dispatch over the independent integration fixture ledger."""
 
 from __future__ import annotations
 
@@ -7,44 +7,9 @@ from typing import Any
 
 import pytest
 
-from tools import dag_dispatch, finding_status
+from tests.integration_driver_fixture import FIXTURE_LEDGER
+from tools import dag_dispatch, finding_coverage, finding_status
 from tools.dag_dispatch import DispatchReason, DispatchRefused
-
-# A (level 0) -> B (level 1) -> C (level 2); D is a second level-0 family.
-_LEDGER = """# Ledger
-
-## Release dependency and landing order
-
-### Family dependency order
-
-| Family | Shared cause or missing authority | Open rows |
-| --- | --- | --- |
-| A. First | a | HF-1, HF-2 |
-| B. Second | b | HF-3 |
-| C. Third | c | HF-4 |
-| D. Fourth | d | HF-5 |
-
-| From | To | Reason |
-| --- | --- | --- |
-| A | B | b needs a |
-| B | C | c needs b |
-
-## Open: correctness and release blockers
-
-| ID | Defect | Evidence | Next |
-|----|--------|----------|------|
-| HF-1 | d | e | n |
-| HF-2 | d | e | n |
-| HF-3 | d | e | n |
-| HF-4 | d | e | n |
-| HF-5 | d | e | n |
-
-## Fixed after the handoff
-
-| ID | Defect | Fix |
-|----|--------|-----|
-| HF-9 | d | fixed by x |
-"""
 
 
 @dataclass
@@ -58,100 +23,391 @@ def _lane(task: str, family: str, *, active: bool = True) -> _Record:
     return _Record(task, active, {"dispatch": {"family": family}})
 
 
-STATUS = finding_status.project(_LEDGER)
+STATUS = finding_status.project(FIXTURE_LEDGER)
+PRIOR_ART = "\n".join(f"## {f.title}" for f in STATUS.dependency_families)
 
 
-def test_frontier_lane_is_admitted_and_recorded() -> None:
-    dispatch = dag_dispatch.plan_dispatch(STATUS, [], ["HF-1", "HF-2"])
-    assert dispatch.record() == {
-        "rows": ["HF-1", "HF-2"],
+def _closed_one() -> finding_status.FindingStatus:
+    # Move the row to the fixture's fixed section, remove only its open
+    # membership and family entry. Leave the row edge's family endpoint intact.
+    return finding_status.project(
+        FIXTURE_LEDGER.replace(
+            "| A. First | engine | loop/per_op | a | HF-1, HF-3, HF-4 |",
+            "| A. First | engine | loop/per_op | a | HF-3, HF-4 |",
+        )
+        .replace("| HF-1 | release_blocking |\n", "")
+        .replace("| HF-1 | d | e | n |\n", "")
+        + "| HF-1 | d | closed by independent proof |\n"
+    )
+
+
+def test_ready_dispatch_keeps_rows_family_and_waits() -> None:
+    assert dag_dispatch.plan_dispatch(STATUS, [], ["HF-1"]).record() == {
+        "rows": ["HF-1"],
         "family": "A",
-        "level": 0,
-        "frontier": 0,
-        "reason": "dag_frontier",
+        "waits": {"HF-1": []},
+        "reason": "dag_ready",
         "text": "",
     }
+    # A ready row in a family with a waiting sibling is independently admitted.
+    assert (
+        dag_dispatch.plan_dispatch(STATUS, [_lane("engine", "A")], ["HF-6"]).family
+        == "C"
+    )
 
 
-@pytest.mark.parametrize(
-    ("records", "rows", "admitted"),
-    [
-        # Level 0 still has unclaimed families (A and D), so B waits.
-        ([], ["HF-3"], False),
-        ([_lane("lane-a", "A")], ["HF-3"], False),
-        # With A and D claimed, level 1 is the frontier.
-        ([_lane("lane-a", "A"), _lane("lane-d", "D")], ["HF-3"], True),
-        # C is level 2: B must be claimed first.
-        ([_lane("lane-a", "A"), _lane("lane-d", "D")], ["HF-4"], False),
-        # A closed lane, or a legacy record without dispatch facts, claims nothing.
-        ([_lane("lane-a", "A", active=False), _lane("lane-d", "D")], ["HF-3"], False),
-        ([_Record("legacy"), _lane("lane-d", "D")], ["HF-3"], False),
-    ],
-)
-def test_lanes_above_the_frontier_are_refused(
-    records: list[_Record], rows: list[str], admitted: bool
-) -> None:
-    if admitted:
-        dag_dispatch.plan_dispatch(STATUS, records, rows)
-        return
-    with pytest.raises(DispatchRefused, match=r"but level \d has families"):
-        dag_dispatch.plan_dispatch(STATUS, records, rows)
+def test_claiming_predecessor_does_not_close_it() -> None:
+    with pytest.raises(DispatchRefused, match="HF-2 waits on HF-1"):
+        dag_dispatch.plan_dispatch(STATUS, [_lane("first", "A")], ["HF-2"])
+    with pytest.raises(DispatchRefused, match="HF-5 waits on HF-2"):
+        dag_dispatch.plan_dispatch(STATUS, [_lane("engine", "A")], ["HF-5", "HF-6"])
 
 
-def test_refusal_names_the_waiting_families_and_counts() -> None:
-    with pytest.raises(DispatchRefused) as refused:
-        dag_dispatch.plan_dispatch(STATUS, [], ["HF-4"])
-    assert "family C is level 2" in str(refused.value)
-    assert "A (2 open), D (1 open)" in str(refused.value)
+def test_family_edge_never_holds_v1_behind_non_v1_siblings() -> None:
+    status = _closed_one()
+    assert finding_coverage.dependency_order_problems(status, PRIOR_ART) == []
+    assert dag_dispatch.plan_dispatch(
+        status, [_lane("engine", "A")], ["HF-2"]
+    ).waits == {"HF-2": ()}
+    assert {"HF-3", "HF-4"} <= set(status.open_keys)
 
 
-def test_a_claimed_family_takes_no_second_lane_without_a_reason() -> None:
+def test_priority_uses_longest_open_v1_chain_then_unique_descendants() -> None:
+    # 1 -> 2 -> {5,7}; 6 is independent. Non-v1 rows do not enter ranking.
+    plan = dag_dispatch.row_plan(STATUS)
+    assert [(r.row, r.critical_path, r.downstream) for r in plan] == [
+        ("HF-1", 3, 3),
+        ("HF-2", 2, 2),
+        ("HF-5", 1, 0),
+        ("HF-6", 1, 0),
+        ("HF-7", 1, 0),
+    ]
+    assert [r.row for r in plan if r.ready] == ["HF-1", "HF-6"]
+    # Equal longest paths: six's two descendants outrank one's single child,
+    # despite its greater numeric key.
+    status = finding_status.project(
+        FIXTURE_LEDGER.replace(
+            "| HF-2 | HF-5 | five consumes two |",
+            "| HF-6 | HF-5 | five consumes six |",
+        ).replace(
+            "| HF-2 | HF-7 | seven consumes two |",
+            "| HF-6 | HF-7 | seven consumes six |",
+        )
+    )
+    assert [
+        (r.row, r.critical_path, r.downstream)
+        for r in dag_dispatch.row_plan(status)
+        if r.ready
+    ] == [("HF-6", 2, 2), ("HF-1", 2, 1)]
+    diamond = finding_status.project(
+        FIXTURE_LEDGER.replace(
+            "| HF-2 | HF-7 | seven consumes two |",
+            "| HF-2 | HF-7 | seven consumes two |\n| HF-1 | HF-6 | six consumes one |\n| HF-6 | HF-5 | shared downstream five |",
+        )
+    )
+    first = dag_dispatch.row_plan(diamond)[0]
+    assert (first.row, first.critical_path, first.downstream) == ("HF-1", 3, 4)
+    rendered = dag_dispatch.render_plan(
+        dag_dispatch.row_plan(STATUS, [_lane("owner", "A")])
+    )
+    assert "HF-1 family=A path=3 downstream=3 owner" in rendered
+    assert "HF-2 family=B path=2 downstream=2 waits=HF-1" in rendered
+
+
+def test_second_family_lane_requires_recorded_departure() -> None:
     records = [_lane("lane-a", "A")]
-    with pytest.raises(
-        DispatchRefused, match=r"family A already has a lane \(lane-a\)"
-    ):
-        dag_dispatch.plan_dispatch(STATUS, records, ["HF-2"])
+    with pytest.raises(DispatchRefused, match="family A already has a lane"):
+        dag_dispatch.plan_dispatch(STATUS, records, ["HF-1"])
+    assert dag_dispatch.plan_dispatch(
+        STATUS, [_lane("old", "A", active=False)], ["HF-1"]
+    )
     dispatch = dag_dispatch.plan_dispatch(
         STATUS,
         records,
-        ["HF-2"],
+        ["HF-1"],
         reason=DispatchReason.OWNER_DIRECTED,
-        text="owner split the family",
+        text="owner split",
     )
-    assert (dispatch.reason, dispatch.text) == (
-        DispatchReason.OWNER_DIRECTED,
-        "owner split the family",
-    )
+    assert dispatch.text == "owner split"
 
 
 @pytest.mark.parametrize(
     ("rows", "reason", "text", "expected"),
     [
-        ([], DispatchReason.DAG_FRONTIER, "", "name the open rows"),
-        (["HF-9"], DispatchReason.DAG_FRONTIER, "", "not open findings: HF-9"),
-        (["HF-77"], DispatchReason.DAG_FRONTIER, "", "not open findings: HF-77"),
-        (["HF-1", "HF-3"], DispatchReason.DAG_FRONTIER, "", "span families A, B"),
-        (["HF-4"], DispatchReason.NEEDS_NOTHING, "  ", "needs --reason TEXT"),
+        ([], DispatchReason.DAG_READY, "", "name the open rows"),
+        (["HF-9"], DispatchReason.DAG_READY, "", "not open findings: HF-9"),
+        (["HF-77"], DispatchReason.DAG_READY, "", "not open findings: HF-77"),
+        (["HF-1", "HF-2"], DispatchReason.DAG_READY, "", "span families A, B"),
+        (["HF-5"], DispatchReason.NEEDS_NOTHING, "  ", "needs --reason TEXT"),
         (["HF-1"], DispatchReason.INTEGRATOR_LEDGER, "ledger", "names no rows"),
     ],
 )
-def test_malformed_dispatch_is_refused(
-    rows: list[str], reason: DispatchReason, text: str, expected: str
-) -> None:
+def test_malformed_dispatch_is_refused(rows, reason, text, expected) -> None:
     with pytest.raises(DispatchRefused, match=expected):
         dag_dispatch.plan_dispatch(STATUS, [], rows, reason=reason, text=text)
 
 
-def test_out_of_order_and_ledger_lanes_keep_their_reason() -> None:
+def test_departure_and_ledger_lanes_keep_reason_and_actual_waits() -> None:
     early = dag_dispatch.plan_dispatch(
         STATUS,
-        [],
-        ["HF-4"],
+        [_lane("engine", "A")],
+        ["HF-5"],
         reason=DispatchReason.NEEDS_NOTHING,
-        text="HF-4 depends on no B row",
+        text="co-design",
     )
-    assert (early.family, early.level, early.frontier) == ("C", 2, 0)
+    assert early.waits == {"HF-5": ("HF-2",)}
     ledger = dag_dispatch.plan_dispatch(
-        STATUS, [], [], reason=DispatchReason.INTEGRATOR_LEDGER, text="flush notes"
+        STATUS, [], [], reason=DispatchReason.INTEGRATOR_LEDGER, text="flush"
     )
-    assert (ledger.rows, ledger.family, ledger.level) == ((), None, None)
+    assert (ledger.rows, ledger.family, ledger.waits) == ((), None, {})
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        ("| A | B | b needs a |", "| HF-99 | B | unknown |", "unknown endpoint HF-99"),
+        ("| A | B | b needs a |", "| A | ZZ | unknown |", "unknown endpoint ZZ"),
+        ("| A | B | b needs a |", "| A | B | |", "gives no reason"),
+        ("| A | B | b needs a |", "| A | B |", "needs From, To and Reason"),
+        ("| A | B | b needs a |", "| A | B | no closing bar", "needs a closing |"),
+        (
+            "| A | B | b needs a |",
+            "| A | B | b needs a |\n| HF-5 | A | mixed cycle |",
+            "row dependency cycle",
+        ),
+        (
+            "| A | B | b needs a |",
+            "| HF-5 | HF-2 | row cycle |",
+            "row dependency cycle",
+        ),
+        (
+            "| A | B | b needs a |",
+            "| A | B | b needs a |\n| B | A | family cycle |",
+            "row dependency cycle",
+        ),
+        (
+            "| A | B | b needs a |",
+            "| HF-3 | HF-2 | invalid tier |",
+            "v1 row HF-2 depends on non-v1 row HF-3",
+        ),
+        ("| HF-1 | release_blocking |\n", "", "HF-1 has 0 v1 classes"),
+        (
+            "| HF-1 | release_blocking |",
+            "| HF-1 | release_blocking |\n| HF-1 | release_apparatus |",
+            "HF-1 has 2 v1 classes",
+        ),
+        ("| HF-1 | release_blocking |", "| HF-1 | mystery |", "unknown class"),
+        (
+            "| HF-1 | release_blocking |",
+            "| HF-1 | release_blocking |\n| HF-9 | apparatus |",
+            "class on closed or unknown row HF-9",
+        ),
+        (
+            "| HF-1 | release_blocking |",
+            "| HF-1 | release_blocking |\n| HF-99 | apparatus |",
+            "class on closed or unknown row HF-99",
+        ),
+    ],
+)
+def test_coverage_refuses_invalid_row_graph_and_membership(
+    before, after, expected
+) -> None:
+    status = finding_status.project(FIXTURE_LEDGER.replace(before, after))
+    problems = finding_coverage.dependency_order_problems(status, PRIOR_ART)
+    assert any(expected in problem for problem in problems), problems
+    # A malformed authority cannot become an empty ready set or silently
+    # remove a prerequisite at either dispatch consumer.
+    with pytest.raises(DispatchRefused, match="invalid ledger DAG"):
+        dag_dispatch.plan_dispatch(status, [_lane("engine", "A")], ["HF-2"])
+    with pytest.raises(DispatchRefused, match="invalid ledger DAG"):
+        dag_dispatch.row_plan(status)
+
+
+def test_family_endpoints_expand_all_three_tiers_and_both_directions() -> None:
+    text = (
+        FIXTURE_LEDGER.replace(
+            "| B. Second | semantics | - | b | HF-2 |",
+            "| B. Second | semantics | - | b | HF-2, HF-8, HF-10 |",
+        )
+        .replace(
+            "| HF-2 | release_apparatus |",
+            "| HF-2 | release_apparatus |\n| HF-8 | post_1_0 |\n| HF-10 | apparatus |",
+        )
+        .replace(
+            "## Fixed after the handoff",
+            "| HF-8 | later | e | n |\n| HF-10 | apparatus | e | n |\n\n## Fixed after the handoff",
+        )
+    )
+    status = finding_status.project(text)
+    assert finding_status.dependency_problems(status) == []
+    predecessors = finding_status.dependency_predecessors(status)
+    assert {key: predecessors[key] for key in ("HF-2", "HF-8", "HF-10")} == {
+        "HF-2": frozenset({"HF-1"}),
+        "HF-8": frozenset({"HF-3"}),
+        "HF-10": frozenset({"HF-4"}),
+    }
+    row_to_family = finding_status.project(
+        text.replace("| A | B | b needs a |", "| HF-1 | B | direct prerequisite |")
+    )
+    assert finding_status.dependency_predecessors(row_to_family)["HF-2"] == frozenset(
+        {"HF-1"}
+    )
+    assert finding_status.dependency_predecessors(row_to_family)["HF-8"] == frozenset()
+    family_to_row = finding_status.project(
+        text.replace("| A | B | b needs a |", "| A | HF-8 | post-tier prerequisite |")
+    )
+    assert finding_status.dependency_predecessors(family_to_row)["HF-8"] == frozenset(
+        {"HF-3"}
+    )
+
+
+@pytest.mark.parametrize("stratum", ["", "other"])
+def test_coverage_and_dispatch_refuse_missing_or_unknown_strata(stratum) -> None:
+    text = FIXTURE_LEDGER.replace("| A. First | engine |", f"| A. First | {stratum} |")
+    status = finding_status.project(text)
+    assert any(
+        "stratum" in problem
+        for problem in finding_coverage.dependency_order_problems(status, PRIOR_ART)
+    )
+    with pytest.raises(DispatchRefused, match="stratum"):
+        dag_dispatch.plan_dispatch(status, [], ["HF-1"])
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        DispatchReason.DAG_READY,
+        DispatchReason.NEEDS_NOTHING,
+        DispatchReason.ROW_ORDER_EDGE,
+        DispatchReason.OWNER_DIRECTED,
+    ],
+)
+@pytest.mark.parametrize("family,row", [("B", "HF-2"), ("C", "HF-6"), ("D", "HF-7")])
+def test_non_engine_capacity_cannot_be_bypassed_by_departure(
+    reason, family, row
+) -> None:
+    with pytest.raises(
+        DispatchRefused, match="engine capacity rule.*active lanes: B: semantic-owner"
+    ):
+        dag_dispatch.plan_dispatch(
+            STATUS,
+            [_lane("semantic-owner", "B"), _lane("ended-engine", "A", active=False)],
+            [row],
+            reason=reason,
+            text="recorded departure",
+        )
+
+
+def test_capacity_with_live_engine_and_apparatus_custody() -> None:
+    # Remove only the fixture's prerequisite of seven so all three strata have
+    # ready representatives; this does not change capacity facts.
+    status = finding_status.project(
+        FIXTURE_LEDGER.replace("| HF-2 | HF-7 | seven consumes two |\n", "")
+    )
+    engine = _lane("engine-owner", "A")
+    assert dag_dispatch.plan_dispatch(status, [engine], ["HF-6"]).family == "C"
+    assert dag_dispatch.plan_dispatch(status, [engine], ["HF-7"]).family == "D"
+    assert dag_dispatch.plan_dispatch(_closed_one(), [engine], ["HF-2"]).family == "B"
+    with pytest.raises(
+        DispatchRefused, match="apparatus capacity rule.*apparatus-owner"
+    ):
+        dag_dispatch.plan_dispatch(
+            status,
+            [engine, _lane("apparatus-owner", "D")],
+            ["HF-7"],
+            reason=DispatchReason.OWNER_DIRECTED,
+            text="cannot bypass",
+        )
+    # Retired claims consume no capacity; active non-engine claims do not stop
+    # the first engine lane from starting.
+    assert dag_dispatch.plan_dispatch(
+        status, [_lane("old", "D", active=False), engine], ["HF-7"]
+    )
+    assert dag_dispatch.plan_dispatch(status, [_lane("apparatus-owner", "D")], ["HF-1"])
+    with pytest.raises(
+        DispatchRefused, match="engine capacity rule.*active lanes: none"
+    ):
+        dag_dispatch.plan_dispatch(status, [], ["HF-7"])
+
+
+def test_only_landing_repair_and_integrator_ledger_are_capacity_exceptions() -> None:
+    records = [_lane("apparatus-owner", "D")]
+    repair = dag_dispatch.plan_dispatch(
+        STATUS,
+        records,
+        ["HF-7"],
+        reason=DispatchReason.LANDING_REPAIR,
+        text="repair failed landing",
+    )
+    assert repair.family == "D" and repair.waits == {"HF-7": ("HF-2",)}
+    assert (
+        dag_dispatch.plan_dispatch(
+            STATUS,
+            records,
+            [],
+            reason=DispatchReason.INTEGRATOR_LEDGER,
+            text="reconcile ledger",
+        ).family
+        is None
+    )
+
+
+def test_north_star_uses_geometric_mean_and_family_axis_authority() -> None:
+    ratchet = {
+        "schema": "molt-primitive-instructions-v1",
+        "axes": {
+            "one/per_op": {"ratio": 4},
+            "one/startup": {"ratio": 1000},
+            "two/per_op": {"ratio": 16},
+            "empty/startup": {"ratio": 1},
+        },
+    }
+    # Cube root of 4*16*1 = 4. The per-primitive startup duplicate must not
+    # contaminate the operation mean.
+    assert "4.00x CPython over 3 axes" in dag_dispatch.north_star(ratchet)
+    rendered = dag_dispatch.render_plan(dag_dispatch.row_plan(STATUS), ratchet)
+    assert "axes=loop/per_op" in rendered
+    assert "unavailable" in dag_dispatch.north_star(None)
+    for ratio in (0, -1, float("nan"), float("inf"), True, "1"):
+        ratchet["axes"]["one/per_op"]["ratio"] = ratio
+        with pytest.raises(DispatchRefused, match="invalid ratio"):
+            dag_dispatch.north_star(ratchet)
+    with pytest.raises(DispatchRefused, match="schema"):
+        dag_dispatch.north_star({"schema": "unknown"})
+    with pytest.raises(DispatchRefused, match="missing recorded axes"):
+        dag_dispatch.north_star({"schema": "molt-primitive-instructions-v1"})
+
+
+def test_capacity_is_shared_between_distinct_apparatus_families() -> None:
+    text = FIXTURE_LEDGER.replace(
+        "| D. Fourth | apparatus | - | d | HF-7 |",
+        "| D. Fourth | apparatus | - | d | HF-7 |\n| E. Fifth | apparatus | - | e | HF-11 |",
+    )
+    text = text.replace(
+        "| HF-7 | release_blocking |",
+        "| HF-7 | release_blocking |\n| HF-11 | release_apparatus |",
+    )
+    text = text.replace(
+        "| HF-7 | d | e | n |",
+        "| HF-7 | d | e | n |\n| HF-11 | independent apparatus | e | n |",
+    )
+    status = finding_status.project(text)
+    assert finding_status.dependency_problems(status) == []
+    engine = _lane("engine-owner", "A")
+    assert dag_dispatch.plan_dispatch(status, [engine], ["HF-11"]).family == "E"
+    with pytest.raises(
+        DispatchRefused, match="apparatus capacity rule.*apparatus-owner"
+    ):
+        dag_dispatch.plan_dispatch(
+            status, [engine, _lane("apparatus-owner", "D")], ["HF-11"]
+        )
+    with pytest.raises(
+        DispatchRefused, match="engine capacity rule.*unassigned: ledger-owner"
+    ):
+        dag_dispatch.plan_dispatch(status, [_Record("ledger-owner")], ["HF-11"])
+
+
+@pytest.mark.parametrize("text", ["null", "[]", "true", "2", '"x"'])
+def test_north_star_refuses_non_object_json(text: str) -> None:
+    with pytest.raises(DispatchRefused, match="ratchet must be an object"):
+        dag_dispatch.parse_ratchet(text)
