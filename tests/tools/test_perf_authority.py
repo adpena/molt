@@ -166,9 +166,11 @@ def test_primitive_program_is_its_own_project_inside_a_checkout(tmp_path, monkey
     checkout = tmp_path / "checkout"
     out = checkout / "proof-receipts" / "primitive-instructions"
     out.mkdir(parents=True)
-    (checkout / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (checkout / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\n", encoding="utf-8"
+    )
     program = out / "loop.py"
-    program.write_text("print(1)\n")
+    program.write_text("print(1)\n", encoding="utf-8")
     monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
     # Unpinned, the build would adopt the enclosing checkout and its sources.
     assert _find_project_root(program) == checkout.resolve()
