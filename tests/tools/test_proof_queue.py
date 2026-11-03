@@ -12508,6 +12508,7 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         "from tools.import_file import bind_repository_imports\n"
         "bind_repository_imports(pathlib.Path(root)/'tools/proof_queue.py')\n"
         "from tools.command_execution import detached_command_use\n"
+        "from molt.exact_json import write_exact\n"
         "ready=pathlib.Path(ready); release=pathlib.Path(release)\n"
         "if mode=='early_exit': raise SystemExit(2)\n"
         "with ExitStack() as use:\n"
@@ -12517,7 +12518,7 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         " else:\n"
         "  ack={'schema_version':1,'pid':(0 if mode=='invalid_pid' else True if mode=='bool_pid' else os.getpid()),'use_token':('0'*32 if mode=='wrong_nonce' else token)}\n"
         "  if mode=='extra_key': ack['extra']=1\n"
-        "  ready.write_text(json.dumps(None if mode=='null_ack' else ack),encoding='utf-8')\n"
+        "  write_exact(ready,None if mode=='null_ack' else ack,exclusive=True)\n"
         " deadline=time.monotonic()+15\n"
         " while not release.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
         " assert release.exists(), 'worker release deadline'\n",
