@@ -55,7 +55,7 @@ unsafe fn custom_init(py: &PyToken<'_>, class: u64, base: u64) -> Result<bool, (
         if class == base {
             return Ok(false);
         }
-        let name = intern_static_name(py, &runtime_state(py).interned.init_name, b"__init__");
+        let name = crate::NameId::DunderInit.bits(py);
         let class = obj_from_bits(class).as_ptr().unwrap();
         let base = obj_from_bits(base).as_ptr().unwrap();
         Ok(class_attr_lookup_raw_mro(py, class, name)?

@@ -4,7 +4,7 @@ use num_traits::ToPrimitive;
 
 pub(crate) extern "C" fn io_base_check_closed(object: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let Some(name) = attr_name_bits_from_bytes(py, b"closed") else {
+        let Some(name) = crate::NameId::Closed.owned_bits(py) else {
             return MoltObject::none().bits();
         };
         let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
@@ -57,7 +57,7 @@ pub(crate) extern "C" fn io_base_finalize(object: u64) -> u64 {
         // This also preserves incoming errors on an explicit __del__ call.
         crate::builtins::exceptions::run_unraisable(py, object, None, || {
             let _exception_scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
-            let Some(name) = attr_name_bits_from_bytes(py, b"closed") else {
+            let Some(name) = crate::NameId::Closed.owned_bits(py) else {
                 clear_exception(py);
                 return;
             };
@@ -81,12 +81,12 @@ pub(crate) extern "C" fn io_base_finalize(object: u64) -> u64 {
             if closed {
                 return;
             }
-            if let Some(name) = attr_name_bits_from_bytes(py, b"_finalizing") {
+            if let Some(name) = crate::NameId::PrivateFinalizing.owned_bits(py) {
                 let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
                 molt_setattr_builtin(object, name, MoltObject::from_bool(true).bits());
             }
             clear_exception(py);
-            let result = io_call_noargs(py, object, b"close");
+            let result = io_call_noargs(py, object, crate::NameId::Close);
             dec_ref_bits(py, result);
             if exception_pending(py)
                 && crate::object::ops_sys::env_flag_bool("PYTHONDEVMODE").unwrap_or(0) == 0
@@ -120,7 +120,7 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
-            if let Err(error) = buffered::prepare(_py, ptr, &[b"write"], true) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[crate::NameId::Write], true) {
                 return error;
             }
             if buffered::is_reader(_py, ptr) || buffered::applies(ptr) {
@@ -447,7 +447,16 @@ fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits:
         {
             return error;
         }
-        if let Err(error) = buffered::prepare(_py, ptr, &[b"seekable", b"write", b"seek"], false) {
+        if let Err(error) = buffered::prepare(
+            _py,
+            ptr,
+            &[
+                crate::NameId::Seekable,
+                crate::NameId::Write,
+                crate::NameId::Seek,
+            ],
+            false,
+        ) {
             return error;
         }
         if buffered::applies(ptr) {
@@ -536,7 +545,7 @@ fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits:
         };
         if handle.text && whence == 1 && value == num_bigint::BigInt::from(0) {
             let cookie = if flush_text {
-                io_call_noargs(_py, handle_bits, b"tell")
+                io_call_noargs(_py, handle_bits, crate::NameId::Tell)
             } else {
                 file_tell(_py, handle_bits)
             };
@@ -551,7 +560,7 @@ fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits:
         if flush_text {
             // SEEK_SET/END honor the same overridable flush protocol as tell.
             // The temporary admission borrow/lock has ended before the call.
-            let result = io_call_noargs(_py, handle_bits, b"flush");
+            let result = io_call_noargs(_py, handle_bits, crate::NameId::Flush);
             dec_ref_bits(_py, result);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -708,7 +717,7 @@ fn file_tell(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
         if handle_ptr.is_null() {
             return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
         }
-        if let Err(error) = buffered::prepare(_py, ptr, &[b"tell"], false) {
+        if let Err(error) = buffered::prepare(_py, ptr, &[crate::NameId::Tell], false) {
             return error;
         }
         if buffered::is_reader(_py, ptr) {
@@ -756,7 +765,7 @@ fn file_tell(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
         };
         if flush_text {
             // No backing borrow or lock may span the overridable flush call.
-            let result = io_call_noargs(_py, handle_bits, b"flush");
+            let result = io_call_noargs(_py, handle_bits, crate::NameId::Flush);
             dec_ref_bits(_py, result);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -839,13 +848,13 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
-            if let Err(error) = buffered::prepare(_py, ptr, &[b"fileno"], false) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[crate::NameId::Fileno], false) {
                 return error;
             }
             if buffered::is_writer(_py, ptr)
                 || (buffered::is_reader(_py, ptr) && buffered::applies(ptr))
             {
-                return buffered::query(_py, handle_bits, ptr, b"fileno");
+                return buffered::query(_py, handle_bits, ptr, crate::NameId::Fileno);
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -923,9 +932,16 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
             {
                 return error;
             }
-            if let Err(error) =
-                buffered::prepare(_py, ptr, &[b"write", b"truncate", b"tell"], false)
-            {
+            if let Err(error) = buffered::prepare(
+                _py,
+                ptr,
+                &[
+                    crate::NameId::Write,
+                    crate::NameId::Truncate,
+                    crate::NameId::Tell,
+                ],
+                false,
+            ) {
                 return error;
             }
             if buffered::applies(ptr) {
@@ -1042,7 +1058,7 @@ pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             if buffered::is_reader(_py, ptr) {
-                return buffered::query(_py, handle_bits, ptr, b"readable");
+                return buffered::query(_py, handle_bits, ptr, crate::NameId::Readable);
             }
             if buffered::is_writer(_py, ptr) {
                 // BufferedWriter inherits IOBase.readable; it does not expose
@@ -1083,11 +1099,11 @@ pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
             if buffered::is_reader(_py, ptr) {
                 return MoltObject::from_bool(false).bits();
             }
-            if let Err(error) = buffered::prepare(_py, ptr, &[b"writable"], false) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[crate::NameId::Writable], false) {
                 return error;
             }
             if buffered::is_writer(_py, ptr) {
-                return buffered::query(_py, handle_bits, ptr, b"writable");
+                return buffered::query(_py, handle_bits, ptr, crate::NameId::Writable);
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -1120,13 +1136,13 @@ pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
-            if let Err(error) = buffered::prepare(_py, ptr, &[b"seekable"], false) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[crate::NameId::Seekable], false) {
                 return error;
             }
             if buffered::is_writer(_py, ptr)
                 || (buffered::is_reader(_py, ptr) && buffered::applies(ptr))
             {
-                return buffered::query(_py, handle_bits, ptr, b"seekable");
+                return buffered::query(_py, handle_bits, ptr, crate::NameId::Seekable);
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -1178,13 +1194,13 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
-            if let Err(error) = buffered::prepare(_py, ptr, &[b"isatty"], false) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[crate::NameId::Isatty], false) {
                 return error;
             }
             if buffered::is_writer(_py, ptr)
                 || (buffered::is_reader(_py, ptr) && buffered::applies(ptr))
             {
-                return buffered::query(_py, handle_bits, ptr, b"isatty");
+                return buffered::query(_py, handle_bits, ptr, crate::NameId::Isatty);
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -1289,7 +1305,7 @@ pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
                     != builtin_classes(_py).buffered_reader
             };
         let line_bits = if virtual_reader {
-            io_call_noargs(_py, handle_bits, b"readline")
+            io_call_noargs(_py, handle_bits, crate::NameId::Readline)
         } else {
             molt_file_readline(handle_bits, MoltObject::from_int(-1).bits())
         };
@@ -1342,7 +1358,9 @@ pub extern "C" fn molt_file_enter(object: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_exit(handle_bits: u64, _exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { io_call_noargs(_py, handle_bits, b"close") })
+    crate::with_gil_entry_nopanic!(_py, {
+        io_call_noargs(_py, handle_bits, crate::NameId::Close)
+    })
 }
 
 #[unsafe(no_mangle)]

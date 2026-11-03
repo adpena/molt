@@ -122,7 +122,7 @@ fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         dec_ref_bits(_py, result_bits);
         // The same physical allocation shortcut must miss after abstractness
         // changes; the slow/default and explicit object allocators then agree.
-        let abstract_name = crate::attr_name_bits_from_bytes(_py, b"__abstractmethods__").unwrap();
+        let abstract_name = crate::dynamic_attr_name_bits(_py, b"__abstractmethods__").unwrap();
         let methods =
             MoltObject::from_ptr(crate::alloc_tuple(_py, &[init_name_bits, name_bits])).bits();
         crate::molt_set_attr_name(class_bits, abstract_name, methods);
@@ -381,8 +381,8 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = crate::attr_name_bits_from_bytes(py, b"reverse").unwrap();
-            let label = crate::attr_name_bits_from_bytes(py, b"NoArgsList").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"reverse").unwrap();
+            let label = crate::dynamic_attr_name_bits(py, b"NoArgsList").unwrap();
             let class = crate::molt_class_new(label);
             crate::molt_class_set_base(class, builtin_classes(py).list);
             assert!(!exception_pending(py));
@@ -481,7 +481,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
 
             // Installing a compatible builtin wrapper preserves direct
             // selection; an unrelated declaring owner remains an override.
-            let getter_name = crate::attr_name_bits_from_bytes(py, b"__getattribute__").unwrap();
+            let getter_name = crate::dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             assert_eq!(
                 molt_cpython_abi::api::typeobj::PyType_Ready(
                     &raw mut molt_cpython_abi::abi_types::PyTuple_Type,

@@ -6,7 +6,7 @@ use crate::object::{
 };
 
 unsafe fn new_dataclass_class(_py: &PyToken<'_>, name: &[u8]) -> u64 {
-    let name_bits = attr_name_bits_from_bytes(_py, name).expect("class name");
+    let name_bits = dynamic_attr_name_bits(_py, name).expect("class name");
     let class_bits = molt_class_new(name_bits);
     dec_ref_bits(_py, name_bits);
     assert!(obj_from_bits(class_bits).as_ptr().is_some());
@@ -24,8 +24,8 @@ fn heap_refcount(bits: u64) -> u32 {
 }
 
 fn new_unpublished_dataclass(_py: &PyToken<'_>, value_bits: u64, field_name: &[u8]) -> u64 {
-    let name_bits = attr_name_bits_from_bytes(_py, b"Record").expect("dataclass name");
-    let field_bits = attr_name_bits_from_bytes(_py, field_name).expect("field name");
+    let name_bits = dynamic_attr_name_bits(_py, b"Record").expect("dataclass name");
+    let field_bits = dynamic_attr_name_bits(_py, field_name).expect("field name");
     let field_names_ptr = alloc_tuple(_py, &[field_bits]);
     let values_ptr = alloc_tuple(_py, &[value_bits]);
     assert!(!field_names_ptr.is_null());
@@ -65,7 +65,7 @@ fn dataclass_payload_stays_private_until_class_finalization_publishes_once() {
 
             let class_bits = unsafe { new_dataclass_class(_py, b"Record") };
             let class_ptr = obj_from_bits(class_bits).as_ptr().expect("dataclass class");
-            let dict_name = attr_name_bits_from_bytes(_py, b"__dict__").expect("dictionary name");
+            let dict_name = dynamic_attr_name_bits(_py, b"__dict__").expect("dictionary name");
             let namespace = unsafe { crate::object::layout::class_dict_bits(class_ptr) };
             let namespace_ptr = obj_from_bits(namespace).as_ptr().expect("class namespace");
             assert_eq!(
@@ -269,8 +269,8 @@ fn dataclass_dictionary_is_the_only_ordinary_field_owner_after_exposure() {
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let (object, class) = published_record(_py, value);
         let ptr = obj_from_bits(object).as_ptr().unwrap();
-        let field = attr_name_bits_from_bytes(_py, b"field").unwrap();
-        let dict_name = attr_name_bits_from_bytes(_py, b"__dict__").unwrap();
+        let field = dynamic_attr_name_bits(_py, b"field").unwrap();
+        let dict_name = dynamic_attr_name_bits(_py, b"__dict__").unwrap();
         let dict = unsafe {
             crate::builtins::attr::dataclass_attr_lookup_raw(_py, ptr, dict_name)
                 .unwrap()
@@ -389,7 +389,7 @@ fn dataclass_mutation_publishes_before_release_across_every_backing_transition()
                 dec_ref_bits(_py, weak_type);
                 let (owner, class) = published_record(_py, old);
                 let ptr = obj_from_bits(owner).as_ptr().unwrap();
-                let field = attr_name_bits_from_bytes(_py, b"field").unwrap();
+                let field = dynamic_attr_name_bits(_py, b"field").unwrap();
                 if materialized {
                     unsafe {
                         crate::object::field_storage::materialize(_py, ptr).unwrap();
@@ -442,11 +442,11 @@ fn dataclass_mutation_publishes_before_release_across_every_backing_transition()
 fn dataclass_declared_slot_and_same_name_dictionary_key_remain_independent() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let field = attr_name_bits_from_bytes(_py, b"field").unwrap();
-        let dict_name = attr_name_bits_from_bytes(_py, b"__dict__").unwrap();
-        let slots_name = attr_name_bits_from_bytes(_py, b"__slots__").unwrap();
-        let offsets_name = attr_name_bits_from_bytes(_py, b"__molt_field_offsets__").unwrap();
-        let size_name = attr_name_bits_from_bytes(_py, b"__molt_layout_size__").unwrap();
+        let field = dynamic_attr_name_bits(_py, b"field").unwrap();
+        let dict_name = dynamic_attr_name_bits(_py, b"__dict__").unwrap();
+        let slots_name = dynamic_attr_name_bits(_py, b"__slots__").unwrap();
+        let offsets_name = dynamic_attr_name_bits(_py, b"__molt_field_offsets__").unwrap();
+        let size_name = dynamic_attr_name_bits(_py, b"__molt_layout_size__").unwrap();
         let slots = MoltObject::from_ptr(alloc_tuple(_py, &[field, dict_name])).bits();
         let offsets = MoltObject::from_ptr(alloc_dict_with_pairs(
             _py,
@@ -524,7 +524,7 @@ fn failed_dataclass_metadata_preparation_never_attaches_finalizing_class() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let class = unsafe { new_dataclass_class(_py, b"FailedPreparation") };
-        let finalizer_name = attr_name_bits_from_bytes(_py, b"__del__").unwrap();
+        let finalizer_name = dynamic_attr_name_bits(_py, b"__del__").unwrap();
         let finalizer = dataclass_callable(
             _py,
             "observe_unpublished_finalizer",
@@ -626,10 +626,10 @@ fn dataclass_reset_resource_denial_preserves_every_existing_owner() {
 fn dataclass_slot_state_follows_mro_then_declaration_order() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let base_field = attr_name_bits_from_bytes(_py, b"base_field").unwrap();
-        let child_first = attr_name_bits_from_bytes(_py, b"child_first").unwrap();
-        let child_second = attr_name_bits_from_bytes(_py, b"child_second").unwrap();
-        let slots_name = attr_name_bits_from_bytes(_py, b"__slots__").unwrap();
+        let base_field = dynamic_attr_name_bits(_py, b"base_field").unwrap();
+        let child_first = dynamic_attr_name_bits(_py, b"child_first").unwrap();
+        let child_second = dynamic_attr_name_bits(_py, b"child_second").unwrap();
+        let slots_name = dynamic_attr_name_bits(_py, b"__slots__").unwrap();
         let base_slots = MoltObject::from_ptr(alloc_tuple(_py, &[base_field])).bits();
         let child_slots =
             MoltObject::from_ptr(alloc_tuple(_py, &[child_first, child_second])).bits();
@@ -639,7 +639,7 @@ fn dataclass_slot_state_follows_mro_then_declaration_order() {
             crate::object::class_finish_definition(_py, obj_from_bits(base).as_ptr().unwrap())
                 .expect("seal base slots");
         }
-        let child_name = attr_name_bits_from_bytes(_py, b"SlotChild").unwrap();
+        let child_name = dynamic_attr_name_bits(_py, b"SlotChild").unwrap();
         let child = crate::molt_class_new(child_name);
         crate::molt_class_set_base(child, base);
         crate::molt_set_attr_name(child, slots_name, child_slots);
@@ -700,13 +700,13 @@ fn dataclass_slot_state_follows_mro_then_declaration_order() {
 fn ordinary_slot_state_omits_shadowed_storage_but_reset_releases_both_owners() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let field = attr_name_bits_from_bytes(py, b"x").unwrap();
-        let slots_name = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
-        let offsets_name = attr_name_bits_from_bytes(py, b"__molt_field_offsets__").unwrap();
-        let size_name = attr_name_bits_from_bytes(py, b"__molt_layout_size__").unwrap();
+        let field = dynamic_attr_name_bits(py, b"x").unwrap();
+        let slots_name = dynamic_attr_name_bits(py, b"__slots__").unwrap();
+        let offsets_name = dynamic_attr_name_bits(py, b"__molt_field_offsets__").unwrap();
+        let size_name = dynamic_attr_name_bits(py, b"__molt_layout_size__").unwrap();
         let slots = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
         let make_class = |name: &[u8], base: u64, offset: i64| {
-            let name = attr_name_bits_from_bytes(py, name).unwrap();
+            let name = dynamic_attr_name_bits(py, name).unwrap();
             let class = crate::molt_class_new(name);
             crate::molt_class_set_base(class, base);
             let offsets = MoltObject::from_ptr(alloc_dict_with_pairs(
@@ -801,16 +801,16 @@ fn slot_state_uses_sequential_attribute_protocol_and_propagates_errors() {
     use std::sync::atomic::Ordering;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let field = attr_name_bits_from_bytes(py, b"x").unwrap();
-        let slots_name = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
-        let getter_name = attr_name_bits_from_bytes(py, b"__getattribute__").unwrap();
+        let field = dynamic_attr_name_bits(py, b"x").unwrap();
+        let slots_name = dynamic_attr_name_bits(py, b"__slots__").unwrap();
+        let getter_name = dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
         let slots = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
         let base = unsafe { new_dataclass_class(py, b"StateProtocolBase") };
         crate::molt_set_attr_name(base, slots_name, slots);
         unsafe {
             class_finish_definition(py, obj_from_bits(base).as_ptr().unwrap()).unwrap();
         }
-        let child_name = attr_name_bits_from_bytes(py, b"StateProtocolChild").unwrap();
+        let child_name = dynamic_attr_name_bits(py, b"StateProtocolChild").unwrap();
         let child = crate::molt_class_new(child_name);
         crate::molt_class_set_base(child, base);
         crate::molt_set_attr_name(child, slots_name, slots);
@@ -888,8 +888,8 @@ fn dataclass_and_identity_dict_preserve_allocation_failure_and_input_ownership()
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
-        let name = attr_name_bits_from_bytes(py, b"DeniedSnapshotRecord").unwrap();
-        let field = attr_name_bits_from_bytes(py, b"value").unwrap();
+        let name = dynamic_attr_name_bits(py, b"DeniedSnapshotRecord").unwrap();
+        let field = dynamic_attr_name_bits(py, b"value").unwrap();
         let fields = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
         let value = MoltObject::from_ptr(alloc_string(py, b"snapshot owned value")).bits();
         for tuple in [false, true] {

@@ -220,9 +220,9 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         let classes = builtin_classes(&py);
-        let name = attr_name_bits_from_bytes(&py, b"NativeProtocolChild").unwrap();
-        let bool_name = attr_name_bits_from_bytes(&py, b"__bool__").unwrap();
-        let len_name = attr_name_bits_from_bytes(&py, b"__len__").unwrap();
+        let name = dynamic_attr_name_bits(&py, b"NativeProtocolChild").unwrap();
+        let bool_name = dynamic_attr_name_bits(&py, b"__bool__").unwrap();
+        let len_name = dynamic_attr_name_bits(&py, b"__len__").unwrap();
         let truth = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
             &py,
             crate::builtins::functions::runtime_fn_addr(
@@ -647,7 +647,7 @@ fn capi_native_family_checks_distinguish_semantic_subclasses_from_storage() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         let classes = builtin_classes(&py);
-        let name = attr_name_bits_from_bytes(&py, b"NativePredicateChild").unwrap();
+        let name = dynamic_attr_name_bits(&py, b"NativePredicateChild").unwrap();
         let families: [(u64, Check, Check, Option<u64>); 12] = [
             (
                 classes.list,

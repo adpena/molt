@@ -41,7 +41,10 @@ function instantiate(path) {
     thread_record() {
       const record=256, work=288;
       const view=new DataView(imports.env.memory.buffer);
-      view.setUint8(record,Number(state.pending));
+      // Keep the pending byte armed, as the work word below, so every inline
+      // exception test reaches this oracle; its answer decides, as the
+      // runtime reader's repair does for a stale byte.
+      view.setUint8(record,1);
       view.setBigUint64(record+16,BigInt(work),true);
       // This frame/custody oracle injects failures at servicing boundaries.
       // Keep real work armed; the separate poll oracle tests empty readiness.
@@ -253,7 +256,6 @@ function instantiate(path) {
              'exception observer outside the owned attempt or inherited frame');
       state.polls++;
       state.pending ||= state.polls === state.exceptionAt;
-      new DataView(imports.env.memory.buffer).setUint8(256,Number(state.pending));
       return state.pending ? 1n : 0n;
     },
     async_work_poll_and_exception_pending() {

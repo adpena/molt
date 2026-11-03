@@ -39,9 +39,9 @@ use crate::object::builders::CanonicalObjectCache;
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::object::weakref::WeakContainerCookie;
 use crate::{
-    AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, InternedNames,
-    MethodCache, MoltObject, MoltScheduler, ProcessRegistry, PtrSlot, PyToken, RuntimeStaticNames,
-    SleepQueue, default_cancel_tokens,
+    AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, MethodCache,
+    MoltObject, MoltScheduler, ProcessRegistry, PtrSlot, PyToken, RuntimeNames, SleepQueue,
+    default_cancel_tokens,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ThreadPool, ThreadTaskState};
@@ -391,8 +391,7 @@ pub(crate) struct RuntimeState {
     pub(crate) interpreter_finalizing: AtomicBool,
     pub(crate) builtin_classes: std::sync::atomic::AtomicPtr<BuiltinClasses>,
     pub(crate) cpython: crate::cpython_abi_hooks::CpythonRuntimeState,
-    pub(crate) interned: InternedNames,
-    pub(crate) runtime_static_names: RuntimeStaticNames,
+    pub(crate) names: RuntimeNames,
     pub(crate) method_cache: MethodCache,
     pub(crate) special_cache: SpecialCache,
     pub(crate) canonical_objects: CanonicalObjectCache,
@@ -548,8 +547,7 @@ impl RuntimeState {
             interpreter_finalizing: AtomicBool::new(false),
             builtin_classes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             cpython: crate::cpython_abi_hooks::CpythonRuntimeState::new(),
-            interned: InternedNames::new(),
-            runtime_static_names: RuntimeStaticNames::new(),
+            names: RuntimeNames::new(),
             method_cache: MethodCache::new(),
             special_cache: SpecialCache::new(),
             canonical_objects: CanonicalObjectCache::new(),
@@ -834,6 +832,7 @@ fn runtime_lifecycle_failed(message: &str) {
     use std::io::Write;
 
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+    unbind_execution_state(crate::state::execution_tls());
     RUNTIME_EXECUTION_ADMISSION
         .fetch_or(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel);
     let lifecycle = runtime_lifecycle();
@@ -1153,8 +1152,10 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
     if !try_acquire_admission_units(&RUNTIME_EXECUTION_ADMISSION, unit, mask) {
         return None;
     }
+    let tls = crate::state::execution_tls();
+    let begins_custody = tls.lease_depth.get() == 0;
     {
-        let depth = &crate::state::execution_tls().lease_depth;
+        let depth = &tls.lease_depth;
         let current = depth.get() & !RUNTIME_EXECUTION_SERVICE_ROLE;
         assert_ne!(
             current,
@@ -1180,6 +1181,9 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
         release.wait();
     }
     if runtime_ready_ptr().is_some() {
+        if begins_custody {
+            bind_execution_state(tls);
+        }
         return Some(true);
     }
     release_runtime_execution_lease();
@@ -1188,11 +1192,13 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
 
 pub(crate) fn release_runtime_execution_lease() {
     let service = {
-        let depth = &crate::state::execution_tls().lease_depth;
+        let tls = crate::state::execution_tls();
+        let depth = &tls.lease_depth;
         let current = depth.get();
         let count = current & !RUNTIME_EXECUTION_SERVICE_ROLE;
         assert_ne!(count, 0, "current-thread runtime execution lease underflow");
         depth.set(if count == 1 { 0 } else { current - 1 });
+        release_execution_state_binding(tls);
         current & RUNTIME_EXECUTION_SERVICE_ROLE != 0
     };
     if service {
@@ -1440,11 +1446,71 @@ pub(crate) fn owns_process_cpython_state(state: &RuntimeState) -> bool {
 }
 
 pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
-    runtime_state_for_gil_in(crate::state::execution_tls())
+    admitted_runtime_state_in(crate::state::execution_tls())
+}
+
+/// The runtime state this thread's admission custody runs: the binding its
+/// custody edge resolved, else the full resolution.
+#[inline]
+pub(crate) fn admitted_runtime_state_in(
+    tls: &crate::state::ExecutionTls,
+) -> Option<&'static RuntimeState> {
+    let bound = tls.bound_state.get();
+    if bound.is_null() {
+        runtime_state_for_gil_in(tls)
+    } else {
+        debug_assert_binding_matches_resolution(tls, bound);
+        // SAFETY: a binding names the state its thread's live custody runs;
+        // every edge that could end that state's lifetime for this thread
+        // resets it first (`release_execution_state_binding`,
+        // `clear_thread_runtime_state`, `unbind_execution_state`).
+        Some(unsafe { &*bound })
+    }
+}
+
+/// Debug builds check every binding read against the full resolution while
+/// the ready state is published (the resolution then takes no lock).
+#[inline(always)]
+fn debug_assert_binding_matches_resolution(
+    tls: &crate::state::ExecutionTls,
+    bound: *const RuntimeState,
+) {
+    if cfg!(debug_assertions) && runtime_ready_ptr().is_some() {
+        let resolved = runtime_state_for_gil_in(tls).map_or(std::ptr::null(), std::ptr::from_ref);
+        assert!(
+            std::ptr::eq(bound, resolved),
+            "bound runtime state diverged from its resolution"
+        );
+    }
+}
+
+/// Bind this thread's custody to the state the full resolution returns now.
+/// Custody edges call it once their facts are complete: a lease's Ready
+/// recheck has passed, a retained worker's origin is recorded. While the
+/// custody lives, the service role, the retained origin and the ready pointer
+/// do not change for this thread, and `set_thread_runtime_state` rebinds, so
+/// the binding stays equal to the resolution.
+pub(crate) fn bind_execution_state(tls: &crate::state::ExecutionTls) {
+    tls.bound_state
+        .set(runtime_state_for_gil_in(tls).map_or(std::ptr::null(), std::ptr::from_ref));
+}
+
+/// Reset the binding once this thread holds neither a lease nor drain custody.
+pub(crate) fn release_execution_state_binding(tls: &crate::state::ExecutionTls) {
+    if tls.lease_depth.get() == 0 && tls.shutdown_drain_depth.get() == 0 {
+        tls.bound_state.set(std::ptr::null());
+    }
+}
+
+/// Reset the binding unconditionally; readers then resolve in full. Lifecycle
+/// edges that unpublish or free a state call it for their own thread.
+pub(crate) fn unbind_execution_state(tls: &crate::state::ExecutionTls) {
+    tls.bound_state.set(std::ptr::null());
 }
 
 /// `runtime_state_for_gil` for a caller that has already read this thread's
-/// execution facts, such as a runtime entry's GIL guard.
+/// execution facts, such as a runtime entry's GIL guard. Always the full
+/// resolution; custody edges bind its result.
 pub(crate) fn runtime_state_for_gil_in(
     tls: &crate::state::ExecutionTls,
 ) -> Option<&'static RuntimeState> {
@@ -1481,33 +1547,33 @@ pub(crate) fn runtime_state_for_gil_in(
     }
 }
 
+#[inline]
 pub(crate) fn runtime_state(py: &PyToken<'_>) -> &'static RuntimeState {
-    // While the runtime is ready, the full resolution below returns this
-    // thread's own state when it has one (an isolate, which a thread may
-    // switch to under a live token) and otherwise the published ready state.
-    // A token reuses its earlier answer only while that is still the result;
-    // lifecycle edges, where no ready state is published, resolve in full.
+    // Under admission custody the state was resolved once, when the custody
+    // began (`bind_execution_state`). A token taken outside custody (lifecycle
+    // edges, TLS destruction) resolves in full.
     let tls = py.execution_tls();
-    if let Some(state) = py.resolved_runtime_state()
-        && let Some(ready) = runtime_ready_ptr()
-        && std::ptr::eq(
-            runtime_state_tls_in(tls).map_or(ready.cast_const(), std::ptr::from_ref),
-            state,
-        )
-    {
-        return state;
-    }
     crate::state::lifecycle::touch_tls_guard_in(tls);
-    let state = match runtime_state_for_gil_in(tls) {
+    let bound = tls.bound_state.get();
+    if !bound.is_null() {
+        debug_assert_binding_matches_resolution(tls, bound);
+        // SAFETY: see `admitted_runtime_state_in`.
+        return unsafe { &*bound };
+    }
+    runtime_state_unbound(tls)
+}
+
+#[cold]
+#[inline(never)]
+fn runtime_state_unbound(tls: &crate::state::ExecutionTls) -> &'static RuntimeState {
+    match runtime_state_for_gil_in(tls) {
         Some(state) => state,
         None => {
             let _ = molt_runtime_init();
             runtime_state_for_gil()
                 .unwrap_or_else(|| panic!("runtime state requested after permanent shutdown"))
         }
-    };
-    py.remember_runtime_state(state);
-    state
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1597,6 +1663,7 @@ fn runtime_exit(code_bits: u64) -> u64 {
                         return 0;
                     }
                     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+                    unbind_execution_state(crate::state::execution_tls());
                     #[cfg(test)]
                     note_lifecycle_transition();
                     *phase = RuntimeLifecyclePhase::Finalizing { owner, ptr };
@@ -1925,6 +1992,7 @@ fn runtime_shutdown() -> u64 {
         return 0;
     }
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+    unbind_execution_state(crate::state::execution_tls());
     #[cfg(test)]
     note_lifecycle_transition();
     *phase = RuntimeLifecyclePhase::Finalizing {
@@ -2029,13 +2097,19 @@ fn runtime_state_tls_in(tls: &crate::state::ExecutionTls) -> Option<&'static Run
 }
 
 pub(crate) fn set_thread_runtime_state(ptr: *mut RuntimeState) {
-    crate::state::execution_tls().runtime_state.set(ptr);
+    let tls = crate::state::execution_tls();
+    tls.runtime_state.set(ptr);
+    // A switch under live custody rebinds to what the resolution now returns.
+    if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
+        bind_execution_state(tls);
+    }
 }
 
 pub(crate) fn clear_thread_runtime_state() {
-    crate::state::execution_tls()
-        .runtime_state
-        .set(std::ptr::null_mut());
+    let tls = crate::state::execution_tls();
+    tls.runtime_state.set(std::ptr::null_mut());
+    // Teardown clears before it frees the state; never keep a binding to it.
+    unbind_execution_state(tls);
 }
 
 /// Resets all one-shot flags that prevent runtime re-initialization.

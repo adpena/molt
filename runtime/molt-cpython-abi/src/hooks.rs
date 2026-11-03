@@ -979,6 +979,10 @@ pub struct RuntimeHooks {
         name_bits: u64,
         search_mro: u8,
     ) -> BorrowedHandleResult,
+    /// Invalidate runtime observations of a managed type and its descendants.
+    /// Callback-free and infallible; runs before native type watcher callbacks,
+    /// even when the C view has no valid native version tag.
+    pub type_modified: unsafe extern "C" fn(type_bits: u64),
     /// Callback-free native declaration identity. A matching wrapper descriptor
     /// or constructor returns its borrowed declaring class; arbitrary Python
     /// callables, including same-name functions, return Missing. Name selects a
@@ -1501,7 +1505,8 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 73 replaces the minor-only target query with a full-version predicate.
 // Version 74 joins interpreter dictionary/cache-only import hooks with Version 73's
 // struct-sequence factories and full-version target predicate.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 74;
+// Version 75 joins explicit C type invalidation to runtime type epochs.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 75;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2238,6 +2243,8 @@ unsafe extern "C" fn stub_type_lookup_borrowed(
 ) -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
+// There are no runtime type observations before runtime hook registration.
+unsafe extern "C" fn stub_type_modified(_type: u64) {}
 unsafe extern "C" fn stub_object_get_attr(
     _obj: u64,
     _name: u64,
@@ -2844,6 +2851,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     type_metadata: stub_type_metadata,
     builtin_slot_owner: stub_builtin_slot_owner,
     type_lookup_borrowed: stub_type_lookup_borrowed,
+    type_modified: stub_type_modified,
     object_set_attr: stub_object_set_attr,
     descriptor_protocol: stub_descriptor_protocol,
     descriptor_get: stub_descriptor_get,

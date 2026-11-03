@@ -85,8 +85,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let generic_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"Generic"),
-            b"Generic",
+            crate::NameId::Generic,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -103,8 +102,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let param_spec_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"_ParamSpec"),
-            b"_ParamSpec",
+            crate::NameId::ParamSpec,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -121,8 +119,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let param_spec_args_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"_ParamSpecArgs"),
-            b"_ParamSpecArgs",
+            crate::NameId::ParamSpecArgs,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -139,8 +136,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let param_spec_kwargs_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"_ParamSpecKwargs"),
-            b"_ParamSpecKwargs",
+            crate::NameId::ParamSpecKwargs,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -157,8 +153,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let type_alias_type_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"_MoltTypeAlias"),
-            b"_MoltTypeAlias",
+            crate::NameId::TypeAliasType,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -175,8 +170,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let type_var_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"_TypeVar"),
-            b"_TypeVar",
+            crate::NameId::TypeVar,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -193,8 +187,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let type_var_tuple_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"_TypeVarTuple"),
-            b"_TypeVarTuple",
+            crate::NameId::TypeVarTuple,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -245,75 +238,56 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(11);
 
-        let any_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"Any"),
-            b"Any",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let any_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::Any, "typing") {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(any_bits);
         values.push((b"Any", any_bits));
 
-        let dict_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"Dict"),
-            b"Dict",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let dict_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::Dict, "typing") {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(dict_bits);
         values.push((b"Dict", dict_bits));
 
-        let iterator_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"Iterator"),
-            b"Iterator",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let iterator_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::Iterator, "typing")
+            {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(iterator_bits);
         values.push((b"Iterator", iterator_bits));
 
-        let list_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"List"),
-            b"List",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let list_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::List, "typing") {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(list_bits);
         values.push((b"List", list_bits));
 
@@ -322,47 +296,38 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         owned.push(mapping_bits);
         values.push((b"Mapping", mapping_bits));
 
-        let optional_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"Optional"),
-            b"Optional",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let optional_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::Optional, "typing")
+            {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(optional_bits);
         values.push((b"Optional", optional_bits));
 
-        let protocol_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"Protocol"),
-            b"Protocol",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let protocol_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::Protocol, "typing")
+            {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(protocol_bits);
         values.push((b"Protocol", protocol_bits));
 
         let type_var_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            runtime_static_name_slot(_py, b"_TypeVar"),
-            b"_TypeVar",
+            crate::NameId::TypeVar,
             "typing",
         ) {
             Ok(bits) => bits,
@@ -376,47 +341,37 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         owned.push(type_var_bits);
         values.push((b"TypeVar", type_var_bits));
 
-        let union_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"Union"),
-            b"Union",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let union_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::Union, "typing") {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(union_bits);
         values.push((b"Union", union_bits));
 
-        let overload_bits = match importlib_required_attribute(
-            _py,
-            typing_bits,
-            runtime_static_name_slot(_py, b"overload"),
-            b"overload",
-            "typing",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let overload_bits =
+            match importlib_required_attribute(_py, typing_bits, crate::NameId::Overload, "typing")
+            {
+                Ok(bits) => bits,
+                Err(err) => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return err;
                 }
-                return err;
-            }
-        };
+            };
         owned.push(overload_bits);
         values.push((b"overload", overload_bits));
 
         let meta_path_finder_bits = match importlib_required_attribute(
             _py,
             abc_bits,
-            runtime_static_name_slot(_py, b"MetaPathFinder"),
-            b"MetaPathFinder",
+            crate::NameId::MetaPathFinder,
             "importlib.abc",
         ) {
             Ok(bits) => bits,
@@ -433,8 +388,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         let suppress_bits = match importlib_required_attribute(
             _py,
             contextlib_bits,
-            runtime_static_name_slot(_py, b"suppress"),
-            b"suppress",
+            crate::NameId::Suppress,
             "contextlib",
         ) {
             Ok(bits) => bits,
@@ -531,7 +485,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
             match crate::builtins::types::module_spec_suffix_value_from_namespace(
                 _py,
                 staged.bits(),
-                b"BYTECODE_SUFFIXES",
+                crate::NameId::BytecodeSuffixes,
             ) {
                 Some(bits) => bits,
                 None => {
@@ -548,7 +502,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
             match crate::builtins::types::module_spec_suffix_value_from_namespace(
                 _py,
                 staged.bits(),
-                b"BYTECODE_SUFFIXES",
+                crate::NameId::BytecodeSuffixes,
             ) {
                 Some(bits) => bits,
                 None => {
@@ -564,8 +518,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let extension_suffixes_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"EXTENSION_SUFFIXES"),
-            b"EXTENSION_SUFFIXES",
+            crate::NameId::ExtensionSuffixes,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -594,7 +547,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
             match crate::builtins::types::module_spec_suffix_value_from_namespace(
                 _py,
                 staged.bits(),
-                b"BYTECODE_SUFFIXES",
+                crate::NameId::BytecodeSuffixes,
             ) {
                 Some(bits) => bits,
                 None => {
@@ -614,7 +567,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
             match crate::builtins::types::module_spec_suffix_value_from_namespace(
                 _py,
                 staged.bits(),
-                b"SOURCE_SUFFIXES",
+                crate::NameId::SourceSuffixes,
             ) {
                 Some(bits) => bits,
                 None => {
@@ -630,8 +583,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let extension_file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"ExtensionFileLoader"),
-            b"ExtensionFileLoader",
+            crate::NameId::ExtensionFileLoader,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -648,8 +600,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let file_finder_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"FileFinder"),
-            b"FileFinder",
+            crate::NameId::FileFinder,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -666,8 +617,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"_FileLoader"),
-            b"_FileLoader",
+            crate::NameId::PrivateFileLoader,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -684,8 +634,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let namespace_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"NamespaceLoader"),
-            b"NamespaceLoader",
+            crate::NameId::NamespaceLoader,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -702,8 +651,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let path_finder_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"PathFinder"),
-            b"PathFinder",
+            crate::NameId::PathFinder,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -720,8 +668,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let source_file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"SourceFileLoader"),
-            b"SourceFileLoader",
+            crate::NameId::SourceFileLoader,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -738,8 +685,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let source_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"_SourceLoader"),
-            b"_SourceLoader",
+            crate::NameId::PrivateSourceLoader,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -756,8 +702,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let sourceless_file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"SourcelessFileLoader"),
-            b"SourcelessFileLoader",
+            crate::NameId::SourcelessFileLoader,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,
@@ -785,8 +730,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let windows_registry_finder_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"WindowsRegistryFinder"),
-            b"WindowsRegistryFinder",
+            crate::NameId::WindowsRegistryFinder,
             "importlib.machinery",
         ) {
             Ok(bits) => bits,

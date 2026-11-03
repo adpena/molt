@@ -241,7 +241,9 @@ fn serial_bridge_interns_protocol_names_in_runtime_state() {
         let bits = bridge_intern_static_name(key.as_ptr(), key.len());
         assert!(!exception_pending(_py));
         assert_eq!(
-            runtime_state(_py).interned.abs_name.load(Ordering::Acquire),
+            crate::NameId::DunderAbs
+                .slot(&runtime_state(_py).names)
+                .load(Ordering::Acquire),
             bits
         );
     });

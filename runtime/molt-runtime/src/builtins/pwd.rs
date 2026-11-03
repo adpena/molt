@@ -8,7 +8,7 @@ use crate::*;
 // Provider absence is independent of capability denial and of import resolution.
 // Keep the exception's Python name owned through canonical construction.
 fn raise_provider_absence(py: &PyToken<'_>) -> u64 {
-    let Some(name) = attr_name_bits_from_bytes(py, b"pwd") else {
+    let Some(name) = crate::NameId::Pwd.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let name = crate::builtins::exceptions::ExceptionValue::adopt(py, name);
@@ -334,7 +334,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let original_name =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"pwd").unwrap());
+                ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"pwd").unwrap());
             let name_header = unsafe {
                 header_from_obj_ptr(obj_from_bits(original_name.bits()).as_ptr().unwrap())
             };
@@ -356,13 +356,12 @@ mod tests {
                 string_obj_to_owned(obj_from_bits(message.bits())).as_deref(),
                 Some("No module named 'pwd'")
             );
-            let key = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"name").unwrap());
+            let key = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"name").unwrap());
             let name = ExceptionValue::adopt(
                 py,
                 crate::molt_getattr_builtin(exception.bits(), key.bits(), missing_bits(py)),
             );
-            let path_key =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"path").unwrap());
+            let path_key = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"path").unwrap());
             let path = ExceptionValue::adopt(
                 py,
                 crate::molt_getattr_builtin(exception.bits(), path_key.bits(), missing_bits(py)),

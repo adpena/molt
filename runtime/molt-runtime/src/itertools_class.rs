@@ -126,11 +126,7 @@ pub(crate) fn alloc_itertools_class(
         );
         return discard_itertools_class(py, class_bits);
     };
-    let layout_name = intern_static_name(
-        py,
-        &crate::runtime_state(py).interned.molt_layout_size,
-        b"__molt_layout_size__",
-    );
+    let layout_name = crate::NameId::DunderMoltLayoutSize.bits(py);
     if obj_from_bits(layout_name).as_ptr().is_none()
         || !unsafe {
             dict_set_in_place(
@@ -143,9 +139,12 @@ pub(crate) fn alloc_itertools_class(
     {
         return discard_itertools_class(py, class_bits);
     }
-    for (name, callback) in [("__iter__", iter_fn), ("__next__", next_fn)]
-        .into_iter()
-        .filter(|_| !is_tee_block)
+    for (name, callback) in [
+        (crate::NameId::DunderIter, iter_fn),
+        (crate::NameId::DunderNext, next_fn),
+    ]
+    .into_iter()
+    .filter(|_| !is_tee_block)
     {
         if crate::builtins::methods::builtin_func_bits(
             py,
@@ -163,7 +162,7 @@ pub(crate) fn alloc_itertools_class(
             NativeCallableSpec::declared(
                 NativeCallableKind::MethodDescriptor,
                 class_bits,
-                "__copy__",
+                crate::NameId::DunderCopy,
             ),
             crate::molt_itertools_tee_copy as *const () as usize as u64,
             1,
@@ -192,8 +191,8 @@ pub(crate) fn alloc_itertools_class(
     {
         return discard_itertools_class(py, class_bits);
     }
-    let module_key = attr_name_bits_from_bytes(py, b"__module__");
-    let module_value = attr_name_bits_from_bytes(py, b"itertools");
+    let module_key = crate::NameId::DunderModule.owned_bits(py);
+    let module_value = crate::NameId::Itertools.owned_bits(py);
     let (Some(module_key), Some(module_value)) = (module_key, module_value) else {
         for bits in module_key.into_iter().chain(module_value) {
             dec_ref_bits(py, bits);
@@ -513,7 +512,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             fn attr(py: &crate::PyToken<'_>, object: u64, name: &[u8]) -> u64 {
-                let key = attr_name_bits_from_bytes(py, name).expect("attribute name");
+                let key = dynamic_attr_name_bits(py, name).expect("attribute name");
                 let value = crate::molt_get_attr_name(object, key);
                 dec_ref_bits(py, key);
                 assert!(!exception_pending(py), "attribute lookup failed");
@@ -662,7 +661,7 @@ mod tests {
                     unsafe { crate::object::class_is_not_base(py, class) },
                     !basetype
                 );
-                let key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+                let key = dynamic_attr_name_bits(py, b"__module__").unwrap();
                 let module = crate::molt_get_attr_name(class_bits, key);
                 dec_ref_bits(py, key);
                 assert_eq!(
@@ -672,7 +671,7 @@ mod tests {
                 dec_ref_bits(py, module);
             }
             // CPython itertools types are immutable heap types.
-            let key = attr_name_bits_from_bytes(py, b"__next__").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__next__").unwrap();
             let count_class = unsafe { object_class_bits(obj_from_bits(count).as_ptr().unwrap()) };
             let _ = crate::molt_set_attr_name(count_class, key, int(0));
             assert!(
@@ -703,7 +702,7 @@ mod tests {
             }
             // A heap subclass declares no slot; its own or inherited __next__
             // is reached through the special-method protocol.
-            let name = attr_name_bits_from_bytes(py, b"CountChild").unwrap();
+            let name = dynamic_attr_name_bits(py, b"CountChild").unwrap();
             let child = crate::molt_class_new(name);
             dec_ref_bits(py, name);
             let base = crate::molt_class_set_base(child, count_class);

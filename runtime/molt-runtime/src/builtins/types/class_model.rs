@@ -43,11 +43,7 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
         return false;
     }
-    let qualname_name_bits = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.qualname_name,
-        b"__qualname__",
-    );
+    let qualname_name_bits = crate::NameId::DunderQualname.bits(_py);
     if exception_pending(_py) {
         return false;
     }
@@ -97,11 +93,11 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
     // CPython only normalizes plain Python functions, never descriptors or
     // native builtin-function objects supplied by a namespace provider.
     for (name, static_method) in [
-        (b"__new__".as_slice(), true),
-        (b"__init_subclass__".as_slice(), false),
-        (b"__class_getitem__".as_slice(), false),
+        (crate::NameId::DunderNew, true),
+        (crate::NameId::DunderInitSubclass, false),
+        (crate::NameId::DunderClassGetitem, false),
     ] {
-        let Some(key_bits) = attr_name_bits_from_bytes(_py, name) else {
+        let Some(key_bits) = name.owned_bits(_py) else {
             return false;
         };
         let lookup = match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
@@ -140,8 +136,8 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
     // CPython installs the implicit unhashable slot once, from the completed
     // own namespace. Runtime hash lookup must not repeat this inference after
     // a later __eq__ assignment, which preserves the inherited __hash__ slot.
-    let hash_name = intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
-    let eq_name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+    let hash_name = crate::NameId::DunderHash.bits(_py);
+    let eq_name = crate::NameId::DunderEq.bits(_py);
     if exception_pending(_py) {
         return false;
     }
@@ -170,12 +166,12 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
     // finished dictionary; neither metadata key survives on the class itself.
     for (name, value) in [
         (
-            b"__classcell__".as_slice(),
+            crate::NameId::DunderClasscell,
             MoltObject::from_ptr(class_ptr).bits(),
         ),
-        (b"__classdictcell__".as_slice(), dict_bits),
+        (crate::NameId::DunderClassdictcell, dict_bits),
     ] {
-        let Some(key_bits) = attr_name_bits_from_bytes(_py, name) else {
+        let Some(key_bits) = name.owned_bits(_py) else {
             return false;
         };
         let lookup = match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
@@ -201,7 +197,7 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
                 };
                 let message = format!(
                     "{} must be a nonlocal cell, not {}",
-                    String::from_utf8_lossy(name),
+                    name.as_str(),
                     type_repr,
                 );
                 let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &message);

@@ -936,7 +936,7 @@ fn count_elements_dict_storage(
     let dict = builtin_classes(py).dict;
     let dict_ptr = obj_from_bits(dict).as_ptr().ok_or(())?;
     let set_name =
-        CountElementOwned::adopt(py, attr_name_bits_from_bytes(py, b"__setitem__").ok_or(())?);
+        CountElementOwned::adopt(py, crate::NameId::DunderSetitem.owned_bits(py).ok_or(())?);
     let raw = |owner, name| unsafe {
         crate::builtins::attr::class_attr_lookup_raw_mro(py, owner, name)
             .map(|value| value.map(|bits| CountElementOwned::borrow(py, bits)))
@@ -975,7 +975,7 @@ pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
             new_value: None,
             bound_get: None,
         };
-        let Some(name) = attr_name_bits_from_bytes(py, b"get") else {
+        let Some(name) = crate::NameId::Get.owned_bits(py) else {
             return MoltObject::none().bits();
         };
         let name = CountElementOwned::adopt(py, name);

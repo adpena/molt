@@ -201,7 +201,7 @@ fn semantic_sequence_and_argument_snapshots_expose_last_native_owner() {
                         .map_or(tuple, |owner| obj_from_bits(owner.bits()).as_ptr().unwrap());
                     crate::object::seq_access::snapshot(py, source, "snapshot test").unwrap()
                 });
-                let name = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
+                let name = crate::dynamic_attr_name_bits(py, b"value").unwrap();
                 let name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), name);
                 let dict = crate::alloc_dict_with_pairs(py, &[name.bits(), value.bits()]);
                 assert!(!dict.is_null());
@@ -316,7 +316,7 @@ fn context_exit_exposes_error_to_the_last_native_value_owner() {
             assert_eq!(kind.ready(), 0);
             let value = native_value(py, &mut kind);
             let error = pending_error(py);
-            let name = crate::attr_name_bits_from_bytes(py, b"retirement-value").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"retirement-value").unwrap();
             let name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), name);
             let variable = context::new_variable(py, name.bits(), None).unwrap();
             let variable = ProtectedRuntimeValue::from_owned_bits(py.core_token(), variable);
@@ -351,7 +351,7 @@ fn renderer_string_subclass_owners_expose_error_to_native_fields() {
             );
             kind.tp_dealloc = Some(observing_drop);
             assert_eq!(kind.ready(), 0);
-            let name = crate::attr_name_bits_from_bytes(py, b"RetirementString").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"RetirementString").unwrap();
             let name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), name);
             let class = ProtectedRuntimeValue::from_owned_bits(
                 py.core_token(),
@@ -372,7 +372,7 @@ fn renderer_string_subclass_owners_expose_error_to_native_fields() {
                 py.core_token(),
                 MoltObject::from_ptr(text).bits(),
             );
-            let field = crate::attr_name_bits_from_bytes(py, b"native_owner").unwrap();
+            let field = crate::dynamic_attr_name_bits(py, b"native_owner").unwrap();
             let field = ProtectedRuntimeValue::from_owned_bits(py.core_token(), field);
             for mode in 0..3 {
                 let value = native_value(py, &mut kind);
@@ -629,7 +629,7 @@ unsafe fn protocol_receiver<'a, 'py>(
     name: &[u8],
     descriptor: u64,
 ) -> (ProtocolClass<'a, 'py>, ProtectedRuntimeValue<'a>) {
-    let class_name = crate::attr_name_bits_from_bytes(py, b"ManagedTruthLength").unwrap();
+    let class_name = crate::dynamic_attr_name_bits(py, b"ManagedTruthLength").unwrap();
     let class_name = unsafe { ProtectedRuntimeValue::from_owned_bits(py.core_token(), class_name) };
     let class = unsafe {
         ProtectedRuntimeValue::from_owned_bits(
@@ -651,7 +651,7 @@ unsafe fn protocol_receiver<'a, 'py>(
     let name = unsafe {
         ProtectedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::attr_name_bits_from_bytes(py, name).unwrap(),
+            crate::dynamic_attr_name_bits(py, name).unwrap(),
         )
     };
     dec_ref_bits(
@@ -747,7 +747,7 @@ fn protocol_warning_policy(py: &PyToken<'_>, action: &[u8]) {
     let action = unsafe {
         ProtectedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::attr_name_bits_from_bytes(py, action).unwrap(),
+            crate::dynamic_attr_name_bits(py, action).unwrap(),
         )
     };
     dec_ref_bits(
@@ -1100,7 +1100,7 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
                     let (none_class, none_receiver) =
                         protocol_receiver(py, b"__bool__", MoltObject::none().bits());
                     let len_declaration = protocol_value(py, &raw mut *descriptor);
-                    let len_name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), crate::attr_name_bits_from_bytes(py, b"__len__").unwrap());
+                    let len_name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), crate::dynamic_attr_name_bits(py, b"__len__").unwrap());
                     dec_ref_bits(py, crate::molt_set_attr_name(none_class.class.bits(), len_name.bits(), len_declaration.bits()));
                     assert!(!exception_pending(py));
                     drop(len_declaration);

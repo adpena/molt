@@ -2065,7 +2065,7 @@ fn unicode_percent_format_declaring_slot_bypasses_format_subclass_mod() {
     let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
     crate::concurrency::gil::with_gil(|py| unsafe {
         let py = &py;
-        let name = crate::attr_name_bits_from_bytes(py, b"PercentFormatSubclass").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"PercentFormatSubclass").unwrap();
         let _name_owner =
             crate::PtrDropGuard::preserving(crate::obj_from_bits(name).as_ptr().unwrap());
         let class = crate::molt_class_new(name);
@@ -2073,7 +2073,7 @@ fn unicode_percent_format_declaring_slot_bypasses_format_subclass_mod() {
             crate::PtrDropGuard::preserving(crate::obj_from_bits(class).as_ptr().unwrap());
         let base_result = crate::molt_class_set_base(class, crate::builtin_classes(py).str);
         crate::dec_ref_bits(py, base_result);
-        let method_name = crate::attr_name_bits_from_bytes(py, b"__mod__").unwrap();
+        let method_name = crate::dynamic_attr_name_bits(py, b"__mod__").unwrap();
         let _method_name_owner =
             crate::PtrDropGuard::preserving(crate::obj_from_bits(method_name).as_ptr().unwrap());
         let callback = crate::alloc_runtime_function_obj(
@@ -2284,13 +2284,13 @@ fn percent_managed_protocol<'a, 'py>(
     use crate::builtins::exceptions::ExceptionValue;
     let name = ExceptionValue::adopt(
         py,
-        crate::attr_name_bits_from_bytes(py, b"ManagedPercentProtocol").unwrap(),
+        crate::dynamic_attr_name_bits(py, b"ManagedPercentProtocol").unwrap(),
     );
     let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
     let result = crate::molt_class_set_base(class.bits(), base);
     crate::dec_ref_bits(py, result);
     for (name, callback) in methods {
-        let name = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, name).unwrap());
+        let name = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
         let function = crate::alloc_runtime_function_obj(
             py,
             crate::builtins::functions::runtime_fn_addr(
@@ -2498,7 +2498,7 @@ impl Drop for PercentWarningPolicy {
 fn percent_warning_policy(py: &crate::PyToken<'_>, action: &[u8]) {
     use crate::builtins::exceptions::ExceptionValue;
     crate::molt_warnings_resetwarnings();
-    let action = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, action).unwrap());
+    let action = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, action).unwrap());
     let result = crate::molt_warnings_simplefilter(
         action.bits(),
         crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::DeprecationWarning),
@@ -4735,7 +4735,7 @@ mod decimal_output_limits {
             );
             let spec = ExceptionValue::adopt(
                 py,
-                crate::attr_name_bits_from_bytes(py, spec).expect("format spec"),
+                crate::dynamic_attr_name_bits(py, spec).expect("format spec"),
             );
             let result = crate::molt_format_builtin(value.bits(), spec.bits());
             take_raw(GLOBAL_BRIDGE.owned_handle_to_pyobj(result))

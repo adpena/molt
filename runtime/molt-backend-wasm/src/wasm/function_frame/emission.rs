@@ -113,13 +113,14 @@ impl WasmFunctionFrame {
             let policy = WasmConstOpPolicy::for_op(&anchor.op)
                 .unwrap_or_else(|| panic!("missing WASM const policy for {}", anchor.op.kind));
             if policy.materialization_can_fail() {
-                emit_call(
+                // The entry initializers set the record local before any
+                // const anchor materializes.
+                crate::wasm::pending_work::emit_exception_pending_test(
                     func,
-                    reloc_enabled,
+                    crate::wasm::pending_work::thread_record_local(&self.locals),
                     import_ids[WasmRuntimeImport::ExceptionPending],
+                    reloc_enabled,
                 );
-                func.instruction(&Instruction::I64Const(0));
-                func.instruction(&Instruction::I64Ne);
                 func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
                 self.const_cache.emit_none(func);
                 self.emit_return(func, 1);

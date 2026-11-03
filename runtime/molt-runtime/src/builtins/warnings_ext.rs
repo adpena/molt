@@ -185,10 +185,12 @@ fn call1<'a, 'py>(
 fn call_method1<'a, 'py>(
     py: &'a PyToken<'py>,
     receiver: u64,
-    name: &[u8],
+    name: crate::NameId,
     arg: u64,
 ) -> Option<ExceptionValue<'a, 'py>> {
-    let name = owned_name(py, name)?;
+    let name = name
+        .owned_bits(py)
+        .map(|bits| ExceptionValue::adopt(py, bits))?;
     let method = ExceptionValue::adopt(py, molt_get_attr_name(receiver, name.bits()));
     if exception_pending(py) {
         return None;
@@ -203,7 +205,7 @@ fn call_method1<'a, 'py>(
 /// module is not loaded or lacks the attribute. `Err`: an exception is pending.
 fn warnings_module_attr<'a, 'py>(
     py: &'a PyToken<'py>,
-    attr: &[u8],
+    attr: crate::NameId,
 ) -> Result<Option<ExceptionValue<'a, 'py>>, ()> {
     let name = owned_name(py, b"warnings").ok_or(())?;
     let module = ExceptionValue::adopt(py, molt_module_cache_get(name.bits()));
@@ -213,7 +215,10 @@ fn warnings_module_attr<'a, 'py>(
     if obj_from_bits(module.bits()).is_none() {
         return Ok(None);
     }
-    let attr = owned_name(py, attr).ok_or(())?;
+    let attr = attr
+        .owned_bits(py)
+        .map(|bits| ExceptionValue::adopt(py, bits))
+        .ok_or(())?;
     match crate::builtins::platform::getattr_optional_bits(py, module.bits(), attr.bits()) {
         Ok(Some(bits)) => Ok(Some(ExceptionValue::adopt(py, bits))),
         Ok(None) => Ok(None),
@@ -268,7 +273,7 @@ fn default_filters<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, '
 /// then holds, else the state's own list. `None`: an exception is pending.
 fn get_filters<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>> {
     let state = warnings_state(py);
-    if let Some(filters) = warnings_module_attr(py, b"filters").ok()? {
+    if let Some(filters) = warnings_module_attr(py, crate::NameId::Filters).ok()? {
         hold_state_object(py, &state.filters, filters.bits());
     }
     let filters = state_object(py, &state.filters, default_filters)?;
@@ -285,7 +290,7 @@ fn get_filters<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>>
 /// CPython `get_once_registry`. `None`: an exception is pending.
 fn get_once_registry<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>> {
     let state = warnings_state(py);
-    if let Some(registry) = warnings_module_attr(py, b"onceregistry").ok()? {
+    if let Some(registry) = warnings_module_attr(py, crate::NameId::Onceregistry).ok()? {
         if dict_storage(py, registry.bits()).ok()?.is_none() {
             let message = format!(
                 "_warnings.onceregistry must be a dict, not '{}'",
@@ -305,7 +310,7 @@ fn get_once_registry<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a,
 /// CPython `get_default_action`. `None`: an exception is pending.
 fn get_default_action<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>> {
     let state = warnings_state(py);
-    if let Some(action) = warnings_module_attr(py, b"defaultaction").ok()? {
+    if let Some(action) = warnings_module_attr(py, crate::NameId::Defaultaction).ok()? {
         if string_from_bits(py, action.bits()).is_none() {
             let message = format!(
                 "_warnings.defaultaction must be a string, not '{}'",
@@ -338,7 +343,7 @@ fn check_matched(py: &PyToken<'_>, pattern: u64, arg: u64) -> Option<bool> {
         };
         return Some(string_from_bits(py, pattern).as_deref() == Some(arg_text.as_str()));
     }
-    let matched = call_method1(py, pattern, b"match", arg)?;
+    let matched = call_method1(py, pattern, crate::NameId::Match, arg)?;
     crate::object::ops::truth_value(py, obj_from_bits(matched.bits())).ok()
 }
 
@@ -591,7 +596,7 @@ fn owned_str<'a, 'py>(py: &'a PyToken<'py>, text: &str) -> Option<ExceptionValue
 }
 
 fn owned_name<'a, 'py>(py: &'a PyToken<'py>, name: &[u8]) -> Option<ExceptionValue<'a, 'py>> {
-    attr_name_bits_from_bytes(py, name).map(|bits| ExceptionValue::adopt(py, bits))
+    dynamic_attr_name_bits(py, name).map(|bits| ExceptionValue::adopt(py, bits))
 }
 
 /// The dictionary storage of a namespace or registry, `None` for anything else.
@@ -810,7 +815,7 @@ fn show_warning(py: &PyToken<'_>, filename: u64, lineno: u64, text: u64, categor
 /// warning, as CPython reports.
 fn write_sys_stderr(py: &PyToken<'_>, text: &str) {
     let stream = crate::builtins::modules::interpreter_sys_module(py)
-        .and_then(|sys| warnings_attr_of(py, sys, b"stderr"));
+        .and_then(|sys| warnings_attr_of(py, sys, crate::NameId::Stderr));
     let Some(stream) = stream else {
         if !exception_pending(py) {
             eprintln!("lost sys.stderr");
@@ -820,16 +825,23 @@ fn write_sys_stderr(py: &PyToken<'_>, text: &str) {
     let Some(text) = owned_str(py, text) else {
         return;
     };
-    drop(call_method1(py, stream.bits(), b"write", text.bits()));
+    drop(call_method1(
+        py,
+        stream.bits(),
+        crate::NameId::Write,
+        text.bits(),
+    ));
 }
 
 /// `getattr(object, name)` without raising for a missing attribute.
 fn warnings_attr_of<'a, 'py>(
     py: &'a PyToken<'py>,
     object: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Option<ExceptionValue<'a, 'py>> {
-    let name = owned_name(py, name)?;
+    let name = name
+        .owned_bits(py)
+        .map(|bits| ExceptionValue::adopt(py, bits))?;
     match crate::builtins::platform::getattr_optional_bits(py, object, name.bits()) {
         Ok(Some(bits)) => Some(ExceptionValue::adopt(py, bits)),
         _ => None,
@@ -848,7 +860,7 @@ fn call_show_warning(
     filename: u64,
     lineno: u64,
 ) -> bool {
-    let Ok(show) = warnings_module_attr(py, b"_showwarnmsg") else {
+    let Ok(show) = warnings_module_attr(py, crate::NameId::PrivateShowwarnmsg) else {
         return false;
     };
     let Some(show) = show else {
@@ -862,7 +874,7 @@ fn call_show_warning(
             "warnings._showwarnmsg() must be set to a callable",
         );
     }
-    let Ok(message_class) = warnings_module_attr(py, b"WarningMessage") else {
+    let Ok(message_class) = warnings_module_attr(py, crate::NameId::WarningMessage) else {
         return false;
     };
     let Some(message_class) = message_class else {
@@ -1384,7 +1396,7 @@ mod tests {
             crate::with_gil_entry_nopanic!(py, {
                 unsafe { errors::PyErr_Clear() };
                 clear_exception(py);
-                if let Some(name) = attr_name_bits_from_bytes(py, b"warnings") {
+                if let Some(name) = dynamic_attr_name_bits(py, b"warnings") {
                     let result = crate::builtins::modules::molt_module_cache_del(name);
                     dec_ref_bits(py, result);
                     dec_ref_bits(py, name);
@@ -1410,7 +1422,7 @@ mod tests {
 
     fn set_action(py: &PyToken<'_>, action: &[u8]) {
         molt_warnings_resetwarnings();
-        let action = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, action).unwrap());
+        let action = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, action).unwrap());
         let result = molt_warnings_simplefilter(
             action.bits(),
             class(py, crate::BuiltinExc::Warning),
@@ -1424,7 +1436,7 @@ mod tests {
     /// Install a `warnings` module that displays through the fixture's
     /// `_showwarnmsg` and `WarningMessage`.
     fn install_warnings_module<'a, 'py>(py: &'a PyToken<'py>) -> ExceptionValue<'a, 'py> {
-        let name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"warnings").unwrap());
+        let name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"warnings").unwrap());
         let module = alloc_module_obj(py, name.bits());
         assert!(!module.is_null());
         let module = ExceptionValue::adopt(py, MoltObject::from_ptr(module).bits());
@@ -1455,7 +1467,7 @@ mod tests {
     }
 
     fn set_module_attr(py: &PyToken<'_>, module: &ExceptionValue<'_, '_>, attr: &[u8], value: u64) {
-        let attr = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, attr).unwrap());
+        let attr = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, attr).unwrap());
         let result = crate::molt_set_attr_name(module.bits(), attr.bits(), value);
         dec_ref_bits(py, result);
         assert!(!exception_pending(py));
@@ -1503,8 +1515,7 @@ mod tests {
         crate::cpython_abi_hooks::register_cpython_hooks();
         let _reset = ResetWarnings;
         crate::with_gil_entry_nopanic!(py, {
-            let name =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"warnings").unwrap());
+            let name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"warnings").unwrap());
             let module = ExceptionValue::adopt(
                 py,
                 crate::builtins::modules::molt_module_cache_get(name.bits()),
@@ -1573,7 +1584,7 @@ mod tests {
                 unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(custom.as_ptr()) }.unwrap();
             let category_bits = ExceptionValue::adopt(py, category_bits);
             let init_name =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"__init__").unwrap());
+                ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"__init__").unwrap());
             let init = alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr(
@@ -1626,7 +1637,7 @@ mod tests {
             0,
         );
         assert!(!code.is_null());
-        let key = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"__name__").unwrap());
+        let key = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"__name__").unwrap());
         let value = ExceptionValue::adopt(py, alloc_string_result(py, module));
         let globals = alloc_dict_with_pairs(py, &[key.bits(), value.bits()]);
         assert!(!globals.is_null());
@@ -1866,9 +1877,8 @@ mod tests {
             let user = class(py, crate::BuiltinExc::UserWarning);
             let none = MoltObject::none().bits();
             let zero = MoltObject::from_int(0).bits();
-            let name = |text: &[u8]| {
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, text).unwrap())
-            };
+            let name =
+                |text: &[u8]| ExceptionValue::adopt(py, dynamic_attr_name_bits(py, text).unwrap());
             let (ignore, error, always) = (name(b"ignore"), name(b"error"), name(b"always"));
             let simple = |action: u64, append: bool| {
                 molt_warnings_simplefilter(
@@ -2072,8 +2082,7 @@ mod tests {
             let module = install_warnings_module(py);
             // The loaded module's `filters` is the policy, and the engine's
             // list follows it.
-            let ignore =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"ignore").unwrap());
+            let ignore = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"ignore").unwrap());
             let none = MoltObject::none().bits();
             let zero = MoltObject::from_int(0).bits();
             let row = owned_tuple(
@@ -2107,7 +2116,7 @@ mod tests {
             // The module's `defaultaction` decides when no filter matches.
             molt_warnings_resetwarnings();
             let default =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"default").unwrap());
+                ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"default").unwrap());
             set_module_attr(py, &module, b"defaultaction", default.bits());
             // `_showwarnmsg` receives a `WarningMessage` for the caller's
             // location, and the caller's registry records it.
@@ -2126,7 +2135,7 @@ mod tests {
             );
             let registry_name = ExceptionValue::adopt(
                 py,
-                attr_name_bits_from_bytes(py, b"__warningregistry__").unwrap(),
+                dynamic_attr_name_bits(py, b"__warningregistry__").unwrap(),
             );
             let registry = unsafe {
                 dict_get_in_place(

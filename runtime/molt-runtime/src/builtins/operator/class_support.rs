@@ -9,13 +9,13 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
     let operator = &crate::runtime_state(_py).operator;
     let methods = [
         RuntimeClassMethodSpec::fixed(
-            "__call__",
+            crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_itemgetter_call as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
-            "__new__",
+            crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
             crate::molt_operator_itemgetter_new as *const () as usize as u64,
             2,
@@ -42,13 +42,13 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
     let operator = &crate::runtime_state(_py).operator;
     let methods = [
         RuntimeClassMethodSpec::fixed(
-            "__call__",
+            crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_attrgetter_call as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
-            "__new__",
+            crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
             crate::molt_operator_attrgetter_new as *const () as usize as u64,
             2,
@@ -75,13 +75,13 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
     let operator = &crate::runtime_state(_py).operator;
     let methods = [
         RuntimeClassMethodSpec::fixed(
-            "__call__",
+            crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_methodcaller_call as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
-            "__new__",
+            crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
             crate::molt_operator_methodcaller_new as *const () as usize as u64,
             2,

@@ -88,7 +88,7 @@ pub(crate) fn traceback_mutate_field(
         return Err(());
     }
     let self_bits = MoltObject::from_ptr(tb_ptr).bits();
-    let next_name = intern_static_name(py, &runtime_state(py).interned.tb_next_name, b"tb_next");
+    let next_name = crate::NameId::TbNext.bits(py);
     let mut cursor = ExceptionValue::pin(py, next);
     while !obj_from_bits(cursor.bits()).is_none() {
         if cursor.bits() == self_bits {
@@ -115,9 +115,8 @@ pub(crate) fn traceback_mutate_field(
 pub(crate) type TracebackFrameInfo = (Vec<u8>, i64, Vec<u8>);
 
 fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Result<Option<TracebackFrameInfo>, ()> {
-    let interned = &runtime_state(py).interned;
-    let code_name = intern_static_name(py, &interned.f_code_name, b"f_code");
-    let line_name = intern_static_name(py, &interned.f_lineno_name, b"f_lineno");
+    let code_name = crate::NameId::FCode.bits(py);
+    let line_name = crate::NameId::FLineno.bits(py);
     let code = traceback_attribute(py, frame, code_name)?;
     let line = traceback_attribute(py, frame, line_name)?;
     if code.is_none() && line.is_none() {
@@ -131,9 +130,9 @@ fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Result<Option<Traceback
     let mut function = b"<module>".to_vec();
     if let Some(code) = code {
         let filename_name =
-            ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_filename").ok_or(())?);
+            ExceptionValue::adopt(py, crate::NameId::CoFilename.owned_bits(py).ok_or(())?);
         let function_name =
-            ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_name").ok_or(())?);
+            ExceptionValue::adopt(py, crate::NameId::CoName.owned_bits(py).ok_or(())?);
         let file = traceback_attribute(py, code.bits(), filename_name.bits())?;
         let name = traceback_attribute(py, code.bits(), function_name.bits())?;
         if let Some(file) = file.and_then(|value| string_obj_bytes(obj_from_bits(value.bits()))) {
@@ -153,10 +152,9 @@ pub(crate) fn traceback_frames(
     tb_bits: u64,
     limit: Option<usize>,
 ) -> Vec<TracebackFrameInfo> {
-    let interned = &runtime_state(py).interned;
-    let frame_name = intern_static_name(py, &interned.tb_frame_name, b"tb_frame");
-    let line_name = intern_static_name(py, &interned.tb_lineno_name, b"tb_lineno");
-    let next_name = intern_static_name(py, &interned.tb_next_name, b"tb_next");
+    let frame_name = crate::NameId::TbFrame.bits(py);
+    let line_name = crate::NameId::TbLineno.bits(py);
+    let next_name = crate::NameId::TbNext.bits(py);
     let mut out = Vec::new();
     let mut current = ExceptionValue::pin(py, tb_bits);
     let mut seen = HashSet::new();
@@ -1292,7 +1290,7 @@ pub(crate) fn traceback_payload_from_frame_chain(
     source_bits: u64,
     limit: Option<usize>,
 ) -> Vec<TracebackPayloadFrame> {
-    let back_name = intern_static_name(py, &runtime_state(py).interned.f_back_name, b"f_back");
+    let back_name = crate::NameId::FBack.bits(py);
     let mut out = Vec::new();
     let mut current = ExceptionValue::pin(py, source_bits);
     let mut seen = HashSet::new();
@@ -1551,15 +1549,13 @@ pub(crate) fn traceback_payload_from_entry(
                 return Ok(None);
             }
             if type_id == TYPE_ID_DICT {
-                let interned = &runtime_state(_py).interned;
-                let filename_key = intern_static_name(_py, &interned.filename_name, b"filename");
-                let lineno_key = intern_static_name(_py, &interned.lineno_name, b"lineno");
-                let name_key = intern_static_name(_py, &interned.plain_name, b"name");
-                let line_key = intern_static_name(_py, &interned.line_name, b"line");
-                let end_lineno_key =
-                    intern_static_name(_py, &interned.end_lineno_name, b"end_lineno");
-                let colno_key = intern_static_name(_py, &interned.colno_name, b"colno");
-                let end_colno_key = intern_static_name(_py, &interned.end_colno_name, b"end_colno");
+                let filename_key = crate::NameId::Filename.bits(_py);
+                let lineno_key = crate::NameId::Lineno.bits(_py);
+                let name_key = crate::NameId::Name.bits(_py);
+                let line_key = crate::NameId::Line.bits(_py);
+                let end_lineno_key = crate::NameId::EndLineno.bits(_py);
+                let colno_key = crate::NameId::Colno.bits(_py);
+                let end_colno_key = crate::NameId::EndColno.bits(_py);
                 let Some(filename_bits) = dict_get_in_place(_py, entry_ptr, filename_key)? else {
                     return Ok(None);
                 };

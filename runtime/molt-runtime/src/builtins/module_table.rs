@@ -652,7 +652,7 @@ pub(crate) fn publish_interpreter_sys_for_test(py: &PyToken<'_>, bits: u64) -> u
     let previous = table.initialization().slots[index].swap(0, Ordering::AcqRel);
     let prior_spec = table.initialization().specs[index].swap(0, Ordering::AcqRel);
     table.initialization().states[index].store(STATE_INITIALIZING, Ordering::Release);
-    let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
     let result = crate::builtins::modules::molt_module_cache_set(name, bits);
     dec_ref_bits(py, name);
     table.initialization().states[index].store(STATE_READY, Ordering::Release);
@@ -704,7 +704,7 @@ impl InterpreterSysTestSnapshot {
             ))
         });
         let public = existing_module_dictionary(py).and_then(|modules| {
-            let key = crate::attr_name_bits_from_bytes(py, b"sys").expect("sys name");
+            let key = crate::dynamic_attr_name_bits(py, b"sys").expect("sys name");
             let detached = unsafe {
                 crate::object::ops::dict_del_deferred(py, crate::ptr_from_bits(modules), key)
             }
@@ -745,7 +745,7 @@ impl InterpreterSysTestSnapshot {
             ))
         });
         // The test's own entry is released with the other fresh owners below.
-        let key = crate::attr_name_bits_from_bytes(py, b"sys").expect("sys name");
+        let key = crate::dynamic_attr_name_bits(py, b"sys").expect("sys name");
         let current_public = existing_module_dictionary(py).and_then(|modules| {
             let modules = crate::ptr_from_bits(modules);
             match self.public {
@@ -1112,7 +1112,7 @@ pub(crate) fn module_lookup(py: &PyToken<'_>, name: &str) -> Result<Option<u64>,
     let Some(dictionary) = existing_module_dictionary(py) else {
         return Ok(None);
     };
-    let Some(key) = crate::attr_name_bits_from_bytes(py, name.as_bytes()) else {
+    let Some(key) = crate::dynamic_attr_name_bits(py, name.as_bytes()) else {
         return Err(none_bits());
     };
     let found = unsafe { crate::dict_get_in_place(py, crate::ptr_from_bits(dictionary), key) };
@@ -1128,7 +1128,7 @@ pub(crate) fn replace_module_owned_for_test(
     value: Option<u64>,
 ) -> Option<u64> {
     let dictionary = module_dictionary(py).expect("canonical module dictionary");
-    let key = crate::attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+    let key = crate::dynamic_attr_name_bits(py, name.as_bytes()).unwrap();
     let previous = module_lookup(py, name).expect("module lookup");
     if let Some(value) = value {
         assert!(unsafe {
@@ -1280,14 +1280,14 @@ fn publication_for_test(py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 #[cfg(test)]
 fn publish_for_test(py: &PyToken<'_>, name: &str, bits: u64) {
-    let name_bits = crate::attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+    let name_bits = crate::dynamic_attr_name_bits(py, name.as_bytes()).unwrap();
     let _ = crate::builtins::modules::molt_module_cache_set(name_bits, bits);
     dec_ref_bits(py, name_bits);
 }
 
 #[cfg(test)]
 fn remove_for_test(py: &PyToken<'_>, name: &str) {
-    let name_bits = crate::attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+    let name_bits = crate::dynamic_attr_name_bits(py, name.as_bytes()).unwrap();
     let _ = crate::builtins::modules::molt_module_cache_del(name_bits);
     dec_ref_bits(py, name_bits);
 }
@@ -1690,7 +1690,7 @@ impl Drop for RegisteredSpecImport<'_, '_> {
 }
 
 pub(crate) fn set_spec_initializing(py: &PyToken<'_>, spec: u64, initializing: bool) {
-    let Some(key) = crate::attr_name_bits_from_bytes(py, b"_initializing") else {
+    let Some(key) = crate::NameId::Initializing.owned_bits(py) else {
         return;
     };
     let _ = crate::builtins::attributes::mutate_attr_name(
@@ -1745,7 +1745,7 @@ pub extern "C" fn molt_module_initialization_spec(module: u64, spec: u64) -> u64
             table.initialization().specs[index].store(none_bits(), Ordering::Release);
         }
         let spec = crate::builtins::exceptions::ExceptionValue::pin(py, spec);
-        let Some(key) = crate::attr_name_bits_from_bytes(py, b"__spec__") else {
+        let Some(key) = crate::NameId::DunderSpec.owned_bits(py) else {
             return none_bits();
         };
         crate::builtins::modules::molt_module_set_attr(module, key, spec.bits());
@@ -1791,7 +1791,7 @@ pub(crate) fn spec_name<'a, 'py>(
     py: &'a PyToken<'py>,
     spec: u64,
 ) -> Result<crate::builtins::exceptions::ExceptionValue<'a, 'py>, u64> {
-    let key = crate::state::cache::intern_runtime_static_name(py, b"name");
+    let key = crate::NameId::Name.bits(py);
     if key == 0 {
         return Err(none_bits());
     }
@@ -1914,7 +1914,7 @@ pub(crate) fn resolve_cached_module(
         let key = match name_bits {
             Some(bits) => ExceptionValue::pin(py, bits),
             None => {
-                let Some(bits) = crate::attr_name_bits_from_bytes(py, name.as_bytes()) else {
+                let Some(bits) = crate::dynamic_attr_name_bits(py, name.as_bytes()) else {
                     return none_bits();
                 };
                 ExceptionValue::adopt(py, bits)
@@ -1954,7 +1954,7 @@ pub(crate) fn resolve_cached_module(
                 Some(bits) => ExceptionValue::pin(py, bits),
                 None => ExceptionValue::adopt(
                     py,
-                    crate::attr_name_bits_from_bytes(py, name.as_bytes()).ok_or_else(none_bits)?,
+                    crate::dynamic_attr_name_bits(py, name.as_bytes()).ok_or_else(none_bits)?,
                 ),
             };
             let current = unsafe {
@@ -1987,7 +1987,7 @@ pub(crate) fn resolve_cached_module(
         let allocated = if name_bits.is_none() {
             Some(ExceptionValue::adopt(
                 py,
-                crate::attr_name_bits_from_bytes(py, name.as_bytes()).ok_or_else(none_bits)?,
+                crate::dynamic_attr_name_bits(py, name.as_bytes()).ok_or_else(none_bits)?,
             ))
         } else {
             None
@@ -2303,7 +2303,7 @@ fn ensure_parent_ready(_py: &PyToken<'_>, row: &RegistryRow) -> bool {
     // child still creates its namespace parent through the public spec protocol.
     let registry = module_registry().expect("compiled parent registry");
     let parent_bits = if registry.row(parent).kind == MODULE_KIND_NAMESPACE_PARENT {
-        let Some(name) = crate::attr_name_bits_from_bytes(_py, registry.name_of(parent).as_bytes())
+        let Some(name) = crate::dynamic_attr_name_bits(_py, registry.name_of(parent).as_bytes())
         else {
             return false;
         };
@@ -2438,7 +2438,7 @@ fn run_init_transaction_body(
     let unwind = |_py: &PyToken<'_>| {
         let previous = table.initialization().slots[idx].swap(0, Ordering::AcqRel);
         if previous != 0 {
-            if let Some(key) = crate::attr_name_bits_from_bytes(_py, name.as_bytes()) {
+            if let Some(key) = crate::dynamic_attr_name_bits(_py, name.as_bytes()) {
                 // This is the ordinary import-body failure boundary, matching
                 // _load_unlocked's name deletion even after nested publication.
                 // Extension construction rollback has separate exact custody.
@@ -2465,7 +2465,7 @@ fn run_init_transaction_body(
         // (spec/runtime-roots imports) keeps its dynamic-path semantics; the
         // admission channel is the runtime import dispatch set (invariant I11).
         unwind(_py);
-        let Some(key) = crate::attr_name_bits_from_bytes(_py, name.as_bytes()) else {
+        let Some(key) = crate::dynamic_attr_name_bits(_py, name.as_bytes()) else {
             return none_bits();
         };
         let error = crate::builtins::exceptions::raise_module_not_found(
@@ -2497,7 +2497,7 @@ fn run_init_transaction_body(
     let initializer = crate::builtins::exceptions::ExceptionValue::pin(_py, bits);
     let completed = (|| {
         let dictionary = module_dictionary(_py).ok_or_else(none_bits)?;
-        let key = crate::attr_name_bits_from_bytes(_py, name.as_bytes()).ok_or_else(none_bits)?;
+        let key = crate::dynamic_attr_name_bits(_py, name.as_bytes()).ok_or_else(none_bits)?;
         let key = crate::builtins::exceptions::ExceptionValue::adopt(_py, key);
         let spec = table.initialization().specs[idx].load(Ordering::Acquire);
         let name = if spec == 0 || is_none_bits(spec) {
@@ -2563,7 +2563,7 @@ fn publish_alias(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id: u32, 
     let Some(dictionary) = module_dictionary(_py) else {
         return;
     };
-    let Some(key) = crate::attr_name_bits_from_bytes(_py, name.as_bytes()) else {
+    let Some(key) = crate::dynamic_attr_name_bits(_py, name.as_bytes()) else {
         return;
     };
     let retired = unsafe {
@@ -2582,7 +2582,7 @@ fn publish_alias(_py: &PyToken<'_>, registry: &'static ModuleRegistry, id: u32, 
 /// Isolate callers share the same typed resolution and cache projection as
 /// public dynamic imports. This ABI retains its non-raising miss sentinel.
 pub(crate) fn isolate_import_dispatch(py: &PyToken<'_>, name: &str) -> u64 {
-    let Some(key) = crate::attr_name_bits_from_bytes(py, name.as_bytes()) else {
+    let Some(key) = crate::dynamic_attr_name_bits(py, name.as_bytes()) else {
         return none_bits();
     };
     let result = crate::builtins::modules::module_import_attempt(key);

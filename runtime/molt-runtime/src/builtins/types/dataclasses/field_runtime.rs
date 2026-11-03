@@ -43,8 +43,8 @@ fn dc_result(py: &PyToken<'_>, bits: u64) -> Result<DcValue, ()> {
     }
 }
 
-fn dc_attr(py: &PyToken<'_>, object: u64, name: &[u8]) -> Result<DcValue, ()> {
-    let name = DcValue::owned(attr_name_bits_from_bytes(py, name).ok_or(())?);
+fn dc_attr(py: &PyToken<'_>, object: u64, name: crate::NameId) -> Result<DcValue, ()> {
+    let name = DcValue::owned(name.owned_bits(py).ok_or(())?);
     dc_result(
         py,
         crate::builtins::attributes::molt_get_attr_name(object, name.bits),
@@ -54,10 +54,10 @@ fn dc_attr(py: &PyToken<'_>, object: u64, name: &[u8]) -> Result<DcValue, ()> {
 pub(in crate::builtins::types::dataclasses) fn dc_getattr_default_bits(
     py: &PyToken<'_>,
     object: u64,
-    name: &[u8],
+    name: crate::NameId,
     default: u64,
 ) -> Option<u64> {
-    let name = DcValue::owned(attr_name_bits_from_bytes(py, name)?);
+    let name = DcValue::owned(name.owned_bits(py)?);
     Some(crate::builtins::attributes::molt_get_attr_name_default(
         object, name.bits, default,
     ))
@@ -105,13 +105,17 @@ fn dc_fields_ordered<'a, 'py>(
     py: &'a PyToken<'py>,
     object: u64,
 ) -> Result<PinnedSequenceSnapshot<'a, 'py>, ()> {
-    let fields = dc_attr(py, type_of_bits(py, object), b"__dataclass_fields__")?;
+    let fields = dc_attr(
+        py,
+        type_of_bits(py, object),
+        crate::NameId::DunderDataclassFields,
+    )?;
     dc_dict_fields(py, fields.bits)
 }
 
 fn dc_field_has_tag(py: &PyToken<'_>, field: u64, tag: &[u8]) -> Result<bool, ()> {
-    let field_type = dc_attr(py, field, b"_field_type")?;
-    let name = dc_attr(py, field_type.bits, b"name")?;
+    let field_type = dc_attr(py, field, crate::NameId::PrivateFieldType)?;
+    let name = dc_attr(py, field_type.bits, crate::NameId::Name)?;
     Ok(string_obj_to_owned(obj_from_bits(name.bits)).is_some_and(|name| name.as_bytes() == tag))
 }
 
@@ -122,7 +126,7 @@ fn dc_is_field(py: &PyToken<'_>, field: u64) -> Result<bool, ()> {
 fn dc_field_bool_attr(
     py: &PyToken<'_>,
     field: u64,
-    name: &[u8],
+    name: crate::NameId,
     default: bool,
 ) -> Result<bool, ()> {
     let bits =
@@ -132,7 +136,7 @@ fn dc_field_bool_attr(
 }
 
 fn dc_field_name_str(py: &PyToken<'_>, field: u64) -> Result<String, ()> {
-    let name = dc_attr(py, field, b"name")?;
+    let name = dc_attr(py, field, crate::NameId::Name)?;
     string_obj_to_owned(obj_from_bits(name.bits)).ok_or_else(|| {
         raise_exception::<()>(
             py,
@@ -143,7 +147,8 @@ fn dc_field_name_str(py: &PyToken<'_>, field: u64) -> Result<String, ()> {
 }
 
 fn dc_field_hash_flag(py: &PyToken<'_>, field: u64, compare: bool) -> Result<bool, ()> {
-    let bits = dc_getattr_default_bits(py, field, b"hash", MoltObject::none().bits()).ok_or(())?;
+    let bits = dc_getattr_default_bits(py, field, crate::NameId::Hash, MoltObject::none().bits())
+        .ok_or(())?;
     let value = dc_result(py, bits)?;
     if obj_from_bits(value.bits).is_none() {
         Ok(compare)
@@ -156,19 +161,26 @@ fn dc_field_hash_flag(py: &PyToken<'_>, field: u64, compare: bool) -> Result<boo
 pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let fields = dc_try!(dc_fields_ordered(py, self_bits));
-        let class = dc_try!(dc_attr(py, self_bits, b"__class__"));
-        let name = dc_try!(dc_attr(py, class.bits, b"__qualname__"));
+        let class = dc_try!(dc_attr(py, self_bits, crate::NameId::DunderClass));
+        let name = dc_try!(dc_attr(py, class.bits, crate::NameId::DunderQualname));
         let name = string_obj_to_owned(obj_from_bits(name.bits)).unwrap_or_else(|| "?".into());
         let mut parts = Vec::new();
         for pair in fields.as_chunks::<2>().0 {
             let field = pair[1];
             if !dc_try!(dc_is_field(py, field))
-                || !dc_try!(dc_field_bool_attr(py, field, b"repr", true))
+                || !dc_try!(dc_field_bool_attr(py, field, crate::NameId::Repr, true))
             {
                 continue;
             }
             let field_name = dc_try!(dc_field_name_str(py, field));
-            let value = dc_try!(dc_attr(py, self_bits, field_name.as_bytes()));
+            let value = dc_try!((|| {
+                let key =
+                    DcValue::owned(dynamic_attr_name_bits(py, field_name.as_bytes()).ok_or(())?);
+                dc_result(
+                    py,
+                    crate::builtins::attributes::molt_get_attr_name(self_bits, key.bits),
+                )
+            })());
             let repr = dc_try!(dc_repr_str(py, value.bits));
             parts.push(format!("{field_name}={repr}"));
         }
@@ -220,8 +232,8 @@ pub extern "C" fn molt_dataclasses_eq(self_bits: u64, other_bits: u64, compare_n
         if direct && self_bits == other_bits {
             return MoltObject::from_bool(true).bits();
         }
-        let other_class = dc_try!(dc_attr(py, other_bits, b"__class__"));
-        let self_class = dc_try!(dc_attr(py, self_bits, b"__class__"));
+        let other_class = dc_try!(dc_attr(py, other_bits, crate::NameId::DunderClass));
+        let self_class = dc_try!(dc_attr(py, self_bits, crate::NameId::DunderClass));
         let same_class = self_class.bits == other_class.bits;
         drop(other_class);
         drop(self_class);
@@ -296,12 +308,18 @@ pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
             if !dc_try!(dc_is_field(py, field)) {
                 continue;
             }
-            let compare = dc_try!(dc_field_bool_attr(py, field, b"compare", true));
+            let compare = dc_try!(dc_field_bool_attr(py, field, crate::NameId::Compare, true));
             if !dc_try!(dc_field_hash_flag(py, field, compare)) {
                 continue;
             }
             let name = dc_try!(dc_field_name_str(py, field));
-            values.push(dc_try!(dc_attr(py, self_bits, name.as_bytes())));
+            values.push(dc_try!((|| {
+                let key = DcValue::owned(dynamic_attr_name_bits(py, name.as_bytes()).ok_or(())?);
+                dc_result(
+                    py,
+                    crate::builtins::attributes::molt_get_attr_name(self_bits, key.bits),
+                )
+            })()));
         }
         let bits: Vec<u64> = values.iter().map(|value| value.bits).collect();
         let ptr = alloc_tuple(py, &bits);
@@ -325,13 +343,13 @@ pub extern "C" fn molt_dataclasses_check_default_order(fields_dict_bits: u64) ->
             {
                 continue;
             }
-            if !dc_try!(dc_field_bool_attr(py, field, b"init", true))
-                || dc_try!(dc_field_bool_attr(py, field, b"kw_only", false))
+            if !dc_try!(dc_field_bool_attr(py, field, crate::NameId::Init, true))
+                || dc_try!(dc_field_bool_attr(py, field, crate::NameId::KwOnly, false))
             {
                 continue;
             }
             let mut has_default = false;
-            for attr in [b"default".as_slice(), b"default_factory".as_slice()] {
+            for attr in [crate::NameId::Default, crate::NameId::DefaultFactory] {
                 let value = dc_try!(dc_attr(py, field, attr));
                 if dc_try!(dc_repr_str(py, value.bits)).as_bytes() != b"MISSING" {
                     has_default = true;
@@ -363,8 +381,8 @@ pub extern "C" fn molt_dataclasses_field_flags(fields_dict_bits: u64) -> u64 {
             if !dc_try!(dc_is_field(py, field)) {
                 continue;
             }
-            let repr = dc_try!(dc_field_bool_attr(py, field, b"repr", true));
-            let compare = dc_try!(dc_field_bool_attr(py, field, b"compare", true));
+            let repr = dc_try!(dc_field_bool_attr(py, field, crate::NameId::Repr, true));
+            let compare = dc_try!(dc_field_bool_attr(py, field, crate::NameId::Compare, true));
             let hash = dc_try!(dc_field_hash_flag(py, field, compare));
             flags.push(
                 MoltObject::from_int(

@@ -1021,7 +1021,7 @@ fn dispatch_audit_event(py: &PyToken<'_>, event_bits: u64, args_bits: u64) -> bo
         // Optional public lookup still executes descriptors/__getattribute__.
         // AttributeError means missing; other failures and truthiness failures
         // abort dispatch even when no tracing hook is active.
-        let Some(name) = attr_name_bits_from_bytes(py, b"__cantrace__") else {
+        let Some(name) = crate::NameId::DunderCantrace.owned_bits(py) else {
             release_owned_bits(py, hook);
             return false;
         };

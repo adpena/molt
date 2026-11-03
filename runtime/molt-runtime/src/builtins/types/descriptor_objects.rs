@@ -24,7 +24,7 @@ fn super_receiver_class(_py: &PyToken<'_>, type_bits: u64, obj_bits: u64) -> Opt
     }
     // CPython's supercheck uses the real subtype relationship first, then the
     // receiver's __class__ attribute. Metaclass __instancecheck__ is not involved.
-    let name_bits = attr_name_bits_from_bytes(_py, b"__class__")?;
+    let name_bits = crate::NameId::DunderClass.owned_bits(_py)?;
     let claimed_class = molt_getattr_builtin(obj_bits, name_bits, MoltObject::none().bits());
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
@@ -423,7 +423,7 @@ pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64)
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let Some(flag_name_bits) = attr_name_bits_from_bytes(_py, b"_pep695") else {
+        let Some(flag_name_bits) = crate::NameId::PrivatePep695.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
         let _ = molt_set_attr_name(
@@ -615,7 +615,7 @@ mod super_frame_tests {
                 (b"__self__".as_slice(), receiver),
                 (b"__self_class__".as_slice(), classes.int),
             ] {
-                let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
+                let name_bits = dynamic_attr_name_bits(py, name).unwrap();
                 let actual = crate::molt_get_attr_name(result, name_bits);
                 assert!(!exception_pending(py));
                 assert_eq!(actual, expected);

@@ -733,16 +733,7 @@ fn compare_op_symbol(op: CompareOp) -> &'static str {
 }
 
 fn rich_compare_name(py: &PyToken<'_>, op: RichCompareOp) -> u64 {
-    let names = &runtime_state(py).interned;
-    let slot = match op {
-        RichCompareOp::Lt => &names.lt_name,
-        RichCompareOp::Le => &names.le_name,
-        RichCompareOp::Eq => &names.eq_name,
-        RichCompareOp::Ne => &names.ne_name,
-        RichCompareOp::Gt => &names.gt_name,
-        RichCompareOp::Ge => &names.ge_name,
-    };
-    intern_static_name(py, slot, op.method_name().as_bytes())
+    crate::NameId::from(op).bits(py)
 }
 
 fn compare_object_value_for_op(

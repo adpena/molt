@@ -625,8 +625,7 @@ pub extern "C" fn molt_importlib_load_module_shim(
         let call_bits = match importlib_required_callable(
             _py,
             bootstrap_bits,
-            runtime_static_name_slot(_py, b"_load_module_shim"),
-            b"_load_module_shim",
+            crate::NameId::LoadModuleShim,
             "importlib._bootstrap",
         ) {
             Ok(bits) => bits,
@@ -807,7 +806,7 @@ pub(super) fn importlib_transaction_package_from_globals(
         ));
     };
 
-    let package_name = intern_runtime_static_name(_py, b"__package__");
+    let package_name = crate::NameId::DunderPackage.bits(_py);
     if let Some(package_bits) = unsafe { dict_get_in_place(_py, globals_ptr, package_name) }
         .map_err(|()| MoltObject::none().bits())?
         && !obj_from_bits(package_bits).is_none()
@@ -825,12 +824,12 @@ pub(super) fn importlib_transaction_package_from_globals(
         return Ok(None);
     }
 
-    let spec_name = intern_runtime_static_name(_py, b"__spec__");
+    let spec_name = crate::NameId::DunderSpec.bits(_py);
     if let Some(spec_bits) = unsafe { dict_get_in_place(_py, globals_ptr, spec_name) }
         .map_err(|()| MoltObject::none().bits())?
         && !obj_from_bits(spec_bits).is_none()
     {
-        let parent_name = intern_runtime_static_name(_py, b"parent");
+        let parent_name = crate::NameId::Parent.bits(_py);
         let parent_bits = crate::molt_object_getattribute(spec_bits, parent_name);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
@@ -854,7 +853,7 @@ pub(super) fn importlib_transaction_package_from_globals(
         return Ok(None);
     }
 
-    let name_key = intern_runtime_static_name(_py, b"__name__");
+    let name_key = crate::NameId::DunderName.bits(_py);
     let Some(name_bits) = unsafe { dict_get_in_place(_py, globals_ptr, name_key) }
         .map_err(|()| MoltObject::none().bits())?
     else {
@@ -875,7 +874,7 @@ pub(super) fn importlib_transaction_package_from_globals(
         return Ok(None);
     }
 
-    let path_name = intern_runtime_static_name(_py, b"__path__");
+    let path_name = crate::NameId::DunderPath.bits(_py);
     let path_bits = unsafe { dict_get_in_place(_py, globals_ptr, path_name) };
     let path_bits = match path_bits {
         Ok(value) => value,
@@ -1158,7 +1157,7 @@ pub(super) fn importlib_transaction_module_all_items(
             "fromlist star expects module",
         ));
     }
-    let all_name_bits = intern_static_name(_py, &runtime_state(_py).interned.all_name, b"__all__");
+    let all_name_bits = crate::NameId::DunderAll.bits(_py);
     if all_name_bits == 0 {
         return Err(MoltObject::none().bits());
     }
@@ -1251,7 +1250,7 @@ fn importlib_prepare_package_fromlist(
     // Presence is the package boundary, including a falsey/dynamic __path__.
     // Only AttributeError is a miss. Both public imports and bootstrap bodies
     // use this owner before IMPORT_FROM observes any of the resulting names.
-    let path_name = intern_runtime_static_name(py, b"__path__");
+    let path_name = crate::NameId::DunderPath.bits(py);
     let has_path = molt_has_attr_name(module_bits, path_name);
     if exception_pending(py) {
         return Err(MoltObject::none().bits());

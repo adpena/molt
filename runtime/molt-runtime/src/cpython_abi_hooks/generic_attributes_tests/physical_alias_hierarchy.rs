@@ -7,7 +7,7 @@ fn native_alias_diamond_preserves_physical_mro_and_canonical_projection() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let class = snapshot_class(py, b"PhysicalAliasDiamond");
-            let key = crate::attr_name_bits_from_bytes(py, b"__len__").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let seventeen = function(py, length_seventeen as *const (), 1);
             let twenty_three = function(py, length_twenty_three as *const (), 1);
             crate::molt_set_attr_name(class, key, seventeen);

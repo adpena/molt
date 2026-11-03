@@ -712,18 +712,11 @@ pub(super) unsafe fn bind_positional_builtin_call(
         // This handles user-defined functions with keyword default arguments
         // that end up in the builtin bind path (e.g. on WASM when
         // __molt_arg_names__ is not found on the function object).
-        let defaults_bits = match function_attr_bits(
-            _py,
-            func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.defaults_name,
-                b"__defaults__",
-            ),
-        ) {
-            Ok(value) => value,
-            Err(()) => return None,
-        };
+        let defaults_bits =
+            match function_attr_bits(_py, func_ptr, crate::NameId::DunderDefaults.bits(_py)) {
+                Ok(value) => value,
+                Err(()) => return None,
+            };
         if let Some(dbits) = defaults_bits
             && !obj_from_bits(dbits).is_none()
             && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()

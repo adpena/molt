@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const FIELD: &[u8] = b"field";
 
 fn name(py: &PyToken<'_>, bytes: &[u8]) -> u64 {
-    attr_name_bits_from_bytes(py, bytes).unwrap()
+    dynamic_attr_name_bits(py, bytes).unwrap()
 }
 
 /// A class built like a compiled class statement, whose layout places

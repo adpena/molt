@@ -77,8 +77,8 @@ pub(in super::super) fn importlib_find_spec_impl(
     let _target_owner = ExceptionValue::pin(py, target);
     importlib_complete_initial_defaults(py)?;
     let sys = importlib_system_module(py)?;
-    let read = |object, key: &'static [u8]| -> Result<ExceptionValue<'_, '_>, u64> {
-        let key = intern_runtime_static_name(py, key);
+    let read = |object, key: crate::NameId| -> Result<ExceptionValue<'_, '_>, u64> {
+        let key = key.bits(py);
         if key == 0 {
             return Err(MoltObject::none().bits());
         }
@@ -86,7 +86,7 @@ pub(in super::super) fn importlib_find_spec_impl(
             .map_err(|()| MoltObject::none().bits())?;
         Ok(ExceptionValue::adopt(py, bits))
     };
-    let observed = read(sys.bits(), b"meta_path")?;
+    let observed = read(sys.bits(), crate::NameId::MetaPath)?;
     if obj_from_bits(observed.bits()).is_none() {
         return Err(raise_exception::<_>(
             py,
@@ -127,7 +127,9 @@ pub(in super::super) fn importlib_find_spec_impl(
         };
         let key = ExceptionValue::adopt(
             py,
-            attr_name_bits_from_bytes(py, b"warn").ok_or_else(|| MoltObject::none().bits())?,
+            crate::NameId::Warn
+                .owned_bits(py)
+                .ok_or_else(|| MoltObject::none().bits())?,
         );
         let warn = ExceptionValue::adopt(
             py,
@@ -151,7 +153,7 @@ pub(in super::super) fn importlib_find_spec_impl(
         }
     }
     let contains = || -> Result<bool, u64> {
-        let modules = read(sys.bits(), b"modules")?;
+        let modules = read(sys.bits(), crate::NameId::Modules)?;
         let result = crate::object::ops::molt_contains(modules.bits(), name);
         if exception_pending(py) {
             return Err(MoltObject::none().bits());
@@ -173,7 +175,7 @@ pub(in super::super) fn importlib_find_spec_impl(
         let finder = finder_owner.as_ref().unwrap();
         let lock = ImportLockGuard::acquire(py)?;
         let result = (|| -> Result<Option<ExceptionValue<'_, '_>>, u64> {
-            let key = intern_runtime_static_name(py, b"find_spec");
+            let key = crate::NameId::FindSpec.bits(py);
             if key == 0 {
                 return Err(MoltObject::none().bits());
             }
@@ -198,7 +200,7 @@ pub(in super::super) fn importlib_find_spec_impl(
         }
         let module = if !is_reload && contains()? {
             let module = {
-                let modules = read(sys.bits(), b"modules")?;
+                let modules = read(sys.bits(), crate::NameId::Modules)?;
                 // sys.modules is a public subscription receiver: custom
                 // mappings must reach __getitem__, with the normal dict fast
                 // path retained by the shared subscription authority.
@@ -214,7 +216,7 @@ pub(in super::super) fn importlib_find_spec_impl(
             None
         };
         let selected = if let Some(module) = module.as_ref() {
-            let key = intern_runtime_static_name(py, b"__spec__");
+            let key = crate::NameId::DunderSpec.bits(py);
             if key == 0 {
                 return Err(MoltObject::none().bits());
             }

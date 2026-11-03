@@ -9,20 +9,20 @@ macro_rules! native_method_table {
      comparison: $family:expr, {$($setup:tt)*}, {$($members:tt)*}) => {
         crate::builtins::methods::native_method_table!(
             $lookup, $publish, $py, $name, [$($extra),*], {$($setup)*}, {
-                "__eq__" => crate::builtins::methods::native_comparison_descriptor!($py, $family, Eq),
-                "__ne__" => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ne),
-                "__lt__" => crate::builtins::methods::native_comparison_descriptor!($py, $family, Lt),
-                "__le__" => crate::builtins::methods::native_comparison_descriptor!($py, $family, Le),
-                "__gt__" => crate::builtins::methods::native_comparison_descriptor!($py, $family, Gt),
-                "__ge__" => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ge),
+                crate::NameId::DunderEq => crate::builtins::methods::native_comparison_descriptor!($py, $family, Eq),
+                crate::NameId::DunderNe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ne),
+                crate::NameId::DunderLt => crate::builtins::methods::native_comparison_descriptor!($py, $family, Lt),
+                crate::NameId::DunderLe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Le),
+                crate::NameId::DunderGt => crate::builtins::methods::native_comparison_descriptor!($py, $family, Gt),
+                crate::NameId::DunderGe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ge),
                 $($members)*
             }
         );
     };
 
     ($lookup:ident, $publish:ident, $py:ident, $name:ident, [$($extra:ident),*],
-     {$($setup:tt)*}, {$($member:literal $(if $guard:expr)? => $body:expr,)*}) => {
-        pub(crate) fn $lookup($py: &crate::PyToken<'_>, $($extra: u64,)* $name: &str) -> Result<Option<u64>, ()> {
+     {$($setup:tt)*}, {$($member:path $([if $guard:expr])? => $body:expr,)*}) => {
+        pub(crate) fn $lookup($py: &crate::PyToken<'_>, $($extra: u64,)* $name: crate::NameId) -> Result<Option<u64>, ()> {
             crate::builtins::methods::method_dispatch($py, || {
                 $($setup)*
                 Ok(match $name { $($member $(if $guard)? => $body,)* _ => None })
@@ -53,7 +53,7 @@ macro_rules! native_comparison_descriptor {
             crate::builtins::functions::native_callable::NativeCallableSpec::declared(
                 crate::builtins::functions::native_callable::NativeCallableKind::WrapperDescriptor,
                 $family.owner($py),
-                RichCompareOp::$op.method_name(),
+                crate::NameId::from(RichCompareOp::$op),
             )
             .with_text_signature("($self, value, /)"),
             fn_addr!(invoke),
@@ -162,7 +162,7 @@ mod tests {
                     crate::clear_exception(py);
                     dec_ref_bits(py, exception);
                 }
-                let child_name = attr_name_bits_from_bytes(py, b"ForgedAdapter").unwrap();
+                let child_name = dynamic_attr_name_bits(py, b"ForgedAdapter").unwrap();
                 let child = molt_class_new(child_name);
                 dec_ref_bits(py, child_name);
                 let inherited = molt_class_set_base(child, adapter);
@@ -181,60 +181,77 @@ mod tests {
             for (class, required, absent) in [
                 (
                     classes.coroutine,
-                    &["__await__", "send", "throw", "close"][..],
-                    &["__iter__", "__next__"][..],
+                    &[
+                        crate::NameId::DunderAwait,
+                        crate::NameId::Send,
+                        crate::NameId::Throw,
+                        crate::NameId::Close,
+                    ][..],
+                    &[crate::NameId::DunderIter, crate::NameId::DunderNext][..],
                 ),
                 (
                     classes.coroutine_wrapper,
-                    &["__iter__", "__next__", "send", "throw", "close"][..],
-                    &["__await__"][..],
+                    &[
+                        crate::NameId::DunderIter,
+                        crate::NameId::DunderNext,
+                        crate::NameId::Send,
+                        crate::NameId::Throw,
+                        crate::NameId::Close,
+                    ][..],
+                    &[crate::NameId::DunderAwait][..],
                 ),
                 (
                     classes.generator,
-                    &["__iter__", "__next__", "send", "throw", "close"][..],
-                    &["__await__"][..],
+                    &[
+                        crate::NameId::DunderIter,
+                        crate::NameId::DunderNext,
+                        crate::NameId::Send,
+                        crate::NameId::Throw,
+                        crate::NameId::Close,
+                    ][..],
+                    &[crate::NameId::DunderAwait][..],
                 ),
                 (
                     classes.async_generator_asend,
                     &[
-                        "__await__",
-                        "__iter__",
-                        "__next__",
-                        "send",
-                        "throw",
-                        "close",
+                        crate::NameId::DunderAwait,
+                        crate::NameId::DunderIter,
+                        crate::NameId::DunderNext,
+                        crate::NameId::Send,
+                        crate::NameId::Throw,
+                        crate::NameId::Close,
                     ][..],
-                    &["asend", "__anext__"][..],
+                    &[crate::NameId::Asend, crate::NameId::DunderAnext][..],
                 ),
                 (
                     classes.async_generator_athrow,
                     &[
-                        "__await__",
-                        "__iter__",
-                        "__next__",
-                        "send",
-                        "throw",
-                        "close",
+                        crate::NameId::DunderAwait,
+                        crate::NameId::DunderIter,
+                        crate::NameId::DunderNext,
+                        crate::NameId::Send,
+                        crate::NameId::Throw,
+                        crate::NameId::Close,
                     ][..],
-                    &["athrow", "aclose"][..],
+                    &[crate::NameId::Athrow, crate::NameId::Aclose][..],
                 ),
             ] {
                 let directory = molt_dir_builtin(class);
                 assert!(!exception_pending(py));
-                for name in required {
+                for &name in required {
                     let first = builtin_class_method_bits(py, class, name)
                         .expect("method lookup succeeds")
                         .expect("required method");
                     assert_eq!(builtin_class_method_bits(py, class, name), Ok(Some(first)));
-                    let name_bits = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+                    let name_bits = dynamic_attr_name_bits(py, name.as_str().as_bytes()).unwrap();
                     let contains = molt_contains(directory, name_bits);
                     assert!(is_truthy(py, obj_from_bits(contains)));
                     dec_ref_bits(py, contains);
                     dec_ref_bits(py, name_bits);
                 }
-                for name in absent {
+                for &name in absent {
                     assert_eq!(builtin_class_method_bits(py, class, name), Ok(None));
-                    let name_bits = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+                    let name_bits = dynamic_attr_name_bits(py, name.as_str().as_bytes()).unwrap();
                     let contains = molt_contains(directory, name_bits);
                     assert!(!is_truthy(py, obj_from_bits(contains)));
                     dec_ref_bits(py, contains);
@@ -260,10 +277,10 @@ mod tests {
                 let iterator = molt_iter(source);
                 dec_ref_bits(py, source);
                 let class = builtin_classes(py).tuple_iterator;
-                let next = builtin_class_method_bits(py, class, "__next__")
+                let next = builtin_class_method_bits(py, class, crate::NameId::DunderNext)
                     .unwrap()
                     .unwrap();
-                let iter = builtin_class_method_bits(py, class, "__iter__")
+                let iter = builtin_class_method_bits(py, class, crate::NameId::DunderIter)
                     .unwrap()
                     .unwrap();
                 assert_eq!(crate::builtins::type_ops::type_of_bits(py, iterator), class);
@@ -317,7 +334,9 @@ mod tests {
             assert_eq!(method_dispatch(py, || Ok(Some(0))), Err(()));
             assert!(exception_pending(py));
             let _ = molt_exception_clear();
-            let cached = object_method_bits(py, "__getattribute__").unwrap().unwrap();
+            let cached = object_method_bits(py, crate::NameId::DunderGetattribute)
+                .unwrap()
+                .unwrap();
             assert_ne!(cached, 0);
             assert_eq!(method_dispatch(py, || Ok(Some(cached))), Ok(Some(cached)));
 
@@ -335,12 +354,15 @@ mod tests {
                 Err(())
             );
             assert!(exception_pending(py));
-            assert_eq!(object_method_bits(py, "__getattribute__"), Ok(Some(cached)));
-            assert_eq!(object_method_bits(py, "missing_method"), Ok(None));
+            assert_eq!(
+                object_method_bits(py, crate::NameId::DunderGetattribute),
+                Ok(Some(cached))
+            );
+            assert_eq!(object_method_bits(py, crate::NameId::Append), Ok(None));
             // IO signatures include defaults that may initialize a singleton.
             // Cold publication and warm lookup both preserve the admitted error.
             let file_io = builtin_classes(py).file_io;
-            for name in ["__new__", "__init__"] {
+            for name in [crate::NameId::DunderNew, crate::NameId::DunderInit] {
                 let method = builtin_class_method_bits(py, file_io, name)
                     .expect("publication succeeds with an admitted error")
                     .expect("FileIO publishes both constructor phases");

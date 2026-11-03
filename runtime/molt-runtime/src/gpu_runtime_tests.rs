@@ -1,7 +1,7 @@
 use crate::BuiltinExc;
 use crate::{
-    MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    builtin_classes, bytes_data, bytes_len, dec_ref_bits, obj_from_bits, to_f64,
+    MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple, builtin_classes,
+    bytes_data, bytes_len, dec_ref_bits, dynamic_attr_name_bits, obj_from_bits, to_f64,
 };
 use molt_gpu_runtime::{
     molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list, molt_gpu_linear_contiguous,
@@ -63,7 +63,7 @@ fn make_tensor_from_f32(
 }
 
 fn attr_bits(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> u64 {
-    let name_bits = attr_name_bits_from_bytes(_py, name).expect("attr name");
+    let name_bits = dynamic_attr_name_bits(_py, name).expect("attr name");
     let value_bits = crate::molt_get_attr_name(obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
     value_bits
@@ -81,10 +81,12 @@ fn install_gpu_tensor_module(_py: &crate::PyToken<'_>, tensor_cls_bits: u64, buf
     let tensor_module_bits = crate::builtins::modules::molt_module_new(tensor_name_bits_full);
     assert!(!crate::exception_pending(_py));
 
-    let gpu_attr_bits = attr_name_bits_from_bytes(_py, b"gpu").expect("gpu attr");
-    let tensor_attr_bits = attr_name_bits_from_bytes(_py, b"tensor").expect("tensor attr");
-    let tensor_name_bits = attr_name_bits_from_bytes(_py, b"Tensor").expect("Tensor attr");
-    let buffer_name_bits = attr_name_bits_from_bytes(_py, b"Buffer").expect("Buffer attr");
+    let gpu_attr_bits = crate::NameId::Gpu.owned_bits(_py).expect("gpu attr");
+    let tensor_attr_bits = crate::NameId::Tensor.owned_bits(_py).expect("tensor attr");
+    let tensor_name_bits = crate::NameId::LowerTensor
+        .owned_bits(_py)
+        .expect("Tensor attr");
+    let buffer_name_bits = crate::NameId::Buffer.owned_bits(_py).expect("Buffer attr");
     crate::builtins::modules::molt_module_set_attr(
         root_module_bits,
         gpu_attr_bits,
@@ -158,12 +160,18 @@ fn gpu_tensor_from_parts_wraps_tensor_and_buffer_objects() {
             .as_ptr()
             .expect("tensor_from_parts should return a tensor object");
 
-        let buf_name_bits = attr_name_bits_from_bytes(_py, b"_buf").expect("_buf attr");
-        let shape_name_bits = attr_name_bits_from_bytes(_py, b"_shape").expect("_shape attr");
-        let format_name_bits =
-            attr_name_bits_from_bytes(_py, b"_format_char").expect("_format_char attr");
-        let itemsize_name_bits =
-            attr_name_bits_from_bytes(_py, b"_itemsize").expect("_itemsize attr");
+        let buf_name_bits = crate::NameId::PrivateBuf
+            .owned_bits(_py)
+            .expect("_buf attr");
+        let shape_name_bits = crate::NameId::PrivateShape
+            .owned_bits(_py)
+            .expect("_shape attr");
+        let format_name_bits = crate::NameId::PrivateFormatChar
+            .owned_bits(_py)
+            .expect("_format_char attr");
+        let itemsize_name_bits = crate::NameId::PrivateItemsize
+            .owned_bits(_py)
+            .expect("_itemsize attr");
 
         let buffer_bits = crate::molt_get_attr_name(out_bits, buf_name_bits);
         let shape_bits = crate::molt_get_attr_name(out_bits, shape_name_bits);
@@ -258,7 +266,9 @@ fn gpu_buffer_to_list_f32_roundtrip() {
         );
         assert!(!crate::exception_pending(_py));
 
-        let buf_name_bits = attr_name_bits_from_bytes(_py, b"_buf").expect("_buf attr");
+        let buf_name_bits = crate::NameId::PrivateBuf
+            .owned_bits(_py)
+            .expect("_buf attr");
         let buffer_bits = crate::molt_get_attr_name(tensor_bits, buf_name_bits);
         dec_ref_bits(_py, buf_name_bits);
 
@@ -977,7 +987,9 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
                 0
             );
 
-            let name = attr_name_bits_from_bytes(py, b"__molt_gpu_descriptor__").expect("name");
+            let name = crate::NameId::DunderMoltGpuDescriptor
+                .owned_bits(py)
+                .expect("name");
             let _name_owner =
                 crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("name object"));
             crate::builtins::attributes::object_setattr_raw(

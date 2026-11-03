@@ -9,7 +9,7 @@ use super::*;
 use crate::BuiltinExc;
 use crate::object::layout::function_mutation_version;
 use crate::runtime_flags::{self, RuntimeFlag};
-use crate::{attr_name_bits_from_bytes, molt_super_new};
+use crate::{dynamic_attr_name_bits, molt_super_new};
 fn trace_call_bind_ic_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_BIND_IC)
 }
@@ -626,8 +626,9 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 let metaclass_call_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
                     _py,
                     metaclass_ptr,
-                    b"__call__",
+                    crate::NameId::DunderCall.bits(_py),
                     None,
+                    crate::builtins::attr::NamespacePreparation::Unresolved,
                 )??;
                 trace_call_bind_ic_epoch_stage(type_version, "metaclass_call_lookup");
                 if !is_default_type_call(_py, metaclass_call_bits) {
@@ -636,7 +637,11 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 }
                 // Only cacheable when __new__ is the default object.__new__.
                 let new_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
-                    _py, call_ptr, b"__new__", None,
+                    _py,
+                    call_ptr,
+                    crate::NameId::DunderNew.bits(_py),
+                    None,
+                    crate::builtins::attr::NamespacePreparation::Unresolved,
                 )?;
                 trace_call_bind_ic_epoch_stage(type_version, "new_lookup");
                 if !resolved_new_is_default_object_new(new_bits) {
@@ -647,8 +652,9 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 let init_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
                     _py,
                     call_ptr,
-                    b"__init__",
+                    crate::NameId::DunderInit.bits(_py),
                     None,
+                    crate::builtins::attr::NamespacePreparation::Unresolved,
                 )??;
                 trace_call_bind_ic_epoch_stage(type_version, "init_lookup");
                 let init_ptr = obj_from_bits(init_bits).as_ptr()?;
@@ -703,8 +709,9 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 let func_bits = crate::builtins::attr::class_namespace_lookup_mro_pure(
                     _py,
                     class_ptr,
-                    b"__call__",
+                    crate::NameId::DunderCall.bits(_py),
                     None,
+                    crate::builtins::attr::NamespacePreparation::Unresolved,
                 )??;
                 let func_ptr = obj_from_bits(func_bits).as_ptr()?;
                 if object_type_id(func_ptr) != TYPE_ID_FUNCTION
@@ -1262,7 +1269,7 @@ unsafe fn select_class_method(
         }
 
         // A miss resolves the method class-side and installs the cache.
-        let Some(attr_bits) = attr_name_bits_from_bytes(py, name) else {
+        let Some(attr_bits) = dynamic_attr_name_bits(py, name) else {
             return Ok(MethodSelection::Generic);
         };
         let type_version = crate::object::global_type_version();
@@ -1461,7 +1468,7 @@ unsafe fn load_super_method(
         let start_class = crate::object::cells::pin_cell_value(py, class_cell);
         let start_class_bits = start_class.bits();
 
-        if let Some(attr_bits) = attr_name_bits_from_bytes(py, name) {
+        if let Some(attr_bits) = dynamic_attr_name_bits(py, name) {
             let type_version = crate::object::global_type_version();
             let resolved = match crate::builtins::attr::super_resolve_method_unbound(
                 py,
@@ -1968,8 +1975,8 @@ mod super_cache_tests {
                 2,
             );
             assert!(!pointer.is_null());
-            let self_name = attr_name_bits_from_bytes(py, b"self").unwrap();
-            let arg_name = attr_name_bits_from_bytes(py, b"replacement_arg").unwrap();
+            let self_name = dynamic_attr_name_bits(py, b"self").unwrap();
+            let arg_name = dynamic_attr_name_bits(py, b"replacement_arg").unwrap();
             let positional_names = if shape == "positional" {
                 vec![self_name, arg_name]
             } else {
@@ -1986,18 +1993,21 @@ mod super_cache_tests {
             let positional_bits = MoltObject::from_ptr(positional).bits();
             let keyword_bits = MoltObject::from_ptr(keyword).bits();
             for (name, value) in [
-                (b"__molt_arg_names__".as_slice(), positional_bits),
-                (b"__molt_posonly__", MoltObject::from_int(0).bits()),
-                (b"__molt_kwonly_names__", keyword_bits),
+                (crate::NameId::DunderMoltArgNames, positional_bits),
                 (
-                    b"__molt_vararg__",
+                    crate::NameId::DunderMoltPosonly,
+                    MoltObject::from_int(0).bits(),
+                ),
+                (crate::NameId::DunderMoltKwonlyNames, keyword_bits),
+                (
+                    crate::NameId::DunderMoltVararg,
                     if shape == "vararg" {
                         arg_name
                     } else {
                         MoltObject::none().bits()
                     },
                 ),
-                (b"__molt_varkw__", MoltObject::none().bits()),
+                (crate::NameId::DunderMoltVarkw, MoltObject::none().bits()),
             ] {
                 assert!(crate::call::class_init::function_set_attr_name(
                     py, pointer, name, value
@@ -2027,12 +2037,12 @@ mod super_cache_tests {
                         );
                         let target = signature_function(py, "positional");
                         let source = signature_function(py, shape);
-                        let method_name = attr_name_bits_from_bytes(py, b"value").unwrap();
+                        let method_name = dynamic_attr_name_bits(py, b"value").unwrap();
                         crate::molt_set_attr_name(base, method_name, target);
                         let default = MoltObject::from_int(41).bits();
                         let defaults =
                             MoltObject::from_ptr(crate::alloc_tuple(py, &[default])).bits();
-                        let arg_name = attr_name_bits_from_bytes(py, b"replacement_arg").unwrap();
+                        let arg_name = dynamic_attr_name_bits(py, b"replacement_arg").unwrap();
                         let kwdefaults = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
                             py,
                             &[arg_name, MoltObject::from_int(73).bits()],
@@ -2042,7 +2052,7 @@ mod super_cache_tests {
                             (b"__defaults__".as_slice(), defaults),
                             (b"__kwdefaults__", kwdefaults),
                         ] {
-                            let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
+                            let name_bits = dynamic_attr_name_bits(py, name).unwrap();
                             crate::molt_set_attr_name(target, name_bits, value);
                             dec_ref_bits(py, name_bits);
                         }
@@ -2061,7 +2071,7 @@ mod super_cache_tests {
                             py,
                             obj_from_bits(source).as_ptr().unwrap(),
                         );
-                        let code_name = attr_name_bits_from_bytes(py, b"__code__").unwrap();
+                        let code_name = dynamic_attr_name_bits(py, b"__code__").unwrap();
                         crate::molt_set_attr_name(target, code_name, code);
                         assert!(!exception_pending(py));
                         for _ in 0..2 {
@@ -2148,7 +2158,7 @@ mod super_cache_tests {
                         ),
                         (b"__eq__".as_slice(), colliding_shadow_eq as *const (), 2),
                     ] {
-                        let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
+                        let name_bits = dynamic_attr_name_bits(py, name).unwrap();
                         let function = crate::builtins::functions::alloc_runtime_function_obj(
                             py,
                             crate::provenance::abi::expose_function_address(target),
@@ -2164,14 +2174,14 @@ mod super_cache_tests {
                         py,
                         obj_from_bits(key_class).as_ptr().unwrap(),
                     );
-                    let name = attr_name_bits_from_bytes(py, b"value").unwrap();
+                    let name = dynamic_attr_name_bits(py, b"value").unwrap();
                     let hash = crate::molt_hash_builtin(name);
                     SHADOW_HASH.store(hash, Ordering::SeqCst);
                     SHADOW_CLASS.store(class, Ordering::SeqCst);
                     SHADOW_NAME.store(name, Ordering::SeqCst);
                     SHADOW_CALLS.store(0, Ordering::SeqCst);
                     SHADOW_ARMED.store(false, Ordering::SeqCst);
-                    let dict_name = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
+                    let dict_name = dynamic_attr_name_bits(py, b"__dict__").unwrap();
                     let dictionary = crate::molt_get_attr_name(receiver, dict_name);
                     let dict_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
                     assert_eq!(object_type_id(dict_ptr), TYPE_ID_DICT);
@@ -2289,7 +2299,7 @@ mod super_cache_tests {
                     try_call_bind_ic_fast(py, entry, function, &mut args),
                     Some(MoltObject::from_int(1).bits())
                 );
-                let name = attr_name_bits_from_bytes(py, b"__defaults__").unwrap();
+                let name = dynamic_attr_name_bits(py, b"__defaults__").unwrap();
                 let defaults = crate::alloc_tuple(py, &[MoltObject::from_int(5).bits()]);
                 assert!(!defaults.is_null());
                 let defaults = MoltObject::from_ptr(defaults).bits();
@@ -2403,7 +2413,7 @@ mod super_cache_tests {
             assert!(!exception_pending(py));
             let selected = method_ic_lookup(py, 814).expect("must warm method shape");
             let cached = selected.entry;
-            let defaults_name = attr_name_bits_from_bytes(py, b"__defaults__").unwrap();
+            let defaults_name = dynamic_attr_name_bits(py, b"__defaults__").unwrap();
             let defaults_ptr = crate::alloc_tuple(py, &[MoltObject::from_int(99).bits()]);
             assert!(!defaults_ptr.is_null());
             let defaults = MoltObject::from_ptr(defaults_ptr).bits();
@@ -2449,7 +2459,7 @@ mod super_cache_tests {
     }
 
     fn make_class(py: &PyToken<'_>, name: &[u8], base: u64, method: Option<*const ()>) -> u64 {
-        let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+        let name = crate::dynamic_attr_name_bits(py, name).unwrap();
         let bases = crate::alloc_tuple(py, &[base]);
         let ns = crate::alloc_dict_with_pairs(py, &[]);
         assert!(!bases.is_null() && !ns.is_null());
@@ -2463,7 +2473,7 @@ mod super_cache_tests {
             );
             assert!(!function.is_null());
             let function_bits = MoltObject::from_ptr(function).bits();
-            let method_name = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
+            let method_name = crate::dynamic_attr_name_bits(py, b"value").unwrap();
             unsafe {
                 assert!(crate::dict_set_in_place(py, ns, method_name, function_bits));
             }

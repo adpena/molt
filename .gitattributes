@@ -78,6 +78,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-runtime/src/object/heap_kinds_generated.rs" merge=binary
 "/runtime/molt-runtime/src/runtime_flags_generated.rs" merge=binary
 "/runtime/molt-runtime/src/runtime_profile_schema_generated.rs" merge=binary
+"/runtime/molt-runtime/src/state/names_generated.rs" merge=binary
 "/runtime/molt-stdlib-text/src/charmap_codecs_generated.rs" merge=binary
 "/runtime/molt-stdlib-text/src/codec_aliases_generated.rs" merge=binary
 "/runtime/molt-stdlib-text/src/token_metadata_generated.rs" merge=binary

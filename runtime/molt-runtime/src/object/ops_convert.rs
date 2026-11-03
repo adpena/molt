@@ -922,10 +922,10 @@ fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
         return Ok(true);
     }
     unsafe {
-        if crate::builtins::attr::has_special_method(py, bits, b"__float__")? {
+        if crate::builtins::attr::has_special_method(py, bits, crate::NameId::DunderFloat)? {
             return Ok(true);
         }
-        crate::builtins::attr::has_special_method(py, bits, b"__index__")
+        crate::builtins::attr::has_special_method(py, bits, crate::NameId::DunderIndex)
     }
 }
 
@@ -977,7 +977,11 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
         let mut real_bits = val_bits;
         let mut real_owner = None;
         if let Some(method) = unsafe {
-            match crate::builtins::attr::lookup_special_method(py, val_bits, b"__complex__") {
+            match crate::builtins::attr::lookup_special_method(
+                py,
+                val_bits,
+                crate::NameId::DunderComplex,
+            ) {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }

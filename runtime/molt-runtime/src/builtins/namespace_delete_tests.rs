@@ -5,7 +5,7 @@ use crate::BuiltinExc;
 fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"bound").unwrap();
         let value = MoltObject::from_int(1).bits();
         let lexical = alloc_dict_with_pairs(_py, &[key, value]);
         let active = alloc_dict_with_pairs(_py, &[key, value]);
@@ -67,8 +67,8 @@ fn callback_namespace(_py: &PyToken<'_>) -> (u64, u64, u64) {
     );
     assert!(!function.is_null());
     let function = MoltObject::from_ptr(function).bits();
-    let name = attr_name_bits_from_bytes(_py, b"DeleteNamespace").unwrap();
-    let slot = attr_name_bits_from_bytes(_py, b"__delitem__").unwrap();
+    let name = dynamic_attr_name_bits(_py, b"DeleteNamespace").unwrap();
+    let slot = dynamic_attr_name_bits(_py, b"__delitem__").unwrap();
     let dict = alloc_dict_with_pairs(_py, &[slot, function]);
     assert!(!dict.is_null());
     let dict = MoltObject::from_ptr(dict).bits();
@@ -93,7 +93,7 @@ fn callback_namespace(_py: &PyToken<'_>) -> (u64, u64, u64) {
 fn namespace_delete_dictionary_success_returns_none_and_keeps_receiver_owner() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"bound").unwrap();
         let dict = alloc_dict_with_pairs(_py, &[key, MoltObject::from_int(1).bits()]);
         assert!(!dict.is_null());
         let namespace = MoltObject::from_ptr(dict).bits();
@@ -128,7 +128,7 @@ fn namespace_delete_dictionary_success_returns_none_and_keeps_receiver_owner() {
 fn namespace_delete_custom_mapping_discards_result_and_preserves_pending_entry() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"bound").unwrap();
         let result = alloc_list(_py, &[]);
         assert!(!result.is_null());
         let result_bits = MoltObject::from_ptr(result).bits();

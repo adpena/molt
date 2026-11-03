@@ -2,6 +2,7 @@ use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::functions::native_callable::{NativeCallableSpec, configure_native_callable};
 use crate::*;
+#[cfg(test)]
 use std::sync::atomic::AtomicU64;
 
 enum BuiltinFunctionMetadata<'a> {
@@ -21,12 +22,11 @@ enum BuiltinFunctionMetadata<'a> {
 unsafe fn set_function_metadata_attr(
     _py: &PyToken<'_>,
     ptr: *mut u8,
-    slot: &AtomicU64,
-    name: &'static [u8],
+    name: crate::NameId,
     value: u64,
 ) -> bool {
     unsafe {
-        let name_bits = intern_static_name(_py, slot, name);
+        let name_bits = name.bits(_py);
         if exception_pending(_py) {
             return false;
         }
@@ -51,13 +51,8 @@ pub(crate) unsafe fn set_function_defaults(
             return false;
         }
         let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
-        let configured = set_function_metadata_attr(
-            py,
-            ptr,
-            &runtime_state(py).interned.defaults_name,
-            b"__defaults__",
-            defaults_bits,
-        );
+        let configured =
+            set_function_metadata_attr(py, ptr, crate::NameId::DunderDefaults, defaults_bits);
         dec_ref_bits(py, defaults_bits);
         configured
     }
@@ -94,8 +89,7 @@ pub(crate) fn configure_builtin_signature(
             );
             return false;
         }
-        let interned = &runtime_state(py).interned;
-        let names_key = intern_static_name(py, &interned.molt_arg_names, b"__molt_arg_names__");
+        let names_key = crate::NameId::DunderMoltArgNames.bits(py);
         if exception_pending(py) {
             return false;
         }
@@ -133,24 +127,16 @@ pub(crate) fn configure_builtin_signature(
                 return false;
             }
         }
-        for (slot, name, enabled) in [
-            (
-                &interned.molt_vararg,
-                b"__molt_vararg__".as_slice(),
-                has_vararg,
-            ),
-            (
-                &interned.molt_varkw,
-                b"__molt_varkw__".as_slice(),
-                has_varkw,
-            ),
+        for (name, enabled) in [
+            (crate::NameId::DunderMoltVararg, has_vararg),
+            (crate::NameId::DunderMoltVarkw, has_varkw),
         ] {
             let value = if enabled {
                 MoltObject::from_bool(true).bits()
             } else {
                 MoltObject::none().bits()
             };
-            if !set_function_metadata_attr(py, ptr, slot, name, value) {
+            if !set_function_metadata_attr(py, ptr, name, value) {
                 return false;
             }
         }
@@ -177,8 +163,7 @@ unsafe fn configure_builtin_function(
                         || set_function_metadata_attr(
                             _py,
                             ptr,
-                            &runtime_state(_py).interned.molt_posonly,
-                            b"__molt_posonly__",
+                            crate::NameId::DunderMoltPosonly,
                             MoltObject::from_int(positional_only as i64).bits(),
                         ))
                     && configure_builtin_signature(
@@ -194,8 +179,7 @@ unsafe fn configure_builtin_function(
                 if !set_function_metadata_attr(
                     _py,
                     ptr,
-                    &runtime_state(_py).interned.molt_bind_kind,
-                    b"__molt_bind_kind__",
+                    crate::NameId::DunderMoltBindKind,
                     MoltObject::from_int(bind_kind).bits(),
                 ) {
                     return false;
@@ -224,24 +208,20 @@ unsafe fn configure_builtin_function(
                     return false;
                 }
                 let varkw_bits = MoltObject::from_ptr(varkw_ptr).bits();
-                let interned = &runtime_state(_py).interned;
                 let configured = set_function_metadata_attr(
                     _py,
                     ptr,
-                    &interned.molt_arg_names,
-                    b"__molt_arg_names__",
+                    crate::NameId::DunderMoltArgNames,
                     arg_names_bits,
                 ) && set_function_metadata_attr(
                     _py,
                     ptr,
-                    &interned.molt_vararg,
-                    b"__molt_vararg__",
+                    crate::NameId::DunderMoltVararg,
                     vararg_bits,
                 ) && set_function_metadata_attr(
                     _py,
                     ptr,
-                    &interned.molt_varkw,
-                    b"__molt_varkw__",
+                    crate::NameId::DunderMoltVarkw,
                     varkw_bits,
                 );
                 dec_ref_bits(_py, varkw_bits);
@@ -351,7 +331,7 @@ pub(crate) fn init_native_callable(
         raise_exception::<u64>(py, BuiltinExc::SystemError, "declared callable has no name");
         return 0;
     };
-    let Some(key) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+    let Some(key) = name.owned_bits(py) else {
         return 0;
     };
     unsafe {
@@ -572,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn callable_and_name_allocation_failure_never_poison_atomic_caches() {
+    fn callable_failure_retries_and_startup_names_need_no_allocation() {
         use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
         struct RestoreTracker;
         impl Drop for RestoreTracker {
@@ -580,52 +560,40 @@ mod tests {
                 set_tracker(Box::new(UnlimitedTracker));
             }
         }
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            let _ = builtin_classes(py);
-            let function_slot = AtomicU64::new(0);
-            let name_slot = AtomicU64::new(0);
-            let address = crate::builtins::functions::runtime_fn_addr(
-                "descriptor_cache_identity",
-                identity as *const (),
-            );
-            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
-                max_memory: Some(0),
-                ..Default::default()
-            })));
-            let reset = RestoreTracker;
-            assert_eq!(
-                builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
-                0
-            );
-            assert!(exception_pending(py));
-            assert_eq!(function_slot.load(Ordering::Acquire), 0);
-            let _ = molt_exception_clear();
-            assert_eq!(
-                intern_static_name(
-                    py,
-                    &name_slot,
-                    b"unallocated static-name failure regression payload"
-                ),
-                0
-            );
-            assert!(exception_pending(py));
-            assert_eq!(name_slot.load(Ordering::Acquire), 0);
-            drop(reset);
-            let _ = molt_exception_clear();
-            assert_ne!(
-                builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
-                0
-            );
-            let name = intern_static_name(
-                py,
-                &name_slot,
-                b"unallocated static-name failure regression payload",
-            );
-            assert!(obj_from_bits(name).as_ptr().is_some());
-            assert!(!exception_pending(py));
-            crate::state::cache::clear_atomic_bits(py, &function_slot);
-            crate::state::cache::clear_atomic_bits(py, &name_slot);
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let _ = builtin_classes(py);
+                let function_slot = AtomicU64::new(0);
+                let name = crate::NameId::DunderDefaults.bits(py);
+                assert_ne!(name, 0);
+                let address = crate::builtins::functions::runtime_fn_addr(
+                    "descriptor_cache_identity",
+                    identity as *const (),
+                );
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_memory: Some(0),
+                    ..Default::default()
+                })));
+                let reset = RestoreTracker;
+                assert_eq!(
+                    builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
+                    0
+                );
+                assert!(exception_pending(py));
+                assert_eq!(function_slot.load(Ordering::Acquire), 0);
+                let _ = molt_exception_clear();
+                assert_eq!(crate::NameId::DunderDefaults.bits(py), name);
+                assert!(!exception_pending(py));
+                drop(reset);
+                let _ = molt_exception_clear();
+                assert_ne!(
+                    builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
+                    0
+                );
+                assert!(obj_from_bits(name).as_ptr().is_some());
+                assert!(!exception_pending(py));
+                crate::state::cache::clear_atomic_bits(py, &function_slot);
+            });
         });
     }
 }

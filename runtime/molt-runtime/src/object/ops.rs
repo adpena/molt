@@ -1747,8 +1747,11 @@ pub(crate) fn protocol_type_name(py: &PyToken<'_>, bits: u64, precision: usize) 
 fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
     unsafe {
         {
-            let call_bits =
-                crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__bool__")?;
+            let call_bits = crate::builtins::attr::lookup_special_method(
+                _py,
+                obj.bits(),
+                crate::NameId::DunderBool,
+            )?;
             if let Some(call_bits) = call_bits {
                 let mut method = Some(molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                     _py.core_token(),
@@ -1793,8 +1796,11 @@ fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
             }
         }
         {
-            let call_bits =
-                crate::builtins::attr::lookup_special_method(_py, obj.bits(), b"__len__")?;
+            let call_bits = crate::builtins::attr::lookup_special_method(
+                _py,
+                obj.bits(),
+                crate::NameId::DunderLen,
+            )?;
             if let Some(call_bits) = call_bits {
                 let method = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                     _py.core_token(),
@@ -2114,11 +2120,7 @@ unsafe fn install_guarded_class_namespace(
         }
     }
     let size_obj = MoltObject::from_int(layout_size).bits();
-    let layout_attr = crate::intern_static_name(
-        _py,
-        &crate::runtime_state(_py).interned.molt_layout_size,
-        b"__molt_layout_size__",
-    );
+    let layout_attr = crate::NameId::DunderMoltLayoutSize.bits(_py);
     let completed = unsafe { crate::dict_set_in_place(_py, dict_ptr, layout_attr, size_obj) };
     crate::dec_ref_bits(_py, size_obj);
     completed

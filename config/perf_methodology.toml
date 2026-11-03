@@ -17,8 +17,10 @@ schema = "molt-perf-methodology-v1"
 # can move. Earlier reports retain their recorded class.
 # The HF-657 primitive ratio/noise calibration changes diagnostic verdicts;
 # workload declarations and the release-performance acceptance scope are unchanged.
-version = 27
-content_sha256 = "1298e014bb9b81a424c5c9fd81df166a0c29f3afa3b6a97f05b5e7abcb81b862"
+# The HF-198 primitive ratio/noise calibration (nested runtime entries borrow
+# their custody) changes diagnostic verdicts the same way.
+version = 28
+content_sha256 = "ee17752386786986ea91f77c220d1ee7102fbb795d4f86e61b49bf1c35ac1bce"
 
 [[methodology]]
 path = "tools/safe_run.py"

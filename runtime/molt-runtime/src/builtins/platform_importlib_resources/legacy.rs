@@ -250,7 +250,7 @@ pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let joinpath_name = intern_runtime_static_name(_py, b"joinpath");
+        let joinpath_name = crate::NameId::Joinpath.bits(_py);
         let missing = missing_bits(_py);
         let call_bits = molt_getattr_builtin(traversable_bits, joinpath_name, missing);
         if exception_pending(_py) {

@@ -11,43 +11,43 @@ crate::builtins::methods::native_method_table!(module_method_bits, publish_modul
 
 
 }, {
-        "__new__" => Some(builtin_variadic_func_bits(
+        crate::NameId::DunderNew => Some(builtin_variadic_func_bits(
                 py,
             NativeCallableSpec::constructor(builtin_classes(py).module).with_text_signature("($type, *args, **kwargs)"),
                 fn_addr!(molt_module_type_new),
             )),
-        "__init__" => Some(builtin_variadic_func_bits(
+        crate::NameId::DunderInit => Some(builtin_variadic_func_bits(
                 py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, "__init__").with_text_signature("($self, /, *args, **kwargs)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, crate::NameId::DunderInit).with_text_signature("($self, /, *args, **kwargs)"),
                 fn_addr!(molt_module_init),
             )),
-        "__getattribute__" => Some(builtin_func_bits(
+        crate::NameId::DunderGetattribute => Some(builtin_func_bits(
                 py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, "__getattribute__").with_text_signature("($self, name, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, crate::NameId::DunderGetattribute).with_text_signature("($self, name, /)"),
                 fn_addr!(molt_module_getattribute),
                 2,
             )),
-        "__setattr__" => Some(builtin_func_bits(
+        crate::NameId::DunderSetattr => Some(builtin_func_bits(
                 py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).object, "__setattr__").with_text_signature("($self, name, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).object, crate::NameId::DunderSetattr).with_text_signature("($self, name, value, /)"),
                 fn_addr!(molt_module_setattr),
                 3,
             )),
-        "__delattr__" => Some(builtin_func_bits(
+        crate::NameId::DunderDelattr => Some(builtin_func_bits(
                 py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).object, "__delattr__").with_text_signature("($self, name, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).object, crate::NameId::DunderDelattr).with_text_signature("($self, name, /)"),
                 fn_addr!(molt_module_delattr),
                 2,
             )),
-        "__dir__" => Some(builtin_func_bits(
+        crate::NameId::DunderDir => Some(builtin_func_bits(
                 py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).module, "__dir__"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).module, crate::NameId::DunderDir),
                 fn_addr!(molt_module_dir),
                 1,
             )),
-        "__repr__" => Some(builtin_func_bits(
+        crate::NameId::DunderRepr => Some(builtin_func_bits(
                 py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, "__repr__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, crate::NameId::DunderRepr).with_text_signature("($self, /)"),
                 fn_addr!(molt_module_repr),
                 1,
             )),
@@ -120,13 +120,13 @@ pub(crate) fn initialize_module_namespace(
     }
     let none = MoltObject::none().bits();
     for (name, value) in [
-        (b"__name__".as_slice(), name_bits),
-        (b"__doc__".as_slice(), doc_bits),
-        (b"__package__".as_slice(), none),
-        (b"__loader__".as_slice(), none),
-        (b"__spec__".as_slice(), none),
+        (crate::NameId::DunderName, name_bits),
+        (crate::NameId::DunderDoc, doc_bits),
+        (crate::NameId::DunderPackage, none),
+        (crate::NameId::DunderLoader, none),
+        (crate::NameId::DunderSpec, none),
     ] {
-        let Some(key) = attr_name_bits_from_bytes(py, name) else {
+        let Some(key) = name.owned_bits(py) else {
             return none;
         };
         let stored = unsafe { dict_set_in_place(py, namespace_ptr, key, value) };

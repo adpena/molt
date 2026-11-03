@@ -243,7 +243,7 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
             return iterator_poll_adapter(py, bits);
         }
         let method = match unsafe {
-            crate::builtins::attr::lookup_async_special_method(py, bits, b"__await__")
+            crate::builtins::attr::lookup_async_special_method(py, bits, crate::NameId::DunderAwait)
         } {
             Ok(method) => method,
             Err(()) => return MoltObject::none().bits(),
@@ -888,7 +888,12 @@ fn iterator_resume(
             crate::molt_raise(exception)
         }
         ResumeRequest::Send(value) => unsafe {
-            crate::async_rt::generators_async::asyncio_call_method1(py, iterator, b"send", value)
+            crate::async_rt::generators_async::asyncio_call_method1(
+                py,
+                iterator,
+                crate::NameId::Send,
+                value,
+            )
         },
         ResumeRequest::Throw(exception) => {
             if let Some(generator) = maybe_ptr_from_bits(iterator)
@@ -899,11 +904,11 @@ fn iterator_resume(
                 })
             } else {
                 let method_name = if closing {
-                    b"close".as_slice()
+                    crate::NameId::Close
                 } else {
-                    b"throw".as_slice()
+                    crate::NameId::Throw
                 };
-                let name = crate::attr_name_bits_from_bytes(py, method_name);
+                let name = method_name.owned_bits(py);
                 let method = name.ok_or(()).and_then(|name| {
                     let method = unsafe {
                         crate::builtins::attr::attr_lookup_ptr_allow_missing(
@@ -977,7 +982,11 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
         return value;
     }
     let marker_present = match unsafe {
-        crate::builtins::attr::has_special_method(py, value, b"_asyncio_future_blocking")
+        crate::builtins::attr::has_special_method(
+            py,
+            value,
+            crate::NameId::PrivateAsyncioFutureBlocking,
+        )
     } {
         Ok(present) => present,
         Err(()) => return MoltObject::none().bits(),
@@ -985,7 +994,7 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
     if !marker_present {
         return raise_exception::<_>(py, BuiltinExc::RuntimeError, "Task got bad yield");
     }
-    let Some(name) = crate::attr_name_bits_from_bytes(py, b"_asyncio_future_blocking") else {
+    let Some(name) = crate::NameId::PrivateAsyncioFutureBlocking.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let marker = crate::molt_getattr_builtin(value, name, MoltObject::none().bits());
@@ -1018,7 +1027,7 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
     // recursively re-entering a foreign future's self-yielding __await__.
     // This bridge calls a compiler-owned implementation helper, rather than
     // executing a Python import statement on behalf of the caller.
-    let Some(module_name) = crate::attr_name_bits_from_bytes(py, b"asyncio.futures") else {
+    let Some(module_name) = crate::NameId::QualifiedAsyncioFutures.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let imported = crate::builtins::modules::catalog_import_attempt(module_name);
@@ -1034,7 +1043,7 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
         }
         Err(error) => return error,
     };
-    let Some(name) = crate::attr_name_bits_from_bytes(py, b"_wait_for_future") else {
+    let Some(name) = crate::NameId::PrivateWaitForFuture.owned_bits(py) else {
         dec_ref_bits(py, module);
         return MoltObject::none().bits();
     };

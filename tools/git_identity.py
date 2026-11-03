@@ -77,6 +77,17 @@ def require_git_object_id(value: object, *, label: str = "Git object ID") -> str
     return value
 
 
+def merge_base(head: str, upstream: str, *, run_git: Callable[[list[str]], str]) -> str:
+    """The best common ancestor of *head* and *upstream*, as a full object ID.
+
+    The caller supplies its repository-bound Git reader, which raises when Git
+    fails (for example on unrelated histories).
+    """
+    return require_git_object_id(
+        run_git(["merge-base", head, upstream]).strip(), label="landing merge base"
+    )
+
+
 def changed_paths(
     base: str,
     head: str,

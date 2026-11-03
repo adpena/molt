@@ -43,7 +43,7 @@ impl NativeDescriptorFlavor {
 }
 
 fn insert_class_attr(py: &PyToken<'_>, dict: *mut u8, name: &[u8], value: u64) -> bool {
-    let Some(name) = attr_name_bits_from_bytes(py, name) else {
+    let Some(name) = dynamic_attr_name_bits(py, name) else {
         return false;
     };
     let stored = unsafe { dict_set_in_place(py, dict, name, value) };
@@ -93,28 +93,48 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
     );
     let get = crate::builtins::methods::builtin_variadic_func_bits(
         py,
-        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__get__"),
+        NativeCallableSpec::declared(
+            NativeCallableKind::WrapperDescriptor,
+            class,
+            crate::NameId::DunderGet,
+        ),
         molt_native_descriptor_get as *const () as usize as u64,
     );
     let set = crate::builtins::methods::builtin_variadic_func_bits(
         py,
-        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__set__"),
+        NativeCallableSpec::declared(
+            NativeCallableKind::WrapperDescriptor,
+            class,
+            crate::NameId::DunderSet,
+        ),
         molt_native_descriptor_set as *const () as usize as u64,
     );
     let delete = crate::builtins::methods::builtin_variadic_func_bits(
         py,
-        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__delete__"),
+        NativeCallableSpec::declared(
+            NativeCallableKind::WrapperDescriptor,
+            class,
+            crate::NameId::DunderDelete,
+        ),
         molt_native_descriptor_delete as *const () as usize as u64,
     );
     let repr = crate::builtins::methods::builtin_func_bits(
         py,
-        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__repr__"),
+        NativeCallableSpec::declared(
+            NativeCallableKind::WrapperDescriptor,
+            class,
+            crate::NameId::DunderRepr,
+        ),
         molt_native_descriptor_repr as *const () as usize as u64,
         1,
     );
     let reduce = crate::builtins::methods::builtin_func_bits(
         py,
-        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class, "__reduce__"),
+        NativeCallableSpec::declared(
+            NativeCallableKind::MethodDescriptor,
+            class,
+            crate::NameId::DunderReduce,
+        ),
         molt_native_descriptor_reduce as *const () as usize as u64,
         1,
     );
@@ -1094,7 +1114,7 @@ mod tests {
                 let owner_ptr = alloc_class_obj(py, owner_name);
                 assert!(!owner_ptr.is_null());
                 let owner = MoltObject::from_ptr(owner_ptr).bits();
-                let name = string_bits(py, b"sample");
+                let name = string_bits(py, b"append");
                 let callback = callback_bits(py);
                 let function = obj_from_bits(callback).as_ptr().unwrap();
                 assert!(configure_native_callable(
@@ -1103,7 +1123,7 @@ mod tests {
                     NativeCallableSpec::declared(
                         NativeCallableKind::MethodDescriptor,
                         owner,
-                        "sample",
+                        crate::NameId::Append
                     )
                 ));
                 let none = MoltObject::none().bits();
@@ -1126,7 +1146,7 @@ mod tests {
                 let invalid = make_descriptor(owner);
                 let valid_ptr = obj_from_bits(valid).as_ptr().unwrap();
                 let invalid_ptr = obj_from_bits(invalid).as_ptr().unwrap();
-                let callable = object_method_bits(py, "__repr__")
+                let callable = object_method_bits(py, crate::NameId::DunderRepr)
                     .expect("method lookup succeeds")
                     .unwrap();
                 inc_ref_bits(py, callable);
@@ -1369,7 +1389,7 @@ mod tests {
                     .as_ptr()
                     .unwrap();
                 for &(name, member) in fields {
-                    let key = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+                    let key = dynamic_attr_name_bits(py, name.as_bytes()).unwrap();
                     let descriptor = unsafe { dict_get_in_place(py, dictionary, key) }
                         .unwrap()
                         .unwrap();

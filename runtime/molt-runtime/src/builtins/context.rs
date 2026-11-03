@@ -1,13 +1,13 @@
 use crate::BuiltinExc;
-use crate::builtins::attr::lookup_special_method_bits;
+use crate::builtins::attr::lookup_special_method;
 use crate::builtins::exceptions::{
     ExceptionValue, exception_class, exception_is_instance, exception_traceback,
 };
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, alloc_object,
-    call_callable0, call_callable3, dec_ref_bits, exception_pending, inc_ref_bits,
-    intern_static_name, obj_from_bits, object_type_id, raise_exception, runtime_state, to_i64,
+    call_callable0, call_callable3, dec_ref_bits, exception_pending, inc_ref_bits, obj_from_bits,
+    object_type_id, raise_exception, to_i64,
 };
 
 fn context_debug_enabled() -> bool {
@@ -173,10 +173,9 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
             exit_fn(context_payload_bits(ptr), exc_bits);
             return;
         }
-        let exit_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.exit_name, b"__exit__");
+        let exit_name_bits = crate::NameId::DunderExit;
         let Ok(Some(exit_bits)) =
-            lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), exit_name_bits)
+            lookup_special_method(_py, MoltObject::from_ptr(ptr).bits(), exit_name_bits)
         else {
             return;
         };
@@ -281,12 +280,8 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                     res
                 }
                 _ => {
-                    let enter_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.enter_name,
-                        b"__enter__",
-                    );
-                    let enter_method = lookup_special_method_bits(
+                    let enter_name_bits = crate::NameId::DunderEnter;
+                    let enter_method = lookup_special_method(
                         _py,
                         MoltObject::from_ptr(ptr).bits(),
                         enter_name_bits,
@@ -352,12 +347,8 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                     exit_fn(context_payload_bits(ptr), exc_bits)
                 }
                 _ => {
-                    let exit_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.exit_name,
-                        b"__exit__",
-                    );
-                    let exit_method = lookup_special_method_bits(
+                    let exit_name_bits = crate::NameId::DunderExit;
+                    let exit_method = lookup_special_method(
                         _py,
                         MoltObject::from_ptr(ptr).bits(),
                         exit_name_bits,

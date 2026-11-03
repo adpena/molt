@@ -108,14 +108,14 @@ extern "C" fn index_error(_receiver: u64) -> u64 {
 
 fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)]) -> (u64, u64) {
     use crate::builtins::exceptions::ExceptionValue;
-    let name = crate::attr_name_bits_from_bytes(py, b"SliceCallbackProbe").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"SliceCallbackProbe").unwrap();
     let class = crate::molt_class_new(name);
     let class_owner = ExceptionValue::adopt(py, class);
     crate::dec_ref_bits(py, name);
     let result = crate::molt_class_set_base(class, crate::builtin_classes(py).object);
     crate::dec_ref_bits(py, result);
     for &(name, target, arity) in methods {
-        let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+        let name = crate::dynamic_attr_name_bits(py, name).unwrap();
         let _name_owner = ExceptionValue::adopt(py, name);
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,

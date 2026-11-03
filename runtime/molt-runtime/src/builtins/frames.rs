@@ -9,9 +9,8 @@ use crate::{
     TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_dict_with_pairs,
     alloc_instance_for_class, alloc_object, builtin_classes, code_filename_bits, code_firstlineno,
     code_linetable_bits, code_name_bits, dec_ref_bits, dict_get_in_place, exception_pending,
-    inc_ref_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name, module_dict_bits,
-    obj_from_bits, object_mark_has_ptrs, object_type_id, profile_enabled, runtime_state,
-    string_obj_to_owned, to_i64,
+    inc_ref_bits, instance_dict_bits, instance_set_dict_bits, module_dict_bits, obj_from_bits,
+    object_mark_has_ptrs, object_type_id, profile_enabled, string_obj_to_owned, to_i64,
 };
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
@@ -334,11 +333,7 @@ pub(crate) fn frame_effective_builtins_bits(
 ) -> Result<u64, ()> {
     let globals_ptr = globals_namespace_storage_ptr(_py, globals_bits)?;
     if let Some(globals_ptr) = globals_ptr {
-        let key_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.dunder_builtins_name,
-            b"__builtins__",
-        );
+        let key_bits = crate::NameId::DunderBuiltins.bits(_py);
         if key_bits == 0 {
             return Err(());
         }
@@ -730,11 +725,7 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
                 _py, "builtins", dict_bits,
             );
         if !builtin_bootstrap {
-            let key = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.dunder_builtins_name,
-                b"__builtins__",
-            );
+            let key = crate::NameId::DunderBuiltins.bits(_py);
             if key == 0 {
                 return MoltObject::none().bits();
             }
@@ -888,19 +879,18 @@ unsafe fn alloc_frame_obj(
     lasti: i64,
 ) -> Option<u64> {
     unsafe {
-        let names = &runtime_state(_py).interned;
-        let name = |slot, bytes| {
-            let bits = intern_static_name(_py, slot, bytes);
+        let name = |name: crate::NameId| {
+            let bits = name.bits(_py);
             (bits != 0).then_some(bits)
         };
         // Stop at the first failed intern before another allocation can replace
         // its exception or an unpublished frame acquires cleanup obligations.
-        let f_code_bits = name(&names.f_code_name, b"f_code")?;
-        let f_lineno_bits = name(&names.f_lineno_name, b"f_lineno")?;
-        let f_lasti_bits = name(&names.f_lasti_name, b"f_lasti")?;
-        let f_back_bits = name(&names.f_back_name, b"f_back")?;
-        let f_globals_bits = name(&names.f_globals_name, b"f_globals")?;
-        let f_builtins_bits = name(&names.f_builtins_name, b"f_builtins")?;
+        let f_code_bits = name(crate::NameId::FCode)?;
+        let f_lineno_bits = name(crate::NameId::FLineno)?;
+        let f_lasti_bits = name(crate::NameId::FLasti)?;
+        let f_back_bits = name(crate::NameId::FBack)?;
+        let f_globals_bits = name(crate::NameId::FGlobals)?;
+        let f_builtins_bits = name(crate::NameId::FBuiltins)?;
         let builtins = builtin_classes(_py);
         let class_obj = obj_from_bits(builtins.frame);
         let class_ptr = class_obj.as_ptr()?;
@@ -1024,8 +1014,7 @@ unsafe fn alloc_traceback_obj(
                 if object_type_id(dict_ptr) != TYPE_ID_DICT {
                     return Ok(-1);
                 }
-                let f_code_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+                let f_code_bits = crate::NameId::FCode.bits(_py);
                 let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)? else {
                     return Ok(-1);
                 };
@@ -1095,17 +1084,10 @@ unsafe fn alloc_traceback_obj(
         }
         let tb_bits = alloc_instance_for_class(_py, class_ptr);
         let tb_ptr = obj_from_bits(tb_bits).as_ptr()?;
-        let tb_frame_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
-        let tb_lineno_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.tb_lineno_name,
-            b"tb_lineno",
-        );
-        let tb_next_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
-        let tb_lasti_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.tb_lasti_name, b"tb_lasti");
+        let tb_frame_bits = crate::NameId::TbFrame.bits(_py);
+        let tb_lineno_bits = crate::NameId::TbLineno.bits(_py);
+        let tb_next_bits = crate::NameId::TbNext.bits(_py);
+        let tb_lasti_bits = crate::NameId::TbLasti.bits(_py);
         let line_bits = MoltObject::from_int(line).bits();
         let lasti = match compute_tb_lasti(_py, frame_bits, line) {
             Ok(value) => value,

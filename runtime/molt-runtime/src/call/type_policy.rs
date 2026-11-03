@@ -1,7 +1,7 @@
 use crate::{
     PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
-    class_attr_lookup_raw_mro, function_fn_ptr, function_trampoline_ptr, intern_static_name,
-    molt_object_init, molt_object_new_bound, obj_from_bits, object_type_id, runtime_state,
+    class_attr_lookup_raw_mro, function_fn_ptr, function_trampoline_ptr, molt_object_init,
+    molt_object_new_bound, obj_from_bits, object_type_id,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,10 +99,8 @@ pub(crate) unsafe fn object_constructor_extra_args_allowed(
             return Ok(false);
         }
 
-        let new_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-        let init_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
+        let new_name_bits = crate::NameId::DunderNew.bits(_py);
+        let init_name_bits = crate::NameId::DunderInit.bits(_py);
         let Some(resolved_new) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits)? else {
             return Ok(false);
         };
@@ -200,7 +198,7 @@ mod tests {
             );
             assert!(!function_ptr.is_null());
             let function_bits = MoltObject::from_ptr(function_ptr).bits();
-            let name_bits = crate::attr_name_bits_from_bytes(_py, name).unwrap();
+            let name_bits = crate::dynamic_attr_name_bits(_py, name).unwrap();
             let class_ptr = obj_from_bits(class_bits).as_ptr().unwrap();
             let dictionary_bits = crate::class_dict_bits(class_ptr);
             let dictionary_ptr = obj_from_bits(dictionary_bits).as_ptr().unwrap();
@@ -219,8 +217,10 @@ mod tests {
     fn object_builtin_methods_match_runtime_symbols() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let new_bits = object_method_bits(_py, "__new__").expect("lookup succeeds");
-            let init_bits = object_method_bits(_py, "__init__").expect("lookup succeeds");
+            let new_bits =
+                object_method_bits(_py, crate::NameId::DunderNew).expect("lookup succeeds");
+            let init_bits =
+                object_method_bits(_py, crate::NameId::DunderInit).expect("lookup succeeds");
             assert!(unsafe {
                 callable_matches_runtime_symbol(new_bits, fn_key!(crate::molt_object_new_bound))
             });
@@ -234,7 +234,8 @@ mod tests {
     fn type_call_matches_runtime_symbol() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let call_bits = type_method_bits(_py, "__call__").expect("lookup succeeds");
+            let call_bits =
+                type_method_bits(_py, crate::NameId::DunderCall).expect("lookup succeeds");
             assert!(unsafe {
                 callable_matches_runtime_symbol(call_bits, fn_key!(crate::molt_type_call))
             });
@@ -245,10 +246,12 @@ mod tests {
     fn exception_builtin_methods_match_runtime_symbols() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let new_bits = crate::builtins::exceptions::exception_method_bits(_py, "__new__")
-                .expect("method lookup succeeds");
-            let init_bits = crate::builtins::exceptions::exception_method_bits(_py, "__init__")
-                .expect("method lookup succeeds");
+            let new_bits =
+                crate::builtins::exceptions::exception_method_bits(_py, crate::NameId::DunderNew)
+                    .expect("method lookup succeeds");
+            let init_bits =
+                crate::builtins::exceptions::exception_method_bits(_py, crate::NameId::DunderInit)
+                    .expect("method lookup succeeds");
             assert!(unsafe {
                 callable_matches_runtime_symbol(
                     new_bits,
@@ -268,8 +271,10 @@ mod tests {
     fn constructor_policy_rejects_args_for_default_object_constructor() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let new_bits = object_method_bits(_py, "__new__").expect("lookup succeeds");
-            let init_bits = object_method_bits(_py, "__init__").expect("lookup succeeds");
+            let new_bits =
+                object_method_bits(_py, crate::NameId::DunderNew).expect("lookup succeeds");
+            let init_bits =
+                object_method_bits(_py, crate::NameId::DunderInit).expect("lookup succeeds");
             assert_eq!(
                 unsafe { resolved_constructor_init_policy(new_bits, init_bits) },
                 InitArgPolicy::RejectConstructorArgs
@@ -288,7 +293,8 @@ mod tests {
             );
             assert!(!new_ptr.is_null());
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
-            let init_bits = object_method_bits(_py, "__init__").expect("lookup succeeds");
+            let init_bits =
+                object_method_bits(_py, crate::NameId::DunderInit).expect("lookup succeeds");
             assert_eq!(
                 unsafe { resolved_constructor_init_policy(Some(new_bits), init_bits) },
                 InitArgPolicy::SkipObjectInit

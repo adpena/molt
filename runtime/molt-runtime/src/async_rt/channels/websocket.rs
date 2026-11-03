@@ -30,7 +30,7 @@ use crate::{
     ptr_from_bits, raise_exception, release_ptr, usize_from_bits,
 };
 #[cfg(molt_has_net_io)]
-use crate::{alloc_string, raise_os_error, runtime_static_name_slot};
+use crate::{alloc_string, raise_os_error};
 #[cfg(molt_has_net_io)]
 use mio::net::TcpStream as MioTcpStream;
 #[cfg(molt_has_net_io)]
@@ -816,12 +816,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
                 "server ssl requires a context with certfile/keyfile",
             );
         }
-        let certfile = match tls_server_ssl_attr_string(
-            _py,
-            ssl_bits,
-            runtime_static_name_slot(_py, b"certfile"),
-            b"certfile",
-        ) {
+        let certfile = match tls_server_ssl_attr_string(_py, ssl_bits, crate::NameId::Certfile) {
             Ok(Some(value)) => value,
             Ok(None) => {
                 return raise_exception::<u64>(
@@ -832,12 +827,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
             }
             Err(bits) => return bits,
         };
-        let keyfile = match tls_server_ssl_attr_string(
-            _py,
-            ssl_bits,
-            runtime_static_name_slot(_py, b"keyfile"),
-            b"keyfile",
-        ) {
+        let keyfile = match tls_server_ssl_attr_string(_py, ssl_bits, crate::NameId::Keyfile) {
             Ok(Some(value)) => value,
             Ok(None) => {
                 return raise_exception::<u64>(

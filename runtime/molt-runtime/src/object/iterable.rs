@@ -34,9 +34,9 @@ pub(crate) fn special_iteration_step(
     exhaustion: IterationExhaustion,
 ) -> Result<SpecialIterationStep, ()> {
     let frame = crate::builtins::exceptions::ExceptionStackScope::push(py);
-    let name: &[u8] = match kind {
-        SpecialIterationKind::Next => b"__next__",
-        SpecialIterationKind::SequenceItem(_) => b"__getitem__",
+    let name: crate::NameId = match kind {
+        SpecialIterationKind::Next => crate::NameId::DunderNext,
+        SpecialIterationKind::SequenceItem(_) => crate::NameId::DunderGetitem,
     };
     use crate::builtins::attr::DescriptorArguments;
     let args = match kind {

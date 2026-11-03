@@ -627,9 +627,13 @@ fn new_runtime_registry(_py: &PyToken<'_>) -> Option<OwnedExactDict> {
                 let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
                     continue;
                 };
-                let Some(func_bits) =
-                    build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
-                else {
+                let Some(func_bits) = build_intrinsic_func(
+                    _py,
+                    fn_ptr,
+                    spec.arity,
+                    spec.defaults,
+                    spec.python_name_id,
+                ) else {
                     ensure_registry_memory_error(_py, "intrinsic function allocation failed");
                     return None;
                 };
@@ -891,13 +895,15 @@ fn build_intrinsic_func(
     fn_ptr: u64,
     arity: u8,
     default_values: &[IntrinsicDefaultValue],
-    python_name: Option<&str>,
+    python_name: Option<crate::NameId>,
 ) -> Option<u64> {
     let defaults = materialize_intrinsic_defaults(_py, default_values)?;
     let bits = build_runtime_function(_py, fn_ptr, arity, &defaults)?;
     if let Some(name) = python_name {
         let spec = crate::builtins::functions::native_callable::NativeCallableSpec {
-            name: Some(name),
+            name: Some(
+                crate::builtins::functions::native_callable::NativeCallableName::Known(name),
+            ),
             ..crate::builtins::functions::native_callable::NativeCallableSpec::uncached_function()
         };
         let pointer = obj_from_bits(bits)
@@ -1257,7 +1263,7 @@ fn publish_materialization(
             inc_ref_bits(py, bits);
             bits
         }
-        None => build_intrinsic_func(py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
+        None => build_intrinsic_func(py, fn_ptr, spec.arity, spec.defaults, spec.python_name_id)
             .ok_or(IntrinsicResolveError::AllocFailed)?,
     };
     let mut value_owner = obj_from_bits(value).as_ptr().map(crate::PtrDropGuard::new);
@@ -1304,7 +1310,7 @@ fn resolve_intrinsic_func(
         None
     };
     let Some(registry) = registry else {
-        return build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
+        return build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.python_name_id)
             .ok_or(IntrinsicResolveError::AllocFailed);
     };
     let alias = alias_name(spec.name);
@@ -1743,8 +1749,11 @@ mod tests {
                             crate::object_class_bits(ptr),
                             crate::builtin_classes(py).builtin_function_or_method
                         );
-                        let defaults =
-                            crate::call::function::function_metadata_bits(py, ptr, b"__defaults__");
+                        let defaults = crate::call::function::function_metadata_bits(
+                            py,
+                            ptr,
+                            crate::object::function_metadata::FunctionMetadataField::Defaults,
+                        );
                         let tuple = obj_from_bits(defaults).as_ptr().unwrap();
                         assert_eq!(
                             crate::object::seq_access::with_immutable_tuple_slice(tuple, |items| {
@@ -2200,7 +2209,7 @@ mod tests {
                     app_fn_ptr(spec.name),
                     spec.arity,
                     spec.defaults,
-                    spec.python_name,
+                    spec.python_name_id,
                 )
                 .expect("eager materialization");
                 assert!(checked_dict_insert(
@@ -2348,12 +2357,21 @@ mod tests {
                     let original = resolve_intrinsic_func(_py, name, true).unwrap();
                     let ptr = obj_from_bits(original).as_ptr().unwrap();
                     unsafe {
-                        assert!(crate::call::class_init::function_set_attr_name(
-                            _py,
-                            ptr,
-                            b"note",
-                            MoltObject::from_int(42).bits(),
-                        ));
+                        assert!({
+                            match crate::dynamic_attr_name_bits(_py, b"note") {
+                                Some(name) => {
+                                    let result = crate::call::class_init::function_set_attr_bits(
+                                        _py,
+                                        ptr,
+                                        name,
+                                        MoltObject::from_int(42).bits(),
+                                    );
+                                    crate::dec_ref_bits(_py, name);
+                                    result
+                                }
+                                None => false,
+                            }
+                        });
                         // An unrelated attribute must not invalidate reuse.
                         assert_eq!(resolve_intrinsic_func(_py, name, true), Ok(original));
                         dec_ref_bits(_py, original);

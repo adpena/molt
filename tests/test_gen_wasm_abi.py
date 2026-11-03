@@ -28,6 +28,26 @@ _RENDERED_RS_MODULES_CACHE: dict[str, str] | None = None
 _RENDERED_RUNTIME_CALLABLES_CACHE: str | None = None
 _RENDERED_PY_CACHE: str | None = None
 _RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
+
+
+def test_runtime_name_registry_changes_invalidate_callable_render_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ROOT / "runtime/molt-ir/src/tir/runtime_names.toml"
+    assert registry in gen_wasm_abi._cache_input_files()
+    baseline = gen_wasm_abi._render_cache_key("registry-test-rustfmt")
+    original_read_bytes = Path.read_bytes
+
+    def changed_registry(path: Path) -> bytes:
+        contents = original_read_bytes(path)
+        if path == registry:
+            return contents.replace(b'Append = "append"', b'NewAppend = "append"')
+        return contents
+
+    monkeypatch.setattr(Path, "read_bytes", changed_registry)
+    assert gen_wasm_abi._render_cache_key("registry-test-rustfmt") != baseline
+
+
 _RENDERED_ALLOWED_IMPORTS_CACHE: str | None = None
 
 

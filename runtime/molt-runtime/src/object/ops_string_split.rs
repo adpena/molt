@@ -630,10 +630,10 @@ mod split_contract_tests {
     }
 
     fn index_object(py: &PyToken<'_>) -> u64 {
-        let name = attr_name_bits_from_bytes(py, b"SplitContractIndex").unwrap();
+        let name = dynamic_attr_name_bits(py, b"SplitContractIndex").unwrap();
         let class = crate::molt_class_new(name);
         crate::molt_class_set_base(class, builtin_classes(py).object);
-        let method = attr_name_bits_from_bytes(py, b"__index__").unwrap();
+        let method = dynamic_attr_name_bits(py, b"__index__").unwrap();
         let function = alloc_runtime_function_obj(
             py,
             runtime_fn_addr("split_contract_index", split_contract_index as *const ()),

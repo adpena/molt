@@ -1,9 +1,5 @@
-use super::{
-    INTERNED_NAME_SLOT_COUNT, InternedNames, METHOD_CACHE_SLOT_COUNT, MethodCache,
-    RUNTIME_STATIC_NAME_SLOT_COUNT, RuntimeStaticNames, clear_method_cache,
-    clear_runtime_static_names, intern_runtime_static_name,
-};
-use crate::{MoltObject, alloc_string, runtime_state};
+use super::{METHOD_CACHE_SLOT_COUNT, MethodCache, clear_method_cache, clear_runtime_names};
+use crate::{MoltObject, NameId, RuntimeNames, alloc_string, runtime_state};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,24 +41,10 @@ fn method_cache_slots_are_manifest_complete_and_unique() {
 }
 
 #[test]
-fn interned_name_slots_are_manifest_complete_and_unique() {
-    let names = InternedNames::new();
+fn runtime_name_slots_are_manifest_complete_and_unique() {
+    let names = RuntimeNames::new();
     let slots = names.slots();
-    assert_eq!(slots.len(), INTERNED_NAME_SLOT_COUNT);
-
-    let mut seen = HashSet::with_capacity(slots.len());
-    for slot in slots {
-        let addr = slot as *const AtomicU64 as usize;
-        assert!(seen.insert(addr));
-        assert_eq!(slot.load(Ordering::Acquire), 0);
-    }
-}
-
-#[test]
-fn runtime_static_name_slots_are_manifest_complete_and_unique() {
-    let names = RuntimeStaticNames::new();
-    let slots = names.slots();
-    assert_eq!(slots.len(), RUNTIME_STATIC_NAME_SLOT_COUNT);
+    assert_eq!(slots.len(), NameId::ALL.len());
 
     let mut seen = HashSet::with_capacity(slots.len());
     for slot in slots {
@@ -71,12 +53,14 @@ fn runtime_static_name_slots_are_manifest_complete_and_unique() {
         assert_eq!(slot.load(Ordering::Acquire), 0);
     }
 
-    assert!(names.slot_for(b"__spec__").is_some());
-    assert!(names.slot_for(b"path_importer_cache").is_some());
-    assert!(names.slot_for(b"certfile").is_some());
-    assert!(names.slot_for(b"_ORIGIN").is_some());
-    assert!(names.slot_for(b"get_filename").is_some());
-    assert!(names.slot_for(b"missing-runtime-static-name").is_none());
+    let typed_slots: HashSet<usize> = NameId::ALL
+        .iter()
+        .map(|name| name.slot(&names) as *const AtomicU64 as usize)
+        .collect();
+    assert_eq!(
+        typed_slots, seen,
+        "typed identities cover the physical slots"
+    );
 }
 
 #[test]
@@ -98,22 +82,56 @@ fn clear_method_cache_releases_every_remaining_private_callback() {
 }
 
 #[test]
-fn clear_runtime_static_names_releases_every_manifest_slot() {
-    let _guard = crate::test_support::RuntimeTestTransaction::new();
-    crate::with_gil_entry_nopanic!(_py, {
-        let state = runtime_state(_py);
-        clear_runtime_static_names(_py, state);
+fn clear_runtime_names_releases_every_manifest_slot() {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            // An unused TLS keyword must not allocate an object at startup.
+            assert_eq!(
+                NameId::Certfile.slot(&state.names).load(Ordering::Acquire),
+                0
+            );
+            let certificate = NameId::Certfile.bits(_py);
+            assert_ne!(certificate, 0);
+            assert_eq!(NameId::Certfile.bits(_py), certificate);
+            assert_eq!(NameId::from_bits(_py, certificate), Some(NameId::Certfile));
+            let external = crate::object::builders::alloc_string_nointern(_py, b"certfile");
+            assert!(!external.is_null());
+            let external = MoltObject::from_ptr(external).bits();
+            assert_ne!(external, certificate);
+            assert_eq!(NameId::from_bits(_py, external), Some(NameId::Certfile));
+            {
+                let index = state.names.index.lock().unwrap_or_else(|e| e.into_inner());
+                assert!(index.iter().any(|&(bits, _)| bits == certificate));
+                assert!(
+                    index.iter().all(|&(bits, name)| {
+                        bits == name.slot(&state.names).load(Ordering::Acquire)
+                    }),
+                    "every borrowed index key must have its canonical slot owner"
+                );
+            }
+            crate::dec_ref_bits(_py, external);
+            clear_runtime_names(_py, state);
+            assert!(
+                state
+                    .names
+                    .index
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty()
+            );
 
-        let spec_bits = intern_runtime_static_name(_py, b"__spec__");
-        let cache_bits = intern_runtime_static_name(_py, b"path_importer_cache");
-        assert_ne!(spec_bits, 0);
-        assert_ne!(cache_bits, 0);
-        assert_ne!(spec_bits, cache_bits);
+            let spec_bits = crate::NameId::DunderSpec.bits(_py);
+            let cache_bits = crate::NameId::Origin.bits(_py);
+            assert_ne!(spec_bits, 0);
+            assert_ne!(cache_bits, 0);
+            assert_ne!(spec_bits, cache_bits);
 
-        clear_runtime_static_names(_py, state);
+            clear_runtime_names(_py, state);
 
-        for slot in state.runtime_static_names.slots() {
-            assert_eq!(slot.load(Ordering::Acquire), 0);
-        }
+            for slot in state.names.slots() {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+        });
     });
 }

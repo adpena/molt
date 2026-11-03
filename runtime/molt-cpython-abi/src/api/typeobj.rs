@@ -3105,6 +3105,22 @@ impl TypeNamespaceInvalidation {
 pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     unsafe {
+        // Runtime lookup does not depend on native tag admission. Notify its
+        // canonical class epoch before the native traversal's tag fast exit or
+        // any watcher can observe a manually edited namespace.
+        let _runtime_owner = if let Some(class) = GLOBAL_BRIDGE.molt_handle_for_pyobj(tp.cast()) {
+            // A C teardown pin can outlive runtime death. Preserve the same
+            // checked-retention boundary as native invalidation before touching
+            // runtime class storage, and keep it through watcher dispatch.
+            let Some(owner) = crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast())
+            else {
+                return;
+            };
+            (crate::hooks::hooks_or_stubs().type_modified)(class.bits());
+            Some(owner)
+        } else {
+            None
+        };
         visit_type_invalidation(std::iter::once(tp), |identity| {
             invalidate_type_identity(identity)
         });

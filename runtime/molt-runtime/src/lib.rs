@@ -534,10 +534,9 @@ pub use crate::builtins::ast::*;
 pub use crate::builtins::atexit::*;
 pub(crate) use crate::builtins::attr::{
     attr_error, attr_error_with_message, attr_error_with_obj, attr_error_with_obj_message,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, class_attr_lookup,
-    class_attr_lookup_raw_mro, descriptor_bind, descriptor_is_data, instance_bits_for_call,
-    is_iterator_bits, module_attr_lookup, raise_attr_name_type_error,
-    setattr_no_attr_error_with_obj,
+    attr_lookup_ptr_allow_missing, class_attr_lookup, class_attr_lookup_raw_mro, descriptor_bind,
+    descriptor_is_data, dynamic_attr_name_bits, instance_bits_for_call, is_iterator_bits,
+    module_attr_lookup, raise_attr_name_type_error, setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::binding_guards::molt_guard_builtin_bindings;
@@ -805,10 +804,8 @@ pub use crate::object::{
 };
 #[cfg(feature = "stdlib_regex")]
 pub use crate::regex_bridge::{molt_re_subject_snapshot, molt_re_subject_view};
-pub(crate) use crate::state::cache::{
-    InternedNames, MethodCache, RuntimeStaticNames, intern_runtime_static_name, intern_static_name,
-    runtime_static_name_slot,
-};
+pub(crate) use crate::state::cache::MethodCache;
+pub(crate) use crate::state::names::{NameId, RuntimeNames};
 pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
 #[allow(unused_imports)]
 pub(crate) use crate::state::{

@@ -172,7 +172,7 @@ fn importlib_system_module_authority_returns_and_releases_one_owner() {
             assert_eq!(refcount(), baseline + 1, "resolver returns one owner");
         }
         assert_eq!(refcount(), baseline, "resolver releases its owner");
-        let name = crate::attr_name_bits_from_bytes(_py, b"sys").unwrap();
+        let name = crate::dynamic_attr_name_bits(_py, b"sys").unwrap();
         crate::builtins::modules::molt_module_cache_del(name);
         dec_ref_bits(_py, name);
         if let Some(prior) = prior {
@@ -193,7 +193,7 @@ fn import_attempt_reports_a_resolver_miss_without_manufacturing_an_exception() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let _resolver = crate::test_support::EmptyImportResolver::new(_py);
-        let name = attr_name_bits_from_bytes(_py, b"molt_absent_import_outcome_probe").unwrap();
+        let name = dynamic_attr_name_bits(_py, b"molt_absent_import_outcome_probe").unwrap();
         let outcome = crate::builtins::modules::module_import_attempt(name);
         assert!(matches!(
             outcome,
@@ -325,22 +325,16 @@ fn alloc_test_string_bits(_py: &PyToken<'_>, value: &str) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-fn assert_string_attr(
-    _py: &PyToken<'_>,
-    target_bits: u64,
-    slot: &AtomicU64,
-    name: &'static [u8],
-    expected: &str,
-) {
-    let attr_name = intern_static_name(_py, slot, name);
+fn assert_string_attr(_py: &PyToken<'_>, target_bits: u64, name: crate::NameId, expected: &str) {
+    let attr_name = name.bits(_py);
     let attr_bits = getattr_optional_bits(_py, target_bits, attr_name)
         .expect("attribute lookup should not raise")
-        .unwrap_or_else(|| panic!("missing attribute {}", String::from_utf8_lossy(name)));
+        .unwrap_or_else(|| panic!("missing attribute {}", name.as_str()));
     assert_eq!(
         string_obj_to_owned(obj_from_bits(attr_bits)).as_deref(),
         Some(expected),
         "attribute {}",
-        String::from_utf8_lossy(name)
+        name.as_str()
     );
     if !obj_from_bits(attr_bits).is_none() {
         dec_ref_bits(_py, attr_bits);
@@ -373,28 +367,15 @@ fn importlib_module_from_spec_impl_materializes_module_without_util_callback() {
         );
         assert!(!obj_from_bits(module_bits).is_none());
 
-        let spec_attr_name =
-            intern_static_name(_py, runtime_static_name_slot(_py, b"__spec__"), b"__spec__");
+        let spec_attr_name = crate::NameId::DunderSpec.bits(_py);
         let spec_attr_bits = getattr_optional_bits(_py, module_bits, spec_attr_name)
             .expect("__spec__ lookup should not raise")
             .expect("__spec__ must be installed");
         assert_eq!(spec_attr_bits, spec_bits);
         dec_ref_bits(_py, spec_attr_bits);
 
-        assert_string_attr(
-            _py,
-            module_bits,
-            runtime_static_name_slot(_py, b"__name__"),
-            b"__name__",
-            "pkg.helper",
-        );
-        assert_string_attr(
-            _py,
-            module_bits,
-            runtime_static_name_slot(_py, b"__package__"),
-            b"__package__",
-            "pkg",
-        );
+        assert_string_attr(_py, module_bits, crate::NameId::DunderName, "pkg.helper");
+        assert_string_attr(_py, module_bits, crate::NameId::DunderPackage, "pkg");
 
         dec_ref_bits(_py, module_bits);
         dec_ref_bits(_py, module_name_bits);
@@ -2490,7 +2471,7 @@ fn loader_identity_setattr(py: &PyToken<'_>, object: u64, name: &[u8], value: u6
 fn loader_identity_class_namespace(py: &PyToken<'_>, class: u64, name: &[u8], value: u64) {
     // Seed the namespace as a class body does. Setting Type.__class__ through
     // setattr would instead request a metaclass change.
-    let name_bits = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let name_bits = crate::dynamic_attr_name_bits(py, name).unwrap();
     unsafe {
         let ptr = obj_from_bits(class).as_ptr().unwrap();
         let dict = obj_from_bits(crate::object::layout::class_dict_bits(ptr))
@@ -3268,7 +3249,7 @@ fn spec_metadata_cached_projection_obeys_target_version_and_factory_ownership() 
         ] {
             loader_identity_setattr(py, spec.bits(), key, value);
         }
-        let cache_key = intern_runtime_static_name(py, b"__cached__");
+        let cache_key = crate::NameId::DunderCached.bits(py);
         assert_ne!(cache_key, 0);
         // Independent CPython controls: ordinary/factory-owned fields, reload
         // override, and a getter that must remain unobserved on 3.15+. These
@@ -3524,7 +3505,7 @@ static SPEC_PROTOCOL_FLAG_ERROR: std::sync::atomic::AtomicU64 =
 
 extern "C" fn spec_protocol_setattr(spec: u64, name: u64, value: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let flag = crate::attr_name_bits_from_bytes(py, b"_initializing").unwrap();
+        let flag = crate::dynamic_attr_name_bits(py, b"_initializing").unwrap();
         // The setter receives a pinned Python str key; flag is an owned str.
         let is_flag = unsafe { crate::object::ops_compare::string_storage_equal(name, flag) };
         dec_ref_bits(py, flag);
@@ -3781,15 +3762,15 @@ fn initial_finder_generation_preserves_public_customization_and_retires_owners()
             let name = ExceptionValue::adopt(py, alloc_test_string_bits(py, "sys"));
             let sys = ExceptionValue::adopt(py, crate::molt_module_new(name.bits()));
             crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys.bits());
-            let read = |key| {
-                let key = intern_runtime_static_name(py, key);
+            let read = |key: crate::NameId| {
+                let key = key.bits(py);
                 ExceptionValue::adopt(
                     py,
                     crate::builtins::attributes::get_attr_name(py, sys.bits(), key).unwrap(),
                 )
             };
-            let meta = read(b"meta_path");
-            let hooks = read(b"path_hooks");
+            let meta = read(crate::NameId::MetaPath);
+            let hooks = read(crate::NameId::PathHooks);
             let initial = unsafe {
                 crate::object::seq_access::snapshot(
                     py,
@@ -3868,7 +3849,7 @@ fn initial_finder_generation_preserves_public_customization_and_retires_owners()
                 "terminal phase retires both temporary list owners"
             );
             {
-                let current = read(b"meta_path");
+                let current = read(crate::NameId::MetaPath);
                 if mode == "none" {
                     assert!(obj_from_bits(current.bits()).is_none());
                 } else {
@@ -3887,7 +3868,7 @@ fn initial_finder_generation_preserves_public_customization_and_retires_owners()
                     };
                     assert_eq!(&*current, expected);
                 }
-                let current = read(b"path_hooks");
+                let current = read(crate::NameId::PathHooks);
                 let current = unsafe {
                     crate::object::seq_access::snapshot(
                         py,

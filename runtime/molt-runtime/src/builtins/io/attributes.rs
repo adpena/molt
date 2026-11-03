@@ -81,7 +81,7 @@ impl IoOperation {
 }
 
 struct IoMember {
-    name: &'static str,
+    name: crate::NameId,
     owners: &'static [IoClass],
     operation: IoOperation,
     // FileIO.name and TextIOWrapper.mode are ordinary initialized attributes in
@@ -103,13 +103,13 @@ const IO_CLASSES: &[IoClass] = &[
 ];
 const IO_MEMBERS: &[IoMember] = &[
     IoMember {
-        name: "__dict__",
+        name: crate::NameId::DunderDict,
         owners: &[IoClass::Base],
         operation: IoOperation::Dictionary,
         dictionary: false,
     },
     IoMember {
-        name: "closed",
+        name: crate::NameId::Closed,
         owners: &[
             IoClass::Base,
             IoClass::File,
@@ -125,7 +125,7 @@ const IO_MEMBERS: &[IoMember] = &[
         dictionary: false,
     },
     IoMember {
-        name: "name",
+        name: crate::NameId::Name,
         owners: &[
             IoClass::File,
             IoClass::BufferedReader,
@@ -137,13 +137,13 @@ const IO_MEMBERS: &[IoMember] = &[
         dictionary: false,
     },
     IoMember {
-        name: "name",
+        name: crate::NameId::Name,
         owners: &[IoClass::FileIO],
         operation: IoOperation::Name,
         dictionary: true,
     },
     IoMember {
-        name: "mode",
+        name: crate::NameId::Mode,
         owners: &[
             IoClass::File,
             IoClass::FileIO,
@@ -155,25 +155,25 @@ const IO_MEMBERS: &[IoMember] = &[
         dictionary: false,
     },
     IoMember {
-        name: "mode",
+        name: crate::NameId::Mode,
         owners: &[IoClass::TextWrapper],
         operation: IoOperation::Mode,
         dictionary: true,
     },
     IoMember {
-        name: "encoding",
+        name: crate::NameId::Encoding,
         owners: &[IoClass::File, IoClass::TextBase, IoClass::TextWrapper],
         operation: IoOperation::Encoding,
         dictionary: false,
     },
     IoMember {
-        name: "errors",
+        name: crate::NameId::Errors,
         owners: &[IoClass::File, IoClass::TextBase, IoClass::TextWrapper],
         operation: IoOperation::Errors,
         dictionary: false,
     },
     IoMember {
-        name: "newlines",
+        name: crate::NameId::Newlines,
         owners: &[
             IoClass::File,
             IoClass::TextBase,
@@ -184,25 +184,25 @@ const IO_MEMBERS: &[IoMember] = &[
         dictionary: false,
     },
     IoMember {
-        name: "line_buffering",
+        name: crate::NameId::LineBuffering,
         owners: &[IoClass::File, IoClass::TextWrapper, IoClass::StringIO],
         operation: IoOperation::LineBuffering,
         dictionary: false,
     },
     IoMember {
-        name: "write_through",
+        name: crate::NameId::WriteThrough,
         owners: &[IoClass::File, IoClass::TextWrapper],
         operation: IoOperation::WriteThrough,
         dictionary: false,
     },
     IoMember {
-        name: "buffer",
+        name: crate::NameId::LowerBuffer,
         owners: &[IoClass::File, IoClass::TextWrapper],
         operation: IoOperation::Buffer,
         dictionary: false,
     },
     IoMember {
-        name: "raw",
+        name: crate::NameId::Raw,
         owners: &[
             IoClass::BufferedReader,
             IoClass::BufferedWriter,
@@ -212,7 +212,7 @@ const IO_MEMBERS: &[IoMember] = &[
         dictionary: false,
     },
     IoMember {
-        name: "closefd",
+        name: crate::NameId::Closefd,
         owners: &[IoClass::FileIO],
         operation: IoOperation::Closefd,
         dictionary: false,
@@ -248,7 +248,7 @@ pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
                 .iter()
                 .filter(|member| !member.dictionary && member.owners.contains(&kind))
             {
-                let Some(name) = attr_name_bits_from_bytes(py, member.name.as_bytes()) else {
+                let Some(name) = member.name.owned_bits(py) else {
                     return false;
                 };
                 let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
@@ -361,12 +361,12 @@ pub(super) unsafe fn io_member_value(
                     underlying,
                 );
                 let name = match operation {
-                    IoOperation::Name => b"name".as_slice(),
-                    IoOperation::Mode => b"mode".as_slice(),
-                    IoOperation::Closed => b"closed".as_slice(),
+                    IoOperation::Name => crate::NameId::Name,
+                    IoOperation::Mode => crate::NameId::Mode,
+                    IoOperation::Closed => crate::NameId::Closed,
                     _ => unreachable!(),
                 };
-                let name = attr_name_bits_from_bytes(py, name)?;
+                let name = name.owned_bits(py)?;
                 let _name =
                     molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), name);
                 // No native handle reference/lock spans user attribute lookup.
@@ -507,7 +507,7 @@ pub(super) unsafe fn io_initialize_dictionary_members(py: &PyToken<'_>, object: 
                 continue;
             };
             let _value = obj_from_bits(value).as_ptr().map(PtrDropGuard::new);
-            let Some(name) = attr_name_bits_from_bytes(py, member.name.as_bytes()) else {
+            let Some(name) = member.name.owned_bits(py) else {
                 return false;
             };
             let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());

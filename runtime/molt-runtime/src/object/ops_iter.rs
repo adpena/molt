@@ -528,7 +528,7 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 && let Some(method) = match crate::builtins::attr::lookup_special_method(
                     _py,
                     seq_bits,
-                    b"__reversed__",
+                    crate::NameId::DunderReversed,
                 ) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
@@ -625,7 +625,7 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 }
                 return MoltObject::from_ptr(rev_ptr).bits();
             }
-            if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__reversed__") {
+            if let Some(name_bits) = crate::NameId::DunderReversed.owned_bits(_py) {
                 let lookup = attr_lookup_ptr(_py, ptr, name_bits);
                 dec_ref_bits(_py, name_bits);
                 let lookup = match lookup {
@@ -908,7 +908,7 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                     && let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         iter_bits,
-                        b"__iter__",
+                        crate::NameId::DunderIter,
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
@@ -940,7 +940,7 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                     && match crate::builtins::attr::has_special_method(
                         _py,
                         iter_bits,
-                        b"__getitem__",
+                        crate::NameId::DunderGetitem,
                     ) {
                         Ok(present) => present,
                         Err(()) => return MoltObject::none().bits(),
@@ -1041,7 +1041,7 @@ pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
             let Some(method) = (match crate::builtins::attr::lookup_async_special_method(
                 _py,
                 obj_bits,
-                b"__aiter__",
+                crate::NameId::DunderAiter,
             ) {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
@@ -1060,8 +1060,11 @@ pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
             }
             // Admission observes the type slot without binding its descriptor.
             // __anext__ is looked up only when the next operation executes.
-            let valid = match crate::builtins::attr::has_special_method(_py, iterator, b"__anext__")
-            {
+            let valid = match crate::builtins::attr::has_special_method(
+                _py,
+                iterator,
+                crate::NameId::DunderAnext,
+            ) {
                 Ok(valid) => valid,
                 Err(()) => {
                     dec_ref_bits(_py, iterator);
@@ -2803,7 +2806,7 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
             let Some(method) = (match crate::builtins::attr::lookup_async_special_method(
                 _py,
                 obj_bits,
-                b"__anext__",
+                crate::NameId::DunderAnext,
             ) {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),

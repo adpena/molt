@@ -35,6 +35,7 @@ from pathlib import Path
 from types import ModuleType
 
 from tools.driver_errors import CandidateFailure, DriverError
+from tools.git_identity import merge_base
 from tools.molt_dev_common import _ok, _say, _step, _warn
 from tools import molt_dev_policy
 from tools.molt_dev_policy import (
@@ -62,13 +63,6 @@ def _driver() -> ModuleType:
     from tools import molt_dev
 
     return molt_dev
-
-
-def _merge_base(git, head: str, upstream: str) -> str:
-    return _driver().require_git_object_id(
-        git._run(["merge-base", head, upstream]).stdout.strip(),
-        label="landing merge base",
-    )
 
 
 def repair_steps(config: GateConfig, *, base: str) -> list[SelectedGate]:
@@ -206,7 +200,7 @@ def repair_landing(
         return head
     if (request := _pending_request(git, repo)) is not None:
         raise EnrolledLaneRefusal(request.id, request.head)
-    base = _merge_base(git, head, upstream)
+    base = merge_base(head, upstream, run_git=lambda args: git._run(args).stdout)
     _step(f"repair in the lane ({len(config.repair)} declared step(s))")
     started = time.monotonic()
     run_repairs(repo, config, base=base, session_id=session_id)
@@ -314,7 +308,7 @@ def precheck_landing(
     from tools.molt_dev_queue import queue_paths, recent_postsubmit_failures
 
     budget = budget or molt_dev_policy.PRECHECK_BUDGET
-    base = _merge_base(git, head, upstream)
+    base = merge_base(head, upstream, run_git=lambda args: git._run(args).stdout)
     policy, config, _touched, gates, _matched = select_landing_gates(
         git,
         repo,

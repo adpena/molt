@@ -46,7 +46,7 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
     class_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
+        let field_names_name = crate::NameId::DunderMoltDataclassFieldNames.owned_bits(_py)?;
         let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
         dec_ref_bits(_py, field_names_name);
         let field_names_bits = match field_names_bits {
@@ -80,7 +80,7 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
         }
         let values_bits = MoltObject::from_ptr(values_ptr).bits();
         let flags_bits =
-            if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
+            if let Some(flags_name) = crate::NameId::DunderMoltDataclassFlags.owned_bits(_py) {
                 let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name);
                 dec_ref_bits(_py, flags_name);
                 match bits {
@@ -2812,7 +2812,7 @@ mod sequence_builder_tests {
             crate::molt_class_set_base(subtype, classes.module);
             let field = bits_from_ptr(alloc_string(py, b"field"));
             let slots = bits_from_ptr(alloc_tuple(py, &[field]));
-            let key = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__slots__").unwrap();
             crate::molt_set_attr_name(subtype, key, slots);
             for bits in [key, slots, field] {
                 dec_ref_bits(py, bits);
@@ -3576,7 +3576,7 @@ mod tests {
     fn alloc_class_owns_one_heap_class_edge_released_with_the_instance() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let name = crate::builtins::attr::attr_name_bits_from_bytes(py, b"HeapClassRef")
+            let name = crate::builtins::attr::dynamic_attr_name_bits(py, b"HeapClassRef")
                 .expect("class name");
             let class = crate::molt_class_new(name);
             dec_ref_bits(py, name);

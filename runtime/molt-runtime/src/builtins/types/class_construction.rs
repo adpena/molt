@@ -141,7 +141,7 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
         dec_ref_bits(_py, bases_tuple_bits);
         return MoltObject::none().bits();
     };
-    let Some(mro_entries_name_bits) = attr_name_bits_from_bytes(_py, b"__mro_entries__") else {
+    let Some(mro_entries_name_bits) = crate::NameId::DunderMroEntries.owned_bits(_py) else {
         dec_ref_bits(_py, bases_tuple_bits);
         return MoltObject::none().bits();
     };
@@ -292,7 +292,7 @@ fn prepare_class_impl(
         }
     }
 
-    let Some(metaclass_name_bits) = attr_name_bits_from_bytes(_py, b"metaclass") else {
+    let Some(metaclass_name_bits) = crate::NameId::Metaclass.owned_bits(_py) else {
         dec_ref_bits(_py, kwds_copy_bits);
         return None;
     };
@@ -446,7 +446,7 @@ fn prepare_class_impl(
     let prepare_bits = if winner_bits == builtin_classes(_py).type_obj {
         missing
     } else {
-        let Some(prepare_name_bits) = attr_name_bits_from_bytes(_py, b"__prepare__") else {
+        let Some(prepare_name_bits) = crate::NameId::DunderPrepare.owned_bits(_py) else {
             dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
@@ -537,7 +537,7 @@ pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
         // __orig_bases__ lookup or a storage-tag type test. This also permits
         // metaclass overrides and objects implementing that exact protocol.
         let read = |object, name: &[u8]| {
-            let name = ExceptionValue::adopt(_py, attr_name_bits_from_bytes(_py, name)?);
+            let name = ExceptionValue::adopt(_py, dynamic_attr_name_bits(_py, name)?);
             crate::builtins::attributes::get_attr_name(_py, object, name.bits())
                 .ok()
                 .map(|value| ExceptionValue::adopt(_py, value))
@@ -549,8 +549,7 @@ pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
             // method, if any, owns it across the following eager default lookup.
             drop(namespace);
             let get = get?;
-            let name =
-                ExceptionValue::adopt(_py, attr_name_bits_from_bytes(_py, b"__orig_bases__")?);
+            let name = ExceptionValue::adopt(_py, crate::NameId::DunderOrigBases.owned_bits(_py)?);
             let bases = read(cls_bits, b"__bases__")?;
             let result = ExceptionValue::adopt(_py, unsafe {
                 call_callable2(_py, get.bits(), name.bits(), bases.bits())
@@ -904,8 +903,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
             }
         }
         if resolved_bases_bits != bases_bits {
-            let Some(orig_bases_name_bits) = attr_name_bits_from_bytes(_py, b"__orig_bases__")
-            else {
+            let Some(orig_bases_name_bits) = crate::NameId::DunderOrigBases.owned_bits(_py) else {
                 dec_ref_bits(_py, state.metaclass_bits);
                 dec_ref_bits(_py, state.namespace_bits);
                 dec_ref_bits(_py, state.kwds_bits);
@@ -959,7 +957,7 @@ mod keyword_snapshot_tests {
     fn keyword_selection_keeps_values_owned_after_source_mapping_is_destroyed() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"selected").expect("keyword name");
+            let name = dynamic_attr_name_bits(py, b"selected").expect("keyword name");
             let value_ptr = alloc_list(py, &[]);
             assert!(!value_ptr.is_null());
             let value = MoltObject::from_ptr(value_ptr).bits();
@@ -1029,7 +1027,7 @@ mod native_base_tests {
                     );
                     let bases = MoltObject::from_ptr(alloc_tuple(py, &[class])).bits();
                     dec_ref_bits(py, class);
-                    let child_name = attr_name_bits_from_bytes(py, b"NativeChild").unwrap();
+                    let child_name = dynamic_attr_name_bits(py, b"NativeChild").unwrap();
                     let count = (*native.as_ptr()).ob_refcnt;
                     for _ in 0..2 {
                         let original_bases = molt_types_get_original_bases(class);

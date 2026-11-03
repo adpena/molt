@@ -60,6 +60,7 @@ import subprocess
 import textwrap
 import time
 import venv
+from collections.abc import Sequence
 from pathlib import Path
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
@@ -6408,6 +6409,236 @@ def _declare_outputs(work: Path, *outputs: str) -> None:
     _git(work, "add", "--", "tools/generator_manifest.toml")
 
 
+# Ledger lanes run first, one ledger writer in flight (HF-711).
+_LEDGER = "docs/agent/V1_HANDOFF_FINDINGS.md"
+
+
+def _ledger_text(open_ids: Sequence[str], fixed_ids: Sequence[str] = ()) -> str:
+    def table(ids: Sequence[str]) -> str:
+        return "| ID | Finding | Evidence |\n| --- | --- | --- |\n" + "".join(
+            f"| {key} | finding {key} | evidence |\n" for key in ids
+        )
+
+    return (
+        f"# Findings\n\n## Open\n\n{table(open_ids)}\n"
+        f"## Fixed findings\n\n{table(fixed_ids)}"
+    )
+
+
+def _publish_ledger_main(work: Path, counter: Path) -> None:
+    """main: the counting gate policy and a ledger whose row HF-1 is open."""
+    _counting_policy(work, counter)
+    _commit_file(work, _LEDGER, _ledger_text(["HF-1"]), "ledger")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+
+
+def _ledger_deleting_lane(work: Path, name: str) -> tuple[Path, str]:
+    lane = work.parent / f"lane-{name}"
+    _git(work, "fetch", "-q", "origin")
+    _git(work, "worktree", "add", "-q", "-b", f"codex/{name}", str(lane), "origin/main")
+    _git(lane, "rm", "-q", "--", _LEDGER)
+    _git(lane, "commit", "-q", "--no-verify", "-m", f"lane {name}: drop the ledger")
+    return lane, _git(lane, "rev-parse", "HEAD").stdout.strip()
+
+
+def _landed_first(work: Path, earlier: str, later: str) -> bool:
+    """Git ancestry, not the queue's own records, orders two landings."""
+    return (
+        earlier != later
+        and _git(
+            work, "merge-base", "--is-ancestor", earlier, later, check=False
+        ).returncode
+        == 0
+    )
+
+
+def test_ledger_paths_name_the_ledger_and_its_generated_ids():
+    from tools import finding_status, gen_finding_ids
+    from tools.molt_dev_policy import LEDGER_PATHS
+
+    assert LEDGER_PATHS == {
+        finding_status.LEDGER_PATH.as_posix(),
+        gen_finding_ids.OUTPUT.as_posix(),
+    }
+
+
+def test_head_class_is_ledger_only_when_every_change_since_the_merge_base_is(
+    tmp_path,
+):
+    from tools import molt_dev_queue as queue
+    from tools.molt_dev_policy import LandingClass
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    base = _commit_file(repo, _LEDGER, _ledger_text(["HF-1"]), "base")
+    git = molt_dev.Git(repo)
+
+    def lane(name: str, files: dict[str, str]) -> str:
+        _git(repo, "checkout", "-q", "-b", name, base)
+        for rel, content in files.items():
+            tip = _commit_file(repo, rel, content, f"{name}: {rel}")
+        return tip
+
+    ledger = lane(
+        "ledger",
+        {
+            _LEDGER: _ledger_text(["HF-1", "HF-2"]),
+            "tests/findings/finding_ids.py": "OPEN = ('HF-1', 'HF-2')\n",
+        },
+    )
+    mixed = lane(
+        "mixed", {_LEDGER: _ledger_text(["HF-1", "HF-3"]), "code.py": "c = 1\n"}
+    )
+    _git(repo, "checkout", "-q", "main")
+    main = _commit_file(repo, "main.py", "m = 1\n", "main moves on with code")
+
+    assert queue.head_class(git, base, ledger) is LandingClass.LEDGER
+    # A code change on main after the merge base is not the lane's change.
+    assert queue.head_class(git, main, ledger) is LandingClass.LEDGER
+    assert queue.head_class(git, main, mixed) is LandingClass.CODE
+    # A lane with no change has no ledger path, so it is not a ledger lane.
+    assert queue.head_class(git, main, base) is LandingClass.CODE
+
+
+@pytest.mark.parametrize("missing_at", ["head", "base"])
+def test_head_closes_rows_refuses_a_revision_without_the_ledger(tmp_path, missing_at):
+    from tools import molt_dev_queue as queue
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    if missing_at == "base":
+        base = _commit_file(repo, "README.md", "seed\n", "base")
+        head = _commit_file(repo, _LEDGER, _ledger_text(["HF-1"]), "add the ledger")
+    else:
+        base = _commit_file(repo, _LEDGER, _ledger_text(["HF-1"]), "base")
+        _git(repo, "rm", "-q", "--", _LEDGER)
+        _git(repo, "commit", "-q", "--no-verify", "-m", "drop the ledger")
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(DriverError, match=_LEDGER):
+        queue.head_closes_rows(molt_dev.Git(repo), base, head)
+
+
+def test_queue_runs_a_non_closing_ledger_lane_before_an_earlier_code_lane(
+    drv, origin_and_clone, tmp_path
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _publish_ledger_main(work, tmp_path / "gate-runs.txt")
+    code = _lane(work, "code", {"code.py": "code = 1\n"})
+    ledger = _lane(work, "ledger", {_LEDGER: _ledger_text(["HF-1", "HF-2"])})
+    paths, requests = _enqueue(drv, work, code, ledger)
+
+    assert _run_queue(drv, work) == EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed", "landed"]
+    code_landed, ledger_landed = (
+        queue.read_result(paths, request.id)["landed"] for request in requests
+    )
+    assert _landed_first(work, ledger_landed, code_landed)
+
+
+def test_queue_keeps_the_place_of_a_ledger_lane_that_closes_a_row(
+    drv, origin_and_clone, tmp_path
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _publish_ledger_main(work, tmp_path / "gate-runs.txt")
+    code = _lane(work, "code", {"code.py": "code = 1\n"})
+    # Closing HF-1 must not overtake a code lane that may still cite it.
+    closing = _lane(work, "close", {_LEDGER: _ledger_text([], ["HF-1"])})
+    paths, requests = _enqueue(drv, work, code, closing)
+
+    assert _run_queue(drv, work) == EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed", "landed"]
+    code_landed, closing_landed = (
+        queue.read_result(paths, request.id)["landed"] for request in requests
+    )
+    assert _landed_first(work, code_landed, closing_landed)
+
+
+def test_queue_records_an_unclassifiable_request_failed_and_lands_the_next(
+    drv, origin_and_clone, tmp_path
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _publish_ledger_main(work, tmp_path / "gate-runs.txt")
+    # No shared history with main: `merge-base` fails while it is classified.
+    tree = _git(work, "mktree", input_text="").stdout.strip()
+    orphan = _git(work, "commit-tree", tree, "-m", "no shared history").stdout.strip()
+    code = _lane(work, "code", {"code.py": "code = 1\n"})
+    paths, requests = _enqueue(drv, work, orphan, code)
+
+    assert _run_queue(drv, work) == EXIT_OK
+
+    assert _statuses(paths, requests) == ["failed", "landed"]
+    assert "merge-base" in queue.read_result(paths, requests[0].id)["detail"]
+    assert "code.py" in _origin_tree(work)
+
+
+@pytest.mark.parametrize("precheck", [(), ("--no-precheck",)], ids=["precheck", "none"])
+def test_land_refuses_a_second_ledger_lane_while_one_is_pending(
+    drv, origin_and_clone, tmp_path, monkeypatch, precheck
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _publish_ledger_main(work, tmp_path / "gate-runs.txt")
+    first = _lane(work, "first", {_LEDGER: _ledger_text(["HF-1", "HF-2"])})
+    _lane(work, "second", {_LEDGER: _ledger_text(["HF-1", "HF-3"])})
+    code = _lane(work, "code", {"code.py": "code = 1\n"})
+    lanes = work.parent
+    assert _land_without_runner(drv, monkeypatch, lanes / "lane-first", *precheck) == (
+        EXIT_OK
+    )
+    paths = queue.queue_paths(work)
+    (pending_ledger,) = queue.pending(paths)
+
+    with pytest.raises(DriverError) as refused:
+        _land_without_runner(drv, monkeypatch, lanes / "lane-second", *precheck)
+
+    assert isinstance(refused.value, queue.LandingRefusal)
+    assert refused.value.reason == queue.LandingRefusalReason.LEDGER_PENDING
+    assert refused.value.code == EXIT_FAIL
+    assert pending_ledger.id in str(refused.value)
+    assert [item.head for item in queue.pending(paths)] == [first]
+    # A pending ledger lane never refuses a code lane.
+    assert _land_without_runner(drv, monkeypatch, lanes / "lane-code", *precheck) == (
+        EXIT_OK
+    )
+    assert [item.head for item in queue.pending(paths)] == [first, code]
+
+
+@pytest.mark.parametrize("ledger_pending", [False, True], ids=["alone", "behind"])
+def test_land_refuses_a_ledger_lane_without_the_ledger(
+    drv, origin_and_clone, tmp_path, monkeypatch, ledger_pending
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _publish_ledger_main(work, tmp_path / "gate-runs.txt")
+    queued: list[str] = []
+    if ledger_pending:
+        queued.append(_lane(work, "first", {_LEDGER: _ledger_text(["HF-1", "HF-2"])}))
+        lane = work.parent / "lane-first"
+        assert _land_without_runner(drv, monkeypatch, lane, "--no-precheck") == EXIT_OK
+    lane, head = _ledger_deleting_lane(work, "drop")
+
+    with pytest.raises(DriverError) as refused:
+        _land_without_runner(drv, monkeypatch, lane)
+
+    assert isinstance(refused.value, queue.LandingRefusal)
+    # The missing ledger is named first, even behind a pending ledger lane.
+    assert refused.value.reason == queue.LandingRefusalReason.LEDGER_MISSING
+    assert refused.value.code == EXIT_FAIL
+    assert head in str(refused.value)
+    assert [item.head for item in queue.pending(queue.queue_paths(work))] == queued
+
+
 def _publish_policy(work: Path, policy: str) -> None:
     (work / "tools" / "proof_plan.toml").write_text(policy, encoding="utf-8")
     _git(work, "add", "--", "tools/proof_plan.toml")
@@ -7203,6 +7434,16 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
     assert (observed_failure is injected) == (failure_stage is not None)
 
 
+def _code_order(requests) -> dict:
+    """Fake heads classify as code lanes that close no row."""
+    from tools import molt_dev_queue as queue
+    from tools.molt_dev_policy import LandingClass
+
+    return {
+        request.id: queue.RequestOrder(LandingClass.CODE, False) for request in requests
+    }
+
+
 def test_queue_batches_one_request_by_default(tmp_path):
     from tools import molt_dev_queue as queue
 
@@ -7215,7 +7456,10 @@ def test_queue_batches_one_request_by_default(tmp_path):
     ]
     # At a low pass rate a multi-request batch mostly bisects; the oldest
     # request is tested alone.
-    assert queue.next_batch(paths, queue.pending(paths)) == requests[:1]
+    assert (
+        queue.next_batch(paths, queue.pending(paths), order=_code_order(requests))
+        == (requests[:1])
+    )
 
 
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(
@@ -7232,31 +7476,63 @@ def test_queue_plan_survives_between_runners_and_drops_closed_requests(
         queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
         for index in range(1, 6)
     ]
-    batch = queue.next_batch(paths, queue.pending(paths))
+    order = _code_order(requests)
+    batch = queue.next_batch(paths, queue.pending(paths), order=order)
     assert batch == requests
     # requests[4] conflicted and left; the four that applied failed together.
     queue.record_result(
         paths, requests[4], status=queue.LandingStatus.CONFLICT, detail=""
     )
     queue.bisect(paths, batch, requests[:4])
-    batch = queue.next_batch(paths, queue.pending(paths))
+    batch = queue.next_batch(paths, queue.pending(paths), order=order)
     assert batch == requests[:2]
     for request in batch:
         queue.record_result(
             paths, request, status=queue.LandingStatus.LANDED, detail="", landed=None
         )
     queue.retire_batch_plan(paths, batch)
-    assert queue.next_batch(paths, queue.pending(paths)) == requests[2:4]
+    assert queue.next_batch(paths, queue.pending(paths), order=order) == requests[2:4]
     # A request closed outside the runner drops out of the plan.
     queue.record_result(
         paths, requests[2], status=queue.LandingStatus.FAILED, detail=""
     )
-    assert queue.next_batch(paths, queue.pending(paths)) == requests[3:4]
+    assert queue.next_batch(paths, queue.pending(paths), order=order) == requests[3:4]
     queue.record_result(
         paths, requests[3], status=queue.LandingStatus.LANDED, detail="", landed=None
     )
-    assert queue.next_batch(paths, queue.pending(paths)) == []
+    assert queue.next_batch(paths, queue.pending(paths), order=order) == []
     assert not paths.plan.exists()
+
+
+def test_queue_takes_non_closing_ledger_requests_first_in_runs_of_one_class(
+    tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+    from tools.molt_dev_policy import LandingClass
+
+    monkeypatch.setattr(queue, "MAX_BATCH", 8)
+    paths = queue.QueuePaths(
+        tmp_path / "landing-queue", tmp_path / "sandbox", tmp_path / "data/evidence"
+    )
+    code, closing, ledger, later, last = (
+        queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
+        for index in range(1, 6)
+    )
+    order = {
+        code.id: queue.RequestOrder(LandingClass.CODE, False),
+        closing.id: queue.RequestOrder(LandingClass.LEDGER, True),
+        ledger.id: queue.RequestOrder(LandingClass.LEDGER, False),
+        later.id: queue.RequestOrder(LandingClass.CODE, False),
+        last.id: queue.RequestOrder(LandingClass.CODE, False),
+    }
+    # Each batch is one class: the order's head and the run behind it.
+    for expected in ([ledger], [code], [closing], [later, last]):
+        batch = queue.next_batch(paths, queue.pending(paths), order=order)
+        assert batch == expected
+        for request in batch:
+            queue.record_result(
+                paths, request, status=queue.LandingStatus.LANDED, detail=""
+            )
 
 
 @pytest.mark.parametrize("recent", [0, 1, 3, 100])
@@ -10588,7 +10864,9 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
     assert result["status"] == queue.LandingStatus.WITHDRAWN
     assert result["detail"] == "review found defects"
     assert queue.pending(paths) == [first, third]
-    assert queue.next_batch(paths, queue.pending(paths)) == [first]
+    assert queue.next_batch(
+        paths, queue.pending(paths), order=_code_order([first, third])
+    ) == [first]
     assert [row["request"]["id"] for row in queue.recorded_results(paths)] == [
         second.id
     ]

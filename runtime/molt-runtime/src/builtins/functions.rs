@@ -42,8 +42,8 @@ use crate::{
     FunctionCallAbi, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CODE, TYPE_ID_FUNCTION, TYPE_ID_MODULE,
     TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_code_obj, alloc_dict_with_pairs,
     alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, call_callable1,
-    call_callable2, dec_ref_bits, dict_get_in_place, ensure_function_code_bits, exception_pending,
+    bound_method_func_bits, builtin_classes, call_callable1, call_callable2, dec_ref_bits,
+    dict_get_in_place, dynamic_attr_name_bits, ensure_function_code_bits, exception_pending,
     function_globals_bits, function_set_closure_bits, function_set_globals_bits,
     function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
     molt_cpython_abi_cext_call_trampoline, molt_getattr_builtin, molt_getitem_method, molt_iter,
@@ -82,7 +82,7 @@ fn enum_set_attr(
     name: &[u8],
     value_bits: u64,
 ) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = dynamic_attr_name_bits(_py, name) else {
         return false;
     };
     let _ = crate::molt_set_attr_name(target_bits, name_bits, value_bits);
@@ -816,7 +816,7 @@ fn bisect_insert_at(
     x_bits: u64,
 ) -> Result<(), u64> {
     let missing = missing_bits(_py);
-    let Some(insert_name_bits) = attr_name_bits_from_bytes(_py, b"insert") else {
+    let Some(insert_name_bits) = crate::NameId::Insert.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
     let insert_bits = molt_getattr_builtin(seq_bits, insert_name_bits, missing);
