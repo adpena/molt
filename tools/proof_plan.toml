@@ -4234,6 +4234,16 @@ gates = [
   "python tools/check_dynamic_policy.py",
 ]
 
+# A ledger-only lane regenerates the finding-id Literal types; a closed row
+# must fail every finding test that still cites it (HF-711). The local form
+# of python.static.ty.
+[[rule]]
+name = "finding-ids-static"
+toolchains = ["python", "uv"]
+description = "Type-check the finding tests against the regenerated finding-id types."
+globs = ["tests/findings/*.py"]
+gates = ["python -m ty check src tests/findings"]
+
 # Initial namespace writes affect eager imports and their cache identities.
 # Keep the existing consumer families in local selection: a stale record-key
 # caller and a missing entry mask both escaped the broader source-only gates.
