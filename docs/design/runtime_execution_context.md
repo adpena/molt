@@ -75,9 +75,11 @@ Static counts from the release binary the HF-657 lane built and retained on 2026
 | `molt_thread_record` | 17 instructions, one thunk call, and `runtime_state_for_gil_in` |
 | `molt_recursion_enter_fast` | 20 instructions, two thread-local accesses, and `runtime_state_for_gil_in` |
 
-B1 removes the depth update, the guard construction and the drop from every nested entry (about
-33 of the 42 instructions). It keeps one thread-local access and the custody test (about 9). It
-turns the state resolution into one load.
+B1 removes the depth update and the guard construction from every nested entry and turns the
+state resolution into one load. Measured on the same entry after B1 (section 5): 21 instructions
+outside the body instead of 42: 4 to reach the thunk, 6 for the custody test (now including the
+GIL depth), 5 to build the token, and 6 for the drop's ownership test, which the compiler keeps
+because the cold path joins the same drop.
 
 ### 1.3 The entries one Python call makes (native)
 
@@ -250,6 +252,23 @@ the lane after B1 and B2, same environment.
   suites.
 - **Residual guard cost:** the instructions a nested entry still spends on custody (thread-local
   access and predicate), read from the head disassembly.
+
+**Result** (2026-11-03; base `5209263c72`, head `0032a54f04`; instructions retired, medians of five
+runs; CPython 3.12.16 for the ratios):
+
+| workload | base | head | change |
+|---|---:|---:|---:|
+| W1, per call | 4,401.8 | 4,003.0 | -9.06% |
+| W2, per generator step | 6,707.2 | 6,233.5 | -7.06% |
+| W3 `recursion`, per depth-100 traversal | 441,377.6 (7.83x) | 400,093.3 (7.09x) | -9.35% |
+| W3 `dynamic_call`, per op | 2,957.4 (3.46x) | 2,648.6 (3.10x) | -10.44% |
+| W3 `loop`, per op | 392.9 | 373.8 | -4.88% |
+| W4 startup | 191.75 M | 191.37 M | -0.20% |
+
+Every other primitive per-op axis fell by 4.7% to 9.3%; no per-op axis rose. Startup axes moved -1.6% to
++0.1%. The W1 binary is 0.37% smaller. Runtime entries per call are unchanged (B1 removes cost
+inside entries); the residual guard is 21 instructions plus one `_tlv_get_addr` thunk call per
+nested entry.
 
 ## 6. Deferred: the attached ABI
 
