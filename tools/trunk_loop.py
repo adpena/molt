@@ -226,7 +226,9 @@ def provision_host(args, *, transport=None) -> dict:
         )
     import tomllib
 
-    releases = tomllib.loads((_REPO_ROOT / "config/tool_releases.toml").read_text())
+    releases = tomllib.loads(
+        (_REPO_ROOT / "config/tool_releases.toml").read_text(encoding="utf-8")
+    )
     repository = checked(["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"])
     result = transport.shell_command(
         provision_script(

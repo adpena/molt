@@ -161,7 +161,7 @@ def test_inventory_rejects_invalid_wsl_custody(tmp_path, field, value):
     import tomllib
 
     # Mutate the real inventory at its serialization boundary, preserving siblings.
-    text = cross_run.DEFAULT_INVENTORY.read_text()
+    text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
     current = tomllib.loads(text)["host"][-1][field]
     if isinstance(current, str):
         line = next(line for line in text.splitlines() if line.startswith(field + " ="))
@@ -169,7 +169,7 @@ def test_inventory_rejects_invalid_wsl_custody(tmp_path, field, value):
     else:
         text = text.replace(f"{field} = {current}", f"{field} = {str(value).lower()}")
     inventory = tmp_path / "hosts.toml"
-    inventory.write_text(text)
+    inventory.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="invalid WSL"):
         cross_run.parse_inventory(inventory)
 
@@ -177,7 +177,9 @@ def test_inventory_rejects_invalid_wsl_custody(tmp_path, field, value):
 def test_inventory_rejects_retired_python_contract(tmp_path):
     inventory = tmp_path / "hosts.toml"
     inventory.write_text(
-        cross_run.DEFAULT_INVENTORY.read_text() + '\npython = "/handmade/python"\n'
+        cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
+        + '\npython = "/handmade/python"\n',
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="Python is owned by uv"):
         cross_run.parse_inventory(inventory)
@@ -199,7 +201,8 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name):
         executable.write_text(
             "#!/bin/sh\n"
             '[ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}${MOLT_VENV:-}" ] || exit 93\n'
-            f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n'
+            f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n',
+            encoding="utf-8",
         )
         executable.chmod(0o755)
     host = replace(host_named(name), custody_root=str(root), checkout=str(checkout))
@@ -218,7 +221,7 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name):
             ["/bin/sh"], input=script, text=True, capture_output=True, env=env
         )
         assert result.returncode == 0, result.stderr
-    calls = log.read_text().splitlines()
+    calls = log.read_text(encoding="utf-8").splitlines()
     assert (
         calls
         == [
