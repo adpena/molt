@@ -659,10 +659,10 @@ fn c_api_method_flags_supported(flags: u32) -> bool {
 }
 
 #[inline]
-fn c_api_method_set_attr_bytes(
+fn c_api_method_set_attr(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    name: &'static [u8],
+    name: crate::NameId,
     value_bits: u64,
 ) -> i32 {
     let Some(function) = obj_from_bits(obj_bits)
@@ -689,7 +689,7 @@ fn c_api_method_set_name(_py: &PyToken<'_>, func_bits: u64, name_bytes: &[u8]) -
         return Err(-1);
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let rc = c_api_method_set_attr_bytes(_py, func_bits, b"__name__", name_bits);
+    let rc = c_api_method_set_attr(_py, func_bits, crate::NameId::DunderName, name_bits);
     dec_ref_bits(_py, name_bits);
     if rc < 0 {
         return Err(-1);
@@ -711,7 +711,7 @@ fn c_api_method_set_doc(
         return Err(-1);
     }
     let doc_bits = MoltObject::from_ptr(doc_ptr).bits();
-    let rc = c_api_method_set_attr_bytes(_py, func_bits, b"__doc__", doc_bits);
+    let rc = c_api_method_set_attr(_py, func_bits, crate::NameId::DunderDoc, doc_bits);
     dec_ref_bits(_py, doc_bits);
     if rc < 0 {
         return Err(-1);
@@ -786,10 +786,10 @@ fn c_api_method_build_function(
         dec_ref_bits(_py, func_bits);
         return Err(-1);
     }
-    if c_api_method_set_attr_bytes(
+    if c_api_method_set_attr(
         _py,
         func_bits,
-        b"__molt_bind_kind__",
+        crate::NameId::DunderMoltBindKind,
         MoltObject::from_int(crate::BIND_KIND_CAPI_METHOD).bits(),
     ) < 0
         || c_api_method_set_name(_py, func_bits, name_bytes).is_err()

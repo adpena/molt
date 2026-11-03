@@ -12,7 +12,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import importlib.util
 import sys
-from tests.stdlib_intrinsic_registry import install_registry
+from tests.stdlib_intrinsic_registry import install_registry, record_builtin_promotion
 
 _consts = {{
     "molt_signal_sig_dfl": 0,
@@ -56,6 +56,7 @@ def _const(name):
 
 
 install_registry({{
+    "molt_function_set_builtin": record_builtin_promotion,
     **{{name: _const(name) for name in _consts}},
     "molt_signal_signal": lambda sig, handler: _handlers.setdefault(sig, _consts["molt_signal_sig_dfl"]),
     "molt_signal_getsignal": lambda sig: _handlers.get(sig, _consts["molt_signal_sig_dfl"]),

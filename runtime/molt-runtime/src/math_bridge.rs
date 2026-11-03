@@ -554,11 +554,19 @@ pub extern "C" fn __molt_math_lookup_special_method(
     out: *mut u64,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(name) = crate::NameId::from_bits(_py, name_bits) else {
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::SystemError,
+                "math protocol name is not registered",
+            );
+            return -1;
+        };
         match unsafe {
-            crate::builtins::attr::lookup_special_method_bits(
+            crate::builtins::attr::lookup_special_method(
                 _py,
                 MoltObject::from_ptr(ptr).bits(),
-                name_bits,
+                name,
             )
         } {
             Ok(Some(bits)) => {
@@ -833,9 +841,8 @@ mod tests {
             let bits = __molt_math_intern_static_name(key.as_ptr(), key.len());
             assert!(!exception_pending(_py));
             assert_eq!(
-                runtime_state(_py)
-                    .interned
-                    .bool_name
+                crate::NameId::DunderBool
+                    .slot(&runtime_state(_py).names)
                     .load(Ordering::Acquire),
                 bits
             );
@@ -1389,10 +1396,8 @@ mod numeric_protocol_tests {
             for warning_error in [false, true] {
                 crate::molt_warnings_resetwarnings();
                 let action: &[u8] = if warning_error { b"error" } else { b"ignore" };
-                let action = ExceptionValue::adopt(
-                    py,
-                    crate::attr_name_bits_from_bytes(py, action).unwrap(),
-                );
+                let action =
+                    ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, action).unwrap());
                 let configured = ExceptionValue::adopt(
                     py,
                     crate::molt_warnings_simplefilter(

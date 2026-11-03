@@ -9176,11 +9176,8 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
 @pytest.mark.parametrize(
     ("child_returncode", "retention_errors", "expected_returncode"),
     [
-        (
-            0,
-            ["prior generation receipt unreadable"],
-            memory_guard.INFRASTRUCTURE_RETURN_CODE,
-        ),
+        # Other runs' retention errors never change this command's result.
+        (0, ["prior generation receipt unreadable"], 0),
         (7, ["prior generation receipt unreadable"], 7),
         (137, ["prior generation receipt unreadable"], 137),
         (0, [], 0),
@@ -9188,6 +9185,7 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
 )
 def test_run_guarded_retention_sweep_health_preserves_primary_result(
     request: pytest.FixtureRequest,
+    capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     child_returncode: int,
@@ -9261,19 +9259,16 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     assert result.temporary_artifacts is not None
     assert result.temporary_artifacts["state"] == "reclaimed"
     assert result.temporary_artifacts["retention"]["protected_count"] == 3
+    assert result.infrastructure_failure is None
+    assert "temporary artifact custody incomplete" not in result.stderr
+    # The warning reaches the guard host's stderr, never the child's output.
+    assert "retention sweep reported errors" not in result.stderr
+    host_stderr = capsys.readouterr().err
     if retention_errors:
-        assert result.infrastructure_failure is not None
-        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
-        incident = memory_guard._incident_payload(result)
-        assert incident["reason"] == "infrastructure_error"
-        assert incident["child_returncode"] == child_returncode
-        assert "signal" not in incident
-        assert "prior generation receipt unreadable" in result.stderr
-        assert "retention sweep reported errors" in result.stderr
-    else:
-        assert result.infrastructure_failure is None
+        assert "prior generation receipt unreadable" in host_stderr
+        assert "retention sweep reported errors" in host_stderr
+    if child_returncode == 0:
         assert memory_guard._incident_payload(result) is None
-        assert "temporary artifact custody incomplete" not in result.stderr
     assert lease.release_calls == 1
 
     summary = tmp_path / "outcome.json"
@@ -9308,8 +9303,100 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
         signal_payload=memory_guard.exit_signal_payload,
         stderr=diagnostic,
     )
-    assert ("infrastructure_error" in diagnostic.getvalue()) is bool(retention_errors)
+    assert "infrastructure_error" not in diagnostic.getvalue()
+    assert ("retention sweep reported errors" in diagnostic.getvalue()) is bool(
+        retention_errors
+    )
+    assert payload["infrastructure_failure"] is None
+    assert payload["temporary_artifacts"]["retention"]["errors"] == retention_errors
     assert ("SIGKILL" in diagnostic.getvalue()) is (child_returncode == 137)
+
+
+@pytest.mark.parametrize(
+    ("child_returncode", "expected_returncode"),
+    [(0, memory_guard.INFRASTRUCTURE_RETURN_CODE), (7, 7)],
+)
+def test_run_guarded_fails_a_clean_run_whose_own_payload_stays_retained(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int,
+    expected_returncode: int,
+) -> None:
+    """A clean run reclaims its own payload; a failed run retains it.
+
+    A removal that failed leaves the payload retained and indexed for the
+    next sweep, which is still this clean run's own custody failure.
+    """
+    if run_in_fresh_guard_observer(request):
+        return
+
+    class FakeLease:
+        target = tmp_path / "guard-scratch"
+        release_calls = 0
+
+        def release(self) -> None:
+            self.release_calls += 1
+
+    lease = FakeLease()
+    lease.target.mkdir()
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "acquire_guard_scratch",
+        lambda _root, _env: lease,
+    )
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "finish_guard_scratch",
+        lambda _lease, *, closed, success, evidence, timings: {
+            "state": "retained",
+            "receipt": str(tmp_path / "owner.json"),
+            "error": "payload removal deferred: fixture file in use"
+            if success
+            else None,
+            "retention": {
+                "reclaimed": [],
+                "retained_bytes": 0,
+                "retained_count": 1,
+                "protected_count": 0,
+                "errors": [],
+                "deferred": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_temporary_artifact_descendant_closure",
+        lambda **_kwargs: (
+            True,
+            {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "test-closed",
+                "closed": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
+    env = dict(os.environ)
+    env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "memory_guard")
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", f"raise SystemExit({child_returncode})"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+        cleanup_orphans=False,
+        env=env,
+    )
+
+    assert result.returncode == expected_returncode
+    assert result.child_returncode == child_returncode
+    assert (result.infrastructure_failure is not None) is (child_returncode == 0)
+    if child_returncode == 0:
+        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
+        assert "temporary artifact custody incomplete" in result.stderr
+    assert lease.release_calls == 1
 
 
 def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):

@@ -38,7 +38,6 @@ define_llvm_op_kinds!(
     OpKind::TypeOf,
     OpKind::Missing,
     OpKind::GetAttrNameDefault,
-    OpKind::DataclassNewValues,
     OpKind::Abs,
     OpKind::ConstEllipsis,
     OpKind::ConstNotImplemented,
@@ -523,7 +522,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 );
                 true
             }
-            OpKind::DataclassNewValues => self.emit_dataclass_from_values(op),
 
             // -- Preserved value-producing / side-effecting ops whose runtime
             //    symbol name DIFFERS from `molt_<kind>` (so the generic

@@ -14,10 +14,7 @@ use super::unraisable::sys_attr_bits;
 use super::*;
 use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
-use crate::{
-    attr_name_bits_from_bytes, call_callable1, call_callable3, molt_get_attr_name,
-    molt_set_attr_name,
-};
+use crate::{call_callable1, call_callable3, molt_get_attr_name, molt_set_attr_name};
 
 /// The exit status of a program whose main body has returned: 0 when nothing
 /// is pending; otherwise the pending exception is taken, reported as CPython's
@@ -78,10 +75,10 @@ fn report_uncaught(py: &PyToken<'_>, exc_bits: u64) -> i32 {
     } else {
         trace_bits
     };
-    set_sys_attr(py, b"last_exc", exc_bits);
-    set_sys_attr(py, b"last_type", type_bits);
-    set_sys_attr(py, b"last_value", exc_bits);
-    set_sys_attr(py, b"last_traceback", tb_bits);
+    set_sys_attr(py, crate::NameId::LastExc, exc_bits);
+    set_sys_attr(py, crate::NameId::LastType, type_bits);
+    set_sys_attr(py, crate::NameId::LastValue, exc_bits);
+    set_sys_attr(py, crate::NameId::LastTraceback, tb_bits);
 
     let hook_bits = sys_attr_bits(py, b"excepthook");
     let audited = crate::builtins::sys_ext::audit_event(
@@ -141,11 +138,11 @@ fn release(py: &PyToken<'_>, bits: u64) {
 
 /// Set one `sys` attribute; a failure is cleared, as `_PySys_SetAttr` failures
 /// are in `PyErr_Print`.
-fn set_sys_attr(py: &PyToken<'_>, name: &[u8], value_bits: u64) {
+fn set_sys_attr(py: &PyToken<'_>, name: crate::NameId, value_bits: u64) {
     let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(py) else {
         return;
     };
-    let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+    let Some(name_bits) = name.owned_bits(py) else {
         return;
     };
     let result = molt_set_attr_name(sys_bits, name_bits, value_bits);
@@ -171,7 +168,7 @@ pub(super) fn write_sys_stderr(py: &PyToken<'_>, text: &str) {
 }
 
 fn write_stream(py: &PyToken<'_>, stream_bits: u64, text: &str) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(py, b"write") else {
+    let Some(name_bits) = crate::NameId::Write.owned_bits(py) else {
         return false;
     };
     let write_bits = molt_get_attr_name(stream_bits, name_bits);

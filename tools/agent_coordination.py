@@ -34,7 +34,12 @@ SRC_ROOT = REPO_ROOT / "src"
 
 from molt import process_guard, toolchain_identity  # noqa: E402
 from molt.checkout_state import checkout_state_use  # noqa: E402
-from molt.dx import DX_ENV_KEYS, development_artifact_env, render_env  # noqa: E402
+from molt.dx import (  # noqa: E402
+    DX_ENV_KEYS,
+    SCRATCH_ENV_KEYS,
+    development_artifact_env,
+    render_env,
+)
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 from tools import check_instruction_hierarchy, claims_status, coordination_records  # noqa: E402
 from tools.memory_guard_core.cli_contract import guardian_argv  # noqa: E402
@@ -1568,9 +1573,8 @@ def build_record(
         if status not in coordination_records.ACTIVE_STATUSES:
             raise ValueError("pending ownership request requires an active task status")
     branch, commit = read_git_identity(repo_root)
-    session_id = (
-        session or os.environ.get("MOLT_SESSION_ID") or f"agent-{task}-{os.getpid()}"
-    )
+    # The session belongs to the task, never to the caller's own lane (HF-756).
+    session_id = session or f"agent-{task}-{os.getpid()}"
     agent_id = agent or os.environ.get("MOLT_AGENT_ID") or session_id
     base = coordination_records.task_dir(registry_root, task)
     return {
@@ -2509,12 +2513,34 @@ def refresh_task_environment(
     return record["dx_env"]
 
 
+# Keys whose values depend on the checkout. Host-level roots and caches
+# (MOLT_EXT_ROOT, UV_CACHE_DIR, ...) are shared by every lane and stay.
+CHECKOUT_DERIVED_ENV_KEYS = frozenset(
+    (
+        *SCRATCH_ENV_KEYS,
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "MOLT_SESSION_ID",
+        "MOLT_SESSION_ID_GENERATED",
+        "PYTHONPATH",
+    )
+)
+
+
 def _task_environment(
     source_root: Path, task: str, *, session: str | None, session_id: str
 ) -> dict[str, str]:
     """The DX environment that a task's env files and record publish."""
-    session_env = dict(os.environ)
-    if not session and not session_env.get("MOLT_SESSION_ID"):
+    # Checkout-derived keys come from this task's checkout; a caller that sourced
+    # another lane's env.sh must not hand that lane's target, image or session
+    # to this one (HF-756).
+    session_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in CHECKOUT_DERIVED_ENV_KEYS
+    }
+    if not session:
         # init named this session itself. Only --session pins an isolated
         # Cargo target; an unpinned task shares the warm persistent one.
         session_env["MOLT_SESSION_ID"] = session_id

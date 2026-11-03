@@ -1093,11 +1093,11 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
     with_gil(|py| unsafe {
         FINALIZER_CALLS.store(0, Ordering::SeqCst);
         assert_eq!(RESURRECTED.load(Ordering::SeqCst), 0);
-        let name = crate::attr_name_bits_from_bytes(&py, b"ManagedGcFinalization").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"ManagedGcFinalization").unwrap();
         let class = crate::molt_class_new(name);
         crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
         let class_ptr = MoltObject::from_bits(class).as_ptr().unwrap();
-        let del = crate::attr_name_bits_from_bytes(&py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(&py, b"__del__").unwrap();
         let callback =
             MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                 &py,

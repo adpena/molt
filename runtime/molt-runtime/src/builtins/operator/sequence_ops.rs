@@ -124,7 +124,11 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
         }
 
         let method = unsafe {
-            crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__length_hint__")
+            crate::builtins::attr::lookup_special_method(
+                _py,
+                obj_bits,
+                crate::NameId::DunderLengthHint,
+            )
         };
         let method = match method {
             Ok(method) => method,

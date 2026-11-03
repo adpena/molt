@@ -142,7 +142,7 @@ fn property_initialize(py: &PyToken<'_>, self_bits: u64, values: [u64; 4]) -> u6
             inc_ref_bits(py, doc);
             doc
         } else if !obj_from_bits(get).is_none() {
-            let Some(name) = attr_name_bits_from_bytes(py, b"__doc__") else {
+            let Some(name) = crate::NameId::DunderDoc.owned_bits(py) else {
                 return MoltObject::none().bits();
             };
             let value = molt_getattr_builtin(get, name, MoltObject::none().bits());
@@ -166,7 +166,7 @@ fn property_initialize(py: &PyToken<'_>, self_bits: u64, values: [u64; 4]) -> u6
                 return wrapper_storage_failure(py);
             }
         } else {
-            let Some(name) = attr_name_bits_from_bytes(py, b"__doc__") else {
+            let Some(name) = crate::NameId::DunderDoc.owned_bits(py) else {
                 dec_ref_bits(py, effective_doc);
                 return MoltObject::none().bits();
             };
@@ -305,7 +305,7 @@ pub(crate) unsafe fn wrapper_uses_default_method(
         let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
             return Ok(false);
         };
-        let name = attr_name_bits_from_bytes(py, name).ok_or(())?;
+        let name = dynamic_attr_name_bits(py, name).ok_or(())?;
         let raw = crate::builtins::attr::class_attr_lookup_raw_mro(py, class_ptr, name);
         dec_ref_bits(py, name);
         Ok(crate::call::type_policy::callable_matches_runtime_symbol(
@@ -378,7 +378,11 @@ pub(crate) unsafe fn wrapper_get(
                 }
                 let _target = WrapperInputs::new(py, [target]);
                 if !crate::object::ops_sys::runtime_target_at_least(py, 3, 13)
-                    && crate::builtins::attr::has_special_method(py, target, b"__get__")?
+                    && crate::builtins::attr::has_special_method(
+                        py,
+                        target,
+                        crate::NameId::DunderGet,
+                    )?
                 {
                     return crate::builtins::attr::descriptor_bind(
                         py,

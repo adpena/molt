@@ -37,7 +37,9 @@ use super::ops::parse_codec_arg;
 pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u64) -> u64 {
     use molt_cpython_abi::abi_types::PyBUF_SIMPLE;
     let has_index = crate::builtins::numbers::index_integral_payload_bits(needle).is_some()
-        || match unsafe { crate::builtins::attr::has_special_method(py, needle, b"__index__") } {
+        || match unsafe {
+            crate::builtins::attr::has_special_method(py, needle, crate::NameId::DunderIndex)
+        } {
             Ok(present) => present,
             Err(()) => return MoltObject::none().bits(),
         };
@@ -1578,8 +1580,10 @@ pub(crate) extern "C" fn bytes_bytes(bits: u64) -> u64 {
 /// TypeError fallback from an index provider to the buffer/iterable path.
 fn byte_count(py: &PyToken<'_>, bits: u64) -> Result<Option<usize>, ()> {
     let integral = crate::builtins::numbers::index_bigint_integral_bits(bits).is_some();
-    let index =
-        integral || unsafe { crate::builtins::attr::has_special_method(py, bits, b"__index__") }?;
+    let index = integral
+        || unsafe {
+            crate::builtins::attr::has_special_method(py, bits, crate::NameId::DunderIndex)
+        }?;
     if !index {
         return Ok(None);
     }
@@ -1682,11 +1686,12 @@ fn bytes_from_obj_impl(
     special: bool,
 ) -> u64 {
     if special && matches!(kind, BytesCtorKind::Bytes) {
-        let method =
-            match unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__bytes__") } {
-                Ok(method) => method,
-                Err(()) => return MoltObject::none().bits(),
-            };
+        let method = match unsafe {
+            crate::builtins::attr::lookup_special_method(py, bits, crate::NameId::DunderBytes)
+        } {
+            Ok(method) => method,
+            Err(()) => return MoltObject::none().bits(),
+        };
         if let Some(method) = method {
             let result = unsafe { call_callable0(py, method) };
             dec_ref_bits(py, method);

@@ -2,10 +2,10 @@ use super::*;
 use crate::*;
 
 fn class_with_field(py: &PyToken<'_>) -> u64 {
-    let name = attr_name_bits_from_bytes(py, b"PollLogicalClass").unwrap();
-    let field = attr_name_bits_from_bytes(py, b"field").unwrap();
-    let offsets_key = attr_name_bits_from_bytes(py, b"__molt_field_offsets__").unwrap();
-    let size_key = attr_name_bits_from_bytes(py, b"__molt_layout_size__").unwrap();
+    let name = dynamic_attr_name_bits(py, b"PollLogicalClass").unwrap();
+    let field = dynamic_attr_name_bits(py, b"field").unwrap();
+    let offsets_key = dynamic_attr_name_bits(py, b"__molt_field_offsets__").unwrap();
+    let size_key = dynamic_attr_name_bits(py, b"__molt_layout_size__").unwrap();
     let class = crate::molt_class_new(name);
     let offsets = crate::alloc_dict_with_pairs(py, &[field, MoltObject::from_int(0).bits()]);
     assert!(!offsets.is_null());
@@ -163,7 +163,16 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let value = MoltObject::from_int(19).bits();
-            let source = crate::molt_itertools_repeat(value, MoltObject::from_int(4).bits());
+            let source = crate::test_support::with_public_type_class(
+                crate::molt_itertools_repeat_type,
+                |public_class| {
+                    crate::molt_itertools_repeat_new(
+                        public_class,
+                        value,
+                        MoltObject::from_int(4).bits(),
+                    )
+                },
+            );
             let readers = crate::molt_itertools_tee(source, MoltObject::from_int(1).bits());
             assert!(!exception_pending(py));
             let reader = seq_access::item(obj_from_bits(readers).as_ptr().unwrap(), 0).unwrap();
@@ -203,7 +212,7 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
 
             // Normal attribute lookup must pass the native payload untouched
             // before binding the public copy descriptor.
-            let key = attr_name_bits_from_bytes(py, b"__copy__").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__copy__").unwrap();
             let bound = crate::molt_get_attr_name(reader, key);
             assert!(!exception_pending(py));
             let copied = call_callable0(py, bound);

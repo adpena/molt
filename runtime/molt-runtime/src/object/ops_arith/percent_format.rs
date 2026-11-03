@@ -423,7 +423,11 @@ fn percent_decimal_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<Per
     // Mirror PyNumber_Check before PyNumber_Long, using the existing type-level
     // admission authority without binding or executing descriptors.
     let mut numeric = false;
-    for name in [b"__index__".as_slice(), b"__int__", b"__float__"] {
+    for name in [
+        crate::NameId::DunderIndex,
+        crate::NameId::DunderInt,
+        crate::NameId::DunderFloat,
+    ] {
         numeric = unsafe { crate::builtins::attr::has_special_method(py, bits, name) }.ok()?;
         if numeric {
             break;

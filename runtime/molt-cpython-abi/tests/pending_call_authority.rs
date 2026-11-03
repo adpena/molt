@@ -118,8 +118,12 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
         "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
     ))
     .unwrap();
-    let llvm = fs::read_to_string(
+    let llvm_dispatch = fs::read_to_string(
         root.join("runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs"),
+    )
+    .unwrap();
+    let llvm_poll = fs::read_to_string(
+        root.join("runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs"),
     )
     .unwrap();
     let luau =
@@ -155,10 +159,15 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     assert!(target_info.contains("supports_pending_call_eval_breaker_poll"));
     assert!(pass_manager.contains("tti.supports_pending_call_eval_breaker_poll()"));
 
-    for backend in [&native, &llvm, &wasm] {
+    // Native and LLVM name the service entry by its symbol; no typed runtime
+    // identity spans the three backends yet. LLVM's poll arm routes to the one
+    // inline-word emitter, which owns the cold service call.
+    assert!(llvm_dispatch.contains("self.emit_async_work_poll(false)"));
+    for (name, backend) in [("native", &native), ("llvm", &llvm_poll), ("wasm", &wasm)] {
         assert!(
             backend.contains("molt_async_work_poll_and_exception_pending")
-                || backend.contains("AsyncWorkPollAndExceptionPending")
+                || backend.contains("AsyncWorkPollAndExceptionPending"),
+            "{name} backend must service async work polls through the pending-exception entry"
         );
     }
     // Source architecture witness: Rust/Luau reject through shared admission

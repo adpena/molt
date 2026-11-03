@@ -192,7 +192,10 @@ def compose(
 BRIEF_HEADER = (
     "This file is your brief. Re-read it before each commit and before each long command. "
     'The integrator may append corrections at the end, under a dated "Correction" heading. '
-    "A correction overrides the text above it."
+    "A correction overrides the text above it. "
+    "Put every scratch clone, build target and measurement output under $TMPDIR, "
+    "your lane's scratch root (set by the lane's env.sh); lane retire deletes it, "
+    "so record what matters in your report."
 )
 
 

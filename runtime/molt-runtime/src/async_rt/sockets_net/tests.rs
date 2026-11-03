@@ -7,12 +7,12 @@ fn assert_pending_error(py: &PyToken<'_>, expected_class: crate::BuiltinExc, exp
     let class = crate::builtins::exceptions::exception_class(py, error).unwrap();
     assert_eq!(class.bits(), exception_class_bits(py, expected_class));
     clear_exception(py);
-    let name = crate::attr_name_bits_from_bytes(py, b"errno").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"errno").unwrap();
     let code = crate::molt_getattr_builtin(error, name, MoltObject::none().bits());
     assert_eq!(to_i64(obj_from_bits(code)), Some(expected_errno));
     dec_ref_bits(py, name);
     dec_ref_bits(py, code);
-    let name = crate::attr_name_bits_from_bytes(py, b"strerror").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"strerror").unwrap();
     let message = crate::molt_getattr_builtin(error, name, MoltObject::none().bits());
     assert!(string_obj_to_owned(obj_from_bits(message)).is_some());
     dec_ref_bits(py, name);
@@ -122,7 +122,7 @@ fn resolver_reverse_lookup_converts_only_resolver_errors() {
             exception_class_bits(py, BuiltinExc::SocketHError)
         );
         clear_exception(py);
-        let name = crate::attr_name_bits_from_bytes(py, b"errno").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"errno").unwrap();
         let code = crate::molt_getattr_builtin(error, name, MoltObject::none().bits());
         assert!(obj_from_bits(code).is_none(), "no invented legacy h_errno");
         dec_ref_bits(py, name);

@@ -218,7 +218,7 @@ mod execution_kind_tests {
                         b"__molt_is_coroutine__".as_slice(),
                         b"__molt_is_async_generator__".as_slice(),
                     ] {
-                        let key = crate::attr_name_bits_from_bytes(py, marker).unwrap();
+                        let key = crate::dynamic_attr_name_bits(py, marker).unwrap();
                         let result = crate::molt_set_attr_name(
                             bits,
                             key,

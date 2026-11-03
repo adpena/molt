@@ -6,8 +6,8 @@ fn class(py: &PyToken<'_>, name: &[u8], base: u64, slots: bool) -> u64 {
     dec_ref_bits(py, name);
     crate::molt_class_set_base(class, base);
     if slots {
-        let field = attr_name_bits_from_bytes(py, b"field").unwrap();
-        let dict = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
+        let field = dynamic_attr_name_bits(py, b"field").unwrap();
+        let dict = dynamic_attr_name_bits(py, b"__dict__").unwrap();
         let inherited_dictionary = unsafe {
             crate::object::layout::class_slot_policy(obj_from_bits(base).as_ptr().unwrap())
                 .unwrap()
@@ -19,7 +19,7 @@ fn class(py: &PyToken<'_>, name: &[u8], base: u64, slots: bool) -> u64 {
             &fields[..if inherited_dictionary { 1 } else { 2 }],
         ))
         .bits();
-        let key = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
+        let key = dynamic_attr_name_bits(py, b"__slots__").unwrap();
         crate::molt_set_attr_name(class, key, names);
         for bits in [field, dict, names, key] {
             dec_ref_bits(py, bits);
@@ -75,7 +75,7 @@ fn native_subtype_constructor_family_tracks_cycles_and_retires_membership() {
             assert_eq!(unsafe { object_type_id(ptr) }, kind.type_id());
             assert!(unsafe { has_fields(ptr) });
             assert!(unsafe { crate::object::gc::gc_is_tracked(ptr) });
-            let key = attr_name_bits_from_bytes(py, b"self_cycle").unwrap();
+            let key = dynamic_attr_name_bits(py, b"self_cycle").unwrap();
             crate::molt_set_attr_name(object, key, object);
             assert!(!exception_pending(py));
             assert_ne!(unsafe { crate::object::instance_dict_bits(ptr) }, 0);
@@ -111,12 +111,12 @@ fn native_subtype_slots_align_and_survive_dictionary_and_class_changes() {
                 let base = unsafe { field_base(ptr) };
                 assert_eq!(base as usize % WORD, 0);
                 assert!(base as usize > ptr as usize);
-                let field = attr_name_bits_from_bytes(py, b"field").unwrap();
+                let field = dynamic_attr_name_bits(py, b"field").unwrap();
                 let target = MoltObject::from_ptr(alloc_list(py, &[])).bits();
                 crate::molt_set_attr_name(object, field, target);
-                let extra = attr_name_bits_from_bytes(py, b"extra").unwrap();
+                let extra = dynamic_attr_name_bits(py, b"extra").unwrap();
                 crate::molt_set_attr_name(object, extra, target);
-                let class_key = attr_name_bits_from_bytes(py, b"__class__").unwrap();
+                let class_key = dynamic_attr_name_bits(py, b"__class__").unwrap();
                 crate::molt_set_attr_name(object, class_key, second);
                 assert!(!exception_pending(py));
                 assert_eq!(type_of_bits(py, object), second);
@@ -159,7 +159,7 @@ fn native_inline_terminator_precedes_slots_and_the_dictionary_through_c_abi_acce
             let has_slot = kind == NativePayload::String;
             let class = class(py, b"TerminatedNative", kind.owner(py).unwrap(), has_slot);
             let key =
-                attr_name_bits_from_bytes(py, if has_slot { b"field" } else { b"extra" }).unwrap();
+                dynamic_attr_name_bits(py, if has_slot { b"field" } else { b"extra" }).unwrap();
             for length in [0, 1, 7, 8, 9, 15, 16, 17] {
                 let input = value(py, kind, length);
                 let object = construct(py, class, input);
@@ -309,8 +309,8 @@ fn native_io_subtype_slots_preserve_payload_dictionary_and_cycle_retirement() {
             let native = unsafe { file_handle_ptr(ptr) };
             assert!(!native.is_null());
             let state = unsafe { std::sync::Arc::downgrade((*native).state.as_ref().unwrap()) };
-            let field = attr_name_bits_from_bytes(py, b"field").unwrap();
-            let extra = attr_name_bits_from_bytes(py, b"extra").unwrap();
+            let field = dynamic_attr_name_bits(py, b"field").unwrap();
+            let extra = dynamic_attr_name_bits(py, b"extra").unwrap();
             let marker = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             crate::molt_set_attr_name(object, field, marker);
             crate::molt_set_attr_name(object, extra, marker);
@@ -397,8 +397,8 @@ fn native_declared_slots_share_allocation_projection_and_retirement() {
                 })
                 .collect();
             assert_eq!(roots, vec![kind.owner(py).unwrap()]);
-            let name = attr_name_bits_from_bytes(py, b"DeclaredNativeTail").unwrap();
-            let field = attr_name_bits_from_bytes(py, b"retained").unwrap();
+            let name = dynamic_attr_name_bits(py, b"DeclaredNativeTail").unwrap();
+            let field = dynamic_attr_name_bits(py, b"retained").unwrap();
             let class = crate::molt_class_new(name);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let policy = crate::object::class_storage::ClassSlotPolicy {
@@ -479,7 +479,7 @@ fn native_declared_slots_share_allocation_projection_and_retirement() {
 fn native_class_edge_publication_refuses_an_unallocated_tail_atomically() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let name = attr_name_bits_from_bytes(py, b"NativePublicationExtent").unwrap();
+        let name = dynamic_attr_name_bits(py, b"NativePublicationExtent").unwrap();
         let class = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
@@ -491,7 +491,7 @@ fn native_class_edge_publication_refuses_an_unallocated_tail_atomically() {
         crate::molt_class_set_base(class, builtin_classes(py).tuple);
         let mut names = Vec::new();
         for index in 0..32 {
-            names.push(attr_name_bits_from_bytes(py, format!("field{index}").as_bytes()).unwrap());
+            names.push(dynamic_attr_name_bits(py, format!("field{index}").as_bytes()).unwrap());
         }
         let slots = MoltObject::from_ptr(alloc_tuple(py, &names)).bits();
         let declaration = MoltObject::from_ptr(alloc_tuple(py, &[slots, policy.encode()])).bits();

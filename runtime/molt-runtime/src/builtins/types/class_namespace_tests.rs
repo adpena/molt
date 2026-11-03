@@ -4,9 +4,9 @@ use super::*;
 fn class_namespace_cell_rejection_releases_unpublished_class_payload() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let name = attr_name_bits_from_bytes(_py, b"RejectedNamespaceOwner").unwrap();
-        let cell_key = attr_name_bits_from_bytes(_py, b"__classdictcell__").unwrap();
-        let payload_key = attr_name_bits_from_bytes(_py, b"payload").unwrap();
+        let name = dynamic_attr_name_bits(_py, b"RejectedNamespaceOwner").unwrap();
+        let cell_key = dynamic_attr_name_bits(_py, b"__classdictcell__").unwrap();
+        let payload_key = dynamic_attr_name_bits(_py, b"payload").unwrap();
         let payload = alloc_list(_py, &[]);
         assert!(!payload.is_null());
         let payload_bits = MoltObject::from_ptr(payload).bits();
@@ -48,9 +48,9 @@ fn class_namespace_cell_rejection_releases_unpublished_class_payload() {
 fn class_namespace_cell_publishes_actual_copied_dictionary() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let name = attr_name_bits_from_bytes(_py, b"NamespaceOwner").unwrap();
-        let cell_key = attr_name_bits_from_bytes(_py, b"__classdictcell__").unwrap();
-        let key = attr_name_bits_from_bytes(_py, b"injected").unwrap();
+        let name = dynamic_attr_name_bits(_py, b"NamespaceOwner").unwrap();
+        let cell_key = dynamic_attr_name_bits(_py, b"__classdictcell__").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"injected").unwrap();
         let prepared = alloc_dict_with_pairs(_py, &[key, MoltObject::from_int(1).bits()]);
         let prepared_bits = MoltObject::from_ptr(prepared).bits();
         let cell = crate::object::cells::alloc_cell(_py, prepared_bits);

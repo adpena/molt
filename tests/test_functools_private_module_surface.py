@@ -19,7 +19,7 @@ install_registry({{
     "molt_functools_kwd_mark": lambda: getattr(_host_functools, "Placeholder", object()),
     "molt_functools_update_wrapper": _host_functools.update_wrapper,
     "molt_functools_wraps": _host_functools.wraps,
-    "molt_functools_partial": lambda func, args, kwargs: _host_functools.partial(func, *args, **kwargs),
+    "molt_functools_partial_type": lambda: _host_functools.partial,
     "molt_functools_reduce": _host_functools.reduce,
     "molt_functools_lru_cache": _host_functools._lru_cache_wrapper,
     "molt_functools_cmp_to_key": _host_functools.cmp_to_key,

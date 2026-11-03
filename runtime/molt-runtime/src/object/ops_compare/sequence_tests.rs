@@ -7,7 +7,7 @@ static CLEAR_DURING_EQUALITY: AtomicU64 = AtomicU64::new(0);
 static RICH_RESULT: AtomicU64 = AtomicU64::new(0);
 
 fn subclass(py: &PyToken<'_>, base: u64) -> u64 {
-    let name = attr_name_bits_from_bytes(py, b"ComparedSequence").unwrap();
+    let name = dynamic_attr_name_bits(py, b"ComparedSequence").unwrap();
     let class = molt_class_new(name);
     dec_ref_bits(py, name);
     let result = molt_class_set_base(class, base);
@@ -19,7 +19,7 @@ fn subclass(py: &PyToken<'_>, base: u64) -> u64 {
 }
 
 fn install(py: &PyToken<'_>, class: u64, name: &[u8], target: *const ()) {
-    let name = attr_name_bits_from_bytes(py, name).unwrap();
+    let name = dynamic_attr_name_bits(py, name).unwrap();
     let function = MoltObject::from_ptr(alloc_runtime_function_obj(
         py,
         runtime_fn_addr("sequence_test_callback", target),
@@ -87,12 +87,16 @@ fn inherited_sequence_descriptors_cover_every_operation_and_declaring_owner() {
             assert!(!exception_pending(py));
             assert_eq!(type_of_bits(py, child), class);
             for (name, operator, expected) in [
-                ("__eq__", molt_eq as extern "C" fn(u64, u64) -> u64, false),
-                ("__ne__", molt_ne, true),
-                ("__lt__", molt_lt, true),
-                ("__le__", molt_le, true),
-                ("__gt__", molt_gt, false),
-                ("__ge__", molt_ge, false),
+                (
+                    crate::NameId::DunderEq,
+                    molt_eq as extern "C" fn(u64, u64) -> u64,
+                    false,
+                ),
+                (crate::NameId::DunderNe, molt_ne, true),
+                (crate::NameId::DunderLt, molt_lt, true),
+                (crate::NameId::DunderLe, molt_le, true),
+                (crate::NameId::DunderGt, molt_gt, false),
+                (crate::NameId::DunderGe, molt_ge, false),
             ] {
                 let descriptor =
                     crate::builtins::methods::builtin_class_method_bits(py, owner, name)
@@ -100,15 +104,15 @@ fn inherited_sequence_descriptors_cover_every_operation_and_declaring_owner() {
                         .expect("declared comparison");
                 for lhs in [left, child] {
                     let direct = unsafe { call_callable2(py, descriptor, lhs, right) };
-                    assert!(!exception_pending(py), "{name}");
-                    assert_eq!(direct, MoltObject::from_bool(expected).bits(), "{name}");
+                    assert!(!exception_pending(py), "{name:?}");
+                    assert_eq!(direct, MoltObject::from_bool(expected).bits(), "{name:?}");
                     dec_ref_bits(py, direct);
                     let generic = operator(lhs, right);
-                    assert!(!exception_pending(py), "inherited {name}");
+                    assert!(!exception_pending(py), "inherited {name:?}");
                     assert_eq!(
                         generic,
                         MoltObject::from_bool(expected).bits(),
-                        "inherited {name}"
+                        "inherited {name:?}"
                     );
                     dec_ref_bits(py, generic);
                 }
@@ -199,7 +203,7 @@ fn sequence_overrides_reflect_and_notimplemented_falls_back_to_identity() {
         let slot = crate::builtins::methods::builtin_class_method_bits(
             py,
             builtin_classes(py).tuple,
-            "__ge__",
+            crate::NameId::DunderGe,
         )
         .unwrap()
         .unwrap();

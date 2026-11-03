@@ -33,7 +33,7 @@ fn suffix_policy_survives_failed_initialization_and_commits_one_owner() {
         );
         let original = ExceptionValue::adopt(
             py,
-            module_spec_suffix_value(py, b"SOURCE_SUFFIXES").unwrap(),
+            module_spec_suffix_value(py, crate::NameId::SourceSuffixes).unwrap(),
         );
         let stage = ExceptionValue::adopt(py, stage_module_spec_suffix_namespace(py));
         let source_key = ExceptionValue::adopt(py, str_bits(py, b"SOURCE_SUFFIXES"));
@@ -48,7 +48,7 @@ fn suffix_policy_survives_failed_initialization_and_commits_one_owner() {
         ));
         let after_failure = ExceptionValue::adopt(
             py,
-            module_spec_suffix_value(py, b"SOURCE_SUFFIXES").unwrap(),
+            module_spec_suffix_value(py, crate::NameId::SourceSuffixes).unwrap(),
         );
         assert_eq!(after_failure.bits(), original.bits());
         drop(stage);
@@ -57,7 +57,7 @@ fn suffix_policy_survives_failed_initialization_and_commits_one_owner() {
         // rebinding is observed there, not in a later replacement module.
         let bytecode = ExceptionValue::adopt(
             py,
-            module_spec_suffix_value(py, b"BYTECODE_SUFFIXES").unwrap(),
+            module_spec_suffix_value(py, crate::NameId::BytecodeSuffixes).unwrap(),
         );
         let complete = alloc_dict_with_pairs(
             py,
@@ -81,13 +81,13 @@ fn suffix_policy_survives_failed_initialization_and_commits_one_owner() {
         assert!(!exception_pending(py));
         let rebound = ExceptionValue::adopt(
             py,
-            module_spec_suffix_value(py, b"SOURCE_SUFFIXES").unwrap(),
+            module_spec_suffix_value(py, crate::NameId::SourceSuffixes).unwrap(),
         );
         assert_eq!(rebound.bits(), MoltObject::from_int(37).bits());
         assert!(commit_module_spec_suffix_namespace(py, partial.bits()));
         let after_replacement = ExceptionValue::adopt(
             py,
-            module_spec_suffix_value(py, b"SOURCE_SUFFIXES").unwrap(),
+            module_spec_suffix_value(py, crate::NameId::SourceSuffixes).unwrap(),
         );
         assert_eq!(after_replacement.bits(), rebound.bits());
     });
@@ -99,13 +99,13 @@ fn str_bits(py: &PyToken<'_>, value: &[u8]) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-fn attr(py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> u64 {
+fn attr(py: &PyToken<'_>, obj_bits: u64, name: crate::NameId) -> u64 {
     let value = get_spec_attr(py, obj_bits, name).expect("ModuleSpec attribute");
     assert!(!exception_pending(py));
     value
 }
 
-fn attr_text(py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> String {
+fn attr_text(py: &PyToken<'_>, obj_bits: u64, name: crate::NameId) -> String {
     let value = attr(py, obj_bits, name);
     let text = string_obj_to_owned(obj_from_bits(value)).expect("str attribute");
     dec_ref_bits(py, value);
@@ -155,8 +155,8 @@ fn runtime_factory_obeys_mutable_class_attribute_protocol() {
         let name = str_bits(py, b"original");
         let none = MoltObject::none().bits();
         let spec = alloc_module_spec(py, name, none, none, none).expect("observed spec");
-        assert_eq!(attr_text(py, spec, b"name"), "observed.leaf");
-        assert_eq!(attr_text(py, spec, b"parent"), "observed");
+        assert_eq!(attr_text(py, spec, crate::NameId::Name), "observed.leaf");
+        assert_eq!(attr_text(py, spec, crate::NameId::Parent), "observed");
         for bits in [spec, name] {
             dec_ref_bits(py, bits);
         }
@@ -170,7 +170,7 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
         let class_bits = module_spec_class(py);
         assert_ne!(class_bits, 0);
         assert_eq!(
-            attr_text(py, class_bits, b"__module__"),
+            attr_text(py, class_bits, crate::NameId::DunderModule),
             "_frozen_importlib"
         );
         let facade_bits = molt_importlib_module_spec_type();
@@ -183,16 +183,16 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
         let not_package = MoltObject::from_bool(false).bits();
         let spec = alloc_module_spec(py, name, none, origin, not_package).expect("module spec");
         assert_eq!(type_of_bits(py, spec), class_bits);
-        assert_eq!(attr_text(py, spec, b"name"), "pkg.leaf");
-        assert_eq!(attr_text(py, spec, b"origin"), "/tmp/leaf.so");
-        assert_eq!(attr_text(py, spec, b"parent"), "pkg");
+        assert_eq!(attr_text(py, spec, crate::NameId::Name), "pkg.leaf");
+        assert_eq!(attr_text(py, spec, crate::NameId::Origin), "/tmp/leaf.so");
+        assert_eq!(attr_text(py, spec, crate::NameId::Parent), "pkg");
         for (field, expected) in [
-            (b"loader".as_slice(), none),
-            (b"loader_state".as_slice(), none),
-            (b"cached".as_slice(), none),
-            (b"submodule_search_locations".as_slice(), none),
+            (crate::NameId::Loader, none),
+            (crate::NameId::LoaderState, none),
+            (crate::NameId::Cached, none),
+            (crate::NameId::SubmoduleSearchLocations, none),
             (
-                b"has_location".as_slice(),
+                crate::NameId::HasLocation,
                 MoltObject::from_bool(false).bits(),
             ),
         ] {
@@ -207,7 +207,7 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
 
         let is_package = MoltObject::from_bool(true).bits();
         let package = alloc_module_spec(py, name, none, none, is_package).expect("package spec");
-        assert_eq!(attr_text(py, package, b"parent"), "pkg.leaf");
+        assert_eq!(attr_text(py, package, crate::NameId::Parent), "pkg.leaf");
         let package_repr = molt_repr_from_obj(package);
         assert!(!exception_pending(py));
         assert_eq!(
@@ -216,10 +216,10 @@ fn runtime_factory_and_facade_type_share_one_canonical_class() {
         );
         dec_ref_bits(py, package_repr);
         assert_eq!(
-            attr(py, package, b"has_location"),
+            attr(py, package, crate::NameId::HasLocation),
             MoltObject::from_bool(false).bits()
         );
-        let locations = attr(py, package, b"submodule_search_locations");
+        let locations = attr(py, package, crate::NameId::SubmoduleSearchLocations);
         assert_eq!(molt_len(locations), MoltObject::from_int(0).bits());
         dec_ref_bits(py, locations);
 
@@ -241,8 +241,8 @@ fn class_call_binds_positional_and_keyword_initializer_arguments() {
         let positional = unsafe { call_callable2(py, class_bits, name, none) };
         assert!(!exception_pending(py));
         assert_eq!(type_of_bits(py, positional), class_bits);
-        assert_eq!(attr_text(py, positional, b"parent"), "");
-        assert_eq!(attr(py, positional, b"origin"), none);
+        assert_eq!(attr_text(py, positional, crate::NameId::Parent), "");
+        assert_eq!(attr(py, positional, crate::NameId::Origin), none);
 
         let origin_key = str_bits(py, b"origin");
         let package_key = str_bits(py, b"is_package");
@@ -255,13 +255,13 @@ fn class_call_binds_positional_and_keyword_initializer_arguments() {
         }
         let keyword = molt_call_bind(class_bits, builder);
         assert!(!exception_pending(py));
-        assert_eq!(attr_text(py, keyword, b"origin"), "built-in");
-        assert_eq!(attr(py, keyword, b"loader"), none);
+        assert_eq!(attr_text(py, keyword, crate::NameId::Origin), "built-in");
+        assert_eq!(attr(py, keyword, crate::NameId::Loader), none);
         assert_eq!(
-            attr(py, keyword, b"has_location"),
+            attr(py, keyword, crate::NameId::HasLocation),
             MoltObject::from_bool(false).bits()
         );
-        assert_eq!(attr_text(py, keyword, b"parent"), "top");
+        assert_eq!(attr_text(py, keyword, crate::NameId::Parent), "top");
 
         let parent_name = str_bits(py, b"parent");
         let _ = molt_set_attr_name(keyword, parent_name, name);

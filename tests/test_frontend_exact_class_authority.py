@@ -449,14 +449,14 @@ def test_matching_branch_facts_publish_one_live_join_authority() -> None:
     assert generator._exact_class_for_name("point") == POINT
 
 
-def test_proven_exact_dataclass_value_authorizes_dataclass_field_access() -> None:
+def test_exact_dataclass_value_uses_the_attribute_protocol() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.classes[RECORD] = {
         "binding_name": "Record",
         "dataclass": True,
-        "fields": {"value": 0},
-        "field_hints": {"value": "int"},
-        # ``value: int`` binds no class attribute, so none may be a descriptor.
+        "fields": {},
+        "field_hints": {},
+        # The dataclass transform owns runtime fields, not inferred offsets.
         "possible_data_descriptor_attrs": frozenset(),
     }
     record = generator._stamp_exact_class(
@@ -470,7 +470,7 @@ def test_proven_exact_dataclass_value_authorizes_dataclass_field_access() -> Non
 
     generator._emit_attribute_load(node, record, None, RECORD)
 
-    assert any(op.kind == "DATACLASS_GET" for op in generator.current_ops)
+    assert any(op.kind == "GETATTR_GENERIC_OBJ" for op in generator.current_ops)
 
 
 def test_dataclass_type_hint_does_not_authorize_direct_field_storage() -> None:

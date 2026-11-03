@@ -66,9 +66,12 @@ pub(super) fn emit_hash_container_op(
             func.instruction(&Instruction::LocalGet(locals[value]));
             emit_call(func, reloc, imports[insert]);
             discard_runtime_result(func, imports, reloc, insert);
-            emit_call(func, reloc, imports[WasmRuntimeImport::ExceptionPending]);
-            func.instruction(&Instruction::I64Const(0));
-            func.instruction(&Instruction::I64Ne);
+            crate::wasm::pending_work::emit_exception_pending_test(
+                func,
+                crate::wasm::pending_work::thread_record_local(locals),
+                imports[WasmRuntimeImport::ExceptionPending],
+                reloc,
+            );
             func.instruction(&Instruction::If(BlockType::Empty));
             // Preserve the pending exception, retire the partial container,
             // and skip all remaining user-observable hash/equality calls.

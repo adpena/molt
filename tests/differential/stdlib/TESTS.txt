@@ -1243,6 +1243,7 @@ tests/differential/stdlib/importlib_module_reload.py
 tests/differential/stdlib/importlib_module_spec.py
 tests/differential/stdlib/importlib_namespace_path_protocol.py
 tests/differential/stdlib/importlib_optional_import_intrinsic.py
+tests/differential/stdlib/importlib_package_defers_util.py
 tests/differential/stdlib/importlib_package_path_identity.py
 tests/differential/stdlib/importlib_path_identity_ns/child.py
 tests/differential/stdlib/importlib_path_identity_pkg/__init__.py
@@ -1632,6 +1633,8 @@ tests/differential/stdlib/poplib_basic.py
 tests/differential/stdlib/posix_platform_basic.py
 tests/differential/stdlib/posix_userdb_basic.py
 tests/differential/stdlib/pprint_basic.py
+tests/differential/stdlib/public_native_types.py
+tests/differential/stdlib/public_object_identity.py
 tests/differential/stdlib/pwd_basic.py
 tests/differential/stdlib/py_compile_basic.py
 tests/differential/stdlib/queue_basic.py

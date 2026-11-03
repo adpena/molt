@@ -12,7 +12,9 @@ unsafe fn readonly_descriptor_metadata(
     name: &str,
 ) -> Option<u64> {
     if unsafe { object_type_id(object) } == crate::TYPE_ID_NATIVE_DESCRIPTOR
-        && native_descriptor_metadata_field(name).is_some()
+        && crate::NameId::from_bytes(name.as_bytes())
+            .and_then(native_descriptor_metadata_field)
+            .is_some()
     {
         Some(raise_exception::<u64>(
             py,
@@ -43,14 +45,9 @@ unsafe fn selected_mutation_hook<'a, 'py>(
     mutation: DescriptorMutation,
 ) -> Result<Option<crate::builtins::exceptions::ExceptionValue<'a, 'py>>, ()> {
     unsafe {
-        let names = &runtime_state(py).interned;
         let name = match mutation {
-            DescriptorMutation::Set(_) => {
-                intern_static_name(py, &names.setattr_name, b"__setattr__")
-            }
-            DescriptorMutation::Delete => {
-                intern_static_name(py, &names.delattr_name, b"__delattr__")
-            }
+            DescriptorMutation::Set(_) => crate::NameId::DunderSetattr.bits(py),
+            DescriptorMutation::Delete => crate::NameId::DunderDelattr.bits(py),
         };
         Ok(class_attr_lookup_raw_mro(py, class, name)?
             .map(|bits| crate::builtins::exceptions::ExceptionValue::pin(py, bits)))
@@ -117,14 +114,16 @@ pub(super) unsafe fn pure_mutation_default_access(
         let setter = crate::builtins::attr::class_namespace_lookup_mro_pure(
             py,
             class,
-            b"__setattr__",
+            crate::NameId::DunderSetattr.bits(py),
             None,
+            crate::builtins::attr::NamespacePreparation::Unresolved,
         )?;
         let deleter = crate::builtins::attr::class_namespace_lookup_mro_pure(
             py,
             class,
-            b"__delattr__",
+            crate::NameId::DunderDelattr.bits(py),
             None,
+            crate::builtins::attr::NamespacePreparation::Unresolved,
         )?;
         for (set, delete, access) in [
             (
@@ -488,7 +487,9 @@ unsafe fn mutate_class_namespace(
 
 /// Raw generic class mutation shares the physical dictionary owner with the
 /// generic getter. Heap classes alias their namespace; static classes have a
-/// separate instance dictionary. Neither path invalidates semantic type caches.
+/// separate instance dictionary. Heap namespace commits invalidate borrowed
+/// runtime observations before retirement, through the existing class version.
+/// Raw generic mutation does not publish native slots or notify C type watchers.
 unsafe fn mutate_class_physical_dictionary(
     py: &PyToken<'_>,
     class: *mut u8,
@@ -498,6 +499,9 @@ unsafe fn mutate_class_physical_dictionary(
     unsafe {
         if let Some(value) = value {
             let retired = crate::object::field_storage::set_item_deferred(py, class, name, value)?;
+            if instance_dict_bits(class) == class_dict_bits(class) {
+                class_bump_layout_version(class);
+            }
             drop(retired);
             return Ok(true);
         }
@@ -514,6 +518,9 @@ unsafe fn mutate_class_physical_dictionary(
             Ok(retired) => Ok(retired.is_some()),
             Err(()) => Err(()),
         };
+        if matches!(applied, Ok(true)) && instance_dict_bits(class) == class_dict_bits(class) {
+            class_bump_layout_version(class);
+        }
         drop(retired);
         dec_ref_bits(py, dictionary);
         applied
@@ -897,31 +904,7 @@ unsafe fn set_attr_ptr_with_name(
             attr_error(_py, "code", attr_name);
             return Err(());
         }
-        if type_id == TYPE_ID_DATACLASS {
-            if access == AttributeMutation::Normal
-                && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && dispatch_custom_mutation(
-                    _py,
-                    class_ptr,
-                    obj_ptr,
-                    attr_bits,
-                    DescriptorMutation::Set(val_bits),
-                    CustomMutationDefaultPolicy::InvokeAnyHook,
-                )? == CustomMutationDispatch::Handled
-            {
-                return Ok(());
-            }
-            let result = dataclass_setattr_inner(
-                _py,
-                obj_ptr,
-                attr_bits,
-                attr_name,
-                val_bits,
-                access == AttributeMutation::Normal,
-            );
-            return result;
-        }
+
         if crate::object::heap_kind_has_class_shape(type_id)
             || crate::object::native_instance::has_fields(obj_ptr)
             || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
@@ -970,22 +953,14 @@ unsafe fn module_delattr_namespace(
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
             && object_type_id(dict_ptr) == TYPE_ID_DICT
         {
-            let annotations_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.annotations_name,
-                b"__annotations__",
-            );
+            let annotations_bits = crate::NameId::DunderAnnotations.bits(_py);
             if annotations_bits == 0 {
                 return Err(());
             }
             if crate::object::ops_compare::string_storage_equal(attr_bits, annotations_bits) {
                 if dict_del_in_place(_py, dict_ptr, annotations_bits)? {
                     if pep649_enabled(_py) {
-                        let annotate_bits = intern_static_name(
-                            _py,
-                            &runtime_state(_py).interned.annotate_name,
-                            b"__annotate__",
-                        );
+                        let annotate_bits = crate::NameId::DunderAnnotate.bits(_py);
                         if annotate_bits == 0 {
                             return Err(());
                         }
@@ -1000,11 +975,7 @@ unsafe fn module_delattr_namespace(
                 raise_exception::<()>(_py, BuiltinExc::AttributeError, "__annotations__");
                 return Err(());
             }
-            let annotate_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.annotate_name,
-                b"__annotate__",
-            );
+            let annotate_bits = crate::NameId::DunderAnnotate.bits(_py);
             if annotate_bits == 0 {
                 return Err(());
             }
@@ -1210,29 +1181,7 @@ unsafe fn del_attr_ptr_with_access(
             attr_error(_py, "function", attr_name);
             return Err(());
         }
-        if type_id == TYPE_ID_DATACLASS {
-            if access == AttributeMutation::Normal
-                && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && dispatch_custom_mutation(
-                    _py,
-                    class_ptr,
-                    obj_ptr,
-                    attr_bits,
-                    DescriptorMutation::Delete,
-                    CustomMutationDefaultPolicy::InvokeAnyHook,
-                )? == CustomMutationDispatch::Handled
-            {
-                return Ok(());
-            }
-            return dataclass_delattr_inner(
-                _py,
-                obj_ptr,
-                attr_bits,
-                attr_name,
-                access == AttributeMutation::Normal,
-            );
-        }
+
         if crate::object::heap_kind_has_class_shape(type_id)
             || crate::object::native_instance::has_fields(obj_ptr)
             || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
@@ -1365,82 +1314,6 @@ pub(crate) unsafe fn object_setattr_raw(
     }
 }
 
-unsafe fn dataclass_setattr_inner(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-    attr_name: &str,
-    val_bits: u64,
-    enforce_frozen: bool,
-) -> Result<(), ()> {
-    unsafe {
-        let desc_ptr = dataclass_desc_ptr(obj_ptr);
-        if enforce_frozen && !desc_ptr.is_null() && (*desc_ptr).frozen {
-            raise_exception::<()>(
-                _py,
-                BuiltinExc::TypeError,
-                "cannot assign to frozen dataclass field",
-            );
-            return Err(());
-        }
-        if !desc_ptr.is_null() {
-            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name)
-                && crate::object::field_storage::field_at_offset(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                )
-                .is_some_and(|field| field.kind.is_declared_slot())
-            {
-                return crate::object::accessors::object_field_set_ptr_raw(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                    val_bits,
-                );
-            }
-            if class_bits != 0
-                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?
-                && apply_descriptor_mutation(
-                    _py,
-                    desc_bits,
-                    instance_bits_for_call(obj_ptr),
-                    DescriptorMutation::Set(val_bits),
-                )?
-            {
-                return Ok(());
-            }
-            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
-                return crate::object::accessors::object_field_set_ptr_raw(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                    val_bits,
-                );
-            }
-            if !(*desc_ptr).allows_dict {
-                let name = &(*desc_ptr).name;
-                let type_label = if name.is_empty() {
-                    "dataclass"
-                } else {
-                    name.as_str()
-                };
-                attr_error_with_obj(
-                    _py,
-                    type_label,
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
-                return Err(());
-            }
-        }
-        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits)
-    }
-}
-
 pub(crate) unsafe fn object_delattr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1537,93 +1410,6 @@ pub(crate) unsafe fn object_delattr_raw(
             return Err(());
         }
         attr_error(_py, class_name_for_error(class_bits), attr_name);
-        Err(())
-    }
-}
-
-unsafe fn dataclass_delattr_inner(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-    attr_name: &str,
-    enforce_frozen: bool,
-) -> Result<(), ()> {
-    unsafe {
-        let desc_ptr = dataclass_desc_ptr(obj_ptr);
-        if !desc_ptr.is_null() {
-            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-            if class_bits != 0
-                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?
-                && apply_descriptor_mutation(
-                    _py,
-                    desc_bits,
-                    instance_bits_for_call(obj_ptr),
-                    DescriptorMutation::Delete,
-                )?
-            {
-                return Ok(());
-            }
-            if enforce_frozen && (*desc_ptr).frozen {
-                raise_exception::<()>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "cannot delete frozen dataclass field",
-                );
-                return Err(());
-            }
-            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
-                if crate::object::accessors::object_field_delete_ptr_raw(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                )? {
-                    return Ok(());
-                }
-                attr_error_with_obj(
-                    _py,
-                    &(*desc_ptr).name,
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
-                return Err(());
-            }
-            if !(*desc_ptr).allows_dict {
-                let name = &(*desc_ptr).name;
-                let type_label = if name.is_empty() {
-                    "dataclass"
-                } else {
-                    name.as_str()
-                };
-                attr_error_with_obj(
-                    _py,
-                    type_label,
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
-                return Err(());
-            }
-        }
-        if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits)? {
-            return Ok(());
-        }
-        let type_label = if !desc_ptr.is_null() {
-            let name = &(*desc_ptr).name;
-            if name.is_empty() {
-                "dataclass"
-            } else {
-                name.as_str()
-            }
-        } else {
-            "dataclass"
-        };
-        attr_error_with_obj(
-            _py,
-            type_label,
-            attr_name,
-            MoltObject::from_ptr(obj_ptr).bits(),
-        );
         Err(())
     }
 }
@@ -1735,9 +1521,6 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                     mutation,
                 );
             };
-            if super::field_sites::write_cached_field(py, site_id, obj_bits, val_bits) {
-                return MoltObject::none().bits();
-            }
             let Some(length) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(
                     py,
@@ -1746,7 +1529,10 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                 );
             };
             let bytes = std::slice::from_raw_parts(attr_name_ptr, length);
-            let Some(name) = attr_name_bits_from_bytes(py, bytes) else {
+            if super::field_sites::write_cached_field(py, site_id, obj_bits, val_bits, bytes) {
+                return MoltObject::none().bits();
+            }
+            let Some(name) = dynamic_attr_name_bits(py, bytes) else {
                 return MoltObject::none().bits();
             };
             if super::field_sites::remember_field_site(
@@ -1807,7 +1593,7 @@ unsafe fn mutate_attr_bytes(
             );
         };
         let bytes = std::slice::from_raw_parts(name_ptr, length);
-        let Some(name) = attr_name_bits_from_bytes(py, bytes) else {
+        let Some(name) = dynamic_attr_name_bits(py, bytes) else {
             return MoltObject::none().bits();
         };
         let _ = mutate_attr_name(py, object, name, mutation, AttributeMutation::Normal);
@@ -2203,14 +1989,14 @@ mod function_metadata_tests {
                 assert!(crate::call::class_init::function_set_attr_name(
                     py,
                     replacement_ptr,
-                    b"__molt_arg_names__",
-                    replacement_names_bits,
+                    crate::NameId::DunderMoltArgNames,
+                    replacement_names_bits
                 ));
                 assert!(crate::call::class_init::function_set_attr_name(
                     py,
                     replacement_ptr,
-                    b"__molt_kwonly_names__",
-                    empty_bits,
+                    crate::NameId::DunderMoltKwonlyNames,
+                    empty_bits
                 ));
                 let replacement_code = ensure_function_code_bits(py, replacement_ptr);
 
@@ -2227,20 +2013,20 @@ mod function_metadata_tests {
                 assert!(crate::call::class_init::function_set_attr_name(
                     py,
                     target_ptr,
-                    b"__molt_arg_names__",
-                    original_names_bits,
+                    crate::NameId::DunderMoltArgNames,
+                    original_names_bits
                 ));
                 assert!(crate::call::class_init::function_set_attr_name(
                     py,
                     target_ptr,
-                    b"__molt_kwonly_names__",
-                    empty_bits,
+                    crate::NameId::DunderMoltKwonlyNames,
+                    empty_bits
                 ));
                 assert!(crate::call::class_init::function_set_attr_name(
                     py,
                     target_ptr,
-                    b"__defaults__",
-                    defaults_bits,
+                    crate::NameId::DunderDefaults,
+                    defaults_bits
                 ));
 
                 let result = molt_set_attr_generic(
@@ -2261,12 +2047,16 @@ mod function_metadata_tests {
                     crate::call::function::function_metadata_bits(
                         py,
                         target_ptr,
-                        b"__molt_arg_names__",
+                        crate::object::function_metadata::FunctionMetadataField::ArgumentNames
                     ),
                     replacement_names_bits
                 );
                 assert_eq!(
-                    crate::call::function::function_metadata_bits(py, target_ptr, b"__defaults__"),
+                    crate::call::function::function_metadata_bits(
+                        py,
+                        target_ptr,
+                        crate::object::function_metadata::FunctionMetadataField::Defaults
+                    ),
                     defaults_bits
                 );
 
@@ -2299,7 +2089,7 @@ mod function_metadata_tests {
                 let target = runtime_function(py, "metadata_reentry_echo", echo as *const (), 1);
                 let target_ptr = obj_from_bits(target).as_ptr().unwrap();
                 TARGET.store(target, Ordering::SeqCst);
-                let name = attr_name_bits_from_bytes(py, b"MetadataFinalizerProbe").unwrap();
+                let name = dynamic_attr_name_bits(py, b"MetadataFinalizerProbe").unwrap();
                 let class = crate::molt_class_new(name);
                 crate::molt_class_set_base(class, builtin_classes(py).object);
                 let class_ptr = obj_from_bits(class).as_ptr().unwrap();
@@ -2310,7 +2100,7 @@ mod function_metadata_tests {
                     observe_metadata_release as *const (),
                     1,
                 );
-                let del_name = attr_name_bits_from_bytes(py, b"__del__").unwrap();
+                let del_name = dynamic_attr_name_bits(py, b"__del__").unwrap();
                 molt_set_attr_name(class, del_name, finalizer);
                 assert!(!exception_pending(py));
 
@@ -2322,7 +2112,7 @@ mod function_metadata_tests {
                     b"__kwdefaults__",
                     b"__molt_is_generator__",
                 ] {
-                    let key_bits = attr_name_bits_from_bytes(py, key).unwrap();
+                    let key_bits = dynamic_attr_name_bits(py, key).unwrap();
                     for delete in [false, true] {
                         let victim = crate::alloc_instance_for_class(py, class_ptr);
                         let value = if key == b"__defaults__" {

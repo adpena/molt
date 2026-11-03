@@ -322,15 +322,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         custody: &mut BorrowedOperands<'ctx>,
         step: &str,
     ) {
-        let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
-        let pending = self
-            .backend
-            .builder
-            .build_call(pending_fn, &[], &format!("{}_pending", custody.label))
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
+        let pending = self.emit_exception_pending_word(&format!("{}_pending", custody.label));
         let clear = self
             .backend
             .builder
@@ -916,7 +908,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
     }
 
-    /// A fixed word range for one operation (list, tuple, dataclass,
+    /// A fixed word range for one operation (list, tuple,
     /// class-definition or unpack transport). Every execution of the operation
     /// reuses this static entry-block slot; allocating where the operation runs
     /// would grow the stack on each loop iteration.
@@ -1988,6 +1980,107 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             result.add_incoming(&[(&none, fast)]);
         }
         result.as_basic_value()
+    }
+
+    /// `molt_exception_pending()` as an i64 0 or 1. A function that polls
+    /// for async work already holds the thread record, so it tests the
+    /// record's pending byte inline and calls the runtime reader only when the
+    /// byte is set. The reader answers 0 at once for a clear byte, and for a
+    /// set byte it confirms it, repairing a stale task slot; the inline test
+    /// therefore returns exactly what the call returned. A function without
+    /// the record keeps the call: acquiring the record costs more than one
+    /// check.
+    pub(super) fn emit_exception_pending_word(
+        &mut self,
+        name: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
+        if !self.polls_async_work {
+            return self
+                .backend
+                .builder
+                .build_call(pending_fn, &[], name)
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_int_value();
+        }
+        let (record, _) = self.async_poll_context();
+        let context = self.backend.context;
+        let byte_ptr = unsafe {
+            self.backend
+                .builder
+                .build_gep(
+                    context.i8_type(),
+                    record,
+                    &[context.i64_type().const_int(
+                        molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as u64,
+                        false,
+                    )],
+                    &format!("{name}_byte_ptr"),
+                )
+                .unwrap()
+        };
+        let byte = self
+            .backend
+            .builder
+            .build_load(context.i8_type(), byte_ptr, &format!("{name}_byte"))
+            .unwrap()
+            .into_int_value();
+        let set = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                byte,
+                context.i8_type().const_zero(),
+                &format!("{name}_byte_set"),
+            )
+            .unwrap();
+        let confirm = context.append_basic_block(self.llvm_fn, "exception_pending_confirm");
+        let join = context.append_basic_block(self.llvm_fn, "exception_pending_join");
+        self.all_llvm_blocks.extend([confirm, join]);
+        let from = self.backend.builder.get_insert_block().unwrap();
+        self.record_llvm_edge(from, confirm);
+        self.record_llvm_edge(from, join);
+        self.backend
+            .builder
+            .build_conditional_branch(set, confirm, join)
+            .unwrap();
+        self.backend.builder.position_at_end(confirm);
+        let confirm_call = self
+            .backend
+            .builder
+            .build_call(pending_fn, &[], name)
+            .unwrap();
+        confirm_call.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
+                0,
+            ),
+        );
+        let confirmed = confirm_call
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        let confirm_exit = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(join)
+            .unwrap();
+        self.record_llvm_edge(confirm_exit, join);
+        self.backend.builder.position_at_end(join);
+        let pending = self
+            .backend
+            .builder
+            .build_phi(context.i64_type(), &format!("{name}_word"))
+            .unwrap();
+        pending.add_incoming(&[
+            (&confirmed, confirm_exit),
+            (&context.i64_type().const_zero(), from),
+        ]);
+        pending.as_basic_value().into_int_value()
     }
 
     pub(super) fn ensure_runtime_i64_fn(

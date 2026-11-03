@@ -16,32 +16,27 @@ import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
 
-_HOST_MISSING = object()
-
 install_registry({{
-    "molt_itertools_kwd_mark": lambda: _HOST_MISSING,
-    "molt_itertools_chain": lambda iterables: _host_itertools.chain(*iterables),
-    "molt_itertools_chain_from_iterable": _host_itertools.chain.from_iterable,
-    "molt_itertools_islice": lambda iterable, start, stop, step: _host_itertools.islice(iterable, start, None if stop is _HOST_MISSING else stop, None if step is _HOST_MISSING else step),
-    "molt_itertools_repeat": _host_itertools.repeat,
+    "molt_itertools_accumulate_type": lambda: _host_itertools.accumulate,
+    "molt_itertools_batched_type": lambda: _host_itertools.batched,
+    "molt_itertools_chain_type": lambda: _host_itertools.chain,
+    "molt_itertools_combinations_type": lambda: _host_itertools.combinations,
+    "molt_itertools_combinations_with_replacement_type": lambda: _host_itertools.combinations_with_replacement,
+    "molt_itertools_compress_type": lambda: _host_itertools.compress,
+    "molt_itertools_count_type": lambda: _host_itertools.count,
+    "molt_itertools_cycle_type": lambda: _host_itertools.cycle,
+    "molt_itertools_dropwhile_type": lambda: _host_itertools.dropwhile,
+    "molt_itertools_filterfalse_type": lambda: _host_itertools.filterfalse,
+    "molt_itertools_groupby_type": lambda: _host_itertools.groupby,
+    "molt_itertools_islice_type": lambda: _host_itertools.islice,
+    "molt_itertools_pairwise_type": lambda: _host_itertools.pairwise,
+    "molt_itertools_permutations_type": lambda: _host_itertools.permutations,
+    "molt_itertools_product_type": lambda: _host_itertools.product,
     "molt_itertools_repeat_type": lambda: _host_itertools.repeat,
-    "molt_itertools_count": _host_itertools.count,
-    "molt_itertools_accumulate": lambda iterable, func, initial: _host_itertools.accumulate(iterable, func, initial=None if initial is _HOST_MISSING else initial),
-    "molt_itertools_batched": lambda iterable, n, strict=False: _host_itertools.batched(iterable, n, strict=strict),
-    "molt_itertools_product": lambda iterables, repeat=1: _host_itertools.product(*iterables, repeat=repeat),
-    "molt_itertools_permutations": _host_itertools.permutations,
-    "molt_itertools_groupby": _host_itertools.groupby,
+    "molt_itertools_starmap_type": lambda: _host_itertools.starmap,
+    "molt_itertools_takewhile_type": lambda: _host_itertools.takewhile,
+    "molt_itertools_zip_longest_type": lambda: _host_itertools.zip_longest,
     "molt_itertools_tee": _host_itertools.tee,
-    "molt_itertools_zip_longest": lambda iterables, fillvalue=None: _host_itertools.zip_longest(*iterables, fillvalue=fillvalue),
-    "molt_itertools_cycle": _host_itertools.cycle,
-    "molt_itertools_pairwise": _host_itertools.pairwise,
-    "molt_itertools_combinations": _host_itertools.combinations,
-    "molt_itertools_combinations_with_replacement": _host_itertools.combinations_with_replacement,
-    "molt_itertools_compress": _host_itertools.compress,
-    "molt_itertools_dropwhile": _host_itertools.dropwhile,
-    "molt_itertools_filterfalse": _host_itertools.filterfalse,
-    "molt_itertools_starmap": _host_itertools.starmap,
-    "molt_itertools_takewhile": _host_itertools.takewhile,
 }})
 
 
@@ -73,7 +68,7 @@ checks = {{
         and "_MOLT_REPEAT_TYPE" not in itertools.__dict__
         and "_MOLT_KWD_MARK" not in itertools.__dict__
         and "_MISSING" not in itertools.__dict__
-        and "molt_itertools_chain" not in itertools.__dict__
+        and "molt_itertools_chain_type" not in itertools.__dict__
         and "molt_itertools_islice" not in itertools.__dict__
         and "molt_itertools_cycle" not in itertools.__dict__
     ),

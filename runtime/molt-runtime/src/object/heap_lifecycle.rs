@@ -722,21 +722,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
             HeapLifecycleHandler::ContextManager => {
                 visit_bits(crate::builtins::context::context_payload_bits(ptr), visit);
             }
-            HeapLifecycleHandler::Dataclass => {
-                let fields = super::dataclass_fields_ptr(ptr);
-                if !fields.is_null() {
-                    for &bits in &*fields {
-                        visit_bits(bits, visit);
-                    }
-                }
-                let desc = super::dataclass_desc_ptr(ptr);
-                if !desc.is_null() {
-                    for field in &(*desc).field_layout {
-                        visit_bits(field.name, visit);
-                    }
-                }
-                visit_bits(super::instance_dict_bits(ptr), visit);
-            }
+
             HeapLifecycleHandler::Code => {
                 for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22, 23, 24] {
                     visit_bits(
@@ -1419,33 +1405,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     sink.detach_resource(DetachedResource::TypeProjection(fields));
                 }
             }
-            HeapLifecycleHandler::Dataclass => {
-                let fields = super::dataclass_fields_ptr(ptr);
-                let detached_fields = if fields.is_null() {
-                    Vec::new()
-                } else {
-                    std::mem::take(&mut *fields)
-                };
-                let desc = super::dataclass_desc_ptr(ptr);
-                let detached_keys = if desc.is_null() {
-                    Vec::new()
-                } else {
-                    std::mem::take(&mut (*desc).field_layout)
-                };
-                let dict = super::dataclass_dict_bits_ptr(ptr);
-                let detached_dict = if dict.is_null() {
-                    0
-                } else {
-                    dict.replace(MoltObject::none().bits())
-                };
-                detach(
-                    sink,
-                    detached_fields
-                        .into_iter()
-                        .chain(detached_keys.into_iter().map(|field| field.name))
-                        .chain(std::iter::once(detached_dict)),
-                );
-            }
+
             HeapLifecycleHandler::Generator => {
                 crate::async_rt::scheduler::task_detach_owned_edges(py, ptr, sink);
                 detach_generator_owned_edges(ptr, sink);
@@ -1695,11 +1655,14 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                 let payload = ptr.add(2 * std::mem::size_of::<*const ()>()) as *mut u64;
                 sink.detach_if_heap(payload.replace(MoltObject::none().bits()));
             }
-            HeapLifecycleHandler::Code => detach_slots(
-                ptr,
-                [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22, 23, 24],
-                sink,
-            ),
+            HeapLifecycleHandler::Code => {
+                crate::builtins::types::dataclasses::drop_code_init_plan(ptr);
+                detach_slots(
+                    ptr,
+                    [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22, 23, 24],
+                    sink,
+                );
+            }
             HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
             HeapLifecycleHandler::ListBuilder => {
                 let values = *(ptr as *mut *mut Vec<u64>);
@@ -1735,7 +1698,6 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             | HeapLifecycleHandler::Function
             | HeapLifecycleHandler::Cell
             | HeapLifecycleHandler::FrameBindings
-            | HeapLifecycleHandler::Dataclass
             | HeapLifecycleHandler::Generator
             | HeapLifecycleHandler::AsyncGenerator
             | HeapLifecycleHandler::FileHandle

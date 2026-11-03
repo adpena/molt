@@ -6,7 +6,7 @@ use super::{dec_ref_bits, exception_pending};
 #[cfg(not(feature = "stdlib_http"))]
 pub fn attr_name_bits_from_bytes(_py: &CoreGilToken, name: &[u8]) -> Option<u64> {
     crate::with_gil_entry_nopanic!(py, {
-        crate::builtins::attr::attr_name_bits_from_bytes(py, name)
+        crate::builtins::attr::dynamic_attr_name_bits(py, name)
     })
 }
 

@@ -14,7 +14,7 @@ fn loader_class_module(py: &PyToken<'_>, dict_ptr: *mut u8, module: &[u8]) -> bo
         return false;
     }
     let bits = MoltObject::from_ptr(ptr).bits();
-    let published = set_class_method(py, dict_ptr, "__module__", bits);
+    let published = set_class_method(py, dict_ptr, crate::NameId::DunderModule, bits);
     dec_ref_bits(py, bits);
     published
 }
@@ -35,7 +35,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
         |class_bits, dict_ptr| {
             let methods = [
                 RuntimeClassMethodSpec::with_signature(
-                    "create_module",
+                    crate::NameId::CreateModule,
                     NativeCallableKind::MethodDescriptor,
                     crate::builtins::functions::runtime_fn_addr(
                         "molt_importlib_compiled_loader_create_module",
@@ -45,7 +45,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
                     RuntimeMethodSignature::new(&[b"self", b"_spec"], false, false),
                 ),
                 RuntimeClassMethodSpec::with_signature(
-                    "exec_module",
+                    crate::NameId::ExecModule,
                     NativeCallableKind::MethodDescriptor,
                     crate::builtins::functions::runtime_fn_addr(
                         "molt_importlib_compiled_loader_exec_module",
@@ -55,7 +55,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
                     RuntimeMethodSignature::new(&[b"self", b"module"], false, false),
                 ),
                 RuntimeClassMethodSpec::with_signature(
-                    "load_module",
+                    crate::NameId::LoadModule,
                     NativeCallableKind::MethodDescriptor,
                     crate::builtins::functions::runtime_fn_addr(
                         "molt_importlib_compiled_loader_load_module",
@@ -117,7 +117,7 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
                 crate::builtins::functions::native_callable::NativeCallableSpec::declared(
                     NativeCallableKind::ClassMethodDescriptor,
                     class_bits,
-                    "find_spec",
+                    crate::NameId::FindSpec,
                 ),
                 crate::builtins::functions::runtime_fn_addr(
                     "molt_importlib_compiled_loader_find_spec",
@@ -130,7 +130,7 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
                 false,
                 false,
             );
-            set_class_method(py, dict_ptr, "find_spec", method)
+            set_class_method(py, dict_ptr, crate::NameId::FindSpec, method)
         },
     )
 }
@@ -226,7 +226,7 @@ pub extern "C" fn molt_importlib_compiled_loader_find_spec(
             return MoltObject::none().bits();
         };
         if metadata.has_location {
-            let Some(key) = attr_name_bits_from_bytes(py, b"has_location") else {
+            let Some(key) = crate::NameId::HasLocation.owned_bits(py) else {
                 dec_ref_bits(py, spec_bits);
                 return MoltObject::none().bits();
             };
@@ -264,7 +264,7 @@ pub extern "C" fn molt_importlib_compiled_loader_find_spec(
                 return MoltObject::none().bits();
             }
             let paths_bits = MoltObject::from_ptr(paths).bits();
-            let Some(attr) = attr_name_bits_from_bytes(py, b"submodule_search_locations") else {
+            let Some(attr) = crate::NameId::SubmoduleSearchLocations.owned_bits(py) else {
                 dec_ref_bits(py, paths_bits);
                 dec_ref_bits(py, spec_bits);
                 return MoltObject::none().bits();
@@ -316,7 +316,7 @@ pub extern "C" fn molt_importlib_compiled_loader_create_module(
 
 #[cfg(test)]
 fn attr_or_none(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
-    let attr = attr_name_bits_from_bytes(py, name)?;
+    let attr = dynamic_attr_name_bits(py, name)?;
     let bits = molt_getattr_builtin(target, attr, MoltObject::none().bits());
     dec_ref_bits(py, attr);
     if exception_pending(py) {
@@ -381,7 +381,7 @@ pub extern "C" fn molt_importlib_compiled_loader_load_module(
                 "module has no compiler-emitted body in this binary",
             );
         }
-        let Some(loader_name) = attr_name_bits_from_bytes(py, b"loader") else {
+        let Some(loader_name) = crate::NameId::Loader.owned_bits(py) else {
             dec_ref_bits(py, spec);
             return none;
         };

@@ -9,9 +9,8 @@ use crate::{
     TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_dict_with_pairs,
     alloc_instance_for_class, alloc_object, builtin_classes, code_filename_bits, code_firstlineno,
     code_linetable_bits, code_name_bits, dec_ref_bits, dict_get_in_place, exception_pending,
-    inc_ref_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name, module_dict_bits,
-    obj_from_bits, object_mark_has_ptrs, object_type_id, profile_enabled, runtime_state,
-    string_obj_to_owned, to_i64,
+    inc_ref_bits, instance_dict_bits, instance_set_dict_bits, module_dict_bits, obj_from_bits,
+    object_mark_has_ptrs, object_type_id, profile_enabled, string_obj_to_owned, to_i64,
 };
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
@@ -334,11 +333,7 @@ pub(crate) fn frame_effective_builtins_bits(
 ) -> Result<u64, ()> {
     let globals_ptr = globals_namespace_storage_ptr(_py, globals_bits)?;
     if let Some(globals_ptr) = globals_ptr {
-        let key_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.dunder_builtins_name,
-            b"__builtins__",
-        );
+        let key_bits = crate::NameId::DunderBuiltins.bits(_py);
         if key_bits == 0 {
             return Err(());
         }
@@ -431,6 +426,136 @@ pub(crate) fn frame_stack_enter_homes(plan: FramePlan) -> bool {
         entry.bindings = bindings;
     });
     true
+}
+
+/// A synchronous Python body implemented by a runtime plan. It has the same
+/// homes, live locals, namespace and exit custody as a compiled Python entry.
+/// No code-slot registry or secondary locals dictionary is introduced.
+pub(crate) struct PythonFunctionFrame<'a, 'py> {
+    py: &'a PyToken<'py>,
+    homes: *mut u64,
+    code: u64,
+    depth: usize,
+}
+
+impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
+    /// On success adopts each argument. On failure adopts none. `cells` are
+    /// borrowed lexical cells; their frame owners are retained separately.
+    pub(crate) fn adopt(
+        py: &'a PyToken<'py>,
+        context: [u64; 3],
+        plan: FramePlan,
+        arguments: &[u64],
+        cells: &[u64],
+    ) -> Result<Self, ()> {
+        use molt_codegen_abi::{FRAME_HOME_CELL, FRAME_HOME_PLAIN, FRAME_HOME_WORDS};
+        let [globals, builtins, code] = context;
+        if !plan.optimized || plan.homes as usize != arguments.len() + cells.len() {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "runtime body disagrees with Python frame layout",
+            );
+            return Err(());
+        }
+        for bits in context {
+            inc_ref_bits(py, bits);
+        }
+        frame_stack_push_owned(py, code, globals, builtins, 0);
+        let depth = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
+        let mut frame = Self {
+            py,
+            homes: std::ptr::null_mut(),
+            code,
+            depth,
+        };
+        if !frame_stack_enter_homes(plan) {
+            crate::record_memory_error_without_allocation(py);
+            return Err(());
+        }
+        let homes = bindings::molt_frame_homes(plan.homes as u64);
+        if exception_pending(py) {
+            return Err(());
+        }
+        frame.homes = crate::provenance::abi::mut_ptr::<u64>(homes).unwrap();
+        // No fallible work or callbacks remain before the argument transfer.
+        for (slot, &value) in arguments.iter().enumerate() {
+            unsafe {
+                frame
+                    .homes
+                    .add(slot * FRAME_HOME_WORDS)
+                    .write(FRAME_HOME_PLAIN as u64);
+                frame.homes.add(slot * FRAME_HOME_WORDS + 1).write(value);
+            }
+        }
+        for (index, &cell) in cells.iter().enumerate() {
+            inc_ref_bits(py, cell);
+            let slot = arguments.len() + index;
+            unsafe {
+                frame
+                    .homes
+                    .add(slot * FRAME_HOME_WORDS)
+                    .write(FRAME_HOME_CELL as u64);
+                frame.homes.add(slot * FRAME_HOME_WORDS + 1).write(cell);
+            }
+        }
+        // The new entry has no displaced context and therefore no release.
+        FRAME_STACK.with(|stack| {
+            stack
+                .borrow_mut()
+                .last_mut()
+                .unwrap()
+                .python_context
+                .argument_zero = if arguments.is_empty() {
+                PythonArgumentZero::NoArgument
+            } else {
+                PythonArgumentZero::Home
+            };
+        });
+        Ok(frame)
+    }
+
+    /// A fresh owned read observes PEP 667 writes made by an earlier callback.
+    pub(crate) fn argument(&self, slot: usize) -> Result<u64, ()> {
+        let home = unsafe { self.homes.add(slot * molt_codegen_abi::FRAME_HOME_WORDS) };
+        let value = bindings::molt_frame_home_load(home as usize as u64);
+        if exception_pending(self.py) {
+            return Err(());
+        }
+        if crate::is_missing_bits(self.py, value) {
+            let code = obj_from_bits(self.code).as_ptr().unwrap();
+            let names = unsafe { crate::object::layout::code_varnames_bits(code) };
+            let name = unsafe {
+                crate::object::seq_access::with_immutable_tuple_slice(
+                    obj_from_bits(names).as_ptr().unwrap(),
+                    |items| items[slot],
+                )
+            }
+            .unwrap();
+            let name = string_obj_to_owned(obj_from_bits(name)).unwrap();
+            raise_exception::<()>(
+                self.py,
+                BuiltinExc::UnboundLocalError,
+                &format!(
+                    "cannot access local variable '{name}' where it is not associated with a value"
+                ),
+            );
+            return Err(());
+        }
+        inc_ref_bits(self.py, value);
+        Ok(value)
+    }
+}
+
+impl Drop for PythonFunctionFrame<'_, '_> {
+    fn drop(&mut self) {
+        assert_eq!(
+            FRAME_STACK.with(|stack| stack.borrow().len()),
+            self.depth + 1,
+            "runtime Python frame custody is not LIFO"
+        );
+        frame_stack_pop(self.py);
+    }
 }
 
 #[cfg(test)]
@@ -730,11 +855,7 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
                 _py, "builtins", dict_bits,
             );
         if !builtin_bootstrap {
-            let key = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.dunder_builtins_name,
-                b"__builtins__",
-            );
+            let key = crate::NameId::DunderBuiltins.bits(_py);
             if key == 0 {
                 return MoltObject::none().bits();
             }
@@ -888,19 +1009,18 @@ unsafe fn alloc_frame_obj(
     lasti: i64,
 ) -> Option<u64> {
     unsafe {
-        let names = &runtime_state(_py).interned;
-        let name = |slot, bytes| {
-            let bits = intern_static_name(_py, slot, bytes);
+        let name = |name: crate::NameId| {
+            let bits = name.bits(_py);
             (bits != 0).then_some(bits)
         };
         // Stop at the first failed intern before another allocation can replace
         // its exception or an unpublished frame acquires cleanup obligations.
-        let f_code_bits = name(&names.f_code_name, b"f_code")?;
-        let f_lineno_bits = name(&names.f_lineno_name, b"f_lineno")?;
-        let f_lasti_bits = name(&names.f_lasti_name, b"f_lasti")?;
-        let f_back_bits = name(&names.f_back_name, b"f_back")?;
-        let f_globals_bits = name(&names.f_globals_name, b"f_globals")?;
-        let f_builtins_bits = name(&names.f_builtins_name, b"f_builtins")?;
+        let f_code_bits = name(crate::NameId::FCode)?;
+        let f_lineno_bits = name(crate::NameId::FLineno)?;
+        let f_lasti_bits = name(crate::NameId::FLasti)?;
+        let f_back_bits = name(crate::NameId::FBack)?;
+        let f_globals_bits = name(crate::NameId::FGlobals)?;
+        let f_builtins_bits = name(crate::NameId::FBuiltins)?;
         let builtins = builtin_classes(_py);
         let class_obj = obj_from_bits(builtins.frame);
         let class_ptr = class_obj.as_ptr()?;
@@ -1024,8 +1144,7 @@ unsafe fn alloc_traceback_obj(
                 if object_type_id(dict_ptr) != TYPE_ID_DICT {
                     return Ok(-1);
                 }
-                let f_code_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+                let f_code_bits = crate::NameId::FCode.bits(_py);
                 let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)? else {
                     return Ok(-1);
                 };
@@ -1095,17 +1214,10 @@ unsafe fn alloc_traceback_obj(
         }
         let tb_bits = alloc_instance_for_class(_py, class_ptr);
         let tb_ptr = obj_from_bits(tb_bits).as_ptr()?;
-        let tb_frame_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
-        let tb_lineno_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.tb_lineno_name,
-            b"tb_lineno",
-        );
-        let tb_next_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
-        let tb_lasti_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.tb_lasti_name, b"tb_lasti");
+        let tb_frame_bits = crate::NameId::TbFrame.bits(_py);
+        let tb_lineno_bits = crate::NameId::TbLineno.bits(_py);
+        let tb_next_bits = crate::NameId::TbNext.bits(_py);
+        let tb_lasti_bits = crate::NameId::TbLasti.bits(_py);
         let line_bits = MoltObject::from_int(line).bits();
         let lasti = match compute_tb_lasti(_py, frame_bits, line) {
             Ok(value) => value,

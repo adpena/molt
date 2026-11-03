@@ -300,6 +300,9 @@ authority_inputs = [
   "tools/molt_dev.py",
   "tools/fuzz_compiler.py",
   "tools/proof_plan.py",
+  "tools/proof_command_argv.py",
+  "tools/venv_exec.py",
+  "tools/uv_project_env.py",
   "tools/proof_receipts.py",
   "tools/proof_executor.py",
   "tools/proof_plan.toml",
@@ -318,6 +321,7 @@ authority_inputs = [
   "tools/proof_queue_pkg/execution_environment.py",
   "tools/proof_queue_pkg/guarded_execution.py",
   "tools/proof_queue_pkg/process_image_capture.py",
+  "tools/proof_queue_pkg/python_payload_authority.py",
   "tools/proof_queue_pkg/supervisor_custody.py",
   "tools/proof_queue_pkg/toolchain_capture.py",
   "tools/proof_queue_pkg/commands.py",
@@ -671,10 +675,10 @@ setup_command = "python -m molt.tool_releases provision uv"
 executable = "uv"
 version_args = ["--version"]
 process_image_probes = [["--offline", "--no-config", "--managed-python", "python", "list", "--only-downloads"]]
-version_pattern = '^uv 0\.13\.5\b'
-setup_value = "0.13.5"
+version_pattern = '^uv 0\.13\.6\b'
+setup_value = "0.13.6"
 setup_evidence = [
-  "config/tool_releases.toml::version = \"0.13.5\"",
+  "config/tool_releases.toml::version = \"0.13.6\"",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.uv-version",
 ]
 
@@ -1586,6 +1590,7 @@ inputs = ["src/molt/cli/completion.py", "src/molt/cli/arg_helpers.py", "src/molt
   "docs/spec/STATUS.md",
   "docs/agent/AGENTS.full.md",
   "tests/proof_queue_owned_roots.py",
+  "tests/fixtures/guard_scratch_v*.py",
 ]
 executor = "github-matrix"
 workflow = ".github/workflows/ci.yml"
@@ -2684,7 +2689,7 @@ cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage", "repository.perf-methodology"]
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-p", "tools.pytest_profile", "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"]
 evidence_outputs = ["proof-receipts/evidence/repository-docs-tests"]
-pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_committed_gate_policy.py", "tests/test_molt_dev_lanes.py", "tests/test_checkout_provisioning.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
+pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_runtime_names.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_committed_gate_policy.py", "tests/test_molt_dev_lanes.py", "tests/test_checkout_provisioning.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
 pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv", "rustc", "rustfmt"]
 
@@ -4233,6 +4238,16 @@ gates = [
   "python tools/check_dynamic_policy.py",
 ]
 
+# A ledger-only lane regenerates the finding-id Literal types; a closed row
+# must fail every finding test that still cites it (HF-711). The local form
+# of python.static.ty.
+[[rule]]
+name = "finding-ids-static"
+toolchains = ["python", "uv"]
+description = "Type-check the finding tests against the regenerated finding-id types."
+globs = ["tests/findings/*.py"]
+gates = ["python -m ty check src tests/findings"]
+
 # Initial namespace writes affect eager imports and their cache identities.
 # Keep the existing consumer families in local selection: a stale record-key
 # caller and a missing entry mask both escaped the broader source-only gates.
@@ -4637,7 +4652,11 @@ name = "intrinsic-registry"
 toolchains = ["python", "rustc", "rustfmt"]
 description = "Intrinsic registry: generated signatures, frontend lowering, reachability and resolver ownership."
 globs = [
-  "tools/gen_intrinsics.py",
+  "tools/gen_intrinsics.py", "tools/intrinsic_manifest.py", "tools/public_objects.py",
+  "tools/cpython_census/*.py", "tests/fixtures/public_object_identity/*.json",
+  "src/molt/_public_objects_generated.py",
+  "runtime/molt-runtime/src/intrinsics/public_objects.toml",
+  "runtime/molt-runtime/src/intrinsics/public_objects_generated.rs",
   "src/molt/_intrinsics.pyi", "src/molt/_intrinsic_symbols.py",
   "src/molt/_runtime_feature_gates.py",
   "src/molt/builtin_callables.py",
@@ -6635,7 +6654,7 @@ cache_domain = "cargo-workspace"
 id = "runtime.public-consumers.native"
 description = "Compile and execute the runtime ownership, mapping, numeric, path, encoding, stream and shared-call consumers against CPython 3.12 on native targets."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "release", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--json"]
-differential_cases = ["tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/stdlib/copyreg_helpers.py", "tests/differential/stdlib/copy_deep_nesting.py", "tests/differential/stdlib/asyncio_task_basic.py", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/asyncio_tls_open_connection_invalid_host_intrinsic.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py"]
+differential_cases = ["tests/differential/stdlib/time_timegm.py", "tests/differential/stdlib/public_native_types.py", "tests/differential/stdlib/public_object_identity.py", "tests/differential/stdlib/copyreg_helpers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/stdlib/copy_deep_nesting.py", "tests/differential/stdlib/asyncio_task_basic.py", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/asyncio_tls_open_connection_invalid_host_intrinsic.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py", "tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/basic/type_cache_mutation.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
@@ -6647,7 +6666,7 @@ cache_domain = "cargo-workspace"
 id = "runtime.public-consumers.wasm"
 description = "Compile and execute the shared mapping, numeric, serialization and error consumers against CPython 3.12 on WASM; native process and thread cells remain separate."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "release", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--json"]
-differential_cases = ["tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/stdlib/copyreg_helpers.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py"]
+differential_cases = ["tests/differential/stdlib/time_timegm.py", "tests/differential/stdlib/public_native_types.py", "tests/differential/stdlib/public_object_identity.py", "tests/differential/stdlib/copyreg_helpers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py", "tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/basic/type_cache_mutation.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "wasm-browser"
@@ -7000,6 +7019,34 @@ globs = [
 gates = ["cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4"]
 
 [[rule]]
+name = "pending-call-source-authority"
+toolchains = ["rustc", "cargo"]
+description = "The pending-call authority test reads these sources in other crates; a change to one runs it (HF-657's LLVM move left main red unseen)."
+globs = [
+  "include/molt/Python.h",
+  "runtime/molt-backend-luau/src/luau/compile_pipeline.rs",
+  "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
+  "runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs",
+  "runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs",
+  "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
+  "runtime/molt-backend-rust/src/rust.rs",
+  "runtime/molt-backend-wasm/src/wasm/op_loop/control_ops/exceptions.rs",
+  "runtime/molt-ir/src/tir/op_kinds.toml",
+  "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+  "runtime/molt-ir/src/tir/ops.rs",
+  "runtime/molt-ir/src/tir/target_info.rs",
+  "runtime/molt-passes/src/tir/pass_manager.rs",
+  "runtime/molt-passes/src/tir/passes/async_work_poll.rs",
+  "runtime/molt-runtime/src/builtins/exceptions/exception_state_abi.rs",
+  "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+  "runtime/molt-runtime/src/state/lifecycle.rs",
+  "runtime/molt-runtime/src/state/runtime_state.rs",
+  "runtime/molt-tir/src/target_admission.rs",
+  "runtime/molt-tir/src/target_admission/runtime.rs",
+]
+gates = ["cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --test pending_call_authority"]
+
+[[rule]]
 name = "compression-stream-state"
 toolchains = ["rustc", "cargo", "python"]
 description = "Compression engine and bounded stream state use one small Cargo graph, with the existing native integer oracle."
@@ -7014,3 +7061,11 @@ globs = ["tools/agent_coordination.py", "tools/coordination_records.py", "tools/
 pytest = ["tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py"]
 gates = []
 toolchains = ["python", "uv"]
+
+[[rule]]
+name = "runtime-name-registry"
+description = "Runtime NameId authority and consumer census."
+toolchains = ["python", "rustfmt"]
+globs = ["tools/gen_runtime_names.py", "runtime/molt-ir/src/tir/runtime_names.toml", "runtime/molt-runtime/src/**/*.rs", "tests/test_gen_runtime_names.py"]
+gates = []
+pytest = ["tests/test_gen_runtime_names.py"]

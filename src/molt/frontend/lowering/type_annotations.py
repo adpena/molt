@@ -1093,7 +1093,6 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             "dict": 10,
             "range": 11,
             "slice": 12,
-            "dataclass": 13,
             "buffer2d": 14,
             "memoryview": 15,
             "set": 17,

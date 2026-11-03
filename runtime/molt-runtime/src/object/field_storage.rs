@@ -21,32 +21,6 @@ pub(crate) unsafe fn for_each_instance_field(
     visit: &mut dyn FnMut(InstanceField, *mut u64),
 ) {
     unsafe {
-        if object_type_id(object) == TYPE_ID_DATACLASS {
-            let desc = dataclass_desc_ptr(object);
-            let fields = dataclass_fields_ptr(object);
-            if desc.is_null() || fields.is_null() {
-                return;
-            }
-            // Descriptor keys and slot classes are immutable after publication.
-            // No mutable Vec borrow survives a callback.
-            assert_eq!(
-                (*fields).len(),
-                (*desc).field_layout.len(),
-                "dataclass projection must cover every owner"
-            );
-            let count = (*fields).len();
-            for index in 0..count {
-                visit(
-                    InstanceField {
-                        name: (&(*desc).field_layout)[index].name,
-                        offset: index * size_of::<u64>(),
-                        kind: (&(*desc).field_layout)[index].kind,
-                    },
-                    (*fields).as_mut_ptr().add(index),
-                );
-            }
-            return;
-        }
         if !super::object_has_class_shape(object) && !super::native_instance::has_fields(object) {
             return;
         }
@@ -115,20 +89,6 @@ pub(crate) unsafe fn field_at_offset(
     offset: usize,
 ) -> Option<InstanceField> {
     unsafe {
-        if object_type_id(object) == TYPE_ID_DATACLASS {
-            let desc = dataclass_desc_ptr(object);
-            let index = offset / size_of::<u64>();
-            if desc.is_null() || !offset.is_multiple_of(size_of::<u64>()) {
-                return None;
-            }
-            let layout = &(*desc).field_layout;
-            let field = layout.get(index)?;
-            return Some(InstanceField {
-                name: field.name,
-                offset,
-                kind: field.kind,
-            });
-        }
         if !super::object_has_class_shape(object) && !super::native_instance::has_fields(object) {
             return None;
         }
@@ -148,25 +108,6 @@ pub(crate) unsafe fn field_at_offset(
             "sealed physical field must fit the instance extent"
         );
         Some(field)
-    }
-}
-
-/// Dataclass vectors preserve public field indices while projecting every
-/// canonical declared-slot offset onto one distinct backing element.
-pub(crate) unsafe fn dataclass_slot_storage_offset(
-    object: *mut u8,
-    slot_offset: usize,
-) -> Option<usize> {
-    unsafe {
-        let desc = dataclass_desc_ptr(object);
-        if desc.is_null() {
-            return None;
-        }
-        (*desc)
-            .field_layout
-            .iter()
-            .position(|field| field.slot_offset == Some(slot_offset))
-            .and_then(|index| index.checked_mul(size_of::<u64>()))
     }
 }
 
@@ -209,7 +150,7 @@ unsafe fn inferred_inline_owners(
         let mut fields = Vec::new();
         // Native payloads can own dictionaries without hosting managed inline
         // fields. Their typed prefix/items must never be interpreted as slots.
-        if !super::object_has_class_shape(object) && object_type_id(object) != TYPE_ID_DATACLASS {
+        if !super::object_has_class_shape(object) {
             return Ok(fields);
         }
         if let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr()
@@ -479,7 +420,7 @@ pub(crate) unsafe fn set_item_deferred<'a, 'py>(
     }
 }
 
-/// Ordinary instance and dataclass writers use the same staged first insertion
+/// Ordinary instance writers use the same staged first insertion
 /// as private callable metadata. Public capability remains a sealed class fact.
 pub(crate) unsafe fn set_item(
     py: &PyToken<'_>,
@@ -505,10 +446,6 @@ pub(crate) unsafe fn set_item(
 /// Whether the sealed representation provides ordinary dictionary attributes.
 pub(crate) unsafe fn allows_dictionary(py: &PyToken<'_>, object: *mut u8) -> bool {
     unsafe {
-        if object_type_id(object) == TYPE_ID_DATACLASS {
-            let desc = dataclass_desc_ptr(object);
-            return !desc.is_null() && (*desc).allows_dict;
-        }
         !crate::object::instance_dict_bits_ptr(object).is_null()
             && class_allows_dictionary(py, object)
     }
@@ -553,7 +490,7 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
             return;
         };
         let mut detached = super::backing::tracked_vec_box_from_raw(detached);
-        // Sealed physical offsets and projected dataclass indices are unique.
+        // Sealed physical offsets are unique.
         // Reserve and collect the complete transition before destructive writes.
         for_each_instance_field(py, object, class, &mut |_, slot| {
             detached.push((slot, *slot));
@@ -575,9 +512,8 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
 }
 
 /// Snapshot declared attribute names, not physical values, in MRO order.
-/// Duplicate declarations remain observable repeated attribute reads. Dataclass
-/// descriptor-only slots follow in descriptor order; GC/reset retain their
-/// separate complete physical traversal.
+/// Duplicate declarations remain observable repeated attribute reads;
+/// GC/reset retain the separate complete physical traversal.
 pub(crate) unsafe fn slot_state_names<'a, 'py>(
     py: &'a PyToken<'py>,
     object: *mut u8,
@@ -591,11 +527,6 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
             return None;
         }
         let mro = class_mro_view(py, class);
-        let desc = if object_type_id(object) == TYPE_ID_DATACLASS {
-            dataclass_desc_ptr(object)
-        } else {
-            std::ptr::null_mut()
-        };
         let visit_declarations = |visit: &mut dyn FnMut(u64)| {
             for &class in mro.iter() {
                 let Some(class) = obj_from_bits(class).as_ptr() else {
@@ -618,11 +549,7 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
                 }
             }
         };
-        let mut count = if desc.is_null() {
-            0
-        } else {
-            (*desc).field_layout.len()
-        };
+        let mut count = 0usize;
         visit_declarations(&mut |_| {
             count = count.saturating_add(1);
         });
@@ -638,77 +565,7 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
             inc_ref_bits(py, name);
             names.push(name);
         });
-        if !desc.is_null() {
-            // Hidden physical rows are already represented by their captured
-            // class declarations. Only logical descriptor-only names can add
-            // observable state reads here.
-            for field in (*desc).field_layout.iter().take((*desc).field_names.len()) {
-                let name = field.name;
-                if field.kind.is_declared_slot()
-                    && !names
-                        .iter()
-                        .any(|&seen| crate::object::ops_compare::string_storage_equal(seen, name))
-                {
-                    inc_ref_bits(py, name);
-                    names.push(name);
-                }
-            }
-        }
-        Some(super::seq_access::PinnedSequenceSnapshot::from_owned_values(py, names))
-    }
-}
 
-/// Pin authoritative dataclass values before equality/hash/repr callbacks.
-/// No raw backing borrow escapes a field read; callback replacement cannot
-/// invalidate a later element or make these operations read retired words.
-pub(crate) unsafe fn dataclass_snapshot<'a, 'py>(
-    py: &'a PyToken<'py>,
-    object: *mut u8,
-    flag_mask: u8,
-) -> Option<super::seq_access::PinnedSequenceSnapshot<'a, 'py>> {
-    unsafe {
-        let desc = dataclass_desc_ptr(object);
-        if desc.is_null() {
-            return None;
-        }
-        let count = (*desc).field_names.len();
-        let Some(values) = super::backing::tracked_vec_box_with_capacity::<u64>(count) else {
-            crate::record_memory_error_without_allocation(py);
-            return None;
-        };
-        let flags = &(*desc).field_flags;
-        for index in 0..count {
-            let flag = flags.get(index).copied().unwrap_or(0x7);
-            let value = if flag & flag_mask == 0 {
-                Ok(MoltObject::none().bits())
-            } else {
-                super::accessors::object_field_get_ptr_raw(py, object, index * size_of::<u64>())
-            };
-            let result = value.and_then(|bits| {
-                (*values).push(bits);
-                if is_missing_bits(py, bits) {
-                    let name = (&(*desc).field_names)[index].as_str();
-                    let _ = attr_error(py, &(*desc).name, name);
-                    Err(())
-                } else {
-                    Ok(())
-                }
-            });
-            if result.is_err() {
-                drop(
-                    super::seq_access::PinnedSequenceSnapshot::from_owned_values(
-                        py,
-                        super::backing::tracked_vec_box_from_raw(values),
-                    ),
-                );
-                return None;
-            }
-        }
-        Some(
-            super::seq_access::PinnedSequenceSnapshot::from_owned_values(
-                py,
-                super::backing::tracked_vec_box_from_raw(values),
-            ),
-        )
+        Some(super::seq_access::PinnedSequenceSnapshot::from_owned_values(py, names))
     }
 }

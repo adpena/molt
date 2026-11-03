@@ -48,7 +48,7 @@ extern "C" fn preferred_rhs_mutates_lhs(_self_bits: u64, _lhs_bits: u64) -> u64 
 extern "C" fn lhs_changes_rhs_class(_self_bits: u64, rhs_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         trace(1);
-        let class_name = attr_name_bits_from_bytes(_py, b"__class__").unwrap();
+        let class_name = dynamic_attr_name_bits(_py, b"__class__").unwrap();
         crate::molt_set_attr_name(
             rhs_bits,
             class_name,
@@ -98,7 +98,7 @@ fn runtime_function(_py: &PyToken<'_>, name: &'static str, target: *const (), ar
 }
 
 fn test_class(_py: &PyToken<'_>, name: &[u8], base: u64) -> u64 {
-    let name_bits = attr_name_bits_from_bytes(_py, name).unwrap();
+    let name_bits = dynamic_attr_name_bits(_py, name).unwrap();
     let class_bits = crate::molt_class_new(name_bits);
     crate::molt_class_set_base(class_bits, base);
     let class_ptr = obj_from_bits(class_bits).as_ptr().expect("test class");
@@ -137,8 +137,8 @@ impl BinaryFixture {
         let rhs_base = if rhs_is_subclass { lhs_class } else { object };
         let rhs_class = test_class(_py, &[name, b"Rhs"].concat(), rhs_base);
         Self {
-            op_name: attr_name_bits_from_bytes(_py, b"__add__").unwrap(),
-            rop_name: attr_name_bits_from_bytes(_py, b"__radd__").unwrap(),
+            op_name: dynamic_attr_name_bits(_py, b"__add__").unwrap(),
+            rop_name: dynamic_attr_name_bits(_py, b"__radd__").unwrap(),
             lhs_class,
             rhs_class,
             lhs: test_instance(_py, lhs_class),

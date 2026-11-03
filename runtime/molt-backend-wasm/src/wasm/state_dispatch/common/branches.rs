@@ -3,7 +3,6 @@ use super::super::super::frame_locals::WasmDispatchFrameLocals;
 use super::super::super::op_loop::WasmFunctionEmitContext;
 use super::super::DispatchMode;
 use super::super::plan::{ControlScopeDepth, NonLinearControlPlan, StaticDispatchEdge};
-use crate::wasm_binary::emit_call;
 use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use crate::{FunctionIR, OpIR};
@@ -90,15 +89,16 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
             context.reloc_enabled,
             false,
         );
+        func.instruction(&Instruction::I64Const(0));
+        func.instruction(&Instruction::I64Ne);
     } else {
-        emit_call(
+        crate::wasm::pending_work::emit_exception_pending_test(
             func,
-            context.reloc_enabled,
+            crate::wasm::pending_work::thread_record_local(context.locals()),
             context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+            context.reloc_enabled,
         );
     }
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
     emit_conditional_state_branch(
         func,
         context,

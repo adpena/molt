@@ -40,46 +40,21 @@ fn declaring_spec(py: &PyToken<'_>, class: u64) -> Option<&'static BuiltinExcept
         .map(|kind| kind.spec())
 }
 
-pub(crate) fn exception_render_method_bits(
-    py: &PyToken<'_>,
-    owner: u64,
-    name: &str,
-) -> Result<Option<u64>, ()> {
-    crate::builtins::methods::method_dispatch(py, || {
-        let Some(declaration) = declaring_spec(py, owner) else {
-            return Ok(None);
-        };
-        let (name, address) = match name {
-            "__str__" => (
-                "__str__",
-                string_slot_address(match declaration.declared_str_slot() {
-                    Some(slot) => slot,
-                    None => return Ok(None),
-                }),
-            ),
-            "__repr__" if declaration.declares_repr() => ("__repr__", fn_addr!(exception_repr)),
-            _ => return Ok(None),
-        };
-        Ok(Some(builtin_func_bits(
-            py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, name)
-                .with_text_signature("($self, /)"),
-            address,
-            1,
-        )))
-    })
-}
-
-pub(crate) fn publish_exception_render_methods(py: &PyToken<'_>, owner: u64) -> bool {
-    // Declarations come from the same schema path used by direct lookup. A
-    // subclass inherits a descriptor; it does not acquire its own dictionary row.
-    for name in ["__str__", "__repr__"] {
-        if exception_render_method_bits(py, owner, name).is_err() {
-            return false;
-        }
+crate::builtins::methods::native_method_table!(
+    exception_render_method_bits, publish_exception_render_methods, py, name, [owner], {
+        let Some(declaration) = declaring_spec(py, owner) else { return Ok(None); };
+    }, {
+        crate::NameId::DunderStr => {
+            let Some(slot) = declaration.declared_str_slot() else { return Ok(None); };
+            Some(builtin_func_bits(py,
+                NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, crate::NameId::DunderStr)
+                    .with_text_signature("($self, /)"), string_slot_address(slot), 1))
+        },
+        crate::NameId::DunderRepr [if declaration.declares_repr()] => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, crate::NameId::DunderRepr)
+                .with_text_signature("($self, /)"), fn_addr!(exception_repr), 1)),
     }
-    true
-}
+);
 
 macro_rules! managed_string_slots {
     ($($name:ident => $slot:ident),* $(,)?) => {

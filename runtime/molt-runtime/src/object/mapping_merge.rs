@@ -31,7 +31,7 @@ pub(crate) unsafe fn direct_dict(py: &PyToken<'_>, source: u64) -> Result<Option
     let Some(dict_class) = obj_from_bits(builtin_classes(py).dict).as_ptr() else {
         return Ok(None);
     };
-    let Some(name) = attr_name_bits_from_bytes(py, b"__iter__") else {
+    let Some(name) = crate::NameId::DunderIter.owned_bits(py) else {
         return Err(());
     };
     let same = (|| unsafe {
@@ -183,7 +183,7 @@ pub(crate) unsafe fn apply(
             }
             return MergeOutcome::Complete;
         }
-        let Some(name) = attr_name_bits_from_bytes(py, b"keys") else {
+        let Some(name) = crate::NameId::Keys.owned_bits(py) else {
             return MergeOutcome::Error;
         };
         let method = crate::builtins::attributes::attr_lookup_ptr(py, ptr, name);

@@ -93,6 +93,14 @@ Static binding replaces that whole domain, including across runtime restarts;
 physical readiness, protocol and GC flags remain C-owned. Both runtime producers
 and test stubs use the canonical version constant.
 
+Explicit `PyType_Modified` on a managed type also advances the runtime's
+canonical class and global MRO epochs through `RuntimeHooks::type_modified`,
+before native tag checks and watcher callbacks. This invalidates runtime hits
+and misses inherited by descendants even without a native version tag. Manual
+`tp_dict` edits require this notification; dictionary C-API mutation and repeated
+`PyType_Ready` do not send it automatically. Native-only types retain native
+tag/subclass invalidation.
+
 Process-static type storage has one cohort with separate lifecycle-readiness and
 builtin-namespace policies. Private buffer and sequence-iterator shells join
 both policies; datetime extension types and the internal managed carrier keep

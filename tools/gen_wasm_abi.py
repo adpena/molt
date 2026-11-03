@@ -157,6 +157,8 @@ def _cache_input_files() -> tuple[Path, ...]:
     files = {
         Path(__file__).resolve(),
         BUILTIN_CALLABLES.resolve(),
+        ROOT / "tools/gen_runtime_names.py",
+        ROOT / "runtime/molt-ir/src/tir/runtime_names.toml",
         *(path.resolve() for path in generator_pkg.glob("*.py")),
         *(path.resolve() for path in op_kinds_pkg.glob("*.py")),
         *(path.resolve() for path in generator_input_files()),
@@ -1985,8 +1987,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy)]\n",
             "pub(crate) struct PythonBuiltinFunctionInfo {\n",
-            "    pub(crate) python_name: &'static str,\n",
-            "    pub(crate) python_module: &'static str,\n",
+            "    pub(crate) public: crate::intrinsics::public_objects_generated::PublicObjectId,\n",
             "    pub(crate) text_signature: Option<&'static str>,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) arity: u64,\n",
@@ -2138,11 +2139,14 @@ def render_runtime_callables_rs(data: dict) -> str:
     for entry in sorted(
         python_builtin_callables, key=lambda entry: entry["python_name"]
     ):
+        from tools.public_objects import public_object_id
+
         lines.extend(
             [
                 "        PythonBuiltinFunctionInfo {\n",
-                f'            python_name: "{entry["python_name"]}",\n',
-                f"            python_module: {_rust_str_lit(entry['python_module'])},\n",
+                "            public: crate::intrinsics::public_objects_generated::PublicObjectId::"
+                + public_object_id(entry["runtime_name"])
+                + ",\n",
                 f"            text_signature: {_rust_optional_str(entry['text_signature'])},\n",
                 f'            runtime_name: "{entry["runtime_name"]}",\n',
                 f"            arity: {entry['arity']},\n",
@@ -2173,7 +2177,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    python_name: &str,\n",
             ") -> Option<PythonBuiltinFunctionInfo> {\n",
             "    PYTHON_BUILTIN_FUNCTIONS\n",
-            "        .binary_search_by_key(&python_name, |info| info.python_name)\n",
+            "        .binary_search_by_key(&python_name, |info| info.public.identity().name.as_str())\n",
             "        .ok().map(|index| PYTHON_BUILTIN_FUNCTIONS[index])\n",
             "}\n\n",
             "#[cfg(test)]\n",

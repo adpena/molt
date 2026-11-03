@@ -9,14 +9,12 @@ _MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic("molt_importlib_import_module
 _MOLT_IMPORTLIB_RELOAD = _require_intrinsic("molt_importlib_reload")
 
 
+# CPython also exports `__import__`, which this package does not define.
+# Submodules load on their first explicit import, as in CPython.
 __all__ = [
     "import_module",
     "invalidate_caches",
     "reload",
-    "machinery",
-    "util",
-    "resources",
-    "metadata",
 ]
 
 def import_module(name: object, package: object = None):
@@ -26,7 +24,6 @@ def import_module(name: object, package: object = None):
 import sys
 
 import importlib.machinery as machinery
-import importlib.util as util
 import importlib._bootstrap as _bootstrap  # noqa: F401
 import importlib._bootstrap_external as _bootstrap_external  # noqa: F401
 

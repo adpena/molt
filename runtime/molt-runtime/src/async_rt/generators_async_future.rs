@@ -606,14 +606,14 @@ pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
                     );
                 };
                 let task_bits = task.bits();
-                let Some(done) = asyncio_method_truthy(_py, task_bits, b"done") else {
+                let Some(done) = asyncio_method_truthy(_py, task_bits, crate::NameId::Done) else {
                     dec_ref_bits(_py, task_tuple_bits);
                     return MoltObject::none().bits();
                 };
                 if done {
                     continue;
                 }
-                let out_bits = asyncio_call_method0(_py, task_bits, b"cancel");
+                let out_bits = asyncio_call_method0(_py, task_bits, crate::NameId::Cancel);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, task_tuple_bits);
                     return MoltObject::none().bits();
@@ -1072,7 +1072,7 @@ mod sleep_payload_tests {
     }
 
     fn delay_class(py: &PyToken<'_>) -> u64 {
-        let name = attr_name_bits_from_bytes(py, b"SleepPayloadDelay").unwrap();
+        let name = dynamic_attr_name_bits(py, b"SleepPayloadDelay").unwrap();
         let class = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         crate::molt_class_set_base(class, builtin_classes(py).object);
@@ -1080,7 +1080,7 @@ mod sleep_payload_tests {
             (b"__float__".as_slice(), delay_float as *const ()),
             (b"__del__".as_slice(), delay_finalizer as *const ()),
         ] {
-            let name = attr_name_bits_from_bytes(py, name).unwrap();
+            let name = dynamic_attr_name_bits(py, name).unwrap();
             let function = crate::object::builders::alloc_function_obj(
                 py,
                 crate::provenance::abi::expose_function_address(address),

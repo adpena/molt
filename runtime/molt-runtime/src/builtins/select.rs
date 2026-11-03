@@ -8,8 +8,8 @@ use crate::audit::AuditArgs;
 use crate::raise_os_error;
 use crate::{
     IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_LIST, TYPE_ID_TUPLE,
-    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
+    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, call_callable0, dec_ref_bits,
+    dynamic_attr_name_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
     missing_bits, molt_getattr_builtin, molt_is_callable, monotonic_now_secs, obj_from_bits,
     opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr, to_f64, to_i64,
 };
@@ -119,9 +119,9 @@ fn collect_iterable(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<Vec<
 fn get_attr_optional(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<Option<u64>, u64> {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
     let missing = missing_bits(_py);
@@ -150,7 +150,7 @@ fn select_construct_private_object(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let Some(class_name_bits) = attr_name_bits_from_bytes(_py, class_name) else {
+    let Some(class_name_bits) = dynamic_attr_name_bits(_py, class_name) else {
         dec_ref_bits(_py, module_bits);
         return Err(MoltObject::none().bits());
     };
@@ -196,7 +196,7 @@ fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64>
         return Ok(fd);
     }
 
-    if let Some(fileno_attr_bits) = get_attr_optional(_py, obj_bits, b"fileno")? {
+    if let Some(fileno_attr_bits) = get_attr_optional(_py, obj_bits, crate::NameId::Fileno)? {
         let callable = is_truthy(_py, obj_from_bits(molt_is_callable(fileno_attr_bits)));
         let raw_bits = if callable {
             let out = unsafe { call_callable0(_py, fileno_attr_bits) };
@@ -224,7 +224,7 @@ fn object_to_handle(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<i64, u64>
         return Ok(out);
     }
 
-    if let Some(handle_bits) = get_attr_optional(_py, obj_bits, b"_handle")? {
+    if let Some(handle_bits) = get_attr_optional(_py, obj_bits, crate::NameId::PrivateHandle)? {
         let out = to_i64(obj_from_bits(handle_bits)).ok_or_else(|| {
             raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid socket handle")
         })?;

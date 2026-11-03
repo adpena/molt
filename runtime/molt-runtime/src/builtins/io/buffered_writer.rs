@@ -135,7 +135,14 @@ unsafe fn raw_write<T: ?Sized>(
         }
         let implicit = unsafe { (*file_handle_ptr(writer)).buffer_bits == 0 }
             && raw == MoltObject::from_ptr(writer).bits();
-        if !implicit && raw_callbacks(py, builtin_classes(py).buffered_writer, raw, &[b"write"]) {
+        if !implicit
+            && raw_callbacks(
+                py,
+                builtin_classes(py).buffered_writer,
+                raw,
+                &[crate::NameId::Write],
+            )
+        {
             break;
         }
         let pointer = obj_from_bits(raw).as_ptr().expect("proven physical raw");
@@ -202,7 +209,7 @@ unsafe fn raw_write<T: ?Sized>(
     let view = scope.bits();
     let (result, errno) = loop {
         unsafe { molt_capi_set_errno(0) };
-        let result = call(py, raw, b"write", Some(view));
+        let result = call(py, raw, crate::NameId::Write, Some(view));
         let errno = unsafe { molt_capi_errno() };
         if !exception_pending(py) {
             break (result, errno);
@@ -435,7 +442,7 @@ pub(super) unsafe fn tell(py: &PyToken<'_>, bits: u64, pointer: *mut u8) -> u64 
         Ok(raw) => raw,
         Err(error) => return error,
     };
-    let result = call(py, raw.bits(), b"tell", None);
+    let result = call(py, raw.bits(), crate::NameId::Tell, None);
     let _result = owned(py, result);
     if exception_pending(py) {
         return MoltObject::none().bits();
@@ -498,7 +505,7 @@ pub(super) unsafe fn seek(
         Ok(raw) => raw,
         Err(error) => return error,
     };
-    let seekable = call(py, raw.bits(), b"seekable", None);
+    let seekable = call(py, raw.bits(), crate::NameId::Seekable, None);
     let _seekable = owned(py, seekable);
     if exception_pending(py) {
         return MoltObject::none().bits();
@@ -530,7 +537,7 @@ pub(super) unsafe fn seek(
         Ok(Some(errno)) => return blocking(py, errno, 0),
         Err(error) => return error,
     }
-    let Some(key) = attr_name_bits_from_bytes(py, b"seek") else {
+    let Some(key) = crate::NameId::Seek.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let _key = owned(py, key);
@@ -583,12 +590,12 @@ pub(super) unsafe fn truncate(py: &PyToken<'_>, bits: u64, pointer: *mut u8, siz
         Ok(Some(errno)) => return blocking(py, errno, 0),
         Err(error) => return error,
     }
-    let result = call(py, raw.bits(), b"truncate", Some(size));
+    let result = call(py, raw.bits(), crate::NameId::Truncate, Some(size));
     let result = owned(py, result);
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    let position = call(py, raw.bits(), b"tell", None);
+    let position = call(py, raw.bits(), crate::NameId::Tell, None);
     let _position = owned(py, position);
     if !exception_pending(py) {
         let _ = off_t(py, position);

@@ -221,7 +221,7 @@ pub extern "C" fn molt_pickle_loads_core(
                             Err(err_bits) => return err_bits,
                         };
                     let readonly_bits = if let Some(toreadonly_bits) =
-                        match pickle_attr_optional(_py, view_bits, b"toreadonly") {
+                        match pickle_attr_optional(_py, view_bits, crate::NameId::Toreadonly) {
                             Ok(bits) => bits,
                             Err(err_bits) => return err_bits,
                         } {

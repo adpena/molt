@@ -6,11 +6,14 @@ Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
 
 from __future__ import annotations
 
-import abc as _abc
-from typing import Any, Callable
-from types import GenericAlias as _GenericAlias
+import abc
+from typing import Any as _Any, Callable as _Callable
+from types import GenericAlias, MethodType
+from collections import deque
+from functools import wraps
+import os
 
-import sys as _sys
+import sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -32,10 +35,6 @@ __all__ = [
 ]
 
 
-_MOLT_CONTEXT_NULL = _require_intrinsic("molt_context_null")
-_MOLT_CONTEXTLIB_CLOSING = _require_intrinsic("molt_contextlib_closing")
-_MOLT_CONTEXTLIB_ACLOSING_ENTER = _require_intrinsic("molt_contextlib_aclosing_enter")
-_MOLT_CONTEXTLIB_ACLOSING_EXIT = _require_intrinsic("molt_contextlib_aclosing_exit")
 _MOLT_CONTEXTLIB_ABSTRACT_ENTER = _require_intrinsic("molt_contextlib_abstract_enter")
 _MOLT_CONTEXTLIB_ABSTRACT_AENTER = _require_intrinsic("molt_contextlib_abstract_aenter")
 _MOLT_CONTEXTLIB_ABSTRACT_SUBCLASSHOOK = _require_intrinsic(
@@ -84,7 +83,7 @@ _MOLT_CONTEXTLIB_ASYNC_EXITSTACK_EXIT = _require_intrinsic(
 
 
 def _copy_wrapper_metadata(
-    wrapper: Callable[..., Any], wrapped: Callable[..., Any]
+    wrapper: _Callable[..., _Any], wrapped: _Callable[..., _Any]
 ) -> None:
     for name in (
         "__module__",
@@ -103,76 +102,87 @@ def _copy_wrapper_metadata(
         pass
 
 
-# --- Direct intrinsic bindings (no Python wrapper overhead) ---
-
-closing = _MOLT_CONTEXTLIB_CLOSING
-
-
-# --- Retained wrappers ---
-
-
-def nullcontext(value: Any = None) -> Any:
-    return _MOLT_CONTEXT_NULL(value)
-
-
-class _AClosing:
-    def __init__(self, thing: Any) -> None:
-        self._thing = thing
-
-    async def __aenter__(self) -> Any:
-        return _MOLT_CONTEXTLIB_ACLOSING_ENTER(self._thing)
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        await _MOLT_CONTEXTLIB_ACLOSING_EXIT(self._thing)
-        return False
-
-
-def aclosing(thing: Any) -> Any:
-    return _AClosing(thing)
-
-
-class AbstractContextManager(_abc.ABC):
-    __class_getitem__ = classmethod(_GenericAlias)
+class AbstractContextManager(abc.ABC):
+    __class_getitem__ = classmethod(GenericAlias)
     __slots__ = ()
 
-    def __enter__(self) -> Any:
+    def __enter__(self) -> _Any:
         return _MOLT_CONTEXTLIB_ABSTRACT_ENTER(self)
 
-    @_abc.abstractmethod
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> Any:
+    @abc.abstractmethod
+    def __exit__(self, exc_type: _Any, exc_value: _Any, traceback: _Any) -> _Any:
         return None
 
     @classmethod
-    def __subclasshook__(cls, C: Any) -> Any:
+    def __subclasshook__(cls, C: _Any) -> _Any:
         if cls is AbstractContextManager:
             return _MOLT_CONTEXTLIB_ABSTRACT_SUBCLASSHOOK(C)
         return NotImplemented
 
 
-class AbstractAsyncContextManager(_abc.ABC):
-    __class_getitem__ = classmethod(_GenericAlias)
+class AbstractAsyncContextManager(abc.ABC):
+    __class_getitem__ = classmethod(GenericAlias)
     __slots__ = ()
 
-    async def __aenter__(self) -> Any:
+    async def __aenter__(self) -> _Any:
         return _MOLT_CONTEXTLIB_ABSTRACT_AENTER(self)
 
-    @_abc.abstractmethod
-    async def __aexit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> Any:
+    @abc.abstractmethod
+    async def __aexit__(self, exc_type: _Any, exc_value: _Any, traceback: _Any) -> _Any:
         return None
 
     @classmethod
-    def __subclasshook__(cls, C: Any) -> Any:
+    def __subclasshook__(cls, C: _Any) -> _Any:
         if cls is AbstractAsyncContextManager:
             return _MOLT_CONTEXTLIB_ABSTRACT_ASYNC_SUBCLASSHOOK(C)
         return NotImplemented
+
+
+class closing(AbstractContextManager):
+    def __init__(self, thing):
+        self.thing = thing
+
+    def __enter__(self):
+        return self.thing
+
+    def __exit__(self, *exc_info):
+        self.thing.close()
+
+
+class aclosing(AbstractAsyncContextManager):
+    def __init__(self, thing):
+        self.thing = thing
+
+    async def __aenter__(self):
+        return self.thing
+
+    async def __aexit__(self, *exc_info):
+        await self.thing.aclose()
+
+
+class nullcontext(AbstractContextManager, AbstractAsyncContextManager):
+    def __init__(self, enter_result=None):
+        self.enter_result = enter_result
+
+    def __enter__(self):
+        return self.enter_result
+
+    def __exit__(self, *exc_info):
+        pass
+
+    async def __aenter__(self):
+        return self.enter_result
+
+    async def __aexit__(self, *exc_info):
+        pass
 
 
 class ContextDecorator:
     def _recreate_cm(self) -> "ContextDecorator":
         return self
 
-    def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
-        def _inner(*args: Any, **kwargs: Any) -> Any:
+    def __call__(self, func: _Callable[..., _Any]) -> _Callable[..., _Any]:
+        def _inner(*args: _Any, **kwargs: _Any) -> _Any:
             cm = self._recreate_cm()
             return _MOLT_CONTEXTLIB_CONTEXTDECORATOR_CALL(cm, func, args, kwargs)
 
@@ -184,8 +194,8 @@ class AsyncContextDecorator:
     def _recreate_cm(self) -> "AsyncContextDecorator":
         return self
 
-    def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
-        async def _inner(*args: Any, **kwds: Any) -> Any:
+    def __call__(self, func: _Callable[..., _Any]) -> _Callable[..., _Any]:
+        async def _inner(*args: _Any, **kwds: _Any) -> _Any:
             async with self._recreate_cm():
                 return await func(*args, **kwds)
 
@@ -195,7 +205,7 @@ class AsyncContextDecorator:
 
 class _GeneratorContextManager(ContextDecorator):
     def __init__(
-        self, func: Callable[..., Any], args: tuple[Any, ...], kwds: dict[str, Any]
+        self, func: _Callable[..., _Any], args: tuple[_Any, ...], kwds: dict[str, _Any]
     ):
         self._func = func
         self._args = args
@@ -205,21 +215,21 @@ class _GeneratorContextManager(ContextDecorator):
     def _recreate_cm(self) -> "_GeneratorContextManager":
         return _GeneratorContextManager(self._func, self._args, self._kwds)
 
-    def __enter__(self) -> Any:
+    def __enter__(self) -> _Any:
         if self._gen is None:
             self._gen = self._func(*self._args, **self._kwds)
         return _MOLT_CONTEXTLIB_GENERATOR_ENTER(self._gen)
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(self, exc_type: _Any, exc: _Any, tb: _Any) -> bool:
         if self._gen is None:
             return False
         return _MOLT_CONTEXTLIB_GENERATOR_EXIT(self._gen, exc_type, exc, tb)
 
 
 def contextmanager(
-    func: Callable[..., Any],
-) -> Callable[..., _GeneratorContextManager]:
-    def helper(*args: Any, **kwds: Any) -> _GeneratorContextManager:
+    func: _Callable[..., _Any],
+) -> _Callable[..., _GeneratorContextManager]:
+    def helper(*args: _Any, **kwds: _Any) -> _GeneratorContextManager:
         return _GeneratorContextManager(func, args, kwds)
 
     _copy_wrapper_metadata(helper, func)
@@ -228,7 +238,7 @@ def contextmanager(
 
 class _AsyncGeneratorContextManager(AsyncContextDecorator):
     def __init__(
-        self, func: Callable[..., Any], args: tuple[Any, ...], kwds: dict[str, Any]
+        self, func: _Callable[..., _Any], args: tuple[_Any, ...], kwds: dict[str, _Any]
     ):
         self._func = func
         self._args = args
@@ -238,28 +248,28 @@ class _AsyncGeneratorContextManager(AsyncContextDecorator):
     def _recreate_cm(self) -> "_AsyncGeneratorContextManager":
         return _AsyncGeneratorContextManager(self._func, self._args, self._kwds)
 
-    async def __aenter__(self) -> Any:
+    async def __aenter__(self) -> _Any:
         if self._agen is None:
             self._agen = self._func(*self._args, **self._kwds)
         return await _MOLT_CONTEXTLIB_ASYNCGEN_ENTER(self._agen)
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    async def __aexit__(self, exc_type: _Any, exc: _Any, tb: _Any) -> bool:
         if self._agen is None:
             return False
         return await _MOLT_CONTEXTLIB_ASYNCGEN_EXIT(self._agen, exc_type, exc, tb)
 
 
 def asynccontextmanager(
-    func: Callable[..., Any],
-) -> Callable[..., _AsyncGeneratorContextManager]:
-    def helper(*args: Any, **kwds: Any) -> _AsyncGeneratorContextManager:
+    func: _Callable[..., _Any],
+) -> _Callable[..., _AsyncGeneratorContextManager]:
+    def helper(*args: _Any, **kwds: _Any) -> _AsyncGeneratorContextManager:
         return _AsyncGeneratorContextManager(func, args, kwds)
 
     _copy_wrapper_metadata(helper, func)
     return helper
 
 
-class AsyncExitStack:
+class AsyncExitStack(AbstractAsyncContextManager):
     def __init__(self) -> None:
         self._molt_state = _MOLT_CONTEXTLIB_EXITSTACK_NEW()
 
@@ -276,7 +286,7 @@ class AsyncExitStack:
     async def __aenter__(self) -> "AsyncExitStack":
         return self
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    async def __aexit__(self, exc_type: _Any, exc: _Any, tb: _Any) -> bool:
         return await _MOLT_CONTEXTLIB_ASYNC_EXITSTACK_EXIT(
             self._molt_state, exc_type, exc, tb
         )
@@ -290,25 +300,25 @@ class AsyncExitStack:
         return new_stack
 
     def push_async_exit(
-        self, exit: Callable[[Any, Any, Any], Any]
-    ) -> Callable[[Any, Any, Any], Any]:
+        self, exit: _Callable[[_Any, _Any, _Any], _Any]
+    ) -> _Callable[[_Any, _Any, _Any], _Any]:
         return _MOLT_CONTEXTLIB_ASYNC_EXITSTACK_PUSH_EXIT(self._molt_state, exit)
 
     def push_async_callback(
-        self, callback: Callable[..., Any], *args: Any, **kwds: Any
-    ) -> Callable[..., Any]:
+        self, callback: _Callable[..., _Any], *args: _Any, **kwds: _Any
+    ) -> _Callable[..., _Any]:
         _MOLT_CONTEXTLIB_ASYNC_EXITSTACK_PUSH_CALLBACK(
             self._molt_state, callback, args, kwds
         )
         return callback
 
-    async def enter_async_context(self, cm: Any) -> Any:
+    async def enter_async_context(self, cm: _Any) -> _Any:
         return await _MOLT_CONTEXTLIB_ASYNC_EXITSTACK_ENTER_CONTEXT(
             self._molt_state, cm
         )
 
 
-class ExitStack(ContextDecorator):
+class ExitStack(AbstractContextManager):
     def __init__(self) -> None:
         self._molt_state = _MOLT_CONTEXTLIB_EXITSTACK_NEW()
 
@@ -325,7 +335,7 @@ class ExitStack(ContextDecorator):
     def __enter__(self) -> "ExitStack":
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(self, exc_type: _Any, exc: _Any, tb: _Any) -> bool:
         return _MOLT_CONTEXTLIB_EXITSTACK_EXIT(self._molt_state, exc_type, exc, tb)
 
     def close(self) -> None:
@@ -337,15 +347,15 @@ class ExitStack(ContextDecorator):
         return new_stack
 
     def push(
-        self, exit: Callable[[Any, Any, Any], Any]
-    ) -> Callable[[Any, Any, Any], Any]:
+        self, exit: _Callable[[_Any, _Any, _Any], _Any]
+    ) -> _Callable[[_Any, _Any, _Any], _Any]:
         _MOLT_CONTEXTLIB_EXITSTACK_PUSH(self._molt_state, exit)
         return exit
 
-    def callback(self, callback: Callable[..., Any], *args: Any, **kwds: Any) -> None:
+    def callback(self, callback: _Callable[..., _Any], *args: _Any, **kwds: _Any) -> None:
         _MOLT_CONTEXTLIB_EXITSTACK_PUSH_CALLBACK(self._molt_state, callback, args, kwds)
 
-    def enter_context(self, cm: Any) -> Any:
+    def enter_context(self, cm: _Any) -> _Any:
         return _MOLT_CONTEXTLIB_EXITSTACK_ENTER_CONTEXT(self._molt_state, cm)
 
 
@@ -356,41 +366,41 @@ class suppress(AbstractContextManager):
     def __enter__(self) -> None:
         return None
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(self, exc_type: _Any, exc: _Any, tb: _Any) -> bool:
         if exc_type is None:
             return False
         return bool(_MOLT_CONTEXTLIB_SUPPRESS_MATCH(exc_type, self._exceptions))
 
 
-class _RedirectStream(ContextDecorator):
-    def __init__(self, new_target: Any, stream_name: str) -> None:
+class _RedirectStream(AbstractContextManager):
+    def __init__(self, new_target: _Any, stream_name: str) -> None:
         self._new_target = new_target
         self._stream = stream_name
         self._old_target = None
 
-    def __enter__(self) -> Any:
+    def __enter__(self) -> _Any:
         self._old_target = _MOLT_CONTEXTLIB_REDIRECT_ENTER(
-            _sys, self._stream, self._new_target
+            sys, self._stream, self._new_target
         )
         return self._new_target
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        _MOLT_CONTEXTLIB_REDIRECT_EXIT(_sys, self._stream, self._old_target)
+    def __exit__(self, exc_type: _Any, exc: _Any, tb: _Any) -> bool:
+        _MOLT_CONTEXTLIB_REDIRECT_EXIT(sys, self._stream, self._old_target)
         return False
 
 
 class redirect_stdout(_RedirectStream):
-    def __init__(self, new_target: Any) -> None:
+    def __init__(self, new_target: _Any) -> None:
         super().__init__(new_target, "stdout")
 
 
 class redirect_stderr(_RedirectStream):
-    def __init__(self, new_target: Any) -> None:
+    def __init__(self, new_target: _Any) -> None:
         super().__init__(new_target, "stderr")
 
 
 class chdir(AbstractContextManager):
-    def __init__(self, path: Any) -> None:
+    def __init__(self, path: _Any) -> None:
         self.path = path
         self._old_cwd: list[str] = []
 
@@ -399,7 +409,7 @@ class chdir(AbstractContextManager):
         self._old_cwd.append(old_cwd)
         return None
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(self, exc_type: _Any, exc: _Any, tb: _Any) -> bool:
         _MOLT_CONTEXTLIB_CHDIR_EXIT(self._old_cwd.pop())
         return False
 

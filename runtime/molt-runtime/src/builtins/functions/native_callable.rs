@@ -7,6 +7,81 @@ use std::sync::atomic::AtomicU64;
 
 use crate::object::function_metadata::FunctionMetadataField as Field;
 
+/// CPython methodobject.c meth_reduce: module builtins reduce by public name;
+/// bound builtins reduce through getattr on their actual retained receiver.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_native_callable_reduce(function: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(pointer) = obj_from_bits(function).as_ptr() else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "expected a builtin function",
+            );
+        };
+        if unsafe { object_type_id(pointer) } != TYPE_ID_FUNCTION
+            || !matches!(
+                NativeCallableKind::from_class(py, unsafe { object_class_bits(pointer) }),
+                Some(NativeCallableKind::Function | NativeCallableKind::CMethod)
+            )
+        {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "expected a builtin function",
+            );
+        }
+        let Some(name) = (unsafe { Field::Name.load(pointer) }) else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "builtin function has no public name",
+            );
+        };
+        inc_ref_bits(py, name);
+        let name_owner = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), name)
+        };
+        let receiver =
+            unsafe { Field::SelfValue.load(pointer) }.unwrap_or(MoltObject::none().bits());
+        if obj_from_bits(receiver).is_none()
+            || obj_from_bits(receiver)
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_MODULE)
+        {
+            return name_owner.into_bits();
+        }
+        inc_ref_bits(py, receiver);
+        let receiver = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), receiver)
+        };
+        let getattr = match super::lookup_builtin_name(py, "getattr") {
+            Ok(Some(bits)) => bits,
+            Ok(None) => return raise_exception::<u64>(py, BuiltinExc::AttributeError, "getattr"),
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let getattr = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), getattr)
+        };
+        let args = alloc_tuple(py, &[receiver.bits(), name_owner.bits()]);
+        if args.is_null() {
+            return MoltObject::none().bits();
+        }
+        let args = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(args).bits(),
+            )
+        };
+        let result = alloc_tuple(py, &[getattr.bits(), args.bits()]);
+        if result.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(result).bits()
+        }
+    })
+}
+
 /// Declared callable attributes: mutable tail fields or a read-only projection
 /// of an owner that already lives in the function prefix. Projected attributes
 /// cannot enter the physical metadata mutation or GC-storage APIs.
@@ -36,11 +111,11 @@ impl CallableMetadata {
         }
     }
 
-    pub(crate) fn from_name(name: &[u8]) -> Option<Self> {
-        if name == Self::Builtins.name().as_bytes() {
+    pub(crate) fn from_id(name: crate::NameId) -> Option<Self> {
+        if name == Self::Builtins.name_id() {
             Some(Self::Builtins)
         } else {
-            Field::from_name(name).map(Self::Stored)
+            Field::from_id(name).map(Self::Stored)
         }
     }
 
@@ -51,11 +126,15 @@ impl CallableMetadata {
         }
     }
 
-    pub(crate) const fn name(self) -> &'static str {
+    pub(crate) const fn name_id(self) -> crate::NameId {
         match self {
-            Self::Stored(field) => field.name(),
-            Self::Builtins => "__builtins__",
+            Self::Stored(field) => field.name_id(),
+            Self::Builtins => crate::NameId::DunderBuiltins,
         }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        self.name_id().as_str()
     }
 }
 
@@ -157,14 +236,34 @@ impl NativeCallableKind {
 /// Passed by the owning method declaration; never inferred from names or native
 /// code addresses. The cached callable retains its owner and metadata once.
 #[derive(Clone, Copy)]
+pub(crate) enum NativeCallableName<'a> {
+    Known(crate::NameId),
+    External(&'a str),
+}
+impl<'a> NativeCallableName<'a> {
+    fn bytes(self) -> &'a [u8] {
+        match self {
+            Self::Known(name) => name.as_str().as_bytes(),
+            Self::External(name) => name.as_bytes(),
+        }
+    }
+    pub(crate) fn owned_bits(self, py: &PyToken<'_>) -> Option<u64> {
+        match self {
+            Self::Known(name) => name.owned_bits(py),
+            Self::External(name) => dynamic_attr_name_bits(py, name.as_bytes()),
+        }
+    }
+}
+#[derive(Clone, Copy)]
 pub(crate) struct NativeCallableSpec<'a> {
     pub(crate) kind: NativeCallableKind,
     pub(crate) owner: Option<u64>,
-    pub(crate) name: Option<&'a str>,
+    pub(crate) name: Option<NativeCallableName<'a>>,
     pub(crate) self_bits: Option<u64>,
     pub(crate) cache: Option<&'a AtomicU64>,
     pub(crate) text_signature: Option<&'a str>,
     pub(crate) fixed_convention: Option<molt_cpython_abi::api::cfunction::CFunctionConvention>,
+    pub(crate) identity: Option<crate::intrinsics::public_objects_generated::PublicObjectIdentity>,
 }
 
 impl<'a> NativeCallableSpec<'a> {
@@ -184,18 +283,24 @@ impl<'a> NativeCallableSpec<'a> {
             cache: None,
             text_signature: None,
             fixed_convention: None,
+            identity: None,
         }
     }
 
-    pub(crate) const fn declared(kind: NativeCallableKind, owner: u64, name: &'a str) -> Self {
+    pub(crate) const fn declared(
+        kind: NativeCallableKind,
+        owner: u64,
+        name: crate::NameId,
+    ) -> Self {
         Self {
             kind,
             owner: Some(owner),
-            name: Some(name),
+            name: Some(NativeCallableName::Known(name)),
             self_bits: None,
             cache: None,
             text_signature: None,
             fixed_convention: None,
+            identity: None,
         }
     }
 
@@ -203,11 +308,12 @@ impl<'a> NativeCallableSpec<'a> {
         Self {
             kind: NativeCallableKind::Function,
             owner: Some(owner),
-            name: Some("__new__"),
+            name: Some(NativeCallableName::Known(crate::NameId::DunderNew)),
             self_bits: Some(owner),
             cache: None,
             text_signature: None,
             fixed_convention: None,
+            identity: None,
         }
     }
 
@@ -313,15 +419,24 @@ pub(crate) unsafe fn configure_native_callable(
                 })
             })
         });
-        let name = if let Some(name) = spec.name {
-            let Some(bits) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+        let name = if let Some(name) = spec
+            .identity
+            .map(|identity| NativeCallableName::Known(identity.name))
+            .or(spec.name)
+        {
+            let Some(bits) = name.owned_bits(py) else {
                 return false;
             };
             Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
         } else {
             None
         };
-        let qualified = if let Some(name) = spec.name {
+        let qualified = if let Some(identity) = spec.identity {
+            let Some(bits) = identity.qualname.owned_bits(py) else {
+                return false;
+            };
+            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+        } else if let Some(name) = spec.name {
             let mut bytes = if let Some(owner) = spec.owner {
                 let Ok(mut bytes) = owner_qualname_bytes(py, owner) else {
                     return false;
@@ -331,8 +446,16 @@ pub(crate) unsafe fn configure_native_callable(
             } else {
                 Vec::new()
             };
-            bytes.extend_from_slice(name.as_bytes());
-            let Some(bits) = attr_name_bits_from_bytes(py, &bytes) else {
+            bytes.extend_from_slice(name.bytes());
+            let Some(bits) = dynamic_attr_name_bits(py, &bytes) else {
+                return false;
+            };
+            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+        } else {
+            None
+        };
+        let module = if let Some(identity) = spec.identity {
+            let Some(bits) = identity.module.owned_bits(py) else {
                 return false;
             };
             Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
@@ -340,7 +463,7 @@ pub(crate) unsafe fn configure_native_callable(
             None
         };
         let signature = if let Some(signature) = spec.text_signature {
-            let Some(bits) = attr_name_bits_from_bytes(py, signature.as_bytes()) else {
+            let Some(bits) = dynamic_attr_name_bits(py, signature.as_bytes()) else {
                 return false;
             };
             Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
@@ -368,7 +491,7 @@ pub(crate) unsafe fn configure_native_callable(
             if !crate::object::ops::dict_require_writable(py, dictionary_ptr) {
                 return false;
             }
-            let Some(key) = attr_name_bits_from_bytes(py, b"__text_signature__") else {
+            let Some(key) = crate::NameId::DunderTextSignature.owned_bits(py) else {
                 return false;
             };
             let _key_owner = crate::PtrDropGuard::preserving(ptr_from_bits(key));
@@ -416,9 +539,8 @@ pub(crate) unsafe fn configure_native_callable(
                     return false;
                 }
             };
-            let meta = |field: Field| {
-                crate::call::function::function_metadata_bits(py, pointer, field.name().as_bytes())
-            };
+            let meta =
+                |field: Field| crate::call::function::function_metadata_bits(py, pointer, field);
             let empty_tuple_or_none = |bits| {
                 obj_from_bits(bits).is_none()
                     || obj_from_bits(bits).as_ptr().is_some_and(|ptr| {
@@ -503,6 +625,7 @@ pub(crate) unsafe fn configure_native_callable(
             ),
             (Field::Name, name.as_ref().map(|(bits, _)| *bits)),
             (Field::QualName, qualified.as_ref().map(|(bits, _)| *bits)),
+            (Field::Module, module.as_ref().map(|(bits, _)| *bits)),
             (Field::TextSignature, text_signature),
             (Field::SelfValue, spec.self_bits),
             (Field::BindKind, fixed_kind),
@@ -622,7 +745,7 @@ pub(crate) unsafe fn native_function_error_name(
         });
         let mut prefix = None;
         if let Some(module) = module {
-            let Some(builtins) = attr_name_bits_from_bytes(py, b"builtins") else {
+            let Some(builtins) = crate::NameId::Builtins.owned_bits(py) else {
                 return Err(());
             };
             let _builtins = crate::PtrDropGuard::preserving(ptr_from_bits(builtins));

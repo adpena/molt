@@ -332,10 +332,6 @@ impl RustBackend {
             | molt_ir::OpKind::ConstStr
             | molt_ir::OpKind::ContextEnter
             | molt_ir::OpKind::ContextExit
-            | molt_ir::OpKind::DataclassGet
-            | molt_ir::OpKind::DataclassNewValues
-            | molt_ir::OpKind::DataclassSet
-            | molt_ir::OpKind::DataclassSetClass
             | molt_ir::OpKind::DecRef
             | molt_ir::OpKind::DelAttr
             | molt_ir::OpKind::DelAttrGenericObj

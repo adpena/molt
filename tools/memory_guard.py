@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import replace
 from functools import partial
-import json
 import os
 import platform
 from pathlib import Path
@@ -2851,15 +2850,6 @@ def run_guarded(
         scratch_state = (
             None if temporary_artifacts is None else temporary_artifacts.get("state")
         )
-        retention_errors: tuple[str, ...] = ()
-        if temporary_artifacts is not None:
-            retention = temporary_artifacts.get("retention")
-            if isinstance(retention, Mapping):
-                raw_errors = retention.get("errors")
-                if isinstance(raw_errors, Sequence) and not isinstance(
-                    raw_errors, (str, bytes)
-                ):
-                    retention_errors = tuple(str(error) for error in raw_errors)
         scratch_failure_details: list[str] = []
         if cleanup_error:
             scratch_failure_details.append(cleanup_error)
@@ -2867,15 +2857,21 @@ def run_guarded(
             scratch_failure_details.append(
                 "guarded descendant closure remained indeterminate"
             )
-        if scratch_state in {"blocked", "cleanup-error", "indeterminate"}:
+        if scratch_state in {"blocked", "cleanup-error", "indeterminate"} or (
+            # A clean run reclaims its own payload. A removal that failed
+            # stays retained and indexed for the next sweep, but it is this
+            # run's own custody failure.
+            scratch_clean_success and scratch_state == "retained"
+        ):
             scratch_failure_details.append(
                 f"temporary artifact terminal state is {scratch_state!r}"
             )
-        if retention_errors:
-            scratch_failure_details.append(
-                "temporary artifact retention sweep reported errors: "
-                + json.dumps(list(retention_errors), sort_keys=True)
-            )
+        # The whole-root retention sweep may reclaim other runs' scratch. Its
+        # warning goes to the guard host's stderr and the receipt, never into
+        # the child's captured output: callers compare that output with an
+        # oracle (the primitive ratchet saw a false CPython mismatch).
+        if warning := _reporting.retention_warning(temporary_artifacts):
+            print(warning, file=sys.stderr)
         infrastructure_failure = (
             GuardInfrastructureFailure(
                 phase="temporary_artifact_custody",

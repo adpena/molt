@@ -23,7 +23,7 @@ thread_local! {
 }
 
 fn class(py: &PyToken<'_>, base: u64) -> u64 {
-    let name = attr_name_bits_from_bytes(py, b"ComparisonConsumerProbe").unwrap();
+    let name = dynamic_attr_name_bits(py, b"ComparisonConsumerProbe").unwrap();
     let bits = molt_class_new(name);
     dec_ref_bits(py, name);
     let result = molt_class_set_base(bits, base);
@@ -41,7 +41,7 @@ fn instance(py: &PyToken<'_>, class: u64) -> u64 {
 }
 
 fn attr(py: &PyToken<'_>, object: u64, name: &[u8], value: u64) {
-    let key = attr_name_bits_from_bytes(py, name).unwrap();
+    let key = dynamic_attr_name_bits(py, name).unwrap();
     let result = molt_set_attr_name(object, key, value);
     dec_ref_bits(py, result);
     dec_ref_bits(py, key);
@@ -239,7 +239,7 @@ fn enum_callable_sentinel_and_stdio_do_not_publish_after_equality_error() {
         install(py, probe_class, b"__eq__", equal as *const (), 2);
         let probe = instance(py, probe_class);
         let returned = instance(py, probe_class);
-        let key = attr_name_bits_from_bytes(py, b"member").unwrap();
+        let key = dynamic_attr_name_bits(py, b"member").unwrap();
         let members = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[key, probe])).bits();
         let enum_class = class(py, builtin_classes(py).object);
         attr(py, enum_class, b"__members__", members);
@@ -347,7 +347,7 @@ fn dataclass_equality_matches_versioned_operand_order_and_raw_result_contract() 
         let record_class = class(py, builtin_classes(py).object);
         let field_class = class(py, builtin_classes(py).object);
         let tag = instance(py, field_class);
-        let tag_name = attr_name_bits_from_bytes(py, b"_FIELD").unwrap();
+        let tag_name = dynamic_attr_name_bits(py, b"_FIELD").unwrap();
         attr(py, tag, b"name", tag_name);
         dec_ref_bits(py, tag_name);
         let mut field_pairs = Vec::new();
@@ -365,7 +365,7 @@ fn dataclass_equality_matches_versioned_operand_order_and_raw_result_contract() 
             ),
         ] {
             let field = instance(py, field_class);
-            let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
+            let name_bits = dynamic_attr_name_bits(py, name).unwrap();
             attr(py, field, b"name", name_bits);
             attr(py, field, b"_field_type", tag);
             attr(py, field, b"compare", MoltObject::from_bool(true).bits());

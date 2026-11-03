@@ -55,7 +55,7 @@ extern "C" fn name_equal(left: u64, right: u64) -> u64 {
 }
 
 fn new_class(py: &crate::PyToken<'_>, name: &[u8], base: u64) -> u64 {
-    let name = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, name).unwrap());
+    let name = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
     let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
     crate::molt_class_set_base(class.bits(), base);
     assert!(!crate::exception_pending(py));
@@ -69,7 +69,7 @@ fn finish_class(py: &crate::PyToken<'_>, class: u64) {
 
 fn subclass_name(py: &crate::PyToken<'_>) -> (u64, u64, u64) {
     HASH_FAIL.with(|slot| slot.set(false));
-    let spelling = crate::attr_name_bits_from_bytes(py, b"mutation_name_identity").unwrap();
+    let spelling = crate::dynamic_attr_name_bits(py, b"mutation_name_identity").unwrap();
     let spelling_owner = ExceptionValue::adopt(py, spelling);
     let ordinary_hash = crate::molt_hash_builtin(spelling);
     let alternate = MoltObject::from_int(if ordinary_hash == MoltObject::from_int(137).bits() {
@@ -110,12 +110,11 @@ fn named_mutation_preserves_original_name_for_every_override_family() {
             FAILURE.with(|slot| slot.set(0));
             let (name, spelling, name_class) = subclass_name(py);
             let classes = crate::builtin_classes(py);
-            for (base, dataclass) in [
-                (classes.object, false),
-                (classes.list, false),
-                (classes.module, false),
-                (classes.object, true),
-                (classes.type_obj, false),
+            for base in [
+                classes.object,
+                classes.list,
+                classes.module,
+                classes.type_obj,
             ] {
                 let class = new_class(py, b"NameObservingOwner", base);
                 method(py, class, b"__setattr__", named_set as *const (), 3);
@@ -137,7 +136,7 @@ fn named_mutation_preserves_original_name_for_every_override_family() {
                     dec_ref_bits(py, bases);
                     receiver
                 } else {
-                    snapshot_receiver(py, class, dataclass)
+                    snapshot_receiver(py, class)
                 };
                 assert!(!crate::exception_pending(py));
                 let name_ptr = obj_from_bits(name).as_ptr().unwrap();
@@ -204,18 +203,16 @@ fn raw_c_generic_mutation_roundtrips_name_subclass_identity_and_hash() {
         unsafe {
             let (name, spelling, name_class) = subclass_name(py);
             let owner_class = snapshot_class(py, b"NameStorageOwner");
-            let instance = snapshot_receiver(py, owner_class, false);
-            let dataclass = snapshot_receiver(py, owner_class, true);
+            let instance = snapshot_receiver(py, owner_class);
             let native_class = new_class(py, b"NameStorageList", crate::builtin_classes(py).list);
             finish_class(py, native_class);
-            let native = snapshot_receiver(py, native_class, false);
+            let native = snapshot_receiver(py, native_class);
             let function = function(py, crossing_receiver as *const (), 1);
             let name_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(name);
             let value_bits = MoltObject::from_int(83).bits();
             let value = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value_bits);
             for receiver in [
                 instance,
-                dataclass,
                 native,
                 function,
                 owner_class,
@@ -275,7 +272,6 @@ fn raw_c_generic_mutation_roundtrips_name_subclass_identity_and_hash() {
                 function,
                 native,
                 native_class,
-                dataclass,
                 instance,
                 owner_class,
                 name,

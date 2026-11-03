@@ -749,16 +749,8 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             super::ops_dict::molt_dict_copy(MoltObject::from_ptr(live_namespace).bits());
         let namespace = obj_from_bits(staged_bits).as_ptr().ok_or(())?;
         owners.push(crate::PtrDropGuard::new(namespace));
-        let fields_name = intern_static_name(
-            py,
-            &runtime_state(py).interned.field_offsets_name,
-            b"__molt_field_offsets__",
-        );
-        let size_name = intern_static_name(
-            py,
-            &runtime_state(py).interned.molt_layout_size,
-            b"__molt_layout_size__",
-        );
+        let fields_name = crate::NameId::DunderMoltFieldOffsets.bits(py);
+        let size_name = crate::NameId::DunderMoltLayoutSize.bits(py);
         if obj_from_bits(fields_name).as_ptr().is_none()
             || obj_from_bits(size_name).as_ptr().is_none()
         {
@@ -1081,7 +1073,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                     .is_some_and(|policy| policy.allows_dict)
             })
         {
-            let name = intern_static_name(py, &runtime_state(py).interned.dict_name, b"__dict__");
+            let name = crate::NameId::DunderDict.bits(py);
             if obj_from_bits(name).as_ptr().is_none() {
                 return Err(());
             }
@@ -1256,7 +1248,7 @@ mod tests {
                 let target = REENTERED_SLOT_CLASS.load(std::sync::atomic::Ordering::SeqCst);
                 let class = obj_from_bits(target).as_ptr().unwrap();
                 let namespace = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
-                let name = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
+                let name = dynamic_attr_name_bits(py, b"__slots__").unwrap();
                 let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
                 assert!(dict_set_in_place(py, namespace, name, empty));
                 assert!(crate::builtins::attr::capture_class_slot_declaration_for_seal(py, class));
@@ -1270,17 +1262,17 @@ mod tests {
 
     unsafe fn slotted_class(py: &PyToken<'_>, label: &[u8], base: u64, slots: &[&[u8]]) -> u64 {
         unsafe {
-            let name = attr_name_bits_from_bytes(py, label).unwrap();
+            let name = dynamic_attr_name_bits(py, label).unwrap();
             let class = molt_class_new(name);
             dec_ref_bits(py, name);
             let result = molt_class_set_base(class, base);
             dec_ref_bits(py, result);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let namespace = obj_from_bits(class_dict_bits(class_ptr)).as_ptr().unwrap();
-            let slots_name = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
+            let slots_name = dynamic_attr_name_bits(py, b"__slots__").unwrap();
             let names: Vec<u64> = slots
                 .iter()
-                .map(|name| attr_name_bits_from_bytes(py, name).unwrap())
+                .map(|name| dynamic_attr_name_bits(py, name).unwrap())
                 .collect();
             let declaration = alloc_tuple(py, &names);
             for name in names {
@@ -1313,10 +1305,10 @@ mod tests {
                     crate::builtins::attr::class_slots_info(py, cached_exception)
                         .expect("native cache publication admits slots");
                 assert!(published_policy.allows_dict && !published_policy.allows_weakref);
-                let name = attr_name_bits_from_bytes(py, b"AdmissionPolicy").unwrap();
-                let slots = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
-                let dict = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
-                let weak = attr_name_bits_from_bytes(py, b"__weakref__").unwrap();
+                let name = dynamic_attr_name_bits(py, b"AdmissionPolicy").unwrap();
+                let slots = dynamic_attr_name_bits(py, b"__slots__").unwrap();
+                let dict = dynamic_attr_name_bits(py, b"__dict__").unwrap();
+                let weak = dynamic_attr_name_bits(py, b"__weakref__").unwrap();
                 let unfinished = molt_class_new(name);
                 let unfinished_ptr = obj_from_bits(unfinished).as_ptr().unwrap();
                 assert!(crate::builtins::attr::class_slots_info(py, unfinished_ptr).is_none());
@@ -1465,7 +1457,7 @@ mod tests {
                     &[],
                 );
                 let iterable_ptr = obj_from_bits(iterable).as_ptr().unwrap();
-                let iterator_name = attr_name_bits_from_bytes(py, b"__iter__").unwrap();
+                let iterator_name = dynamic_attr_name_bits(py, b"__iter__").unwrap();
                 let function = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
                     crate::builtins::functions::runtime_fn_addr(
@@ -1477,10 +1469,10 @@ mod tests {
                 let function = MoltObject::from_ptr(function).bits();
                 crate::molt_set_attr_name(iterable, iterator_name, function);
                 let declaration = alloc_instance_for_class(py, iterable_ptr);
-                let name = attr_name_bits_from_bytes(py, b"ReenteredSlotOwner").unwrap();
+                let name = dynamic_attr_name_bits(py, b"ReenteredSlotOwner").unwrap();
                 let target = molt_class_new(name);
                 let target_ptr = obj_from_bits(target).as_ptr().unwrap();
-                let slots = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
+                let slots = dynamic_attr_name_bits(py, b"__slots__").unwrap();
                 crate::molt_set_attr_name(target, slots, declaration);
                 REENTERED_SLOT_CLASS.store(target, std::sync::atomic::Ordering::SeqCst);
                 assert!(
@@ -1696,7 +1688,7 @@ mod tests {
                         field.offset
                     );
                 }
-                let x = attr_name_bits_from_bytes(py, b"x").unwrap();
+                let x = dynamic_attr_name_bits(py, b"x").unwrap();
                 let base_descriptor = dict_get_in_place(
                     py,
                     obj_from_bits(class_dict_bits(base_ptr)).as_ptr().unwrap(),

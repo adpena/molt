@@ -10,38 +10,3 @@
 # carries an advisory, and on an entry that has aged out; `--prune-expired`
 # deletes those entries.
 schema_version = 1
-
-[[pin]]
-name = "uv"
-version = "0.13.5"
-until = 2026-10-29T01:35:54Z
-cites = "HF-62"
-reason = "adopted in a9f61e4f3 before the rule landed; 0.13.4 is the oldest fix of GHSA-hq85-5cpj-mr62"
-
-[[pin]]
-name = "reference-python-3.13"
-version = "3.13.17"
-until = 2026-10-28T14:22:30Z
-cites = "HF-62"
-reason = "adopted in 7634df76d before the rule landed"
-
-[[pin]]
-name = "reference-python-3.14"
-version = "3.14.9"
-until = 2026-10-28T13:08:09Z
-cites = "HF-62"
-reason = "adopted in 7634df76d before the rule landed"
-
-[[pin]]
-name = "lune"
-version = "0.11.1"
-until = 2026-10-28T10:05:45Z
-cites = "HF-62"
-reason = "adopted in a9f61e4f3 before the rule landed"
-
-[[pin]]
-name = "astral-sh/setup-uv"
-version = "10.3.1"
-until = 2026-10-28T20:01:37Z
-cites = "HF-62"
-reason = "adopted in a9f61e4f3 before the rule landed"

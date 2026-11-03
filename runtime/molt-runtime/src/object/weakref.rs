@@ -1347,7 +1347,7 @@ mod tests {
 
             // Ordinary attribute reads and strong ownership remain valid. The
             // retirement policy is not the terminal DEALLOCATING state.
-            let name_key = crate::attr_name_bits_from_bytes(py, b"__name__").unwrap();
+            let name_key = crate::dynamic_attr_name_bits(py, b"__name__").unwrap();
             let name = crate::molt_get_attr_name(target, name_key);
             if crate::object::ops_format::string_obj_matches_bytes(
                 crate::obj_from_bits(name),

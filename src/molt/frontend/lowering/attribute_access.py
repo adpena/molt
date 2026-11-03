@@ -118,29 +118,6 @@ def _is_non_descriptor_literal(expr: ast.expr) -> bool:
 
 
 class AttributeAccessMixin(GeneratorMixinBase):
-    def _exact_dataclass_field(
-        self,
-        obj: MoltValue,
-        obj_name: str | None,
-        attr: str,
-    ) -> tuple[ClassId, int] | None:
-        class_id = self._exact_class_for_value(obj, obj_name)
-        if class_id is None:
-            return None
-        class_info = self.classes.get(class_id)
-        if (
-            class_info is None
-            or not class_info.get("dataclass")
-            or class_info.get("dynamic")
-        ):
-            return None
-        offset = class_info.get("fields", {}).get(attr)
-        if not isinstance(offset, int) or self._class_attr_may_be_data_descriptor(
-            class_id, attr
-        ):
-            return None
-        return class_id, offset
-
     def _module_can_defer_attrs(self, node: ast.Module) -> bool:
         for current in ast.walk(node):
             if isinstance(
@@ -1101,19 +1078,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 return self._emit_generic_attribute_load(
                     obj, node.attr, "GETATTR_GENERIC_PTR", method_load=method_load
                 )
-        exact_dataclass_field = self._exact_dataclass_field(obj, obj_name, node.attr)
-        if exact_dataclass_field is not None:
-            exact_dataclass, field_offset = exact_dataclass_field
-            idx_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[field_offset], result=idx_val))
-            hint: TypeHint | None = None
-            if self._hints_enabled():
-                hint = (
-                    self.classes[exact_dataclass].get("field_hints", {}).get(node.attr)
-                )
-            res = MoltValue(self.next_var(), type_hint=hint or "Unknown")
-            self.emit(MoltOp(kind="DATACLASS_GET", args=[obj, idx_val], result=res))
-            return res
         if class_info and class_info.get("dataclass"):
             return self._emit_generic_attribute_load(
                 obj,
@@ -1334,23 +1298,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
                         obj_name=obj_name,
                     )
                     return
-        exact_dataclass_field = (
-            self._exact_dataclass_field(obj, obj_name, attr)
-            if obj is not None
-            else None
-        )
-        if exact_dataclass_field is not None:
-            _, field_offset = exact_dataclass_field
-            idx_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[field_offset], result=idx_val))
-            self.emit(
-                MoltOp(
-                    kind="DATACLASS_SET",
-                    args=[obj, idx_val, value_node],
-                    result=MoltValue("none"),
-                )
-            )
-            return
         if class_info and class_info.get("dataclass"):
             self.emit(
                 MoltOp(

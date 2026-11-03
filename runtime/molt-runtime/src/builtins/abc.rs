@@ -1,4 +1,6 @@
 use crate::BuiltinExc;
+#[cfg(test)]
+use crate::dynamic_attr_name_bits;
 use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
 use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
@@ -6,20 +8,19 @@ use molt_obj_model::MoltObject;
 use super::methods::is_not_implemented_bits;
 use crate::{
     TYPE_ID_DICT, TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_dict_with_pairs, alloc_list,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable1,
-    class_bases_bits, class_bases_vec, class_dict_bits, class_mro_vec, dec_ref_bits,
-    dict_get_in_place, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    issubclass_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception,
-    runtime_state, type_of_bits,
+    alloc_string, alloc_tuple, builtin_classes, call_callable1, class_bases_bits, class_bases_vec,
+    class_dict_bits, class_mro_vec, dec_ref_bits, dict_get_in_place, exception_pending,
+    inc_ref_bits, int_bits_from_i64, is_truthy, issubclass_bits, maybe_ptr_from_bits,
+    obj_from_bits, object_type_id, raise_exception, runtime_state, type_of_bits,
 };
 
 fn get_attr_default(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
     default_bits: u64,
 ) -> u64 {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = name.owned_bits(_py) else {
         return MoltObject::none().bits();
     };
     let out = crate::molt_getattr_builtin(obj_bits, name_bits, default_bits);
@@ -30,11 +31,12 @@ fn get_attr_default(
 fn set_attr_name(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
     value_bits: u64,
 ) -> Result<(), u64> {
-    let name_bits =
-        attr_name_bits_from_bytes(_py, name).ok_or_else(|| MoltObject::none().bits())?;
+    let name_bits = name
+        .owned_bits(_py)
+        .ok_or_else(|| MoltObject::none().bits())?;
     let _ = crate::molt_set_attr_name(obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
@@ -215,7 +217,7 @@ fn owned_return(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
 fn owned_default_get_attr(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    attr_name: &[u8],
+    attr_name: crate::NameId,
     default_bits: u64,
 ) -> u64 {
     let out_bits = get_attr_default(_py, obj_bits, attr_name, default_bits);
@@ -240,7 +242,7 @@ fn is_abstract_value(_py: &crate::PyToken<'_>, value_bits: u64) -> Result<bool, 
     let is_abs = get_attr_default(
         _py,
         value_bits,
-        b"__isabstractmethod__",
+        crate::NameId::DunderIsabstractmethod,
         MoltObject::none().bits(),
     );
     if exception_pending(_py) {
@@ -249,7 +251,12 @@ fn is_abstract_value(_py: &crate::PyToken<'_>, value_bits: u64) -> Result<bool, 
     if truthy_owned(_py, is_abs)? {
         return Ok(true);
     }
-    let func_bits = get_attr_default(_py, value_bits, b"__func__", MoltObject::none().bits());
+    let func_bits = get_attr_default(
+        _py,
+        value_bits,
+        crate::NameId::DunderFunc,
+        MoltObject::none().bits(),
+    );
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -257,7 +264,7 @@ fn is_abstract_value(_py: &crate::PyToken<'_>, value_bits: u64) -> Result<bool, 
         let func_abs = get_attr_default(
             _py,
             func_bits,
-            b"__isabstractmethod__",
+            crate::NameId::DunderIsabstractmethod,
             MoltObject::none().bits(),
         );
         if exception_pending(_py) {
@@ -276,7 +283,11 @@ fn is_abstract_value(_py: &crate::PyToken<'_>, value_bits: u64) -> Result<bool, 
             return Ok(true);
         }
     }
-    for accessor in [b"fget".as_slice(), b"fset".as_slice(), b"fdel".as_slice()] {
+    for accessor in [
+        crate::NameId::Fget,
+        crate::NameId::Fset,
+        crate::NameId::Fdel,
+    ] {
         let acc_bits = get_attr_default(_py, value_bits, accessor, MoltObject::none().bits());
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
@@ -287,7 +298,7 @@ fn is_abstract_value(_py: &crate::PyToken<'_>, value_bits: u64) -> Result<bool, 
         let acc_abs = get_attr_default(
             _py,
             acc_bits,
-            b"__isabstractmethod__",
+            crate::NameId::DunderIsabstractmethod,
             MoltObject::none().bits(),
         );
         if exception_pending(_py) {
@@ -329,7 +340,11 @@ fn abc_counter_inc(_py: &crate::PyToken<'_>) -> u64 {
         + 1
 }
 
-fn abc_state_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name: &[u8]) -> Result<u64, u64> {
+fn abc_state_attr(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    name: crate::NameId,
+) -> Result<u64, u64> {
     let Some(cls_ptr) = maybe_ptr_from_bits(cls_bits) else {
         return Ok(MoltObject::none().bits());
     };
@@ -344,8 +359,9 @@ fn abc_state_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name: &[u8]) -> Resul
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
             return Ok(MoltObject::none().bits());
         }
-        let name_bits =
-            attr_name_bits_from_bytes(_py, name).ok_or_else(|| MoltObject::none().bits())?;
+        let name_bits = name
+            .owned_bits(_py)
+            .ok_or_else(|| MoltObject::none().bits())?;
         let out = dict_get_in_place(_py, dict_ptr, name_bits);
         dec_ref_bits(_py, name_bits);
         out.map(|value| value.unwrap_or_else(|| MoltObject::none().bits()))
@@ -353,10 +369,15 @@ fn abc_state_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name: &[u8]) -> Resul
     }
 }
 
-const ABC_DIRECT_SUBCLASSES_ATTR: &[u8] = b"_molt_abc_direct_subclasses";
+const ABC_DIRECT_SUBCLASSES_ATTR: crate::NameId = crate::NameId::PrivateMoltAbcDirectSubclasses;
 
 fn abc_has_state(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<bool, u64> {
-    Ok(!obj_from_bits(abc_state_attr(_py, cls_bits, b"_abc_registry")?).is_none())
+    Ok(!obj_from_bits(abc_state_attr(
+        _py,
+        cls_bits,
+        crate::NameId::PrivateAbcRegistry,
+    )?)
+    .is_none())
 }
 
 fn abc_direct_subclasses_attr(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<u64, u64> {
@@ -453,7 +474,7 @@ fn abc_collect_abstractmethods_frozenset(
         let base_abstracts = get_attr_default(
             _py,
             base_bits,
-            b"__abstractmethods__",
+            crate::NameId::DunderAbstractmethods,
             MoltObject::none().bits(),
         );
         if exception_pending(_py) {
@@ -530,11 +551,31 @@ fn abc_init_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
     }
     let version_bits = int_bits_from_i64(_py, abc_counter_get(_py) as i64);
 
-    set_attr_name(_py, cls_bits, b"__abstractmethods__", frozen_bits)?;
-    set_attr_name(_py, cls_bits, b"_abc_registry", registry_bits)?;
-    set_attr_name(_py, cls_bits, b"_abc_cache", cache_bits)?;
-    set_attr_name(_py, cls_bits, b"_abc_negative_cache", neg_cache_bits)?;
-    set_attr_name(_py, cls_bits, b"_abc_negative_cache_version", version_bits)?;
+    set_attr_name(
+        _py,
+        cls_bits,
+        crate::NameId::DunderAbstractmethods,
+        frozen_bits,
+    )?;
+    set_attr_name(
+        _py,
+        cls_bits,
+        crate::NameId::PrivateAbcRegistry,
+        registry_bits,
+    )?;
+    set_attr_name(_py, cls_bits, crate::NameId::PrivateAbcCache, cache_bits)?;
+    set_attr_name(
+        _py,
+        cls_bits,
+        crate::NameId::PrivateAbcNegativeCache,
+        neg_cache_bits,
+    )?;
+    set_attr_name(
+        _py,
+        cls_bits,
+        crate::NameId::PrivateAbcNegativeCacheVersion,
+        version_bits,
+    )?;
     set_attr_name(
         _py,
         cls_bits,
@@ -560,7 +601,7 @@ fn abc_update_abstractmethods_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> R
     let current = get_attr_default(
         _py,
         cls_bits,
-        b"__abstractmethods__",
+        crate::NameId::DunderAbstractmethods,
         MoltObject::none().bits(),
     );
     if exception_pending(_py) {
@@ -570,7 +611,12 @@ fn abc_update_abstractmethods_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> R
         return Ok(owned_return(_py, cls_bits));
     }
     let frozen_bits = abc_collect_abstractmethods_frozenset(_py, cls_bits)?;
-    set_attr_name(_py, cls_bits, b"__abstractmethods__", frozen_bits)?;
+    set_attr_name(
+        _py,
+        cls_bits,
+        crate::NameId::DunderAbstractmethods,
+        frozen_bits,
+    )?;
     if !obj_from_bits(frozen_bits).is_none() {
         dec_ref_bits(_py, frozen_bits);
     }
@@ -578,17 +624,22 @@ fn abc_update_abstractmethods_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> R
 }
 
 fn abc_sync_negative_cache_version(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
-    let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache")?;
+    let neg_cache_bits = abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcNegativeCache)?;
     if !obj_from_bits(neg_cache_bits).is_none() {
         set_clear(_py, neg_cache_bits)?;
     }
     let version_bits = int_bits_from_i64(_py, abc_counter_get(_py) as i64);
-    set_attr_name(_py, cls_bits, b"_abc_negative_cache_version", version_bits)?;
+    set_attr_name(
+        _py,
+        cls_bits,
+        crate::NameId::PrivateAbcNegativeCacheVersion,
+        version_bits,
+    )?;
     Ok(())
 }
 
 fn abc_ensure_init(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
-    let registry = abc_state_attr(_py, cls_bits, b"_abc_registry")?;
+    let registry = abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcRegistry)?;
     if obj_from_bits(registry).is_none() {
         return abc_init_impl(_py, cls_bits);
     }
@@ -623,10 +674,11 @@ fn abc_subclasscheck_impl_inner(
     }
     abc_ensure_init(_py, cls_bits)?;
 
-    let cache_bits = abc_state_attr(_py, cls_bits, b"_abc_cache")?;
-    let neg_cache_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache")?;
-    let registry_bits = abc_state_attr(_py, cls_bits, b"_abc_registry")?;
-    let neg_ver_bits = abc_state_attr(_py, cls_bits, b"_abc_negative_cache_version")?;
+    let cache_bits = abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcCache)?;
+    let neg_cache_bits = abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcNegativeCache)?;
+    let registry_bits = abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcRegistry)?;
+    let neg_ver_bits =
+        abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcNegativeCacheVersion)?;
     if obj_from_bits(cache_bits).is_none()
         || obj_from_bits(neg_cache_bits).is_none()
         || obj_from_bits(registry_bits).is_none()
@@ -643,7 +695,12 @@ fn abc_subclasscheck_impl_inner(
     if stored_version < current_counter {
         set_clear(_py, neg_cache_bits)?;
         let version_bits = int_bits_from_i64(_py, current_counter);
-        set_attr_name(_py, cls_bits, b"_abc_negative_cache_version", version_bits)?;
+        set_attr_name(
+            _py,
+            cls_bits,
+            crate::NameId::PrivateAbcNegativeCacheVersion,
+            version_bits,
+        )?;
     } else if set_contains(_py, neg_cache_bits, subclass_bits)? {
         return Ok(false);
     }
@@ -651,7 +708,7 @@ fn abc_subclasscheck_impl_inner(
     let hook_bits = get_attr_default(
         _py,
         cls_bits,
-        b"__subclasshook__",
+        crate::NameId::DunderSubclasshook,
         MoltObject::none().bits(),
     );
     if exception_pending(_py) {
@@ -1024,7 +1081,7 @@ pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
                 "Refusing to create an inheritance cycle",
             );
         }
-        let registry_bits = match abc_state_attr(_py, cls_bits, b"_abc_registry") {
+        let registry_bits = match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcRegistry) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
@@ -1042,8 +1099,12 @@ pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_abc_instancecheck(cls_bits: u64, instance_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let class_attr_bits =
-            get_attr_default(_py, instance_bits, b"__class__", MoltObject::none().bits());
+        let class_attr_bits = get_attr_default(
+            _py,
+            instance_bits,
+            crate::NameId::DunderClass,
+            MoltObject::none().bits(),
+        );
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1086,22 +1147,24 @@ pub extern "C" fn molt_abc_get_dump(cls_bits: u64) -> u64 {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
-        let registry_bits = match abc_state_attr(_py, cls_bits, b"_abc_registry") {
+        let registry_bits = match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcRegistry) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_cache") {
+        let cache_bits = match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcCache) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let neg_cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_negative_cache") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let neg_ver_bits = match abc_state_attr(_py, cls_bits, b"_abc_negative_cache_version") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let neg_cache_bits =
+            match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcNegativeCache) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let neg_ver_bits =
+            match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcNegativeCacheVersion) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         let tuple_ptr = alloc_tuple(
             _py,
             &[registry_bits, cache_bits, neg_cache_bits, neg_ver_bits],
@@ -1119,7 +1182,7 @@ pub extern "C" fn molt_abc_reset_registry(cls_bits: u64) -> u64 {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
-        let registry_bits = match abc_state_attr(_py, cls_bits, b"_abc_registry") {
+        let registry_bits = match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcRegistry) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
@@ -1140,14 +1203,15 @@ pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
         }
-        let cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_cache") {
+        let cache_bits = match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcCache) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let neg_cache_bits = match abc_state_attr(_py, cls_bits, b"_abc_negative_cache") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let neg_cache_bits =
+            match abc_state_attr(_py, cls_bits, crate::NameId::PrivateAbcNegativeCache) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         if let Err(bits) = set_clear(_py, cache_bits) {
             return bits;
         }
@@ -1155,9 +1219,12 @@ pub extern "C" fn molt_abc_reset_caches(cls_bits: u64) -> u64 {
             return bits;
         }
         let version_bits = int_bits_from_i64(_py, abc_counter_get(_py) as i64);
-        if let Err(bits) =
-            set_attr_name(_py, cls_bits, b"_abc_negative_cache_version", version_bits)
-        {
+        if let Err(bits) = set_attr_name(
+            _py,
+            cls_bits,
+            crate::NameId::PrivateAbcNegativeCacheVersion,
+            version_bits,
+        ) {
             return bits;
         }
         MoltObject::none().bits()
@@ -1288,7 +1355,12 @@ fn protocol_collect_own_members(
     ignored: &[&[u8]],
 ) -> Result<(), u64> {
     // Collect names from __annotations__
-    let ann_bits = get_attr_default(_py, cls_bits, b"__annotations__", MoltObject::none().bits());
+    let ann_bits = get_attr_default(
+        _py,
+        cls_bits,
+        crate::NameId::DunderAnnotations,
+        MoltObject::none().bits(),
+    );
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -1411,7 +1483,7 @@ fn protocol_collect_structural_members(
         let is_proto_flag = get_attr_default(
             _py,
             base_bits,
-            b"_is_protocol",
+            crate::NameId::PrivateIsProtocol,
             MoltObject::from_bool(false).bits(),
         );
         if exception_pending(_py) {
@@ -1426,7 +1498,7 @@ fn protocol_collect_structural_members(
         let parent_attrs = get_attr_default(
             _py,
             base_bits,
-            b"__protocol_attrs__",
+            crate::NameId::DunderProtocolAttrs,
             MoltObject::none().bits(),
         );
         if exception_pending(_py) {
@@ -1507,7 +1579,7 @@ fn protocol_check_impl(
     let rt_flag = get_attr_default(
         _py,
         proto_bits,
-        b"_is_runtime_protocol",
+        crate::NameId::PrivateIsRuntimeProtocol,
         MoltObject::from_bool(false).bits(),
     );
     if exception_pending(_py) {
@@ -1525,7 +1597,7 @@ fn protocol_check_impl(
     let attrs_bits = get_attr_default(
         _py,
         proto_bits,
-        b"__protocol_attrs__",
+        crate::NameId::DunderProtocolAttrs,
         MoltObject::none().bits(),
     );
     if exception_pending(_py) {
@@ -1603,7 +1675,12 @@ pub extern "C" fn molt_typing_cast(_typ_bits: u64, val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_typing_get_origin(tp_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        get_attr_default(_py, tp_bits, b"__origin__", MoltObject::none().bits())
+        get_attr_default(
+            _py,
+            tp_bits,
+            crate::NameId::DunderOrigin,
+            MoltObject::none().bits(),
+        )
     })
 }
 
@@ -1612,7 +1689,7 @@ pub extern "C" fn molt_typing_get_origin(tp_bits: u64) -> u64 {
 pub extern "C" fn molt_typing_get_args(tp_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let empty_tuple = new_empty_tuple_bits(_py);
-        owned_default_get_attr(_py, tp_bits, b"__args__", empty_tuple)
+        owned_default_get_attr(_py, tp_bits, crate::NameId::DunderArgs, empty_tuple)
     })
 }
 
@@ -1950,7 +2027,7 @@ mod tests {
                     let set_base_ok = is_type_object(base_bits) && is_type_object(child_bits);
                     let set_base_pending = exception_pending(_py);
 
-                    let attr_name_bits = attr_name_bits_from_bytes(_py, b"bootstrap_flag")
+                    let attr_name_bits = dynamic_attr_name_bits(_py, b"append")
                         .expect("attr name allocation failed");
                     let set_attr = crate::molt_set_attr_name(
                         base_bits,
@@ -1964,7 +2041,7 @@ mod tests {
                     let inherited = get_attr_default(
                         _py,
                         child_bits,
-                        b"bootstrap_flag",
+                        crate::NameId::Append,
                         MoltObject::none().bits(),
                     );
 

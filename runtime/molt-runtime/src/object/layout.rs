@@ -1475,13 +1475,17 @@ impl PreparedFunctionCode {
                 code_publish_callable_identity_unchecked(code_ptr, identity);
             }
             *slot = self.bits;
-            let setup_signature =
-                if function_code_signature_metadata_bits(ptr, b"__molt_arg_names__").is_some() {
-                    super::function_metadata::FunctionMetadataField::SIGNATURE
-                        .map(|field| field.take(ptr))
-                } else {
-                    [0; 5]
-                };
+            let setup_signature = if function_code_signature_metadata_bits(
+                ptr,
+                crate::object::function_metadata::FunctionMetadataField::ArgumentNames,
+            )
+            .is_some()
+            {
+                super::function_metadata::FunctionMetadataField::SIGNATURE
+                    .map(|field| field.take(ptr))
+            } else {
+                [0; 5]
+            };
             // Code publication changes the active signature projection. Keep
             // every attachment path coherent before returning displaced edges
             // whose release can invoke Python finalizers.
@@ -1881,9 +1885,9 @@ pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallable
 /// for runtime/native setup or unpublished code metadata.
 pub(crate) unsafe fn function_code_signature_metadata_bits(
     ptr: *mut u8,
-    name: &[u8],
+    field: crate::object::function_metadata::FunctionMetadataField,
 ) -> Option<u64> {
-    use crate::call::function::FunctionBindingField;
+    use crate::object::function_metadata::FunctionMetadataField;
     unsafe {
         let code_ptr = obj_from_bits(function_code_bits(ptr)).as_ptr()?;
         if object_type_id(code_ptr) != TYPE_ID_CODE
@@ -1895,12 +1899,12 @@ pub(crate) unsafe fn function_code_signature_metadata_bits(
         {
             return None;
         }
-        match FunctionBindingField::from_name(name)? {
-            FunctionBindingField::ArgumentNames => Some(code_arg_names_bits(code_ptr)),
-            FunctionBindingField::PositionalOnly => Some(code_signature_posonly_bits(code_ptr)),
-            FunctionBindingField::KeywordOnlyNames => Some(code_kwonly_names_bits(code_ptr)),
-            FunctionBindingField::Varargs => Some(code_vararg_bits(code_ptr)),
-            FunctionBindingField::VarKeywords => Some(code_varkw_bits(code_ptr)),
+        match field {
+            FunctionMetadataField::ArgumentNames => Some(code_arg_names_bits(code_ptr)),
+            FunctionMetadataField::PositionalOnly => Some(code_signature_posonly_bits(code_ptr)),
+            FunctionMetadataField::KeywordOnlyNames => Some(code_kwonly_names_bits(code_ptr)),
+            FunctionMetadataField::Varargs => Some(code_vararg_bits(code_ptr)),
+            FunctionMetadataField::VarKeywords => Some(code_varkw_bits(code_ptr)),
             _ => None,
         }
     }
@@ -2622,7 +2626,8 @@ pub(crate) const CLASS_DEFINITION_WORD: usize = ClassReferenceSlot::NativeModule
 /// A plain scalar code address like the definition word: no reference, no
 /// inheritance, and teardown leaves it alone.
 pub(crate) const CLASS_NATIVE_NEXT_WORD: usize = CLASS_DEFINITION_WORD + 1;
-pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_NATIVE_NEXT_WORD + 1;
+pub(crate) const CLASS_PAYLOAD_WORDS: usize =
+    ClassReferenceSlot::DataclassInitTemplate as usize + 1;
 
 /// The identity of one compiled class statement (HF-220): its program slot
 /// plus one, so zero stays the word of every class no compiled statement
@@ -3490,7 +3495,7 @@ mod tests {
                 let original = super::ensure_function_code_bits(py, function);
                 let candidate = alloc_test_code(py, name, name, 1);
                 let candidate_bits = MoltObject::from_ptr(candidate).bits();
-                let snapshot = || std::slice::from_raw_parts(candidate.cast::<u64>(), 25).to_vec();
+                let snapshot = || std::slice::from_raw_parts(candidate.cast::<u64>(), 26).to_vec();
                 let refs = |bits| ref_count(obj_from_bits(bits).as_ptr().unwrap());
                 let candidate_refs = ref_count(candidate);
                 let original_refs = ref_count(obj_from_bits(original).as_ptr().unwrap());

@@ -259,7 +259,7 @@ mod http_exception_boundary_tests {
     }
 
     fn set_attr(py: &PyToken<'_>, instance: u64, name: &[u8], value: u64) {
-        let name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, name).unwrap());
+        let name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, name).unwrap());
         crate::molt_object_setattr(instance, name.bits(), value);
         assert!(!exception_pending(py));
     }
@@ -288,12 +288,12 @@ mod http_exception_boundary_tests {
     ) -> ExceptionValue<'a, 'py> {
         let name = ExceptionValue::adopt(
             py,
-            attr_name_bits_from_bytes(py, b"HttpBoundaryFixture").unwrap(),
+            dynamic_attr_name_bits(py, b"HttpBoundaryFixture").unwrap(),
         );
         let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
         crate::molt_class_set_base(class.bits(), builtin_classes(py).object);
         for &(name, callback, arity) in methods {
-            let name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, name).unwrap());
+            let name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, name).unwrap());
             let function = ExceptionValue::adopt(
                 py,
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
@@ -663,11 +663,11 @@ extern "C" fn reentrant_typed_index(_: u64) -> u64 {
 }
 
 fn typed_callback_class(py: &PyToken<'_>, name: &[u8], callback: *const ()) -> u64 {
-    let class_name = attr_name_bits_from_bytes(py, b"TypedUpdateCallback").unwrap();
+    let class_name = dynamic_attr_name_bits(py, b"TypedUpdateCallback").unwrap();
     let class = crate::molt_class_new(class_name);
     dec_ref_bits(py, class_name);
     crate::molt_class_set_base(class, builtin_classes(py).object);
-    let name = attr_name_bits_from_bytes(py, name).unwrap();
+    let name = dynamic_attr_name_bits(py, name).unwrap();
     let function = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
         py,
         crate::provenance::abi::expose_function_address(callback),
@@ -1123,7 +1123,7 @@ fn spoofed_native_identity_cannot_enter_exception_matching_or_descriptors() {
                 ),
                 0
             );
-            let method = exception_method_bits(py, "add_note")
+            let method = exception_method_bits(py, crate::NameId::AddNote)
                 .expect("method lookup succeeds")
                 .unwrap();
             inc_ref_bits(py, method);
@@ -1225,7 +1225,7 @@ fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
                 (&raw mut *first).cast::<PyObject>(),
             );
 
-            let descriptor = object_method_bits(py, "__init_subclass__")
+            let descriptor = object_method_bits(py, crate::NameId::DunderInitSubclass)
                 .expect("method lookup succeeds")
                 .unwrap();
             inc_ref_bits(py, descriptor);
@@ -1273,7 +1273,7 @@ fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
                 class
             );
 
-            let repr_descriptor = object_method_bits(py, "__repr__")
+            let repr_descriptor = object_method_bits(py, crate::NameId::DunderRepr)
                 .expect("method lookup succeeds")
                 .unwrap();
             inc_ref_bits(py, repr_descriptor);
@@ -1318,7 +1318,7 @@ fn native_exception_public_methods_use_physical_receiver_admission() {
             let native = native_exception(&raw mut PyExc_ValueError);
             let bits = foreign_bits(native);
             let note = MoltObject::from_ptr(alloc_string(py, b"native note")).bits();
-            let method = exception_method_bits(py, "add_note")
+            let method = exception_method_bits(py, crate::NameId::AddNote)
                 .expect("method lookup succeeds")
                 .unwrap();
             inc_ref_bits(py, method);
@@ -1347,7 +1347,7 @@ fn native_exception_public_methods_use_physical_receiver_admission() {
             );
             refcount::Py_DECREF(notes);
 
-            let traceback_method = exception_method_bits(py, "with_traceback")
+            let traceback_method = exception_method_bits(py, crate::NameId::WithTraceback)
                 .expect("method lookup succeeds")
                 .unwrap();
             inc_ref_bits(py, traceback_method);
@@ -1485,7 +1485,7 @@ fn init_storage_call(
     values: &[u64],
 ) {
     let owner = exception_class_bits(py, root.owner_kind());
-    let callable = exception_method_bits_for_owner(py, owner, "__init__")
+    let callable = exception_method_bits_for_owner(py, owner, crate::NameId::DunderInit)
         .expect("method lookup succeeds")
         .unwrap();
     let mut arguments = vec![receiver];
@@ -1575,8 +1575,7 @@ fn runtime_exception_initializers_dispatch_real_native_storage_without_wrapper_w
                     .contains("native message")
             );
             dec_ref_bits(py, represented);
-            let args_name =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"args").unwrap());
+            let args_name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"args").unwrap());
             let public_args = ExceptionValue::adopt(
                 py,
                 crate::molt_get_attr_name(receiver.bits(), args_name.bits()),
@@ -1715,10 +1714,8 @@ fn declaring_base_exception_init_preserves_typed_fields_across_storage() {
                     );
                     let observed = ExceptionValue::adopt(py, init_storage_arg(py, receiver));
                     assert_eq!(observed.bits(), MoltObject::from_int(9).bits());
-                    let value_name = ExceptionValue::adopt(
-                        py,
-                        attr_name_bits_from_bytes(py, public_name).unwrap(),
-                    );
+                    let value_name =
+                        ExceptionValue::adopt(py, dynamic_attr_name_bits(py, public_name).unwrap());
                     let public_value = ExceptionValue::adopt(
                         py,
                         crate::molt_get_attr_name(receiver, value_name.bits()),
@@ -1758,9 +1755,9 @@ fn declaring_base_exception_init_preserves_typed_fields_across_storage() {
                 &raw mut PyExc_AttributeError,
             ));
             let attribute_bits = ExceptionValue::adopt(py, foreign_bits(attribute.as_ptr()));
-            let name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"name").unwrap());
+            let name = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"name").unwrap());
             let field =
-                ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"missing_field").unwrap());
+                ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"missing_field").unwrap());
             init_storage_call(
                 py,
                 ExceptionLayoutRoot::AttributeError,
@@ -1788,10 +1785,8 @@ fn native_child_of_managed_exception_initializes_real_physical_payload() {
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = ExceptionValue::adopt(
-                py,
-                attr_name_bits_from_bytes(py, b"ManagedAppError").unwrap(),
-            );
+            let name =
+                ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"ManagedAppError").unwrap());
             let parent = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
             crate::molt_class_set_base(
                 parent.bits(),
@@ -1809,7 +1804,7 @@ fn native_child_of_managed_exception_initializes_real_physical_payload() {
             let class = init_storage_native_type(view.as_ptr().cast());
             let message = ExceptionValue::adopt(
                 py,
-                attr_name_bits_from_bytes(py, b"constructed native").unwrap(),
+                dynamic_attr_name_bits(py, b"constructed native").unwrap(),
             );
             let c_message = refcount::OwnedPyObject::from_owned(
                 GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(message.bits()),

@@ -678,8 +678,7 @@ pub unsafe extern "C" fn molt_object_getattr_bytes(
                 "attribute name pointer cannot be null when len > 0",
             );
         };
-        let Some(name_bits) = crate::builtins::attr::attr_name_bits_from_bytes(_py, name_bytes)
-        else {
+        let Some(name_bits) = crate::builtins::attr::dynamic_attr_name_bits(_py, name_bytes) else {
             if exception_pending(_py) {
                 return none_bits();
             }
@@ -710,8 +709,7 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
                 "attribute name pointer cannot be null when len > 0",
             );
         };
-        let Some(name_bits) = crate::builtins::attr::attr_name_bits_from_bytes(_py, name_bytes)
-        else {
+        let Some(name_bits) = crate::builtins::attr::dynamic_attr_name_bits(_py, name_bytes) else {
             if exception_pending(_py) {
                 return -1;
             }
@@ -1237,8 +1235,7 @@ pub unsafe extern "C" fn molt_module_add_object_bytes(
                 "module attribute name pointer cannot be null when len > 0",
             );
         };
-        let Some(name_bits) = crate::builtins::attr::attr_name_bits_from_bytes(_py, name_bytes)
-        else {
+        let Some(name_bits) = crate::builtins::attr::dynamic_attr_name_bits(_py, name_bytes) else {
             if exception_pending(_py) {
                 return -1;
             }
@@ -1276,8 +1273,7 @@ pub unsafe extern "C" fn molt_module_get_object_bytes(
                 "module attribute name pointer cannot be null when len > 0",
             );
         };
-        let Some(name_bits) = crate::builtins::attr::attr_name_bits_from_bytes(_py, name_bytes)
-        else {
+        let Some(name_bits) = crate::builtins::attr::dynamic_attr_name_bits(_py, name_bytes) else {
             if exception_pending(_py) {
                 return none_bits();
             }
@@ -1689,7 +1685,12 @@ pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
             molt_object_getattr_bytes(module_bits, b"__name__".as_ptr(), b"__name__".len() as u64)
         };
         if !obj_from_bits(module_name_bits).is_none() && !exception_pending(_py) {
-            let _ = c_api_method_set_attr_bytes(_py, func_bits, b"__module__", module_name_bits);
+            let _ = c_api_method_set_attr(
+                _py,
+                func_bits,
+                crate::NameId::DunderModule,
+                module_name_bits,
+            );
             dec_ref_bits(_py, module_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, func_bits);
@@ -1767,7 +1768,12 @@ pub unsafe extern "C" fn molt_module_add_cfunction_keywords_bytes(
             molt_object_getattr_bytes(module_bits, b"__name__".as_ptr(), b"__name__".len() as u64)
         };
         if !obj_from_bits(module_name_bits).is_none() && !exception_pending(_py) {
-            let _ = c_api_method_set_attr_bytes(_py, func_bits, b"__module__", module_name_bits);
+            let _ = c_api_method_set_attr(
+                _py,
+                func_bits,
+                crate::NameId::DunderModule,
+                module_name_bits,
+            );
             dec_ref_bits(_py, module_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, func_bits);

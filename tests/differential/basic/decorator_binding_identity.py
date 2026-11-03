@@ -89,6 +89,29 @@ except TypeError:
     print("custom annotation is a required field")
 print(ActualField(19).value)
 
+
+class InitVar:
+    __molt_initvar__ = True
+
+    @classmethod
+    def __class_getitem__(cls, parameter):
+        return cls()
+
+
+class _KW_ONLY_TYPE:
+    __molt_kw_only__ = True
+
+
+@record
+class MarkerLookalikes:
+    first: InitVar[int]
+    second: _KW_ONLY_TYPE()
+
+
+lookalikes = MarkerLookalikes(23, 29)
+print("marker lookalikes", lookalikes.first, lookalikes.second,
+      sorted(vars(lookalikes)))
+
 clear_overloads()
 headers = []
 
@@ -160,3 +183,46 @@ def replacement_read(self):
 
 MutableMethod.read.__code__ = replacement_read.__code__
 print("changed method", MutableMethod().read())
+
+
+def not_a_class(name, bases, namespace):
+    return 7
+
+try:
+    @record
+    class NonClassDataclass(metaclass=not_a_class):
+        value: int
+except Exception as error:
+    print("dataclass non-class result", type(error).__name__, str(error))
+
+# A finite possible binding can propose a body, but only the real transform
+# consumes it. The user branch keeps its ordinary class namespace.
+for use_record in (False, True):
+    selected = record if use_record else dataclass
+    @selected
+    class ProposedRecord:
+        value: int
+    print("selected decorator", use_record, is_dataclass(ProposedRecord))
+    if use_record:
+        print("selected initializer", ProposedRecord(17).value)
+    else:
+        print("selected ordinary class", "__init__" in vars(ProposedRecord), ProposedRecord.marker)
+def returns_function(cls):
+    def answer(value):
+        return "captured function", value
+    return answer
+
+
+@returns_function
+class FunctionResult:
+    pass
+
+
+def replace_function_result():
+    global FunctionResult
+    FunctionResult = lambda value: ("replacement", value)
+    return 19
+
+
+print(FunctionResult(replace_function_result()))
+print(FunctionResult(20))

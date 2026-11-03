@@ -184,16 +184,10 @@ unsafe fn function_kwdefault_owned(
     name_bits: u64,
 ) -> Result<Option<u64>, u64> {
     unsafe {
-        let defaults_bits = function_attr_bits(
-            py,
+        let defaults_bits = crate::object::function_metadata::metadata_bits(
             func_ptr,
-            intern_static_name(
-                py,
-                &runtime_state(py).interned.kwdefaults_name,
-                FunctionBindingField::KeywordDefaults.name(),
-            ),
+            crate::object::function_metadata::FunctionMetadataField::KeywordDefaults,
         )
-        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
         if obj_from_bits(defaults_bits).is_none() {
             return Ok(None);
@@ -254,7 +248,7 @@ pub(super) unsafe fn function_binding_meta(
     func_ptr: *mut u8,
     field: FunctionBindingField,
 ) -> u64 {
-    unsafe { crate::call::function::function_metadata_bits(py, func_ptr, field.name()) }
+    unsafe { crate::call::function::function_metadata_bits(py, func_ptr, field.metadata_field()) }
 }
 
 /// Read current positional defaults without retaining a second derived fact.
@@ -447,18 +441,10 @@ pub(super) unsafe fn call_function_with_arguments(
             args.enter_inlined_frame();
             return call_function_obj_bound_vec(_py, func_bits, args.positional());
         }
-        let bind_kind_bits = match function_attr_bits(
-            _py,
+        let bind_kind_bits = crate::object::function_metadata::metadata_bits(
             func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_bind_kind,
-                FunctionBindingField::BindKind.name(),
-            ),
-        ) {
-            Ok(value) => value,
-            Err(()) => return MoltObject::none().bits(),
-        };
+            crate::object::function_metadata::FunctionMetadataField::BindKind,
+        );
         if let Some(kind_bits) = bind_kind_bits
             && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_CAPI_METHOD)
         {
@@ -569,16 +555,10 @@ unsafe fn python_argument_names<'a, 'py>(
     function: *mut u8,
 ) -> Result<Option<crate::object::seq_access::PinnedTuple<'a, 'py>>, u64> {
     unsafe {
-        let bits = function_attr_bits(
-            py,
+        let bits = crate::object::function_metadata::metadata_bits(
             function,
-            intern_static_name(
-                py,
-                &runtime_state(py).interned.molt_arg_names,
-                FunctionBindingField::ArgumentNames.name(),
-            ),
-        )
-        .map_err(|()| MoltObject::none().bits())?;
+            crate::object::function_metadata::FunctionMetadataField::ArgumentNames,
+        );
         let Some(bits) = bits else {
             return Ok(None);
         };
@@ -644,29 +624,17 @@ unsafe fn bind_python_frame<'a, 'py>(
     arg_names: crate::object::seq_access::PinnedTuple<'a, 'py>,
 ) -> Result<BoundPythonFrame<'a, 'py>, u64> {
     unsafe {
-        let posonly_bits = function_attr_bits(
-            _py,
+        let posonly_bits = crate::object::function_metadata::metadata_bits(
             func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_posonly,
-                FunctionBindingField::PositionalOnly.name(),
-            ),
+            crate::object::function_metadata::FunctionMetadataField::PositionalOnly,
         )
-        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::from_int(0).bits());
         let posonly = obj_from_bits(posonly_bits).as_int().unwrap_or(0).max(0) as usize;
 
-        let kwonly_bits = function_attr_bits(
-            _py,
+        let kwonly_bits = crate::object::function_metadata::metadata_bits(
             func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_kwonly_names,
-                FunctionBindingField::KeywordOnlyNames.name(),
-            ),
+            crate::object::function_metadata::FunctionMetadataField::KeywordOnlyNames,
         )
-        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
         let kwonly_names_pin = if obj_from_bits(kwonly_bits).is_none() {
             None
@@ -692,27 +660,15 @@ unsafe fn bind_python_frame<'a, 'py>(
         };
         let kwonly_names: &[u64] = kwonly_names_pin.as_deref().unwrap_or(&[]);
 
-        let vararg_bits = function_attr_bits(
-            _py,
+        let vararg_bits = crate::object::function_metadata::metadata_bits(
             func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_vararg,
-                FunctionBindingField::Varargs.name(),
-            ),
+            crate::object::function_metadata::FunctionMetadataField::Varargs,
         )
-        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
-        let varkw_bits = function_attr_bits(
-            _py,
+        let varkw_bits = crate::object::function_metadata::metadata_bits(
             func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_varkw,
-                FunctionBindingField::VarKeywords.name(),
-            ),
+            crate::object::function_metadata::FunctionMetadataField::VarKeywords,
         )
-        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
         let has_vararg = !obj_from_bits(vararg_bits).is_none();
         let has_varkw = !obj_from_bits(varkw_bits).is_none();
@@ -948,16 +904,10 @@ unsafe fn bind_python_frame<'a, 'py>(
 
         // Keyword callbacks and their errors precede positional arity and
         // default resolution, as in CPython initialize_locals.
-        let defaults_bits = function_attr_bits(
-            _py,
+        let defaults_bits = crate::object::function_metadata::metadata_bits(
             func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.defaults_name,
-                FunctionBindingField::Defaults.name(),
-            ),
+            crate::object::function_metadata::FunctionMetadataField::Defaults,
         )
-        .map_err(|()| MoltObject::none().bits())?
         .unwrap_or_else(|| MoltObject::none().bits());
         let defaults_pin = if obj_from_bits(defaults_bits).is_none() {
             None

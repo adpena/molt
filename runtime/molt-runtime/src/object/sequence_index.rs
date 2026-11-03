@@ -76,7 +76,7 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
     }
     let Some(slot) = slot else {
         let mapping = match unsafe {
-            crate::builtins::attr::has_special_method(py, receiver, b"__getitem__")
+            crate::builtins::attr::has_special_method(py, receiver, crate::NameId::DunderGetitem)
         } {
             Ok(present) => present,
             Err(()) => return MoltObject::none().bits(),
@@ -93,8 +93,9 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         // Normalize exactly once, after sq_item admission. An inherited native
         // item slot still observes an overridden heap-class length slot.
         let has_length = matches!(slot, SequenceReadSlot::Builtin)
-            || match unsafe { crate::builtins::attr::has_special_method(py, receiver, b"__len__") }
-            {
+            || match unsafe {
+                crate::builtins::attr::has_special_method(py, receiver, crate::NameId::DunderLen)
+            } {
                 Ok(present) => present,
                 Err(()) => return MoltObject::none().bits(),
             };
@@ -132,7 +133,11 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         }
         SequenceReadSlot::Special => {
             let method = match unsafe {
-                crate::builtins::attr::lookup_special_method(py, receiver, b"__getitem__")
+                crate::builtins::attr::lookup_special_method(
+                    py,
+                    receiver,
+                    crate::NameId::DunderGetitem,
+                )
             } {
                 Ok(method) => method,
                 Err(()) => return MoltObject::none().bits(),

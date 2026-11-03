@@ -573,12 +573,11 @@ impl FunctionBindingField {
         }
     }
 
-    pub(crate) const fn name(self) -> &'static [u8] {
-        self.metadata_field().name().as_bytes()
-    }
-
     pub(crate) fn from_name(name: &[u8]) -> Option<Self> {
-        Self::ALL.into_iter().find(|field| field.name() == name)
+        let field = crate::object::function_metadata::FunctionMetadataField::from_name(name)?;
+        Self::ALL
+            .into_iter()
+            .find(|binding| binding.metadata_field() == field)
     }
 }
 
@@ -591,7 +590,8 @@ pub(crate) unsafe fn function_has_default_only_binding_metadata(
     unsafe {
         FunctionBindingField::ALL.into_iter().all(|field| {
             field == FunctionBindingField::Defaults
-                || crate::object::function_metadata::metadata_bits(func_ptr, field.name()).is_none()
+                || crate::object::function_metadata::metadata_bits(func_ptr, field.metadata_field())
+                    .is_none()
         })
     }
 }
@@ -601,10 +601,10 @@ pub(crate) unsafe fn function_has_default_only_binding_metadata(
 pub(crate) unsafe fn function_metadata_bits(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
-    name: &[u8],
+    field: crate::object::function_metadata::FunctionMetadataField,
 ) -> u64 {
     unsafe {
-        crate::object::function_metadata::metadata_bits(func_ptr, name)
+        crate::object::function_metadata::metadata_bits(func_ptr, field)
             .unwrap_or_else(|| crate::MoltObject::none().bits())
     }
 }
@@ -2598,15 +2598,23 @@ pub(crate) enum ArgumentTransfer {
 /// Moved argument references that no entry has taken over yet. A failure
 /// before entry, or a borrowing C callback's return, releases each exactly
 /// once in frame order with ordinary native deallocator error visibility.
-struct PendingMove<'a, 'py> {
+pub(crate) struct PendingMove<'a, 'py> {
     py: &'a PyToken<'py>,
     args: &'a [u64],
 }
 
 impl PendingMove<'_, '_> {
     /// The entry now owns every reference.
-    fn into_entry(self) {
+    pub(crate) fn into_entry(self) {
         std::mem::forget(self);
+    }
+}
+
+impl<'a, 'py> PendingMove<'a, 'py> {
+    /// The caller has surrendered one owned reference per argument. A runtime
+    /// body uses the same guard until its ordinary frame has adopted them.
+    pub(crate) fn new(py: &'a PyToken<'py>, args: &'a [u64]) -> Self {
+        Self { py, args }
     }
 }
 
@@ -2997,29 +3005,13 @@ mod tests {
         args_bits as i64
     }
 
-    fn intern_metadata_name(_py: &crate::PyToken<'_>, name: &'static [u8]) -> u64 {
-        let interned = &crate::runtime_state(_py).interned;
-        let slot = match name {
-            b"__molt_arg_names__" => &interned.molt_arg_names,
-            b"__molt_posonly__" => &interned.molt_posonly,
-            b"__molt_kwonly_names__" => &interned.molt_kwonly_names,
-            b"__molt_vararg__" => &interned.molt_vararg,
-            b"__molt_varkw__" => &interned.molt_varkw,
-            b"__molt_bind_kind__" => &interned.molt_bind_kind,
-            b"__defaults__" => &interned.defaults_name,
-            b"__kwdefaults__" => &interned.kwdefaults_name,
-            other => panic!("unknown metadata name {:?}", other),
-        };
-        crate::intern_static_name(_py, slot, name)
-    }
-
     unsafe fn set_function_metadata_attr(
         _py: &crate::PyToken<'_>,
         func_ptr: *mut u8,
-        name: &'static [u8],
+        name: crate::NameId,
         value_bits: u64,
     ) {
-        let attr_bits = intern_metadata_name(_py, name);
+        let attr_bits = name.bits(_py);
         unsafe {
             assert!(crate::call::class_init::function_set_attr_bits(
                 _py, func_ptr, attr_bits, value_bits
@@ -3190,23 +3182,43 @@ mod tests {
             let none_bits = MoltObject::none().bits();
 
             unsafe {
-                set_function_metadata_attr(_py, func_ptr, b"__molt_arg_names__", arg_names_bits);
                 set_function_metadata_attr(
                     _py,
                     func_ptr,
-                    b"__molt_posonly__",
+                    crate::NameId::DunderMoltArgNames,
+                    arg_names_bits,
+                );
+                set_function_metadata_attr(
+                    _py,
+                    func_ptr,
+                    crate::NameId::DunderMoltPosonly,
                     MoltObject::from_int(0).bits(),
                 );
                 set_function_metadata_attr(
                     _py,
                     func_ptr,
-                    b"__molt_kwonly_names__",
+                    crate::NameId::DunderMoltKwonlyNames,
                     empty_tuple_bits,
                 );
-                set_function_metadata_attr(_py, func_ptr, b"__molt_vararg__", vararg_bits);
-                set_function_metadata_attr(_py, func_ptr, b"__molt_varkw__", varkw_bits);
-                set_function_metadata_attr(_py, func_ptr, b"__defaults__", none_bits);
-                set_function_metadata_attr(_py, func_ptr, b"__kwdefaults__", none_bits);
+                set_function_metadata_attr(
+                    _py,
+                    func_ptr,
+                    crate::NameId::DunderMoltVararg,
+                    vararg_bits,
+                );
+                set_function_metadata_attr(
+                    _py,
+                    func_ptr,
+                    crate::NameId::DunderMoltVarkw,
+                    varkw_bits,
+                );
+                set_function_metadata_attr(_py, func_ptr, crate::NameId::DunderDefaults, none_bits);
+                set_function_metadata_attr(
+                    _py,
+                    func_ptr,
+                    crate::NameId::DunderKwdefaults,
+                    none_bits,
+                );
                 crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
             }
 
@@ -3923,7 +3935,12 @@ mod tests {
                 let defaults_ptr = alloc_tuple(py, &[value]);
                 assert!(!defaults_ptr.is_null());
                 let defaults = MoltObject::from_ptr(defaults_ptr).bits();
-                set_function_metadata_attr(py, function_ptr, b"__defaults__", defaults);
+                set_function_metadata_attr(
+                    py,
+                    function_ptr,
+                    crate::NameId::DunderDefaults,
+                    defaults,
+                );
                 let baseline = ref_count(value);
                 let mut arguments = vec![int(1); 12];
                 for supplied in [12, 13] {
@@ -3968,21 +3985,21 @@ mod tests {
                 let init = crate::builtins::methods::builtin_class_method_bits(
                     py,
                     crate::builtin_classes(py).property,
-                    "__init__",
+                    crate::NameId::DunderInit,
                 )
                 .expect("method lookup succeeds")
                 .unwrap();
                 let get = crate::builtins::methods::builtin_class_method_bits(
                     py,
                     crate::builtin_classes(py).property,
-                    "__get__",
+                    crate::NameId::DunderGet,
                 )
                 .expect("method lookup succeeds")
                 .unwrap();
                 let set_name = crate::builtins::methods::builtin_class_method_bits(
                     py,
                     crate::builtin_classes(py).property,
-                    "__set_name__",
+                    crate::NameId::DunderSetName,
                 )
                 .expect("method lookup succeeds")
                 .unwrap();
@@ -4050,16 +4067,18 @@ mod tests {
     fn fixed_arity_type_constructor_builtins_route_visible_args_through_binder() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let type_new_bits = crate::builtins::methods::type_method_bits(_py, "__new__")
-                .expect("operation succeeds")
-                .expect("type.__new__");
-            let type_init_bits = crate::builtins::methods::type_method_bits(_py, "__init__")
-                .expect("operation succeeds")
-                .expect("type.__init__");
+            let type_new_bits =
+                crate::builtins::methods::type_method_bits(_py, crate::NameId::DunderNew)
+                    .expect("operation succeeds")
+                    .expect("type.__new__");
+            let type_init_bits =
+                crate::builtins::methods::type_method_bits(_py, crate::NameId::DunderInit)
+                    .expect("operation succeeds")
+                    .expect("type.__init__");
 
             for func_bits in [type_new_bits, type_init_bits] {
                 let func_ptr = obj_from_bits(func_bits).as_ptr().expect("function object");
-                let bind_kind_name = intern_metadata_name(_py, b"__molt_bind_kind__");
+                let bind_kind_name = crate::NameId::DunderMoltBindKind.bits(_py);
                 let bind_kind_bits = unsafe {
                     crate::function_attr_bits(_py, func_ptr, bind_kind_name)
                         .expect("operation succeeds")

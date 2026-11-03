@@ -89,15 +89,20 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify(
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
-                let Some(done) = asyncio_method_truthy(_py, waiter_bits, b"done") else {
+                let Some(done) = asyncio_method_truthy(_py, waiter_bits, crate::NameId::Done)
+                else {
                     if !obj_from_bits(waiter_bits).is_none() {
                         dec_ref_bits(_py, waiter_bits);
                     }
                     return MoltObject::none().bits();
                 };
                 if !done {
-                    let out_bits =
-                        asyncio_call_method1(_py, waiter_bits, b"set_result", result_bits);
+                    let out_bits = asyncio_call_method1(
+                        _py,
+                        waiter_bits,
+                        crate::NameId::SetResult,
+                        result_bits,
+                    );
                     if exception_pending(_py) {
                         if !obj_from_bits(waiter_bits).is_none() {
                             dec_ref_bits(_py, waiter_bits);
@@ -165,15 +170,20 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
-                let Some(done) = asyncio_method_truthy(_py, waiter_bits, b"done") else {
+                let Some(done) = asyncio_method_truthy(_py, waiter_bits, crate::NameId::Done)
+                else {
                     if !obj_from_bits(waiter_bits).is_none() {
                         dec_ref_bits(_py, waiter_bits);
                     }
                     return MoltObject::none().bits();
                 };
                 if !done {
-                    let out_bits =
-                        asyncio_call_method1(_py, waiter_bits, b"set_exception", exc_bits);
+                    let out_bits = asyncio_call_method1(
+                        _py,
+                        waiter_bits,
+                        crate::NameId::SetException,
+                        exc_bits,
+                    );
                     if exception_pending(_py) {
                         if !obj_from_bits(waiter_bits).is_none() {
                             dec_ref_bits(_py, waiter_bits);
@@ -200,7 +210,8 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
 pub unsafe extern "C" fn molt_asyncio_waiters_remove(waiters_bits: u64, waiter_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let out_bits = asyncio_call_method1(_py, waiters_bits, b"remove", waiter_bits);
+            let out_bits =
+                asyncio_call_method1(_py, waiters_bits, crate::NameId::Remove, waiter_bits);
             if exception_pending(_py) {
                 asyncio_clear_pending_exception(_py);
                 return MoltObject::from_bool(false).bits();
@@ -259,7 +270,7 @@ pub unsafe extern "C" fn molt_asyncio_condition_wait_for_step(
                 dec_ref_bits(_py, predicate_out);
             }
 
-            let wait_bits = asyncio_call_method0(_py, condition_bits, b"wait");
+            let wait_bits = asyncio_call_method0(_py, condition_bits, crate::NameId::Wait);
             if exception_pending(_py) {
                 return wait_bits;
             }
@@ -287,7 +298,7 @@ pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 
             let Some(waiter_tuple_bits) = tuple_from_iter_bits(_py, waiters_bits) else {
                 return MoltObject::none().bits();
             };
-            let clear_bits = asyncio_call_method0(_py, waiters_bits, b"clear");
+            let clear_bits = asyncio_call_method0(_py, waiters_bits, crate::NameId::Clear);
             if exception_pending(_py) {
                 dec_ref_bits(_py, waiter_tuple_bits);
                 return MoltObject::none().bits();
@@ -316,7 +327,8 @@ pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 
                     );
                 };
                 let waiter_bits = waiter.bits();
-                let Some(done) = asyncio_method_truthy(_py, waiter_bits, b"done") else {
+                let Some(done) = asyncio_method_truthy(_py, waiter_bits, crate::NameId::Done)
+                else {
                     dec_ref_bits(_py, waiter_tuple_bits);
                     return MoltObject::none().bits();
                 };
@@ -326,7 +338,7 @@ pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 
                 let out_bits = asyncio_call_method1(
                     _py,
                     waiter_bits,
-                    b"set_result",
+                    crate::NameId::SetResult,
                     MoltObject::from_int(idx as i64).bits(),
                 );
                 if exception_pending(_py) {
@@ -350,7 +362,8 @@ unsafe fn asyncio_transfer_set_target_exception(
     exc_bits: u64,
 ) {
     unsafe {
-        let out_bits = asyncio_call_method1(_py, target_bits, b"set_exception", exc_bits);
+        let out_bits =
+            asyncio_call_method1(_py, target_bits, crate::NameId::SetException, exc_bits);
         if !obj_from_bits(out_bits).is_none() {
             dec_ref_bits(_py, out_bits);
         }
@@ -366,7 +379,8 @@ unsafe fn asyncio_transfer_set_target_exception(
 pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let Some(target_done) = asyncio_method_truthy(_py, target_bits, b"done") else {
+            let Some(target_done) = asyncio_method_truthy(_py, target_bits, crate::NameId::Done)
+            else {
                 asyncio_clear_pending_exception(_py);
                 return MoltObject::from_bool(false).bits();
             };
@@ -374,22 +388,27 @@ pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_b
                 return MoltObject::from_bool(false).bits();
             }
 
-            let Some(source_cancelled) = asyncio_method_truthy(_py, source_bits, b"cancelled")
+            let Some(source_cancelled) =
+                asyncio_method_truthy(_py, source_bits, crate::NameId::Cancelled)
             else {
                 asyncio_clear_pending_exception(_py);
                 return MoltObject::from_bool(false).bits();
             };
             if source_cancelled {
-                let cancel_msg_ref =
-                    match asyncio_attr_lookup_allow_missing(_py, source_bits, b"_cancel_message") {
-                        Ok(value) => value,
-                        Err(()) => {
-                            asyncio_clear_pending_exception(_py);
-                            return MoltObject::from_bool(false).bits();
-                        }
-                    };
+                let cancel_msg_ref = match asyncio_attr_lookup_allow_missing(
+                    _py,
+                    source_bits,
+                    crate::NameId::PrivateCancelMessage,
+                ) {
+                    Ok(value) => value,
+                    Err(()) => {
+                        asyncio_clear_pending_exception(_py);
+                        return MoltObject::from_bool(false).bits();
+                    }
+                };
                 let cancel_msg_bits = cancel_msg_ref.unwrap_or_else(|| MoltObject::none().bits());
-                let out_bits = asyncio_call_method1(_py, target_bits, b"cancel", cancel_msg_bits);
+                let out_bits =
+                    asyncio_call_method1(_py, target_bits, crate::NameId::Cancel, cancel_msg_bits);
                 if let Some(found_bits) = cancel_msg_ref
                     && !obj_from_bits(found_bits).is_none()
                 {
@@ -405,7 +424,7 @@ pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_b
                 return MoltObject::from_bool(true).bits();
             }
 
-            let source_exc_bits = asyncio_call_method0(_py, source_bits, b"exception");
+            let source_exc_bits = asyncio_call_method0(_py, source_bits, crate::NameId::Exception);
             if exception_pending(_py) {
                 asyncio_clear_pending_exception(_py);
                 return MoltObject::from_bool(false).bits();
@@ -424,12 +443,13 @@ pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_b
                 dec_ref_bits(_py, source_exc_bits);
             }
 
-            let result_bits = asyncio_call_method0(_py, source_bits, b"result");
+            let result_bits = asyncio_call_method0(_py, source_bits, crate::NameId::Result);
             if exception_pending(_py) {
                 asyncio_clear_pending_exception(_py);
                 return MoltObject::from_bool(false).bits();
             }
-            let out_bits = asyncio_call_method1(_py, target_bits, b"set_result", result_bits);
+            let out_bits =
+                asyncio_call_method1(_py, target_bits, crate::NameId::SetResult, result_bits);
             if !obj_from_bits(result_bits).is_none() {
                 dec_ref_bits(_py, result_bits);
             }
@@ -475,35 +495,44 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -
                     );
                 };
                 let waiter_bits = waiter.bits();
-                let owner_bits =
-                    match asyncio_attr_lookup_allow_missing(_py, waiter_bits, b"_molt_event_owner")
-                    {
-                        Ok(Some(bits)) => bits,
-                        Ok(None) => continue,
-                        Err(()) => {
-                            dec_ref_bits(_py, waiter_tuple_bits);
-                            return MoltObject::none().bits();
-                        }
-                    };
+                let owner_bits = match asyncio_attr_lookup_allow_missing(
+                    _py,
+                    waiter_bits,
+                    crate::NameId::PrivateMoltEventOwner,
+                ) {
+                    Ok(Some(bits)) => bits,
+                    Ok(None) => continue,
+                    Err(()) => {
+                        dec_ref_bits(_py, waiter_tuple_bits);
+                        return MoltObject::none().bits();
+                    }
+                };
                 if obj_from_bits(owner_bits).is_none() {
                     dec_ref_bits(_py, owner_bits);
                     continue;
                 }
-                let owner_waiters_bits =
-                    match asyncio_attr_lookup_allow_missing(_py, owner_bits, b"_waiters") {
-                        Ok(Some(bits)) => bits,
-                        Ok(None) => {
-                            dec_ref_bits(_py, owner_bits);
-                            continue;
-                        }
-                        Err(()) => {
-                            dec_ref_bits(_py, owner_bits);
-                            dec_ref_bits(_py, waiter_tuple_bits);
-                            return MoltObject::none().bits();
-                        }
-                    };
-                let out_bits =
-                    asyncio_call_method1(_py, owner_waiters_bits, b"remove", waiter_bits);
+                let owner_waiters_bits = match asyncio_attr_lookup_allow_missing(
+                    _py,
+                    owner_bits,
+                    crate::NameId::PrivateWaiters,
+                ) {
+                    Ok(Some(bits)) => bits,
+                    Ok(None) => {
+                        dec_ref_bits(_py, owner_bits);
+                        continue;
+                    }
+                    Err(()) => {
+                        dec_ref_bits(_py, owner_bits);
+                        dec_ref_bits(_py, waiter_tuple_bits);
+                        return MoltObject::none().bits();
+                    }
+                };
+                let out_bits = asyncio_call_method1(
+                    _py,
+                    owner_waiters_bits,
+                    crate::NameId::Remove,
+                    waiter_bits,
+                );
                 if exception_pending(_py) {
                     asyncio_clear_pending_exception(_py);
                 } else {
@@ -571,8 +600,12 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
                     );
                 };
                 let task_bits = task.bits();
-                let out_bits =
-                    asyncio_call_method1(_py, task_bits, b"add_done_callback", callback_bits);
+                let out_bits = asyncio_call_method1(
+                    _py,
+                    task_bits,
+                    crate::NameId::AddDoneCallback,
+                    callback_bits,
+                );
                 if exception_pending(_py) {
                     dec_ref_bits(_py, task_tuple_bits);
                     return MoltObject::none().bits();
@@ -638,7 +671,7 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
                 let token = match asyncio_attr_lookup_allow_missing(
                     _py,
                     waiter_bits,
-                    b"_molt_event_token_id",
+                    crate::NameId::PrivateMoltEventTokenId,
                 ) {
                     Ok(value) => value,
                     Err(()) => {
@@ -663,7 +696,8 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
                         dec_ref_bits(_py, token_bits);
                     }
                 }
-                let out_bits = asyncio_call_method1(_py, waiter_bits, b"set_result", result_bits);
+                let out_bits =
+                    asyncio_call_method1(_py, waiter_bits, crate::NameId::SetResult, result_bits);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, waiter_tuple_bits);
                     return out_bits;
@@ -737,7 +771,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
             count = count.min(buf_len);
 
             if count == buf_len {
-                let clear_bits = asyncio_call_method0(_py, buffer_bits, b"clear");
+                let clear_bits = asyncio_call_method0(_py, buffer_bits, crate::NameId::Clear);
                 if exception_pending(_py) {
                     return clear_bits;
                 }
@@ -755,7 +789,8 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
             if obj_from_bits(slice_bits).is_none() {
                 return slice_bits;
             }
-            let del_bits = asyncio_call_method1(_py, buffer_bits, b"__delitem__", slice_bits);
+            let del_bits =
+                asyncio_call_method1(_py, buffer_bits, crate::NameId::DunderDelitem, slice_bits);
             if !obj_from_bits(slice_bits).is_none() {
                 dec_ref_bits(_py, slice_bits);
             }

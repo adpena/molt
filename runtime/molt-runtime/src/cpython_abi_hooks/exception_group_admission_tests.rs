@@ -335,9 +335,9 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
             refcount::Py_DECREF(native_group);
             assert!(errors::PyErr_Occurred().is_null());
 
-            let split_name = crate::attr_name_bits_from_bytes(py, b"split").unwrap();
-            let exceptions_name = crate::attr_name_bits_from_bytes(py, b"exceptions").unwrap();
-            let notes_name = crate::attr_name_bits_from_bytes(py, b"__notes__").unwrap();
+            let split_name = crate::dynamic_attr_name_bits(py, b"split").unwrap();
+            let exceptions_name = crate::dynamic_attr_name_bits(py, b"exceptions").unwrap();
+            let notes_name = crate::dynamic_attr_name_bits(py, b"__notes__").unwrap();
             let note = MoltObject::from_ptr(alloc_string(py, b"kept")).bits();
             let notes = MoltObject::from_ptr(crate::alloc_list(py, &[note])).bits();
             let set_result = crate::molt_set_attr_name(group, notes_name, notes);
@@ -473,7 +473,7 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
 
             // A visible derive override returns C-owned groups. The public
             // split path must publish metadata through the native field owners.
-            let derive_name = crate::attr_name_bits_from_bytes(py, b"derive").unwrap();
+            let derive_name = crate::dynamic_attr_name_bits(py, b"derive").unwrap();
             let derive =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
@@ -486,10 +486,9 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
                 .bits();
             let set_result = crate::molt_set_attr_name(group, derive_name, derive);
             dec_ref_bits(py, set_result);
-            let context_name = crate::attr_name_bits_from_bytes(py, b"__context__").unwrap();
-            let cause_name = crate::attr_name_bits_from_bytes(py, b"__cause__").unwrap();
-            let suppress_name =
-                crate::attr_name_bits_from_bytes(py, b"__suppress_context__").unwrap();
+            let context_name = crate::dynamic_attr_name_bits(py, b"__context__").unwrap();
+            let cause_name = crate::dynamic_attr_name_bits(py, b"__cause__").unwrap();
+            let suppress_name = crate::dynamic_attr_name_bits(py, b"__suppress_context__").unwrap();
             for name in [context_name, cause_name] {
                 let result = crate::molt_set_attr_name(group, name, other);
                 dec_ref_bits(py, result);

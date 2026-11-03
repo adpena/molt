@@ -1282,8 +1282,20 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     state.mkdir(parents=True)
     (state / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
 
+    scratch = dx.scratch_root(worktree, create=True)
+    (scratch / "clone").mkdir()
+    (scratch / "clone" / "big.bin").write_bytes(b"x" * 64)
+    (scratch / "measure.json").write_text("{}", encoding="utf-8")
+
     assert lanes.cmd_lane_retire(_args(family, slug="landed")) == 0
     _assert_released(main, worktree)
+    # Lane scratch goes with the lane; the slot keeps its scratch binding.
+    assert sorted(p.name for p in scratch.iterdir()) == sorted(
+        n
+        for n in (".molt-state-owner.json", ".molt-last-use")
+        if (scratch / n).exists()
+    )
+    assert (scratch / ".molt-state-owner.json").exists()
     assert _registered(main) == [main.resolve(), worktree.resolve()]
     assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == tip
     assert _ref(main, "refs/heads/lane/landed") is None
@@ -1297,6 +1309,27 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     assert _start(family, "next") == worktree
     assert (state / "pyvenv.cfg").read_text(encoding="utf-8") == "home = /x\n"
     assert _record(family, "next")["lane"]["slot"] is True
+
+
+def test_lane_retire_finishes_a_landed_lane_whose_slot_another_lane_reuses(
+    family: Path,
+) -> None:
+    # HF-753: a landed lane's slot served another lane before its record was
+    # retired, and retire refused "exists outside its managed Git registration".
+    main = family / "molt-src"
+    worktree = _start(family, "first")
+    _commit_file(worktree, "first.txt", "first\n", "first work")
+    _git(worktree, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/lane/first")
+    _git(worktree, "checkout", "-q", "--detach")
+    assert _start(family, "second") == worktree
+
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == 0
+    assert _record(family, "first")["status"] == "landed"
+    assert _ref(main, "refs/heads/lane/first") is None
+    assert (
+        _git(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "lane/second"
+    )
 
 
 def _replay_onto_advanced_main(family: Path, commits: list[str], amend: bool) -> None:

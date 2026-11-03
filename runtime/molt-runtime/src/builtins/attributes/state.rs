@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 3;
 
 pub(crate) struct AttributesRuntimeState {
+    pub(crate) class_lookup: crate::builtins::attr::ClassLookupCache,
     pub(super) wrapper_member_get: AtomicU64,
     pub(super) wrapper_member_set: AtomicU64,
     pub(super) wrapper_member_delete: AtomicU64,
@@ -19,6 +20,7 @@ pub(crate) struct AttributesRuntimeState {
 impl AttributesRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
+            class_lookup: crate::builtins::attr::ClassLookupCache::new(),
             wrapper_member_get: AtomicU64::new(0),
             wrapper_member_set: AtomicU64::new(0),
             wrapper_member_delete: AtomicU64::new(0),
@@ -115,7 +117,8 @@ pub(crate) fn attributes_clear_runtime_state(
     };
     // The map and every atomic slot are empty before the first release;
     // callbacks can repopulate them without lock recursion or lost publication.
-    let changed = !names.is_empty();
+    let lookup_changed = attributes.class_lookup.clear(_py);
+    let changed = !names.is_empty() || lookup_changed;
     let slots = attributes.object_slots();
     let slots_changed = crate::state::cache::clear_atomic_slots(_py, &slots);
     for bits in names.into_values() {

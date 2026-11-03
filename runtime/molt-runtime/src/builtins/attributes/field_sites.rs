@@ -12,12 +12,15 @@
 //!   (reads) or the default `__setattr__`/`__delattr__` pair (writes),
 //! - no class in the MRO has an attribute of that name, so no descriptor
 //!   can take priority over the instance,
-//! - the class layout places the name in an inferred field.
+//! - the class layout places the name in an inferred field, or an ordinary
+//!   dictionary write is admitted and no inferred field exists.
 //!
 //! Entries hold no references. They are keyed by the global type version,
 //! which advances on every class mutation and every type release, so a hit
-//! never sees a stale offset or a reused class address. A hit still defers to
-//! the generic path when the instance has a dictionary or the field is unset.
+//! never sees a stale offset or a reused class address. Inferred-field hits
+//! defer when the instance has a dictionary or the field is unset. Dictionary
+//! writes use the canonical storage transaction, including first insertion,
+//! dictionary replacement, equality callbacks and displaced-value retirement.
 
 use super::*;
 use crate::builtins::attr::{class_inferred_field_offset, class_namespace_lookup_mro_pure};
@@ -30,14 +33,20 @@ struct FieldSiteEntry {
     site_id: u64,
     class_bits: u64,
     type_version: u64,
-    offset: usize,
+    target: FieldSiteTarget,
+}
+
+#[derive(Clone, Copy)]
+enum FieldSiteTarget {
+    Inferred(usize),
+    Dictionary,
 }
 
 const EMPTY_FIELD_SITE: FieldSiteEntry = FieldSiteEntry {
     site_id: 0,
     class_bits: 0,
     type_version: 0,
-    offset: 0,
+    target: FieldSiteTarget::Inferred(0),
 };
 
 /// Direct-mapped by site id, like the call and method caches.
@@ -89,11 +98,11 @@ unsafe fn plain_instance(obj_bits: u64) -> Option<*mut u8> {
 /// The field offset a warm site may use for `obj_ptr`, or `None` when the
 /// generic transaction must decide.
 #[inline]
-unsafe fn cached_offset(
+unsafe fn cached_target(
     access: FieldAccess,
     site_id: u64,
     obj_bits: u64,
-) -> Option<(*mut u8, usize)> {
+) -> Option<(*mut u8, FieldSiteTarget)> {
     unsafe {
         let entry = access
             .table()
@@ -103,9 +112,23 @@ unsafe fn cached_offset(
         }
         let obj_ptr = plain_instance(obj_bits)?;
         (object_class_bits(obj_ptr) == entry.class_bits
-            && crate::object::global_type_version() == entry.type_version
-            && instance_dict_bits(obj_ptr) == 0)
-            .then_some((obj_ptr, entry.offset))
+            && crate::object::global_type_version() == entry.type_version)
+            .then_some((obj_ptr, entry.target))
+    }
+}
+
+#[inline]
+unsafe fn cached_offset(
+    access: FieldAccess,
+    site_id: u64,
+    obj_bits: u64,
+) -> Option<(*mut u8, usize)> {
+    unsafe {
+        let (object, FieldSiteTarget::Inferred(offset)) = cached_target(access, site_id, obj_bits)?
+        else {
+            return None;
+        };
+        (instance_dict_bits(object) == 0).then_some((object, offset))
     }
 }
 
@@ -139,19 +162,35 @@ pub(super) unsafe fn read_cached_field(
     }
 }
 
-/// A warm write site. `true` means the write completed or raised; `false`
-/// sends it to the generic path.
+/// A warm write site. Dictionary entries retain no name reference: the static
+/// site's name is resolved through the canonical interner on each hit.
+/// `true` means the write completed or raised; `false` takes the generic path.
 pub(super) unsafe fn write_cached_field(
     py: &PyToken<'_>,
     site_id: u64,
     obj_bits: u64,
     val_bits: u64,
+    name: &[u8],
 ) -> bool {
     unsafe {
-        let Some((obj_ptr, offset)) = cached_offset(FieldAccess::Write, site_id, obj_bits) else {
+        let Some((object, target)) = cached_target(FieldAccess::Write, site_id, obj_bits) else {
             return false;
         };
-        let _completed = object_field_set_ptr_raw(py, obj_ptr, offset, val_bits);
+        match target {
+            FieldSiteTarget::Inferred(offset) => {
+                if instance_dict_bits(object) != 0 {
+                    return false;
+                }
+                let _ = object_field_set_ptr_raw(py, object, offset, val_bits);
+            }
+            FieldSiteTarget::Dictionary => {
+                let Some(name) = dynamic_attr_name_bits(py, name) else {
+                    return true;
+                };
+                let _ = crate::object::field_storage::set_item(py, object, name, val_bits);
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+            }
+        }
         true
     }
 }
@@ -200,12 +239,25 @@ pub(super) unsafe fn remember_field_site(
                     == Some(AttributeMutation::Generic)
             }
         };
-        if !default_protocol || class_namespace_lookup_mro_pure(py, class, name, None) != Some(None)
+        if !default_protocol
+            || class_namespace_lookup_mro_pure(
+                py,
+                class,
+                name_bits,
+                None,
+                crate::builtins::attr::NamespacePreparation::Unresolved,
+            ) != Some(None)
         {
             return Ok(());
         }
-        let Some(offset) = class_inferred_field_offset(py, class, name_bits)? else {
-            return Ok(());
+        let target = match class_inferred_field_offset(py, class, name_bits)? {
+            Some(offset) => FieldSiteTarget::Inferred(offset),
+            None if access == FieldAccess::Write
+                && crate::object::field_storage::allows_dictionary(py, obj_ptr) =>
+            {
+                FieldSiteTarget::Dictionary
+            }
+            None => return Ok(()),
         };
         // Finishing the class definition may publish layout; record only a
         // fact that still describes the current class graph.
@@ -217,7 +269,7 @@ pub(super) unsafe fn remember_field_site(
                 site_id,
                 class_bits,
                 type_version,
-                offset,
+                target,
             });
         });
         Ok(())

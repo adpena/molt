@@ -18,11 +18,13 @@ pub(super) enum DefaultGetattribute {
 impl DefaultGetattribute {
     fn bits(self, py: &PyToken<'_>) -> Result<Option<u64>, ()> {
         match self {
-            Self::Object => object_method_bits(py, "__getattribute__"),
-            Self::Module => {
-                builtin_class_method_bits(py, builtin_classes(py).module, "__getattribute__")
-            }
-            Self::Type => type_method_bits(py, "__getattribute__"),
+            Self::Object => object_method_bits(py, crate::NameId::DunderGetattribute),
+            Self::Module => builtin_class_method_bits(
+                py,
+                builtin_classes(py).module,
+                crate::NameId::DunderGetattribute,
+            ),
+            Self::Type => type_method_bits(py, crate::NameId::DunderGetattribute),
         }
     }
 
@@ -103,8 +105,20 @@ pub(super) unsafe fn plain_attribute_protocol(
             return Ok(entry.plain);
         }
         let (Some(getattr), Some(Some(getattribute))) = (
-            class_namespace_lookup_mro_pure(py, owner, b"__getattr__", None),
-            class_namespace_lookup_mro_pure(py, owner, b"__getattribute__", None),
+            class_namespace_lookup_mro_pure(
+                py,
+                owner,
+                crate::NameId::DunderGetattr.bits(py),
+                None,
+                crate::builtins::attr::NamespacePreparation::Unresolved,
+            ),
+            class_namespace_lookup_mro_pure(
+                py,
+                owner,
+                crate::NameId::DunderGetattribute.bits(py),
+                None,
+                crate::builtins::attr::NamespacePreparation::Unresolved,
+            ),
         ) else {
             return Ok(false);
         };
@@ -167,17 +181,12 @@ where
         let mut fallback = None;
         let mut raw = None;
         let result = (|| {
-            let fallback_name =
-                intern_static_name(py, &runtime_state(py).interned.getattr_name, b"__getattr__");
+            let fallback_name = crate::NameId::DunderGetattr.bits(py);
             fallback = class_attr_lookup_raw_mro(py, owner, fallback_name)?;
             if let Some(bits) = fallback {
                 inc_ref_bits(py, bits);
             }
-            let getattribute_name = intern_static_name(
-                py,
-                &runtime_state(py).interned.getattribute_name,
-                b"__getattribute__",
-            );
+            let getattribute_name = crate::NameId::DunderGetattribute.bits(py);
             raw = class_attr_lookup_raw_mro(py, owner, getattribute_name)?;
             if let Some(bits) = raw {
                 inc_ref_bits(py, bits);
@@ -315,17 +324,19 @@ unsafe fn type_attr_lookup_ptr_inner(
             return descriptor_bind(_py, local.bits(), Some(class_bits), None);
         }
 
-        if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
+        if let Some(name) = crate::NameId::from_bits(_py, attr_bits) {
             let builtins = builtin_classes(_py);
             if class_bits == builtins.object
-                && (name == "__getattribute__" || name == "__setattr__" || name == "__delattr__")
-                && let Some(func_bits) = object_method_bits(_py, name.as_str())?
+                && (name == crate::NameId::DunderGetattribute
+                    || name == crate::NameId::DunderSetattr
+                    || name == crate::NameId::DunderDelattr)
+                && let Some(func_bits) = object_method_bits(_py, name)?
             {
                 inc_ref_bits(_py, func_bits);
                 drop(meta_attribute.take());
                 return Ok(Some(func_bits));
             }
-            if name == "__init_subclass__"
+            if name == crate::NameId::DunderInitSubclass
                 && runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_INIT_SUBCLASS)
             {
                 let builtins = builtin_classes(_py);
@@ -337,8 +348,9 @@ unsafe fn type_attr_lookup_ptr_inner(
                 );
             }
             if class_bits == builtins.tuple
-                && name == "__new__"
-                && let Some(func_bits) = builtin_class_method_bits(_py, class_bits, "__new__")?
+                && name == crate::NameId::DunderNew
+                && let Some(func_bits) =
+                    builtin_class_method_bits(_py, class_bits, crate::NameId::DunderNew)?
             {
                 inc_ref_bits(_py, func_bits);
                 drop(meta_attribute.take());
@@ -346,10 +358,10 @@ unsafe fn type_attr_lookup_ptr_inner(
             }
 
             let class_bits = MoltObject::from_ptr(obj_ptr).bits();
-            if name == "fromkeys" {
+            if name == crate::NameId::Fromkeys {
                 let builtins = builtin_classes(_py);
                 if issubclass_bits(class_bits, builtins.dict)
-                    && let Some(func_bits) = dict_method_bits(_py, name.as_str())?
+                    && let Some(func_bits) = dict_method_bits(_py, crate::NameId::Fromkeys)?
                 {
                     let function = ExceptionValue::pin(_py, func_bits);
                     drop(meta_attribute.take());

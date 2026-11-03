@@ -399,7 +399,7 @@ pub extern "C" fn __molt_http_molt_iter(bits: u64) -> u64 {
 pub extern "C" fn __molt_http_attr_name_bits_from_bytes(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        crate::builtins::attr::attr_name_bits_from_bytes(_py, key).unwrap_or_default()
+        crate::builtins::attr::dynamic_attr_name_bits(_py, key).unwrap_or_default()
     })
 }
 

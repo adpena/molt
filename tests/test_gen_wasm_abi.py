@@ -20,6 +20,7 @@ from tools.wasm_abi_gen.paths import (
     OUT_RUNTIME_CALLABLES_RS,
 )
 from tests.process_guard_common import run_guarded_test_process
+from tools.public_objects import public_object_id
 
 ROOT = Path(__file__).resolve().parents[1]
 _MANIFEST_CACHE: dict | None = None
@@ -28,6 +29,26 @@ _RENDERED_RS_MODULES_CACHE: dict[str, str] | None = None
 _RENDERED_RUNTIME_CALLABLES_CACHE: str | None = None
 _RENDERED_PY_CACHE: str | None = None
 _RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
+
+
+def test_runtime_name_registry_changes_invalidate_callable_render_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ROOT / "runtime/molt-ir/src/tir/runtime_names.toml"
+    assert registry in gen_wasm_abi._cache_input_files()
+    baseline = gen_wasm_abi._render_cache_key("registry-test-rustfmt")
+    original_read_bytes = Path.read_bytes
+
+    def changed_registry(path: Path) -> bytes:
+        contents = original_read_bytes(path)
+        if path == registry:
+            return contents.replace(b'Append = "append"', b'NewAppend = "append"')
+        return contents
+
+    monkeypatch.setattr(Path, "read_bytes", changed_registry)
+    assert gen_wasm_abi._render_cache_key("registry-test-rustfmt") != baseline
+
+
 _RENDERED_ALLOWED_IMPORTS_CACHE: str | None = None
 
 
@@ -1032,7 +1053,6 @@ def test_fixed_arity_constructors_take_raw_word_ranges_not_boxed_operands() -> N
     for name, arity in (
         ("tuple_from_values", 2),
         ("list_from_values", 2),
-        ("dataclass_new_from_values", 5),
     ):
         entry = imports[name]
         signature = data["static_type"][entry["type"]]
@@ -2171,18 +2191,24 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         ) in rendered_builtin_rs
     assert offsets == sorted(offsets), "binary-search projection must be name-sorted"
     runtime_offsets = [
-        rendered_runtime_rs.index(f'python_name: "{entry["python_name"]}",')
+        rendered_runtime_rs.index(
+            "PublicObjectId::" + public_object_id(entry["runtime_name"]) + ","
+        )
         for entry in builtin_entries
     ]
     assert runtime_offsets == sorted(runtime_offsets), (
         "runtime metadata shares sorted lookup and enumeration"
     )
-    assert '            python_name: "len",' in rendered_runtime_rs
+    assert "PublicObjectId::Len," in rendered_runtime_rs
     builtin_info_fields = rendered_runtime_rs.split(
         "pub(crate) struct PythonBuiltinFunctionInfo {", 1
     )[1].split("}", 1)[0]
     assert "pub(crate) index:" not in builtin_info_fields
-    assert "pub(crate) python_module: &'static str" in builtin_info_fields
+    assert (
+        "pub(crate) public: crate::intrinsics::public_objects_generated::PublicObjectId"
+        in builtin_info_fields
+    )
+    assert "python_module:" not in builtin_info_fields
     assert '            runtime_name: "molt_len",' in rendered_runtime_rs
     assert "python_builtin_function_target_ptr" not in rendered_runtime_rs
     assert (
@@ -2199,7 +2225,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert '#[cfg(not(target_arch = "wasm32"))]' not in rendered_runtime_rs
     assert '            posonly_params: &["obj"],' in rendered_runtime_rs
     assert "            defaults: &[]," in rendered_runtime_rs
-    assert '            python_name: "print",' in rendered_runtime_rs
+    assert "PublicObjectId::PrintBuiltin," in rendered_runtime_rs
     assert '            runtime_name: "molt_print_builtin",' in rendered_runtime_rs
     assert '            vararg: Some("args"),' in rendered_runtime_rs
     assert (
@@ -2407,7 +2433,7 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
 
     runtime_callables = gen.render_runtime_callables_rs(loaded)
     hash_builtin_projection = runtime_callables.split(
-        '            python_name: "hash",', 1
+        "PublicObjectId::HashBuiltin,", 1
     )[1].split("        },", 1)[0]
     assert 'runtime_name: "molt_hash_builtin"' in hash_builtin_projection
     assert '#[cfg(feature = "stdlib_crypto")]' not in hash_builtin_projection

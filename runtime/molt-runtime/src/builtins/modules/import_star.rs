@@ -36,7 +36,7 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
         let _src_dict_owner = PtrDropGuard::new(src_dict);
         inc_ref_bits(py, destination_dict);
         let _dst_dict_owner = PtrDropGuard::new(dst_dict);
-        let all_name = intern_static_name(py, &runtime_state(py).interned.all_name, b"__all__");
+        let all_name = crate::NameId::DunderAll.bits(py);
         if all_name == 0 {
             return none;
         }
@@ -89,9 +89,7 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
             let Some(text) = string_obj_to_owned(obj_from_bits(name)) else {
                 // CPython fetches __name__ only on the invalid-name path; this
                 // lookup is observable and may itself fail or return non-str.
-                let Some(name_key) =
-                    crate::builtins::attr::attr_name_bits_from_bytes(py, b"__name__")
-                else {
+                let Some(name_key) = crate::NameId::DunderName.owned_bits(py) else {
                     return none;
                 };
                 let _name_key_owner = obj_from_bits(name_key).as_ptr().map(PtrDropGuard::new);
@@ -197,11 +195,11 @@ mod tests {
                 );
                 let callback = MoltObject::from_ptr(callback).bits();
                 let getattr_name =
-                    crate::builtins::attr::attr_name_bits_from_bytes(py, b"__getattr__").unwrap();
+                    crate::builtins::attr::dynamic_attr_name_bits(py, b"__getattr__").unwrap();
                 let dynamic_name =
-                    crate::builtins::attr::attr_name_bits_from_bytes(py, b"dynamic").unwrap();
+                    crate::builtins::attr::dynamic_attr_name_bits(py, b"dynamic").unwrap();
                 let hidden_name =
-                    crate::builtins::attr::attr_name_bits_from_bytes(py, b"_hidden").unwrap();
+                    crate::builtins::attr::dynamic_attr_name_bits(py, b"_hidden").unwrap();
                 let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                 let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
                 assert!(dict_set_in_place(py, src_dict, getattr_name, callback));
@@ -294,10 +292,10 @@ mod tests {
         let getitem = MoltObject::from_ptr(getitem).bits();
         let iter = MoltObject::from_ptr(iter).bits();
         let getitem_name =
-            crate::builtins::attr::attr_name_bits_from_bytes(py, b"__getitem__").unwrap();
-        let iter_name = crate::builtins::attr::attr_name_bits_from_bytes(py, b"__iter__").unwrap();
+            crate::builtins::attr::dynamic_attr_name_bits(py, b"__getitem__").unwrap();
+        let iter_name = crate::builtins::attr::dynamic_attr_name_bits(py, b"__iter__").unwrap();
         let class_name =
-            crate::builtins::attr::attr_name_bits_from_bytes(py, b"IndexedNames").unwrap();
+            crate::builtins::attr::dynamic_attr_name_bits(py, b"IndexedNames").unwrap();
         let namespace = MoltObject::from_ptr(alloc_dict_with_pairs(
             py,
             &[getitem_name, getitem, iter_name, iter],
@@ -351,8 +349,7 @@ mod tests {
                     let key = MoltObject::from_ptr(alloc_string(py, b"visible")).bits();
                     let names = indexed_names(py);
                     let _names_owner = obj_from_bits(names).as_ptr().map(PtrDropGuard::new);
-                    let all_key =
-                        intern_static_name(py, &runtime_state(py).interned.all_name, b"__all__");
+                    let all_key = crate::NameId::DunderAll.bits(py);
                     let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                     let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
                     assert!(dict_set_in_place(
@@ -415,8 +412,7 @@ mod tests {
                 let key = MoltObject::from_ptr(alloc_string(py, b"visible")).bits();
                 let names = alloc_list(py, &[key, MoltObject::from_int(3).bits()]);
                 let _names_owner = PtrDropGuard::new(names);
-                let all_key =
-                    intern_static_name(py, &runtime_state(py).interned.all_name, b"__all__");
+                let all_key = crate::NameId::DunderAll.bits(py);
                 let src_dict = obj_from_bits(module_dict_bits(src)).as_ptr().unwrap();
                 let dst_dict = obj_from_bits(module_dict_bits(dst)).as_ptr().unwrap();
                 assert!(dict_set_in_place(

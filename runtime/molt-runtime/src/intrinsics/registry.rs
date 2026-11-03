@@ -1,5 +1,6 @@
 use crate::BuiltinExc;
 use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue, IntrinsicSpec};
+use crate::intrinsics::public_objects_generated::{PublicObjectId, PublicObjectKind};
 use crate::object::ops::{
     DICT_STRING_BINDING_LIMIT, ExactStringLookup, dict_bind_string_entries,
     dict_exact_string_lookup, hash_string_bytes,
@@ -352,7 +353,7 @@ pub(crate) fn publish_python_native_namespace(
     if provider != "builtins"
         && !crate::builtins::functions::PYTHON_BUILTIN_FUNCTIONS
             .iter()
-            .any(|spec| spec.python_module == provider)
+            .any(|spec| spec.public.identity().module.as_str() == provider)
     {
         return true;
     }
@@ -398,8 +399,10 @@ pub(crate) fn publish_python_native_namespace(
     for spec in crate::builtins::functions::PYTHON_BUILTIN_FUNCTIONS {
         // The per-app resolver is the executable/profile authority. Excluded
         // providers stay unavailable; allocation errors must never be skipped.
-        if spec.python_module != provider
-            || crate::builtins::classes::is_public_builtin_class_name(spec.python_name)
+        if spec.public.identity().module.as_str() != provider
+            || crate::builtins::classes::is_public_builtin_class_name(
+                spec.public.identity().name.as_str(),
+            )
             || try_app_resolve_symbol(spec.runtime_name).is_none()
         {
             continue;
@@ -410,7 +413,12 @@ pub(crate) fn publish_python_native_namespace(
             ensure_registry_memory_error(py, "builtin callable materialization failed");
             return false;
         };
-        let inserted = checked_dict_insert(py, staged, spec.python_name.as_bytes(), bits);
+        let inserted = checked_dict_insert(
+            py,
+            staged,
+            spec.public.identity().name.as_str().as_bytes(),
+            bits,
+        );
         dec_ref_bits(py, bits);
         if !inserted {
             return false;
@@ -452,13 +460,17 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
         return false;
     };
     for spec in crate::builtins::functions::PYTHON_BUILTIN_FUNCTIONS {
-        if spec.python_module == "builtins"
-            || crate::builtins::classes::is_public_builtin_class_name(spec.python_name)
+        if spec.public.identity().module.as_str() == "builtins"
+            || crate::builtins::classes::is_public_builtin_class_name(
+                spec.public.identity().name.as_str(),
+            )
             || try_app_resolve_symbol(spec.runtime_name).is_none()
         {
             continue;
         }
-        let Some(id) = crate::builtins::module_table::module_id_of(spec.python_module) else {
+        let Some(id) =
+            crate::builtins::module_table::module_id_of(spec.public.identity().module.as_str())
+        else {
             raise_exception::<()>(
                 py,
                 BuiltinExc::SystemError,
@@ -481,7 +493,11 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
             );
             return false;
         };
-        let value = match named_dict_value(py, namespace, spec.python_name.as_bytes()) {
+        let value = match named_dict_value(
+            py,
+            namespace,
+            spec.public.identity().name.as_str().as_bytes(),
+        ) {
             Ok(Some(value)) => value,
             Ok(None) => {
                 raise_exception::<()>(
@@ -494,7 +510,11 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
             Err(()) => return false,
         };
         inc_ref_bits(py, value);
-        let displaced = bind_names(py, builtins, &[(spec.python_name, value)]);
+        let displaced = bind_names(
+            py,
+            builtins,
+            &[(spec.public.identity().name.as_str(), value)],
+        );
         dec_ref_bits(py, value);
         let Some(displaced) = displaced else {
             return false;
@@ -628,7 +648,7 @@ fn new_runtime_registry(_py: &PyToken<'_>) -> Option<OwnedExactDict> {
                     continue;
                 };
                 let Some(func_bits) =
-                    build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
+                    build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.public)
                 else {
                     ensure_registry_memory_error(_py, "intrinsic function allocation failed");
                     return None;
@@ -826,24 +846,27 @@ fn alias_name(name: &str) -> Option<String> {
     Some(alias)
 }
 
-fn materialize_intrinsic_defaults(
+pub(crate) fn materialize_intrinsic_defaults(
     _py: &PyToken<'_>,
     defaults: &[IntrinsicDefaultValue],
 ) -> Option<Vec<u64>> {
-    Some(
-        defaults
-            .iter()
-            .map(|&default| intrinsic_default_bits(default))
-            .collect(),
-    )
+    let values = defaults
+        .iter()
+        .map(|&default| intrinsic_default_bits(_py, default))
+        .collect();
+    (!exception_pending(_py)).then_some(values)
 }
 
 /// The canonical boxed value of one generated intrinsic default.
-fn intrinsic_default_bits(default: IntrinsicDefaultValue) -> u64 {
+pub(super) fn intrinsic_default_bits(py: &PyToken<'_>, default: IntrinsicDefaultValue) -> u64 {
     match default {
         IntrinsicDefaultValue::None => MoltObject::none().bits(),
         IntrinsicDefaultValue::Bool(value) => MoltObject::from_bool(value).bits(),
         IntrinsicDefaultValue::Int(value) => MoltObject::from_int(value).bits(),
+        IntrinsicDefaultValue::FloatBits(value) => {
+            MoltObject::from_float(f64::from_bits(value)).bits()
+        }
+        IntrinsicDefaultValue::Missing => crate::builtins::methods::missing_bits(py),
     }
 }
 
@@ -891,13 +914,34 @@ fn build_intrinsic_func(
     fn_ptr: u64,
     arity: u8,
     default_values: &[IntrinsicDefaultValue],
-    python_name: Option<&str>,
+    public: Option<PublicObjectId>,
 ) -> Option<u64> {
+    if let Some(public) = public
+        && let Some(signature) =
+            public.call_signature(crate::object::ops_sys::runtime_target_at_least(_py, 3, 14))
+    {
+        let defaults = materialize_intrinsic_defaults(_py, signature.defaults)?;
+        let spec = crate::builtins::functions::native_callable::NativeCallableSpec {
+            identity: Some(public.identity()),
+            ..crate::builtins::functions::native_callable::NativeCallableSpec::uncached_function()
+        };
+        let bits = crate::builtins::methods::alloc_builtin_function_with_signature(
+            _py, spec, fn_ptr, signature, &defaults,
+        );
+        if bits == 0 {
+            return None;
+        }
+        if !super::public_objects::configure_keyword_only(_py, bits, signature) {
+            dec_ref_bits(_py, bits);
+            return None;
+        }
+        return Some(bits);
+    }
     let defaults = materialize_intrinsic_defaults(_py, default_values)?;
     let bits = build_runtime_function(_py, fn_ptr, arity, &defaults)?;
-    if let Some(name) = python_name {
+    if let Some(public) = public {
         let spec = crate::builtins::functions::native_callable::NativeCallableSpec {
-            name: Some(name),
+            identity: Some(public.identity()),
             ..crate::builtins::functions::native_callable::NativeCallableSpec::uncached_function()
         };
         let pointer = obj_from_bits(bits)
@@ -971,7 +1015,7 @@ fn is_runtime_materialization(
     fn_ptr: u64,
     arity: u8,
     defaults: &[IntrinsicDefaultValue],
-    python_name: Option<&str>,
+    public: Option<PublicObjectId>,
 ) -> bool {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return false;
@@ -985,11 +1029,28 @@ fn is_runtime_materialization(
             && crate::function_arity(ptr) == u64::from(arity)
             && crate::function_call_abi(ptr) == crate::FunctionCallAbi::Positional
             && crate::function_mutation_version(ptr) == 0
-            && crate::call::function::function_has_default_only_binding_metadata(py, ptr)
-            && function_defaults_are(py, ptr, defaults)
-            && python_name.is_none_or(|name| {
+            && public
+                .and_then(|public| {
+                    public
+                        .call_signature(crate::object::ops_sys::runtime_target_at_least(py, 3, 14))
+                })
+                .map_or_else(
+                    || {
+                        crate::call::function::function_has_default_only_binding_metadata(py, ptr)
+                            && function_defaults_are(py, ptr, defaults)
+                    },
+                    |signature| super::public_objects::signature_matches(py, ptr, signature),
+                )
+            && public.is_none_or(|public| {
                 use crate::object::function_metadata::FunctionMetadataField as Field;
-                [Field::Name, Field::QualName].into_iter().all(|field| {
+                let identity = public.identity();
+                [
+                    (Field::Name, identity.name.as_str()),
+                    (Field::QualName, identity.qualname.as_str()),
+                    (Field::Module, identity.module.as_str()),
+                ]
+                .into_iter()
+                .all(|(field, name)| {
                     field.load(ptr).is_some_and(|value| {
                         crate::object::ops_format::with_string_bytes(
                             obj_from_bits(value),
@@ -1011,7 +1072,7 @@ pub(crate) fn is_named_runtime_materialization(py: &PyToken<'_>, bits: u64, name
     let Some(target) = try_app_resolve_symbol(spec.symbol) else {
         return false;
     };
-    is_runtime_materialization(py, bits, target, spec.arity, spec.defaults, None)
+    is_runtime_materialization(py, bits, target, spec.arity, spec.defaults, spec.public)
 }
 
 /// Recognize a positional Python builtin dependency from the existing builtin
@@ -1025,7 +1086,10 @@ pub(crate) fn is_named_python_builtin_materialization(
 ) -> bool {
     let Some(spec) = crate::builtins::functions::PYTHON_BUILTIN_FUNCTIONS
         .iter()
-        .find(|spec| spec.python_module == "builtins" && spec.python_name == name)
+        .find(|spec| {
+            spec.public.identity().module.as_str() == "builtins"
+                && spec.public.identity().name.as_str() == name
+        })
     else {
         return false;
     };
@@ -1133,14 +1197,14 @@ pub(crate) fn is_compiled_body_materialization(
 /// Whether a function binds exactly these canonical `__defaults__`, decided
 /// without allocation or Python equality. Both materialization families use
 /// this owner; their caller supplies the admitted immutable default bits.
-unsafe fn function_defaults_are(
+pub(super) unsafe fn function_defaults_are(
     _py: &PyToken<'_>,
     function: *mut u8,
     defaults: &[IntrinsicDefaultValue],
 ) -> bool {
     unsafe {
         function_default_bits_are(function, defaults.len(), |i| {
-            intrinsic_default_bits(defaults[i])
+            intrinsic_default_bits(_py, defaults[i])
         })
     }
 }
@@ -1204,14 +1268,7 @@ unsafe fn bound_materialization(
 ) -> Option<u64> {
     let (canonical, spellings) = names.split_first()?;
     let bits = unsafe { exact_name_value(py, registry, canonical.as_bytes()) }.ok()??;
-    if !is_runtime_materialization(
-        py,
-        bits,
-        fn_ptr,
-        spec.arity,
-        spec.defaults,
-        spec.python_name,
-    ) {
+    if !is_runtime_materialization(py, bits, fn_ptr, spec.arity, spec.defaults, spec.public) {
         return None;
     }
     for name in spellings {
@@ -1243,21 +1300,14 @@ fn publish_materialization(
             .map_err(|()| IntrinsicResolveError::AllocFailed)?,
     };
     let reusable = bound.filter(|&bits| {
-        is_runtime_materialization(
-            py,
-            bits,
-            fn_ptr,
-            spec.arity,
-            spec.defaults,
-            spec.python_name,
-        )
+        is_runtime_materialization(py, bits, fn_ptr, spec.arity, spec.defaults, spec.public)
     });
     let value = match reusable {
         Some(bits) => {
             inc_ref_bits(py, bits);
             bits
         }
-        None => build_intrinsic_func(py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
+        None => build_intrinsic_func(py, fn_ptr, spec.arity, spec.defaults, spec.public)
             .ok_or(IntrinsicResolveError::AllocFailed)?,
     };
     let mut value_owner = obj_from_bits(value).as_ptr().map(crate::PtrDropGuard::new);
@@ -1295,16 +1345,19 @@ fn resolve_intrinsic_func(
     if exception_pending(_py) {
         return Err(IntrinsicResolveError::AllocFailed);
     }
-    // Only the registry's materialization is shared. Compiled BUILTIN_FUNC
-    // construction receives a private callable with the same manifest-owned
-    // defaults; no post-construction public metadata writes are needed.
-    let registry = if cache_result {
+    // Public native functions have one identity even when compiled modules
+    // acquire them before their public provider initializes. Reuse the existing
+    // registry; internal implementation handles remain private to their caller.
+    let public_function = spec
+        .public
+        .is_some_and(|public| public.identity().kind == PublicObjectKind::BuiltinFunctionOrMethod);
+    let registry = if cache_result || public_function {
         published_registry(_py).map_err(|()| IntrinsicResolveError::AllocFailed)?
     } else {
         None
     };
     let Some(registry) = registry else {
-        return build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.python_name)
+        return build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.public)
             .ok_or(IntrinsicResolveError::AllocFailed);
     };
     let alias = alias_name(spec.name);
@@ -1743,8 +1796,11 @@ mod tests {
                             crate::object_class_bits(ptr),
                             crate::builtin_classes(py).builtin_function_or_method
                         );
-                        let defaults =
-                            crate::call::function::function_metadata_bits(py, ptr, b"__defaults__");
+                        let defaults = crate::call::function::function_metadata_bits(
+                            py,
+                            ptr,
+                            crate::object::function_metadata::FunctionMetadataField::Defaults,
+                        );
                         let tuple = obj_from_bits(defaults).as_ptr().unwrap();
                         assert_eq!(
                             crate::object::seq_access::with_immutable_tuple_slice(tuple, |items| {
@@ -1918,7 +1974,7 @@ mod tests {
         miri,
         ignore = "materialization identity compares native callable addresses"
     )]
-    fn public_intrinsic_names_survive_cached_and_private_materialization() {
+    fn public_intrinsic_names_and_identity_survive_compiled_materialization() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
                 let owner = construct_registry_owner(py);
@@ -1948,13 +2004,16 @@ mod tests {
                         target,
                         spec.arity,
                         spec.defaults,
-                        Some(expected)
+                        spec.public
                     ));
                     dec_ref_bits(py, unnamed);
+                    let compiled = resolve_intrinsic_func(py, runtime, false)
+                        .expect("compiled public intrinsic");
                     for cache in [false, true] {
                         let alias = alias_name(runtime).unwrap();
                         let function = resolve_intrinsic_func(py, &alias, cache)
                             .expect("public intrinsic materialization");
+                        assert_eq!(function, compiled, "{runtime}/{cache}");
                         for field in ["__name__", "__qualname__"] {
                             let key = string_bits(py, field);
                             let value = crate::molt_get_attr_name(function, key);
@@ -1969,6 +2028,7 @@ mod tests {
                         assert!(!exception_pending(py));
                         dec_ref_bits(py, function);
                     }
+                    dec_ref_bits(py, compiled);
                 }
                 // CPython publishes distinct methods even with one implementation.
                 for (alias, original) in [
@@ -2003,7 +2063,10 @@ mod tests {
                     let value = crate::molt_get_attr_name(repaired, key);
                     assert_eq!(
                         crate::string_obj_to_owned(obj_from_bits(value)).as_deref(),
-                        find_spec(alias).unwrap().python_name
+                        find_spec(alias)
+                            .unwrap()
+                            .public
+                            .map(|id| id.identity().name.as_str())
                     );
                     for bits in [value, key, repaired, alias_bits, original_bits] {
                         dec_ref_bits(py, bits);
@@ -2200,7 +2263,7 @@ mod tests {
                     app_fn_ptr(spec.name),
                     spec.arity,
                     spec.defaults,
-                    spec.python_name,
+                    spec.public,
                 )
                 .expect("eager materialization");
                 assert!(checked_dict_insert(
@@ -2348,12 +2411,21 @@ mod tests {
                     let original = resolve_intrinsic_func(_py, name, true).unwrap();
                     let ptr = obj_from_bits(original).as_ptr().unwrap();
                     unsafe {
-                        assert!(crate::call::class_init::function_set_attr_name(
-                            _py,
-                            ptr,
-                            b"note",
-                            MoltObject::from_int(42).bits(),
-                        ));
+                        assert!({
+                            match crate::dynamic_attr_name_bits(_py, b"note") {
+                                Some(name) => {
+                                    let result = crate::call::class_init::function_set_attr_bits(
+                                        _py,
+                                        ptr,
+                                        name,
+                                        MoltObject::from_int(42).bits(),
+                                    );
+                                    crate::dec_ref_bits(_py, name);
+                                    result
+                                }
+                                None => false,
+                            }
+                        });
                         // An unrelated attribute must not invalidate reuse.
                         assert_eq!(resolve_intrinsic_func(_py, name, true), Ok(original));
                         dec_ref_bits(_py, original);
@@ -2513,12 +2585,12 @@ mod tests {
         miri,
         ignore = "reuse compares callable addresses from separate fn-pointer casts, which Miri's provenance model exposes as distinct"
     )]
-    fn uncached_resolution_is_private_to_its_caller() {
+    fn internal_compiled_resolution_is_private_to_its_caller() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(_py, {
                 let owner_bits = construct_registry_owner(_py);
                 let registry = runtime_registry(_py);
-                let canonical = "molt_operator_length_hint";
+                let canonical = "molt_require_intrinsic_runtime";
                 let shared = resolve_intrinsic_func(_py, canonical, true).expect("publication");
                 let private =
                     resolve_intrinsic_func(_py, canonical, false).expect("private callable");

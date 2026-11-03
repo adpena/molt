@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from tools.public_objects import PublicObjectIdentity
 
 _DEF_RE = re.compile(
     r"^def\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\((?P<params>.*)\)\s*->\s*(?P<ret>[^:]+):\s*\.\.\.\s*$"
@@ -169,7 +170,7 @@ class IntrinsicEntry:
         "symbol",
         "arity",
         "defaults",
-        "python_name",
+        "public",
         "cfg",
         "parameter_names",
     )
@@ -180,7 +181,7 @@ class IntrinsicEntry:
         symbol: str,
         arity: int,
         defaults: tuple[str, ...] = (),
-        python_name: str | None = None,
+        public: PublicObjectIdentity | None = None,
         cfg: RuntimeCfg = ALWAYS_DEFINED,
         *,
         parameter_names: tuple[str, ...],
@@ -191,16 +192,11 @@ class IntrinsicEntry:
             or len(set(parameter_names)) != len(parameter_names)
         ):
             raise ValueError("intrinsic parameter names must match its fixed arity")
-        if python_name is not None and (
-            not isinstance(python_name, str)
-            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", python_name) is None
-        ):
-            raise ValueError("python-name must be an ASCII identifier")
         self.name = name
         self.symbol = symbol
         self.arity = arity
         self.defaults = defaults
-        self.python_name = python_name
+        self.public = public
         self.cfg = cfg
         self.parameter_names = parameter_names
 
@@ -221,9 +217,11 @@ def _iter_defs(text: str) -> list[tuple[str, dict[str, str]]]:
                     raise ValueError("duplicate cfg declaration")
                 metadata["cfg"] = match.group(1)
                 continue
-            if line.startswith(("# python-name", "# runtime-symbol")):
+            if line.startswith("# python-name"):
+                raise ValueError("public identity belongs to public_objects.toml")
+            if line.startswith("# runtime-symbol"):
                 match = re.fullmatch(
-                    r"# (python-name|runtime-symbol): ([A-Za-z_][A-Za-z0-9_]*)", line
+                    r"# (runtime-symbol): ([A-Za-z_][A-Za-z0-9_]*)", line
                 )
                 if match is None:
                     raise ValueError("invalid intrinsic metadata declaration")
@@ -351,7 +349,6 @@ def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
             symbol=metadata.get("runtime-symbol", name),
             arity=len(params),
             defaults=_parse_intrinsic_defaults(name, params),
-            python_name=metadata.get("python-name"),
             cfg=cfg or ALWAYS_DEFINED,
             parameter_names=tuple(
                 param.split(":", 1)[0].split("=", 1)[0].strip() for param in params

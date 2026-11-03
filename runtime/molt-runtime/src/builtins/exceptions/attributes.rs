@@ -299,12 +299,12 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
         };
         for declaration in declarations {
             let operation = declaration.field.operation();
-            let name = declaration.python_name;
+            let name = crate::NameId::from(declaration.field);
             let flavor = match declaration.field.descriptor_kind() {
                 ExceptionDescriptorKind::Member => NativeDescriptorFlavor::Member,
                 ExceptionDescriptorKind::GetSet => NativeDescriptorFlavor::GetSet,
             };
-            let Some(name) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+            let Some(name) = name.owned_bits(py) else {
                 return false;
             };
             let _name_owner = crate::PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
@@ -356,8 +356,8 @@ mod tests {
             // view. Ordinary lookup only consumes that completed namespace.
             let base = builtin_classes(&py).base_exception;
             let base_ptr = obj_from_bits(base).as_ptr().unwrap();
-            let args_name = attr_name_bits_from_bytes(&py, b"args").unwrap();
-            let cause_name = attr_name_bits_from_bytes(&py, b"__cause__").unwrap();
+            let args_name = dynamic_attr_name_bits(&py, b"args").unwrap();
+            let cause_name = dynamic_attr_name_bits(&py, b"__cause__").unwrap();
             let namespace = obj_from_bits(class_dict_bits(base_ptr)).as_ptr().unwrap();
             let previous_cause =
                 dict_get_in_place(&py, namespace, cause_name).expect("dictionary lookup succeeds");
@@ -402,7 +402,7 @@ mod tests {
             let managed = alloc_exception(&py, BuiltinExc::ValueError, "mixed chain");
             assert!(!managed.is_null());
             let managed_bits = MoltObject::from_ptr(managed).bits();
-            let context_name = attr_name_bits_from_bytes(&py, b"__context__").unwrap();
+            let context_name = dynamic_attr_name_bits(&py, b"__context__").unwrap();
             for name in [cause_name, context_name] {
                 let result = crate::molt_set_attr_name(managed_bits, name, receiver);
                 dec_ref_bits(&py, result);
@@ -468,7 +468,7 @@ mod tests {
             dec_ref_bits(&py, observed);
 
             let typed_owner = exception_class_bits(&py, BuiltinExc::AttributeError);
-            let typed_name = attr_name_bits_from_bytes(&py, b"obj").unwrap();
+            let typed_name = dynamic_attr_name_bits(&py, b"obj").unwrap();
             let typed_descriptor = crate::builtins::attr::class_namespace_lookup_raw(
                 &py,
                 obj_from_bits(typed_owner).as_ptr().unwrap(),

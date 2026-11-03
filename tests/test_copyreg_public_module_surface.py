@@ -10,7 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
+import functools
 import importlib.util
+import operator
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
@@ -37,6 +39,8 @@ install_registry({{
     "molt_copyreg_reconstructor": lambda cls, base, state_obj: cls.__new__(cls),
     "molt_copyreg_reduce_ex": lambda obj, proto: ("reduced", proto, type(obj).__name__),
     "molt_copyreg_constructor": lambda func: state["ctors"].add(func),
+    "molt_functools_reduce": functools.reduce,
+    "molt_operator_or": operator.or_,
     "molt_copyreg_add_extension": lambda module, name, code: state["ext"].__setitem__((module, name), int(code)),
     "molt_copyreg_remove_extension": lambda module, name, code: state["ext"].pop((module, name), None),
     "molt_copyreg_clear_extension_cache": lambda: state["cache"].clear(),

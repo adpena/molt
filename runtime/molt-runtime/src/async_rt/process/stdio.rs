@@ -389,7 +389,7 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
 
         let mut fd = to_i64(value_obj);
         if fd.is_none() {
-            let Some(fileno_name_bits) = attr_name_bits_from_bytes(_py, b"fileno") else {
+            let Some(fileno_name_bits) = crate::NameId::Fileno.owned_bits(_py) else {
                 return MoltObject::none().bits();
             };
             let missing = missing_bits(_py);

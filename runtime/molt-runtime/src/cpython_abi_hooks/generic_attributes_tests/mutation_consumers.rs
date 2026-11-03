@@ -82,7 +82,7 @@ fn native_normal_mutation_consumers_invoke_override_and_preserve_failures() {
             let bits = GLOBAL_BRIDGE
                 .molt_value_for_pyobj(&raw mut receiver.object)
                 .unwrap();
-            let name = crate::attr_name_bits_from_bytes(py, b"field").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"field").unwrap();
             let value = MoltObject::from_int(19).bits();
             assert_eq!(
                 crate::molt_setattr_builtin(bits, name, value),
@@ -231,7 +231,7 @@ fn managed_class_mutation_separates_normal_explicit_and_raw_generic() {
                 } else {
                     classes.type_obj
                 };
-                let name = crate::attr_name_bits_from_bytes(py, b"MutableClass").unwrap();
+                let name = crate::dynamic_attr_name_bits(py, b"MutableClass").unwrap();
                 let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
                 let namespace = crate::molt_dict_new(0);
                 let class = crate::builtins::types::molt_type_new(
@@ -242,7 +242,7 @@ fn managed_class_mutation_separates_normal_explicit_and_raw_generic() {
                     MoltObject::none().bits(),
                 );
                 assert!(!crate::exception_pending(py));
-                let field = crate::attr_name_bits_from_bytes(py, b"field").unwrap();
+                let field = crate::dynamic_attr_name_bits(py, b"field").unwrap();
                 let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class);
                 let name_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(field);
                 let value =
@@ -298,12 +298,14 @@ fn managed_class_mutation_separates_normal_explicit_and_raw_generic() {
                 );
                 // Explicit type defaults remain valid for metaclass delegation
                 // and bypass that metaclass's Python mutation overrides.
-                let setter = crate::builtins::methods::type_method_bits(py, "__setattr__")
-                    .expect("method lookup succeeds")
-                    .expect("declared mutation method");
-                let deleter = crate::builtins::methods::type_method_bits(py, "__delattr__")
-                    .expect("method lookup succeeds")
-                    .expect("declared mutation method");
+                let setter =
+                    crate::builtins::methods::type_method_bits(py, crate::NameId::DunderSetattr)
+                        .expect("method lookup succeeds")
+                        .expect("declared mutation method");
+                let deleter =
+                    crate::builtins::methods::type_method_bits(py, crate::NameId::DunderDelattr)
+                        .expect("method lookup succeeds")
+                        .expect("declared mutation method");
                 inc_ref_bits(py, setter);
                 inc_ref_bits(py, deleter);
                 let result =
@@ -349,7 +351,7 @@ fn raw_static_class_mutation_is_visible_only_through_generic_dictionary() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let classes = crate::builtin_classes(py);
-            let name = crate::attr_name_bits_from_bytes(py, b"_molt_raw_class_oracle").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"_molt_raw_class_oracle").unwrap();
             let name_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(name);
             let value =
                 GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(MoltObject::from_int(137).bits());
@@ -420,7 +422,7 @@ fn explicit_object_mutation_admits_builtin_storage_and_managed_subclasses() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let classes = crate::builtin_classes(py);
-        let name = crate::attr_name_bits_from_bytes(py, b"managed").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"managed").unwrap();
         for base in [classes.object, classes.list, classes.tuple] {
             CALLS.with(|calls| calls.set([0; 6]));
             FAILURE.with(|failure| failure.set(0));
@@ -471,10 +473,9 @@ fn explicit_object_defaults_mutate_managed_storage_without_projection() {
                 crate::builtin_classes(py).list,
             ] {
                 let class = attribute_class(py, base, false);
-                let receiver = snapshot_receiver(py, class, false);
+                let receiver = snapshot_receiver(py, class);
                 let pointer = obj_from_bits(receiver).as_ptr().unwrap();
-                let field =
-                    crate::attr_name_bits_from_bytes(py, b"unprojected_object_field").unwrap();
+                let field = crate::dynamic_attr_name_bits(py, b"unprojected_object_field").unwrap();
                 CALLS.with(|calls| calls.set([0; 6]));
                 assert!(
                     !(*crate::header_from_obj_ptr(pointer))
@@ -519,20 +520,20 @@ fn metaclass_default_pairs_select_raw_type_or_explicit_admission() {
             for (object_set, object_delete) in
                 [(true, true), (false, false), (true, false), (false, true)]
             {
-                let name = crate::attr_name_bits_from_bytes(py, b"ObjectDefaultMeta").unwrap();
+                let name = crate::dynamic_attr_name_bits(py, b"ObjectDefaultMeta").unwrap();
                 let meta = crate::molt_class_new(name);
                 crate::molt_class_set_base(meta, crate::builtin_classes(py).type_obj);
                 let setter = if object_set {
-                    crate::builtins::methods::object_method_bits(py, "__setattr__")
+                    crate::builtins::methods::object_method_bits(py, crate::NameId::DunderSetattr)
                 } else {
-                    crate::builtins::methods::type_method_bits(py, "__setattr__")
+                    crate::builtins::methods::type_method_bits(py, crate::NameId::DunderSetattr)
                 }
                 .expect("method lookup succeeds")
                 .expect("declared mutation method");
                 let deleter = if object_delete {
-                    crate::builtins::methods::object_method_bits(py, "__delattr__")
+                    crate::builtins::methods::object_method_bits(py, crate::NameId::DunderDelattr)
                 } else {
-                    crate::builtins::methods::type_method_bits(py, "__delattr__")
+                    crate::builtins::methods::type_method_bits(py, crate::NameId::DunderDelattr)
                 }
                 .expect("method lookup succeeds")
                 .expect("declared mutation method");
@@ -582,11 +583,10 @@ fn metaclass_default_pairs_select_raw_type_or_explicit_admission() {
                                 Some(MoltObject::from_int(41).bits())
                             }
                         );
-                        if object_set && object_delete {
-                            assert_eq!(crate::class_layout_version_bits(class_ptr), version);
-                        } else {
-                            assert_ne!(crate::class_layout_version_bits(class_ptr), version);
-                        }
+                        // Both defaults committed to the same heap namespace.
+                        // Raw generic writes must expire borrowed runtime facts
+                        // even though they never publish native slots or views.
+                        assert_ne!(crate::class_layout_version_bits(class_ptr), version);
                     }
                 }
                 assert!(!GLOBAL_BRIDGE.type_has_projection(class));
@@ -604,7 +604,7 @@ fn raw_managed_class_dictionary_retires_displaced_ownership() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let class = snapshot_class(py, b"RawOwnedClass");
-            let name = crate::attr_name_bits_from_bytes(py, b"raw_owned_value").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"raw_owned_value").unwrap();
             let value = crate::molt_dict_new(0);
             let value_ptr = obj_from_bits(value).as_ptr().unwrap();
             let before = (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot();
@@ -657,15 +657,17 @@ fn managed_mutation_projection_profile() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let class = snapshot_class(py, b"MutationProjectionProfile");
-            let receiver = snapshot_receiver(py, class, false);
+            let receiver = snapshot_receiver(py, class);
             let pointer = obj_from_bits(receiver).as_ptr().unwrap();
-            let name = crate::attr_name_bits_from_bytes(py, b"profile_field").unwrap();
-            let setter = crate::builtins::methods::type_method_bits(py, "__setattr__")
-                .expect("method lookup succeeds")
-                .expect("declared mutation method");
-            let deleter = crate::builtins::methods::type_method_bits(py, "__delattr__")
-                .expect("method lookup succeeds")
-                .expect("declared mutation method");
+            let name = crate::dynamic_attr_name_bits(py, b"profile_field").unwrap();
+            let setter =
+                crate::builtins::methods::type_method_bits(py, crate::NameId::DunderSetattr)
+                    .expect("method lookup succeeds")
+                    .expect("declared mutation method");
+            let deleter =
+                crate::builtins::methods::type_method_bits(py, crate::NameId::DunderDelattr)
+                    .expect("method lookup succeeds")
+                    .expect("declared mutation method");
             inc_ref_bits(py, setter);
             inc_ref_bits(py, deleter);
             let iterations = 4096_u64;

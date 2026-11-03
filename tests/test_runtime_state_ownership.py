@@ -65,6 +65,8 @@ def test_importlib_platform_static_names_are_runtime_owned() -> None:
     lifecycle_text = (ROOT / "runtime/molt-runtime/src/state/lifecycle.rs").read_text(
         encoding="utf-8"
     )
-    assert "struct RuntimeStaticNames" in cache_text
-    assert "intern_runtime_static_name" in cache_text
-    assert "clear_runtime_static_names" in lifecycle_text
+    # Static names are typed `NameId` slots owned by the runtime state (HF-653);
+    # the runtime clears them at teardown through the one cache authority.
+    assert "fn clear_runtime_names" in cache_text
+    assert "state.names.slots()" in cache_text
+    assert "clear_runtime_names" in lifecycle_text

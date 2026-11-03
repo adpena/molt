@@ -28,15 +28,16 @@ extern "C" fn cache_eviction_removes_selected_method(_: u64) -> u64 {
             EVICTION_TARGET_NAME.load(Ordering::SeqCst),
         );
         dec_ref_bits(py, result);
-        // Reentrant lookup/clear can retire the new cache entry as well as
-        // the class's edge. Only the in-flight snapshot may now own it.
+        // Clear the actual namespace cache during finalizer reentry. Only
+        // the active snapshot may own the removed method now.
+        crate::runtime_state(py).attributes.class_lookup.clear(py);
         clear_attr_tls_caches(py);
         MoltObject::none().bits()
     })
 }
 
 #[test]
-fn descriptor_lookup_owns_selection_through_reentrant_cache_eviction_and_consumer_pin() {
+fn descriptor_snapshot_owns_selection_through_reentrant_retirement_and_cache_clear() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         clear_attr_tls_caches(py);
@@ -66,22 +67,15 @@ fn descriptor_lookup_owns_selection_through_reentrant_cache_eviction_and_consume
         EVICTION_TARGET_CLASS.store(owner, Ordering::SeqCst);
         EVICTION_TARGET_NAME.store(name, Ordering::SeqCst);
         EVICTION_CALLBACK_COUNT.store(0, Ordering::SeqCst);
-        descriptor_cache_store(
-            py,
-            retiring_class,
-            name,
-            1,
-            crate::object::global_type_version(),
-            None,
-            Some(retiring),
-        );
-        dec_ref_bits(py, retiring);
 
         let selected = unsafe {
             with_class_descriptor_snapshot(py, owner, name, |snapshot| {
                 let selected = snapshot
                     .and_then(|snapshot| snapshot.class_attr_bits)
                     .expect("selected method");
+                // The cache no longer owns arbitrary finalizable values. Retire
+                // a real owner while the selection is pinned by the snapshot.
+                dec_ref_bits(py, retiring);
                 assert_eq!(EVICTION_CALLBACK_COUNT.load(Ordering::SeqCst), 1);
                 assert_eq!(
                     class_attr_lookup_raw_mro(py, obj_from_bits(owner).as_ptr().unwrap(), name)
@@ -256,7 +250,12 @@ fn runtime_function_bits(
     MoltObject::from_ptr(ptr).bits()
 }
 
-fn test_class_bits(_py: &PyToken<'_>, name: &[u8], bases: &[u64], attrs: &[(&[u8], u64)]) -> u64 {
+pub(super) fn test_class_bits(
+    _py: &PyToken<'_>,
+    name: &[u8],
+    bases: &[u64],
+    attrs: &[(&[u8], u64)],
+) -> u64 {
     let builtins = builtin_classes(_py);
     let name_bits = string_bits(_py, name);
     let namespace_bits = crate::molt_dict_new(attrs.len() as u64);
@@ -295,7 +294,11 @@ fn descriptor_function_receiver_uses_declared_wrapper_identity() {
     crate::with_gil_entry_nopanic!(_py, {
         let owner = builtin_classes(_py).int;
         let scalar = MoltObject::from_int(7).bits();
-        for name in ["__getattribute__", "__setattr__", "__delattr__"] {
+        for name in [
+            crate::NameId::DunderGetattribute,
+            crate::NameId::DunderSetattr,
+            crate::NameId::DunderDelattr,
+        ] {
             let function = crate::builtins::methods::object_method_bits(_py, name)
                 .expect("method lookup succeeds")
                 .unwrap();

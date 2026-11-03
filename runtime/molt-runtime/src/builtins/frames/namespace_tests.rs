@@ -701,7 +701,7 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
             (b"f_locals".as_slice(), locals),
             (b"f_builtins".as_slice(), builtins),
         ] {
-            let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+            let key = crate::dynamic_attr_name_bits(py, name).unwrap();
             let actual = crate::molt_get_attr_name(frame, key);
             assert!(!crate::exception_pending(py));
             assert_eq!(actual, expected);

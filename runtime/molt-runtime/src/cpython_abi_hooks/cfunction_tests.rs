@@ -1803,7 +1803,7 @@ fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding()
             ));
             assert_eq!(value.as_ptr(), expected);
         }
-        let shadow = crate::attr_name_bits_from_bytes(&py, b"__hash__").unwrap();
+        let shadow = crate::dynamic_attr_name_bits(&py, b"__hash__").unwrap();
         assert!(crate::call::class_init::function_set_attr_bits(
             &py,
             target,

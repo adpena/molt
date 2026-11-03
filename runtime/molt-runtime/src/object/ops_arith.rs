@@ -81,8 +81,8 @@ pub(super) fn numeric_subtype_binary_result(
     py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
-    method: &[u8],
-    reflected: &[u8],
+    method: crate::NameId,
+    reflected: crate::NameId,
     symbol: &str,
 ) -> Option<u64> {
     let needs_dispatch = |value: MoltObject| {
@@ -94,10 +94,10 @@ pub(super) fn numeric_subtype_binary_result(
     if !needs_dispatch(lhs) && !needs_dispatch(rhs) {
         return None;
     }
-    let Some(method) = attr_name_bits_from_bytes(py, method) else {
+    let Some(method) = method.owned_bits(py) else {
         return Some(MoltObject::none().bits());
     };
-    let Some(reflected) = attr_name_bits_from_bytes(py, reflected) else {
+    let Some(reflected) = reflected.owned_bits(py) else {
         dec_ref_bits(py, method);
         return Some(MoltObject::none().bits());
     };
@@ -163,9 +163,14 @@ fn add_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     // of checking every arithmetic op is unnecessary.
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(result) =
-        numeric_subtype_binary_result(_py, lhs, rhs, b"__add__", b"__radd__", err_op)
-    {
+    if let Some(result) = numeric_subtype_binary_result(
+        _py,
+        lhs,
+        rhs,
+        crate::NameId::DunderAdd,
+        crate::NameId::DunderRadd,
+        err_op,
+    ) {
         return result;
     }
     // BigInt fast path — hoisted above inline int/float checks because
@@ -280,10 +285,8 @@ fn add_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         return bits;
     }
     unsafe {
-        let add_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.add_name, b"__add__");
-        let radd_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.radd_name, b"__radd__");
+        let add_name_bits = crate::NameId::DunderAdd.bits(_py);
+        let radd_name_bits = crate::NameId::DunderRadd.bits(_py);
         if let Some(res_bits) = call_binary_dunder(_py, a, b, add_name_bits, radd_name_bits) {
             return res_bits;
         }
@@ -294,10 +297,9 @@ fn add_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 /// operator.concat/iconcat deliberately prefer sequence slots, unlike +/+=.
 fn sequence_concat(py: &PyToken<'_>, left: u64, right: u64, inplace: bool) -> u64 {
     unsafe {
-        let names = &runtime_state(py).interned;
-        let add = intern_static_name(py, &names.add_name, b"__add__");
+        let add = crate::NameId::DunderAdd.bits(py);
         let iadd = if inplace {
-            Some(intern_static_name(py, &names.iadd_name, b"__iadd__"))
+            Some(crate::NameId::DunderIadd.bits(py))
         } else {
             None
         };
@@ -326,7 +328,7 @@ fn sequence_concat(py: &PyToken<'_>, left: u64, right: u64, inplace: bool) -> u6
             if let Some(result) = iadd.and_then(|name| call_inplace_dunder(py, left, right, name)) {
                 return result;
             }
-            let reflected = intern_static_name(py, &names.radd_name, b"__radd__");
+            let reflected = crate::NameId::DunderRadd.bits(py);
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
@@ -355,19 +357,18 @@ fn dynamic_inplace_sequence(py: &PyToken<'_>, left: u64, right: u64, repeat: boo
         return None;
     }
     unsafe {
-        let names = &runtime_state(py).interned;
         let (inplace, normal, reflected, symbol) = if repeat {
             (
-                intern_static_name(py, &names.imul_name, b"__imul__"),
-                intern_static_name(py, &names.mul_name, b"__mul__"),
-                intern_static_name(py, &names.rmul_name, b"__rmul__"),
+                crate::NameId::DunderImul.bits(py),
+                crate::NameId::DunderMul.bits(py),
+                crate::NameId::DunderRmul.bits(py),
                 "*=",
             )
         } else {
             (
-                intern_static_name(py, &names.iadd_name, b"__iadd__"),
-                intern_static_name(py, &names.add_name, b"__add__"),
-                intern_static_name(py, &names.radd_name, b"__radd__"),
+                crate::NameId::DunderIadd.bits(py),
+                crate::NameId::DunderAdd.bits(py),
+                crate::NameId::DunderRadd.bits(py),
                 "+=",
             )
         };
@@ -502,9 +503,14 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
 fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(result) =
-        numeric_subtype_binary_result(_py, lhs, rhs, b"__sub__", b"__rsub__", err_op)
-    {
+    if let Some(result) = numeric_subtype_binary_result(
+        _py,
+        lhs,
+        rhs,
+        crate::NameId::DunderSub,
+        crate::NameId::DunderRsub,
+        err_op,
+    ) {
         return result;
     }
     // BigInt fast path — hoisted above inline int/float checks to avoid
@@ -572,10 +578,8 @@ fn sub_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
     }
     unsafe {
-        let sub_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.sub_name, b"__sub__");
-        let rsub_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.rsub_name, b"__rsub__");
+        let sub_name_bits = crate::NameId::DunderSub.bits(_py);
+        let rsub_name_bits = crate::NameId::DunderRsub.bits(_py);
         if let Some(res_bits) = call_binary_dunder(_py, a, b, sub_name_bits, rsub_name_bits) {
             return res_bits;
         }
@@ -623,8 +627,7 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
             }
         }
         unsafe {
-            let isub_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.isub_name, b"__isub__");
+            let isub_name_bits = crate::NameId::DunderIsub.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, isub_name_bits) {
                 return res_bits;
             }
@@ -1137,9 +1140,14 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
 fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(result) =
-        numeric_subtype_binary_result(_py, lhs, rhs, b"__mul__", b"__rmul__", err_op)
-    {
+    if let Some(result) = numeric_subtype_binary_result(
+        _py,
+        lhs,
+        rhs,
+        crate::NameId::DunderMul,
+        crate::NameId::DunderRmul,
+        err_op,
+    ) {
         return result;
     }
     // BigInt fast path — hoisted to avoid wasted to_i64/is_float checks
@@ -1181,9 +1189,8 @@ fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     if let Some((ptr, other)) = sequence {
         if !builtin_operand(_py, lhs) || !builtin_operand(_py, rhs) {
             unsafe {
-                let names = &runtime_state(_py).interned;
-                let mul = intern_static_name(_py, &names.mul_name, b"__mul__");
-                let rmul = intern_static_name(_py, &names.rmul_name, b"__rmul__");
+                let mul = crate::NameId::DunderMul.bits(_py);
+                let rmul = crate::NameId::DunderRmul.bits(_py);
                 if let Some(result) = call_numeric_dunder(_py, a, b, mul, rmul, None) {
                     return result;
                 }
@@ -1210,10 +1217,8 @@ fn mul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         return bits;
     }
     unsafe {
-        let mul_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.mul_name, b"__mul__");
-        let rmul_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.rmul_name, b"__rmul__");
+        let mul_name_bits = crate::NameId::DunderMul.bits(_py);
+        let rmul_name_bits = crate::NameId::DunderRmul.bits(_py);
         if let Some(res_bits) = call_binary_dunder(_py, a, b, mul_name_bits, rmul_name_bits) {
             return res_bits;
         }
@@ -1235,9 +1240,14 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) =
-            numeric_subtype_binary_result(_py, lhs, rhs, b"__truediv__", b"__rtruediv__", err_op)
-        {
+        if let Some(result) = numeric_subtype_binary_result(
+            _py,
+            lhs,
+            rhs,
+            crate::NameId::DunderTruediv,
+            crate::NameId::DunderRtruediv,
+            err_op,
+        ) {
             return result;
         }
         // Python true division: int / int always returns float
@@ -1303,16 +1313,8 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
         }
         unsafe {
-            let div_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.truediv_name,
-                b"__truediv__",
-            );
-            let rdiv_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.rtruediv_name,
-                b"__rtruediv__",
-            );
+            let div_name_bits = crate::NameId::DunderTruediv.bits(_py);
+            let rdiv_name_bits = crate::NameId::DunderRtruediv.bits(_py);
             if let Some(res_bits) = call_binary_dunder(_py, a, b, div_name_bits, rdiv_name_bits) {
                 return res_bits;
             }
@@ -1325,11 +1327,7 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let idiv_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.itruediv_name,
-                b"__itruediv__",
-            );
+            let idiv_name_bits = crate::NameId::DunderItruediv.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, idiv_name_bits) {
                 return res_bits;
             }
@@ -1351,9 +1349,14 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) =
-            numeric_subtype_binary_result(_py, lhs, rhs, b"__floordiv__", b"__rfloordiv__", err_op)
-        {
+        if let Some(result) = numeric_subtype_binary_result(
+            _py,
+            lhs,
+            rhs,
+            crate::NameId::DunderFloordiv,
+            crate::NameId::DunderRfloordiv,
+            err_op,
+        ) {
             return result;
         }
         if let (Some(li), Some(ri)) = (
@@ -1396,16 +1399,8 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             Ok(None) => {}
         }
         unsafe {
-            let div_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.floordiv_name,
-                b"__floordiv__",
-            );
-            let rdiv_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.rfloordiv_name,
-                b"__rfloordiv__",
-            );
+            let div_name_bits = crate::NameId::DunderFloordiv.bits(_py);
+            let rdiv_name_bits = crate::NameId::DunderRfloordiv.bits(_py);
             if let Some(res_bits) = call_binary_dunder(_py, a, b, div_name_bits, rdiv_name_bits) {
                 return res_bits;
             }
@@ -1418,11 +1413,7 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 pub extern "C" fn molt_inplace_floordiv(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let idiv_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.ifloordiv_name,
-                b"__ifloordiv__",
-            );
+            let idiv_name_bits = crate::NameId::DunderIfloordiv.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, idiv_name_bits) {
                 return res_bits;
             }
@@ -1443,9 +1434,14 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) =
-            numeric_subtype_binary_result(_py, lhs, rhs, b"__mod__", b"__rmod__", err_op)
-        {
+        if let Some(result) = numeric_subtype_binary_result(
+            _py,
+            lhs,
+            rhs,
+            crate::NameId::DunderMod,
+            crate::NameId::DunderRmod,
+            err_op,
+        ) {
             return result;
         }
         // Int fast path first — much more common than string % formatting.
@@ -1499,10 +1495,8 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             Ok(None) => {}
         }
         unsafe {
-            let mod_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.mod_name, b"__mod__");
-            let rmod_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.rmod_name, b"__rmod__");
+            let mod_name_bits = crate::NameId::DunderMod.bits(_py);
+            let rmod_name_bits = crate::NameId::DunderRmod.bits(_py);
             if let Some(res_bits) = call_binary_dunder(_py, a, b, mod_name_bits, rmod_name_bits) {
                 return res_bits;
             }
@@ -1515,8 +1509,7 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 pub extern "C" fn molt_inplace_mod(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let imod_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.imod_name, b"__imod__");
+            let imod_name_bits = crate::NameId::DunderImod.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, imod_name_bits) {
                 return res_bits;
             }
@@ -1798,8 +1791,7 @@ pub(crate) fn number_power(a: u64, b: u64, modulus: u64, inplace: bool) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             if inplace {
-                let name =
-                    intern_static_name(py, &runtime_state(py).interned.ipow_name, b"__ipow__");
+                let name = crate::NameId::DunderIpow.bits(py);
                 if let Some(result) = call_inplace_dunder(py, a, b, name) {
                     return result;
                 }
@@ -1818,9 +1810,8 @@ pub(crate) fn number_power(a: u64, b: u64, modulus: u64, inplace: bool) -> u64 {
                     return modular_power_impl(py, a, b, modulus);
                 }
             }
-            let forward = intern_static_name(py, &runtime_state(py).interned.pow_name, b"__pow__");
-            let reflected =
-                intern_static_name(py, &runtime_state(py).interned.rpow_name, b"__rpow__");
+            let forward = crate::NameId::DunderPow.bits(py);
+            let reflected = crate::NameId::DunderRpow.bits(py);
             let left = match power_slot(py, a, forward, reflected) {
                 Ok(slot) => slot,
                 Err(result) => return result,
@@ -1908,9 +1899,14 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) =
-            numeric_subtype_binary_result(_py, lhs, rhs, b"__pow__", b"__rpow__", err_op)
-        {
+        if let Some(result) = numeric_subtype_binary_result(
+            _py,
+            lhs,
+            rhs,
+            crate::NameId::DunderPow,
+            crate::NameId::DunderRpow,
+            err_op,
+        ) {
             return result;
         }
         if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
@@ -2004,10 +2000,8 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             return float_result_bits(_py, out);
         }
         unsafe {
-            let pow_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.pow_name, b"__pow__");
-            let rpow_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.rpow_name, b"__rpow__");
+            let pow_name_bits = crate::NameId::DunderPow.bits(_py);
+            let rpow_name_bits = crate::NameId::DunderRpow.bits(_py);
             if let Some(res_bits) = call_binary_dunder(_py, a, b, pow_name_bits, rpow_name_bits) {
                 return res_bits;
             }
@@ -2149,8 +2143,7 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
             unsafe {
-                let trunc_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.trunc_name, b"__trunc__");
+                let trunc_name_bits = crate::NameId::DunderTrunc.bits(_py);
                 if let Some(call_bits) = match attr_lookup_ptr(_py, ptr, trunc_name_bits) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
@@ -2306,9 +2299,14 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
 fn bit_or_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(result) =
-        numeric_subtype_binary_result(_py, lhs, rhs, b"__or__", b"__ror__", err_op)
-    {
+    if let Some(result) = numeric_subtype_binary_result(
+        _py,
+        lhs,
+        rhs,
+        crate::NameId::DunderOr,
+        crate::NameId::DunderRor,
+        err_op,
+    ) {
         return result;
     }
     // Integer-only projections exclude every float storage representation.
@@ -2372,9 +2370,8 @@ fn bit_or_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
     }
     unsafe {
-        let or_name_bits = intern_static_name(_py, &runtime_state(_py).interned.or_name, b"__or__");
-        let ror_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.ror_name, b"__ror__");
+        let or_name_bits = crate::NameId::DunderOr.bits(_py);
+        let ror_name_bits = crate::NameId::DunderRor.bits(_py);
         if let Some(res_bits) = call_binary_dunder(_py, a, b, or_name_bits, ror_name_bits) {
             return res_bits;
         }
@@ -2413,8 +2410,7 @@ pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
             }
         }
         unsafe {
-            let ior_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.ior_name, b"__ior__");
+            let ior_name_bits = crate::NameId::DunderIor.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, ior_name_bits) {
                 return res_bits;
             }
@@ -2432,9 +2428,14 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
 fn bit_and_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(result) =
-        numeric_subtype_binary_result(_py, lhs, rhs, b"__and__", b"__rand__", err_op)
-    {
+    if let Some(result) = numeric_subtype_binary_result(
+        _py,
+        lhs,
+        rhs,
+        crate::NameId::DunderAnd,
+        crate::NameId::DunderRand,
+        err_op,
+    ) {
         return result;
     }
     // Integer-only projections exclude every float storage representation.
@@ -2481,10 +2482,8 @@ fn bit_and_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
     }
     unsafe {
-        let and_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.and_name, b"__and__");
-        let rand_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.rand_name, b"__rand__");
+        let and_name_bits = crate::NameId::DunderAnd.bits(_py);
+        let rand_name_bits = crate::NameId::DunderRand.bits(_py);
         if let Some(res_bits) = call_binary_dunder(_py, a, b, and_name_bits, rand_name_bits) {
             return res_bits;
         }
@@ -2511,8 +2510,7 @@ pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
             }
         }
         unsafe {
-            let iand_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.iand_name, b"__iand__");
+            let iand_name_bits = crate::NameId::DunderIand.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, iand_name_bits) {
                 return res_bits;
             }
@@ -2530,9 +2528,14 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
 fn bit_xor_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
-    if let Some(result) =
-        numeric_subtype_binary_result(_py, lhs, rhs, b"__xor__", b"__rxor__", err_op)
-    {
+    if let Some(result) = numeric_subtype_binary_result(
+        _py,
+        lhs,
+        rhs,
+        crate::NameId::DunderXor,
+        crate::NameId::DunderRxor,
+        err_op,
+    ) {
         return result;
     }
     // Integer-only projections exclude every float storage representation.
@@ -2579,10 +2582,8 @@ fn bit_xor_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
     }
     unsafe {
-        let xor_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.xor_name, b"__xor__");
-        let rxor_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.rxor_name, b"__rxor__");
+        let xor_name_bits = crate::NameId::DunderXor.bits(_py);
+        let rxor_name_bits = crate::NameId::DunderRxor.bits(_py);
         if let Some(res_bits) = call_binary_dunder(_py, a, b, xor_name_bits, rxor_name_bits) {
             return res_bits;
         }
@@ -2594,7 +2595,7 @@ fn bit_xor_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 pub extern "C" fn molt_invert(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
-        if let Some(result) = unary_subtype_result(_py, obj, b"__invert__") {
+        if let Some(result) = unary_subtype_result(_py, obj, crate::NameId::DunderInvert) {
             return result;
         }
         // Python 3.12+ DeprecationWarning for ~bool.
@@ -2626,7 +2627,7 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
             return bigint_bits(_py, res);
         }
         if let Some(ptr) = maybe_ptr_from_bits(val)
-            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__invert__")
+            && let Some(name_bits) = crate::NameId::DunderInvert.owned_bits(_py)
         {
             unsafe {
                 let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
@@ -2652,7 +2653,7 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
 pub(super) fn unary_subtype_result(
     py: &PyToken<'_>,
     value: MoltObject,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Option<u64> {
     if builtin_operand(py, value) {
         return None;
@@ -2672,7 +2673,7 @@ pub(super) fn unary_subtype_result(
 pub extern "C" fn molt_neg(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
-        if let Some(result) = unary_subtype_result(_py, obj, b"__neg__") {
+        if let Some(result) = unary_subtype_result(_py, obj, crate::NameId::DunderNeg) {
             return result;
         }
         // Float identity and signed zero survive integral-carrier recovery.
@@ -2699,7 +2700,7 @@ pub extern "C" fn molt_neg(val: u64) -> u64 {
 pub extern "C" fn molt_pos(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
-        if let Some(result) = unary_subtype_result(_py, obj, b"__pos__") {
+        if let Some(result) = unary_subtype_result(_py, obj, crate::NameId::DunderPos) {
             return result;
         }
         if let Some(f) = as_float_extended(obj) {
@@ -2740,8 +2741,7 @@ pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
             }
         }
         unsafe {
-            let ixor_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.ixor_name, b"__ixor__");
+            let ixor_name_bits = crate::NameId::DunderIxor.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, ixor_name_bits) {
                 return res_bits;
             }
@@ -2868,9 +2868,14 @@ fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         let trace_shift = trace_bigint_shift_enabled();
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) =
-            numeric_subtype_binary_result(_py, lhs, rhs, b"__lshift__", b"__rlshift__", err_op)
-        {
+        if let Some(result) = numeric_subtype_binary_result(
+            _py,
+            lhs,
+            rhs,
+            crate::NameId::DunderLshift,
+            crate::NameId::DunderRlshift,
+            err_op,
+        ) {
             return result;
         }
         // CPython tries `a.__lshift__(b)` then `b.__rlshift__(a)` for any operand
@@ -2881,16 +2886,8 @@ fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         let (Some(value), Some(count)) = (strict_integer_from_obj(a), strict_integer_from_obj(b))
         else {
             unsafe {
-                let lshift_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.lshift_name,
-                    b"__lshift__",
-                );
-                let rlshift_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.rlshift_name,
-                    b"__rlshift__",
-                );
+                let lshift_name_bits = crate::NameId::DunderLshift.bits(_py);
+                let rlshift_name_bits = crate::NameId::DunderRlshift.bits(_py);
                 if let Some(res_bits) =
                     call_binary_dunder(_py, a, b, lshift_name_bits, rlshift_name_bits)
                 {
@@ -2963,11 +2960,7 @@ fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let ilshift_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.ilshift_name,
-                b"__ilshift__",
-            );
+            let ilshift_name_bits = crate::NameId::DunderIlshift.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, ilshift_name_bits) {
                 return res_bits;
             }
@@ -2987,9 +2980,14 @@ fn rshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) =
-            numeric_subtype_binary_result(_py, lhs, rhs, b"__rshift__", b"__rrshift__", err_op)
-        {
+        if let Some(result) = numeric_subtype_binary_result(
+            _py,
+            lhs,
+            rhs,
+            crate::NameId::DunderRshift,
+            crate::NameId::DunderRrshift,
+            err_op,
+        ) {
             return result;
         }
         // Try `a.__rshift__(b)` then `b.__rrshift__(a)` for any operand the
@@ -2997,16 +2995,8 @@ fn rshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         let (Some(value), Some(count)) = (strict_integer_from_obj(a), strict_integer_from_obj(b))
         else {
             unsafe {
-                let rshift_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.rshift_name,
-                    b"__rshift__",
-                );
-                let rrshift_name_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.rrshift_name,
-                    b"__rrshift__",
-                );
+                let rshift_name_bits = crate::NameId::DunderRshift.bits(_py);
+                let rrshift_name_bits = crate::NameId::DunderRrshift.bits(_py);
                 if let Some(res_bits) =
                     call_binary_dunder(_py, a, b, rshift_name_bits, rrshift_name_bits)
                 {
@@ -3043,11 +3033,7 @@ fn rshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let irshift_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.irshift_name,
-                b"__irshift__",
-            );
+            let irshift_name_bits = crate::NameId::DunderIrshift.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, irshift_name_bits) {
                 return res_bits;
             }
@@ -3638,13 +3624,8 @@ fn matmul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
         }
         unsafe {
-            let matmul_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.matmul_name, b"__matmul__");
-            let rmatmul_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.rmatmul_name,
-                b"__rmatmul__",
-            );
+            let matmul_name_bits = crate::NameId::DunderMatmul.bits(_py);
+            let rmatmul_name_bits = crate::NameId::DunderRmatmul.bits(_py);
             if let Some(res_bits) =
                 call_binary_dunder(_py, a, b, matmul_name_bits, rmatmul_name_bits)
             {
@@ -3659,11 +3640,7 @@ fn matmul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
 pub extern "C" fn molt_inplace_matmul(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let imatmul_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.imatmul_name,
-                b"__imatmul__",
-            );
+            let imatmul_name_bits = crate::NameId::DunderImatmul.bits(_py);
             if let Some(res_bits) = call_inplace_dunder(_py, a, b, imatmul_name_bits) {
                 return res_bits;
             }

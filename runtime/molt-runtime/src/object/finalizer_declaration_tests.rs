@@ -83,7 +83,7 @@ extern "C" fn mutate_own_finalizer_and_raise(self_bits: u64) -> u64 {
             .as_ptr()
             .expect("finalized instance");
         let class_bits = unsafe { object_class_bits(self_ptr) };
-        let del_bits = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del_bits = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let replacement = MUTATING_FINALIZER_REPLACEMENT.load(Ordering::SeqCst);
         if replacement == 0 {
             crate::molt_del_attr_name(class_bits, del_bits);
@@ -97,7 +97,7 @@ extern "C" fn mutate_own_finalizer_and_raise(self_bits: u64) -> u64 {
 }
 
 fn child_class(py: &PyToken<'_>, name: &[u8], base: u64) -> u64 {
-    let name_bits = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let name_bits = crate::dynamic_attr_name_bits(py, name).unwrap();
     let class = crate::molt_class_new(name_bits);
     crate::molt_class_set_base(class, base);
     let ptr = obj_from_bits(class).as_ptr().unwrap();
@@ -142,7 +142,7 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
         let base = child_class(py, b"FinalizerBase", crate::builtin_classes(py).object);
         let child = child_class(py, b"FinalizerChild", base);
         let leaf = child_class(py, b"FinalizerLeaf", child);
-        let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let base_del = finalizer(py, false);
         let own_del = finalizer(py, true);
         let preexisting = instance(py, leaf);
@@ -191,9 +191,9 @@ fn cyclic_finalization_uses_late_inherited_declarations() {
         let base = child_class(py, b"CycleFinalizerBase", crate::builtin_classes(py).object);
         let child = child_class(py, b"CycleFinalizerChild", base);
         let value = instance(py, child);
-        let peer = crate::attr_name_bits_from_bytes(py, b"peer").unwrap();
+        let peer = crate::dynamic_attr_name_bits(py, b"peer").unwrap();
         crate::molt_set_attr_name(value, peer, value);
-        let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
         crate::molt_set_attr_name(base, del, callback);
         assert!(!crate::exception_pending(py));
@@ -221,7 +221,7 @@ fn displaced_namespace_values_release_after_finalizer_metadata_commit() {
                 crate::builtin_classes(py).object,
             );
             let child = child_class(py, b"ReentrantNamespaceChild", base);
-            let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+            let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
             let old = finalizer(py, true);
             crate::molt_set_attr_name(base, del, old);
             let callback = MoltObject::from_ptr(alloc_runtime_function_obj(
@@ -261,7 +261,7 @@ fn displaced_namespace_values_release_after_finalizer_metadata_commit() {
 }
 
 fn dynamic_class(py: &PyToken<'_>, name: &[u8], metaclass: u64, namespace: u64, bases: u64) -> u64 {
-    let name_bits = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let name_bits = crate::dynamic_attr_name_bits(py, name).unwrap();
     let result = crate::molt_type_new(
         metaclass,
         name_bits,
@@ -282,7 +282,7 @@ fn metaclass_finalizers_follow_late_mro_mutation_for_type_payloads() {
         let meta = child_class(py, b"FinalizingMeta", crate::builtin_classes(py).type_obj);
         let derived = child_class(py, b"DerivedFinalizingMeta", meta);
         let namespace = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
-        let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let base_del = finalizer(py, false);
         let own_del = finalizer(py, true);
         let preexisting = dynamic_class(
@@ -351,11 +351,11 @@ fn type_construction_finalizes_only_after_preallocation_admission() {
             b"ConstructionFinalizingMeta",
             crate::builtin_classes(py).type_obj,
         );
-        let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
         crate::molt_set_attr_name(meta, del, callback);
-        let slots = crate::attr_name_bits_from_bytes(py, b"__slots__").unwrap();
-        let qualname = crate::attr_name_bits_from_bytes(py, b"__qualname__").unwrap();
+        let slots = crate::dynamic_attr_name_bits(py, b"__slots__").unwrap();
+        let qualname = crate::dynamic_attr_name_bits(py, b"__qualname__").unwrap();
         let bad_slots =
             MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(42).bits()])).bits();
         let base = child_class(
@@ -417,7 +417,7 @@ fn type_construction_finalizes_only_after_preallocation_admission() {
 fn builtin_spelled_class_and_metaclass_names_do_not_suppress_finalizers() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
         let namespace = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
         for name in [b"frame".as_slice(), b"traceback".as_slice()] {
@@ -466,7 +466,7 @@ fn finalizer_raw_owner_releases_when_callback_panics_before_binding() {
             b"RawOwnerPanicFinalizer",
             crate::builtin_classes(py).object,
         );
-        let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
         crate::molt_set_attr_name(class, del, callback);
         let baseline = refcount(callback);
@@ -511,7 +511,7 @@ fn finalizer_bound_owner_and_exception_scope_restore_on_panic() {
             b"BoundOwnerPanicFinalizer",
             crate::builtin_classes(py).object,
         );
-        let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback = finalizer(py, false);
         crate::molt_set_attr_name(class, del, callback);
         let callback_baseline = refcount(callback);
@@ -597,7 +597,7 @@ fn finalizer_raw_callable_survives_self_deletion_and_replacement_through_reporti
                 },
                 crate::builtin_classes(py).object,
             );
-            let del = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+            let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
             let raw_ptr = alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr(

@@ -1773,10 +1773,9 @@ pub(super) fn importlib_path_looks_like_extension(path: &str) -> bool {
 pub(super) fn importlib_spec_attr_string(
     _py: &PyToken<'_>,
     target_bits: u64,
-    name_slot: &AtomicU64,
-    name: &'static [u8],
+    name: crate::NameId,
 ) -> Result<Option<String>, u64> {
-    let attr_name = intern_static_name(_py, name_slot, name);
+    let attr_name = name.bits(_py);
     let Some(attr_bits) = getattr_optional_bits(_py, target_bits, attr_name)? else {
         return Ok(None);
     };
@@ -1796,22 +1795,12 @@ pub(super) fn importlib_extension_spec_target(
         return Ok(None);
     }
 
-    let module_name = importlib_spec_attr_string(
-        _py,
-        spec_bits,
-        runtime_static_name_slot(_py, b"name"),
-        b"name",
-    )?
-    .unwrap_or_else(|| expected_module_name.to_string());
-    let origin = importlib_spec_attr_string(
-        _py,
-        spec_bits,
-        runtime_static_name_slot(_py, b"origin"),
-        b"origin",
-    )?;
+    let module_name = importlib_spec_attr_string(_py, spec_bits, crate::NameId::Name)?
+        .unwrap_or_else(|| expected_module_name.to_string());
+    let origin = importlib_spec_attr_string(_py, spec_bits, crate::NameId::Origin)?;
     let mut has_extension_loader = false;
 
-    let loader_name = intern_runtime_static_name(_py, b"loader");
+    let loader_name = crate::NameId::Loader.bits(_py);
     if let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)?
         && !obj_from_bits(loader_bits).is_none()
     {

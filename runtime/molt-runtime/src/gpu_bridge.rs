@@ -193,8 +193,7 @@ pub extern "C" fn __molt_gpu_attr_name_bits(data_ptr: *const u8, data_len: usize
         } else {
             unsafe { std::slice::from_raw_parts(data_ptr, data_len) }
         };
-        crate::attr_name_bits_from_bytes(_py, data)
-            .unwrap_or_else(|| crate::MoltObject::none().bits())
+        crate::dynamic_attr_name_bits(_py, data).unwrap_or_else(|| crate::MoltObject::none().bits())
     })
 }
 
@@ -587,16 +586,20 @@ pub extern "C" fn __molt_gpu_default_field(object: u64, name: *const u8, len: us
         };
         // Materialize the canonical method anchors before inspecting mutable
         // class/instance state. All subsequent successful reads are callback-free.
-        let get = match crate::builtins::methods::object_method_bits(py, "__getattribute__") {
+        let get = match crate::builtins::methods::object_method_bits(
+            py,
+            crate::NameId::DunderGetattribute,
+        ) {
             Ok(Some(bits)) => bits,
             Ok(None) => return refused(),
             Err(()) => return crate::MoltObject::none().bits(),
         };
-        let set = match crate::builtins::methods::object_method_bits(py, "__setattr__") {
-            Ok(Some(bits)) => bits,
-            Ok(None) => return refused(),
-            Err(()) => return crate::MoltObject::none().bits(),
-        };
+        let set =
+            match crate::builtins::methods::object_method_bits(py, crate::NameId::DunderSetattr) {
+                Ok(Some(bits)) => bits,
+                Ok(None) => return refused(),
+                Err(()) => return crate::MoltObject::none().bits(),
+            };
         unsafe {
             let name = std::slice::from_raw_parts(name, len);
             if !crate::object::object_has_class_shape(object)

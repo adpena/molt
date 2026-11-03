@@ -1123,11 +1123,14 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                     }
                 }
                 if !builtin_only {
-                    let call_bits =
-                        match crate::builtins::attr::lookup_special_method(_py, val, b"__len__") {
-                            Ok(call_bits) => call_bits,
-                            Err(()) => return MoltObject::none().bits(),
-                        };
+                    let call_bits = match crate::builtins::attr::lookup_special_method(
+                        _py,
+                        val,
+                        crate::NameId::DunderLen,
+                    ) {
+                        Ok(call_bits) => call_bits,
+                        Err(()) => return MoltObject::none().bits(),
+                    };
                     if let Some(call_bits) = call_bits {
                         let method = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                             _py.core_token(),
@@ -2050,10 +2053,10 @@ pub extern "C" fn molt_sys_abiflags() -> u64 {
 fn sys_namespace_set_attr_owned(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    name: &'static [u8],
+    name: crate::NameId,
     value_bits: u64,
 ) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = name.owned_bits(_py) else {
         dec_ref_bits(_py, value_bits);
         return false;
     };
@@ -2110,11 +2113,11 @@ pub extern "C" fn molt_sys_implementation_payload() -> u64 {
             return MoltObject::none().bits();
         }
 
-        let attrs: [(&'static [u8], u64); 4] = [
-            (b"name", name_bits),
-            (b"cache_tag", cache_tag_bits),
-            (b"version", version_bits),
-            (b"hexversion", hexversion_bits),
+        let attrs: [(crate::NameId, u64); 4] = [
+            (crate::NameId::Name, name_bits),
+            (crate::NameId::CacheTag, cache_tag_bits),
+            (crate::NameId::Version, version_bits),
+            (crate::NameId::Hexversion, hexversion_bits),
         ];
         let mut remaining = attrs.into_iter();
         while let Some((attr_name, value_bits)) = remaining.next() {

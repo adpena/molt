@@ -170,10 +170,10 @@ fn instance_with_method(
     target: *const (),
     arity: u64,
 ) -> (u64, u64, u64) {
-    let name = attr_name_bits_from_bytes(py, class_name).unwrap();
+    let name = dynamic_attr_name_bits(py, class_name).unwrap();
     let class = crate::molt_class_new(name);
     crate::molt_class_set_base(class, builtin_classes(py).object);
-    let method_name = attr_name_bits_from_bytes(py, method).unwrap();
+    let method_name = dynamic_attr_name_bits(py, method).unwrap();
     let function = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, target), arity);
     assert!(!function.is_null());
     let function = MoltObject::from_ptr(function).bits();

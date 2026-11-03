@@ -2679,7 +2679,6 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
     let names = [
         "fixed_tuple",
         "fixed_list",
-        "fixed_dataclass",
         "fixed_discard",
         "fixed_class",
         "fixed_class_discard",
@@ -2711,37 +2710,34 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
     for (name, kind, bound) in [
         (names[0], OpKind::TupleNew, true),
         (names[1], OpKind::ListNew, true),
-        (names[2], OpKind::DataclassNewValues, true),
-        (names[3], OpKind::TupleNew, false),
-        (names[4], OpKind::ClassDef, true),
-        (names[5], OpKind::ClassDef, false),
-        (names[6], OpKind::SliceNew, true),
-        (names[7], OpKind::SliceNew, false),
-        (names[8], OpKind::Slice, true),
-        (names[9], OpKind::Slice, false),
-        (names[10], OpKind::Index, true),
-        (names[11], OpKind::Index, false),
-        (names[12], OpKind::StoreIndex, false),
-        (names[13], OpKind::DelIndex, false),
-        (names[14], OpKind::DictSet, false),
-        (names[15], OpKind::DictUpdateMissing, false),
-        (names[16], OpKind::DictGet, true),
-        (names[17], OpKind::DictGet, false),
-        (names[18], OpKind::SetAdd, false),
-        (names[19], OpKind::VecSum, true),
-        (names[20], OpKind::VecSum, false),
-        (names[21], OpKind::VecProd, true),
-        (names[22], OpKind::VecProd, false),
-        (names[23], OpKind::VecMin, true),
-        (names[24], OpKind::VecMin, false),
-        (names[25], OpKind::VecMax, true),
-        (names[26], OpKind::VecMax, false),
-        (names[27], OpKind::OperatorIndex, true),
-        (names[28], OpKind::OperatorIndex, false),
+        (names[2], OpKind::TupleNew, false),
+        (names[3], OpKind::ClassDef, true),
+        (names[4], OpKind::ClassDef, false),
+        (names[5], OpKind::SliceNew, true),
+        (names[6], OpKind::SliceNew, false),
+        (names[7], OpKind::Slice, true),
+        (names[8], OpKind::Slice, false),
+        (names[9], OpKind::Index, true),
+        (names[10], OpKind::Index, false),
+        (names[11], OpKind::StoreIndex, false),
+        (names[12], OpKind::DelIndex, false),
+        (names[13], OpKind::DictSet, false),
+        (names[14], OpKind::DictUpdateMissing, false),
+        (names[15], OpKind::DictGet, true),
+        (names[16], OpKind::DictGet, false),
+        (names[17], OpKind::SetAdd, false),
+        (names[18], OpKind::VecSum, true),
+        (names[19], OpKind::VecSum, false),
+        (names[20], OpKind::VecProd, true),
+        (names[21], OpKind::VecProd, false),
+        (names[22], OpKind::VecMin, true),
+        (names[23], OpKind::VecMin, false),
+        (names[24], OpKind::VecMax, true),
+        (names[25], OpKind::VecMax, false),
+        (names[26], OpKind::OperatorIndex, true),
+        (names[27], OpKind::OperatorIndex, false),
     ] {
-        let mut args: Vec<String> = if kind == OpKind::DataclassNewValues {
-            vec!["none".into(); 3]
-        } else if kind == OpKind::ClassDef {
+        let mut args: Vec<String> = if kind == OpKind::ClassDef {
             vec!["none".into()]
         } else {
             Vec::new()
@@ -2854,9 +2850,6 @@ fn construct_words(values: &[u64]) -> u64 {
 }
 #[no_mangle] pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
 #[no_mangle] pub unsafe extern "C" fn molt_list_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
-#[no_mangle] pub unsafe extern "C" fn molt_dataclass_new_from_values(name:u64, fields:u64, address:u64, len:u64, flags:u64)->u64 {
-    assert_eq!([name,fields,flags],[NONE;3]); unsafe {construct(address,len)}
-}
 #[no_mangle] pub extern "C" fn molt_slice_new(start:u64, stop:u64, step:u64)->u64 {construct_words(&[start,stop,step])}
 #[no_mangle] pub extern "C" fn molt_slice(target:u64, start:u64, end:u64)->u64 {construct_words(&[target,start,end])}
 // Real family dispatch reaches these borrowed-input/owned-result providers.
@@ -2928,7 +2921,7 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
     let harness = r#"
 const NONE:u64=@NONE@;
 extern "C" {
- fn fixed_tuple()->u64; fn fixed_list()->u64; fn fixed_dataclass()->u64; fn fixed_discard();
+ fn fixed_tuple()->u64; fn fixed_list()->u64; fn fixed_discard();
  fn fixed_class()->u64; fn fixed_class_discard();
  fn fixed_slice()->u64; fn fixed_slice_discard();
  fn fixed_subscript_slice()->u64; fn fixed_subscript_slice_discard();
@@ -2946,7 +2939,7 @@ extern "C" {
  fn molt_dec_ref_obj(value:u64);
 }
 fn main() {unsafe {
- for run in [fixed_tuple as unsafe extern "C" fn()->u64, fixed_list, fixed_dataclass, fixed_class, fixed_slice, fixed_subscript_slice, fixed_vec_sum, fixed_vec_prod, fixed_vec_min, fixed_vec_max] {
+ for run in [fixed_tuple as unsafe extern "C" fn()->u64, fixed_list, fixed_class, fixed_slice, fixed_subscript_slice, fixed_vec_sum, fixed_vec_prod, fixed_vec_min, fixed_vec_max] {
   for (failure,ctor_failure) in [(0,0),(1,0),(2,0),(0,1)] {
    fixed_reset(failure,ctor_failure); let result=run();
    let success=failure==0 && ctor_failure==0;
