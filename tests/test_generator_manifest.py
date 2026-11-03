@@ -1550,8 +1550,6 @@ def test_unicode_generation_has_no_target_interpreter_prerequisite():
 def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
     tmp_path: Path,
 ) -> None:
-    import subprocess
-
     from tools.generators import Generator, changed_generators
 
     files = {
@@ -1580,13 +1578,9 @@ def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
-    def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(tmp_path), *args],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
+    def git(*args: str, stdin: str | None = None) -> str:
+        return run_guarded_test_process(
+            ["git", "-C", str(tmp_path), *args], check=True, input=stdin
         ).stdout.strip()
 
     git("init", "-q")
@@ -1623,14 +1617,7 @@ def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
         "tools/gen_other.py",
     )
     # Relative to the empty tree every path changed: every reproducible one.
-    empty = subprocess.run(
-        ["git", "-C", str(tmp_path), "hash-object", "-t", "tree", "--stdin"],
-        input="",
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    ).stdout.strip()
+    empty = git("hash-object", "-t", "tree", "--stdin", stdin="")
     assert changed_generators(generators, empty, root=tmp_path) == (
         "tools/gen_table.py",
         "tools/gen_other.py",
