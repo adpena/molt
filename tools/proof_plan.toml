@@ -671,10 +671,10 @@ setup_command = "python -m molt.tool_releases provision uv"
 executable = "uv"
 version_args = ["--version"]
 process_image_probes = [["--offline", "--no-config", "--managed-python", "python", "list", "--only-downloads"]]
-version_pattern = '^uv 0\.13\.5\b'
-setup_value = "0.13.5"
+version_pattern = '^uv 0\.13\.6\b'
+setup_value = "0.13.6"
 setup_evidence = [
-  "config/tool_releases.toml::version = \"0.13.5\"",
+  "config/tool_releases.toml::version = \"0.13.6\"",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.uv-version",
 ]
 

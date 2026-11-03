@@ -14443,14 +14443,14 @@
       "projection": "tool-release",
       "setup_command": "python -m molt.tool_releases provision uv",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"0.13.5\"",
+        "config/tool_releases.toml::version = \"0.13.6\"",
         ".github/actions/setup-project/action.yml::steps.inputs.outputs.uv-version"
       ],
-      "setup_value": "0.13.5",
+      "setup_value": "0.13.6",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^uv 0\\.13\\.5\\b"
+      "version_pattern": "^uv 0\\.13\\.6\\b"
     },
     {
       "executable": "node",

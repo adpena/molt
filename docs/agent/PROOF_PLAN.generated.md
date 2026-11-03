@@ -124,7 +124,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `posix-true` | `executable` | — | `^$` | `.` | `host POSIX utility` | 1 |
 | `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
 | `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
-| `uv` | `executable` | — | `^uv 0\.13\.5\b` | `.` | `0.13.5` | 2 |
+| `uv` | `executable` | — | `^uv 0\.13\.6\b` | `.` | `0.13.6` | 2 |
 | `node` | `executable` | — | `^v26\.12\.1$` | `.` | `26.12.1` | 3 |
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |

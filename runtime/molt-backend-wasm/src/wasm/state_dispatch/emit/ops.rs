@@ -106,13 +106,12 @@ pub(super) fn emit_dispatch_op(
             true
         }
         molt_ir::OpKind::LoopBreakIfException => {
-            emit_call(
+            crate::wasm::pending_work::emit_exception_pending_test(
                 func,
-                context.reloc_enabled,
+                crate::wasm::pending_work::thread_record_local(context.locals()),
                 context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+                context.reloc_enabled,
             );
-            func.instruction(&Instruction::I64Const(0));
-            func.instruction(&Instruction::I64Ne);
             emit_conditional_state_branch(
                 func,
                 context,

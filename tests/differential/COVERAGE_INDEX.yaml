@@ -1017,6 +1017,7 @@ stdlib:
       - tests/differential/stdlib/importlib_sourcefileloader_resolution.py
       - tests/differential/stdlib/importlib_spec_from_file_location_payload.py
       - tests/differential/stdlib/importlib_import_module_basic.py
+      - tests/differential/stdlib/importlib_package_defers_util.py
       - tests/differential/stdlib/importlib_util_spec_module.py
       - tests/differential/stdlib/importlib_util_exec_module.py
       - tests/differential/stdlib/importlib_spec_fields_basic.py

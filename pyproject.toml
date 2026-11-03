@@ -36,14 +36,6 @@ constraint-dependencies = [
     "virtualenv>=21.14.13",
     # Release-age exemptions: each admits only the one release that its
     # [tool.uv.exclude-newer-package] entry names.
-    "certifi==2026.10.19",
-    "filelock==4.2.4",
-    "hypothesis==6.170.5",
-    "platformdirs==4.13.5",
-    "python-discovery==1.6.4",
-    "setuptools==84.2.1",
-    "ty==0.0.90",
-    "virtualenv==21.14.13",
 ]
 
 # Release-age exemptions: each admits one release younger than the 7-day
@@ -54,14 +46,6 @@ constraint-dependencies = [
 # --prune-expired` deletes those that have aged out; `molt update` runs it
 # first.
 [tool.uv.exclude-newer-package]
-certifi = "2026-10-20T02:24:17Z"  # 2026.10.19 (GHSA-6q48-6c7w-9gw2): drops emSign ECC Root CA - G3 (HF-445); ages out 2026-10-27
-filelock = "2026-10-19T01:57:52Z"  # 4.2.4 (HF-62): adopted in a9f61e4f3 before the rule landed; ages out 2026-10-26
-hypothesis = "2026-10-20T00:53:38Z"  # 6.170.5 (HF-62): adopted in 110d5ee09 before the rule landed; ages out 2026-10-27
-platformdirs = "2026-10-19T01:02:12Z"  # 4.13.5 (HF-62): adopted in a9f61e4f3 before the rule landed; ages out 2026-10-26
-python-discovery = "2026-10-19T01:45:15Z"  # 1.6.4 (HF-62): adopted in a9f61e4f3 before the rule landed; ages out 2026-10-26
-setuptools = "2026-10-20T19:01:38Z"  # 84.2.1 (HF-62): adopted in a9f61e4f3 before the rule landed; ages out 2026-10-27
-ty = "2026-10-20T14:25:20Z"  # 0.0.90 (HF-62): adopted in 110d5ee09 before the rule landed; ages out 2026-10-27
-virtualenv = "2026-10-22T20:10:17Z"  # 21.14.13 (GHSA-cx6f-vjhg-g3cc): oldest fix for deferred bash prompt expansion; ages out 2026-10-29
 
 [tool.ruff]
 line-length = 88
