@@ -9,8 +9,8 @@ _MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic("molt_importlib_import_module
 _MOLT_IMPORTLIB_RELOAD = _require_intrinsic("molt_importlib_reload")
 
 
-# CPython 3.12-3.15 export these names and also `__import__`, which this
-# package does not define. Submodules load on explicit import, as in CPython.
+# CPython also exports `__import__`, which this package does not define.
+# Submodules load on their first explicit import, as in CPython.
 __all__ = [
     "import_module",
     "invalidate_caches",
