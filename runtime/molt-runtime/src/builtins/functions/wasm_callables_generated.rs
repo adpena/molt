@@ -111,6 +111,7 @@ pub(crate) enum GeneratedBuiltinDefaultValue {
 #[derive(Clone, Copy)]
 pub(crate) struct PythonBuiltinFunctionInfo {
     pub(crate) python_name: &'static str,
+    pub(crate) name_id: crate::NameId,
     pub(crate) python_module: &'static str,
     pub(crate) text_signature: Option<&'static str>,
     pub(crate) runtime_name: &'static str,
@@ -937,6 +938,7 @@ pub(crate) fn reserved_wasm_runtime_callable_dispatch_for_index(
 pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
             python_name: "__import__",
+            name_id: crate::NameId::DunderImport,
             python_module: "builtins",
             text_signature: Some("($module, /, name, globals=None, locals=None, fromlist=(),\n           level=0)"),
             runtime_name: "molt_importlib_import_transaction",
@@ -952,6 +954,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "abs",
+            name_id: crate::NameId::Abs,
             python_module: "builtins",
             text_signature: Some("($module, x, /)"),
             runtime_name: "molt_abs_builtin",
@@ -967,6 +970,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "aiter",
+            name_id: crate::NameId::Aiter,
             python_module: "builtins",
             text_signature: Some("($module, async_iterable, /)"),
             runtime_name: "molt_aiter",
@@ -982,6 +986,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "all",
+            name_id: crate::NameId::All,
             python_module: "builtins",
             text_signature: Some("($module, iterable, /)"),
             runtime_name: "molt_all_builtin",
@@ -997,6 +1002,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "anext",
+            name_id: crate::NameId::Anext,
             python_module: "builtins",
             text_signature: Some("($module, aiterator, default=<unrepresentable>, /)"),
             runtime_name: "molt_anext_builtin",
@@ -1012,6 +1018,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "any",
+            name_id: crate::NameId::LowerAny,
             python_module: "builtins",
             text_signature: Some("($module, iterable, /)"),
             runtime_name: "molt_any_builtin",
@@ -1027,6 +1034,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "ascii",
+            name_id: crate::NameId::Ascii,
             python_module: "builtins",
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_ascii_from_obj",
@@ -1042,6 +1050,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "bin",
+            name_id: crate::NameId::Bin,
             python_module: "builtins",
             text_signature: Some("($module, number, /)"),
             runtime_name: "molt_bin_builtin",
@@ -1057,6 +1066,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "callable",
+            name_id: crate::NameId::Callable,
             python_module: "builtins",
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_callable_builtin",
@@ -1072,6 +1082,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "chr",
+            name_id: crate::NameId::Chr,
             python_module: "builtins",
             text_signature: Some("($module, i, /)"),
             runtime_name: "molt_chr",
@@ -1087,6 +1098,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "compile",
+            name_id: crate::NameId::Compile,
             python_module: "builtins",
             text_signature: Some("($module, /, source, filename, mode, flags=0,\n        dont_inherit=False, optimize=-1, *, _feature_version=-1)"),
             runtime_name: "molt_compile_builtin",
@@ -1102,6 +1114,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "delattr",
+            name_id: crate::NameId::Delattr,
             python_module: "builtins",
             text_signature: Some("($module, obj, name, /)"),
             runtime_name: "molt_del_attr_name",
@@ -1117,6 +1130,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "dir",
+            name_id: crate::NameId::Dir,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_dir_builtin",
@@ -1132,6 +1146,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "divmod",
+            name_id: crate::NameId::Divmod,
             python_module: "builtins",
             text_signature: Some("($module, x, y, /)"),
             runtime_name: "molt_divmod_builtin",
@@ -1147,6 +1162,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "enumerate",
+            name_id: crate::NameId::Enumerate,
             python_module: "builtins",
             text_signature: Some("(iterable, start=0)"),
             runtime_name: "molt_enumerate_builtin",
@@ -1162,6 +1178,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "filter",
+            name_id: crate::NameId::Filter,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_filter_builtin",
@@ -1177,6 +1194,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "format",
+            name_id: crate::NameId::Format,
             python_module: "builtins",
             text_signature: Some("($module, value, format_spec='', /)"),
             runtime_name: "molt_format_builtin",
@@ -1192,6 +1210,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "getattr",
+            name_id: crate::NameId::Getattr,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_getattr_builtin",
@@ -1207,6 +1226,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "globals",
+            name_id: crate::NameId::Globals,
             python_module: "builtins",
             text_signature: Some("($module, /)"),
             runtime_name: "molt_globals_builtin",
@@ -1222,6 +1242,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "hasattr",
+            name_id: crate::NameId::Hasattr,
             python_module: "builtins",
             text_signature: Some("($module, obj, name, /)"),
             runtime_name: "molt_has_attr_name",
@@ -1237,6 +1258,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "hash",
+            name_id: crate::NameId::Hash,
             python_module: "builtins",
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_hash_builtin",
@@ -1252,6 +1274,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "hex",
+            name_id: crate::NameId::Hex,
             python_module: "builtins",
             text_signature: Some("($module, number, /)"),
             runtime_name: "molt_hex_builtin",
@@ -1267,6 +1290,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "id",
+            name_id: crate::NameId::Id,
             python_module: "builtins",
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_id",
@@ -1282,6 +1306,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "isinstance",
+            name_id: crate::NameId::Isinstance,
             python_module: "builtins",
             text_signature: Some("($module, obj, class_or_tuple, /)"),
             runtime_name: "molt_isinstance",
@@ -1297,6 +1322,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "issubclass",
+            name_id: crate::NameId::Issubclass,
             python_module: "builtins",
             text_signature: Some("($module, cls, class_or_tuple, /)"),
             runtime_name: "molt_issubclass",
@@ -1312,6 +1338,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "iter",
+            name_id: crate::NameId::Iter,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_iter_builtin",
@@ -1327,6 +1354,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "len",
+            name_id: crate::NameId::Len,
             python_module: "builtins",
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_len",
@@ -1342,6 +1370,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "locals",
+            name_id: crate::NameId::Locals,
             python_module: "builtins",
             text_signature: Some("($module, /)"),
             runtime_name: "molt_locals_builtin",
@@ -1357,6 +1386,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "map",
+            name_id: crate::NameId::Map,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_map_builtin",
@@ -1372,6 +1402,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "max",
+            name_id: crate::NameId::Max,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_max_builtin",
@@ -1387,6 +1418,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "min",
+            name_id: crate::NameId::Min,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_min_builtin",
@@ -1402,6 +1434,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "next",
+            name_id: crate::NameId::Next,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_next_builtin",
@@ -1417,6 +1450,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "oct",
+            name_id: crate::NameId::Oct,
             python_module: "builtins",
             text_signature: Some("($module, number, /)"),
             runtime_name: "molt_oct_builtin",
@@ -1432,6 +1466,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "open",
+            name_id: crate::NameId::Open,
             python_module: "_io",
             text_signature: Some("($module, /, file, mode='r', buffering=-1, encoding=None,\n     errors=None, newline=None, closefd=True, opener=None)"),
             runtime_name: "molt_open_builtin",
@@ -1447,6 +1482,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "ord",
+            name_id: crate::NameId::Ord,
             python_module: "builtins",
             text_signature: Some("($module, c, /)"),
             runtime_name: "molt_ord",
@@ -1462,6 +1498,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "pow",
+            name_id: crate::NameId::Pow,
             python_module: "builtins",
             text_signature: Some("($module, /, base, exp, mod=None)"),
             runtime_name: "molt_pow_mod",
@@ -1477,6 +1514,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "print",
+            name_id: crate::NameId::Print,
             python_module: "builtins",
             text_signature: Some("($module, /, *args, sep=' ', end='\\n', file=None, flush=False)"),
             runtime_name: "molt_print_builtin",
@@ -1492,6 +1530,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "repr",
+            name_id: crate::NameId::Repr,
             python_module: "builtins",
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_repr_builtin",
@@ -1507,6 +1546,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "reversed",
+            name_id: crate::NameId::Reversed,
             python_module: "builtins",
             text_signature: Some("(sequence, /)"),
             runtime_name: "molt_reversed_builtin",
@@ -1522,6 +1562,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "round",
+            name_id: crate::NameId::Round,
             python_module: "builtins",
             text_signature: Some("($module, /, number, ndigits=None)"),
             runtime_name: "molt_round_builtin",
@@ -1537,6 +1578,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "setattr",
+            name_id: crate::NameId::Setattr,
             python_module: "builtins",
             text_signature: Some("($module, obj, name, value, /)"),
             runtime_name: "molt_set_attr_name",
@@ -1552,6 +1594,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "sorted",
+            name_id: crate::NameId::Sorted,
             python_module: "builtins",
             text_signature: Some("($module, iterable, /, *, key=None, reverse=False)"),
             runtime_name: "molt_sorted_builtin",
@@ -1567,6 +1610,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "sum",
+            name_id: crate::NameId::Sum,
             python_module: "builtins",
             text_signature: Some("($module, iterable, /, start=0)"),
             runtime_name: "molt_sum_builtin",
@@ -1582,6 +1626,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "vars",
+            name_id: crate::NameId::Vars,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_vars_builtin",
@@ -1597,6 +1642,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         },
         PythonBuiltinFunctionInfo {
             python_name: "zip",
+            name_id: crate::NameId::Zip,
             python_module: "builtins",
             text_signature: None,
             runtime_name: "molt_zip_builtin",
