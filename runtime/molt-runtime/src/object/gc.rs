@@ -264,6 +264,7 @@ pub(crate) struct GcRuntimeTestSnapshot {
 /// embedded in `RuntimeState`, so shutdown/re-init cannot inherit thresholds,
 /// pending work, or statistics from a prior embedded interpreter.
 pub(crate) struct GcRuntimeState {
+    pending_work: std::sync::Arc<crate::state::pending_work::PendingWork>,
     enabled: GcWord,
     pending: GcWord,
     debug_flags: GcWord,
@@ -285,8 +286,11 @@ impl std::panic::RefUnwindSafe for GcRuntimeState {}
 impl std::panic::UnwindSafe for GcRuntimeState {}
 
 impl GcRuntimeState {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new(
+        pending_work: std::sync::Arc<crate::state::pending_work::PendingWork>,
+    ) -> Self {
         Self {
+            pending_work,
             enabled: GcWord::new(1),
             pending: GcWord::new(0),
             debug_flags: GcWord::new(0),
@@ -402,6 +406,10 @@ impl GcRuntimeState {
             .store(snapshot.long_lived_total, AtomicOrdering::Relaxed);
         self.long_lived_pending
             .store(snapshot.long_lived_pending, AtomicOrdering::Relaxed);
+        self.pending_work.serviced(
+            crate::state::pending_work::PendingWorkKind::GarbageCollection,
+            || self.collection_scheduled(),
+        );
     }
 
     pub(crate) fn on_allocation(&self) {
@@ -431,7 +439,13 @@ impl GcRuntimeState {
         let count0 = self.counts[0].load(AtomicOrdering::Relaxed) as i64;
         if threshold0 != 0 && count0 > threshold0 {
             self.pending.store(1, AtomicOrdering::Release);
+            self.pending_work
+                .request(crate::state::pending_work::PendingWorkKind::GarbageCollection);
         }
+    }
+
+    pub(crate) fn collection_scheduled(&self) -> bool {
+        self.pending.load(AtomicOrdering::Acquire) != 0
     }
 
     fn take_scheduled_generation(&self) -> Option<u8> {
@@ -460,6 +474,8 @@ impl GcRuntimeState {
     fn rearm_pending(&self) {
         Self::assert_custody();
         self.pending.store(1, AtomicOrdering::Release);
+        self.pending_work
+            .request(crate::state::pending_work::PendingWorkKind::GarbageCollection);
     }
 
     fn begin_collection(&self, generation: u8) {
@@ -4161,7 +4177,9 @@ mod tests {
     fn generation_control_matches_cpython_312_threshold_and_count_semantics() {
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
-            let state = GcRuntimeState::new();
+            let state = GcRuntimeState::new(std::sync::Arc::new(
+                crate::state::pending_work::PendingWork::new(),
+            ));
             assert!(state.enabled());
             assert_eq!(state.thresholds(), [700, 10, 10]);
             assert_eq!(state.counts(), [0, 0, 0]);

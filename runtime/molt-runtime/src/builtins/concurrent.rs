@@ -193,6 +193,7 @@ impl WorkerLimit {
 // ── Handle-id counter ─────────────────────────────────────────────────────
 
 pub(crate) struct ConcurrentRuntimeState {
+    pending_work: Arc<crate::state::pending_work::PendingWork>,
     next_pool_id: AtomicI64,
     next_future_id: AtomicI64,
     pools: Mutex<HashMap<i64, Arc<ThreadPoolState>>>,
@@ -210,14 +211,25 @@ struct StoppedPools {
 }
 
 impl ConcurrentRuntimeState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(pending_work: Arc<crate::state::pending_work::PendingWork>) -> Self {
         Self {
+            pending_work,
             next_pool_id: AtomicI64::new(1),
             next_future_id: AtomicI64::new(1),
             pools: Mutex::new(HashMap::new()),
             futures: Mutex::new(HashMap::new()),
             stopped: Mutex::new(StoppedPools::default()),
             stopped_pending: AtomicBool::new(false),
+        }
+    }
+
+    /// Publish readiness after changing the stopped FIFO, including a retry
+    /// restored during unwind. Callers hold its lock; notification owns no ID.
+    fn publish_stopped_pending(&self, pending: bool) {
+        self.stopped_pending.store(pending, Ordering::Release);
+        if pending {
+            self.pending_work
+                .request(crate::state::pending_work::PendingWorkKind::PoolRetirement);
         }
     }
 }
@@ -301,8 +313,16 @@ impl ThreadPoolState {
 fn schedule_stopped_pool(state: &ConcurrentRuntimeState, id: i64) {
     let mut stopped = state.stopped.lock().unwrap();
     stopped.ids.push_back(id);
-    state.stopped_pending.store(true, Ordering::Release);
+    state.publish_stopped_pending(true);
 }
+
+pub(crate) fn concurrent_retirement_pending(state: &ConcurrentRuntimeState) -> bool {
+    state.stopped_pending.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+#[path = "concurrent/pending_work_tests.rs"]
+mod pending_work_tests;
 
 /// A poll owns only one worklist ID. The map retains the actual pool until
 /// joins and callback-bearing queued-owner release both succeed. Reentrant
@@ -322,9 +342,7 @@ impl Drop for StoppedPoolPoll<'_> {
             stopped.ids.push_back(self.id);
         }
         stopped.reaping = false;
-        self.state
-            .stopped_pending
-            .store(!stopped.ids.is_empty(), Ordering::Release);
+        self.state.publish_stopped_pending(!stopped.ids.is_empty());
     }
 }
 
@@ -361,7 +379,7 @@ fn reap_stopped_pools_pending(py: &PyToken<'_>, state: &ConcurrentRuntimeState, 
                 return;
             }
             let Some(id) = stopped.ids.pop_front() else {
-                state.stopped_pending.store(false, Ordering::Release);
+                state.publish_stopped_pending(false);
                 return;
             };
             stopped.reaping = true;
@@ -508,8 +526,7 @@ pub(crate) fn concurrent_clear_runtime_state(
         stopped.ids.retain(|id| !pools.contains_key(id));
         state
             .concurrent
-            .stopped_pending
-            .store(!stopped.ids.is_empty(), Ordering::Release);
+            .publish_stopped_pending(!stopped.ids.is_empty());
     }
     let changed = !pools.is_empty() || !futures.is_empty();
     for (id, pool) in pools {

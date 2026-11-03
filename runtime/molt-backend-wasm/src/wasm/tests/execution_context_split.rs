@@ -38,6 +38,16 @@ function instantiate(path) {
     __indirect_function_table: new WebAssembly.Table({initial: config.table_entries, element: 'anyfunc'}),
   }};
   const hooks = {
+    thread_record() {
+      const record=256, work=288;
+      const view=new DataView(imports.env.memory.buffer);
+      view.setUint8(record,Number(state.pending));
+      view.setBigUint64(record+16,BigInt(work),true);
+      // This frame/custody oracle injects failures at servicing boundaries.
+      // Keep real work armed; the separate poll oracle tests empty readiness.
+      view.setUint32(work,8,true);
+      return BigInt(record);
+    },
     int_from_i64(value) {
       ensure(state.mixedCase && state.mixedAnchorLive && state.enters===0 && state.boxes<2
              && value === (1n << 62n) + BigInt(state.boxes), 'unexpected integer materialization');
@@ -243,6 +253,7 @@ function instantiate(path) {
              'exception observer outside the owned attempt or inherited frame');
       state.polls++;
       state.pending ||= state.polls === state.exceptionAt;
+      new DataView(imports.env.memory.buffer).setUint8(256,Number(state.pending));
       return state.pending ? 1n : 0n;
     },
     async_work_poll_and_exception_pending() {

@@ -401,11 +401,21 @@ pub extern "C" fn molt_async_work_poll_and_exception_last_pending() -> u64 {
     })
 }
 
+#[cold]
 fn service_async_work(_py: &PyToken<'_>) -> bool {
+    use crate::state::pending_work::PendingWorkKind;
     // CPython `_Py_HandlePending`: pending Python signal handlers run first,
     // on the registered main thread only, and a raising handler ends this
     // safepoint with its exception.
-    if crate::builtins::signal_ext::signal_safepoint(_py) {
+    let signal_raised = crate::builtins::signal_ext::signal_safepoint(_py);
+    let state = crate::runtime_state(_py);
+    if crate::builtins::signal_ext::async_work_owner(_py) {
+        state.pending_work.serviced(
+            PendingWorkKind::Signals,
+            crate::builtins::signal_ext::signal_tripped,
+        );
+    }
+    if signal_raised {
         return true;
     }
     // Allocation only schedules GC; generated call-return/backedge polls own
@@ -414,13 +424,28 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
     // telemetry rather than being confused with a user exception.
     // Entry custody retains this exact origin across GC/finalizer callbacks.
     // Resolve it once for both scheduled resource owners.
-    let state = crate::runtime_state(_py);
     let _ = unsafe { crate::object::gc::collect_pending(_py, &state.gc) };
+    state
+        .pending_work
+        .serviced(PendingWorkKind::GarbageCollection, || {
+            state.gc.collection_scheduled()
+        });
     // Bounded retirement uses its own cheap empty check and preserves pending
     // errors only when it actually releases callback-bearing queued owners.
     crate::builtins::concurrent::concurrent_reap_stopped_pools(_py, &state.concurrent, 8);
+    state
+        .pending_work
+        .serviced(PendingWorkKind::PoolRetirement, || {
+            crate::builtins::concurrent::concurrent_retirement_pending(&state.concurrent)
+        });
     let drain_failed =
         molt_cpython_abi::api::pending_calls::make_pending_calls_at_runtime_safepoint() != 0;
+    if crate::builtins::signal_ext::async_work_owner(_py) {
+        state.pending_work.serviced(
+            PendingWorkKind::PendingCalls,
+            molt_cpython_abi::api::pending_calls::has_pending_calls,
+        );
+    }
     drain_failed || exception_pending(_py)
 }
 

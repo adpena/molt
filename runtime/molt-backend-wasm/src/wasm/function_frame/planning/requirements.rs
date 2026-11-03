@@ -14,10 +14,12 @@ pub(super) struct FrameRuntimeRequirements {
     stateful: bool,
     saw_jump_or_label: bool,
     fast_int_count: usize,
+    needs_async_poll: bool,
 }
 
 impl FrameRuntimeRequirements {
     pub(super) fn observe_op(&mut self, scalar_plan: &ScalarRepresentationPlan, op: &OpIR) {
+        self.needs_async_poll |= op.is_async_work_poll();
         if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
             self.fast_int_count += 1;
         }
@@ -61,6 +63,18 @@ impl FrameRuntimeRequirements {
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) {
+        if self.needs_async_poll {
+            locals.ensure_synthetic(
+                WasmFrameSyntheticLocal::ThreadRecord,
+                local_types,
+                local_count,
+            );
+            locals.ensure_synthetic(
+                WasmFrameSyntheticLocal::PendingWorkPtr,
+                local_types,
+                local_count,
+            );
+        }
         if self.needs_field_fast || self.needs_native_forward_f32 {
             locals.ensure_synthetic(WasmFrameSyntheticLocal::WasmTmp0, local_types, local_count);
         }

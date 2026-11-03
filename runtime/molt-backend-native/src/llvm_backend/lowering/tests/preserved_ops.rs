@@ -1104,7 +1104,7 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
 }
 
 #[test]
-fn marked_finally_observer_lowers_to_the_fused_runtime_projection() {
+fn marked_finally_observer_loads_the_work_word_and_selects_the_passive_or_cold_projection() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
     let mut func = TirFunction::new(
@@ -1139,8 +1139,16 @@ fn marked_finally_observer_lowers_to_the_fused_runtime_projection() {
         "marked observer must use the fused poll/object-return primitive:\n{ir}"
     );
     assert!(
-        !ir.contains("call i64 @molt_exception_last_pending"),
-        "marked observer must not emit the unfused runtime call:\n{ir}"
+        ir.contains("call i64 @molt_exception_last_pending"),
+        "the empty work edge must observe the passive exception payload:\n{ir}"
+    );
+    assert!(
+        ir.contains("load atomic volatile i32") && ir.contains("monotonic"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("async_poll_cold") && ir.contains("async_poll_fast"),
+        "{ir}"
     );
 }
 

@@ -381,6 +381,7 @@ pub(crate) struct RuntimeState {
     thread_borrow_admission: AtomicUsize,
     /// Interpreter policy shared by its threads; execution depth stays thread-local.
     pub(crate) recursion_limit: AtomicUsize,
+    pub(crate) pending_work: std::sync::Arc<super::pending_work::PendingWork>,
     pub(crate) gc: crate::object::gc::GcRuntimeState,
     pub(crate) gc_running: AtomicBool,
     pub(crate) gc_last_failure: AtomicU8,
@@ -535,12 +536,13 @@ impl RuntimeState {
     }
 
     fn with_process_registry(process_registry: ProcessRegistry) -> Self {
+        let pending_work = std::sync::Arc::new(super::pending_work::PendingWork::new());
         Self {
             policy: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             thread_borrow_admission: AtomicUsize::new(0),
             recursion_limit: AtomicUsize::new(super::recursion::DEFAULT_RECURSION_LIMIT),
-            gc: crate::object::gc::GcRuntimeState::new(),
+            gc: crate::object::gc::GcRuntimeState::new(pending_work.clone()),
             gc_running: AtomicBool::new(false),
             gc_last_failure: AtomicU8::new(0),
             interpreter_finalizing: AtomicBool::new(false),
@@ -607,7 +609,7 @@ impl RuntimeState {
             await_waiter_index: Mutex::new(HashMap::new()),
             task_waiting_on: Mutex::new(HashMap::new()),
             asyncgen_hooks: Mutex::new(HashMap::new()),
-            concurrent: ConcurrentRuntimeState::new(),
+            concurrent: ConcurrentRuntimeState::new(pending_work.clone()),
             functools: FunctoolsRuntimeState::new(),
             io: IoRuntimeState::new(),
             modules: ModulesRuntimeState::new(),
@@ -630,7 +632,8 @@ impl RuntimeState {
             process_registry,
             #[cfg(molt_net)]
             socket_state: SocketRuntimeState::new(),
-            signal: SignalRuntimeState::new(),
+            signal: SignalRuntimeState::new(pending_work.clone()),
+            pending_work,
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
             start_time: OnceLock::new(),

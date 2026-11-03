@@ -166,6 +166,11 @@ pub const THREAD_RECORD_EXCEPTION_PENDING_OFFSET: i32 = 0;
 /// u64: the callable an invoker hands to the next compiled frame entry
 /// (a borrowed function or task object), or zero.
 pub const THREAD_RECORD_PENDING_INVOCATION_OFFSET: i32 = 8;
+/// u64: address of the attached runtime's aligned atomic u32 pending-work word.
+/// Borrowed for the invocation under its runtime execution lease. Read once at
+/// entry; async poll sites load the word atomically, never the pointer afresh.
+pub const THREAD_RECORD_PENDING_WORK_PTR_OFFSET: i32 = 16;
+pub const THREAD_RECORD_PENDING_WORK_WORD_BYTES: u32 = 4;
 
 /// A compiled function object's entry custody, passed to `molt_func_new` and
 /// `molt_func_new_closure`: the entry adopts every Python argument. Zero: it
@@ -397,10 +402,14 @@ pub struct GeneratedObjectAbiFacts {
     pub type_id_list_bool: u32,
     pub frame_binding_abi: u64,
     pub generator_resume_returned: i64,
+    pub thread_record_exception_pending_offset: i32,
+    pub thread_record_pending_invocation_offset: i32,
+    pub thread_record_pending_work_ptr_offset: i32,
+    pub thread_record_pending_work_word_bytes: u32,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 58] {
+    pub const fn words(self) -> [u64; 62] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -460,6 +469,10 @@ impl GeneratedObjectAbiFacts {
             self.type_id_list_bool as u64,
             self.frame_binding_abi,
             self.generator_resume_returned as u64,
+            self.thread_record_exception_pending_offset as i64 as u64,
+            self.thread_record_pending_invocation_offset as i64 as u64,
+            self.thread_record_pending_work_ptr_offset as i64 as u64,
+            self.thread_record_pending_work_word_bytes as u64,
         ]
     }
 
@@ -542,6 +555,10 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     type_id_list_bool: TYPE_ID_LIST_BOOL,
     frame_binding_abi: frame_binding_abi_word(),
     generator_resume_returned: GENERATOR_RESUME_RETURNED,
+    thread_record_exception_pending_offset: THREAD_RECORD_EXCEPTION_PENDING_OFFSET,
+    thread_record_pending_invocation_offset: THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+    thread_record_pending_work_ptr_offset: THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
+    thread_record_pending_work_word_bytes: THREAD_RECORD_PENDING_WORK_WORD_BYTES,
 };
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
@@ -556,16 +573,18 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// protocol: a body returns its yielded or returned value with no
 /// `(value, done)` tuple and reports completion through
 /// `GENERATOR_RESUME_RETURNED`, one appended word. Old generated code cannot
-/// link to it.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V5: u64 = 0xcc3e_3a1c_d01a_b8fb;
+/// link to it. Revision 6 binds the thread-record prefix offsets and pending-work
+/// word width. A compiler reading the work-word pointer must never link to an
+/// older runtime whose recursion-depth field occupied that offset.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V6: u64 = 0xedf8_8c8f_3204_47e7;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V5,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V6,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_cc3e3a1cd01ab8fb_gil_v5";
+    "molt_generated_object_abi_edf88c8f320447e7_gil_v6";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_cc3e3a1cd01ab8fb_free_threaded_v5";
+    "molt_generated_object_abi_edf88c8f320447e7_free_threaded_v6";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1492,14 +1511,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V5
+            GENERATED_OBJECT_ABI_FINGERPRINT_V6
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V5,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V6,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1507,13 +1526,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V5);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V6);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v5"), "{symbol}");
+            assert!(symbol.ends_with("_v6"), "{symbol}");
         }
     }
 

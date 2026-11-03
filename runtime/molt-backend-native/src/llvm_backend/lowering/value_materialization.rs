@@ -1,5 +1,6 @@
 use super::task_construction::TaskConstruction;
 use super::*;
+use inkwell::values::BasicValue;
 use molt_tir::trampolines::TaskConstructorLayout;
 use std::collections::BTreeMap;
 
@@ -1815,6 +1816,178 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             fn_ty,
         );
         require_llvm_function_type(name, func, fn_ty)
+    }
+
+    /// The execution lease keeps both pointers alive for this invocation.
+    /// Materialize them in the actual LLVM entry, including a CFG trampoline.
+    fn async_poll_context(
+        &mut self,
+    ) -> (
+        inkwell::values::PointerValue<'ctx>,
+        inkwell::values::PointerValue<'ctx>,
+    ) {
+        if let Some(context) = self.poll_context {
+            return context;
+        }
+        let record_fn = self.ensure_runtime_i64_fn("molt_thread_record", 0);
+        let builder = self.entry_block_builder(&self.backend.builder);
+        let context = self.backend.context;
+        let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
+        let bits = builder
+            .build_call(record_fn, &[], "thread_record")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        let record = builder
+            .build_int_to_ptr(bits, ptr_ty, "thread_record_ptr")
+            .unwrap();
+        let field = unsafe {
+            builder
+                .build_gep(
+                    context.i8_type(),
+                    record,
+                    &[context.i64_type().const_int(
+                        molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64,
+                        false,
+                    )],
+                    "pending_work_field",
+                )
+                .unwrap()
+        };
+        let word = builder
+            .build_load(context.i64_type(), field, "pending_work_address")
+            .unwrap()
+            .into_int_value();
+        let word = builder
+            .build_int_to_ptr(word, ptr_ty, "pending_work_ptr")
+            .unwrap();
+        self.poll_context = Some((record, word));
+        (record, word)
+    }
+
+    pub(super) fn emit_async_work_poll(&mut self, payload: bool) -> BasicValueEnum<'ctx> {
+        let (record, word_ptr) = self.async_poll_context();
+        let context = self.backend.context;
+        let builder = &self.backend.builder;
+        let word = builder
+            .build_load(context.i32_type(), word_ptr, "pending_work")
+            .unwrap();
+        let load = word.as_instruction_value().unwrap();
+        load.set_alignment(4).unwrap();
+        load.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+            .unwrap();
+        load.set_volatile(true).unwrap();
+        let has_work = builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                word.into_int_value(),
+                context.i32_type().const_zero(),
+                "has_async_work",
+            )
+            .unwrap();
+        let cold = context.append_basic_block(self.llvm_fn, "async_poll_cold");
+        let fast = context.append_basic_block(self.llvm_fn, "async_poll_fast");
+        let done = context.append_basic_block(self.llvm_fn, "async_poll_done");
+        self.all_llvm_blocks.extend([cold, fast, done]);
+        let from = builder.get_insert_block().unwrap();
+        self.record_llvm_edge(from, cold);
+        self.record_llvm_edge(from, fast);
+        self.backend
+            .builder
+            .build_conditional_branch(has_work, cold, fast)
+            .unwrap();
+        self.backend.builder.position_at_end(cold);
+        let cold_fn = self.ensure_runtime_i64_fn(
+            if payload {
+                "molt_async_work_poll_and_exception_last_pending"
+            } else {
+                "molt_async_work_poll_and_exception_pending"
+            },
+            0,
+        );
+        let cold_call = self
+            .backend
+            .builder
+            .build_call(cold_fn, &[], "serviced_async_work")
+            .unwrap();
+        cold_call.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
+                0,
+            ),
+        );
+        let cold_value = cold_call.try_as_basic_value().unwrap_basic();
+        self.backend
+            .builder
+            .build_unconditional_branch(done)
+            .unwrap();
+        self.record_llvm_edge(cold, done);
+        self.backend.builder.position_at_end(fast);
+        let byte = self
+            .backend
+            .builder
+            .build_load(context.i8_type(), record, "exception_pending")
+            .unwrap()
+            .into_int_value();
+        let mut no_exception = None;
+        let fast_value = if payload {
+            let capture = context.append_basic_block(self.llvm_fn, "async_poll_capture_exception");
+            self.all_llvm_blocks.push(capture);
+            let pending = self
+                .backend
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    byte,
+                    context.i8_type().const_zero(),
+                    "has_pending_exception",
+                )
+                .unwrap();
+            self.backend
+                .builder
+                .build_conditional_branch(pending, capture, done)
+                .unwrap();
+            self.record_llvm_edge(fast, capture);
+            self.record_llvm_edge(fast, done);
+            no_exception = Some(
+                context
+                    .i64_type()
+                    .const_int(molt_codegen_abi::QNAN_TAG_NONE_I64 as u64, false),
+            );
+            self.backend.builder.position_at_end(capture);
+            let observer = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
+            self.backend
+                .builder
+                .build_call(observer, &[], "pending_exception_payload")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+        } else {
+            self.backend
+                .builder
+                .build_int_z_extend(byte, context.i64_type(), "pending_exception_word")
+                .unwrap()
+                .into()
+        };
+        let fast_exit = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(done)
+            .unwrap();
+        self.record_llvm_edge(fast_exit, done);
+        self.backend.builder.position_at_end(done);
+        let result = self
+            .backend
+            .builder
+            .build_phi(context.i64_type(), "async_poll_result")
+            .unwrap();
+        result.add_incoming(&[(&cold_value, cold), (&fast_value, fast_exit)]);
+        if let Some(none) = no_exception {
+            result.add_incoming(&[(&none, fast)]);
+        }
+        result.as_basic_value()
     }
 
     pub(super) fn ensure_runtime_i64_fn(

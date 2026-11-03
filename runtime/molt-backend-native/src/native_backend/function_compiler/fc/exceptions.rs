@@ -44,6 +44,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
+    pending_work_slots: Option<(
+        cranelift_codegen::ir::StackSlot,
+        cranelift_codegen::ir::StackSlot,
+    )>,
     nbc: &crate::NanBoxConsts,
 ) {
     // Reconstruct the original op-local closure (captures representation_plan +
@@ -134,8 +138,29 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[]);
-            let res = builder.inst_results(call)[0];
+            let res = if op.is_async_work_poll() {
+                let fast = SimpleBackend::import_func_id_split(
+                    module,
+                    import_ids,
+                    "molt_exception_last_pending",
+                    &[],
+                    &[types::I64],
+                );
+                let fast = module.declare_func_in_func(fast, builder.func);
+                let (word, record) =
+                    pending_work_slots.expect("async observer requires an execution record");
+                emit_async_work_poll(
+                    builder,
+                    sealed_blocks,
+                    word,
+                    record,
+                    local_callee,
+                    Some(fast),
+                )
+            } else {
+                let call = builder.ins().call(local_callee, &[]);
+                builder.inst_results(call)[0]
+            };
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
