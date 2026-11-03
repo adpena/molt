@@ -254,9 +254,11 @@ def test_agent_coordination_exports_managed_bytecode_write_policy(
 
     repo = tmp_path / "repo"
     artifacts = tmp_path / "artifacts"
-    image = materialize_development_environment(repo, artifacts)
+    # The checkout's selection record names its image; a caller's
+    # UV_PROJECT_ENVIRONMENT is not consulted (HF-756).
+    materialize_development_environment(repo, artifacts, select=True)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
-    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "")
     monkeypatch.delenv("MOLT_VENV", raising=False)
     agent_coordination.create_task(
@@ -528,6 +530,41 @@ def test_agent_coordination_scan_flags_broad_lane_collisions(tmp_path: Path) -> 
             ],
         }
     ]
+
+
+def test_init_publishes_the_task_checkout_environment_not_the_callers(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # A caller that sourced another lane's env.sh (HF-756, 2026-11-03).
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    foreign_target = artifacts / "target" / "checkouts" / "slot-06-other"
+    foreign_image = artifacts / "build-environments" / "slot-06-other" / "image"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.setenv("MOLT_SESSION_ID", "agent-lane-other-83218")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(foreign_target))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(foreign_image))
+    monkeypatch.setenv("PYTHONPATH", "/elsewhere/slot-06/src")
+
+    assert (
+        agent_coordination.main(
+            ["--repo-root", str(tmp_path), "init", "own-lane", "--json"]
+        )
+        == 0
+    )
+
+    payload = json.loads(
+        (tmp_path / "logs/agents/own-lane/coordination.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    env = payload["dx_env"]
+    assert payload["session_id"].startswith("agent-own-lane-")
+    assert env["MOLT_SESSION_ID"] == payload["session_id"]
+    assert env.get("CARGO_TARGET_DIR") != str(foreign_target)
+    assert env.get("UV_PROJECT_ENVIRONMENT") != str(foreign_image)
+    assert env.get("PYTHONPATH") != "/elsewhere/slot-06/src"
 
 
 @pytest.mark.parametrize(

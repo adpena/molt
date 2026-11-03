@@ -1299,6 +1299,27 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     assert _record(family, "next")["lane"]["slot"] is True
 
 
+def test_lane_retire_finishes_a_landed_lane_whose_slot_another_lane_reuses(
+    family: Path,
+) -> None:
+    # HF-753: a landed lane's slot served another lane before its record was
+    # retired, and retire refused "exists outside its managed Git registration".
+    main = family / "molt-src"
+    worktree = _start(family, "first")
+    _commit_file(worktree, "first.txt", "first\n", "first work")
+    _git(worktree, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/lane/first")
+    _git(worktree, "checkout", "-q", "--detach")
+    assert _start(family, "second") == worktree
+
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == 0
+    assert _record(family, "first")["status"] == "landed"
+    assert _ref(main, "refs/heads/lane/first") is None
+    assert (
+        _git(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "lane/second"
+    )
+
+
 def _replay_onto_advanced_main(family: Path, commits: list[str], amend: bool) -> None:
     """Historical replay/amend landings remain represented after main moves."""
     main = family / "molt-src"
