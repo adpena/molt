@@ -144,7 +144,9 @@ def test_windows_sftp_source_and_destination_use_forward_slashes(tmp_path, monke
 
 
 @pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX launcher contract")
-def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
+def test_trunk_posix_child_outlives_launcher_and_owns_new_session(
+    tmp_path, monkeypatch
+):
     import json
     import os
     import sys
@@ -154,9 +156,11 @@ def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
         name="local",
         target="aarch64-apple-darwin",
         transport="ssh",
-        python=sys.executable,
         os=cross_run.HostOS.MACOS,
         launcher=cross_run.DetachedLauncher.POSIX_SESSION,
+    )
+    monkeypatch.setattr(
+        trunk_loop, "uv_python", lambda *args: [sys.executable, "-B", *args]
     )
     ready, release, complete = [
         tmp_path / name for name in ("ready", "release", "complete")
@@ -231,7 +235,15 @@ def test_trunk_seed_inputs_reuses_content_addressed_archives(tmp_path, monkeypat
     local = tmp_path / "stage"
     local.mkdir()
     seeds = trunk_loop.seed_inputs(
-        {"releases": {"first": {"asset": asset}, "second": {"asset": asset}}},
+        {
+            "releases": {
+                "first": {"asset": asset},
+                "second": {"asset": asset},
+                # uv must never reach the archive provisioner, even when the
+                # selected proof policy includes it in the toolchain closure.
+                "uv": {},
+            }
+        },
         Transfer(),
         local,
     )
