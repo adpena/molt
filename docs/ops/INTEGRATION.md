@@ -290,7 +290,7 @@ integration speedup.
 | Subcommand | Purpose |
 |---|---|
 | `integrate` | controller → fetch → rebase → verify-commits → cite → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--candidate-controller`, `--ignore` (cleanup only). |
-| `land` | Run the lane's static gates in the lane (the precheck), then queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. `--no-precheck` queues without the precheck. `--precheck-only` runs the precheck and stops, queueing nothing (a worker's handoff check). |
+| `land` | Apply the plan's `repair` steps in the lane and commit what they change, run the lane's precheck (static gates plus the try run, within `PRECHECK_BUDGET`), then queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. `--no-precheck` queues without the repairs and the precheck. `--precheck-only` repairs and prechecks, then stops, queueing nothing (a worker's handoff check); it exits 1 when the budget refused a gate. |
 | `queue run` | The runner (started by `land`): land queued commits in batches through `integrate`, bisecting failures. `--candidate-controller` for a controller repair. |
 | `queue status` | Pending requests, the bisection plan and recent results as JSON. `--recent N`. |
 | `queue withdraw` | Close pending requests without testing them: `queue withdraw <request-id>... --reason TEXT`. Runs from main's pinned controller (`--candidate-controller` for a controller repair). Refuses while a batch runs, withdraws nothing if any id is not pending, and starts a runner when requests remain. |
@@ -619,12 +619,30 @@ executor and `integrate` provision it on demand.
 
 ### The landing queue (`land`, `queue run`)
 
-`land` checks that the checkout is clean, then runs the precheck: the
-selected gates whose toolchains only read the candidate's files (linters,
-formatters, type checks, generators and policy audits; no pytest session and
-no Cargo build) run in the lane against its merge base with main, through the
-same selection, environment and executor as `integrate`. A failing gate stops
-`land` before it queues anything. It then writes one request under
+`land` checks that the checkout is clean, then repairs it: the lane's plan
+declares `repair` steps (encoding pins, formatting, and `tools/generators.py
+write --changed-since <merge base>`, which renders only the generators whose
+derived inputs or declared outputs the lane changed). What they change becomes
+one commit with exact paths, and the lane's tip moves to it; the installed
+Git hooks run on it. `land` refuses the commit when a path outside the lane's
+diff since the merge base and the generator manifest's declared outputs
+changed (another writer touched the checkout), and refuses to repair a branch
+that a pending landing request pins. Repairs have no deadline and sit outside
+the 15-minute precheck claim: a full `generators.py write` of all 40
+reproducible generators took 16-25 s on the primary (2026-11-02), and one
+lane's whole repair took 43.5 s. Then `land` runs
+the precheck in the lane against its merge base with main, through the same
+selection, environment and executor as `integrate`: the static gates (linters,
+formatters, type checks, generators and policy audits) and the try run, which
+is the dependency graph's test cohorts (changed tests and their direct
+readers) and the gates of `precheck = true` rules (changed-crate Clippy).
+Other Cargo builds and the rules' curated pytest cohorts wait for the batch. A
+failing gate stops `land` before it queues anything. The static gates run to
+their verdict with no deadline. `PRECHECK_BUDGET` (`tools/molt_dev_policy.py`,
+15 minutes) bounds the try run alone, from its first gate: at the limit the
+guards cancel running gates, later gates never start, and `land` names each
+refused gate, then queues; the batch runs every selected gate. A try run that
+the disk-capacity check refuses is named and queued the same way. It then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
 the commit. Enrollment of a managed `lane/<slug>` is a cooperative handoff:
 stop editing it until the request closes. Its canonical lane record, exact

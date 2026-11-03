@@ -27,7 +27,9 @@ def _run(command: list[str], *, on_spawn=None):
     )
 
 
-def _run_observed_memory_tree(monkeypatch, tmp_path):
+def _run_observed_memory_tree(
+    monkeypatch, tmp_path, *, sampler=memory_guard.sample_processes
+):
     release = tmp_path / "observed"
     ready = [tmp_path / name for name in ("child", "grandchild")]
     spawned = []
@@ -87,6 +89,7 @@ def _run_observed_memory_tree(monkeypatch, tmp_path):
         max_total_rss_kb=512 * 1024,
         poll_interval=0.01,
         timeout=30.0,
+        sampler=sampler,
         capture_output=True,
         on_spawn=spawned.append,
         samples_jsonl=str(tmp_path / "samples.jsonl"),
@@ -170,7 +173,9 @@ def test_run_guarded_does_not_return_with_live_job_descendants(tmp_path) -> None
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")
-def test_windows_job_sampling_automatically_avoids_global_process_table() -> None:
+def test_windows_job_sampling_automatically_avoids_global_process_table(
+    monkeypatch, tmp_path
+) -> None:
     global_samples = 0
 
     def forbidden_global_sampler():
@@ -178,18 +183,8 @@ def test_windows_job_sampling_automatically_avoids_global_process_table() -> Non
         global_samples += 1
         raise AssertionError("owned-tree measurement must not scan the whole host")
 
-    result = memory_guard.run_guarded(
-        [
-            sys.executable,
-            "-c",
-            "import time; x=bytearray(8_000_000); time.sleep(0.1)",
-        ],
-        max_rss_kb=512 * 1024,
-        max_total_rss_kb=768 * 1024,
-        poll_interval=0.003,
-        sampler=forbidden_global_sampler,
-        capture_output=True,
-        cleanup_orphans=True,
+    result = _run_observed_memory_tree(
+        monkeypatch, tmp_path, sampler=forbidden_global_sampler
     )
 
     assert result.returncode == 0

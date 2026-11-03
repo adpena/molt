@@ -57,7 +57,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 155 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 156 |
 
 ## Scheduled families
 
@@ -124,7 +124,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `posix-true` | `executable` | — | `^$` | `.` | `host POSIX utility` | 1 |
 | `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
 | `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
-| `uv` | `executable` | — | `^uv 0\.13\.5\b` | `.` | `0.13.5` | 2 |
+| `uv` | `executable` | — | `^uv 0\.13\.6\b` | `.` | `0.13.6` | 2 |
 | `node` | `executable` | — | `^v26\.12\.1$` | `.` | `26.12.1` | 3 |
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |

@@ -114,8 +114,10 @@ NO_FAKES = (
 
 HANDOFF_PRECHECK = (
     "HANDOFF PRECHECK: before reporting a commit ready, run `python -B tools/molt_dev.py land "
-    "--repo <your checkout> --precheck-only` with the slot image. It runs the landing's static "
-    "gates through main's controller and queues nothing. Run it and your changed tests from the "
+    "--repo <your checkout> --precheck-only` with the slot image. It applies the plan's "
+    "repairs (committing any change), then runs the landing's static gates and its try run "
+    "(changed-crate Clippy, changed tests and their direct readers) within the precheck budget "
+    "through main's controller, and queues nothing; a budget refusal exits 1. Run it and your changed tests from the "
     "landing runner's plain environment (`env -u CARGO_TARGET_DIR -u UV_PROJECT_ENVIRONMENT "
     "TMPDIR=<data-volume dir>`), never under a sourced lane env.sh: its exported selectors hide "
     "failures the runner sees. Fix every failure. Commit each green slice at once with exact "

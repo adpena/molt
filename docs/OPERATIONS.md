@@ -110,9 +110,9 @@ not choose guest semantics.
   retaining their full payloads until classification and publication. These
   development checks add no work to emitted programs. A guard that
   finishes moves its own marker to `retired/` once its scratch is reclaimed,
-  retained or blocked; `retired/` keeps the newest 256 records. A marker that
-  stays in `active/` names a live run, a run that raised, a run whose closure or
-  scratch is unresolved, or a guard that died. The producer publishes
+  retained or blocked; `retired/` keeps every record, and no tool expires it.
+  A marker that stays in `active/` names a live run, a run that raised, a run
+  whose closure or scratch is unresolved, or a guard that died. The producer publishes
   `spawn_pending` before it creates a child, records the handle-bound child
   birth, and records `child_launch_state: failed` when the launch raises (no
   child exists). An exiting guard sweeps `active/` when it holds 16 more records
@@ -675,9 +675,67 @@ startup socket overflow declines the generated cache with one warning, leaving
 no `SCCACHE_DIR`, wrapper or endpoint default. Explicit enablement or an explicit
 unfittable `SCCACHE_DIR` raises `SccacheSocketPathError` before launch. Select a
 shorter artifact root or an explicit short `SCCACHE_DIR` to enable caching.
-Coordination records and recovery indices stay in the checkout. Evidence never
+Coordination records and recovery indices stay in the checkout. Other evidence never
 expires into deletion: compaction verifies an archive, publishes its external
 manifest and source index, then removes only represented raw payloads.
+
+Failed guard scratch is regenerable (HF-694). A failed run keeps three things:
+
+| What | Where | How long |
+| --- | --- | --- |
+| Guard marker record, with its `temporary_artifacts` outcome | `retired/`, beside the guard's `active/` markers | No tool expires it |
+| Landing gate result and bounded stream tails, when a landing ran it | The landing's integration receipts | Durable evidence |
+| Failed scratch payload | `gs/v2/<token>/payload` | Until the bound below evicts it |
+
+A guard writes a summary file only with `--summary-json` or for an incident.
+No tool reads a retained payload; it exists only for manual inspection. After
+proven process-tree closure, the scratch collector keeps the newest three
+failed payloads within 2 GiB and deletes older payloads with their generation
+receipts. A failed payload larger than the byte bound is deleted by its own
+guard's exit sweep. A dead guard uses the same closure and identity checks,
+without archiving. Every deletion first checks the payload's identity and
+its allocation receipt; a payload without its receipt is blocked and reported
+once. A deletion that fails leaves the payload retained and indexed; the owner
+records the attempt count and the first and last three errors, each cut to 512
+characters. Guard exits retry it up to three times; after that each sweep
+reports it as an error, and only explicit cleanup retries it. Active,
+indeterminate, foreign and malformed custody stays protected. Errors in the
+namespaces every run shares (the root, `pending/` and `removing/`) are
+diagnostics, raised or returned: they never change the child exit or create
+an infrastructure failure. When `pending/` refuses a run's own index, that run deletes its
+payload at once; if that deletion fails, the payload stays without an index
+until explicit cleanup finds it. A failure of the current run's own closure or
+scratch finalization still fails the run, and so does a clean run whose own
+payload removal failed.
+
+The removed archive producer left two kinds of state that only explicit
+cleanup resolves, never guard exit: indexed archives, and failed generations
+blocked with `failure evidence awaits archive` or `failure evidence preserved;
+archive unavailable: ...`, which ordinary sweeps no longer see. Explicit
+cleanup also scans for every other generation without a pending index. Using
+the selected image's Python, inspect the same count/byte policy first:
+
+```sh
+python -B -m molt.temporary_artifacts --root /artifact/tmp/gs/v2 --dry-run
+python -B -m molt.temporary_artifacts --root /artifact/tmp/gs/v2 --apply
+```
+
+The defaults are the guard's own bound. `--count` and `--bytes` select an
+explicit tighter bound, including zero for an approved terminal backlog. The
+dry run changes no receipts and reports payload and archive bytes. Apply
+revalidates custody under each generation lock. It accepts a legacy block only
+when its terminal receipt, payload identity and allocation receipt verify, and
+then applies the bound: a kept payload rejoins ordinary retention with a
+pending index, and an expired one is deleted with its indexed archive and
+sidecar. A retained payload whose index was refused gets its index back and
+the same bound. Missing already-deleted archive files are accepted on resume.
+Every other unindexed block, interrupted transition, unreadable owner or link
+remains and is listed under `held` with its reason, payload directory and
+bytes; nothing deletes it. Malformed or foreign archive coordinates remain
+with an error. A held entry does not change the exit status. Cleanup reads only
+the bounded source index, never the unbounded external file manifest, and
+copies or regenerates no archive. Marker reconciliation leaves a generation
+with legacy archive coordinates in place for this command.
 
 Existing state moves only through a separately reviewed operation:
 

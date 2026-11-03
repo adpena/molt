@@ -504,6 +504,17 @@ always = [
   "python tools/check_perf_plane_gate.py",
 ]
 
+# Mechanical repairs the read-only gates above ask for. `land` applies them in
+# the lane before its precheck and commits what they change as its own commit;
+# `fix` applies them to a checkout. Generators run only where the change since
+# the merge base reaches their inputs or outputs (tools/generators.py).
+repair_toolchains = ["python", "generators"]
+repair = [
+  "python tools/encoding_gate.py --fix",
+  "python -m ruff format .",
+  "python tools/generators.py write --changed-since {integration_upstream_commit}",
+]
+
 receipt_schema = "molt.proof-receipt.v4"
 
 # Each modeled CI or scheduled job declares a positive job_reserve_seconds.
@@ -660,10 +671,10 @@ setup_command = "python -m molt.tool_releases provision uv"
 executable = "uv"
 version_args = ["--version"]
 process_image_probes = [["--offline", "--no-config", "--managed-python", "python", "list", "--only-downloads"]]
-version_pattern = '^uv 0\.13\.5\b'
-setup_value = "0.13.5"
+version_pattern = '^uv 0\.13\.6\b'
+setup_value = "0.13.6"
 setup_evidence = [
-  "config/tool_releases.toml::version = \"0.13.5\"",
+  "config/tool_releases.toml::version = \"0.13.6\"",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.uv-version",
 ]
 
@@ -1575,6 +1586,7 @@ inputs = ["src/molt/cli/completion.py", "src/molt/cli/arg_helpers.py", "src/molt
   "docs/spec/STATUS.md",
   "docs/agent/AGENTS.full.md",
   "tests/proof_queue_owned_roots.py",
+  "tests/fixtures/guard_scratch_v*.py",
 ]
 executor = "github-matrix"
 workflow = ".github/workflows/ci.yml"
@@ -5019,7 +5031,7 @@ pytest = [
 [[rule]]
 name = "committed-gate-policy"
 toolchains = ["python", "uv"]
-plan_entities = ["rule", "always", "always_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy", "pinned_asset"]
+plan_entities = ["rule", "always", "always_toolchains", "repair", "repair_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy", "pinned_asset"]
 description = "The committed proof plan's gate selection and the tests that read its toolchain policies."
 globs = [
   "tests/test_committed_gate_policy.py",
@@ -5604,7 +5616,7 @@ pytest_select = [
 [[rule]]
 name = "ci-wiring"
 toolchains = ["python"]
-plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "pinned_asset", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
+plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "repair_toolchains", "repair", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "pinned_asset", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
 description = "CI workflows or pyproject: the CI-topology contract test."
 globs = [
   ".github/actions/**",
@@ -6052,6 +6064,9 @@ pytest = [
 [[rule]]
 name = "rust-clippy-changed"
 toolchains = ["python", "rustc", "cargo"]
+# Lint answers for the lane alone and replays cached crates, so `land` runs it
+# in the lane before it queues (HF-710).
+precheck = true
 description = "Clippy with Cargo-owned warning denial and the proof plan's feature, target and profile cells for every Cargo package a change reaches."
 globs = [
   "runtime/**",

@@ -209,7 +209,9 @@ print(json.dumps(dict(implementation_name=sys.implementation.name,implementation
             capture_output=True,
             text=True,
             check=False,
-            timeout=120,
+            # A hang bound, as for the identity capture: under disk contention
+            # interpreter startup blocks on I/O, not work (HF-638).
+            timeout=python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S,
             encoding="utf-8",
         )
         if result.returncode != 0:
@@ -448,7 +450,7 @@ def _probe_source_build_python(
         errors="replace",
         check=False,
         env=ProcessEnvironment(probe_environment),
-        timeout=120,
+        timeout=python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
