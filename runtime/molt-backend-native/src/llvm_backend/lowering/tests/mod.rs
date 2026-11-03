@@ -152,6 +152,7 @@ fn make_dummy_lowering<'ctx, 'func>(
         repr_facts: crate::representation_plan::LlvmReprFacts::default(),
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
+        poll_context: None,
         frame_homes: None,
     }
 }

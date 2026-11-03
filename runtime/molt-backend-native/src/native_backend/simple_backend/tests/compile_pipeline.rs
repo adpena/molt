@@ -1535,7 +1535,7 @@ fn native_backend_import_ids_are_cached_by_symbol() {
 }
 
 #[test]
-fn marked_finally_observer_imports_only_the_fused_runtime_projection() {
+fn marked_finally_observer_imports_both_edges_of_the_inline_work_gate() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -1565,8 +1565,8 @@ fn marked_finally_observer_imports_only_the_fused_runtime_projection() {
         "marked observer must import the fused pending-call/exception primitive: {undefined:?}"
     );
     assert!(
-        !undefined.contains("molt_exception_last_pending"),
-        "marked observer must not retain the unfused exception-only import: {undefined:?}"
+        undefined.contains("molt_exception_last_pending"),
+        "empty work must use the passive exception-only import: {undefined:?}"
     );
 }
 

@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn finally_pending_observer_selects_exactly_one_import_from_the_shared_marker() {
+    fn finally_pending_observer_marker_requires_both_inline_branch_imports() {
         let plain = op_loop_runtime_call(molt_ir::OpKind::ExceptionFinallyPendingObserver, false)
             .expect("plain finally observer runtime call");
         assert_eq!(plain.import, WasmRuntimeImport::ExceptionLastPending);
@@ -279,7 +279,10 @@ mod tests {
         );
         assert_eq!(
             marked.required_imports,
-            [WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending]
+            [
+                WasmRuntimeImport::ExceptionLastPending,
+                WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending
+            ]
         );
     }
 

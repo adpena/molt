@@ -2102,6 +2102,10 @@ def test_published_nonzero_result_dispatches_selected_root_alongside_live_use(
             molt_dev, "prepare_gate_environment", lambda *_a, **_k: context
         )
         monkeypatch.setattr(molt_dev, "run_gate", lambda *_a, **_k: payload())
+        (projects / "tools").mkdir(exist_ok=True)
+        (projects / "tools" / "proof_plan.toml").write_text(
+            'repair = ["python tools/encoding_gate.py --fix"]\n', encoding="utf-8"
+        )
         args = molt_dev.build_parser().parse_args(["fix", "--repo", str(projects)])
 
         def run():

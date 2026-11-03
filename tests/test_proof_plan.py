@@ -7329,6 +7329,19 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
         )
 
 
+# The guard's record of a Cargo command killed before any compiler
+# observation, with an incomplete interruption inventory (HF-655).
+_UNOBSERVED_QUARANTINE = {
+    "ownership_status": "unobserved",
+    "errors": [],
+    "moved_paths": [],
+    "ownership_observations": [],
+    "recovery_observations": [],
+    "interruption_inventory_complete": False,
+    "interruption_inventory_error": "interruption snapshot unavailable",
+}
+
+
 @pytest.mark.parametrize(
     "metrics, returncode, expected",
     [
@@ -7424,6 +7437,35 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
             124,
             "global",
         ),
+        # HF-655: a kill before any compiler observation is terminal without
+        # an inventory; the deadline stays the command's own failure.
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+                "cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE,
+            },
+            124,
+            "partition",
+        ),
+        # An observed compiler or a move is never "unobserved".
+        *(
+            (
+                {
+                    "timed_out": True,
+                    "termination_reports": [
+                        {"remaining_pids": [], "remaining_pgids": []}
+                    ],
+                    "cargo_incremental_quarantine": {
+                        **_UNOBSERVED_QUARANTINE,
+                        field: [{"rustc_pid": 1}],
+                    },
+                },
+                124,
+                "global",
+            )
+            for field in ("ownership_observations", "moved_paths")
+        ),
     ],
 )
 def test_executor_failure_scope_uses_guard_and_quarantine_authority(
@@ -7512,6 +7554,7 @@ def test_executor_missing_guard_outcome_is_a_global_stop() -> None:
             },
             "Cargo quarantine ownership or recovery is unresolved",
         ),
+        ({"cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE}, None),
     ],
 )
 @pytest.mark.parametrize(
@@ -7724,11 +7767,11 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
-    # Windows Job lifetime accounting fences unseen births through termination.
-    # Ordinary POSIX snapshots cannot establish that stronger negative fact.
-    assert record["failure_scope"] == (
-        "partition" if sys.platform == "win32" else "global"
-    ), record
+    # No compiler ran in the timed partition. Windows Job lifetime accounting
+    # fences unseen births and records recovery as unnecessary; a POSIX
+    # snapshot cannot, but with no observed compiler there is nothing to
+    # recover (`unobserved`, HF-655). Either way the deadline is the command's.
+    assert record["failure_scope"] == "partition", record
     # The kill leaves the completed incremental cache exactly as it was.
     assert sorted(path.name for path in incremental.iterdir()) == compiled
 
@@ -12124,3 +12167,24 @@ def test_receipt_refuses_invalid_explicit_effect_declarations(value):
     command = replace(original, data={**original.data, "cargo_target_access": value})
     with pytest.raises((ValueError, TypeError)):
         proof_receipts.command_record(command)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("repair_toolchains", ("no-such-toolchain",), "local repair: "),
+        ("repair", ("python -m ruff format {nope}",), "local.repair.0: "),
+    ],
+)
+def test_repair_is_validated_and_projected_as_always_is(field, value, reason):
+    # The committed plan's repairs bind and close over declared toolchains.
+    assert PLAN.repair and not [error for error in PLAN.validate() if "repair" in error]
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))["local"]
+    assert projection["repair"] == list(PLAN.repair)
+    assert [
+        projection["commands"][identifier]
+        for identifier in projection["repair_command_ids"]
+    ] == list(PLAN.repair)
+    # An unbindable template or undeclared toolchain fails like `always`.
+    errors = replace(PLAN, **{field: value}).validate()
+    assert any(error.startswith(reason) for error in errors), errors

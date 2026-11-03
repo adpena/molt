@@ -159,7 +159,7 @@ fn split_backend_runtime_generated_object_abi_fails_closed_in_both_directions() 
 }
 
 #[test]
-fn signed_pointer_revision_cannot_link_with_unsigned_pointer_revision() {
+fn incompatible_pointer_and_thread_record_revisions_cannot_link() {
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("pointer-abi-link")
         .expect("create pointer ABI link-contract outputs within Cargo image custody");
     for (mode, old_symbol, new_symbol) in [
@@ -173,6 +173,16 @@ fn signed_pointer_revision_cannot_link_with_unsigned_pointer_revision() {
             "molt_generated_object_abi_bf06a9269171acab_free_threaded_v3",
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ),
+        (
+            "gil_record_v5",
+            "molt_generated_object_abi_cc3e3a1cd01ab8fb_gil_v5",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free_record_v5",
+            "molt_generated_object_abi_cc3e3a1cd01ab8fb_free_threaded_v5",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
     ] {
         for (direction, expected, actual) in [
             ("old_new", old_symbol, new_symbol),
@@ -183,11 +193,11 @@ fn signed_pointer_revision_cannot_link_with_unsigned_pointer_revision() {
             let result = link_runtime(&artifacts, &label, &backend, actual);
             assert!(
                 !result.status.success(),
-                "{label} must reject mixed pointer contracts"
+                "{label} must reject mixed generated-code contracts"
             );
             assert!(
                 String::from_utf8_lossy(&result.stderr).contains(expected),
-                "{label} must fail on missing pointer ABI witness {expected}: {}",
+                "{label} must fail on missing ABI witness {expected}: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
         }

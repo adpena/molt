@@ -234,7 +234,9 @@ def test_waiting_unobserved_cargo_preserves_all_incremental_state(tmp_path):
     sibling = unit(target, "debug")
     receipt = recover(target, ())
     assert owned.exists() and sibling.exists()
-    assert receipt.ownership_status == "deferred" and receipt.moved_paths == ()
+    # Terminal without an inventory (HF-655): nothing was observed to recover.
+    assert receipt.ownership_status == "unobserved" and receipt.moved_paths == ()
+    assert receipt.errors == () and receipt.receipt_path is None
 
 
 @pytest.mark.parametrize(
@@ -1392,7 +1394,15 @@ def test_cli_cargo_deferral_guidance_preserves_evidence(tmp_path):
     import io
     from tools.memory_guard_core import reporting, process_custody
 
-    receipt = recover(tmp_path, ())
+    # Unverified compiler closure defers recovery and records why.
+    receipt = cargo._quarantine_cargo_incremental_state(
+        reason="timeout",
+        target_dir=tmp_path,
+        command=["cargo", "test"],
+        cwd=tmp_path,
+        descendants_closed=False,
+    )
+    assert receipt.ownership_status == "deferred" and receipt.errors
     stream = io.StringIO()
     result = process_custody.GuardResult(
         returncode=124,

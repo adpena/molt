@@ -22,6 +22,8 @@ The same scoreboard owns the primitive instruction axis (HF-459):
 python tools/perf_scoreboard.py primitives --cpython 3.12.16 --out-dir <new-evidence-directory>
 ```
 
+Methodology v27 records the HF-657 primitive ratio/noise recalibration, which
+changes diagnostic verdicts without changing workloads or release acceptance.
 Methodology v26 makes each program's own directory its project
 (`MOLT_PROJECT_ROOT`), so an `--out-dir` inside a checkout no longer compiles
 the primitives against that checkout's sources and environment; v25 publishes

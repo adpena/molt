@@ -50,6 +50,10 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     local_dec_ref_obj: FuncRef,
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
+    pending_work_slots: Option<(
+        cranelift_codegen::ir::StackSlot,
+        cranelift_codegen::ir::StackSlot,
+    )>,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
     nbc: &crate::NanBoxConsts,
 ) {
@@ -228,7 +232,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             // retain their explicit transport plan.
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough);
-            let (pending_observer, pending_flag_slot) = if op.is_async_work_poll() {
+            let cond = if op.is_async_work_poll() {
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -236,16 +240,20 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     &[],
                     &[types::I64],
                 );
-                (module.declare_func_in_func(callee, builder.func), None)
+                let callee = module.declare_func_in_func(callee, builder.func);
+                let (word, record) =
+                    pending_work_slots.expect("async poll requires an execution record");
+                let result =
+                    emit_async_work_poll(builder, sealed_blocks, word, record, callee, None);
+                builder.ins().icmp_imm_s(IntCC::NotEqual, result, 0)
             } else {
-                (local_exc_pending_fast, exc_flag_ptr_slot)
+                emit_exception_pending_condition(
+                    &mut *builder,
+                    module.target_config().pointer_type(),
+                    local_exc_pending_fast,
+                    exc_flag_ptr_slot,
+                )
             };
-            let cond = emit_exception_pending_condition(
-                &mut *builder,
-                module.target_config().pointer_type(),
-                pending_observer,
-                pending_flag_slot,
-            );
             let target_args = label_transport_plans
                 .get(&target_id)
                 .map(|plan| plan.edge_args(&mut *builder))

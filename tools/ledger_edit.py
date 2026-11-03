@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edit the v1.0 findings ledger by row: open, close, merge, note, next-key.
+"""Edit the v1.0 findings ledger by row: open, close, merge, note, class, next-key.
 
 ``docs/agent/V1_HANDOFF_FINDINGS.md`` owns the burndown. Its protocol moves a
 row, its family in the dependency order and the generated finding identities
@@ -16,6 +16,7 @@ release engineering" [--after HF-587] --defect ... --evidence ... --next ...
 [--evidence-note ...] [--next-note ...]
     ledger_edit.py note HF-185 [--defect-note ...] [--evidence-note ...] \
 [--next-note ...]
+    ledger_edit.py class HF-605 --v1-class release_apparatus
     ledger_edit.py family create W --stratum engine --axes empty/startup --name ... --cause ...
     ledger_edit.py edge add F W --reason ...
     ledger_edit.py edge remove F W
@@ -144,6 +145,21 @@ def _remove_membership(text: str, key: str) -> str:
     for entry in reversed(finding_status.project(text).v1_membership):
         if entry.key == key:
             del lines[entry.line - 1]
+    return "\n".join(lines)
+
+
+def classify_row(text: str, args: argparse.Namespace) -> str:
+    """Restate an open row's v1 class in place."""
+    entry = next(
+        (e for e in finding_status.project(text).v1_membership if e.key == args.key),
+        None,
+    )
+    if entry is None:
+        raise LedgerEditError(f"{args.key} has no v1 class")
+    if entry.classification == args.v1_class:
+        raise LedgerEditError(f"{args.key} is already {args.v1_class}")
+    lines = text.split("\n")
+    lines[entry.line - 1] = _row([args.key, args.v1_class])
     return "\n".join(lines)
 
 
@@ -427,6 +443,13 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     )
     noted = sub.add_parser("note")
     noted.add_argument("key")
+    classified = sub.add_parser("class", help="restate an open row's v1 class")
+    classified.add_argument("key")
+    classified.add_argument(
+        "--v1-class",
+        required=True,
+        choices=[value.value for value in finding_status.V1Class],
+    )
     for command in (merged, noted):
         for name in ("defect-note", "evidence-note", "next-note"):
             command.add_argument(f"--{name}")
@@ -490,6 +513,7 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
             "close": close_row,
             "merge": merge_rows,
             "note": note_row,
+            "class": classify_row,
         }[args.command]
         subject = args.key
     try:
