@@ -150,7 +150,7 @@ uv run --locked molt doctor --json
 
 
 def wsl_profile_script(host) -> str:
-    """Read physical backing-volume capacity and active disk/profile identity."""
+    """Read registered backing-disk identity and the Windows VM profile."""
     return f"""$ErrorActionPreference='Stop'
 $key=Get-ChildItem HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss | Where-Object {{ (Get-ItemProperty $_.PSPath).DistributionName -eq {ps(host.wsl_distribution)} }}
 if (@($key).Count -ne 1) {{ throw 'WSL distribution identity is ambiguous' }}
@@ -158,14 +158,19 @@ $base=(Get-ItemProperty $key.PSPath).BasePath
 $actual=[IO.Path]::Combine($base,'ext4.vhdx')
 if ($actual -cne {ps(host.wsl_vhdx)}) {{ throw "WSL backing disk changed: $actual" }}
 $config=[IO.File]::ReadAllText((Join-Path $env:USERPROFILE '.wslconfig'))
-$disk=& wsl.exe -d {host.wsl_distribution} -- findmnt -bno SIZE /
-if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
-[pscustomobject]@{{config=$config;disk_bytes=[long]($disk.Trim());vhdx=$actual}} | ConvertTo-Json -Compress
+[pscustomobject]@{{config=$config;vhdx=$actual}} | ConvertTo-Json -Compress
 """
 
 
 def admit_wsl_profile(host, transport) -> dict:
     profile = json.loads(transport.windows_command(wsl_profile_script(host)))
+    # A shrunk filesystem can still inhabit an oversized VHD. Query the root
+    # block device, independently of both filesystem size and physical free space.
+    profile["disk_bytes"] = int(
+        transport.shell_command(
+            'set -eu\nroot_device=$(findmnt -nro SOURCE /)\nlsblk -bdno SIZE "$root_device"'
+        )
+    )
     import configparser
 
     config = configparser.ConfigParser()
@@ -188,7 +193,7 @@ def admit_wsl_profile(host, transport) -> dict:
         raise ValueError(
             "Windows settings change required; return to integrator before applying host profile: "
             + "; ".join(changes)
-            + f" (observed filesystem bytes={profile['disk_bytes']}, budget GiB={host.wsl_disk_gb})"
+            + f" (observed disk bytes={profile['disk_bytes']}, budget GiB={host.wsl_disk_gb})"
         )
     return profile
 

@@ -38,6 +38,8 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
 
         def shell_command(self, script, *, timeout=60):
             scripts.append(script)
+            if "lsblk -bdno SIZE" in script:
+                return str(80 * 1024**3)
             if script.startswith("$d=Get-PSDrive"):
                 return json.dumps({"free": 30 * 1024**3})
             if script.startswith(("df -Pk", "p=")):
@@ -54,16 +56,18 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     first = trunk_loop.provision_host(args, transport=Transport())
     second = trunk_loop.provision_host(args, transport=Transport())
     assert first == second
-    install = scripts[1]
+    installs = [script for script in scripts if "uv sync --locked" in script]
+    assert len(installs) == 2
+    install = installs[0]
     assert "uv sync --locked --group dev" in install
     assert "uv run --locked molt doctor --json" in install
     assert "--default-toolchain none" in install
     assert "rustup show active-toolchain" in install
     assert "git clone --" in install and "fetch origin" in install
-    assert scripts[1] == scripts[4]
+    assert installs[0] == installs[1]
     assert "envs/molt-dx-py312" not in install
     if name == "molt-gate":
-        assert scripts[0].startswith("df -Pk /mnt/c ")
+        assert any(script.startswith("df -Pk /mnt/c ") for script in scripts)
 
 
 def test_settings_stop_precedes_install_and_capacity(monkeypatch):
@@ -76,10 +80,12 @@ def test_settings_stop_precedes_install_and_capacity(monkeypatch):
                 }
             )
 
-        def shell_command(self, *_args, **_kwargs):
-            pytest.fail(
-                "settings refusal must precede any installer or checkout mutation"
-            )
+        def shell_command(self, script, **_kwargs):
+            # Even if a filesystem is shrunk separately, its block device is
+            # still the full 1 TiB: only the latter can prove the VHD cap.
+            assert "lsblk -bdno SIZE" in script
+            assert "findmnt -bno SIZE" not in script
+            return str(1024**4)
 
     with pytest.raises(
         ValueError, match="Windows settings change required.*--resize 80GB"

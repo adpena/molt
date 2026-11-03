@@ -705,10 +705,13 @@ class SSHTransport(Transport):
         return result.stdout.strip()
 
     def _wsl_argv(self, *argv: str) -> list[str]:
+        distribution = self.host.wsl_distribution
+        if distribution is None:
+            raise ValueError("WSL execution requires an inventoried distribution")
         return self._ssh_base() + [
             "wsl.exe",
             "-d",
-            self.host.wsl_distribution,
+            distribution,
             "--",
             *argv,
         ]
@@ -729,18 +732,9 @@ class SSHTransport(Transport):
                     f"{self.host.name}: WSL command failed: {result.stderr} {result.stdout}"
                 )
             return result.stdout.strip()
-        command = (
-            self._ssh_base()
-            + [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                base64.b64encode(script.encode("utf-16-le")).decode("ascii"),
-            ]
-            if self.host.shell == "powershell"
-            else self._ssh_base() + ["sh -c " + shlex.quote(script)]
-        )
+        if self.host.shell == "powershell":
+            return self.windows_command(script, timeout=timeout)
+        command = self._ssh_base() + ["sh -c " + shlex.quote(script)]
         result = _guarded_run(command, timeout=timeout)
         if result.returncode:
             raise RuntimeError(
@@ -837,7 +831,9 @@ class SSHTransport(Transport):
                 import tarfile
 
                 payload = io.BytesIO()
-                with tarfile.open(fileobj=payload, mode="w") as archive:
+                with tarfile.open(
+                    fileobj=payload, mode="w", dereference=True
+                ) as archive:
                     archive.add(src, arcname=src.name, recursive=False)
                 result = _guarded_run(
                     self._wsl_argv("tar", "-xC", self.execution_dir),

@@ -144,9 +144,7 @@ def test_windows_sftp_source_and_destination_use_forward_slashes(tmp_path, monke
 
 
 @pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX launcher contract")
-def test_trunk_posix_child_outlives_launcher_and_owns_new_session(
-    tmp_path, monkeypatch
-):
+def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
     import json
     import os
     import sys
@@ -159,9 +157,23 @@ def test_trunk_posix_child_outlives_launcher_and_owns_new_session(
         os=cross_run.HostOS.MACOS,
         launcher=cross_run.DetachedLauncher.POSIX_SESSION,
     )
-    monkeypatch.setattr(
-        trunk_loop, "uv_python", lambda *args: [sys.executable, "-B", *args]
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="detached-probe"\nversion="0.0.0"\nrequires-python=">=3.12"\n',
+        encoding="utf-8",
     )
+    # Exercise the real uv wrapper without borrowing or resynchronizing the
+    # pytest process's immutable development image.
+    env = dict(os.environ)
+    env.update(
+        UV_PROJECT_ENVIRONMENT=str(tmp_path / "environment"),
+        UV_PYTHON=sys.executable,
+        UV_PYTHON_DOWNLOADS="never",
+        UV_OFFLINE="1",
+    )
+    locked = cross_run._guarded_run(
+        ["uv", "lock", "--project", str(tmp_path)], env=env, timeout=60
+    )
+    assert locked.returncode == 0, locked.stderr
     ready, release, complete = [
         tmp_path / name for name in ("ready", "release", "complete")
     ]
@@ -174,11 +186,11 @@ if g.exists():c.write_text('completed after launcher exit')
 """
     script = trunk_loop.detached_script(
         host,
-        [sys.executable, "-B", "-c", child, str(ready), str(release), str(complete)],
+        trunk_loop.uv_python("-c", child, str(ready), str(release), str(complete)),
         str(tmp_path),
     )
     launcher = subprocess.run(
-        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8"
+        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8", env=env
     )
     assert launcher.returncode == 0, launcher.stderr
     pid = trunk_loop.acknowledge(launcher.stdout)
@@ -189,10 +201,9 @@ if g.exists():c.write_text('completed after launcher exit')
     while not ready.exists() and pid_alive(pid):
         time.sleep(0.01)
     try:
-        assert json.loads(ready.read_text(encoding="utf-8")) == {
-            "pid": pid,
-            "session": pid,
-        }
+        observed = json.loads(ready.read_text(encoding="utf-8"))
+        assert observed["pid"] > 0
+        assert observed["session"] == pid
         assert pid != os.getsid(0)
     finally:
         release.write_text("parent already exited", encoding="utf-8")
