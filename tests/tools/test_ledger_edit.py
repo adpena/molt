@@ -102,6 +102,25 @@ def test_open_inserts_the_row_joins_its_family_and_projects_it(tmp_path: Path) -
     )
 
 
+def test_class_restates_one_row_and_refuses_a_no_op_or_unclassified_row(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+
+    assert ledger_edit.main(["class", "HF-2", "--v1-class", "apparatus"], root=root) == 0
+
+    status = _status(root)
+    assert status.classes["HF-2"] is finding_status.V1Class.APPARATUS
+    assert status.classes["HF-1"] is finding_status.V1Class.RELEASE_BLOCKING
+    assert _family_keys(root) == {"A": ("HF-1",), "B": ("HF-2",)}
+    after = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    assert len(after.split("\n")) == len(before.split("\n"))
+    assert ledger_edit.main(["class", "HF-2", "--v1-class", "apparatus"], root=root) == 2
+    assert ledger_edit.main(["class", "HF-0", "--v1-class", "apparatus"], root=root) == 2
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == after
+
+
 def test_close_moves_the_row_to_fixed_and_leaves_its_family(tmp_path: Path) -> None:
     root = _root(tmp_path)
 
