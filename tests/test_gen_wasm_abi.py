@@ -3645,6 +3645,14 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
     # The async execution families themselves stay out of Pure guests.
     for name in ("asyncgen_new", "asyncgen_poll", "future_poll", "future_cancel"):
         assert pure_profile_skips_import(name)
+    # The execution record is core; every other registered thread operation
+    # retains the old Pure exclusion, including intrinsic-derived imports.
+    thread_imports = {
+        name for name in import_by_runtime_name.values() if name.startswith("thread_")
+    }
+    assert "thread_record" in thread_imports
+    for name in thread_imports:
+        assert pure_profile_skips_import(name) == (name != "thread_record"), name
 
 
 def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:

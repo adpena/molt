@@ -1,5 +1,78 @@
 #include <Python.h>
 
+#if !defined(__wasi__)
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
+
+static int thread_callback_hits = 0;
+static int count_thread_callback(void *unused) {
+    (void)unused;
+    thread_callback_hits++;
+    return 0;
+}
+
+struct thread_publication { int result; };
+#if defined(_WIN32)
+static DWORD WINAPI publish_from_thread(LPVOID arg) {
+#else
+static void *publish_from_thread(void *arg) {
+#endif
+    struct thread_publication *publication = arg;
+    publication->result = Py_AddPendingCall(count_thread_callback, NULL);
+    return 0;
+}
+
+static PyObject *arm_thread_callback(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+    struct thread_publication publication = {-1};
+#if defined(_WIN32)
+    HANDLE thread = CreateThread(NULL, 0, publish_from_thread, &publication, 0, NULL);
+    if (thread == NULL) {
+        return PyErr_SetFromWindowsErr(0);
+    }
+    PyThreadState *saved = PyEval_SaveThread();
+    DWORD wait = WaitForSingleObject(thread, INFINITE);
+    PyEval_RestoreThread(saved);
+    CloseHandle(thread);
+    if (wait != WAIT_OBJECT_0) {
+        Py_FatalError("pending-call publisher join failed");
+    }
+#else
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, publish_from_thread, &publication) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "pending-call publisher creation failed");
+        return NULL;
+    }
+    PyThreadState *saved = PyEval_SaveThread();
+    int joined = pthread_join(thread, NULL);
+    PyEval_RestoreThread(saved);
+    if (joined != 0) {
+        /* Never return while a native child can still borrow our stack. */
+        Py_FatalError("pending-call publisher join failed");
+    }
+#endif
+    if (publication.result != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "pending-call queue full");
+        return NULL;
+    }
+    /* The publisher used no GIL and never ran the callback. Release/reacquire
+       around the blocking join also lets CPython 3.12 recompute its main-thread
+       breaker (its foreign publisher recomputes from the publisher's identity).
+       No Py_MakePendingCalls here: the interpreter's safepoint owns dispatch. */
+    Py_RETURN_NONE;
+}
+
+static PyObject *thread_callback_count(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+    return PyLong_FromLong(thread_callback_hits);
+}
+#endif
+
 static int pending_runtime_error(void *unused) {
     (void)unused;
     PyErr_SetString(PyExc_RuntimeError, "pending replacement");
@@ -22,6 +95,10 @@ static PyObject *arm_runtime_error(PyObject *self, PyObject *args) {
 
 static PyMethodDef pending_call_probe_methods[] = {
     {"arm_runtime_error", arm_runtime_error, METH_NOARGS, NULL},
+#if !defined(__wasi__)
+    {"arm_thread_callback", arm_thread_callback, METH_NOARGS, NULL},
+    {"thread_callback_count", thread_callback_count, METH_NOARGS, NULL},
+#endif
     {NULL, NULL, 0, NULL},
 };
 

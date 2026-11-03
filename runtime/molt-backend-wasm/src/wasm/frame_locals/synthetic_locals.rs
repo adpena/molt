@@ -11,6 +11,8 @@ pub(in crate::wasm) enum WasmFrameSyntheticLocal {
     WasmTmp0,
     WasmTmp1,
     WasmAllocResolve,
+    ThreadRecord,
+    PendingWorkPtr,
 }
 
 impl WasmFrameSyntheticLocal {
@@ -31,12 +33,16 @@ impl WasmFrameSyntheticLocal {
             Self::WasmTmp0 => "__wasm_tmp0",
             Self::WasmTmp1 => "__wasm_tmp1",
             Self::WasmAllocResolve => "__wasm_alloc_resolve",
+            Self::ThreadRecord => "__thread_record",
+            Self::PendingWorkPtr => "__pending_work_ptr",
         }
     }
 
     fn val_type(self) -> ValType {
         match self {
-            Self::WasmTmp0 | Self::WasmAllocResolve => ValType::I32,
+            Self::WasmTmp0 | Self::WasmAllocResolve | Self::ThreadRecord | Self::PendingWorkPtr => {
+                ValType::I32
+            }
             Self::DeadSink
             | Self::MoltTmp0
             | Self::MoltTmp1
@@ -65,6 +71,13 @@ impl WasmFrameLocals {
 
     pub(in crate::wasm) fn synthetic(&self, synthetic: WasmFrameSyntheticLocal) -> u32 {
         self[synthetic.name()]
+    }
+
+    pub(in crate::wasm) fn optional_synthetic(
+        &self,
+        synthetic: WasmFrameSyntheticLocal,
+    ) -> Option<u32> {
+        self.get(synthetic.name()).copied()
     }
 }
 

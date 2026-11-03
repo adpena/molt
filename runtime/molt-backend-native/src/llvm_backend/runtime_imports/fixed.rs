@@ -255,6 +255,7 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_exception_clear", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_last", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_last_pending", 0, ATTR_WILLRETURN),
+    i64_ret("molt_thread_record", 0, ATTR_WILLRETURN),
     // Polling services GC and arbitrary pending Python callbacks; unlike a
     // passive observer, neither projection promises termination or read-only memory.
     i64_ret("molt_async_work_poll_and_exception_pending", 0, ATTR_NONE),

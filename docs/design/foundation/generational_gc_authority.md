@@ -208,7 +208,9 @@ Reentrant polls cannot consume the same worklist entry; a cleanup unwind keeps
 the registry owner and restores its pending ID. Synchronous runtime
 retirement still stops and joins all owners before its fixed-point root drain.
 
-The no-work native safepoint path performs one per-runtime pending-flag load,
+The [compiled async-work gate](inline_async_work_poll.md) reads one runtime
+pending-work word before entering this service path. The no-work reaper path
+inside a servicing safepoint performs one per-runtime pending-flag load,
 allocates nothing, and takes no reaper/error-custody mutex or error-preservation
 transaction. Worklist allocation occurs only on first nonwaiting/explicit pool
 closure. The cursor and flag are scheduling summaries of the existing owner,

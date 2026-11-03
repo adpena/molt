@@ -985,10 +985,11 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             continue
         variants = [(None, entry["import_name"], entry["required_imports"])]
         if marked_import_name := entry.get("marked_import_name"):
-            marked_required_imports = [
-                marked_import_name if required == entry["import_name"] else required
-                for required in entry["required_imports"]
-            ]
+            # The inline pending-work branch retains the passive projection on
+            # its fast edge and calls the marked service only on its cold edge.
+            marked_required_imports = list(entry["required_imports"])
+            if marked_import_name not in marked_required_imports:
+                marked_required_imports.append(marked_import_name)
             variants.insert(
                 0, (" if marked", marked_import_name, marked_required_imports)
             )

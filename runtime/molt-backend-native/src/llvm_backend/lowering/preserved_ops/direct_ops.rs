@@ -307,20 +307,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
-                let symbol =
-                    crate::exception_observer_abi::pending_exception_observer_runtime_symbol(
-                        kind,
-                        op.is_async_work_poll(),
-                    )
-                    .expect("pending-exception observer kind must have a runtime projection");
-                let last_fn = self.ensure_runtime_i64_fn(symbol, 0);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(last_fn, &[], "exception_last_pending")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
+                let result = if op.is_async_work_poll() {
+                    self.emit_async_work_poll(true)
+                } else {
+                    let last_fn = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
+                    self.backend
+                        .builder
+                        .build_call(last_fn, &[], "exception_last_pending")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
+                };
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);

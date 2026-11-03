@@ -82,15 +82,21 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     depth: ControlScopeDepth,
 ) {
     // Observe exactly the authored statement boundary, including async polls.
-    emit_call(
-        func,
-        context.reloc_enabled,
-        context.import_ids[if op.is_async_work_poll() {
-            crate::wasm_abi_generated::WasmRuntimeImport::AsyncWorkPollAndExceptionPending
-        } else {
-            crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending
-        }],
-    );
+    if op.is_async_work_poll() {
+        crate::wasm::pending_work::emit_poll(
+            func,
+            context.locals(),
+            context.import_ids,
+            context.reloc_enabled,
+            false,
+        );
+    } else {
+        emit_call(
+            func,
+            context.reloc_enabled,
+            context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+        );
+    }
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
     emit_conditional_state_branch(

@@ -617,7 +617,9 @@ const TRUE:u64=@TRUE@;
 const FALSE:u64=@FALSE@;
 const METHOD_NULL:u64=@METHOD_NULL@;
 #[export_name="@ABI@"] pub static ABI:u8=0;
-static mut PENDING:u8=0;
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64 }
+static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0 };
 static ATTEMPTS:AtomicU64=AtomicU64::new(0);
 static FAIL:AtomicU64=AtomicU64::new(0);
 static CALLS:AtomicU64=AtomicU64::new(0);
@@ -638,18 +640,18 @@ fn refs(word:u64)->Option<&'static AtomicU64>{match word{0x101=>Some(&FIRST),0x1
 #[no_mangle] pub extern "C" fn molt_dec_ref(word:u64){molt_dec_ref_obj(word)}
 #[no_mangle] pub extern "C" fn molt_int_from_i64(raw:i64)->u64{
  assert_eq!(ERROR.load(SeqCst),0,"later box after first failure");let attempt=ATTEMPTS.fetch_add(1,SeqCst)+1;
- if FAIL.load(SeqCst)==attempt{ERROR.store(0xb000+attempt,SeqCst);unsafe{PENDING=1;}return NONE;}
+ if FAIL.load(SeqCst)==attempt{ERROR.store(0xb000+attempt,SeqCst);unsafe{PENDING_RECORD.pending=1;}return NONE;}
  let (word,owner)=if raw==(1_i64<<62){(0x101,&FIRST)}else{assert_eq!(raw,(1_i64<<62)+(1_i64<<31));(0x102,&SECOND)};
  assert_eq!(owner.swap(1,SeqCst),0,"repeated value rematerialized");word
 }
 #[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64{u64::from(ERROR.load(SeqCst)!=0)}
 #[no_mangle] pub extern "C" fn molt_exception_pending()->u64{molt_exception_pending_fast()}
 #[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64{molt_exception_pending_fast()}
-#[no_mangle] pub extern "C" fn molt_thread_record()->u64{core::ptr::addr_of!(PENDING) as u64}
+#[no_mangle] pub extern "C" fn molt_thread_record()->u64{unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
 #[no_mangle] pub extern "C" fn molt_is_truthy(word:u64)->u64{assert!(word==TRUE||word==FALSE);u64::from(word==TRUE)}
 #[no_mangle] pub extern "C" fn molt_recursion_enter_fast()->u64{1-GUARD_FAIL.load(SeqCst)}
 #[no_mangle] pub extern "C" fn molt_recursion_exit_fast(){}
-#[no_mangle] pub extern "C" fn molt_raise_recursion_error()->u64{ERROR.store(0xc000,SeqCst);unsafe{PENDING=1;}NONE}
+#[no_mangle] pub extern "C" fn molt_raise_recursion_error()->u64{ERROR.store(0xc000,SeqCst);unsafe{PENDING_RECORD.pending=1;}NONE}
 #[no_mangle] pub extern "C" fn molt_function_direct_call_eligible(_:u64,_:u64,_:u64)->u64{0}
 #[no_mangle] pub extern "C" fn molt_handle_resolve(_:u64)->u64{panic!("ineligible callable must not be resolved")}
 unsafe fn words<'a>(p:u64,n:u64)->&'a[u64]{if n==0{&[]}else{unsafe{core::slice::from_raw_parts(p as *const u64,n as usize)}}}
@@ -684,12 +686,12 @@ fn bind(callable:u64,builder:u64,owned:bool)->u64{assert_eq!(ERROR.load(SeqCst),
  if error<0xc000{let mode=MODE.load(SeqCst);if mode==1{assert_eq!(callable,0x501);assert_eq!(args,&[0x501,0x502]);}else if mode==2{assert_eq!(callable,0);assert_eq!(args,&[0x501]);}else{assert_eq!(callable,0);assert_eq!(args,&[0x501,0x501,0x502]);}}
  release(args);molt_dec_ref_obj(callable);ERROR.store(error,SeqCst);
 }
-#[no_mangle] pub extern "C" fn custody_reset(mode:u64,fail:u64,guard:u64){for value in [&ATTEMPTS,&CALLS,&ERROR,&ABORTS,&FIRST,&SECOND,&RESULT]{value.store(0,SeqCst);}unsafe{PENDING=0;}EXISTING.store(u64::from(mode!=3),SeqCst);OTHER.store(u64::from(mode<2),SeqCst);MODE.store(mode,SeqCst);FAIL.store(fail,SeqCst);GUARD_FAIL.store(guard,SeqCst);}
+#[no_mangle] pub extern "C" fn custody_reset(mode:u64,fail:u64,guard:u64){for value in [&ATTEMPTS,&CALLS,&ERROR,&ABORTS,&FIRST,&SECOND,&RESULT]{value.store(0,SeqCst);}unsafe{PENDING_RECORD.pending=0;}EXISTING.store(u64::from(mode!=3),SeqCst);OTHER.store(u64::from(mode<2),SeqCst);MODE.store(mode,SeqCst);FAIL.store(fail,SeqCst);GUARD_FAIL.store(guard,SeqCst);}
 #[no_mangle] pub extern "C" fn custody_check(fail:u64,boxes:u64,guard:u64){let failed=fail!=0||guard!=0;assert_eq!(CALLS.load(SeqCst),u64::from(!failed));assert_eq!(ATTEMPTS.load(SeqCst),if fail!=0{fail}else{boxes});assert_eq!(ERROR.load(SeqCst),if fail!=0{0xb000+fail}else if guard!=0{0xc000}else{0});assert_eq!(ABORTS.load(SeqCst),u64::from(failed));for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"owner escaped operation");}}
-#[no_mangle] pub extern "C" fn custody_prefix_reset(present:u64,fail:u64){PREFIX_PUSHES.store(0,SeqCst);PREFIX_FAIL.store(fail,SeqCst);EXISTING.store(present,SeqCst);ERROR.store(0,SeqCst);unsafe{PENDING=0;}}
+#[no_mangle] pub extern "C" fn custody_prefix_reset(present:u64,fail:u64){PREFIX_PUSHES.store(0,SeqCst);PREFIX_FAIL.store(fail,SeqCst);EXISTING.store(present,SeqCst);ERROR.store(0,SeqCst);unsafe{PENDING_RECORD.pending=0;}}
 #[no_mangle] pub extern "C" fn molt_callargs_push_pos(builder:u64,receiver:u64)->u64{
  assert_eq!((builder,receiver),(0x777,0x501));assert_eq!(PREFIX_PUSHES.fetch_add(1,SeqCst),0);assert_eq!(EXISTING.load(SeqCst),1);
- if PREFIX_FAIL.load(SeqCst)!=0{ERROR.store(0xbad,SeqCst);unsafe{PENDING=1;}}else{molt_inc_ref_obj(receiver);}NONE
+ if PREFIX_FAIL.load(SeqCst)!=0{ERROR.store(0xbad,SeqCst);unsafe{PENDING_RECORD.pending=1;}}else{molt_inc_ref_obj(receiver);}NONE
 }
 #[no_mangle] pub extern "C" fn custody_prefix_check(present:u64,fail:u64){
  assert_eq!(PREFIX_PUSHES.load(SeqCst),present);assert_eq!(ERROR.load(SeqCst),if present!=0&&fail!=0{0xbad}else{0});
