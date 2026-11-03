@@ -79,8 +79,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             // ops branch directly on the raw value, eliminating NaN-box
             // round-trips (box_bool_value + band+icmp extraction).
             let mut lt_raw_bool: Option<Value> = None;
-            let res = if let Some((lhs, rhs)) = representation_plan
-                .float_numeric_operands(op)
+            let res = if let Some(operands) = representation_plan
+                .float_comparison_operands(op)
                 .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
             {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -93,8 +93,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    lhs,
-                    rhs,
+                    operands,
                     FloatCC::LessThan,
                 );
                 lt_raw_bool = Some(raw);
@@ -203,8 +202,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut le_raw_bool: Option<Value> = None;
-            let res = if let Some((lhs, rhs)) = representation_plan
-                .float_numeric_operands(op)
+            let res = if let Some(operands) = representation_plan
+                .float_comparison_operands(op)
                 .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
             {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -217,8 +216,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    lhs,
-                    rhs,
+                    operands,
                     FloatCC::LessThanOrEqual,
                 );
                 le_raw_bool = Some(raw);
@@ -329,8 +327,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut gt_raw_bool: Option<Value> = None;
-            let res = if let Some((lhs, rhs)) = representation_plan
-                .float_numeric_operands(op)
+            let res = if let Some(operands) = representation_plan
+                .float_comparison_operands(op)
                 .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
             {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -343,8 +341,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    lhs,
-                    rhs,
+                    operands,
                     FloatCC::GreaterThan,
                 );
                 gt_raw_bool = Some(raw);
@@ -455,8 +452,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut ge_raw_bool: Option<Value> = None;
-            let res = if let Some((lhs, rhs)) = representation_plan
-                .float_numeric_operands(op)
+            let res = if let Some(operands) = representation_plan
+                .float_comparison_operands(op)
                 .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
             {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -469,8 +466,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    lhs,
-                    rhs,
+                    operands,
                     FloatCC::GreaterThanOrEqual,
                 );
                 ge_raw_bool = Some(raw);
@@ -583,8 +579,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let eq_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let eq_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut eq_raw_bool: Option<Value> = None;
-            let res = if let Some((lhs, rhs)) = representation_plan
-                .float_numeric_operands(op)
+            let res = if let Some(operands) = representation_plan
+                .float_comparison_operands(op)
                 .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
             {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -597,8 +593,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    lhs,
-                    rhs,
+                    operands,
                     FloatCC::Equal,
                 );
                 eq_raw_bool = Some(raw);
@@ -691,8 +686,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let ne_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let ne_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut ne_raw_bool: Option<Value> = None;
-            let res = if let Some((lhs, rhs)) = representation_plan
-                .float_numeric_operands(op)
+            let res = if let Some(operands) = representation_plan
+                .float_comparison_operands(op)
                 .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
             {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -705,8 +700,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    lhs,
-                    rhs,
+                    operands,
                     FloatCC::NotEqual,
                 );
                 ne_raw_bool = Some(raw);

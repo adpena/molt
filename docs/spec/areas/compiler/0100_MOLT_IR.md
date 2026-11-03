@@ -111,6 +111,11 @@ rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
   it. Arithmetic, in-place operations, comparisons, unary operations and truth
   branches share it. Float payload readers take a bound `NumericOperand`;
   arbitrary boxed integers retain runtime conversion and overflow semantics.
+  Mixed comparisons additionally require `FloatComparisonOperands`, which
+  admits integer conversion only with the existing inline-int47 range proof.
+  Full-width integers keep exact runtime comparison: arithmetic's rounding
+  conversion is not a comparison proof. This preserves Python's
+  [precision-preserving numeric comparisons](https://docs.python.org/3.12/reference/expressions.html#value-comparisons).
   The native planner projects TIR facts directly instead of lowering another
   semantic-floor LIR body or maintaining an integer type solver. The generated
   field-role table distinguishes copy/load local-name metadata from semantic

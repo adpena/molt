@@ -1129,10 +1129,10 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     out_name: Option<&String>,
-    lhs: crate::representation_plan::NumericOperand<'_>,
-    rhs: crate::representation_plan::NumericOperand<'_>,
+    operands: crate::representation_plan::FloatComparisonOperands<'_>,
     cc: FloatCC,
 ) -> (Value, Value) {
+    let (lhs, rhs) = operands.operands();
     let lhs_f = float_value_for_mixed(
         module,
         import_ids,

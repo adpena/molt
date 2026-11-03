@@ -2459,6 +2459,43 @@ fn cold_numeric_results_retain_direct_carriers_without_primary_names() {
 }
 
 #[test]
+fn mixed_float_comparison_requires_lossless_integer_conversion() {
+    let func = function(
+        "mixed_comparison_producers",
+        &[],
+        None,
+        vec![
+            const_float("floating", 1.0),
+            const_int("small", 7),
+            const_bool("flag", true),
+            const_int("wide", 9_007_199_254_740_993),
+        ],
+    );
+    let plan = native_representation_plan(&func);
+    assert!(plan.numeric_operand("wide").is_some());
+    assert!(plan.is_raw_int_carrier_name("wide"));
+    for kind in [
+        molt_ir::OpKind::Eq,
+        molt_ir::OpKind::Ne,
+        molt_ir::OpKind::Lt,
+        molt_ir::OpKind::Le,
+        molt_ir::OpKind::Gt,
+        molt_ir::OpKind::Ge,
+    ] {
+        for (integer, lossless) in [("small", true), ("flag", true), ("wide", false)] {
+            for args in [["floating", integer], [integer, "floating"]] {
+                let comparison = op(kind, Some("result"), None, &args);
+                assert_eq!(
+                    plan.float_comparison_operands(&comparison).is_some(),
+                    lossless,
+                    "{kind}: {args:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn annotation_only_comparisons_do_not_mint_raw_bool_carriers() {
     for comparison in [
         molt_ir::OpKind::Eq,

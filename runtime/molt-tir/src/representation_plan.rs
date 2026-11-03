@@ -217,6 +217,20 @@ impl<'a> NumericOperand<'a> {
     }
 }
 
+/// Producer-proven operands whose conversion to f64 preserves comparison.
+/// Arithmetic may round an integer operand; Python comparisons may not.
+#[derive(Clone, Copy, Debug)]
+pub struct FloatComparisonOperands<'a> {
+    lhs: NumericOperand<'a>,
+    rhs: NumericOperand<'a>,
+}
+
+impl<'a> FloatComparisonOperands<'a> {
+    pub fn operands(self) -> (NumericOperand<'a>, NumericOperand<'a>) {
+        (self.lhs, self.rhs)
+    }
+}
+
 /// Per-function representation facts consumed by the LLVM backend.
 ///
 /// The LLVM backend lowers `TirFunction` (SSA `ValueId`s) directly. This struct
@@ -1041,17 +1055,26 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    pub fn float_numeric_operands<'a>(
+    pub fn float_comparison_operands<'a>(
         &self,
         op: &'a OpIR,
-    ) -> Option<(NumericOperand<'a>, NumericOperand<'a>)> {
+    ) -> Option<FloatComparisonOperands<'a>> {
         let args = op.args.as_ref()?;
         let [lhs, rhs] = args.as_slice() else {
             return None;
         };
         let lhs = self.numeric_operand(lhs)?;
         let rhs = self.numeric_operand(rhs)?;
-        (lhs.kind() == ScalarKind::Float || rhs.kind() == ScalarKind::Float).then_some((lhs, rhs))
+        // Reuse the canonical inline-int47 proof, which lies wholly inside
+        // f64's exact integer range. Full-i64 carriers need exact runtime
+        // comparison; converting 2**53 + 1 would silently round it down.
+        if [lhs, rhs].iter().any(|operand| {
+            operand.kind() == ScalarKind::Int && !self.is_inline_safe_int_name(operand.name())
+        }) {
+            return None;
+        }
+        (lhs.kind() == ScalarKind::Float || rhs.kind() == ScalarKind::Float)
+            .then_some(FloatComparisonOperands { lhs, rhs })
     }
 
     pub fn name_scalar_witness(&self, name: &str) -> Option<ExactScalarWitness> {
