@@ -46,7 +46,7 @@ import sys
 import time
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any
 
@@ -89,6 +89,8 @@ class Generator:
     reproducible: bool
     toolchains: tuple[str, ...]
     outputs: tuple[str, ...] = ()
+    # The manifest's `source` entries: `+`-separated, each a path or prose.
+    sources: tuple[str, ...] = ()
 
 
 def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
@@ -102,6 +104,11 @@ def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
             reproducible=bool(row.get("ci_checkable", True)),
             toolchains=tuple(row["toolchains"]),
             outputs=tuple(str(item) for item in row.get("outputs", ())),
+            sources=tuple(
+                entry.strip()
+                for entry in str(row.get("source", "")).split("+")
+                if entry.strip()
+            ),
         )
         for row in rows
         if row.get("check_mode") and not row.get("discovery_only")
@@ -135,28 +142,40 @@ def changed_generators(
     """The reproducible generators a change since ``since`` can reach.
 
     The changed paths are those whose content differs between ``since`` (any
-    tree-ish) and the working tree, deletions included. The dependency graph
-    derives each generator's inputs from its source; a generator whose declared
-    output changed renders it again, since an output is never edited by hand.
+    tree-ish) and the working tree, deletions included. A generator is
+    reached when the dependency graph derives a changed input from its source,
+    when one of its manifest ``source`` entries names a changed tracked file
+    or a directory above one (inputs the scan cannot see, such as a path
+    constant imported from another module), or when a declared output changed,
+    since an output is never edited by hand. Relative to an empty tree every
+    path changed, so every reproducible generator renders without a graph.
     """
     from tools.test_dependency_graph import RepositoryTree, load_graph
 
-    graph = load_graph(root)
+    reproducible = [generator for generator in generators if generator.reproducible]
     before = RepositoryTree.from_commit(root, since).blobs
+    if not before:
+        return tuple(generator.tool for generator in reproducible)
+    graph = load_graph(root)
     after = graph.tree.blobs
     changed = {
         path
         for path in before.keys() | after.keys()
         if before.get(path) != after.get(path)
     }
-    reproducible = [generator for generator in generators if generator.reproducible]
+    directories = {
+        str(parent) for path in changed for parent in PurePosixPath(path).parents
+    }
     reached = set(
         graph.programs_reached(changed, (generator.tool for generator in reproducible))
     )
     return tuple(
         generator.tool
         for generator in reproducible
-        if generator.tool in reached or changed.intersection(generator.outputs)
+        if generator.tool in reached
+        or changed.intersection(generator.outputs)
+        or changed.intersection(generator.sources)
+        or directories.intersection(generator.sources)
     )
 
 

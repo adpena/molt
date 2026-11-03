@@ -88,9 +88,10 @@ PRECHECK_TOOLCHAINS = frozenset({"generators", "git", "python", "rustfmt", "uv"}
 
 @dataclass(frozen=True)
 class PrecheckBudget:
-    """The wall-clock limit of one lane precheck (HF-710: 15 minutes at p90).
+    """The wall-clock limit of one lane try run (HF-710: 15 minutes at p90).
 
-    The try run stops at the limit: its running gates are cancelled through
+    The static gates and the repairs before them run outside it. The try run
+    stops at the limit: its running gates are cancelled through
     their guards and later gates never start. `land` names every gate the
     limit refused; the queue's batch still runs each of them.
     """
@@ -358,6 +359,25 @@ class GateConfig:
         repair = data.get("repair", [])
         if not isinstance(repair, list) or not all(isinstance(g, str) for g in repair):
             raise DriverError("gate manifest `repair` must be a list of str")
+        # Repairs rewrite the checkout before any gate runs, so their
+        # declaration is proven here, by the plan's own section contract.
+        from tools.proof_plan import (
+            load_toolchain_policies,
+            local_command_section_errors,
+        )
+
+        repair_toolchains = data.get("repair_toolchains", [])
+        try:
+            repair_errors = local_command_section_errors(
+                load_toolchain_policies(data, root=root, names=repair_toolchains),
+                {"repair": (repair, repair_toolchains)},
+            )
+        except (ValueError, KeyError, OSError, TypeError) as exc:
+            repair_errors = [f"local repair: {exc}"]
+        if repair_errors:
+            raise DriverError(
+                f"invalid repair declaration ({label}): " + "; ".join(repair_errors)
+            )
         try:
             memory_units = PytestMemoryUnits(data.get("command", ()), root=root)
             commands = local_gate_commands(data, memory_units=memory_units)

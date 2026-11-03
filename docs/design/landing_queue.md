@@ -380,13 +380,18 @@ One runner owns main. Agents enqueue and continue.
   pytest session) and the try run (`SelectedGate.try_run`: the dependency
   graph's presubmit cohorts and the gates of `precheck = true` rules, such as
   changed-crate Clippy; `tools/molt_dev_precheck.py`) within
-  `PRECHECK_BUDGET`, so a lint, format, generator, policy or direct-reader
+  `PRECHECK_BUDGET` (the static gates run to their verdict outside it; the
+  budget clock starts with the try run; repairs are unbounded and outside the
+  15-minute claim), so a lint, format, generator, policy or direct-reader
   test failure costs that lane alone instead of a batch run; GitHub's merge
   queue likewise admits only changes whose required checks passed, Zuul runs
   its check pipeline before its gate pipeline, and Chromium's commit queue and
   Google's TAP run a fast presubmit of affected targets. The budget cancels
-  what is still running, names every refused gate and queues the lane; the
-  batch still runs every gate. `--no-precheck` skips repairs and precheck.
+  what is still running, names every refused gate and queues the lane, as a
+  disk-capacity refusal of the try run does; the batch still runs every gate.
+  The repair commit runs the installed hooks, takes only the lane's own diff
+  and declared generator outputs, and is refused for a branch that a pending
+  request pins. `--no-precheck` skips repairs and precheck.
   `--precheck-only` runs it and stops: nothing is queued and no runner
   starts, so a worker proves its handoff on the landing path itself. It
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned

@@ -444,7 +444,9 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
                 )
             queue.enqueue(paths, head=head, worktree=repo, branch="lane/next")
             assert cancelled()
-            raise GateCancellation("closed cancellation for next landing")
+            from tools.molt_dev_gates import CancelReason
+
+            raise GateCancellation(CancelReason.PENDING_LANDING)
         if outcome == "cas-race":
             _git(repo, "update-ref", queue.LAST_GREEN_REF, head, base)
         return (
@@ -1353,6 +1355,7 @@ def test_cmd_fix_uses_the_selected_environment_without_per_command_wrappers(
         [str(selected), ["--fix"]],
         [str(selected), ["format", "."]],
         [str(selected), ["write", "--changed-since", empty_tree]],
+        [str(selected), ["check"]],
     ]
 
 
@@ -6305,6 +6308,18 @@ def test_land_no_precheck_queues_without_running_gates(
     assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
 
 
+def _declare_outputs(work: Path, *outputs: str) -> None:
+    """Stage a generator manifest whose one generator owns ``outputs``."""
+    (work / "tools").mkdir(exist_ok=True)
+    (work / "tools" / "generator_manifest.toml").write_text(
+        '[[generator]]\ntool = "tools/gen.py"\noutputs = '
+        + json.dumps(list(outputs))
+        + "\n",
+        encoding="utf-8",
+    )
+    _git(work, "add", "--", "tools/generator_manifest.toml")
+
+
 def _publish_policy(work: Path, policy: str) -> None:
     (work / "tools" / "proof_plan.toml").write_text(policy, encoding="utf-8")
     _git(work, "add", "--", "tools/proof_plan.toml")
@@ -6322,6 +6337,7 @@ def test_land_commits_its_declared_repairs_before_the_precheck(
     seen = tmp_path / "gate-saw.txt"
     # The repair records what changed since the bound base; the gate sees
     # only what the repaired commit contains.
+    _declare_outputs(work, "repaired.txt")
     _publish_policy(
         work,
         "repair_toolchains = []\n"
@@ -6337,7 +6353,7 @@ def test_land_commits_its_declared_repairs_before_the_precheck(
     _git(work, "push", "-q", "origin", "HEAD:main")
     before = _git(lane, "rev-parse", "HEAD").stdout.strip()
 
-    assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (EXIT_OK)
 
     repaired = _git(lane, "rev-parse", "HEAD").stdout.strip()
     assert _git(lane, "rev-parse", f"{repaired}^").stdout.strip() == before
@@ -6349,10 +6365,11 @@ def test_land_commits_its_declared_repairs_before_the_precheck(
     ).stdout.split() == ["repaired.txt"]
     assert seen.read_text(encoding="utf-8").split() == ["a.py"]
     assert _git(lane, "status", "--porcelain").stdout == ""
-    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [repaired]
-    # A second landing finds nothing to repair and keeps its tip.
-    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (EXIT_OK)
+    assert queue.pending(queue.queue_paths(lane)) == []
+    # The landing finds nothing more to repair and queues the repaired tip.
+    assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
     assert _git(lane, "rev-parse", "HEAD").stdout.strip() == repaired
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [repaired]
 
 
 def test_land_repair_commit_runs_the_installed_hooks(
@@ -6362,6 +6379,7 @@ def test_land_repair_commit_runs_the_installed_hooks(
 
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
+    _declare_outputs(work, "repaired.txt")
     _publish_policy(
         work,
         'repair_toolchains = []\nrepair = ["printf repaired > repaired.txt"]\n'
@@ -6511,14 +6529,219 @@ def test_land_budget_refuses_unfinished_gates_by_name_and_still_queues(
     )
     assert time.monotonic() - started < 90
     refusal = capsys.readouterr()
-    assert "precheck budget of 4 s ran out" in refusal.err + refusal.out
-    assert f"      {slow}" in refusal.err + refusal.out
+    shown = refusal.err + refusal.out
+    assert "precheck try run refused by budget: 4 s ran out" in shown
+    assert f"      {slow}" in shown
+    # The budget names itself; it is no postsubmit preemption.
+    assert "pending landing request" not in shown
     assert queue.pending(queue.queue_paths(lane)) == []
 
     # The batch runs every selected gate, so a landing still queues.
     assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
     assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
     assert counter.read_text(encoding="utf-8").split().count("static") == 2
+
+
+def test_land_static_gates_run_outside_the_try_run_budget(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from tools import molt_dev_policy
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    # The static gate alone outlasts the budget: it must still run to its
+    # verdict, and the budget clock starts only with the try run.
+    policy = _try_run_policy(counter, try_gate="sleep 120").replace(
+        f"always = [{json.dumps(f'echo static >> {shlex.quote(str(counter))}')}]",
+        f"always = [{json.dumps(f'sleep 5 && echo static >> {shlex.quote(str(counter))}')}]",
+    )
+    _publish_policy(work, policy)
+    lane = work.parent / "lane-static-slow"
+    _lane(work, "static-slow", {"a.py": "a = 1\n"})
+    monkeypatch.setattr(
+        molt_dev_policy, "PRECHECK_BUDGET", molt_dev_policy.PrecheckBudget(3.0)
+    )
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (
+        EXIT_FAIL
+    )
+
+    assert counter.read_text(encoding="utf-8").split() == ["static"]
+    shown = "".join(capsys.readouterr())
+    assert "1 gate(s) passed; it refused 1 gate(s)" in shown
+    assert "      sleep 120" in shown
+
+
+def test_land_static_failure_stops_land_even_past_the_budget(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_policy
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    policy = _try_run_policy(counter, try_gate="true").replace(
+        f"always = [{json.dumps(f'echo static >> {shlex.quote(str(counter))}')}]",
+        'always = ["sleep 3 && false"]',
+    )
+    _publish_policy(work, policy)
+    lane = work.parent / "lane-static-red"
+    _lane(work, "static-red", {"a.py": "a = 1\n"})
+    monkeypatch.setattr(
+        molt_dev_policy, "PRECHECK_BUDGET", molt_dev_policy.PrecheckBudget(1.0)
+    )
+
+    with pytest.raises(CandidateFailure, match="sleep 3 && false"):
+        _land_without_runner(drv, monkeypatch, lane)
+    assert queue.pending(queue.queue_paths(lane)) == []
+
+
+def test_land_names_a_disk_capacity_refusal_and_queues(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from tools import molt_dev_precheck
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    lane = work.parent / "lane-full-disk"
+    head = _lane(work, "full-disk", {"a.py": "a = 1\n"})
+
+    def full(*_args, **_kwargs):
+        raise OSError("target volume below its build headroom")
+
+    monkeypatch.setattr(molt_dev_precheck, "admit_selected_output_capacity", full)
+
+    assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
+
+    shown = "".join(capsys.readouterr())
+    assert "precheck try run refused by disk capacity" in shown
+    assert "below its build headroom" in shown
+    assert counter.read_text(encoding="utf-8").split() == ["static"]
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
+
+
+def test_land_repair_refuses_paths_outside_the_lane_and_declared_outputs(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+    from tools.molt_dev_precheck import RepairScopeRefusal
+
+    _, work = origin_and_clone
+    _declare_outputs(work, "out/table.txt")
+    # The repair writes a declared output, and a concurrent writer drops its
+    # work-in-progress beside it while the repair runs.
+    _publish_policy(
+        work,
+        "repair_toolchains = []\n"
+        'repair = ["mkdir -p out && printf rendered > out/table.txt'
+        ' && printf wip > agent-wip.py"]\n'
+        'always = ["true"]\n',
+    )
+    lane = work.parent / "lane-concurrent"
+    head = _lane(work, "concurrent", {"a.py": "a = 1\n"})
+
+    with pytest.raises(RepairScopeRefusal) as refused:
+        _land_without_runner(drv, monkeypatch, lane)
+
+    assert refused.value.paths == ("agent-wip.py",)
+    assert _git(lane, "rev-parse", "HEAD").stdout.strip() == head
+    assert queue.pending(queue.queue_paths(lane)) == []
+
+
+def test_land_repair_writes_declared_outputs_and_lane_paths_only(
+    drv, origin_and_clone, monkeypatch
+):
+    _, work = origin_and_clone
+    _declare_outputs(work, "out/table.txt")
+    _publish_policy(
+        work,
+        "repair_toolchains = []\n"
+        'repair = ["mkdir -p out && printf rendered > out/table.txt'
+        ' && printf changed >> a.py"]\n'
+        'always = ["true"]\n',
+    )
+    lane = work.parent / "lane-in-scope"
+    head = _lane(work, "in-scope", {"a.py": "a = 1\n"})
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (EXIT_OK)
+
+    repaired = _git(lane, "rev-parse", "HEAD").stdout.strip()
+    assert repaired != head
+    assert sorted(
+        _git(
+            lane, "diff-tree", "--no-commit-id", "--name-only", "-r", repaired
+        ).stdout.split()
+    ) == ["a.py", "out/table.txt"]
+
+
+def test_land_repair_refuses_an_enrolled_branch(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+    from tools.molt_dev_precheck import EnrolledLaneRefusal
+
+    _, work = origin_and_clone
+    _publish_policy(
+        work,
+        'repair_toolchains = []\nrepair = ["printf repaired > repaired.txt"]\n'
+        'always = ["true"]\n',
+    )
+    lane = work.parent / "lane-enrolled"
+    head = _lane(work, "enrolled", {"a.py": "a = 1\n"})
+    paths = queue.queue_paths(lane)
+    request = queue.enqueue(paths, head=head, worktree=lane, branch="codex/enrolled")
+
+    with pytest.raises(EnrolledLaneRefusal) as refused:
+        _land_without_runner(drv, monkeypatch, lane, "--precheck-only")
+
+    assert refused.value.request_id == request.id
+    assert _git(lane, "rev-parse", "HEAD").stdout.strip() == head
+    assert not (lane / "repaired.txt").exists()
+
+
+def test_land_refuses_an_invalid_repair_declaration_as_the_candidate(
+    drv, origin_and_clone, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _publish_policy(
+        work,
+        'repair_toolchains = ["no-such-toolchain"]\nrepair = ["true"]\n'
+        'always = ["true"]\n',
+    )
+    lane = work.parent / "lane-bad-repair"
+    head = _lane(work, "bad-repair", {"a.py": "a = 1\n"})
+
+    with pytest.raises(CandidateFailure, match="no-such-toolchain"):
+        _land_without_runner(drv, monkeypatch, lane)
+
+    assert _git(lane, "rev-parse", "HEAD").stdout.strip() == head
+    assert queue.pending(queue.queue_paths(lane)) == []
+
+
+def test_fix_refuses_a_plan_without_repairs(drv, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "tools").mkdir(parents=True)
+    (repo / "tools" / "proof_plan.toml").write_text(
+        'always = ["true"]\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        drv,
+        "prepare_gate_environment",
+        lambda *_a, **_k: GateEnvironment(ProcessEnvironment(os.environ), None, False),
+    )
+    monkeypatch.setattr(
+        drv, "run_gate", lambda *_a, **_k: pytest.fail("no repair may run")
+    )
+    monkeypatch.setattr(drv, "_collect_driver_maintenance", lambda *_a: None)
+
+    assert drv.cmd_fix(_ns(drv, repo=str(repo))) == 1
 
 
 def test_precheck_budget_must_be_positive():

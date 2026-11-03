@@ -219,6 +219,7 @@ def _run_postsubmit_gates(
     from molt.dx import RunContext
     from tools.molt_dev_policy import select_landing_gates
     from tools.molt_dev_gates import (
+        CancelReason,
         admit_selected_output_capacity,
         gate_runs_pytest,
         run_selected_gates,
@@ -258,6 +259,7 @@ def _run_postsubmit_gates(
         receipt_kind="postsubmit",
         mode=LandingMode.POSTSUBMIT,
         cancelled=cancelled,
+        cancel_reason=CancelReason.PENDING_LANDING,
         deferred=prepared.deferred,
     )
     runtime = replace(runtime, output_dir=output, receipt_path=output / "receipt.json")

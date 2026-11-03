@@ -8,14 +8,17 @@ therefore does two things in the lane first.
    read-only gates ask for (``repair``: encoding pins, formatting, generators
    the change reaches). ``repair_landing`` applies them against the merge base
    and commits what they change as one commit, so a stale projection never
-   costs a precheck or a batch.
+   costs a precheck or a batch. Repairs have no deadline: they sit outside
+   the 15-minute claim (a full generator write took 16-25 s, 2026-11-02).
 2. **Precheck.** ``precheck_landing`` runs the static gates (toolchains within
    ``PRECHECK_TOOLCHAINS``, not a pytest session) and the try run: the
    dependency graph's test cohorts (changed tests and their direct readers) and
    the gates of ``precheck = true`` rules (changed-crate Clippy), within
    ``PRECHECK_BUDGET``. A failure stops ``land`` before it queues anything.
-   The budget refuses whatever has not finished when it runs out and names
-   each refused gate; the batch still runs every selected gate.
+   The static gates run to their verdict without a deadline; the budget
+   clock starts with the try run and refuses whatever has not finished when
+   it runs out, naming each refused gate, as a disk-capacity refusal does;
+   the batch still runs every selected gate.
 
 Chromium's commit queue and Google's TAP run a fast presubmit of the affected
 targets before the merge, as Zuul runs its check pipeline before its gate
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
 
@@ -41,6 +45,7 @@ from tools.molt_dev_policy import (
     select_landing_gates,
 )
 from tools.molt_dev_gates import (
+    CancelReason,
     GateCancellation,
     admit_selected_output_capacity,
     concurrent_gate_limit,
@@ -110,6 +115,60 @@ def run_repairs(repo: Path, config: GateConfig, *, base: str, session_id: str) -
             )
 
 
+class RepairRefusal(DriverError):
+    """``land`` refused to commit a repair; nothing was committed or queued."""
+
+
+class EnrolledLaneRefusal(RepairRefusal):
+    """A pending landing request pins this branch; a repair would move it."""
+
+    def __init__(self, request_id: str, head: str) -> None:
+        super().__init__(
+            f"landing request {request_id} pins this checkout at {head}; a repair "
+            "commit would move an enrolled branch: wait for its result or withdraw it"
+        )
+        self.request_id = request_id
+
+
+class RepairScopeRefusal(RepairRefusal):
+    """The checkout changed paths no declared repair may write."""
+
+    def __init__(self, paths: tuple[str, ...]) -> None:
+        super().__init__(
+            "the repairs left changes outside the lane's diff since its merge base "
+            "and the generator manifest's declared outputs; another writer touched "
+            "the checkout, so nothing was committed:\n"
+            + "\n".join(f"      {path}" for path in paths)
+        )
+        self.paths = paths
+
+
+def _repair_scope(git, head: str, base: str) -> frozenset[str]:
+    """Paths a repair may write: the lane's own diff and declared outputs."""
+    import tomllib
+
+    lane = git._run(["diff", "--name-only", "-z", "--no-renames", base, head]).stdout
+    manifest = git._run(["show", f"{head}:tools/generator_manifest.toml"], check=False)
+    outputs: set[str] = set()
+    if manifest.returncode == 0:
+        for row in tomllib.loads(manifest.stdout).get("generator", ()):
+            outputs.update(str(path) for path in row.get("outputs", ()))
+    return frozenset(path for path in lane.split("\0") if path) | outputs
+
+
+def _pending_request(git, repo: Path):
+    """The pending landing request that pins this checkout, if any."""
+    from tools.molt_dev_queue import pending, queue_paths
+
+    branch = git.symbolic_head()
+    for request in pending(queue_paths(repo)):
+        if (branch is not None and request.branch == branch) or Path(
+            request.worktree
+        ).resolve() == repo.resolve():
+            return request
+    return None
+
+
 def _changed_paths(git) -> list[str]:
     """Tracked edits, deletions and new files in the checkout, sorted."""
     paths = {
@@ -145,6 +204,8 @@ def repair_landing(
         raise CandidateFailure(str(exc), code=exc.code) from exc
     if not config.repair:
         return head
+    if (request := _pending_request(git, repo)) is not None:
+        raise EnrolledLaneRefusal(request.id, request.head)
     base = _merge_base(git, head, upstream)
     _step(f"repair in the lane ({len(config.repair)} declared step(s))")
     started = time.monotonic()
@@ -156,6 +217,9 @@ def repair_landing(
         return head
     if git.head_sha() != head:
         raise DriverError("landing source HEAD moved during its repairs")
+    scope = _repair_scope(git, head, base)
+    if outside := tuple(path for path in paths if path not in scope):
+        raise RepairScopeRefusal(outside)
     # Literal, NUL-framed pathspecs keep unusual names exact and a large
     # generated family below Windows' command-line limit.
     framed = "".join(f"{path}\0" for path in paths)
@@ -187,26 +251,42 @@ def repair_landing(
     return repaired
 
 
+class RefusalReason(StrEnum):
+    """Why the try run left gates to the queue's batch."""
+
+    BUDGET = "budget"
+    DISK_CAPACITY = "disk capacity"
+
+
+@dataclass(frozen=True)
+class TryRunRefusal:
+    """The try-run gates the precheck did not finish, and why."""
+
+    reason: RefusalReason
+    gates: tuple[SelectedGate, ...]
+    detail: str
+
+
 @dataclass(frozen=True)
 class PrecheckResult:
-    """What one lane precheck ran; ``refused`` names what the budget stopped."""
+    """What one lane precheck ran; ``refusal`` names what it left undone."""
 
-    passed: tuple[str, ...]
-    refused: tuple[str, ...]
-    seconds: float
+    passed: tuple[SelectedGate, ...]
+    refusal: TryRunRefusal | None
     budget: PrecheckBudget
 
     @property
     def complete(self) -> bool:
-        return not self.refused
+        return self.refusal is None
 
-    def refusal(self) -> str:
+    def report(self) -> str:
+        assert self.refusal is not None
         return (
-            f"precheck budget of {self.budget.seconds:.0f} s ran out after "
-            f"{self.seconds:.0f} s: {len(self.passed)} gate(s) passed; it refused "
-            f"{len(self.refused)} gate(s) that were still running or not yet "
+            f"precheck try run refused by {self.refusal.reason.value}: "
+            f"{self.refusal.detail}; {len(self.passed)} gate(s) passed; it refused "
+            f"{len(self.refusal.gates)} gate(s) that were still running or not yet "
             "started, and the queue's batch runs them:\n"
-            + "\n".join(f"      {command}" for command in self.refused)
+            + "\n".join(f"      {display(gate.command)}" for gate in self.refusal.gates)
         )
 
 
@@ -219,19 +299,21 @@ def precheck_landing(
     session_id: str,
     budget: PrecheckBudget | None = None,
 ) -> PrecheckResult:
-    """Run ``head``'s precheck gates against its merge base within ``budget``.
+    """Run ``head``'s static gates, then its try run within ``budget``.
 
     The gates, their toolchains and their environment come from the same
     authorities ``integrate`` uses (``select_landing_gates``, ``prepare``,
-    ``gate_environment``); only the selection differs. A failing gate raises
-    ``GateFailure`` and nothing is queued. ``budget`` defaults to the policy's
-    ``PRECHECK_BUDGET``.
+    ``gate_environment``); only the selection differs. The static gates run
+    without a deadline: a lint, format, generator or policy failure always
+    stops ``land``. The budget clock starts with the try run. A failing gate
+    raises ``GateFailure`` and nothing is queued; a budget or disk-capacity
+    refusal names the gates it left to the batch. ``budget`` defaults to the
+    policy's ``PRECHECK_BUDGET``.
     """
     drv = _driver()
     from tools.molt_dev_queue import queue_paths, recent_postsubmit_failures
 
     budget = budget or molt_dev_policy.PRECHECK_BUDGET
-    started = time.monotonic()
     base = _merge_base(git, head, upstream)
     policy, config, _touched, gates, _matched = select_landing_gates(
         git,
@@ -245,69 +327,94 @@ def precheck_landing(
     tried = sum(1 for gate in selected if not gate.static)
     _step(
         f"precheck in the lane ({len(selected)} of {len(gates)} selected gate(s), "
-        f"{tried} of them the try run; budget {budget.seconds:.0f} s; "
+        f"{tried} of them the try run within {budget.seconds:.0f} s; "
         "the queue's batch runs every gate)"
     )
     if not selected:
-        return PrecheckResult((), (), time.monotonic() - started, budget)
+        return PrecheckResult((), None, budget)
     drv._assert_integration_source(git, head)
-    baseline = drv.gate_environment(repo, session_id=session_id)
     prepared = config.prepare(
         selected,
-        baseline=baseline,
+        baseline=drv.gate_environment(repo, session_id=session_id),
         prepare_python=lambda environment, needed: drv.prepare_gate_environment(
             repo, environment, requires_python=needed
         ),
     )
-    selected = prepared.runnable()
-    try:
-        cargo_outputs = config.cargo_outputs(prepared.environments, selected)
-        capacity = admit_selected_output_capacity(cargo_outputs, prepared.environments)
-    except (ValueError, OSError, KeyError) as exc:
-        raise DriverError(
-            f"selected output capacity failed; executed=0: {exc}"
-        ) from exc
+    runnable = prepared.runnable()
+    static = [gate for gate in runnable if gate.static]
+    trial = [gate for gate in runnable if not gate.static]
     from molt.dx import RunContext
 
     for context in prepared.environments.values():
         RunContext(repo).materialize_environment(
             context.environment, protected_python_root=context.python_root
         )
-    drv._assert_integration_source(git, head)
+
+    def runtime(kind: str, **options):
+        drv._assert_integration_source(git, head)
+        return drv._gate_runtime(
+            git,
+            head,
+            repo=repo,
+            policy=policy,
+            config=config,
+            environments=prepared.environments,
+            progress=drv._IntegrationProgress(),
+            toolchains=prepared.fingerprints,
+            receipt_kind=kind,
+            deferred=prepared.deferred,
+            **options,
+        )
+
+    gate_seconds: list[tuple[float, str]] = []
+    checked = runtime("precheck", cargo_outputs={}, capacity_requirements={})
+    if static:
+        run_selected_gates(
+            static, checked, gate_seconds, host_limit=lambda: concurrent_gate_limit()
+        )
+    passed = tuple(checked.passed)
+    if not trial:
+        _say(gate_time_summary(gate_seconds))
+        return PrecheckResult(passed, None, budget)
+    try:
+        cargo_outputs = config.cargo_outputs(prepared.environments, trial)
+        capacity = admit_selected_output_capacity(cargo_outputs, prepared.environments)
+    except (ValueError, OSError, KeyError) as exc:
+        result = PrecheckResult(
+            passed,
+            TryRunRefusal(RefusalReason.DISK_CAPACITY, tuple(trial), str(exc)),
+            budget,
+        )
+        _warn(result.report())
+        return result
+    started = time.monotonic()
     deadline = started + budget.seconds
-    runtime = drv._gate_runtime(
-        git,
-        head,
-        repo=repo,
-        policy=policy,
-        config=config,
-        environments=prepared.environments,
+    tried_runtime = runtime(
+        "try-run",
         cargo_outputs=cargo_outputs,
         capacity_requirements=capacity,
-        progress=drv._IntegrationProgress(),
-        toolchains=prepared.fingerprints,
-        receipt_kind="precheck",
         cancelled=lambda: time.monotonic() >= deadline,
-        deferred=prepared.deferred,
+        cancel_reason=CancelReason.PRECHECK_BUDGET,
     )
-    # Gates that reached an outcome; a failure raises GateFailure, so every
-    # one of them passed. Only the deadline cancels a precheck.
-    gate_seconds: list[tuple[float, str]] = []
+    refusal = None
     try:
         run_selected_gates(
-            selected, runtime, gate_seconds, host_limit=lambda: concurrent_gate_limit()
+            trial,
+            tried_runtime,
+            gate_seconds,
+            host_limit=lambda: concurrent_gate_limit(),
         )
-    except GateCancellation:
-        pass
+    except GateCancellation as cancellation:
+        if cancellation.reason is not CancelReason.PRECHECK_BUDGET:
+            raise
+        refusal = TryRunRefusal(
+            RefusalReason.BUDGET,
+            tuple(gate for gate in trial if gate not in tried_runtime.passed),
+            f"{budget.seconds:.0f} s ran out after "
+            f"{time.monotonic() - started:.0f} s of try run",
+        )
     _say(gate_time_summary(gate_seconds))
-    finished = {command for _seconds, command in gate_seconds}
-    shown = [display(gate.command) for gate in selected]
-    result = PrecheckResult(
-        passed=tuple(command for command in shown if command in finished),
-        refused=tuple(command for command in shown if command not in finished),
-        seconds=time.monotonic() - started,
-        budget=budget,
-    )
-    if not result.complete:
-        _warn(result.refusal())
+    result = PrecheckResult((*passed, *tried_runtime.passed), refusal, budget)
+    if refusal is not None:
+        _warn(result.report())
     return result

@@ -1548,7 +1548,7 @@ def test_unicode_generation_has_no_target_interpreter_prerequisite():
 
 
 def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from tools.generators import Generator, changed_generators
 
@@ -1566,6 +1566,17 @@ def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
             "def generated_outputs():\n    return {'out/table.txt': load()}\n"
         ),
         "tools/gen_other.py": "def generated_outputs():\n    return {}\n",
+        # The manifest path lives in another module's constant, which the
+        # static scan cannot follow; the manifest `source` names it.
+        "data/manifest.toml": "m = 1\n",
+        "tools/manifest_paths.py": (
+            "from pathlib import Path\n\n"
+            "MANIFEST = Path(__file__).resolve().parents[1] / 'data/manifest.toml'\n"
+        ),
+        "tools/gen_manifest.py": (
+            "from tools.manifest_paths import MANIFEST\n\n"
+            "def generated_outputs():\n    return {'out/m.txt': MANIFEST.read_text()}\n"
+        ),
         "tools/gen_host.py": (
             "from tools.table_reader import load\n\n"
             "def generated_outputs():\n    return {}\n"
@@ -1598,6 +1609,14 @@ def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
     generators = [
         Generator("tools/gen_table.py", (), True, (), ("out/table.txt",)),
         Generator("tools/gen_other.py", (), True, (), ("out/other.txt",)),
+        Generator(
+            "tools/gen_manifest.py",
+            (),
+            True,
+            (),
+            (),
+            ("data/manifest.toml", "tools/manifest_paths.py", "prose (not a path)"),
+        ),
         # A host-input generator renders only when named, even when reached.
         Generator("tools/gen_host.py", (), False, (), ()),
     ]
@@ -1616,9 +1635,23 @@ def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
     assert changed_generators(generators, base, root=tmp_path) == (
         "tools/gen_other.py",
     )
-    # Relative to the empty tree every path changed: every reproducible one.
+    (tmp_path / "out/other.txt").write_text("fixed\n", encoding="utf-8")
+    # A declared `source` file the scan cannot see still selects its generator.
+    (tmp_path / "data/manifest.toml").write_text("m = 2\n", encoding="utf-8")
+    assert changed_generators(generators, base, root=tmp_path) == (
+        "tools/gen_manifest.py",
+    )
+    # Relative to the empty tree every path changed: every reproducible one,
+    # with no dependency graph to build.
+    import tools.test_dependency_graph as graph_module
+
+    def no_graph(*_args, **_kwargs):
+        raise AssertionError("the empty tree selects every generator")
+
+    monkeypatch.setattr(graph_module, "load_graph", no_graph)
     empty = git("hash-object", "-t", "tree", "--stdin", stdin="")
     assert changed_generators(generators, empty, root=tmp_path) == (
         "tools/gen_table.py",
         "tools/gen_other.py",
+        "tools/gen_manifest.py",
     )

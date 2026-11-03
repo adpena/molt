@@ -623,17 +623,26 @@ executor and `integrate` provision it on demand.
 declares `repair` steps (encoding pins, formatting, and `tools/generators.py
 write --changed-since <merge base>`, which renders only the generators whose
 derived inputs or declared outputs the lane changed). What they change becomes
-one commit with exact paths, and the lane's tip moves to it. Then `land` runs
+one commit with exact paths, and the lane's tip moves to it; the installed
+Git hooks run on it. `land` refuses the commit when a path outside the lane's
+diff since the merge base and the generator manifest's declared outputs
+changed (another writer touched the checkout), and refuses to repair a branch
+that a pending landing request pins. Repairs have no deadline and sit outside
+the 15-minute precheck claim: a full `generators.py write` of all 40
+reproducible generators took 16-25 s on the primary (2026-11-02), and one
+lane's whole repair took 43.5 s. Then `land` runs
 the precheck in the lane against its merge base with main, through the same
 selection, environment and executor as `integrate`: the static gates (linters,
 formatters, type checks, generators and policy audits) and the try run, which
 is the dependency graph's test cohorts (changed tests and their direct
 readers) and the gates of `precheck = true` rules (changed-crate Clippy).
 Other Cargo builds and the rules' curated pytest cohorts wait for the batch. A
-failing gate stops `land` before it queues anything. `PRECHECK_BUDGET`
-(`tools/molt_dev_policy.py`, 15 minutes) bounds the precheck: at the limit the
+failing gate stops `land` before it queues anything. The static gates run to
+their verdict with no deadline. `PRECHECK_BUDGET` (`tools/molt_dev_policy.py`,
+15 minutes) bounds the try run alone, from its first gate: at the limit the
 guards cancel running gates, later gates never start, and `land` names each
-refused gate, then queues; the batch runs every selected gate. It then writes one request under
+refused gate, then queues; the batch runs every selected gate. A try run that
+the disk-capacity check refuses is named and queued the same way. It then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
 the commit. Enrollment of a managed `lane/<slug>` is a cooperative handoff:
 stop editing it until the request closes. Its canonical lane record, exact

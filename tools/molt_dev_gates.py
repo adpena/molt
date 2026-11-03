@@ -22,7 +22,8 @@ from tools.molt_dev_policy import Deferred, GateEnvironment, LandingMode
 from tools.proof_plan import CargoTargetAccess
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 import datetime as dt
 import hashlib
 import json
@@ -55,8 +56,21 @@ LOCAL_GATE_FAMILY = "local_integration"
 CONCURRENT_GATE_BYTES = 1 << 30
 
 
+class CancelReason(StrEnum):
+    """Why a runtime's owner stops its gates; each owner names its own."""
+
+    # A higher-priority landing request preempts a closed postsubmit run.
+    PENDING_LANDING = "postsubmit cancelled for a pending landing request"
+    # The lane precheck's try run reached its budget (PRECHECK_BUDGET).
+    PRECHECK_BUDGET = "the precheck try run reached its budget"
+
+
 class GateCancellation(DriverError):
-    """A higher-priority landing cancelled a closed postsubmit execution."""
+    """The runtime's owner stopped its gates for ``reason``."""
+
+    def __init__(self, reason: CancelReason) -> None:
+        super().__init__(reason.value)
+        self.reason = reason
 
 
 class Gate(Protocol):
@@ -300,7 +314,11 @@ class GateRuntime:
     toolchain_policies: tuple[ToolchainPolicy, ...] = ()
     mode: LandingMode = LandingMode.PRESUBMIT
     cancelled: Callable[[], bool] = lambda: False
+    cancel_reason: CancelReason = CancelReason.PENDING_LANDING
     deferred: tuple[Deferred, ...] = ()
+    # Every gate that passed, in completion order: the typed outcome a caller
+    # reads instead of matching rendered commands.
+    passed: list[Gate] = field(default_factory=list)
 
 
 def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
@@ -342,7 +360,7 @@ def _pytest_report_command(
 
 def _check_cancellation(runtime: GateRuntime) -> None:
     if runtime.cancelled():
-        raise GateCancellation("postsubmit cancelled for a pending landing request")
+        raise GateCancellation(runtime.cancel_reason)
 
 
 def display(command: str | tuple[str, ...]) -> str:
@@ -690,6 +708,8 @@ def _run_serial_gate(
         sys.stderr.flush()
         timings = [*gate_seconds, (elapsed, shown)] if collection else gate_seconds
         raise gate_failure(rc, elapsed, shown, timings, record)
+    if not collection:
+        runtime.passed.append(gate)
     runtime.ok(
         f"pytest collection passed in {elapsed:.1f} s (execution still required): {shown}"
         if collection
@@ -999,6 +1019,7 @@ def _run_executor_block(
                 f"at {shown}: {record.get('failure_reason') or status}"
             )
             continue
+        runtime.passed.append(command.gate)
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
     if (
         runtime.cancelled()
