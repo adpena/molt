@@ -22,10 +22,10 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from types import ModuleType
-from typing import Any, assert_never
+from typing import TYPE_CHECKING, Any, assert_never
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -45,7 +45,8 @@ from tools.molt_dev_controller import (
 )  # noqa: E402
 from tools.detached_execution import launch_detached, python_command
 from tools.venv_exec import venv_python
-from tools.molt_dev_policy import LandingMode
+from tools import finding_status, git_identity
+from tools.molt_dev_policy import LandingClass, LandingMode, landing_class
 from molt.path_custody import host_path_is_within
 from molt.dx import storage_path
 from molt import process_model
@@ -60,6 +61,10 @@ from tools.driver_errors import (
     RebaseConflict,
 )  # noqa: E402
 from tools.molt_dev_common import _COMMANDS, _fail, _ok, _step, _warn  # noqa: E402
+
+if TYPE_CHECKING:
+    # Imported for types only: tools.molt_dev imports this module.
+    from tools.molt_dev import Git
 
 
 def _driver() -> ModuleType:
@@ -608,13 +613,93 @@ def withdraw(paths: QueuePaths, request_id: str, *, reason: str) -> LandingReque
 # --------------------------------------------------------------------------
 
 
+def _git_reader(git: Git) -> Callable[[list[str]], str]:
+    # changed_paths reads NUL-framed stdout; Git._run raises DriverError.
+    def run_git(args: list[str]) -> str:
+        return git._run(args).stdout
+
+    return run_git
+
+
+def head_class(git: Git, upstream: str, head: str) -> LandingClass:
+    """The class of ``head``'s change since its merge base with ``upstream``.
+
+    Always computed from Git, never stored with the request.
+    """
+    run_git = _git_reader(git)
+    base = git_identity.merge_base(head, upstream, run_git=run_git)
+    return landing_class(git_identity.changed_paths(base, head, run_git=run_git))
+
+
+def head_closes_rows(git: Git, upstream: str, head: str) -> bool:
+    """Whether a row open at the merge base is not open at ``head``.
+
+    A closing ledger lane keeps its place, so it cannot overtake a code lane
+    that still cites the row. ``Git._run`` raises ``DriverError`` when the
+    ledger is missing at either revision.
+    """
+    base = git_identity.merge_base(head, upstream, run_git=_git_reader(git))
+
+    def open_keys(revision: str) -> frozenset[str]:
+        text = git._run(
+            ["show", f"{revision}:{finding_status.LEDGER_PATH.as_posix()}"]
+        ).stdout
+        return frozenset(finding_status.project(text).open_keys)
+
+    return bool(open_keys(base) - open_keys(head))
+
+
+@dataclass(frozen=True)
+class RequestOrder:
+    """How one ready request orders in ``next_batch``; computed per batch."""
+
+    landing_class: LandingClass
+    closes_rows: bool  # False for every CODE request; computed only for LEDGER
+
+
+def classify_ready(
+    git: Git, upstream: str, ready: Sequence[LandingRequest]
+) -> tuple[dict[str, RequestOrder], list[tuple[LandingRequest, DriverError]]]:
+    """The order of each ready request by id, and the requests Git could not
+    classify with their error (for example a head without history in common
+    with ``upstream``)."""
+
+    order: dict[str, RequestOrder] = {}
+    failed: list[tuple[LandingRequest, DriverError]] = []
+    for request in ready:
+        try:
+            kind = head_class(git, upstream, request.head)
+            closes = kind is LandingClass.LEDGER and head_closes_rows(
+                git, upstream, request.head
+            )
+        except DriverError as exc:
+            failed.append((request, exc))
+            continue
+        order[request.id] = RequestOrder(kind, closes)
+    return order, failed
+
+
+def _order_rank(order: RequestOrder) -> int:
+    """Non-closing ledger requests first; every other request after them."""
+    return (
+        0 if order.landing_class is LandingClass.LEDGER and not order.closes_rows else 1
+    )
+
+
 def next_batch(
-    paths: QueuePaths, ready: Sequence[LandingRequest]
+    paths: QueuePaths,
+    ready: Sequence[LandingRequest],
+    *,
+    order: Mapping[str, RequestOrder],
 ) -> list[LandingRequest]:
     """The batch to test next: the bisection plan's head, else the queue's head.
 
     The plan survives the runner's hand-off between processes. A planned id
-    that is no longer pending (landed, failed or withdrawn) drops out of it.
+    that is no longer pending (landed, failed or withdrawn) drops out of it;
+    ``order`` is never consulted for a planned batch. A fresh batch takes the
+    first request in queue order (non-closing ledger requests first, then the
+    rest, each in enqueue order) and the run of requests behind it with the
+    same ``LandingClass``, up to ``MAX_BATCH``.
     """
 
     by_id = {request.id: request for request in ready}
@@ -631,7 +716,17 @@ def next_batch(
         _write_plan(paths, groups)
         return [by_id[request_id] for request_id in groups[0]]
     paths.plan.unlink(missing_ok=True)
-    return list(ready[:MAX_BATCH])
+    # sorted() is stable, so each rank keeps enqueue order.
+    ranked = sorted(ready, key=lambda request: _order_rank(order[request.id]))
+    if not ranked:
+        return []
+    kind = order[ranked[0].id].landing_class
+    batch = [ranked[0]]
+    for request in ranked[1:MAX_BATCH]:
+        if order[request.id].landing_class is not kind:
+            break
+        batch.append(request)
+    return batch
 
 
 def _write_plan(paths: QueuePaths, groups: list[list[str]]) -> None:
@@ -827,6 +922,41 @@ def queue_paths(repo: Path) -> QueuePaths:
     return QueuePaths.of(common_dir, primary_checkout=primary_checkout)
 
 
+class LandingRefusalReason(StrEnum):
+    """Why ``land`` refuses a lane before it queues it."""
+
+    LEDGER_PENDING = "ledger-pending"
+    LEDGER_MISSING = "ledger-missing"
+
+
+class LandingRefusal(DriverError):
+    """``land`` refused the lane; nothing is queued and ``land`` exits EXIT_FAIL."""
+
+    def __init__(self, reason: LandingRefusalReason, detail: str) -> None:
+        self.reason = reason
+        super().__init__(f"{reason.value}: {detail}")
+
+
+def refuse_second_ledger_writer(
+    git: Git, paths: QueuePaths, *, upstream: str, head: str
+) -> None:
+    """Keep one ledger writer in flight: refuse a ledger lane while one waits.
+
+    Only the integrator submits ledger lanes (HF-711), so the check and the
+    enqueue take no lock. A code lane is never refused here. A pending request
+    that cannot be classified is ignored; the runner records it failed.
+    """
+    if head_class(git, upstream, head) is not LandingClass.LEDGER:
+        return
+    ledger = finding_status.LEDGER_PATH.as_posix()
+    if git._run(["cat-file", "-e", f"{head}:{ledger}"], check=False).returncode:
+        raise LandingRefusal(LandingRefusalReason.LEDGER_MISSING, head)
+    order, _unclassified = classify_ready(git, upstream, pending(paths))
+    for request_id, item in order.items():
+        if item.landing_class is LandingClass.LEDGER:
+            raise LandingRefusal(LandingRefusalReason.LEDGER_PENDING, request_id)
+
+
 def cmd_land(args: argparse.Namespace) -> int:
 
     drv = _driver()
@@ -886,6 +1016,8 @@ def cmd_land(args: argparse.Namespace) -> int:
             "shows it idle, then run land --candidate-controller again"
         )
         return EXIT_FAIL
+    # After the repair and the precheck, and also with --no-precheck.
+    refuse_second_ledger_writer(git, paths, upstream=upstream, head=head)
     request = enqueue(paths, head=head, worktree=repo, branch=branch)
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
@@ -1152,11 +1284,16 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
         if not _after_landing(git.repo, already_landed, args, paths, upstream):
             return True
     ready = pending(paths)
+    order, unclassified = classify_ready(git, upstream, ready)
+    for request, error in unclassified:
+        record_result(paths, request, status=LandingStatus.FAILED, detail=str(error))
+        _fail(f"{request.id} failed: {error}")
+    ready = [request for request in ready if request.id in order]
     if not ready:
         # The same plan owner drops closed requests after a retirement repin.
-        next_batch(paths, ready)
+        next_batch(paths, ready, order={})
         return False
-    batch = next_batch(paths, ready)
+    batch = next_batch(paths, ready, order=order)
     sandbox = _sandbox_git(paths, git, upstream)
 
     def run_git(arguments):

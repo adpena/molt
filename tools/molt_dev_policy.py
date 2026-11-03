@@ -20,7 +20,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Final, assert_never
 
 from tools.proof_plan import CellId, prerequisite_cell
 
@@ -51,6 +51,35 @@ GATES_CONFIG_NAME = "proof_plan.toml"
 class LandingMode(StrEnum):
     PRESUBMIT = "presubmit"
     POSTSUBMIT = "postsubmit"
+
+
+class LandingClass(StrEnum):
+    """What a lane changes, which orders it in the landing queue (HF-711).
+
+    LEDGER: every changed path is in ``LEDGER_PATHS``, and there is at least
+    one. CODE: anything else, including a mixed ledger-plus-code diff.
+    """
+
+    LEDGER = "ledger"
+    CODE = "code"
+
+
+# POSIX repository paths, compared with git_identity.changed_paths() output.
+# tests/test_molt_dev.py holds them equal to finding_status.LEDGER_PATH and
+# gen_finding_ids.OUTPUT; importing those here would bind repository imports.
+LEDGER_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        "docs/agent/V1_HANDOFF_FINDINGS.md",
+        "tests/findings/finding_ids.py",
+    }
+)
+
+
+def landing_class(changed: Collection[str]) -> LandingClass:
+    """LEDGER when the change is nonempty and touches only the ledger paths."""
+    if changed and LEDGER_PATHS.issuperset(changed):
+        return LandingClass.LEDGER
+    return LandingClass.CODE
 
 
 class _EveryPlanEntity:
