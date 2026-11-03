@@ -12167,3 +12167,24 @@ def test_receipt_refuses_invalid_explicit_effect_declarations(value):
     command = replace(original, data={**original.data, "cargo_target_access": value})
     with pytest.raises((ValueError, TypeError)):
         proof_receipts.command_record(command)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("repair_toolchains", ("no-such-toolchain",), "local repair: "),
+        ("repair", ("python -m ruff format {nope}",), "local.repair.0: "),
+    ],
+)
+def test_repair_is_validated_and_projected_as_always_is(field, value, reason):
+    # The committed plan's repairs bind and close over declared toolchains.
+    assert PLAN.repair and not [error for error in PLAN.validate() if "repair" in error]
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))["local"]
+    assert projection["repair"] == list(PLAN.repair)
+    assert [
+        projection["commands"][identifier]
+        for identifier in projection["repair_command_ids"]
+    ] == list(PLAN.repair)
+    # An unbindable template or undeclared toolchain fails like `always`.
+    errors = replace(PLAN, **{field: value}).validate()
+    assert any(error.startswith(reason) for error in errors), errors

@@ -28,6 +28,95 @@ use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 use molt_ir::OpKind;
 use native_object_execution::{link_and_run_native_object, rustc_path};
 
+#[test]
+fn inline_async_work_poll_enters_service_only_for_a_notified_word() {
+    let function = FunctionIR {
+        name: "inline_poll_probe".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            OpIR {
+                value: Some(41),
+                ..OpIR::new(OpKind::AsyncWorkPoll)
+            },
+            const_int("ok", 0),
+            ret("ok"),
+            OpIR {
+                value: Some(41),
+                ..OpIR::new(OpKind::Label)
+            },
+            const_int("failed", 1),
+            ret("failed"),
+        ],
+        ..FunctionIR::default()
+    };
+    let payload = FunctionIR {
+        name: "inline_payload_probe".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![
+            OpIR {
+                out: Some("payload".into()),
+                async_work_poll: true,
+                ..OpIR::new(OpKind::ExceptionFinallyPendingObserver)
+            },
+            ret("payload"),
+        ],
+        ..FunctionIR::default()
+    };
+    let output = emit_direct_object(compile_selected_functions_direct(
+        vec![function, payload],
+        &["inline_poll_probe", "inline_payload_probe"],
+    ));
+    let provider = format!(
+        r#"#![no_std]
+use core::sync::atomic::{{AtomicU32,AtomicU64,Ordering::SeqCst}};
+#[repr(C)] struct Record {{ pending:u8, invocation:u64, work:u64 }}
+static mut RECORD:Record=Record{{pending:0,invocation:0,work:0}};
+static WORK:AtomicU32=AtomicU32::new(0);
+static CALLS:AtomicU64=AtomicU64::new(0);
+static PASSIVES:AtomicU64=AtomicU64::new(0);
+static ERROR:AtomicU64=AtomicU64::new(0);
+#[no_mangle] pub static {abi}:u64=1;
+#[no_mangle] pub extern "C" fn molt_thread_record()->u64 {{
+ unsafe {{RECORD.work=core::ptr::addr_of!(WORK) as u64;}} core::ptr::addr_of!(RECORD) as u64
+}}
+#[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64 {{unsafe{{RECORD.pending as u64}}}}
+#[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64 {{CALLS.fetch_add(1,SeqCst);ERROR.load(SeqCst)}}
+#[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_last_pending()->u64 {{CALLS.fetch_add(1,SeqCst);0x7ffb_0000_0000_0000}}
+#[no_mangle] pub extern "C" fn molt_exception_last_pending()->u64 {{assert!(unsafe{{RECORD.pending!=0}},"empty exception state entered passive capture");PASSIVES.fetch_add(1,SeqCst);0x7ff9_0000_0000_0007}}
+#[no_mangle] pub extern "C" fn molt_dec_ref_obj(_:u64){{}}
+#[no_mangle] pub extern "C" fn molt_inc_ref_obj(_:u64){{}}
+#[no_mangle] pub extern "C" fn poll_config(word:u32,pending:u8,error:u64){{WORK.store(word,SeqCst);unsafe{{RECORD.pending=pending;}}ERROR.store(error,SeqCst);CALLS.store(0,SeqCst);PASSIVES.store(0,SeqCst);}}
+#[no_mangle] pub extern "C" fn poll_calls()->u64{{CALLS.load(SeqCst)}}
+#[no_mangle] pub extern "C" fn passive_calls()->u64{{PASSIVES.load(SeqCst)}}
+"#,
+        abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+    );
+    let harness = r#"
+extern "C" {fn inline_poll_probe()->u64;fn inline_payload_probe()->u64;fn poll_config(word:u32,pending:u8,error:u64);fn poll_calls()->u64;fn passive_calls()->u64;}
+fn main(){unsafe{
+ let int=0x7ff9_0000_0000_0000u64;
+ poll_config(0,0,0);for _ in 0..1000{assert_eq!(inline_poll_probe(),int);}assert_eq!(poll_calls(),0);
+ poll_config(8,0,0);assert_eq!(inline_poll_probe(),int);assert_eq!(poll_calls(),1);
+ poll_config(8,0,1);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),1);
+ poll_config(0,1,0);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),0);
+ // Mutation control: callback work with its producer notification suppressed
+ // cannot enter service. The real C-API producer is tested in molt-runtime.
+ poll_config(0,0,1);assert_eq!(inline_poll_probe(),int);assert_eq!(poll_calls(),0);
+ poll_config(0,0,0);assert_eq!(inline_payload_probe(),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),0);
+ poll_config(0,1,0);assert_eq!(inline_payload_probe(),int|7);assert_eq!(poll_calls(),0);assert_eq!(passive_calls(),1);
+ poll_config(8,0,0);assert_eq!(inline_payload_probe(),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),1);
+}}
+"#;
+    link_and_run_native_object(
+        &rustc_path(),
+        "inline-async-work-poll",
+        output,
+        &provider,
+        harness,
+        "inline async-work poll",
+    );
+}
+
 mod cargo_test_artifacts {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -208,7 +297,9 @@ fn native_direct_symbol_object_call_links_provider_archive_and_executes() {
         r#"#![no_std]
 #[export_name = "{generated_object_abi_symbol}"]
 pub static GENERATED_OBJECT_ABI: u8 = 0;
-static EXCEPTION_PENDING: u8 = 0;
+#[repr(C)] struct TestThreadRecord {{ pending: u8, invocation: u64, work: u64 }}
+static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord {{ pending: 0, invocation: 0, work: 0 }};
 #[no_mangle]
 pub extern "C" fn molt_dec_ref(_: u64) {{}}
 #[no_mangle]
@@ -219,7 +310,7 @@ pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
 pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
 #[no_mangle]
 pub extern "C" fn molt_thread_record() -> u64 {{
-    core::ptr::addr_of!(EXCEPTION_PENDING) as u64
+    unsafe {{ EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; }} core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }}
 #[no_mangle]
 pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
@@ -340,7 +431,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 #[export_name = "@GENERATED_OBJECT_ABI_SYMBOL@"]
 pub static GENERATED_OBJECT_ABI: u8 = 0;
-static mut EXCEPTION_PENDING: u8 = 0;
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64 }
+static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0 };
 static FAIL: AtomicU64 = AtomicU64::new(0);
 static CONSTRUCTED: AtomicU64 = AtomicU64::new(0);
 static WORD_RETAINS: AtomicU64 = AtomicU64::new(0);
@@ -348,7 +441,7 @@ static WORD_RETAINS: AtomicU64 = AtomicU64::new(0);
 #[no_mangle]
 pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
     if FAIL.load(Ordering::SeqCst) != 0 {
-        unsafe { EXCEPTION_PENDING = 1; }
+        unsafe { EXCEPTION_PENDING_RECORD.pending = 1; }
         return @BOXED_NONE@;
     }
     let words = unsafe { core::slice::from_raw_parts(address as *const u64, len as usize) };
@@ -368,10 +461,10 @@ pub extern "C" fn molt_dec_ref_obj(_: u64) {}
 #[no_mangle]
 pub extern "C" fn molt_dec_ref(_: u64) {}
 #[no_mangle]
-pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING as u64 } }
+pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
 #[no_mangle]
 pub extern "C" fn molt_thread_record() -> u64 {
-    core::ptr::addr_of!(EXCEPTION_PENDING) as u64
+    unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }
 #[no_mangle]
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {
@@ -1598,7 +1691,9 @@ static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static INC_REFS: AtomicU64 = AtomicU64::new(0);
 static DEC_REFS: AtomicU64 = AtomicU64::new(0);
 static LIVE_REFS: AtomicU64 = AtomicU64::new(0);
-static mut EXCEPTION_PENDING: u8 = 0;
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64 }
+static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0 };
 static HASH_FAIL_ALLOC: AtomicU64 = AtomicU64::new(0);
 static HASH_FAIL_INSERT: AtomicU64 = AtomicU64::new(0);
 static HASH_INSERTS: AtomicU64 = AtomicU64::new(0);
@@ -1644,7 +1739,7 @@ pub extern "C" fn cleanup_oracle_reset() {
     HASH_ERROR.store(0, Ordering::SeqCst);
     HASH_FAIL_BOX.store(0, Ordering::SeqCst);
     HASH_BOXES.store(0, Ordering::SeqCst);
-    unsafe { EXCEPTION_PENDING = 0; }
+    unsafe { EXCEPTION_PENDING_RECORD.pending = 0; }
 }
 
 #[no_mangle]
@@ -1701,11 +1796,11 @@ pub extern "C" fn molt_dec_ref(value: u64) { molt_dec_ref_obj(value); }
 // Providers model ABI owner credits and failure boundaries, not hash semantics.
 fn hash_failure(code: u64) -> u64 {
     assert_eq!(HASH_ERROR.swap(code, Ordering::SeqCst), 0, "original exception overwritten");
-    unsafe { EXCEPTION_PENDING = 1; }
+    unsafe { EXCEPTION_PENDING_RECORD.pending = 1; }
     BOXED_NONE
 }
 fn hash_insert(value: u64, operands: &[u64]) -> u64 {
-    assert_eq!(unsafe { EXCEPTION_PENDING }, 0, "insert after failed predecessor");
+    assert_eq!(unsafe { EXCEPTION_PENDING_RECORD.pending }, 0, "insert after failed predecessor");
     let index = owner_index(value).expect("insert requires allocated hash container");
     assert_ne!(unsafe { REFS[index] }, 0, "insert into released container");
     for &operand in operands {
@@ -1749,10 +1844,10 @@ pub extern "C" fn molt_dict_update_missing(value: u64, _: u64, _: u64) -> u64 { 
 #[no_mangle]
 pub unsafe extern "C" fn molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64) -> u64 {
     let result = hash_new();
-    if EXCEPTION_PENDING != 0 { return result; }
+    if EXCEPTION_PENDING_RECORD.pending != 0 { return result; }
     for index in 0..len as usize {
         hash_insert(result, &[*keys.add(index), *values.add(index)]);
-        if EXCEPTION_PENDING != 0 {
+        if EXCEPTION_PENDING_RECORD.pending != 0 {
             molt_dec_ref_obj(result);
             return BOXED_NONE;
         }
@@ -1794,10 +1889,10 @@ pub unsafe extern "C" fn molt_unpack_sequence(pair: u64, count: u64, output: u64
     BOXED_NONE
 }
 #[no_mangle]
-pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING as u64 } }
+pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
 #[no_mangle]
 pub extern "C" fn molt_thread_record() -> u64 {
-    core::ptr::addr_of!(EXCEPTION_PENDING) as u64
+    unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }
 #[no_mangle]
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 { molt_exception_pending_fast() }
@@ -2469,7 +2564,9 @@ fn native_pyinit_transfers_initializer_address_and_module_name_to_runtime_transa
 use core::sync::atomic::{{AtomicU64, Ordering}};
 #[export_name = "{generated_object_abi_symbol}"]
 pub static GENERATED_OBJECT_ABI: u8 = 0;
-static EXCEPTION_PENDING: u8 = 0;
+#[repr(C)] struct TestThreadRecord {{ pending: u8, invocation: u64, work: u64 }}
+static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord {{ pending: 0, invocation: 0, work: 0 }};
 static INIT_CALLS: AtomicU64 = AtomicU64::new(0);
 static TRANSACTIONS: AtomicU64 = AtomicU64::new(0);
 static MODULE_RELEASES: AtomicU64 = AtomicU64::new(0);
@@ -2486,7 +2583,7 @@ pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
 pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
 #[no_mangle]
 pub extern "C" fn molt_thread_record() -> u64 {{
-    core::ptr::addr_of!(EXCEPTION_PENDING) as u64
+    unsafe {{ EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; }} core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }}
 #[no_mangle]
 pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
@@ -2708,7 +2805,9 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
 use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 #[export_name = "@ABI@"] pub static ABI: u8 = 0;
 const NONE: u64 = @NONE@;
-static mut PENDING: u8 = 0;
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64 }
+static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0 };
 static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static FAIL: AtomicU64 = AtomicU64::new(0);
 static CTOR_FAIL: AtomicU64 = AtomicU64::new(0);
@@ -2722,7 +2821,7 @@ static RESULT_SECOND: AtomicU64 = AtomicU64::new(0);
 #[no_mangle] pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {
     let attempt = ATTEMPTS.fetch_add(1, SeqCst) + 1;
     assert_eq!(value, if attempt == 1 {1_i64 << 62} else {(1_i64 << 62) + (1_i64 << 31)});
-    if FAIL.load(SeqCst) == attempt { unsafe {PENDING = 1;} return NONE; }
+    if FAIL.load(SeqCst) == attempt { unsafe {PENDING_RECORD.pending = 1;} return NONE; }
     assert!(attempt <= 2, "one materialization per distinct value");
     if attempt == 1 {FIRST.store(1, SeqCst)} else {SECOND.store(1, SeqCst)}
     0x100 + attempt
@@ -2748,7 +2847,7 @@ fn construct_words(values: &[u64]) -> u64 {
     CALLS.fetch_add(1, SeqCst); assert_eq!(molt_exception_pending_fast(), 0);
     assert_eq!(values, &[0x101, 0x101, 0x102], "preserve repeated operand identity and order");
     assert_eq!(FIRST.load(SeqCst), 1); assert_eq!(SECOND.load(SeqCst), 1);
-    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING = 1;} return NONE;}
+    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING_RECORD.pending = 1;} return NONE;}
     for &value in values {molt_inc_ref_obj(value)}
     RESULT_FIRST.store(2,SeqCst); RESULT_SECOND.store(1,SeqCst);
     RESULT.store(1, SeqCst); 0x200
@@ -2772,7 +2871,7 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
         let refs = match value {0x101 => &FIRST, 0x102 => &SECOND, _ => continue};
         assert!(refs.load(SeqCst) > 0, "borrowed a released temporary box");
     }
-    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING=1;} return false;}
+    if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING_RECORD.pending=1;} return false;}
     true
 }
 #[no_mangle] pub extern "C" fn molt_operator_index(value:u64)->u64 {
@@ -2812,13 +2911,13 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
     let words=unsafe { [*(bases as *const u64), *(attrs as *const u64), *((attrs as *const u64).add(1))] };
     unsafe {construct(words.as_ptr() as u64,3)}
 }
-#[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64 {unsafe {PENDING as u64}}
-#[no_mangle] pub extern "C" fn molt_thread_record()->u64 {core::ptr::addr_of!(PENDING) as u64}
+#[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64 {unsafe {PENDING_RECORD.pending as u64}}
+#[no_mangle] pub extern "C" fn molt_thread_record()->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
 #[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64 {molt_exception_pending_fast()}
 #[no_mangle] pub extern "C" fn fixed_reset(failure:u64, ctor_failure:u64) {
     assert_eq!(fixed_live(),0); ATTEMPTS.store(0,SeqCst); CALLS.store(0,SeqCst);
     DICT_SETS.store(0,SeqCst);
-    FAIL.store(failure,SeqCst); CTOR_FAIL.store(ctor_failure,SeqCst); unsafe {PENDING=0;}
+    FAIL.store(failure,SeqCst); CTOR_FAIL.store(ctor_failure,SeqCst); unsafe {PENDING_RECORD.pending=0;}
 }
 #[no_mangle] pub extern "C" fn fixed_live()->u64 {FIRST.load(SeqCst)+SECOND.load(SeqCst)+RESULT.load(SeqCst)}
 #[no_mangle] pub extern "C" fn fixed_attempts()->u64 {ATTEMPTS.load(SeqCst)}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,13 +19,17 @@ from tests.process_guard_common import (
 )
 
 
-def _lease(root: Path, number: int = 1, *, storage: str | None = None):
+def _guard_env(root: Path, number: int) -> dict[str, str]:
     state = root / "tmp" / "memory_guard"
-    env = {
+    return {
         "MOLT_MEMORY_GUARD_STATE_ROOT": str(state),
         "MOLT_MEMORY_GUARD_TOKEN": f"{number:032x}",
         "MOLT_MEMORY_GUARD_MARKER": str(state / "active" / f"guard-{number}.json"),
     }
+
+
+def _lease(root: Path, number: int = 1, *, storage: str | None = None):
+    env = _guard_env(root, number)
     if storage is not None:
         env["MOLT_SCRATCH_STORAGE"] = storage
     lease = scratch.acquire_guard_scratch(root, env)
@@ -770,15 +775,56 @@ def test_interrupted_reclamation_repairs_receipt_but_never_retries_payload(
 
 def test_delete_failure_is_durable_and_not_silenced(tmp_path, monkeypatch):
     lease, _ = _lease(tmp_path)
-    monkeypatch.setattr(
-        scratch,
-        "delete_path",
-        lambda path, *, owning_root=None: (False, "fixture sharing violation"),
+    (lease.target / "output").write_bytes(b"regenerable")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            scratch,
+            "delete_path",
+            lambda path, *, owning_root=None: (False, "fixture sharing violation"),
+        )
+        result = _finish(lease)
+    # The run's own removal failed, so its finish reports a retained payload
+    # (the guard fails a clean run on it), yet the payload stays indexed:
+    # a deletion that failed is retried, never blocked forever.
+    assert result["state"] == "retained"
+    assert "sharing violation" in result["error"]
+    assert "sharing violation" in result["retention"]["deferred"][0]
+    assert scratch._index_path(lease.generation).is_file()
+    assert (lease.generation / "payload" / "output").read_bytes() == b"regenerable"
+    swept = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert swept["errors"] == [] and swept["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+def test_failed_eviction_delete_is_retried_by_a_later_sweep(tmp_path, monkeypatch):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "failure").write_bytes(b"regenerable")
+    assert _finish(lease, success=False)["state"] == "retained"
+    root = lease.generation.parent
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            scratch,
+            "delete_path",
+            lambda path, *, owning_root=None: (False, "fixture file in use"),
+        )
+        first = scratch.reclaim_terminal_scratch(
+            root, retention=scratch.ScratchRetention(0, 0)
+        )
+    assert first["errors"] == [] and first["reclaimed"] == []
+    assert "fixture file in use" in first["deferred"][0]
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "retained"
+    assert scratch._index_path(lease.generation).is_file()
+    assert (lease.generation / "payload" / "failure").read_bytes() == b"regenerable"
+    # A partial removal can take the allocation receipt with it; the owner's
+    # recorded attempt excuses that absence, so the retry still runs.
+    (lease.generation / "payload" / scratch._TARGET_RECEIPT).unlink()
+    second = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0)
     )
-    result = _finish(lease)
-    assert result["state"] == "blocked"
-    assert "sharing violation" in _read(lease.generation / "owner.json")["error"]
-    assert (lease.generation / "payload").exists()
+    assert second["errors"] == [] and second["deferred"] == []
+    assert second["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
 
 
 @pytest.mark.parametrize("budget", [3, 4])
@@ -1438,7 +1484,7 @@ def test_receipt_removal_that_cannot_move_now_is_deferred_and_retried(
     assert not scratch._index_path(lease.generation).exists()
 
 
-def test_process_scratch_skips_fsync_but_failure_evidence_is_durable(
+def test_process_scratch_skips_fsync_for_success_failure_and_adoption(
     tmp_path, monkeypatch
 ):
     """Scratch records describe processes, so none crosses a barrier (HF-382).
@@ -1471,20 +1517,18 @@ def test_process_scratch_skips_fsync_but_failure_evidence_is_durable(
         guard_marker=Path(env["MOLT_MEMORY_GUARD_MARKER"]),
         closure={"authority": "fixture", "closed": True},
     )["resolved"]
-    assert fsyncs  # Failed evidence is durable before retirement is granted.
-    archive_root = Path(failed.owner["evidence_root"])
+    assert fsyncs == []
     swept = scratch.reclaim_terminal_scratch(
         lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
     )
     assert swept["errors"] == [] and len(swept["reclaimed"]) == 2
-    assert fsyncs  # Evidence/index durability precedes raw failure removal.
-    assert len(list(archive_root.glob("*.index.json"))) == 2
+    assert fsyncs == []
 
 
 def test_a_terminal_receipt_its_owner_never_committed_blocks_adoption_once(
     tmp_path, monkeypatch
 ):
-    """The finisher wrote its terminal receipt, then failed before its index.
+    """The finisher wrote its terminal receipt, then died before its index.
 
     A dead guard's reconciliation then met that receipt on every pass: its
     adoption tried to publish a second terminal receipt and failed, so the
@@ -1494,11 +1538,12 @@ def test_a_terminal_receipt_its_owner_never_committed_blocks_adoption_once(
     lease, env = _lease(tmp_path)
     (lease.target / "output").write_bytes(b"kept")
 
-    def fail_index(generation, digest):
-        raise OSError("fixture index publication failure")
+    def interrupt_index(generation, digest):
+        # A refused index is a whole-root diagnostic; a kill is not.
+        raise KeyboardInterrupt("fixture guard killed before its index")
 
-    monkeypatch.setattr(scratch, "_publish_index", fail_index)
-    with pytest.raises(OSError, match="index publication failure"):
+    monkeypatch.setattr(scratch, "_publish_index", interrupt_index)
+    with pytest.raises(KeyboardInterrupt, match="killed before its index"):
         _finish(lease)
     monkeypatch.undo()
     assert (lease.generation / "terminal.json").is_file()
@@ -2161,165 +2206,858 @@ def test_memory_scratch_refuses_missing_unique_mount_before_allocation(
     assert not (tmp_path / "tmp" / "gs").exists()
 
 
-def test_failed_scratch_reclamation_publishes_lossless_external_evidence(tmp_path):
-    import tarfile
-
+def test_failed_scratch_is_reclaimed_without_archive_placement(tmp_path):
     lease, _ = _lease(tmp_path)
-    payload = b"unreproducible failure signal" * 100
-    (lease.target / "failure.bin").write_bytes(payload)
-    archive_root = Path(lease.owner["evidence_root"])
+    lease.owner.pop("evidence_root", None)
+    write_exact(lease.generation / "owner.json", lease.owner)
+    (lease.target / "failure.bin").write_bytes(b"regenerable scratch")
     result = _finish(lease, success=False, retention=scratch.ScratchRetention(0, 0))
     assert result["state"] == "reclaimed"
     assert not lease.generation.exists()
-    manifests = list(archive_root.glob("*.index.json"))
-    assert len(manifests) == 1
-    record = read_exact(manifests[0], max_bytes=1024 * 1024, label="archive manifest")
-    assert record["class"] == "scratch-evidence"
-    assert record["source"] == str(lease.generation)
-    with tarfile.open(record["archive"], "r:gz") as archive:
-        assert archive.extractfile("payload/failure.bin").read() == payload
-        assert archive.extractfile("terminal.json") is not None
+    assert result["retention"]["errors"] == []
 
 
-def test_legacy_failed_scratch_without_archive_placement_is_never_deleted(tmp_path):
-    lease, _ = _lease(tmp_path)
-    (lease.target / "failure").write_bytes(b"legacy evidence")
-    lease.owner.pop("evidence_root")
-    write_exact(lease.generation / "owner.json", lease.owner)
-    result = _finish(lease, success=False, retention=scratch.ScratchRetention(0, 0))
-    assert result["state"] == "blocked"
-    assert (lease.generation / "payload" / "failure").read_bytes() == b"legacy evidence"
-    scratch.reclaim_terminal_scratch(lease.generation.parent)
-    assert (lease.generation / "payload" / "failure").read_bytes() == b"legacy evidence"
-
-
-def test_failed_archive_error_preserves_raw_evidence(tmp_path, monkeypatch):
+def test_failed_run_and_dead_guard_never_create_archives(tmp_path, monkeypatch):
     from molt import checkout_state
 
-    lease, _ = _lease(tmp_path)
-    (lease.target / "failure").write_bytes(b"retain on storage failure")
+    def forbidden(*args, **kwargs):
+        pytest.fail("scratch finalization must not compact evidence")
 
-    def unavailable(*args, **kwargs):
-        raise OSError("archive volume unavailable")
-
-    monkeypatch.setattr(checkout_state, "compact_evidence", unavailable)
-    result = _finish(lease, success=False, retention=scratch.ScratchRetention(0, 0))
-    assert result["state"] == "blocked"
-    assert (
-        lease.generation / "payload" / "failure"
-    ).read_bytes() == b"retain on storage failure"
-    assert "archive volume unavailable" in result["error"]
-    assert not scratch._index_path(lease.generation).exists()
-
-
-def test_deferred_failed_receipts_reuse_verified_archive_and_preserve_new_signal(
-    tmp_path, monkeypatch
-):
-    lease, _ = _lease(tmp_path)
-    (lease.target / "failure").write_bytes(b"unique failure")
-    monkeypatch.setattr(
-        scratch, "_remove_reclaimed_generation", lambda generation: "fixture deferral"
-    )
-    result = _finish(lease, success=False, retention=scratch.ScratchRetention(0, 0))
-    assert result["state"] == "reclaimed"
-    archive_root = Path(lease.owner["evidence_root"])
-    assert len(list(archive_root.glob("*.tar.gz"))) == 1
-    with scratch._locked(lease.generation):
-        scratch._reclaim_locked(lease.generation, scratch._owner(lease.generation))
-    assert len(list(archive_root.glob("*.tar.gz"))) == 1
-    signal = lease.generation / "late-diagnostic"
-    signal.write_bytes(b"must not disappear")
-    with scratch._locked(lease.generation):
-        with pytest.raises(ValueError, match="diagnostics changed"):
-            scratch._reclaim_locked(lease.generation, scratch._owner(lease.generation))
-    assert signal.read_bytes() == b"must not disappear"
-
-
-def test_legacy_reclaimed_failure_keeps_remaining_diagnostic_records(tmp_path):
-    lease, env = _lease(tmp_path)
-    lease.owner.pop("evidence_root")
-    write_exact(lease.generation / "owner.json", lease.owner)
-    _finish(lease, success=False)
-    shutil.rmtree(
-        lease.generation / "payload"
-    )  # A legacy collector already removed it.
-    owner = scratch._owner(lease.generation)
-    write_exact(lease.generation / "owner.json", {**owner, "state": "reclaimed"})
-    original_terminal = (lease.generation / "terminal.json").read_bytes()
+    monkeypatch.setattr(checkout_state, "compact_evidence", forbidden)
+    failed, _ = _lease(tmp_path)
+    assert _finish(failed, success=False)["state"] == "retained"
+    adopted, env = _lease(tmp_path, 2)
+    adopted.release()
     result = scratch.resolve_guard_scratch(
-        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+        adopted.generation, guard_marker=_marker_of(env), closure=_CLOSURE
     )
-    assert result["resolved"] and result["state"] == "retained-evidence"
-    swept = scratch.reclaim_terminal_scratch(lease.generation.parent)
-    assert swept["reclaimed"] == []
-    assert "legacy failed scratch" in result["error"]
-    assert (lease.generation / "terminal.json").read_bytes() == original_terminal
+    assert result["resolved"] and result["state"] == "retained"
+    swept = scratch.reclaim_terminal_scratch(
+        failed.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert swept["errors"] == [] and len(swept["reclaimed"]) == 2
 
 
-def test_failed_retirement_grant_already_has_verified_archive_under_live_lease(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("already_reclaimed", [False, True])
+def test_existing_oversized_archive_index_retires_with_payload(
+    tmp_path, monkeypatch, already_reclaimed
 ):
-    import tarfile
-
-    lease, _ = _lease(tmp_path)
-    payload = b"must survive an older collector"
-    (lease.target / "failure").write_bytes(payload)
-    states = []
-    original = scratch.write_exact
-
-    def observe(path, value, **kwargs):
-        if path == lease.generation / "owner.json":
-            states.append(value["state"])
-            if value["state"] == "retained":
-                assert file_locks._file_lock_is_owned(lease.lock)
-                index = read_exact(
-                    Path(value["evidence_index"]),
-                    max_bytes=1024 * 1024,
-                    label="failure archive",
-                )
-                with tarfile.open(index["archive"]) as archive:
-                    assert archive.extractfile("payload/failure").read() == payload
-        return original(path, value, **kwargs)
-
-    monkeypatch.setattr(scratch, "write_exact", observe)
-    result = _finish(lease, success=False)
-    assert result["state"] == "retained"
-    assert states[0] == "blocked" and states[-1] == "retained"
-    assert "retiring" not in states
-    index = Path(scratch._owner(lease.generation)["evidence_index"])
-    before = set(index.parent.glob("*.tar.gz"))
-    scratch.reclaim_terminal_scratch(
+    old, lease, _, archive, index = _archived_failure(tmp_path)
+    if already_reclaimed:
+        # Its own sweep reclaimed the payload; receipt removal was deferred.
+        monkeypatch.setattr(
+            old, "_remove_reclaimed_generation", lambda generation: "fixture deferral"
+        )
+        old.reclaim_terminal_scratch(
+            lease.generation.parent, retention=old.ScratchRetention(0, 0)
+        )
+        monkeypatch.undo()
+        assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
+    # The external manifest of a large tree outgrew the producer's own
+    # 16 MiB reader (whitespace keeps it valid JSON).
+    with index.open("ab") as stream:
+        stream.write(b" " * (17 * 1024 * 1024 - index.stat().st_size))
+    unrelated = archive.parent / f"{'0' * 16}-{'b' * 32}.tar.gz"
+    unrelated.write_bytes(b"other owner")
+    # The old reader refused that manifest on every sweep, forever. Guard
+    # exit now neither reads it nor deletes archives: it reports the
+    # explicit cleanup the coordinates need.
+    automatic = scratch.reclaim_terminal_scratch(
         lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
     )
+    assert automatic["deferred"] == [], automatic
+    assert "explicit dry-run/apply" in automatic["errors"][0], automatic
+    assert archive.exists() and lease.generation.exists()
+    before = {path: path.read_bytes() for path in lease.generation.glob("*.json")}
+    planned = scratch.reclaim_terminal_scratch(
+        lease.generation.parent,
+        retention=scratch.ScratchRetention(0, 0),
+        dry_run=True,
+        resolve_legacy_archives=True,
+    )
+    assert len(planned["would_reclaim"]) == 1
+    assert index.stat().st_size == 17 * 1024 * 1024
+    assert {
+        path: path.read_bytes() for path in lease.generation.glob("*.json")
+    } == before
+    if not already_reclaimed:
+        assert (lease.generation / "payload" / "failure").read_bytes() == b"regenerable"
+    delete = scratch.delete_path
+
+    def busy_sidecar(path, **kwargs):
+        if path == index:
+            return False, "fixture sidecar busy"
+        return delete(path, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scratch, "delete_path", busy_sidecar)
+        interrupted = scratch.reclaim_terminal_scratch(
+            lease.generation.parent,
+            retention=scratch.ScratchRetention(0, 0),
+            resolve_legacy_archives=True,
+        )
+    assert "fixture sidecar busy" in interrupted["errors"][0]
+    assert not archive.exists() and index.exists()
+    assert (lease.generation / "storage-index.json").exists()
+    swept = scratch.reclaim_terminal_scratch(
+        lease.generation.parent,
+        retention=scratch.ScratchRetention(0, 0),
+        resolve_legacy_archives=True,
+    )
+    assert swept["errors"] == [] and swept["deferred"] == []
     assert not lease.generation.exists()
-    assert set(index.parent.glob("*.tar.gz")) == before
+    assert not archive.exists() and not index.exists()
+    assert unrelated.read_bytes() == b"other owner"
 
 
-def test_changed_retained_directory_link_is_archived_before_reclamation(tmp_path):
-    import tarfile
-
+def test_changed_retained_directory_link_does_not_delete_external_payload(tmp_path):
     first, second = tmp_path / "first", tmp_path / "second"
     for directory in (first, second):
         directory.mkdir()
         (directory / "keep").write_bytes(b"external directory")
     lease, _ = _lease(tmp_path)
-    (lease.target / "link").symlink_to(first, target_is_directory=True)
+    try:
+        (lease.target / "link").symlink_to(first, target_is_directory=True)
+    except OSError as exc:
+        lease.release()
+        pytest.skip(f"host does not permit symlinks: {exc}")
     _finish(lease, success=False)
     link = lease.generation / "payload" / "link"
     link.unlink()
     link.symlink_to(second, target_is_directory=True)
-    archive_root = Path(lease.owner["evidence_root"])
-    result = scratch.reclaim_terminal_scratch(
+    swept = scratch.reclaim_terminal_scratch(
         lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
     )
-    assert result["errors"] == [] and result["reclaimed"] == [str(lease.generation)]
-    records = [
-        read_exact(p, max_bytes=1024 * 1024, label="link evidence")
-        for p in archive_root.glob("*.index.json")
-    ]
-    assert len(records) == 2
-    latest = next(record for record in records if "previous_index" in record)
-    with tarfile.open(latest["archive"]) as archive:
-        assert archive.getmember("payload/link").linkname == str(second)
+    assert swept["errors"] == [] and swept["reclaimed"] == [str(lease.generation)]
     for directory in (first, second):
         assert (directory / "keep").read_bytes() == b"external directory"
+
+
+@pytest.mark.parametrize("state", ["retained", "reclaimed", "blocked"])
+def test_dry_run_does_not_repair_crash_residue_or_delete_payload(tmp_path, state):
+    lease, _ = _lease(tmp_path)
+    assert _finish(lease, success=False)["state"] == "retained"
+    owner = _read(lease.generation / "owner.json")
+    # Failed scratch is regenerable: no archive placement or index to preview.
+    assert "evidence_root" not in owner and "evidence_index" not in owner
+    write_exact(lease.generation / "owner.json", {**owner, "state": state})
+    original = {path: path.read_bytes() for path in lease.generation.glob("*.json")}
+    # Reclaimed with a live payload is invalid; a preview must report it,
+    # never repair receipts or offer the payload for deletion.
+    result = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0), dry_run=True
+    )
+    assert {
+        path: path.read_bytes() for path in lease.generation.glob("*.json")
+    } == original
+    assert (lease.generation / "payload").is_dir()
+    if state != "retained":
+        assert result["errors"]
+        assert result["would_reclaim"] == []
+    else:
+        assert result["errors"] == []
+        assert len(result["would_reclaim"]) == 1
+
+
+_OWNER_PERMISSIONS = pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="POSIX directory permission bits bind only a non-root owner",
+)
+
+
+@_OWNER_PERMISSIONS
+@pytest.mark.parametrize("mode", [0o300, 0o000], ids=["unlistable", "inaccessible"])
+@pytest.mark.parametrize("success", [False, True])
+def test_whole_root_scan_error_is_diagnostic_after_current_finalization(
+    tmp_path, success, mode
+):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "output").write_bytes(b"regenerable")
+    pending = lease.generation.parent / "pending"
+    pending.mkdir()
+    pending.chmod(mode)
+    try:
+        outcome = _finish(lease, success=success)
+    finally:
+        pending.chmod(0o755)
+    # An unlistable namespace still takes this run's index, so a failure is
+    # retained. An inaccessible one refuses it: nothing could find the
+    # payload later, so the run reclaims it now. Neither fails the run.
+    retained = not success and mode == 0o300
+    assert outcome["state"] == ("retained" if retained else "reclaimed")
+    assert outcome["error"] is None
+    errors = outcome["retention"]["errors"]
+    assert errors and all("Permission denied" in error for error in errors), errors
+    assert (lease.generation / "payload" / "output").exists() is retained
+    assert lease.lock is None
+
+
+@pytest.mark.parametrize("success", [False, True])
+@pytest.mark.parametrize("namespace", ["pending", "removing"])
+def test_a_linked_shared_namespace_is_diagnostic_not_this_runs_failure(
+    tmp_path, namespace, success
+):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "output").write_bytes(b"regenerable")
+    shared = lease.generation.parent / namespace
+    shared.mkdir()
+    _plant_link(tmp_path, shared)
+    outcome = _finish(lease, success=success)
+    # A linked pending namespace refuses this run's index, so the run
+    # reclaims its payload now; a linked removing namespace only defers its
+    # receipts. A retained failure touches neither.
+    reclaimed = success or namespace == "pending"
+    assert outcome["state"] == ("reclaimed" if reclaimed else "retained")
+    assert outcome["error"] is None
+    linked = [
+        error for error in outcome["retention"]["errors"] if "traverses a link" in error
+    ]
+    assert bool(linked) is reclaimed, outcome["retention"]
+    assert (lease.generation / "payload" / "output").exists() is not reclaimed
+    assert lease.lock is None
+
+
+def _archive_producer():
+    from tools.import_file import load_module_from_path
+
+    # Run the removed inline-archive producer itself (a frozen fixture), so
+    # the records are the ones it left on hosts, not an imitation of them.
+    return load_module_from_path(
+        "guard_scratch_v2_archive_oracle",
+        Path(__file__).parent / "fixtures" / "guard_scratch_v2_archive.py",
+    )
+
+
+def _archive_blocked_failures(tmp_path, monkeypatch):
+    """Leave both legacy archive blocks through the removed producer."""
+    old = _archive_producer()
+
+    def unavailable(*args, **kwargs):
+        raise OSError("nonportable evidence: fixture")
+
+    def killed(*args, **kwargs):
+        raise KeyboardInterrupt("fixture guard killed during its inline archive")
+
+    leases = []
+    for number, compactor in ((1, unavailable), (2, killed)):
+        lease = old.acquire_guard_scratch(tmp_path, _guard_env(tmp_path, number))
+        (lease.target / "failure").write_bytes(b"x" * 1024 * number)
+        monkeypatch.setattr(old, "_compact_evidence", compactor)
+        try:
+            old.finish_guard_scratch(
+                lease,
+                success=False,
+                closed=True,
+                evidence={"authority": "fixture", "child_returncode": 1},
+                timings=old.ScratchFinalizationTimings(),
+            )
+        except KeyboardInterrupt:
+            lease.release()
+        leases.append(lease)
+    monkeypatch.undo()
+    return leases
+
+
+def _archived_failure(tmp_path, number=1):
+    """A failed run the archive producer retained with its real archive records."""
+    old = _archive_producer()
+    env = _guard_env(tmp_path, number)
+    lease = old.acquire_guard_scratch(tmp_path, env)
+    (lease.target / "failure").write_bytes(b"regenerable")
+    outcome = old.finish_guard_scratch(
+        lease,
+        success=False,
+        closed=True,
+        evidence={"authority": "fixture", "child_returncode": 1},
+        timings=old.ScratchFinalizationTimings(),
+    )
+    assert outcome["state"] == "retained", outcome
+    owner = _read(lease.generation / "owner.json")
+    index = Path(owner["evidence_index"])
+    archive = Path(_read(lease.generation / "storage-index.json")["archive"])
+    assert archive.is_file() and index.is_file()
+    return old, lease, env, archive, index
+
+
+def test_explicit_cleanup_bounds_the_old_producers_archive_blocks(
+    tmp_path, monkeypatch
+):
+    unavailable, awaited = _archive_blocked_failures(tmp_path, monkeypatch)
+    assert _read(unavailable.generation / "owner.json")["error"] == (
+        "failure evidence preserved; archive unavailable: nonportable evidence: fixture"
+    )
+    assert _read(awaited.generation / "owner.json")["error"] == (
+        "failure evidence awaits archive"
+    )
+    # The unavailable block dropped its index; the killed one kept it.
+    assert not scratch._index_path(unavailable.generation).exists()
+    assert scratch._index_path(awaited.generation).exists()
+    root = unavailable.generation.parent
+    receipts = {path: path.read_bytes() for path in root.rglob("*.json")}
+    bound = scratch.ScratchRetention(1, 1024**3)
+    preview = scratch.reclaim_terminal_scratch(
+        root, retention=bound, dry_run=True, resolve_legacy_archives=True
+    )
+    assert preview["errors"] == [], preview
+    assert preview["would_reclaim"] == [
+        {
+            "generation": str(unavailable.generation),
+            "payload_bytes": 1024,
+            "archives": [],
+            "archive_bytes": 0,
+        }
+    ]
+    assert (preview["retained_count"], preview["retained_bytes"]) == (1, 2048)
+    assert {path: path.read_bytes() for path in root.rglob("*.json")} == receipts
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=bound, resolve_legacy_archives=True
+    )
+    assert applied["errors"] == [] and applied["deferred"] == [], applied
+    assert applied["reclaimed"] == [str(unavailable.generation)]
+    assert not unavailable.generation.exists()
+    # The kept block joins the current lifecycle: retained and indexed, so
+    # the ordinary bound on guard exit reclaims it without explicit cleanup.
+    owner = _read(awaited.generation / "owner.json")
+    assert owner["state"] == "retained" and "error" not in owner
+    assert scratch._index_path(awaited.generation).exists()
+    assert (awaited.generation / "payload" / "failure").read_bytes() == b"x" * 2048
+    swept = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert swept["errors"] == [] and swept["reclaimed"] == [str(awaited.generation)]
+    assert not awaited.generation.exists()
+
+
+@pytest.mark.parametrize("payload_present", [True, False])
+def test_an_old_adopters_block_on_a_new_lease_yields_to_explicit_cleanup(
+    tmp_path, payload_present
+):
+    lease, env = _lease(tmp_path)
+    (lease.target / "failure").write_bytes(b"regenerable")
+    if not payload_present:
+        shutil.rmtree(lease.target)
+    lease.release()
+    # A host still running the archive producer reconciles this dead guard:
+    # the lease names no evidence placement, so that adopter blocks it.
+    outcome = _archive_producer().resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    assert (outcome["state"], outcome["resolved"]) == ("blocked", True)
+    owner = _read(lease.generation / "owner.json")
+    assert owner["error"].endswith(
+        "legacy failed scratch lacks evidence placement; preserved"
+    )
+    root = lease.generation.parent
+    assert scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0)
+    ) == {
+        "reclaimed": [],
+        "retained_bytes": 0,
+        "retained_count": 0,
+        "protected_count": 0,
+        "errors": [],
+        "deferred": [],
+        "held": [],
+    }
+    # The terminal receipt, payload identity and allocation receipt decide,
+    # not the owner's schema; an absent-source receipt had no payload.
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    assert applied["errors"] == [] and applied["deferred"] == [], applied
+    assert applied["reclaimed"] == ([str(lease.generation)] if payload_present else [])
+    assert not lease.generation.exists()
+
+
+def test_explicit_cleanup_keeps_unverified_and_other_blocks(tmp_path, monkeypatch):
+    verified, replaced = _archive_blocked_failures(tmp_path, monkeypatch)
+    payload = replaced.generation / "payload"
+    shutil.rmtree(payload)
+    payload.mkdir()
+    (payload / "other").write_bytes(b"another directory")
+    interrupted, _ = _lease(tmp_path, 3)
+    _finish(interrupted, success=False)
+    owner = _read(interrupted.generation / "owner.json")
+    write_exact(
+        interrupted.generation / "owner.json",
+        {
+            **owner,
+            "state": "blocked",
+            "error": "interrupted scratch transition; payload preserved without retry",
+        },
+    )
+    scratch._drop_index(interrupted.generation)
+    root = interrupted.generation.parent
+    receipts = {
+        path: path.read_bytes()
+        for generation in (replaced.generation, interrupted.generation)
+        for path in generation.glob("*.json")
+    }
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    assert applied["reclaimed"] == [str(verified.generation)]
+    assert any(
+        "does not hold its own payload" in error for error in applied["errors"]
+    ), applied
+    assert not any(str(interrupted.generation) in error for error in applied["errors"])
+    assert {
+        path: path.read_bytes()
+        for generation in (replaced.generation, interrupted.generation)
+        for path in generation.glob("*.json")
+    } == receipts
+    assert (payload / "other").read_bytes() == b"another directory"
+    assert (interrupted.generation / "payload").is_dir()
+
+
+def test_legacy_retained_failure_without_placement_is_deleted_by_the_bound(tmp_path):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "failure").write_bytes(b"regenerable")
+    _finish(lease, success=False)
+    # Retained before evidence placement existed: no placement, no archive.
+    # The archive producer deferred it on every sweep, forever.
+    owner = _read(lease.generation / "owner.json")
+    for key in ("evidence_root", "evidence_index", "error"):
+        owner.pop(key, None)
+    write_exact(lease.generation / "owner.json", {**owner, "state": "retained"})
+    write_exact(
+        scratch._index_path(lease.generation),
+        {"schema": scratch.SCHEMA, "terminal_digest": owner["terminal_digest"]},
+    )
+    swept = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert swept["deferred"] == [] and swept["errors"] == [], swept
+    assert swept["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+@pytest.mark.parametrize(
+    "fault,error",
+    [
+        ("missing-source-index", "lacks its source index"),
+        ("disagreeing-index", "indices disagree"),
+    ],
+)
+def test_inconsistent_legacy_archive_coordinates_stay_with_an_error(
+    tmp_path, fault, error
+):
+    _, lease, _, archive, index = _archived_failure(tmp_path)
+    if fault == "missing-source-index":
+        (lease.generation / "storage-index.json").unlink()
+    else:
+        owner = _read(lease.generation / "owner.json")
+        write_exact(
+            lease.generation / "owner.json",
+            {**owner, "evidence_index": str(index) + ".other"},
+        )
+    pair = {path: path.read_bytes() for path in (archive, index)}
+    for dry_run in (True, False):
+        result = scratch.reclaim_terminal_scratch(
+            lease.generation.parent,
+            retention=scratch.ScratchRetention(0, 0),
+            dry_run=dry_run,
+            resolve_legacy_archives=True,
+        )
+        assert result["reclaimed"] == [] and error in result["errors"][0], result
+    assert {path: path.read_bytes() for path in pair} == pair
+    assert (lease.generation / "payload" / "failure").read_bytes() == b"regenerable"
+
+
+def test_reconciliation_leaves_a_legacy_archive_to_explicit_cleanup(
+    tmp_path, monkeypatch
+):
+    old, lease, env, archive, index = _archived_failure(tmp_path)
+    # The producer's own sweep reclaims the archived payload; its receipt
+    # removal is deferred (a Windows lock contender), so the reclaimed
+    # generation keeps its archive coordinates. A crash then drops its index.
+    monkeypatch.setattr(
+        old, "_remove_reclaimed_generation", lambda generation: "fixture deferral"
+    )
+    old.reclaim_terminal_scratch(
+        lease.generation.parent, retention=old.ScratchRetention(0, 0)
+    )
+    monkeypatch.undo()
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "reclaimed" and owner["evidence_index"] == str(index)
+    assert not (lease.generation / "payload").exists()
+    scratch._drop_index(lease.generation)
+    outcome = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+    )
+    # The marker may retire; the receipts stay discoverable for cleanup.
+    assert (outcome["state"], outcome["resolved"]) == ("reclaimed", True)
+    assert "awaits explicit cleanup" in outcome["deferred"]
+    assert lease.generation.exists() and archive.exists() and index.exists()
+    assert scratch._index_path(lease.generation).exists()
+    applied = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, resolve_legacy_archives=True
+    )
+    assert applied["errors"] == [] and applied["deferred"] == [], applied
+    assert not lease.generation.exists()
+    assert not archive.exists() and not index.exists()
+
+
+def _stuck_removal(tmp_path, monkeypatch, count=2):
+    """Failed payloads over the bound whose removal always fails."""
+    leases = []
+    for number in range(1, count + 1):
+        lease, _ = _lease(tmp_path, number)
+        (lease.target / "failure").write_bytes(b"x" * 10)
+        _finish(lease, success=False)
+        leases.append(lease)
+    attempts: list[Path] = []
+
+    def stuck(path, *, owning_root=None):
+        attempts.append(path)
+        return False, f"fixture ACL deny {len(attempts)}"
+
+    monkeypatch.setattr(scratch, "delete_path", stuck)
+    return leases, attempts
+
+
+def test_a_removal_that_keeps_failing_becomes_a_loud_error_and_stops(
+    tmp_path, monkeypatch
+):
+    from tools.memory_guard_core import reporting
+
+    (lease,), attempts = _stuck_removal(tmp_path, monkeypatch, count=1)
+    root = lease.generation.parent
+    bound = scratch.ScratchRetention(0, 0)
+    for number in (1, 2):
+        sweep = scratch.reclaim_terminal_scratch(root, retention=bound)
+        assert sweep["errors"] == [] and len(sweep["deferred"]) == 1, sweep
+        assert reporting.retention_warning({"retention": sweep}) is None
+        assert len(attempts) == number
+    third = scratch.reclaim_terminal_scratch(root, retention=bound)
+    # The third failure is an error that names every attempt, and the
+    # guard prints it; later guard exits report without retrying.
+    assert third["deferred"] == [] and len(third["errors"]) == 1, third
+    for number in (1, 2, 3):
+        assert f"fixture ACL deny {number}" in third["errors"][0]
+    assert "retention sweep reported errors" in reporting.retention_warning(
+        {"retention": third}
+    )
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "retained"
+    assert owner["removal_attempts"] == 3
+    assert owner["removal_errors"] == [f"fixture ACL deny {n}" for n in (1, 2, 3)]
+    assert scratch._index_path(lease.generation).is_file()
+    later = scratch.reclaim_terminal_scratch(root, retention=bound)
+    assert len(attempts) == 3 and len(later["errors"]) == 1, later
+    # Explicit cleanup still retries it once the cause is fixed.
+    monkeypatch.undo()
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=bound, resolve_legacy_archives=True
+    )
+    assert applied["errors"] == [] and applied["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+def test_repeated_explicit_retries_keep_a_bounded_attempt_record(tmp_path, monkeypatch):
+    (lease,), attempts = _stuck_removal(tmp_path, monkeypatch, count=1)
+    root = lease.generation.parent
+    for _ in range(11):
+        scratch.reclaim_terminal_scratch(
+            root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+        )
+    monkeypatch.setattr(
+        scratch,
+        "delete_path",
+        lambda path, *, owning_root=None: (False, "e" * 100_000),
+    )
+    last = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    # The receipt stays readable under the 64 KiB reader: the count is
+    # exact, the first and the last three errors are kept, each cut short.
+    owner = _read(lease.generation / "owner.json")
+    assert owner["removal_attempts"] == 12 and len(attempts) == 11
+    assert owner["removal_errors"][:5] == [
+        f"fixture ACL deny {n}" for n in (1, 2, 3, 10, 11)
+    ]
+    assert owner["removal_errors"][5] == "e" * 512
+    assert "failed 12 times" in last["errors"][0] and "; ...; " in last["errors"][0]
+    assert (lease.generation / "owner.json").stat().st_size < 8192
+
+
+def test_an_interrupted_removal_retry_stays_retained_and_indexed(tmp_path, monkeypatch):
+    (lease,), _ = _stuck_removal(tmp_path, monkeypatch, count=1)
+    root = lease.generation.parent
+    scratch.reclaim_terminal_scratch(root, retention=scratch.ScratchRetention(0, 0))
+    monkeypatch.undo()
+    # The guard running the retry died after it recorded reclaiming.
+    owner = _read(lease.generation / "owner.json")
+    write_exact(lease.generation / "owner.json", {**owner, "state": "reclaiming"})
+    swept = scratch.reclaim_terminal_scratch(root)
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "retained", owner
+    assert owner["removal_errors"] == [
+        "fixture ACL deny 1",
+        "removal interrupted while reclaiming",
+    ]
+    assert scratch._index_path(lease.generation).is_file()
+    assert (lease.generation / "payload" / "failure").is_file()
+    assert not any("interrupted scratch transition" in e for e in swept["errors"])
+    final = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert final["reclaimed"] == [str(lease.generation)], final
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_a_refused_index_with_a_failed_removal_stays_findable(
+    tmp_path, monkeypatch, success
+):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "out").write_bytes(b"x" * 4096)
+    root = lease.generation.parent
+    pending = root / "pending"
+    pending.mkdir()
+    _plant_link(tmp_path, pending)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            scratch,
+            "delete_path",
+            lambda path, *, owning_root=None: (False, "fixture file in use"),
+        )
+        result = _finish(lease, success=success)
+    # The diagnostic states what happened: no index, and no reclaim.
+    assert result["state"] == "retained"
+    diagnostics = result["retention"]["errors"]
+    assert not any("payload reclaimed" in error for error in diagnostics), diagnostics
+    assert any(
+        "retained without an index until explicit cleanup" in error
+        for error in diagnostics
+    ), diagnostics
+    pending.unlink()
+    pending.mkdir()
+    assert not scratch._index_path(lease.generation).exists()
+    # Explicit cleanup finds the unindexed payload and applies the bound.
+    preview = scratch.reclaim_terminal_scratch(
+        root,
+        retention=scratch.ScratchRetention(0, 0),
+        dry_run=True,
+        resolve_legacy_archives=True,
+    )
+    assert [item["generation"] for item in preview["would_reclaim"]] == [
+        str(lease.generation)
+    ]
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    assert applied["errors"] == [] and applied["reclaimed"] == [str(lease.generation)]
+    assert not lease.generation.exists()
+
+
+def test_explicit_cleanup_reports_every_unindexed_block_it_keeps(tmp_path):
+    blocked = []
+    for number, reason in (
+        (1, "interrupted scratch transition; payload preserved without retry"),
+        (2, "interrupted before the terminal owner commit; payload preserved"),
+    ):
+        lease, _ = _lease(tmp_path, number)
+        (lease.target / "kept").write_bytes(b"k" * 100 * number)
+        _finish(lease, success=False)
+        owner = _read(lease.generation / "owner.json")
+        write_exact(
+            lease.generation / "owner.json",
+            {**owner, "state": "blocked", "error": reason},
+        )
+        scratch._drop_index(lease.generation)
+        blocked.append((lease, reason))
+    root = blocked[0][0].generation.parent
+    unreadable = root / ("e" * 32)
+    unreadable.mkdir()
+    (unreadable / "owner.json").write_bytes(b"{torn")
+    outside = tmp_path / "outside-generation"
+    outside.mkdir()
+    linked = root / ("f" * 32)
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"host does not permit symlinks: {exc}")
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    for dry_run in (True, False):
+        result = scratch.reclaim_terminal_scratch(
+            root,
+            retention=scratch.ScratchRetention(0, 0),
+            dry_run=dry_run,
+            resolve_legacy_archives=True,
+        )
+        assert result["reclaimed"] == [] and result.get("would_reclaim", []) == []
+        held = {item["generation"]: item for item in result["held"]}
+        for lease, reason in blocked:
+            item = held[str(lease.generation)]
+            assert (item["state"], item["reason"]) == ("blocked", reason)
+            assert item["payload"] == str(lease.generation / "payload")
+            assert item["payload_bytes"] == 100 * int(lease.generation.name[-1])
+        assert held[str(unreadable)]["state"] is None
+        assert "undecodable" in held[str(unreadable)]["reason"]
+        assert held[str(linked)]["reason"] == "not a direct directory; not followed"
+        assert held[str(linked)]["payload_bytes"] is None
+    # A generation its own guard removed after the scan listed it is gone,
+    # not held.
+    assert scratch._visit_unindexed(root / ("a" * 32)) is None
+    assert {
+        path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+    } == before
+
+
+def test_explicit_cleanup_leaves_a_live_unindexed_transition_alone(tmp_path):
+    import subprocess
+    import textwrap
+
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    lease, _ = _lease(tmp_path)
+    (lease.target / "kept").write_bytes(b"k")
+    _finish(lease, success=False)
+    owner = _read(lease.generation / "owner.json")
+    # A live guard between its owner commit and its index: unindexed, locked.
+    write_exact(lease.generation / "owner.json", {**owner, "state": "reclaiming"})
+    scratch._drop_index(lease.generation)
+    holder = start_owned_test_process(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            textwrap.dedent(
+                f"""
+                import time
+                from pathlib import Path
+                from molt import temporary_artifacts as s
+                with s._locked(Path({str(lease.generation)!r})):
+                    print("locked", flush=True)
+                    time.sleep(60)
+                """
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "locked"
+        result = scratch.reclaim_terminal_scratch(
+            lease.generation.parent,
+            retention=scratch.ScratchRetention(0, 0),
+            dry_run=True,
+            resolve_legacy_archives=True,
+        )
+    finally:
+        close_owned_test_process(holder)
+    assert result["protected_count"] == 1 and result["held"] == [], result
+
+
+def test_explicit_apply_verifies_before_it_publishes_an_index(tmp_path, monkeypatch):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "failure").write_bytes(b"regenerable")
+    _finish(lease, success=False)
+    scratch._drop_index(lease.generation)
+    root = lease.generation.parent
+    owner_before = (lease.generation / "owner.json").read_bytes()
+    scan = scratch._visit_unindexed
+
+    def changed_after_scan(generation):
+        visit = scan(generation)
+        # Another directory takes the payload's place before apply.
+        payload = lease.generation / "payload"
+        shutil.rmtree(payload)
+        payload.mkdir()
+        return visit
+
+    monkeypatch.setattr(scratch, "_visit_unindexed", changed_after_scan)
+    applied = scratch.reclaim_terminal_scratch(
+        root, retention=scratch.ScratchRetention(0, 0), resolve_legacy_archives=True
+    )
+    monkeypatch.undo()
+    assert applied["reclaimed"] == [] and applied["errors"], applied
+    # No index and no rewritten owner for a payload that failed verification,
+    # so guard exits do not report it on every sweep.
+    assert not scratch._index_path(lease.generation).exists()
+    assert (lease.generation / "owner.json").read_bytes() == owner_before
+    assert scratch.reclaim_terminal_scratch(root)["errors"] == []
+
+
+@pytest.mark.parametrize("path", ["indexed", "unindexed", "own-success"])
+def test_every_deletion_path_checks_the_allocation_receipt(tmp_path, path):
+    lease, _ = _lease(tmp_path)
+    (lease.target / "kept").write_bytes(b"not provably this allocation's")
+
+    def foreign_receipt(directory: Path) -> None:
+        # A directory that reused the freed inode carries another nonce.
+        write_exact(
+            directory / scratch._TARGET_RECEIPT,
+            {"schema": scratch.SCHEMA, "nonce": "0" * 32},
+        )
+
+    if path == "own-success":
+        foreign_receipt(lease.target)
+        with pytest.raises(ValueError, match="allocation receipt"):
+            _finish(lease)
+        assert (lease.generation / "payload" / "kept").exists()
+        return
+    assert _finish(lease, success=False)["state"] == "retained"
+    foreign_receipt(lease.generation / "payload")
+    if path == "unindexed":
+        scratch._drop_index(lease.generation)
+    root = lease.generation.parent
+    for sweep in range(2):
+        result = scratch.reclaim_terminal_scratch(
+            root,
+            retention=scratch.ScratchRetention(0, 0),
+            resolve_legacy_archives=path == "unindexed",
+        )
+        assert result["reclaimed"] == [], result
+        assert (lease.generation / "payload" / "kept").exists()
+        reports = result["errors"] + [item["reason"] for item in result["held"]]
+        if path == "indexed" and sweep:
+            # Blocked and reported once, like any other residue.
+            assert reports == [], result
+        else:
+            assert any("allocation receipt" in report for report in reports), result
+
+
+def test_explicit_cleanup_command_reads_the_guard_bound(tmp_path, monkeypatch, capsys):
+    leases = []
+    for number in range(1, 4):
+        lease, _ = _lease(tmp_path, number)
+        (lease.target / "failure").write_bytes(b"x" * number)
+        _finish(lease, success=False)
+        leases.append(lease)
+    root = leases[0].generation.parent
+    retention = scratch.ScratchRetention
+    # Replace the authority's default bound: the command must follow it.
+    monkeypatch.setattr(
+        scratch,
+        "ScratchRetention",
+        lambda count=1, bytes=retention().bytes: retention(count, bytes),
+    )
+
+    def command(*arguments: str) -> int:
+        monkeypatch.setattr(
+            sys, "argv", ["temporary_artifacts", "--root", str(root), *arguments]
+        )
+        return scratch._main()
+
+    assert command("--dry-run") == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["retained_count"] == 1
+    assert [item["generation"] for item in preview["would_reclaim"]] == [
+        str(lease.generation) for lease in leases[1::-1]
+    ]
+    assert all(lease.generation.exists() for lease in leases)
+    assert command("--apply", "--count", "2") == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["reclaimed"] == [str(leases[0].generation)]
+    assert [lease.generation.exists() for lease in leases] == [False, True, True]
+    (root / "pending" / "unowned.json").write_bytes(b"{}")
+    assert command("--dry-run") == 1
+    assert "invalid scratch pending entry" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        command("--dry-run", "--apply")

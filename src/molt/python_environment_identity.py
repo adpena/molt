@@ -380,6 +380,13 @@ def python_identity_verifier_arguments(verifier_bytecode_prefix: Path) -> list[s
     ]
 
 
+# A capture walks the environment and its external roots, so its wall time
+# measures disk contention, not work: on 2026-11-01 one capture took 444.6 s
+# wall for 3,470 ms of user CPU (HF-638), and a 120 s bound failed healthy
+# landings. This bound only catches a hung probe; HF-638 owns the capture cost.
+PYTHON_IDENTITY_PROBE_TIMEOUT_S = 900.0
+
+
 def python_identity_probe_arguments(
     arguments: Sequence[str],
     *,
