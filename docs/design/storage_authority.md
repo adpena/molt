@@ -231,17 +231,37 @@ custody rather than following a new binding for regenerable cache.
   require provider-owned pruning. Molt invokes `uv cache prune` and reports a
   remaining over-budget cache instead of manipulating uv's internal objects.
 
-Failed guard scratch is evidence, even when its raw retention cache expires.
-The generation lifetime lock pins a lossless, independently verified archive of
-payload and terminal records; its durable external index is published before
-raw reclamation. New allocations capture their evidence placement at admission.
-Capturing that future destination does not require an explicit artifact directory
-to exist. Archival checks readiness when it writes; durable family bindings
-still require their selected volume at admission.
-Legacy failures lacking that receipt remain untouched for explicit reconciliation.
-An unavailable archive leaves raw bytes intact. Successful scratch remains
-regenerable. Sccache server leftovers have a separate durable evidence class:
-native per-probe cleanup does not grant Molt permission to delete crash signal.
+Failed guard scratch payloads are regenerable (HF-694). Closure and exact
+payload identity, not a successful exit, grant retirement. The existing
+newest-first policy keeps at most three failed payloads and 2 GiB; excess is
+deleted directly after last use. A dead guard follows the same path without
+archival. The retired guard marker's `temporary_artifacts` outcome and the
+landing's existing bounded stream tails carry the failure result; deleting a
+scratch generation does not delete the landing receipt. No tool reads a
+retained payload. A failed deletion keeps the payload retained and indexed,
+records its attempt count with a bounded error sample, and is retried by at
+most three guard exits, then
+reported as an error until explicit cleanup retries it. Errors in the
+shared root, `pending/` and `removing/` namespaces are diagnostic whether
+raised or returned, and cannot change that child's exit or become
+infrastructure failure. A run whose own index the shared namespace refuses
+deletes its payload at once. Current-run custody failures remain failures.
+
+The removed inline compactor traversed, compressed, reread and hashed the whole
+scratch tree before a failed guard could exit, then wrote an unbounded file
+manifest that its 16 MiB reader could refuse forever. No such archive or source
+recovery index is produced now. Explicit dry-run/apply collection in
+`molt.temporary_artifacts` resolves old indexed archives and the old
+producer's two archive block reasons under the same custody and retention
+rules, outside guard exit. A legacy block is a retained failure only after its
+terminal receipt, payload identity and allocation receipt verify; evidence in
+the record decides, not the owner's schema. Cleanup uses the bounded source
+index for coordinates without reading or copying archive content. Unknown
+coordinates stay protected and are reported. Every other unindexed block is
+held and listed with its bytes, never deleted. The
+`scratch-evidence` storage class remains for the distinct legacy-temp
+migration producer; it is not guard scratch. Sccache server leftovers retain
+their separate evidence contract.
 
 Recovery-index names are reserved durable control coordinates. Collectors skip
 them, and the compactor refuses to treat an index itself as raw payload.
@@ -288,10 +308,7 @@ Toolchain removal is the provider/user's
 [`rustup toolchain uninstall`](https://rust-lang.github.io/rustup/examples.html) action;
 Cargo's cache GC is not a rustup toolchain collector.
 
-A failed scratch generation publishes a blocked state before its payload move
-and remains blocked through archival. Only a durable verified archive grants
-retained/reclaimed state, while the parent still holds the lifetime lease.
-Older collectors therefore cannot retire newly produced unarchived failures.
-Interrupted transitions and absent-target diagnostic records use the same
-publication gate. An archive failure leaves blocked evidence for reconciliation;
-ordinary retention verifies and reuses the archive before removing raw bytes.
+Failed scratch uses the same typed lifecycle as successful scratch: terminal
+publication, retiring, retained, reclaiming and reclaimed, with blocked state
+reserved for interrupted or invalid custody. Archive availability grants no
+state transition. Reclamation still refuses identity drift and crash residue.

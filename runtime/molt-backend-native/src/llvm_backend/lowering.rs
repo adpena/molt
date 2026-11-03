@@ -491,6 +491,10 @@ struct FunctionLowering<'ctx, 'func> {
     frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
+    poll_context: Option<(
+        inkwell::values::PointerValue<'ctx>,
+        inkwell::values::PointerValue<'ctx>,
+    )>,
 }
 
 #[cfg(feature = "llvm")]
@@ -590,6 +594,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         frame_homes: None,
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
+        poll_context: None,
     };
 
     // 2. Create LLVM basic blocks for each TIR block.

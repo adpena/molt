@@ -146,8 +146,32 @@ impl WasmFunctionFrame {
         }
     }
 
-    pub(in crate::wasm) fn emit_entry_initializers(&self, func: &mut Function) {
+    pub(in crate::wasm) fn emit_entry_initializers(
+        &self,
+        func: &mut Function,
+        imports: &TrackedImportIds,
+        reloc: bool,
+    ) {
         self.const_cache.emit_init(func);
+        use super::super::frame_locals::WasmFrameSyntheticLocal;
+        if let Some(record) = self
+            .locals
+            .optional_synthetic(WasmFrameSyntheticLocal::ThreadRecord)
+        {
+            emit_call(func, reloc, imports[WasmRuntimeImport::ThreadRecord]);
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::LocalTee(record));
+            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                offset: molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64,
+                align: 3,
+                memory_index: 0,
+            }));
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::LocalSet(
+                self.locals
+                    .synthetic(WasmFrameSyntheticLocal::PendingWorkPtr),
+            ));
+        }
     }
 
     pub(in crate::wasm) fn emit_unwind_scope_start(&self, func: &mut Function) {

@@ -206,6 +206,7 @@ from tools.molt_dev_queue import add_queue_arguments  # noqa: E402
 from tools import venv_exec  # noqa: E402
 from tools.memory_guard_core.repro_context import argv_head  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
+    CancelReason,
     GateOutcome,
     GateRuntime,
     admit_selected_output_capacity,
@@ -217,6 +218,7 @@ from tools.molt_dev_gates import (  # noqa: E402
     run_selected_gates,
 )
 from tools.molt_dev_policy import (  # noqa: E402
+    GATES_CONFIG_NAME,
     Deferred,
     GateConfig,
     GateEnvironment,
@@ -961,6 +963,7 @@ def _gate_runtime(
     receipt_kind: str = "gates",
     mode: LandingMode = LandingMode.PRESUBMIT,
     cancelled: Callable[[], bool] = lambda: False,
+    cancel_reason: CancelReason = CancelReason.PENDING_LANDING,
     deferred: tuple[Deferred, ...] = (),
 ) -> GateRuntime:
     from tools.proof_plan import load_toolchain_policies
@@ -1007,6 +1010,7 @@ def _gate_runtime(
         ),
         mode=mode,
         cancelled=cancelled,
+        cancel_reason=cancel_reason,
         deferred=deferred,
     )
 
@@ -2003,29 +2007,54 @@ def cmd_difftest(args: argparse.Namespace) -> int:
 def cmd_fix(args: argparse.Namespace) -> int:
     """Apply every mechanical repair the read-only gates ask for, in one pass.
 
+    The checkout's proof plan declares the repairs (``repair``); ``land``
+    applies the same steps to a lane before its precheck, against its merge
+    base. ``fix`` repairs the whole checkout: its base is the empty tree, so
+    every path counts as changed and every reproducible generator renders,
+    then the generator check proves every output current. A plan without a
+    ``repair`` section is refused, never reported as repaired.
     Pre-commit hooks stay read-only (they must never rewrite another agent's
     unstaged work); this is the one command their failures point to.
     """
+    from tools.molt_dev_precheck import repair_steps
+
     repo = Path(args.repo).resolve()
     context = prepare_gate_environment(
         repo, ProcessEnvironment(os.environ), requires_python=True
     )
-    python = "python"
-    steps = (
-        ("pin text encodings", f"{python} tools/encoding_gate.py --fix"),
-        ("format Python", f"{python} -m ruff format ."),
-        # One interpreter renders every CI-checkable manifest generator in
-        # upstream order (tools/generators.py), then proves them current.
-        ("regenerate stale generated outputs", f"{python} tools/generators.py write"),
-        ("verify generated outputs", f"{python} tools/generators.py check"),
-    )
-    for name, command in steps:
-        _step(name)
+    plan = repo / "tools" / GATES_CONFIG_NAME
+    try:
+        config = GateConfig.parse(
+            plan.read_text(encoding="utf-8"), str(plan), root=repo
+        )
+        empty_tree = (
+            Git(repo)
+            ._run(["hash-object", "-t", "tree", "--stdin"], input_text="")
+            .stdout.strip()
+        )
+        steps = repair_steps(config, base=empty_tree)
+    except (OSError, DriverError) as exc:
+        _fail(f"fix: cannot read the declared repairs: {exc}")
+        _collect_driver_maintenance(repo, context.environment)
+        return 1
+    if not steps:
+        _fail(f"fix: {plan} declares no `repair` steps; nothing was repaired")
+        _collect_driver_maintenance(repo, context.environment)
+        return 1
+    commands = [
+        *(step.command for step in steps),
+        "python tools/generators.py check",
+    ]
+    for command in commands:
+        _step(f"repair: {_gate_display(command)}")
         if run_gate(command, repo, context) != 0:
-            _fail(f"fix: {name} failed")
+            _fail(f"fix: {_gate_display(command)} failed")
             _collect_driver_maintenance(repo, context.environment)
             return 1
-    _say("fix: encodings pinned, formatted, every generated output current")
+    _say(
+        f"fix: {len(steps)} declared repair step(s) applied to the whole checkout; "
+        "every generated output current"
+    )
     _collect_driver_maintenance(repo, context.environment)
     return 0
 

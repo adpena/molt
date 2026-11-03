@@ -2601,7 +2601,7 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
             ],
             (project if kind.startswith("uv") else tmp_path).resolve(),
             environment,
-            120.0,
+            python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S,
         )
     ]
     assert dict(environment) == {

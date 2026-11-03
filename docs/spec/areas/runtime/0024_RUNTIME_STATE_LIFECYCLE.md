@@ -248,6 +248,14 @@ CPython 3.11+ builds the callee's `_PyInterpreterFrame` from the function object
 (`_PyFrame_PushUnchecked`, `Include/internal/pycore_frame.h`). The same record
 holds the pending-exception byte that inline exception checks load and the
 thread's Python recursion depth, as CPython keeps both on `PyThreadState`.
+
+The same record lends its runtime's atomic pending-work word for inline async
+polls. Its prefix offsets and the work-word width participate in the generated
+object ABI fingerprint (revision 6), so objects needing the new field cannot
+link to a runtime whose old record put recursion depth at that offset. The
+execution lease keeps the borrowed word alive for the invocation, including
+callbacks and isolate switches. [Inline async-work safepoints](../../../design/foundation/inline_async_work_poll.md)
+owns the producer, ordering, reentrancy and backend contract.
 Direct calls charge that depth without entering the object runtime
 (`molt_recursion_enter_fast`); the limit stays runtime policy.
 
