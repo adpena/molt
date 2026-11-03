@@ -6355,6 +6355,45 @@ def test_land_commits_its_declared_repairs_before_the_precheck(
     assert _git(lane, "rev-parse", "HEAD").stdout.strip() == repaired
 
 
+def test_land_repair_commit_runs_the_installed_hooks(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        'repair_toolchains = []\nrepair = ["printf repaired > repaired.txt"]\n'
+        f"always = [{json.dumps(f'echo run >> {shlex.quote(str(counter))}')}]\n",
+    )
+    lane = work.parent / "lane-hooked"
+    head = _lane(work, "hooked", {"a.py": "a = 1\n"})
+    # The lane shares its clone's hooks; this commit-msg hook refuses every
+    # message and records that Git ran it.
+    ran = tmp_path / "hook-ran.txt"
+    hooks = Path(_git(lane, "rev-parse", "--git-common-dir").stdout.strip())
+    hooks = (hooks if hooks.is_absolute() else lane / hooks) / "hooks"
+    hooks.mkdir(exist_ok=True)
+    hook = hooks / "commit-msg"
+    hook.write_text(
+        f'#!/bin/sh\ncat "$1" > {shlex.quote(str(ran))}\n'
+        "echo 'commit-msg: refused by policy' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+
+    with pytest.raises(CandidateFailure, match="refused by policy"):
+        _land_without_runner(drv, monkeypatch, lane)
+
+    from tools.molt_dev_precheck import REPAIR_SUBJECT
+
+    assert ran.read_text(encoding="utf-8").strip() == REPAIR_SUBJECT
+    assert _git(lane, "rev-parse", "HEAD").stdout.strip() == head
+    assert not counter.exists()
+    assert queue.pending(queue.queue_paths(lane)) == []
+
+
 def test_land_queues_nothing_when_a_declared_repair_fails(
     drv, origin_and_clone, monkeypatch
 ):

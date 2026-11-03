@@ -131,7 +131,8 @@ def repair_landing(
 
     The checkout is clean before (``_assert_integration_source``), so every
     path the repairs leave changed is theirs; the commit names exactly those
-    paths. The precheck that follows runs every hook's check as a gate.
+    paths. The installed Git hooks run on it like on any commit; a hook that
+    refuses it stops the landing.
     """
     drv = _driver()
     drv._assert_integration_source(git, head)
@@ -160,18 +161,21 @@ def repair_landing(
     framed = "".join(f"{path}\0" for path in paths)
     spec = ["--pathspec-from-file=-", "--pathspec-file-nul"]
     git._run(["--literal-pathspecs", "add", "--all", *spec], input_text=framed)
-    git._run(
-        [
-            "--literal-pathspecs",
-            "commit",
-            "-q",
-            "--no-verify",
-            "-m",
-            REPAIR_SUBJECT,
-            *spec,
-        ],
+    committed = git._run(
+        ["--literal-pathspecs", "commit", "-q", "-m", REPAIR_SUBJECT, *spec],
+        check=False,
         input_text=framed,
     )
+    if committed.returncode != 0:
+        raise CandidateFailure(
+            f"the repair commit failed (exit {committed.returncode}); a Git hook "
+            "or Git refused it, and the checkout keeps the staged repairs:\n"
+            + "\n".join(
+                stream.strip()
+                for stream in (committed.stdout, committed.stderr)
+                if stream.strip()
+            )
+        )
     repaired = drv.require_git_object_id(git.head_sha(), label="repaired landing")
     drv._assert_integration_source(git, repaired)
     _ok(
