@@ -7155,7 +7155,7 @@ def test_exit_signal_payload_classifies_windows_sigterm_status(
     }
 
 
-def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
+def test_run_guarded_signal_exit_is_unobserved_without_owned_incremental_evidence(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "target"
@@ -7214,8 +7214,65 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
 
     assert result.returncode != 0
     assert result.cargo_incremental_quarantine is not None
-    assert result.cargo_incremental_quarantine.ownership_status == "deferred"
+    assert result.cargo_incremental_quarantine.ownership_status == "unobserved"
+    assert result.cargo_incremental_quarantine.moved_paths == ()
     assert live_file.exists()
+
+
+def test_cancelled_cargo_before_compiler_observation_closes_custody(
+    tmp_path: Path,
+) -> None:
+    """HF-655: a landing cancels a Cargo gate before any rustc starts.
+
+    The guard moves nothing and keeps the cache. The executor's closure check
+    (`_guard_closure_failure`) accepts the result, so the cancelled gate no
+    longer stops the whole gate block.
+    """
+    from tools import proof_plan
+
+    target = tmp_path / "target"
+    live_file = target / "debug" / "incremental" / "unit" / "work.o"
+    live_file.parent.mkdir(parents=True, exist_ok=True)
+    live_file.write_text("work", encoding="utf-8")
+    started = tmp_path / "cargo-started"
+    fake_cargo = tmp_path / ("cargo.cmd" if os.name == "nt" else "cargo")
+    body = (
+        f"import pathlib, time; pathlib.Path({str(started)!r}).touch(); time.sleep(120)"
+    )
+    if os.name == "nt":
+        fake_cargo.write_text(
+            f'@echo off\r\n"{sys.executable}" -c "{body}"\r\n', encoding="utf-8"
+        )
+    else:
+        fake_cargo.write_text(f"#!{sys.executable}\n{body}\n", encoding="utf-8")
+    fake_cargo.chmod(0o755)
+
+    result = memory_guard.run_guarded(
+        [str(fake_cargo)],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        cwd=tmp_path,
+        env={
+            **guard_custody_env(),
+            "CARGO_TARGET_DIR": str(target),
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        },
+        cancellation_requested=started.exists,
+    )
+
+    assert result.cancelled and result.descendants_closed
+    quarantine = result.cargo_incremental_quarantine
+    assert quarantine is not None
+    assert quarantine.ownership_status == "unobserved"
+    assert quarantine.moved_paths == () and quarantine.errors == ()
+    assert live_file.exists()
+    metrics = {
+        "descendants_closed": result.descendants_closed,
+        "cargo_incremental_quarantine": memory_guard._cargo_incremental_quarantine_payload(
+            quarantine
+        ),
+    }
+    assert proof_plan._guard_closure_failure(metrics) is None
 
 
 def _run_guarded_cargo_with_fake_orphan_cleanup(

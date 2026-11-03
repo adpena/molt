@@ -259,6 +259,13 @@ bench = [
     # absent. See bench/corpus/README.md.
     "pyperformance==1.14.0",
 ]
+# The pinned landing controller syncs only this group (`--no-dev`): gate
+# selection reads pytest arguments with pytest's own parser, including
+# installed plugin options such as xdist's `-n` (tools/molt_dev_controller.py).
+controller = [
+    "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
+]
 dev = [
     "ninja==1.13.2",
     "cbor2>=6.1.4",
