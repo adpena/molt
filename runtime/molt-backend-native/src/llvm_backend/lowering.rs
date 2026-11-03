@@ -69,6 +69,11 @@ fn require_function_linkage_abi<'a>(
         // compile driver. Keep their local-only fixture authority out of
         // shipped code while production fails closed on every absent row.
         let returns_value = func.return_abi.returns_value();
+        let facts = backend
+            .function_repr_facts
+            .get(&func.name)
+            .cloned()
+            .unwrap_or_else(|| crate::representation_plan::LlvmReprFacts::build(func));
         std::borrow::Cow::Owned(crate::NativeFunctionLinkageAbi {
             source_signature: crate::ir::ExternFunctionSignature {
                 arity: func.param_types.len(),
@@ -77,8 +82,8 @@ fn require_function_linkage_abi<'a>(
                 execution_context: func.execution_context,
             },
             parameter_custody: Vec::new(),
-            param_types: crate::representation_plan::native_linkage_param_types(func),
-            return_type: returns_value.then(|| func.return_type.clone()),
+            param_types: facts.effective_param_types(func),
+            return_type: returns_value.then(|| facts.effective_return_type(func)),
         })
     }
     #[cfg(not(test))]
@@ -313,7 +318,6 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
                 )
                 .unwrap()
         }
-        TirType::None => i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
         TirType::F64 => {
             let float_val = operand.into_float_value();
             let raw_bits = builder
@@ -333,7 +337,10 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
                 .unwrap()
                 .into_int_value()
         }
-        TirType::DynBox
+        // A None annotation still carries the actual boxed word. Only a
+        // ConstNone producer can supply the singleton, including in homes.
+        TirType::None
+        | TirType::DynBox
         | TirType::BigInt
         | TirType::Str
         | TirType::Bytes
@@ -489,6 +496,7 @@ struct FunctionLowering<'ctx, 'func> {
     /// The entry slot holding the base address of the binding homes that own
     /// a synchronous Python frame's bindings, once `molt_frame_homes` lent it.
     frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
+    owned_frame_entered: Option<inkwell::values::PointerValue<'ctx>>,
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
     poll_context: Option<(
@@ -592,6 +600,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
         frame_homes: None,
+        owned_frame_entered: None,
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
         poll_context: None,
@@ -644,6 +653,8 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
                 .unwrap();
         }
     }
+
+    lowering.initialize_owned_execution_frame();
 
     // 2c. Create synthetic resume blocks for stateful generator/coroutine ops.
 
@@ -911,22 +922,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     ));
                     self.get_undef_for_type(lower_type(self.backend.context, &arg.ty))
                 });
-                // An `int` parameter the plan does NOT prove overflow-safe is
-                // carried BOXED (`DynBox`), exactly as a non-entry phi is (see
-                // the `else` arm). The calling convention passes every argument
-                // NaN-boxed; an unprovable-range int param therefore receives a
-                // boxed value (an inline int OR a heap-BigInt pointer) and the
-                // body must treat it as `DynBox` — using it directly in the
-                // boxed-runtime arithmetic path. Declaring it raw `I64` instead
-                // made the body decode the boxed bits as a raw integer and
-                // re-box them, silently truncating a heap BigInt to its low 47
-                // bits (the trusted-unbox bug-class, at the parameter ABI). Only
-                // a value-range-proven param stays raw `I64`; for it the
-                // caller/trampoline unboxes the inline payload, which is sound
-                // because the range proof guarantees it fits. The LLVM parameter
-                // type is i64 either way, so this changes only the semantic
-                // carrier the body reasons about — matching the native lane,
-                // whose `int` params are likewise boxed words.
+                // Entry values use the same exact-producer carrier decision
+                // as callers and the frozen provider signature. An annotation
+                // cannot decode an arbitrary object as a machine scalar.
                 let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
                 let linkage_ty = require_function_linkage_abi(self.func, self.backend)
                     .param_types
@@ -947,13 +945,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             // Non-entry blocks: create phi nodes for block arguments.
             for (i, arg) in block.args.iter().enumerate() {
-                // A loop-carried integer that the plan does not prove
-                // overflow-safe must travel boxed (DynBox), not as a raw i64
-                // phi. Otherwise a runtime BigInt result flowing back along the
-                // loop edge would be unboxed into a truncating 47-bit payload.
-                // I64 and DynBox both lower to the i64 machine type, so this only
-                // changes the *semantic* carrier; the incoming-edge coercion
-                // boxes the raw-i64 init value to keep the bits consistent.
+                // Every executable incoming value must prove the phi's raw
+                // carrier. Otherwise incoming edges retain boxed ownership.
                 let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
                 let llvm_ty = lower_type(self.backend.context, &effective_ty);
                 let phi = self

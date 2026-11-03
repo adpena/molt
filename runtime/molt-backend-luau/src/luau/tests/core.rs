@@ -3564,7 +3564,7 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
 
 #[test]
 fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
-    let ir = SimpleIR {
+    let mut ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "scalar_identity".to_string(),
@@ -3617,6 +3617,33 @@ fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
         profile: None,
     };
 
+    assert!(
+        LuauBackend::new().compile_checked(&ir).is_err(),
+        "annotations cannot prove that arbitrary Python values have disjoint identities"
+    );
+    let func = &mut ir.functions[0];
+    func.params.clear();
+    func.param_types = None;
+    func.ops.splice(
+        0..0,
+        [
+            OpIR {
+                value: Some(1),
+                out: Some("integer".into()),
+                ..OpIR::new(molt_ir::OpKind::Const)
+            },
+            OpIR {
+                f_value: Some(1.0),
+                out: Some("float".into()),
+                ..OpIR::new(molt_ir::OpKind::ConstFloat)
+            },
+            OpIR {
+                value: Some(1),
+                out: Some("boolean".into()),
+                ..OpIR::new(molt_ir::OpKind::ConstBool)
+            },
+        ],
+    );
     let source = LuauBackend::new().compile_checked(&ir).unwrap();
     assert!(source.contains("local same: boolean = false"), "{source}");
     assert!(

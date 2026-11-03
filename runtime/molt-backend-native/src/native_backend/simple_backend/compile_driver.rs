@@ -238,13 +238,11 @@ impl SimpleBackend {
                                 tir_func.name
                             )
                         });
-                    let param_types = match llvm.function_repr_facts.get(&tir_func.name) {
-                        Some(facts) => facts.effective_param_types(tir_func),
-                        None => tir_func.param_types.clone(),
-                    };
+                    let facts = &llvm.function_repr_facts[&tir_func.name];
+                    let param_types = facts.effective_param_types(tir_func);
                     let return_type = source_signature
                         .returns_value
-                        .then(|| tir_func.return_type.clone());
+                        .then(|| facts.effective_return_type(tir_func));
                     (
                         tir_func.name.clone(),
                         NativeFunctionLinkageAbi {

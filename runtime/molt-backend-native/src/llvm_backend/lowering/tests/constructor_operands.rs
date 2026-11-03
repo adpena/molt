@@ -2679,6 +2679,10 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
     functions.push(adopted_call_loop());
     functions.extend(binding_home_functions(&mut backend));
     for func in &functions {
+        backend
+            .function_repr_facts
+            .entry(func.name.clone())
+            .or_insert_with(|| crate::representation_plan::LlvmReprFacts::build(func));
         let lowered = lower_tir_to_llvm(func, &backend);
         assert_entry_only_allocas(lowered, &lowered.print_to_string().to_string());
     }

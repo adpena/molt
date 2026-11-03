@@ -1276,7 +1276,7 @@ mod numeric_family_tests {
     fn float_divrem_preserves_zero_dispatch_and_python_remainder_sign() {
         for (opcode, runtime) in [(OpCode::Div, "molt_div"), (OpCode::Mod, "molt_mod")] {
             let context = inkwell::context::Context::create();
-            let backend = LlvmBackend::new(&context, "float_divrem_semantics");
+            let mut backend = LlvmBackend::new(&context, "float_divrem_semantics");
             let mut func = TirFunction::new(
                 "float_divrem".into(),
                 vec![TirType::F64, TirType::F64],
@@ -1297,6 +1297,14 @@ mod numeric_family_tests {
             entry.terminator = Terminator::Return {
                 values: vec![result],
             };
+            // Lowerer-only raw-ABI control. Parameter annotations alone are
+            // deliberately boxed in production; this test exercises the
+            // machine float operation's zero, NaN and remainder-sign rules.
+            let mut facts = crate::representation_plan::LlvmReprFacts::default();
+            for value in [ValueId(0), ValueId(1), result] {
+                facts.repr_by_value.insert(value, crate::Repr::FloatUnboxed);
+            }
+            backend.function_repr_facts.insert(func.name.clone(), facts);
             try_lower_tir_to_llvm(&func, &backend).unwrap();
             backend.module.verify().unwrap();
             let ir = backend.module.print_to_string().to_string();

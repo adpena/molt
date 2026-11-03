@@ -37,22 +37,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
     };
-    let op_prefers_float_numeric_lane = |op: &OpIR| {
-        if !scalar_fast_paths_enabled || op_prefers_integer_runtime_lane(op) {
-            return false;
-        }
-        let Some(args) = op.args.as_ref() else {
-            return false;
-        };
-        let (Some(lhs), Some(rhs)) = (args.first(), args.get(1)) else {
-            return false;
-        };
-        let has_float_operand = representation_plan.name_is_float_scalar(lhs)
-            || representation_plan.name_is_float_scalar(rhs);
-        has_float_operand
-            && representation_plan.name_is_numeric_scalar(lhs)
-            && representation_plan.name_is_numeric_scalar(rhs)
-    };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
@@ -95,7 +79,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             // ops branch directly on the raw value, eliminating NaN-box
             // round-trips (box_bool_value + band+icmp extraction).
             let mut lt_raw_bool: Option<Value> = None;
-            let res = if op_prefers_float_numeric_lane(op) {
+            let res = if let Some((lhs, rhs)) = representation_plan
+                .float_numeric_operands(op)
+                .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
+            {
                 let (boxed, raw) = emit_float_numeric_compare(
                     &mut *module,
                     &mut *import_ids,
@@ -106,51 +93,14 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    &args[0],
-                    &args[1],
+                    lhs,
+                    rhs,
                     FloatCC::LessThan,
                 );
                 lt_raw_bool = Some(raw);
                 boxed
             } else if let (Some(lr), Some(rr)) = (lr, rr) {
                 let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
-                let (result, raw_bool) = compare_bool_result_value(
-                    &mut *builder,
-                    representation_plan,
-                    op.out.as_ref(),
-                    cmp,
-                    nbc,
-                );
-                lt_raw_bool = Some(raw_bool);
-                result
-            } else if scalar_fast_paths_enabled
-                && representation_plan.name_is_float_scalar(&args[0])
-                && representation_plan.name_is_float_scalar(&args[1])
-            {
-                // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let lf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[0],
-                );
-                let rf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[1],
-                );
-                let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
                     representation_plan,
@@ -253,7 +203,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut le_raw_bool: Option<Value> = None;
-            let res = if op_prefers_float_numeric_lane(op) {
+            let res = if let Some((lhs, rhs)) = representation_plan
+                .float_numeric_operands(op)
+                .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
+            {
                 let (boxed, raw) = emit_float_numeric_compare(
                     &mut *module,
                     &mut *import_ids,
@@ -264,51 +217,14 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    &args[0],
-                    &args[1],
+                    lhs,
+                    rhs,
                     FloatCC::LessThanOrEqual,
                 );
                 le_raw_bool = Some(raw);
                 boxed
             } else if let (Some(lr), Some(rr)) = (lr, rr) {
                 let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
-                let (result, raw_bool) = compare_bool_result_value(
-                    &mut *builder,
-                    representation_plan,
-                    op.out.as_ref(),
-                    cmp,
-                    nbc,
-                );
-                le_raw_bool = Some(raw_bool);
-                result
-            } else if scalar_fast_paths_enabled
-                && representation_plan.name_is_float_scalar(&args[0])
-                && representation_plan.name_is_float_scalar(&args[1])
-            {
-                // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let lf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[0],
-                );
-                let rf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[1],
-                );
-                let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
                     representation_plan,
@@ -413,7 +329,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut gt_raw_bool: Option<Value> = None;
-            let res = if op_prefers_float_numeric_lane(op) {
+            let res = if let Some((lhs, rhs)) = representation_plan
+                .float_numeric_operands(op)
+                .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
+            {
                 let (boxed, raw) = emit_float_numeric_compare(
                     &mut *module,
                     &mut *import_ids,
@@ -424,51 +343,14 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    &args[0],
-                    &args[1],
+                    lhs,
+                    rhs,
                     FloatCC::GreaterThan,
                 );
                 gt_raw_bool = Some(raw);
                 boxed
             } else if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                 let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
-                let (result, raw_bool) = compare_bool_result_value(
-                    &mut *builder,
-                    representation_plan,
-                    op.out.as_ref(),
-                    cmp,
-                    nbc,
-                );
-                gt_raw_bool = Some(raw_bool);
-                result
-            } else if scalar_fast_paths_enabled
-                && representation_plan.name_is_float_scalar(&args[0])
-                && representation_plan.name_is_float_scalar(&args[1])
-            {
-                // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let lf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[0],
-                );
-                let rf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[1],
-                );
-                let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
                     representation_plan,
@@ -573,7 +455,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut ge_raw_bool: Option<Value> = None;
-            let res = if op_prefers_float_numeric_lane(op) {
+            let res = if let Some((lhs, rhs)) = representation_plan
+                .float_numeric_operands(op)
+                .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
+            {
                 let (boxed, raw) = emit_float_numeric_compare(
                     &mut *module,
                     &mut *import_ids,
@@ -584,51 +469,14 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    &args[0],
-                    &args[1],
+                    lhs,
+                    rhs,
                     FloatCC::GreaterThanOrEqual,
                 );
                 ge_raw_bool = Some(raw);
                 boxed
             } else if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                 let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
-                let (result, raw_bool) = compare_bool_result_value(
-                    &mut *builder,
-                    representation_plan,
-                    op.out.as_ref(),
-                    cmp,
-                    nbc,
-                );
-                ge_raw_bool = Some(raw_bool);
-                result
-            } else if scalar_fast_paths_enabled
-                && representation_plan.name_is_float_scalar(&args[0])
-                && representation_plan.name_is_float_scalar(&args[1])
-            {
-                // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let lf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[0],
-                );
-                let rf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[1],
-                );
-                let cmp = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
                     representation_plan,
@@ -735,7 +583,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let eq_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let eq_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut eq_raw_bool: Option<Value> = None;
-            let res = if op_prefers_float_numeric_lane(op) {
+            let res = if let Some((lhs, rhs)) = representation_plan
+                .float_numeric_operands(op)
+                .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
+            {
                 let (boxed, raw) = emit_float_numeric_compare(
                     &mut *module,
                     &mut *import_ids,
@@ -746,8 +597,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    &args[0],
-                    &args[1],
+                    lhs,
+                    rhs,
                     FloatCC::Equal,
                 );
                 eq_raw_bool = Some(raw);
@@ -756,43 +607,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 // Both operands have raw int shadows: direct icmp,
                 // no unboxing needed.
                 let cmp = builder.ins().icmp(IntCC::Equal, lr, rr);
-                let (result, raw_bool) = compare_bool_result_value(
-                    &mut *builder,
-                    representation_plan,
-                    op.out.as_ref(),
-                    cmp,
-                    nbc,
-                );
-                eq_raw_bool = Some(raw_bool);
-                result
-            } else if scalar_fast_paths_enabled
-                && representation_plan.name_is_float_scalar(&args[0])
-                && representation_plan.name_is_float_scalar(&args[1])
-            {
-                // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let lf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[0],
-                );
-                let rf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[1],
-                );
-                let cmp = builder.ins().fcmp(FloatCC::Equal, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
                     representation_plan,
@@ -877,7 +691,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let ne_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let ne_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut ne_raw_bool: Option<Value> = None;
-            let res = if op_prefers_float_numeric_lane(op) {
+            let res = if let Some((lhs, rhs)) = representation_plan
+                .float_numeric_operands(op)
+                .filter(|_| scalar_fast_paths_enabled && !op_prefers_integer_runtime_lane(op))
+            {
                 let (boxed, raw) = emit_float_numeric_compare(
                     &mut *module,
                     &mut *import_ids,
@@ -888,8 +705,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     representation_plan,
                     nbc,
                     op.out.as_ref(),
-                    &args[0],
-                    &args[1],
+                    lhs,
+                    rhs,
                     FloatCC::NotEqual,
                 );
                 ne_raw_bool = Some(raw);
@@ -897,43 +714,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             } else if let (Some(lr), Some(rr)) = (ne_lr, ne_rr) {
                 // Both operands have raw int shadows: direct icmp.
                 let cmp = builder.ins().icmp(IntCC::NotEqual, lr, rr);
-                let (result, raw_bool) = compare_bool_result_value(
-                    &mut *builder,
-                    representation_plan,
-                    op.out.as_ref(),
-                    cmp,
-                    nbc,
-                );
-                ne_raw_bool = Some(raw_bool);
-                result
-            } else if scalar_fast_paths_enabled
-                && representation_plan.name_is_float_scalar(&args[0])
-                && representation_plan.name_is_float_scalar(&args[1])
-            {
-                // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let lf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[0],
-                );
-                let rf = float_value_for_mixed(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    &args[1],
-                );
-                let cmp = builder.ins().fcmp(FloatCC::NotEqual, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
                     representation_plan,

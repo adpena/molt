@@ -154,6 +154,7 @@ fn make_dummy_lowering<'ctx, 'func>(
         guard_profile_flag: None,
         poll_context: None,
         frame_homes: None,
+        owned_frame_entered: None,
     }
 }
 

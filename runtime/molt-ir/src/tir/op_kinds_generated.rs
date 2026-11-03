@@ -29059,7 +29059,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
-        | OpKind::BindingAlias
         | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
@@ -29573,7 +29572,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => false,
-        OpKind::FrameHomeStore => true,
+        OpKind::BindingAlias | OpKind::FrameHomeStore => true,
     }
 }
 

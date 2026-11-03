@@ -49,18 +49,15 @@ The remaining name-based transport is an explicit migration boundary; it does
 not establish completion of the typed-backend architecture or of WASM's later
 reachability path. Qualification is recorded in the findings ledger.
 
-The shared plan still performs its existing analysis-floor LIR projection,
-including a typed-body clone/refinement and conservative weak names for
-analysis-only values. Those names do not override explicit emitted facts.
-This is remaining fact-extraction work to measure and reconcile through the
-value-keyed authority; removing codegen re-lifting does not prove its cost is
-optimal or that all name-based analysis has retired.
-The initial native cache pipeline also requests LIR verification on cache hits
-and misses, materializing AnalysisFloor before final extraction. This is a
-separate user compile-time cost to measure. The direct typed migration must
-preserve the useful verification invariants while retiring representations that
-native codegen does not consume; disabling a check alone does not prove that
-contract.
+The shared plan projects exact producer witnesses and physical carriers directly
+from TIR. The former analysis-floor LIR path and its duplicate integer inference
+are removed. Conservative synthetic names cannot override explicit emitted
+facts. The initial native cache pipeline retains LIR verification on cache hits
+and misses through the actual producer/range lowering path; signatures and
+values consume the same carrier projection. This preserves the verifier's
+invariants without granting annotation-derived machine permissions. Remaining
+name transport and compilation cost still require measurement; this migration
+does not establish completion of the typed-backend architecture.
 
 ## Representation and operation boundaries
 

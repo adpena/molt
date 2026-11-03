@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use super::super::*;
+use crate::tir::lir::LirRepr;
 use crate::tir::values::ValueId;
 
 // ======================================================================
@@ -704,6 +705,55 @@ fn bool_select_range_proof_does_not_promote_to_raw_i64() {
 }
 
 #[test]
+fn return_slots_join_raw_full_width_and_boxed_integer_producers_as_boxed() {
+    let mut func = TirFunction::new(
+        "mixed_integer_returns".into(),
+        vec![TirType::Bool, TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let wide = func.fresh_value();
+    let raw_exit = func.fresh_block();
+    let boxed_exit = func.fresh_block();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(tir_cint(wide, i64::MAX));
+    entry.terminator = Terminator::CondBranch {
+        cond: ValueId(0),
+        then_block: raw_exit,
+        then_args: vec![],
+        else_block: boxed_exit,
+        else_args: vec![],
+    };
+    for (block, value) in [(raw_exit, wide), (boxed_exit, ValueId(1))] {
+        func.blocks.insert(
+            block,
+            TirBlock {
+                id: block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![value],
+                },
+            },
+        );
+    }
+    let ranges = value_range_for(&func);
+    let repr = repr_by_value_for(&func, Some(&ranges));
+    assert_eq!(repr[&wide], Repr::RawI64FullDeopt);
+    assert_eq!(repr[&ValueId(1)], Repr::MaybeBigInt);
+    assert_eq!(native_linkage_types(&func).1, TirType::DynBox);
+    let lir = crate::tir::lower_to_lir::lower_function_to_lir(&func);
+    assert_eq!(lir.return_types, vec![TirType::DynBox]);
+    assert!(
+        lir.blocks[&raw_exit]
+            .ops
+            .iter()
+            .any(|op| op.tir_op.opcode == TirOpCode::BoxVal)
+    );
+    assert!(lir.blocks[&boxed_exit].ops.is_empty());
+}
+
+#[test]
 fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
     for ty in [TirType::Bool, TirType::F64, TirType::I64] {
         let mut func = TirFunction::new(
@@ -730,6 +780,11 @@ fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
         entry.terminator = Terminator::Return {
             values: vec![called_copy],
         };
+        assert_eq!(
+            native_linkage_types(&func),
+            (vec![TirType::DynBox], TirType::DynBox),
+            "a frozen provider/caller ABI must reject every annotation-only scalar"
+        );
         let range = value_range_for(&func);
         for range in [None, Some(&range)] {
             let repr = repr_by_value_for(&func, range);
@@ -752,10 +807,15 @@ fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
             }
         }
         #[cfg(feature = "llvm")]
-        assert_eq!(
-            repr_by_value_for(&func, Some(&range)),
-            LlvmReprFacts::build(&func).repr_by_value
-        );
+        {
+            let facts = LlvmReprFacts::build(&func);
+            assert_eq!(repr_by_value_for(&func, Some(&range)), facts.repr_by_value);
+            assert_eq!(facts.effective_param_types(&func), vec![TirType::DynBox]);
+            assert_eq!(facts.effective_return_type(&func), TirType::DynBox);
+            for value in [parameter, copied, called, called_copy] {
+                assert_eq!(facts.effective_value_type(value, &ty), TirType::DynBox);
+            }
+        }
     }
 }
 
@@ -846,6 +906,18 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
             let range = value_range_for(&func);
             let repr = repr_by_value_for(&func, Some(&range));
             let native = native_projectable_scalar_reprs_for(&func, &repr);
+            let expected_carrier = if opaque_on_left.is_none() {
+                ty.clone()
+            } else {
+                TirType::DynBox
+            };
+            assert_eq!(native_linkage_types(&func).1, expected_carrier);
+            let lir = crate::tir::lower_to_lir::lower_function_to_lir(&func);
+            assert_eq!(lir.return_types, vec![expected_carrier.clone()]);
+            assert_eq!(
+                lir.blocks[&join].args[0].repr,
+                LirRepr::for_type(&expected_carrier)
+            );
             let exact = match ty {
                 TirType::Bool => Repr::Bool,
                 TirType::F64 => Repr::FloatUnboxed,
@@ -879,7 +951,12 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
                 );
             }
             #[cfg(feature = "llvm")]
-            assert_eq!(repr, LlvmReprFacts::build(&func).repr_by_value);
+            {
+                let facts = LlvmReprFacts::build(&func);
+                assert_eq!(repr, facts.repr_by_value);
+                assert_eq!(facts.effective_value_type(phi, &ty), expected_carrier);
+                assert_eq!(facts.effective_return_type(&func), expected_carrier);
+            }
         }
     }
 }
