@@ -1602,22 +1602,6 @@ impl SimpleBackend {
                         &mut block_tracked_ptr,
                     );
                 }
-                // handle_dataclass_op family — extracted to fc::dataclass (M1)
-                fc::NativeOpFamily::Dataclass => {
-                    fc::dataclass::handle_dataclass_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
                 // handle_compare_op family - extracted to fc::compare (M1)
                 fc::NativeOpFamily::Compare => {
                     fc::compare::handle_compare_op(

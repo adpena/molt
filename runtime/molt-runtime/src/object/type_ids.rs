@@ -13,7 +13,6 @@ pub(crate) const TYPE_TAG_TUPLE: i64 = 9;
 pub(crate) const TYPE_TAG_DICT: i64 = 10;
 pub(crate) const TYPE_TAG_RANGE: i64 = 11;
 pub(crate) const TYPE_TAG_SLICE: i64 = 12;
-pub(crate) const TYPE_TAG_DATACLASS: i64 = 13;
 pub(crate) const TYPE_TAG_BUFFER2D: i64 = 14;
 pub(crate) const TYPE_TAG_MEMORYVIEW: i64 = 15;
 // Tag 16 is retired with the `intarray` heap kind and is never reused.

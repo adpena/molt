@@ -765,14 +765,6 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
             if reject_abstract_object_new(_py, cls_ptr) {
                 return MoltObject::none().bits();
             }
-            if let Some(instance) =
-                crate::object::builders::alloc_dataclass_for_class_ptr(_py, cls_ptr, cls_bits)
-            {
-                return instance;
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
             alloc_instance_for_class(_py, cls_ptr)
         }
     })
@@ -1005,15 +997,6 @@ pub(crate) unsafe fn object_set_class(
             return Err(());
         }
         if crate::object::class_finish_definition(_py, class_ptr).is_err() {
-            return Err(());
-        }
-        if object_type_id(obj_ptr) == TYPE_ID_DATACLASS {
-            // Dataclass values carry descriptor-owned field storage whose
-            // physical compatibility is not described by generic class field
-            // offsets. Unpublished construction has a separate initializer;
-            // published reassignment remains closed until that representation
-            // has a sealed compatibility authority.
-            reject_class_attachment::<()>(_py);
             return Err(());
         }
 

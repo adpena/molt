@@ -1865,7 +1865,7 @@ fn object_getstate_default(_py: &crate::PyToken<'_>, _self_bits: u64, required: 
         return MoltObject::none().bits();
     };
     let type_id = unsafe { object_type_id(ptr) };
-    if required && !matches!(type_id, crate::TYPE_ID_OBJECT | crate::TYPE_ID_DATACLASS) {
+    if required && !matches!(type_id, crate::TYPE_ID_OBJECT) {
         return crate::raise_exception::<u64>(
             _py,
             crate::BuiltinExc::TypeError,
@@ -1877,7 +1877,6 @@ fn object_getstate_default(_py: &crate::PyToken<'_>, _self_bits: u64, required: 
     }
     if !unsafe { crate::object::object_has_class_shape(ptr) }
         && !unsafe { crate::object::native_instance::has_fields(ptr) }
-        && type_id != crate::TYPE_ID_DATACLASS
     {
         return MoltObject::none().bits();
     }
@@ -2139,9 +2138,6 @@ pub(crate) fn object_getattribute(
                             _py, obj_ptr, name_bits, suppress,
                         )
                     }
-                    TYPE_ID_DATACLASS => crate::builtins::attr::dataclass_attr_lookup_inner(
-                        _py, obj_ptr, name_bits, None, suppress,
-                    ),
                     TYPE_ID_TYPE => {
                         // Generic lookup sees the physical object dictionary:
                         // heap types alias their own namespace; static types
@@ -2161,45 +2157,7 @@ pub(crate) fn object_getattribute(
                 if suppress {
                     return Ok(None);
                 }
-                if type_id == TYPE_ID_DATACLASS {
-                    let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                    if !desc_ptr.is_null() && (*desc_ptr).slots && !(*desc_ptr).allows_dict {
-                        let name = &(*desc_ptr).name;
-                        let type_label = if name.is_empty() {
-                            "dataclass"
-                        } else {
-                            name.as_str()
-                        };
-                        return {
-                            let _ = attr_error_with_obj(
-                                _py,
-                                type_label,
-                                &attr_name,
-                                MoltObject::from_ptr(obj_ptr).bits(),
-                            );
-                            Err(())
-                        };
-                    }
-                    let type_label = if !desc_ptr.is_null() {
-                        let name = &(*desc_ptr).name;
-                        if name.is_empty() {
-                            "dataclass"
-                        } else {
-                            name.as_str()
-                        }
-                    } else {
-                        "dataclass"
-                    };
-                    return {
-                        let _ = attr_error_with_obj(
-                            _py,
-                            type_label,
-                            &attr_name,
-                            MoltObject::from_ptr(obj_ptr).bits(),
-                        );
-                        Err(())
-                    };
-                }
+
                 if type_id == TYPE_ID_TYPE {
                     let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
                         .unwrap_or_default();

@@ -115,7 +115,6 @@ ALLOWED = {
         "range",
         "slice",
         "exception",
-        "dataclass",
         "buffer2d",
         "context_manager",
         "file_handle",

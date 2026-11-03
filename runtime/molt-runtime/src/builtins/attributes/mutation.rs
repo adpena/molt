@@ -904,31 +904,7 @@ unsafe fn set_attr_ptr_with_name(
             attr_error(_py, "code", attr_name);
             return Err(());
         }
-        if type_id == TYPE_ID_DATACLASS {
-            if access == AttributeMutation::Normal
-                && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && dispatch_custom_mutation(
-                    _py,
-                    class_ptr,
-                    obj_ptr,
-                    attr_bits,
-                    DescriptorMutation::Set(val_bits),
-                    CustomMutationDefaultPolicy::InvokeAnyHook,
-                )? == CustomMutationDispatch::Handled
-            {
-                return Ok(());
-            }
-            let result = dataclass_setattr_inner(
-                _py,
-                obj_ptr,
-                attr_bits,
-                attr_name,
-                val_bits,
-                access == AttributeMutation::Normal,
-            );
-            return result;
-        }
+
         if crate::object::heap_kind_has_class_shape(type_id)
             || crate::object::native_instance::has_fields(obj_ptr)
             || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
@@ -1205,29 +1181,7 @@ unsafe fn del_attr_ptr_with_access(
             attr_error(_py, "function", attr_name);
             return Err(());
         }
-        if type_id == TYPE_ID_DATACLASS {
-            if access == AttributeMutation::Normal
-                && let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && dispatch_custom_mutation(
-                    _py,
-                    class_ptr,
-                    obj_ptr,
-                    attr_bits,
-                    DescriptorMutation::Delete,
-                    CustomMutationDefaultPolicy::InvokeAnyHook,
-                )? == CustomMutationDispatch::Handled
-            {
-                return Ok(());
-            }
-            return dataclass_delattr_inner(
-                _py,
-                obj_ptr,
-                attr_bits,
-                attr_name,
-                access == AttributeMutation::Normal,
-            );
-        }
+
         if crate::object::heap_kind_has_class_shape(type_id)
             || crate::object::native_instance::has_fields(obj_ptr)
             || !crate::object::instance_dict_bits_ptr(obj_ptr).is_null()
@@ -1360,82 +1314,6 @@ pub(crate) unsafe fn object_setattr_raw(
     }
 }
 
-unsafe fn dataclass_setattr_inner(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-    attr_name: &str,
-    val_bits: u64,
-    enforce_frozen: bool,
-) -> Result<(), ()> {
-    unsafe {
-        let desc_ptr = dataclass_desc_ptr(obj_ptr);
-        if enforce_frozen && !desc_ptr.is_null() && (*desc_ptr).frozen {
-            raise_exception::<()>(
-                _py,
-                BuiltinExc::TypeError,
-                "cannot assign to frozen dataclass field",
-            );
-            return Err(());
-        }
-        if !desc_ptr.is_null() {
-            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name)
-                && crate::object::field_storage::field_at_offset(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                )
-                .is_some_and(|field| field.kind.is_declared_slot())
-            {
-                return crate::object::accessors::object_field_set_ptr_raw(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                    val_bits,
-                );
-            }
-            if class_bits != 0
-                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?
-                && apply_descriptor_mutation(
-                    _py,
-                    desc_bits,
-                    instance_bits_for_call(obj_ptr),
-                    DescriptorMutation::Set(val_bits),
-                )?
-            {
-                return Ok(());
-            }
-            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
-                return crate::object::accessors::object_field_set_ptr_raw(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                    val_bits,
-                );
-            }
-            if !(*desc_ptr).allows_dict {
-                let name = &(*desc_ptr).name;
-                let type_label = if name.is_empty() {
-                    "dataclass"
-                } else {
-                    name.as_str()
-                };
-                attr_error_with_obj(
-                    _py,
-                    type_label,
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
-                return Err(());
-            }
-        }
-        crate::object::field_storage::set_item(_py, obj_ptr, attr_bits, val_bits)
-    }
-}
-
 pub(crate) unsafe fn object_delattr_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1532,93 +1410,6 @@ pub(crate) unsafe fn object_delattr_raw(
             return Err(());
         }
         attr_error(_py, class_name_for_error(class_bits), attr_name);
-        Err(())
-    }
-}
-
-unsafe fn dataclass_delattr_inner(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-    attr_name: &str,
-    enforce_frozen: bool,
-) -> Result<(), ()> {
-    unsafe {
-        let desc_ptr = dataclass_desc_ptr(obj_ptr);
-        if !desc_ptr.is_null() {
-            let class_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
-            if class_bits != 0
-                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                && object_type_id(class_ptr) == TYPE_ID_TYPE
-                && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?
-                && apply_descriptor_mutation(
-                    _py,
-                    desc_bits,
-                    instance_bits_for_call(obj_ptr),
-                    DescriptorMutation::Delete,
-                )?
-            {
-                return Ok(());
-            }
-            if enforce_frozen && (*desc_ptr).frozen {
-                raise_exception::<()>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "cannot delete frozen dataclass field",
-                );
-                return Err(());
-            }
-            if let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name) {
-                if crate::object::accessors::object_field_delete_ptr_raw(
-                    _py,
-                    obj_ptr,
-                    index * std::mem::size_of::<u64>(),
-                )? {
-                    return Ok(());
-                }
-                attr_error_with_obj(
-                    _py,
-                    &(*desc_ptr).name,
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
-                return Err(());
-            }
-            if !(*desc_ptr).allows_dict {
-                let name = &(*desc_ptr).name;
-                let type_label = if name.is_empty() {
-                    "dataclass"
-                } else {
-                    name.as_str()
-                };
-                attr_error_with_obj(
-                    _py,
-                    type_label,
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
-                return Err(());
-            }
-        }
-        if crate::object::accessors::instance_attribute_delete(_py, obj_ptr, attr_bits)? {
-            return Ok(());
-        }
-        let type_label = if !desc_ptr.is_null() {
-            let name = &(*desc_ptr).name;
-            if name.is_empty() {
-                "dataclass"
-            } else {
-                name.as_str()
-            }
-        } else {
-            "dataclass"
-        };
-        attr_error_with_obj(
-            _py,
-            type_label,
-            attr_name,
-            MoltObject::from_ptr(obj_ptr).bits(),
-        );
         Err(())
     }
 }
@@ -1730,9 +1521,6 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                     mutation,
                 );
             };
-            if super::field_sites::write_cached_field(py, site_id, obj_bits, val_bits) {
-                return MoltObject::none().bits();
-            }
             let Some(length) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(
                     py,
@@ -1741,6 +1529,9 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                 );
             };
             let bytes = std::slice::from_raw_parts(attr_name_ptr, length);
+            if super::field_sites::write_cached_field(py, site_id, obj_bits, val_bits, bytes) {
+                return MoltObject::none().bits();
+            }
             let Some(name) = dynamic_attr_name_bits(py, bytes) else {
                 return MoltObject::none().bits();
             };

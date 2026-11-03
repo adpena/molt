@@ -428,15 +428,9 @@ unsafe fn managed_slot_location(
         }
         let object = instance_ptr.unwrap();
         if let Some(field) = managed_slot_field(py, MoltObject::from_ptr(descriptor).bits()) {
-            let offset = if object_type_id(object) == TYPE_ID_DATACLASS {
-                crate::object::field_storage::dataclass_slot_storage_offset(object, field.offset)
-            } else {
-                Some(field.offset)
-            };
-            if let Some(offset) = offset {
-                return Some((object, offset));
-            }
+            return Some((object, field.offset));
         }
+
         raise_exception::<()>(
             py,
             BuiltinExc::SystemError,

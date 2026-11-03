@@ -13,10 +13,10 @@ use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT, GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
-    STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_TYPE,
-    class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_set_in_place, inc_ref_bits,
-    instance_dict_bits, is_missing_bits, obj_from_bits, object_class_bits, object_mark_has_ptrs,
-    object_type_id, profile_hit, raise_exception, to_i64, usize_from_bits,
+    STRUCT_FIELD_STORE_COUNT, TYPE_ID_DICT, TYPE_ID_TYPE, class_layout_version_bits, dec_ref_bits,
+    dict_get_in_place, dict_set_in_place, inc_ref_bits, instance_dict_bits, is_missing_bits,
+    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_hit,
+    raise_exception, to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -44,22 +44,7 @@ unsafe fn object_field_slot_ptr(
         if obj_ptr.is_null() {
             return None;
         }
-        if object_type_id(obj_ptr) == TYPE_ID_DATACLASS {
-            let fields = super::dataclass_fields_ptr(obj_ptr);
-            let index = offset / std::mem::size_of::<u64>();
-            if !offset.is_multiple_of(std::mem::size_of::<u64>())
-                || fields.is_null()
-                || index >= (*fields).len()
-            {
-                raise_exception::<()>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "dataclass field index out of range",
-                );
-                return None;
-            }
-            return Some((*fields).as_mut_ptr().add(index));
-        }
+
         if (debug_field_bounds_enabled() || super::native_instance::has_fields(obj_ptr))
             && offset
                 .checked_add(std::mem::size_of::<u64>())

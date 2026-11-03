@@ -157,9 +157,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::ContextEnter
         | OpKind::ContextExit
         | OpKind::Copy
-        | OpKind::DataclassGet
-        | OpKind::DataclassSet
-        | OpKind::DataclassSetClass
         | OpKind::DecRef
         | OpKind::DelAttr
         | OpKind::DelAttrGenericObj

@@ -154,7 +154,7 @@ fn cold_managed_readiness_exposes_existing_slots_and_tracks_mutation() {
             );
             assert_eq!(typeobj::PyType_Ready(tp), 0);
 
-            let runtime_instance = snapshot_receiver(py, class, false);
+            let runtime_instance = snapshot_receiver(py, class);
             let managed = OwnedPyObject::from_owned(
                 GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(runtime_instance),
             );

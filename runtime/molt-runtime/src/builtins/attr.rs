@@ -15,20 +15,19 @@ use crate::builtins::exceptions::{
 };
 use crate::{
     ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
-    TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_FILTER, TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER,
-    TYPE_ID_ITER, TYPE_ID_MAP, TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
+    TYPE_ID_CLASSMETHOD, TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER,
+    TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
+    TYPE_ID_MAP, TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
     TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs,
     alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple, builtin_class_method_bits,
     builtin_classes, builtin_func_bits, call_callable0, call_callable1, call_callable2,
     call_callable3, class_bases_bits, class_bases_vec, class_dict_bits, class_layout_version_bits,
-    class_mro_pinned, class_mro_view, class_name_bits, clear_exception, dataclass_desc_ptr,
-    dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_last_bits_noinc,
-    exception_pending, inc_ref_bits, init_atomic_bits, is_builtin_class_bits, maybe_ptr_from_bits,
-    module_dict_bits, molt_awaitable_await, molt_bound_method_new, molt_function_get_code,
-    molt_function_get_globals, obj_from_bits, object_class_bits, object_type_id,
-    profile_hit_unchecked, raise_exception, runtime_state, string_bytes, string_len,
-    string_obj_to_owned, type_name, type_of_bits,
+    class_mro_pinned, class_mro_view, class_name_bits, clear_exception, dec_ref_bits,
+    dict_get_in_place, dict_set_in_place, exception_last_bits_noinc, exception_pending,
+    inc_ref_bits, init_atomic_bits, is_builtin_class_bits, maybe_ptr_from_bits, module_dict_bits,
+    molt_awaitable_await, molt_bound_method_new, molt_function_get_code, molt_function_get_globals,
+    obj_from_bits, object_class_bits, object_type_id, profile_hit_unchecked, raise_exception,
+    runtime_state, string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
 };
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
@@ -2489,9 +2488,6 @@ pub(crate) unsafe fn object_attr_lookup_with_dict(
 ) -> Result<Option<u64>, ()> {
     unsafe {
         let pointer = maybe_ptr_from_bits(object).unwrap_or(std::ptr::null_mut());
-        if !pointer.is_null() && object_type_id(pointer) == TYPE_ID_DATACLASS {
-            return dataclass_attr_lookup_inner(py, pointer, name, Some(dictionary), suppress);
-        }
         object_attr_lookup_inner(
             py,
             object,
@@ -2649,8 +2645,7 @@ pub(crate) struct MethodIcResolution {
     pub(crate) class_version: u64,
     pub(crate) func_bits: u64,
     /// Whether an instance of this class could carry an OWN attribute of this
-    /// name (an instance dictionary, an inferred field slot, or a dataclass
-    /// field). When false, instance-shadow checks may be skipped on IC hits:
+    /// name (an instance dictionary or an inferred field slot). When false, instance-shadow checks may be skipped on IC hits:
     /// a non-data class method can never be shadowed.
     pub(crate) can_shadow: bool,
 }
@@ -2672,8 +2667,7 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
 ) -> Result<Option<R>, ()> {
     unsafe {
         crate::gil_assert();
-        let type_id = object_type_id(obj_ptr);
-        if !crate::object::object_has_class_shape(obj_ptr) && type_id != TYPE_ID_DATACLASS {
+        if !crate::object::object_has_class_shape(obj_ptr) {
             return Ok(None);
         }
         let class_bits = object_class_bits(obj_ptr);
@@ -2741,8 +2735,7 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
             crate::object::layout::class_field_offsets_bits(class_ptr),
             attr_bits,
         );
-        let can_shadow = type_id == TYPE_ID_DATACLASS
-            || slots.allows_dict
+        let can_shadow = slots.allows_dict
             || offset.is_some_and(|offset| {
                 crate::object::class_layout::field_at_offset(class_ptr, offset)
                     .is_some_and(|field| field.kind.is_inferred())
@@ -2759,9 +2752,7 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
 /// Return one owned instance-tier hit for a captured plain method selection.
 /// A shadowing callback is part of this lookup and must not be repeated by a
 /// fallback. The caller either calls this value or consumes its captured method.
-/// A dataclass instance keeps its fields in the storage its descriptor maps,
-/// which the generic lookup reads before any class attribute; a class-shaped
-/// instance keeps them at the class layout's inferred offsets.
+/// Class-shaped instances use the class layout's inferred offsets.
 pub(crate) unsafe fn object_instance_attribute(
     py: &PyToken<'_>,
     object: *mut u8,
@@ -2769,11 +2760,7 @@ pub(crate) unsafe fn object_instance_attribute(
     name: u64,
 ) -> Result<Option<u64>, ()> {
     unsafe {
-        let offset = if object_type_id(object) == TYPE_ID_DATACLASS {
-            dataclass_field_offset(object, name)
-        } else {
-            class_inferred_field_offset(py, class, name)?
-        };
+        let offset = class_inferred_field_offset(py, class, name)?;
         crate::object::accessors::instance_attribute_lookup(py, object, name, offset)
     }
 }
@@ -2917,126 +2904,5 @@ pub(crate) unsafe fn super_resolve_method_unbound(
             self_class_version,
             func_bits: value,
         }))
-    }
-}
-
-#[cfg(test)]
-pub(crate) unsafe fn dataclass_attr_lookup_raw(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe { dataclass_attr_lookup_inner(_py, obj_ptr, attr_bits, None, false) }
-}
-
-/// The storage offset of field `attr_bits` in a dataclass instance, from the
-/// instance's descriptor. The generic lookup and the method cache read the
-/// instance tier of a dataclass instance through this one authority.
-///
-/// # Safety
-/// `obj_ptr` must be a live dataclass instance.
-pub(crate) unsafe fn dataclass_field_offset(obj_ptr: *mut u8, attr_bits: u64) -> Option<usize> {
-    unsafe {
-        let desc_ptr = dataclass_desc_ptr(obj_ptr);
-        if desc_ptr.is_null() {
-            return None;
-        }
-        crate::object::ops_format::with_string_bytes(obj_from_bits(attr_bits), |name| {
-            std::str::from_utf8(name)
-                .ok()
-                .and_then(|name| (*desc_ptr).field_name_to_index.get(name).copied())
-        })
-        .flatten()
-        .map(|index| index * std::mem::size_of::<u64>())
-    }
-}
-
-pub(crate) unsafe fn dataclass_attr_lookup_inner(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-    dictionary: Option<u64>,
-    suppress: bool,
-) -> Result<Option<u64>, ()> {
-    unsafe {
-        dataclass_attr_lookup_with_mode(
-            _py,
-            obj_ptr,
-            attr_bits,
-            dictionary,
-            suppress,
-            AttributeLookupMode::Value,
-        )
-    }
-}
-
-pub(crate) unsafe fn dataclass_attr_lookup_with_mode(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-    dictionary: Option<u64>,
-    suppress: bool,
-    mode: AttributeLookupMode<'_>,
-) -> Result<Option<u64>, ()> {
-    unsafe {
-        crate::gil_assert();
-        let descriptor_policy = if suppress {
-            DescriptorCallPolicy::AttributeLookup
-        } else {
-            DescriptorCallPolicy::Required
-        };
-        let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
-        if dataclass_desc_ptr(obj_ptr).is_null() {
-            return Ok(None);
-        }
-        let class_bits = object_class_bits(obj_ptr);
-        let offset = dataclass_field_offset(obj_ptr, attr_bits);
-        if let Some(offset) = offset
-            && crate::object::field_storage::field_at_offset(_py, obj_ptr, offset)
-                .is_some_and(|field| field.kind.is_declared_slot())
-        {
-            return crate::object::accessors::instance_attribute_lookup(
-                _py,
-                obj_ptr,
-                attr_bits,
-                Some(offset),
-            );
-        }
-        with_class_descriptor_snapshot(_py, class_bits, attr_bits, |snapshot| {
-            if let Some(bits) = snapshot.and_then(|entry| entry.data_desc_bits) {
-                // A data descriptor terminates lookup even when its
-                // AttributeError is suppressed; the instance cannot shadow it.
-                return bind_descriptor(
-                    _py,
-                    bits,
-                    Some(type_of_bits(_py, obj_bits)),
-                    Some(obj_bits),
-                    descriptor_policy,
-                );
-            }
-            let instance = if let Some(dictionary) = dictionary {
-                crate::object::accessors::attribute_dictionary_lookup(
-                    _py, dictionary, attr_bits, suppress,
-                )
-            } else {
-                crate::object::accessors::instance_attribute_lookup_with_policy(
-                    _py, obj_ptr, attr_bits, offset, suppress,
-                )
-            };
-            let instance = instance?;
-            if instance.is_some() {
-                return Ok(instance);
-            }
-            match snapshot.and_then(|entry| entry.class_attr_bits) {
-                Some(bits) => mode.bind(
-                    _py,
-                    bits,
-                    Some(type_of_bits(_py, obj_bits)),
-                    Some(obj_bits),
-                    descriptor_policy,
-                ),
-                None => Ok(None),
-            }
-        })
     }
 }

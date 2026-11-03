@@ -1,6 +1,6 @@
 schema_version = 1
 # Retired ABI slots are never valid heap kinds and must never be reused.
-retired_ids = [205, 220, 231]
+retired_ids = [205, 215, 220, 231]
 
 # Canonical heap-kind and lifetime-policy authority. The object header stores only
 # `type_id`; fixed kinds resolve by indexed lookup with invalid retired holes and no header
@@ -179,17 +179,6 @@ weakref = "deny"
 shape = "fixed"
 drop = "exception"
 metrics = "exception"
-
-[[kind]]
-name = "DATACLASS"
-id = 215
-layout = "dynamic"
-edges = "dynamic"
-cycle = "always"
-weakref = "deny"
-shape = "fixed"
-drop = "dataclass"
-metrics = "none"
 
 [[kind]]
 name = "BUFFER2D"

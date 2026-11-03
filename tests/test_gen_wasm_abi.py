@@ -1053,7 +1053,6 @@ def test_fixed_arity_constructors_take_raw_word_ranges_not_boxed_operands() -> N
     for name, arity in (
         ("tuple_from_values", 2),
         ("list_from_values", 2),
-        ("dataclass_new_from_values", 5),
     ):
         entry = imports[name]
         signature = data["static_type"][entry["type"]]

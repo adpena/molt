@@ -204,7 +204,7 @@ outputs = [
   "docs/spec/areas/compat/surfaces/cpython_abi_coverage.generated.md",
   "docs/spec/areas/compat/surfaces/cpython_version_assumptions.generated.md",
 ]
-source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots scanned recursively) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
+source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots admitted through src/molt/source_admission.py) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_cpython_coverage.py --check"
@@ -593,6 +593,7 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_luau_support_matrix.py"
+upstream_generators = ["tools/gen_op_kinds.py"]
 outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
 source = "runtime/molt-backend-luau/src/luau + runtime/molt-ir/src/tir/op_kinds.toml + runtime/molt-ir/src/tir/op_kinds_generated.rs + tools/op_kinds/runtime_requirements.py + tools/structural_audit_rust.py + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true

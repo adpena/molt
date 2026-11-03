@@ -19,8 +19,8 @@ pub(crate) use crate::object::ops_compare::{CompareOutcome, compare_objects};
 
 // Re-export format functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_format::{
-    FormatSpec, decode_string_list, decode_value_list, format_obj, format_obj_str,
-    format_with_spec, parse_format_spec, string_obj_to_owned,
+    FormatSpec, decode_value_list, format_obj, format_obj_str, format_with_spec, parse_format_spec,
+    string_obj_to_owned,
 };
 
 // Re-export hash functions for backward compatibility with crate::object::ops::* paths
@@ -1962,7 +1962,7 @@ pub(crate) fn truth_value(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()
             if type_id == TYPE_ID_FILE_HANDLE {
                 return Ok(true);
             }
-            if crate::object::heap_kind_has_class_shape(type_id) || type_id == TYPE_ID_DATACLASS {
+            if crate::object::heap_kind_has_class_shape(type_id) {
                 return truthy_from_special(_py, obj);
             }
             return Ok(true);
@@ -2018,20 +2018,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_NOT_IMPLEMENTED => Cow::Borrowed("NotImplementedType"),
                 TYPE_ID_ELLIPSIS => Cow::Borrowed("ellipsis"),
                 TYPE_ID_EXCEPTION => Cow::Borrowed("Exception"),
-                TYPE_ID_DATACLASS => {
-                    // First try the dataclass descriptor's name field (always
-                    // set at allocation time, unlike class_bits which can be
-                    // stale for inline-created instances).
-                    let desc_ptr = dataclass_desc_ptr(ptr);
-                    if !desc_ptr.is_null() {
-                        let name = &(*desc_ptr).name;
-                        if !name.is_empty() {
-                            return Cow::Owned(name.clone());
-                        }
-                    }
-                    // Fallback to class_bits → class_name_for_error.
-                    Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits())))
-                }
+
                 TYPE_ID_BUFFER2D => Cow::Borrowed("buffer2d"),
                 TYPE_ID_CONTEXT_MANAGER => Cow::Borrowed("context_manager"),
                 TYPE_ID_FILE_HANDLE => {

@@ -175,6 +175,29 @@ def test_audit_ignores_build_output_inside_a_source_root(
     ]
 
 
+def test_audit_omits_deleted_tracked_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _source_repository(tmp_path)
+    scan = repo / "scan"
+    scan.mkdir()
+    removed = scan / "removed.py"
+    removed.write_text('version = "3.15"\n', encoding="utf-8")
+    completed = run_guarded_test_process(
+        ["git", "-C", str(repo), "add", "scan/removed.py"]
+    )
+    assert completed.returncode == 0, completed.stderr
+    removed.unlink()
+    (scan / "live.py").write_text('version = "3.15"\n', encoding="utf-8")
+    monkeypatch.setattr(gen_cpython_coverage, "ROOT", repo)
+    rendered = gen_cpython_coverage._audit(
+        {"version_assumption_audit": {"source_roots": ["scan"]}}
+    )
+    assert [line for line in rendered.splitlines() if line.startswith("| `")] == [
+        "| `scan/live.py` | 1 | scattered-assumption | `3.15` |"
+    ]
+
+
 # --- Scan records: tools/generators.py replays unchanged audit rows ---------
 
 from tools import generators, scan_records  # noqa: E402

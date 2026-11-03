@@ -648,25 +648,6 @@ pub(crate) fn format_class_name_bytes(class_bits: u64) -> Vec<u8> {
         .unwrap_or_else(|| class_name_for_error(class_bits).into_bytes())
 }
 
-pub(crate) fn decode_string_list(obj: MoltObject) -> Option<Vec<String>> {
-    let ptr = obj.as_ptr()?;
-    unsafe {
-        let type_id = object_type_id(ptr);
-        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return None;
-        }
-        crate::object::seq_access::with_borrowed(ptr, |elems| {
-            let mut out = Vec::with_capacity(elems.len());
-            for &elem_bits in elems {
-                let elem_obj = obj_from_bits(elem_bits);
-                let s = string_obj_to_owned(elem_obj)?;
-                out.push(s);
-            }
-            Some(out)
-        })
-    }
-}
-
 /// Keep decoded elements alive across callbacks using their storage's existing
 /// owner. Immutable tuples need only a tuple pin; mutable lists need a snapshot.
 pub(crate) fn decode_value_list<'a, 'py>(
@@ -679,59 +660,6 @@ pub(crate) fn decode_value_list<'a, 'py>(
             obj.as_ptr()?,
             "sequence snapshot allocation failed",
         )
-    }
-}
-
-fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
-    unsafe {
-        let desc_ptr = dataclass_desc_ptr(ptr);
-        if desc_ptr.is_null() {
-            return "<dataclass>".into();
-        }
-        let desc = &*desc_ptr;
-        let mut out = FormatBuffer::new();
-        out.push_str(&desc.name);
-        out.push('(');
-        let mut first = true;
-        for (idx, name) in desc.field_names.iter().enumerate() {
-            let flag = desc.field_flags.get(idx).copied().unwrap_or(0x7);
-            if (flag & 0x1) == 0 {
-                continue;
-            }
-            if !first {
-                out.push_str(", ");
-            }
-            first = false;
-            out.push_str(name);
-            out.push('=');
-            // Generated dataclass repr reads each field immediately before
-            // its repr callback; a callback may replace a later field.
-            let val = match crate::object::accessors::object_field_get_ptr_raw(
-                _py,
-                ptr,
-                idx * std::mem::size_of::<u64>(),
-            ) {
-                Ok(value) => value,
-                Err(()) => return "<dataclass>".into(),
-            };
-            if is_missing_bits(_py, val) {
-                let type_label = if desc.name.is_empty() {
-                    "dataclass"
-                } else {
-                    desc.name.as_str()
-                };
-                dec_ref_bits(_py, val);
-                let _ = attr_error(_py, type_label, name);
-                return "<dataclass>".into();
-            }
-            out.push_output(_py, format_obj_output(_py, obj_from_bits(val)));
-            dec_ref_bits(_py, val);
-            if exception_pending(_py) {
-                return "<dataclass>".into();
-            }
-        }
-        out.push(')');
-        out.into()
     }
 }
 
@@ -826,7 +754,7 @@ fn repr_depth_exit() {
 
 fn format_default_object_repr(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     let class_bits = unsafe {
-        if object_type_id(ptr) == TYPE_ID_OBJECT || object_type_id(ptr) == TYPE_ID_DATACLASS {
+        if object_type_id(ptr) == TYPE_ID_OBJECT {
             object_class_bits(ptr)
         } else {
             type_of_bits(py, MoltObject::from_ptr(ptr).bits())
@@ -1557,12 +1485,7 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                 out.push_str(" object>>");
                 return out.into();
             }
-            if type_id == TYPE_ID_DATACLASS {
-                let desc_ptr = dataclass_desc_ptr(ptr);
-                if !desc_ptr.is_null() && (*desc_ptr).repr {
-                    return format_dataclass(_py, ptr);
-                }
-            }
+
             if type_id == TYPE_ID_BUFFER2D {
                 let buf_ptr = buffer2d_ptr(ptr);
                 if buf_ptr.is_null() {
