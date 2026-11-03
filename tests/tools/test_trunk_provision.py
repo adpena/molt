@@ -109,6 +109,42 @@ def test_low_physical_space_refuses_before_install():
         )
 
 
+@pytest.mark.parametrize("wsl", [False, True])
+def test_worker_capacity_boundary_precedes_tool_installation(
+    tmp_path, monkeypatch, wsl
+):
+    from pathlib import Path
+    from molt import checkout_provisioning, disk_capacity, dx
+
+    stage, checkout, tools = (
+        tmp_path / name for name in ("stage", "checkout", "tools")
+    )
+    record = {
+        "checkout": str(checkout),
+        "host": {"wsl_distribution": "molt-gate" if wsl else None},
+        "seeds": [],
+    }
+    monkeypatch.setattr(trunk_loop, "worker_environment", lambda _record: {})
+    monkeypatch.setattr(dx, "canonical_toolchain_root", lambda *_args, **_kwargs: tools)
+
+    def capacity(paths, **_kwargs):
+        assert set(paths) == {stage, checkout, tools} | (
+            {Path("/mnt/c")} if wsl else set()
+        )
+        raise RuntimeError("physical capacity refused")
+
+    monkeypatch.setattr(disk_capacity, "require_build_capacity", capacity)
+    monkeypatch.setattr(
+        checkout_provisioning,
+        "ensure",
+        lambda *_args, **_kwargs: pytest.fail(
+            "capacity must precede tool installation"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="physical capacity refused"):
+        trunk_loop.provision(record, stage)
+
+
 def test_wsl_scripts_cross_windows_only_on_stdin(monkeypatch):
     transport = cross_run.SSHTransport(host_named("molt-gate"))
     calls = []

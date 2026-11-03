@@ -558,6 +558,8 @@ def start(args) -> Path:
         ]
     )
     transport = cross.SSHTransport(host)
+    if host.wsl_distribution:
+        admit_wsl_profile(host, transport)
     checkout, control = host_paths(host, transport._nonce)
     from molt.dx import artifact_root
 
@@ -847,7 +849,10 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     tool_root = canonical_toolchain_root(checkout, env, require_exists=False)
     from molt.disk_capacity import require_build_capacity
 
-    require_build_capacity((stage, checkout, tool_root), env=env)
+    capacity_paths = [stage, checkout, tool_root]
+    if record["host"].get("wsl_distribution"):
+        capacity_paths.append(Path("/mnt/c"))
+    require_build_capacity(tuple(capacity_paths), env=env)
     for seed in record["seeds"]:
         release = tool_release(seed["name"], checkout)
         asset = host_asset(release)

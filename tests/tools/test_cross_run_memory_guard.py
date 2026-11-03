@@ -179,10 +179,14 @@ def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
     ]
     child = """import json,os,pathlib,sys,time
 r,g,c=map(pathlib.Path,sys.argv[1:])
-r.write_text(json.dumps({'pid':os.getpid(),'session':os.getsid(0)}))
+def publish(path,value):
+    stage=path.with_suffix('.tmp')
+    stage.write_text(value)
+    stage.replace(path)
+publish(r,json.dumps({'pid':os.getpid(),'session':os.getsid(0)}))
 deadline=time.monotonic()+15
 while not g.exists() and time.monotonic()<deadline:time.sleep(.01)
-if g.exists():c.write_text('completed after launcher exit')
+if g.exists():publish(c,'completed after launcher exit')
 """
     script = trunk_loop.detached_script(
         host,
