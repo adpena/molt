@@ -2866,10 +2866,12 @@ def run_guarded(
             scratch_failure_details.append(
                 f"temporary artifact terminal state is {scratch_state!r}"
             )
-        # The whole-root retention sweep may reclaim other runs' scratch.
-        # Preserve its warning without poisoning this command's custody result.
+        # The whole-root retention sweep may reclaim other runs' scratch. Its
+        # warning goes to the guard host's stderr and the receipt, never into
+        # the child's captured output: callers compare that output with an
+        # oracle (the primitive ratchet saw a false CPython mismatch).
         if warning := _reporting.retention_warning(temporary_artifacts):
-            stderr = _append_guard_message(stderr, warning + "\n", text=text)
+            print(warning, file=sys.stderr)
         infrastructure_failure = (
             GuardInfrastructureFailure(
                 phase="temporary_artifact_custody",
