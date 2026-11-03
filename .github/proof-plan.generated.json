@@ -10574,6 +10574,13 @@
         "gates": [],
         "globs": [
           "tools/gen_intrinsics.py",
+          "tools/intrinsic_manifest.py",
+          "tools/public_objects.py",
+          "tools/cpython_census/*.py",
+          "tests/fixtures/public_object_identity/*.json",
+          "src/molt/_public_objects_generated.py",
+          "runtime/molt-runtime/src/intrinsics/public_objects.toml",
+          "runtime/molt-runtime/src/intrinsics/public_objects_generated.rs",
           "src/molt/_intrinsics.pyi",
           "src/molt/_intrinsic_symbols.py",
           "src/molt/_runtime_feature_gates.py",

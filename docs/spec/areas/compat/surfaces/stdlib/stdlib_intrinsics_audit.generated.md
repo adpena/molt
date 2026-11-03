@@ -19,9 +19,9 @@
 ## Progress Summary (Generated)
 - Total audited modules: `949`
 - `intrinsic-backed`: `39`
-- `intrinsic-partial`: `164`
-- `intrinsic-support`: `27`
-- `python-compiled`: `343`
+- `intrinsic-partial`: `163`
+- `intrinsic-support`: `26`
+- `python-compiled`: `345`
 - `stub`: `376`
 - `policy-gate`: `0`
 
@@ -44,7 +44,7 @@
 - `inspect`: `intrinsic-partial`
 - `functools`: `intrinsic-backed`
 - `itertools`: `intrinsic-backed`
-- `operator`: `intrinsic-support`
+- `operator`: `python-compiled`
 - `contextlib`: `intrinsic-backed`
 
 ### P2 queue (Phase 4: import/data/network long tail)
@@ -194,7 +194,6 @@
 - `importlib.metadata._adapters`
 - `importlib.metadata._collections`
 - `importlib.metadata._functools`
-- `importlib.metadata._itertools`
 - `importlib.metadata._meta`
 - `importlib.metadata._text`
 - `importlib.readers`
@@ -303,7 +302,6 @@
 - `compression.zlib`
 - `email._header_value_parser`
 - `email._policybase`
-- `operator`
 - `xml.etree.cElementTree`
 
 ### Compiled pure-Python modules
@@ -541,6 +539,7 @@
 - `getopt`
 - `importlib._bootstrap`
 - `importlib._bootstrap_external`
+- `importlib.metadata._itertools`
 - `importlib.metadata.diagnose`
 - `io`
 - `json.__main__`
@@ -577,6 +576,7 @@
 - `multiprocessing.synchronize`
 - `multiprocessing.util`
 - `numbers`
+- `operator`
 - `pathlib._abc`
 - `pathlib._local`
 - `pathlib._os`

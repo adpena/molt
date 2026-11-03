@@ -372,7 +372,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `runtime-profile-schema-authority` | 6 | 0 |
 | `op-kind-registry` | 20 | 1 |
 | `tinygrad-op-contract` | 9 | 2 |
-| `intrinsic-registry` | 15 | 0 |
+| `intrinsic-registry` | 22 | 0 |
 | `llvm-runtime-abi` | 8 | 1 |
 | `source-extension-package-sets` | 44 | 0 |
 | `source-extension-proof-policy` | 58 | 0 |

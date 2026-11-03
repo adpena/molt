@@ -4118,6 +4118,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "importlib_module_spec_has_location_set",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::NativeCallableReduce,
+        name: "native_callable_reduce",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::CompatibilityError,
         name: "compatibility_error",
     },
@@ -7762,96 +7766,100 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "operator_methodcaller_type",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsKwdMark,
-        name: "itertools_kwd_mark",
+        import: WasmRuntimeImport::ItertoolsReduce,
+        name: "itertools_reduce",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsChain,
-        name: "itertools_chain",
+        import: WasmRuntimeImport::ItertoolsSetstate,
+        name: "itertools_setstate",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsChainNew,
+        name: "itertools_chain_new",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsChainFromIterable,
         name: "itertools_chain_from_iterable",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsIslice,
-        name: "itertools_islice",
+        import: WasmRuntimeImport::ItertoolsIsliceNew,
+        name: "itertools_islice_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsRepeat,
-        name: "itertools_repeat",
+        import: WasmRuntimeImport::ItertoolsRepeatNew,
+        name: "itertools_repeat_new",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsRepeatType,
         name: "itertools_repeat_type",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsCount,
-        name: "itertools_count",
+        import: WasmRuntimeImport::ItertoolsCountNew,
+        name: "itertools_count_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsCycle,
-        name: "itertools_cycle",
+        import: WasmRuntimeImport::ItertoolsCycleNew,
+        name: "itertools_cycle_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsAccumulate,
-        name: "itertools_accumulate",
+        import: WasmRuntimeImport::ItertoolsAccumulateNew,
+        name: "itertools_accumulate_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsBatched,
-        name: "itertools_batched",
+        import: WasmRuntimeImport::ItertoolsBatchedNew,
+        name: "itertools_batched_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsCompress,
-        name: "itertools_compress",
+        import: WasmRuntimeImport::ItertoolsCompressNew,
+        name: "itertools_compress_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsCombinationsWithReplacement,
-        name: "itertools_combinations_with_replacement",
+        import: WasmRuntimeImport::ItertoolsCombinationsWithReplacementNew,
+        name: "itertools_combinations_with_replacement_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsDropwhile,
-        name: "itertools_dropwhile",
+        import: WasmRuntimeImport::ItertoolsDropwhileNew,
+        name: "itertools_dropwhile_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsFilterfalse,
-        name: "itertools_filterfalse",
+        import: WasmRuntimeImport::ItertoolsFilterfalseNew,
+        name: "itertools_filterfalse_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsPairwise,
-        name: "itertools_pairwise",
+        import: WasmRuntimeImport::ItertoolsPairwiseNew,
+        name: "itertools_pairwise_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsProduct,
-        name: "itertools_product",
+        import: WasmRuntimeImport::ItertoolsProductNew,
+        name: "itertools_product_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsPermutations,
-        name: "itertools_permutations",
+        import: WasmRuntimeImport::ItertoolsPermutationsNew,
+        name: "itertools_permutations_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsCombinations,
-        name: "itertools_combinations",
+        import: WasmRuntimeImport::ItertoolsCombinationsNew,
+        name: "itertools_combinations_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsGroupby,
-        name: "itertools_groupby",
+        import: WasmRuntimeImport::ItertoolsGroupbyNew,
+        name: "itertools_groupby_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsStarmap,
-        name: "itertools_starmap",
+        import: WasmRuntimeImport::ItertoolsStarmapNew,
+        name: "itertools_starmap_new",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsTakewhile,
-        name: "itertools_takewhile",
+        import: WasmRuntimeImport::ItertoolsTakewhileNew,
+        name: "itertools_takewhile_new",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ItertoolsTee,
         name: "itertools_tee",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ItertoolsZipLongest,
-        name: "itertools_zip_longest",
+        import: WasmRuntimeImport::ItertoolsZipLongestNew,
+        name: "itertools_zip_longest_new",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsKwdMark,
@@ -7874,8 +7882,36 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "functools_total_ordering",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::FunctoolsPartial,
-        name: "functools_partial",
+        import: WasmRuntimeImport::FunctoolsPartialType,
+        name: "functools_partial_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctoolsPartialNew,
+        name: "functools_partial_new",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctoolsPartialReduce,
+        name: "functools_partial_reduce",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctoolsPartialSetstate,
+        name: "functools_partial_setstate",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctoolsPartialMemberGet,
+        name: "functools_partial_member_get",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctoolsPartialDictionarySet,
+        name: "functools_partial_dictionary_set",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctoolsPartialDictionaryDelete,
+        name: "functools_partial_dictionary_delete",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctoolsPartialGet,
+        name: "functools_partial_get",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FunctoolsReduce,
@@ -11053,6 +11089,82 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::DictCountElements,
         name: "dict_count_elements",
     },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsAccumulateType,
+        name: "itertools_accumulate_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsBatchedType,
+        name: "itertools_batched_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsChainType,
+        name: "itertools_chain_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsCombinationsType,
+        name: "itertools_combinations_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsCombinationsWithReplacementType,
+        name: "itertools_combinations_with_replacement_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsCompressType,
+        name: "itertools_compress_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsCountType,
+        name: "itertools_count_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsCycleType,
+        name: "itertools_cycle_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsDropwhileType,
+        name: "itertools_dropwhile_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsFilterfalseType,
+        name: "itertools_filterfalse_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsGroupbyType,
+        name: "itertools_groupby_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsIsliceType,
+        name: "itertools_islice_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsPairwiseType,
+        name: "itertools_pairwise_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsPermutationsType,
+        name: "itertools_permutations_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsProductType,
+        name: "itertools_product_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsStarmapType,
+        name: "itertools_starmap_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsTakewhileType,
+        name: "itertools_takewhile_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsZipLongestType,
+        name: "itertools_zip_longest_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ItertoolsBatchedNew312,
+        name: "itertools_batched_new_312",
+    },
 ];
 
 #[inline]
@@ -13364,6 +13476,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_module_spec_has_location_set" => {
             Some(WasmRuntimeImport::ImportlibModuleSpecHasLocationSet)
         }
+        "native_callable_reduce" => Some(WasmRuntimeImport::NativeCallableReduce),
+        "molt_native_callable_reduce" => Some(WasmRuntimeImport::NativeCallableReduce),
         "compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
         "molt_compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
         "tk_available" => Some(WasmRuntimeImport::TkAvailable),
@@ -15518,56 +15632,58 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_operator_attrgetter_type" => Some(WasmRuntimeImport::OperatorAttrgetterType),
         "operator_methodcaller_type" => Some(WasmRuntimeImport::OperatorMethodcallerType),
         "molt_operator_methodcaller_type" => Some(WasmRuntimeImport::OperatorMethodcallerType),
-        "itertools_kwd_mark" => Some(WasmRuntimeImport::ItertoolsKwdMark),
-        "molt_itertools_kwd_mark" => Some(WasmRuntimeImport::ItertoolsKwdMark),
-        "itertools_chain" => Some(WasmRuntimeImport::ItertoolsChain),
-        "molt_itertools_chain" => Some(WasmRuntimeImport::ItertoolsChain),
+        "itertools_reduce" => Some(WasmRuntimeImport::ItertoolsReduce),
+        "molt_itertools_reduce" => Some(WasmRuntimeImport::ItertoolsReduce),
+        "itertools_setstate" => Some(WasmRuntimeImport::ItertoolsSetstate),
+        "molt_itertools_setstate" => Some(WasmRuntimeImport::ItertoolsSetstate),
+        "itertools_chain_new" => Some(WasmRuntimeImport::ItertoolsChainNew),
+        "molt_itertools_chain_new" => Some(WasmRuntimeImport::ItertoolsChainNew),
         "itertools_chain_from_iterable" => Some(WasmRuntimeImport::ItertoolsChainFromIterable),
         "molt_itertools_chain_from_iterable" => Some(WasmRuntimeImport::ItertoolsChainFromIterable),
-        "itertools_islice" => Some(WasmRuntimeImport::ItertoolsIslice),
-        "molt_itertools_islice" => Some(WasmRuntimeImport::ItertoolsIslice),
-        "itertools_repeat" => Some(WasmRuntimeImport::ItertoolsRepeat),
-        "molt_itertools_repeat" => Some(WasmRuntimeImport::ItertoolsRepeat),
+        "itertools_islice_new" => Some(WasmRuntimeImport::ItertoolsIsliceNew),
+        "molt_itertools_islice_new" => Some(WasmRuntimeImport::ItertoolsIsliceNew),
+        "itertools_repeat_new" => Some(WasmRuntimeImport::ItertoolsRepeatNew),
+        "molt_itertools_repeat_new" => Some(WasmRuntimeImport::ItertoolsRepeatNew),
         "itertools_repeat_type" => Some(WasmRuntimeImport::ItertoolsRepeatType),
         "molt_itertools_repeat_type" => Some(WasmRuntimeImport::ItertoolsRepeatType),
-        "itertools_count" => Some(WasmRuntimeImport::ItertoolsCount),
-        "molt_itertools_count" => Some(WasmRuntimeImport::ItertoolsCount),
-        "itertools_cycle" => Some(WasmRuntimeImport::ItertoolsCycle),
-        "molt_itertools_cycle" => Some(WasmRuntimeImport::ItertoolsCycle),
-        "itertools_accumulate" => Some(WasmRuntimeImport::ItertoolsAccumulate),
-        "molt_itertools_accumulate" => Some(WasmRuntimeImport::ItertoolsAccumulate),
-        "itertools_batched" => Some(WasmRuntimeImport::ItertoolsBatched),
-        "molt_itertools_batched" => Some(WasmRuntimeImport::ItertoolsBatched),
-        "itertools_compress" => Some(WasmRuntimeImport::ItertoolsCompress),
-        "molt_itertools_compress" => Some(WasmRuntimeImport::ItertoolsCompress),
-        "itertools_combinations_with_replacement" => {
-            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacement)
+        "itertools_count_new" => Some(WasmRuntimeImport::ItertoolsCountNew),
+        "molt_itertools_count_new" => Some(WasmRuntimeImport::ItertoolsCountNew),
+        "itertools_cycle_new" => Some(WasmRuntimeImport::ItertoolsCycleNew),
+        "molt_itertools_cycle_new" => Some(WasmRuntimeImport::ItertoolsCycleNew),
+        "itertools_accumulate_new" => Some(WasmRuntimeImport::ItertoolsAccumulateNew),
+        "molt_itertools_accumulate_new" => Some(WasmRuntimeImport::ItertoolsAccumulateNew),
+        "itertools_batched_new" => Some(WasmRuntimeImport::ItertoolsBatchedNew),
+        "molt_itertools_batched_new" => Some(WasmRuntimeImport::ItertoolsBatchedNew),
+        "itertools_compress_new" => Some(WasmRuntimeImport::ItertoolsCompressNew),
+        "molt_itertools_compress_new" => Some(WasmRuntimeImport::ItertoolsCompressNew),
+        "itertools_combinations_with_replacement_new" => {
+            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacementNew)
         }
-        "molt_itertools_combinations_with_replacement" => {
-            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacement)
+        "molt_itertools_combinations_with_replacement_new" => {
+            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacementNew)
         }
-        "itertools_dropwhile" => Some(WasmRuntimeImport::ItertoolsDropwhile),
-        "molt_itertools_dropwhile" => Some(WasmRuntimeImport::ItertoolsDropwhile),
-        "itertools_filterfalse" => Some(WasmRuntimeImport::ItertoolsFilterfalse),
-        "molt_itertools_filterfalse" => Some(WasmRuntimeImport::ItertoolsFilterfalse),
-        "itertools_pairwise" => Some(WasmRuntimeImport::ItertoolsPairwise),
-        "molt_itertools_pairwise" => Some(WasmRuntimeImport::ItertoolsPairwise),
-        "itertools_product" => Some(WasmRuntimeImport::ItertoolsProduct),
-        "molt_itertools_product" => Some(WasmRuntimeImport::ItertoolsProduct),
-        "itertools_permutations" => Some(WasmRuntimeImport::ItertoolsPermutations),
-        "molt_itertools_permutations" => Some(WasmRuntimeImport::ItertoolsPermutations),
-        "itertools_combinations" => Some(WasmRuntimeImport::ItertoolsCombinations),
-        "molt_itertools_combinations" => Some(WasmRuntimeImport::ItertoolsCombinations),
-        "itertools_groupby" => Some(WasmRuntimeImport::ItertoolsGroupby),
-        "molt_itertools_groupby" => Some(WasmRuntimeImport::ItertoolsGroupby),
-        "itertools_starmap" => Some(WasmRuntimeImport::ItertoolsStarmap),
-        "molt_itertools_starmap" => Some(WasmRuntimeImport::ItertoolsStarmap),
-        "itertools_takewhile" => Some(WasmRuntimeImport::ItertoolsTakewhile),
-        "molt_itertools_takewhile" => Some(WasmRuntimeImport::ItertoolsTakewhile),
+        "itertools_dropwhile_new" => Some(WasmRuntimeImport::ItertoolsDropwhileNew),
+        "molt_itertools_dropwhile_new" => Some(WasmRuntimeImport::ItertoolsDropwhileNew),
+        "itertools_filterfalse_new" => Some(WasmRuntimeImport::ItertoolsFilterfalseNew),
+        "molt_itertools_filterfalse_new" => Some(WasmRuntimeImport::ItertoolsFilterfalseNew),
+        "itertools_pairwise_new" => Some(WasmRuntimeImport::ItertoolsPairwiseNew),
+        "molt_itertools_pairwise_new" => Some(WasmRuntimeImport::ItertoolsPairwiseNew),
+        "itertools_product_new" => Some(WasmRuntimeImport::ItertoolsProductNew),
+        "molt_itertools_product_new" => Some(WasmRuntimeImport::ItertoolsProductNew),
+        "itertools_permutations_new" => Some(WasmRuntimeImport::ItertoolsPermutationsNew),
+        "molt_itertools_permutations_new" => Some(WasmRuntimeImport::ItertoolsPermutationsNew),
+        "itertools_combinations_new" => Some(WasmRuntimeImport::ItertoolsCombinationsNew),
+        "molt_itertools_combinations_new" => Some(WasmRuntimeImport::ItertoolsCombinationsNew),
+        "itertools_groupby_new" => Some(WasmRuntimeImport::ItertoolsGroupbyNew),
+        "molt_itertools_groupby_new" => Some(WasmRuntimeImport::ItertoolsGroupbyNew),
+        "itertools_starmap_new" => Some(WasmRuntimeImport::ItertoolsStarmapNew),
+        "molt_itertools_starmap_new" => Some(WasmRuntimeImport::ItertoolsStarmapNew),
+        "itertools_takewhile_new" => Some(WasmRuntimeImport::ItertoolsTakewhileNew),
+        "molt_itertools_takewhile_new" => Some(WasmRuntimeImport::ItertoolsTakewhileNew),
         "itertools_tee" => Some(WasmRuntimeImport::ItertoolsTee),
         "molt_itertools_tee" => Some(WasmRuntimeImport::ItertoolsTee),
-        "itertools_zip_longest" => Some(WasmRuntimeImport::ItertoolsZipLongest),
-        "molt_itertools_zip_longest" => Some(WasmRuntimeImport::ItertoolsZipLongest),
+        "itertools_zip_longest_new" => Some(WasmRuntimeImport::ItertoolsZipLongestNew),
+        "molt_itertools_zip_longest_new" => Some(WasmRuntimeImport::ItertoolsZipLongestNew),
         "functools_kwd_mark" => Some(WasmRuntimeImport::FunctoolsKwdMark),
         "molt_functools_kwd_mark" => Some(WasmRuntimeImport::FunctoolsKwdMark),
         "functools_update_wrapper" => Some(WasmRuntimeImport::FunctoolsUpdateWrapper),
@@ -15578,8 +15694,30 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_functools_cmp_to_key" => Some(WasmRuntimeImport::FunctoolsCmpToKey),
         "functools_total_ordering" => Some(WasmRuntimeImport::FunctoolsTotalOrdering),
         "molt_functools_total_ordering" => Some(WasmRuntimeImport::FunctoolsTotalOrdering),
-        "functools_partial" => Some(WasmRuntimeImport::FunctoolsPartial),
-        "molt_functools_partial" => Some(WasmRuntimeImport::FunctoolsPartial),
+        "functools_partial_type" => Some(WasmRuntimeImport::FunctoolsPartialType),
+        "molt_functools_partial_type" => Some(WasmRuntimeImport::FunctoolsPartialType),
+        "functools_partial_new" => Some(WasmRuntimeImport::FunctoolsPartialNew),
+        "molt_functools_partial_new" => Some(WasmRuntimeImport::FunctoolsPartialNew),
+        "functools_partial_reduce" => Some(WasmRuntimeImport::FunctoolsPartialReduce),
+        "molt_functools_partial_reduce" => Some(WasmRuntimeImport::FunctoolsPartialReduce),
+        "functools_partial_setstate" => Some(WasmRuntimeImport::FunctoolsPartialSetstate),
+        "molt_functools_partial_setstate" => Some(WasmRuntimeImport::FunctoolsPartialSetstate),
+        "functools_partial_member_get" => Some(WasmRuntimeImport::FunctoolsPartialMemberGet),
+        "molt_functools_partial_member_get" => Some(WasmRuntimeImport::FunctoolsPartialMemberGet),
+        "functools_partial_dictionary_set" => {
+            Some(WasmRuntimeImport::FunctoolsPartialDictionarySet)
+        }
+        "molt_functools_partial_dictionary_set" => {
+            Some(WasmRuntimeImport::FunctoolsPartialDictionarySet)
+        }
+        "functools_partial_dictionary_delete" => {
+            Some(WasmRuntimeImport::FunctoolsPartialDictionaryDelete)
+        }
+        "molt_functools_partial_dictionary_delete" => {
+            Some(WasmRuntimeImport::FunctoolsPartialDictionaryDelete)
+        }
+        "functools_partial_get" => Some(WasmRuntimeImport::FunctoolsPartialGet),
+        "molt_functools_partial_get" => Some(WasmRuntimeImport::FunctoolsPartialGet),
         "functools_reduce" => Some(WasmRuntimeImport::FunctoolsReduce),
         "molt_functools_reduce" => Some(WasmRuntimeImport::FunctoolsReduce),
         "functools_lru_cache" => Some(WasmRuntimeImport::FunctoolsLruCache),
@@ -17290,6 +17428,48 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_iterator_throw" => Some(WasmRuntimeImport::IteratorThrow),
         "dict_count_elements" => Some(WasmRuntimeImport::DictCountElements),
         "molt_dict_count_elements" => Some(WasmRuntimeImport::DictCountElements),
+        "itertools_accumulate_type" => Some(WasmRuntimeImport::ItertoolsAccumulateType),
+        "molt_itertools_accumulate_type" => Some(WasmRuntimeImport::ItertoolsAccumulateType),
+        "itertools_batched_type" => Some(WasmRuntimeImport::ItertoolsBatchedType),
+        "molt_itertools_batched_type" => Some(WasmRuntimeImport::ItertoolsBatchedType),
+        "itertools_chain_type" => Some(WasmRuntimeImport::ItertoolsChainType),
+        "molt_itertools_chain_type" => Some(WasmRuntimeImport::ItertoolsChainType),
+        "itertools_combinations_type" => Some(WasmRuntimeImport::ItertoolsCombinationsType),
+        "molt_itertools_combinations_type" => Some(WasmRuntimeImport::ItertoolsCombinationsType),
+        "itertools_combinations_with_replacement_type" => {
+            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacementType)
+        }
+        "molt_itertools_combinations_with_replacement_type" => {
+            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacementType)
+        }
+        "itertools_compress_type" => Some(WasmRuntimeImport::ItertoolsCompressType),
+        "molt_itertools_compress_type" => Some(WasmRuntimeImport::ItertoolsCompressType),
+        "itertools_count_type" => Some(WasmRuntimeImport::ItertoolsCountType),
+        "molt_itertools_count_type" => Some(WasmRuntimeImport::ItertoolsCountType),
+        "itertools_cycle_type" => Some(WasmRuntimeImport::ItertoolsCycleType),
+        "molt_itertools_cycle_type" => Some(WasmRuntimeImport::ItertoolsCycleType),
+        "itertools_dropwhile_type" => Some(WasmRuntimeImport::ItertoolsDropwhileType),
+        "molt_itertools_dropwhile_type" => Some(WasmRuntimeImport::ItertoolsDropwhileType),
+        "itertools_filterfalse_type" => Some(WasmRuntimeImport::ItertoolsFilterfalseType),
+        "molt_itertools_filterfalse_type" => Some(WasmRuntimeImport::ItertoolsFilterfalseType),
+        "itertools_groupby_type" => Some(WasmRuntimeImport::ItertoolsGroupbyType),
+        "molt_itertools_groupby_type" => Some(WasmRuntimeImport::ItertoolsGroupbyType),
+        "itertools_islice_type" => Some(WasmRuntimeImport::ItertoolsIsliceType),
+        "molt_itertools_islice_type" => Some(WasmRuntimeImport::ItertoolsIsliceType),
+        "itertools_pairwise_type" => Some(WasmRuntimeImport::ItertoolsPairwiseType),
+        "molt_itertools_pairwise_type" => Some(WasmRuntimeImport::ItertoolsPairwiseType),
+        "itertools_permutations_type" => Some(WasmRuntimeImport::ItertoolsPermutationsType),
+        "molt_itertools_permutations_type" => Some(WasmRuntimeImport::ItertoolsPermutationsType),
+        "itertools_product_type" => Some(WasmRuntimeImport::ItertoolsProductType),
+        "molt_itertools_product_type" => Some(WasmRuntimeImport::ItertoolsProductType),
+        "itertools_starmap_type" => Some(WasmRuntimeImport::ItertoolsStarmapType),
+        "molt_itertools_starmap_type" => Some(WasmRuntimeImport::ItertoolsStarmapType),
+        "itertools_takewhile_type" => Some(WasmRuntimeImport::ItertoolsTakewhileType),
+        "molt_itertools_takewhile_type" => Some(WasmRuntimeImport::ItertoolsTakewhileType),
+        "itertools_zip_longest_type" => Some(WasmRuntimeImport::ItertoolsZipLongestType),
+        "molt_itertools_zip_longest_type" => Some(WasmRuntimeImport::ItertoolsZipLongestType),
+        "itertools_batched_new_312" => Some(WasmRuntimeImport::ItertoolsBatchedNew312),
+        "molt_itertools_batched_new_312" => Some(WasmRuntimeImport::ItertoolsBatchedNew312),
         _ => None,
     }
 }
