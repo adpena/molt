@@ -952,28 +952,62 @@ def test_atomic_final_commit_failure_preserves_complete_pending_receipt(
     assert len(stored["moved_paths"]) == 1
 
 
-def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
+def _write_held_rustc_project(root: Path, *, build_dependency: bool = False) -> None:
+    """Hold the compiler itself at macro expansion, until its observer releases it."""
+    dependency_table = "build-dependencies" if build_dependency else "dependencies"
+    (root / "Cargo.toml").write_text(
+        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n'
+        f'\n[{dependency_table}]\nheld-rustc={{path="held-rustc"}}\n\n[workspace]\n',
+        encoding="utf-8",
+    )
+    macro = root / "held-rustc"
+    (macro / "src").mkdir(parents=True)
+    (macro / "Cargo.toml").write_text(
+        '[package]\nname="held-rustc"\nversion="0.0.0"\nedition="2021"\n'
+        "\n[lib]\nproc-macro=true\n",
+        encoding="utf-8",
+    )
+    (macro / "src/lib.rs").write_text(
+        """extern crate proc_macro;
+#[proc_macro]
+pub fn hold(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    std::fs::write(root.join("rustc-ready.tmp"), std::process::id().to_string()).unwrap();
+    std::fs::rename(root.join("rustc-ready.tmp"), root.join("rustc-ready")).unwrap();
+    while !root.join("release").exists() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    proc_macro::TokenStream::new()
+}
+""",
+        encoding="utf-8",
+    )
+    (root / "src").mkdir()
+
+
+@pytest.mark.parametrize("sampling_delay", [0, 1.5], ids=["ordinary", "slow-sampler"])
+@pytest.mark.parametrize(
+    "build_dependency", [False, True], ids=["library", "build-script"]
+)
+def test_actual_cargo_held_profile_locks_defer_recovery(
+    tmp_path, sampling_delay, build_dependency
+):
     import os
     import threading
     import time
     from tests.process_guard_common import run_custody_subject_process
 
+    _write_held_rustc_project(tmp_path, build_dependency=build_dependency)
     manifest = tmp_path / "Cargo.toml"
-    manifest.write_text(
-        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n',
+    (tmp_path / "src/lib.rs").write_text(
+        ("" if build_dependency else "held_rustc::hold!();\n") + "pub fn unused() {}\n",
         encoding="utf-8",
     )
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}", encoding="utf-8")
-    ready, release = tmp_path / "ready", tmp_path / "release"
-    (tmp_path / "build.rs").write_text(
-        'fn main() { let root=std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()); '
-        'std::fs::write(root.join("ready"), b"ready").unwrap(); '
-        "let start=std::time::Instant::now(); "
-        'while !root.join("release").exists() && start.elapsed().as_secs()<25 {'
-        "std::thread::sleep(std::time::Duration::from_millis(10));} }",
-        encoding="utf-8",
-    )
+    if build_dependency:
+        (tmp_path / "build.rs").write_text(
+            "held_rustc::hold!();\nfn main() {}\n", encoding="utf-8"
+        )
+    ready, release = tmp_path / "rustc-ready", tmp_path / "release"
     target = tmp_path / "target with spaces"
     outcome = []
     env = dict(
@@ -1007,8 +1041,13 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
 
     from molt import process_model
 
+    def sample_processes():
+        # A process-table query can outlast an ordinary rustc invocation.
+        time.sleep(sampling_delay)
+        return process_model.sample_processes()
+
     tracker = process_model.ProcessTreeTracker(os.getpid())
-    tracker.update(process_model.sample_processes())
+    tracker.update(sample_processes())
     actual_observations = set()
     worker = threading.Thread(target=run)
     worker.start()
@@ -1017,18 +1056,23 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
         while (
             not ready.exists() and worker.is_alive() and time.perf_counter() < deadline
         ):
-            samples = process_model.sample_processes()
-            watched = tracker.update(samples)
-            actual_observations.update(
-                cargo.observe_owned_incremental_state(
-                    samples, watched, tracker.known_identities or {}
-                )
-            )
             time.sleep(0.01)
         assert ready.exists(), outcome
+        # The ready file is written inside the observed rustc, which cannot
+        # exit before release. Even a slow snapshot must see this compilation.
+        samples = sample_processes()
+        watched = tracker.update(samples)
+        actual_observations.update(
+            cargo.observe_owned_incremental_state(
+                samples, watched, tracker.known_identities or {}
+            )
+        )
         assert actual_observations, (
             "No actual birth-custodied Rustc/Cargo pair observed"
         )
+        assert {item.rustc_pid for item in actual_observations} == {
+            int(ready.read_text(encoding="utf-8"))
+        }
         assert all(
             Path(item.incremental_dir).resolve()
             == (target / "debug" / "incremental").resolve()
@@ -1433,15 +1477,12 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
     import os
     from tools import memory_guard
 
-    (tmp_path / "src").mkdir()
-    (tmp_path / "Cargo.toml").write_text(
-        '[package]\nname="molt-job-custody-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n',
-        encoding="utf-8",
-    )
+    _write_held_rustc_project(tmp_path, build_dependency=True)
     (tmp_path / "src/lib.rs").write_text(
         "pub fn answer() -> u32 { 42 }\n", encoding="utf-8"
     )
     (tmp_path / "build.rs").write_text(
+        "held_rustc::hold!();\n"
         'fn main() { std::fs::write("ready", "ready").unwrap(); std::thread::sleep(std::time::Duration::from_secs(30)); }\n',
         encoding="utf-8",
     )
@@ -1465,6 +1506,13 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
     def record(*args, **kwargs):
         result = original(*args, **kwargs)
         observed.update(result)
+        ready = tmp_path / "rustc-ready"
+        if ready.exists() and any(
+            item.rustc_pid == int(ready.read_text(encoding="utf-8")) for item in result
+        ):
+            # Let the observed compiler finish before the later build-script
+            # timeout: this test proves completed caches need no quarantine.
+            (tmp_path / "release").write_text("release", encoding="utf-8")
         return result
 
     monkeypatch.setattr(memory_guard, "observe_owned_incremental_state", record)

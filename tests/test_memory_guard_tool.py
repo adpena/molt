@@ -2354,8 +2354,8 @@ def test_actual_darwin_custody_poll_tracks_the_tree_the_host_table_does() -> Non
             "-I",
             "-S",
             "-c",
-            "import os, subprocess\n"
-            "kids = [subprocess.Popen(['/bin/sleep', '30']) for _ in range(2)]\n"
+            "import os, subprocess, sys\n"
+            f"kids = [subprocess.Popen([sys.executable, '-I', '-S', '-c', {HUNG_CHILD_SOURCE!r}]) for _ in range(2)]\n"
             "os.write(1, b'x'); os.read(0, 1)\n"
             "for kid in kids: kid.kill(); kid.wait()\n",
         ],
@@ -2426,8 +2426,8 @@ def test_actual_custody_poll_judges_a_live_tree_as_the_host_table_does() -> None
             "-I",
             "-S",
             "-c",
-            "import os, subprocess\n"
-            "kids = [subprocess.Popen(['sleep', '30']) for _ in range(2)]\n"
+            "import os, subprocess, sys\n"
+            f"kids = [subprocess.Popen([sys.executable, '-I', '-S', '-c', {HUNG_CHILD_SOURCE!r}]) for _ in range(2)]\n"
             "os.write(1, b'x'); os.read(0, 1)\n"
             "for kid in kids: kid.kill(); kid.wait()\n",
         ],
