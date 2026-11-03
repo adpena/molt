@@ -1461,6 +1461,39 @@ class DependencyGraph:
                 )
         return tuple(selected)
 
+    def programs_reached(
+        self, changed: Iterable[str], programs: Iterable[str]
+    ) -> tuple[str, ...]:
+        """The ``programs`` a change to ``changed`` can make produce other output.
+
+        A program is a tracked source run as a whole (a generator, a tool).
+        Unlike a test's first-hop inputs, every data path any source in its
+        execution closure names counts: a missed input leaves a stale output,
+        while an extra one costs one more render. A directory read stands for
+        every file under it.
+        """
+        changed = frozenset(changed)
+        directories = {
+            str(parent) for path in changed for parent in PurePosixPath(path).parents
+        }
+        reached = []
+        for program in programs:
+            closure: set[str] = set()
+            pending = list(self._nodes_of(program))
+            while pending:
+                node = pending.pop()
+                if node not in closure:
+                    closure.add(node)
+                    pending.extend(self.nodes.get(node, Dependencies()).execs)
+            reads = [self.nodes.get(node, Dependencies()) for node in closure]
+            if (
+                any(node_path(node) in changed for node in closure)
+                or any(read.files & changed for read in reads)
+                or any(read.directories & directories for read in reads)
+            ):
+                reached.append(program)
+        return tuple(reached)
+
     def dependencies(self, test: str) -> frozenset[str]:
         """Every tracked file whose change selects ``test`` (for inspection)."""
         reached: set[str] = set()

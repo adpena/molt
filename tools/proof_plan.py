@@ -743,6 +743,9 @@ _LOCAL_RULE_FIELDS = frozenset(
         "toolchains",
         "pinned_assets",
         "plan_entities",
+        # `land` runs the rule's gates in the lane before it queues the lane,
+        # beside the static gates its toolchains alone would admit there.
+        "precheck",
     }
 )
 
@@ -757,6 +760,8 @@ PLAN_SECTIONS: Mapping[str, str | None] = MappingProxyType(
         "authority_inputs": None,
         "always_toolchains": None,
         "always": None,
+        "repair_toolchains": None,
+        "repair": None,
         "receipt_schema": None,
         "executor_max_workers": None,
         "inventory_hash_workers": None,
@@ -1234,6 +1239,8 @@ def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
             f"{rule.get('name', 'local rule')}: unknown local rule fields: "
             + ", ".join(unknown)
         )
+    if type(rule.get("precheck", False)) is not bool:
+        return f"{rule.get('name', 'local rule')}: precheck must be a boolean"
     return None
 
 
@@ -1588,11 +1595,12 @@ def local_gate_commands(
             tuple(assets),
         )
 
-    for index, command in enumerate(data.get("always", [])):
-        identifier = f"local.always.{index}"
-        if error := local_gate_template_error(command):
-            raise ValueError(f"{identifier}: {error}")
-        add(identifier, command, data.get("always_toolchains", []))
+    for section in ("always", "repair"):
+        for index, command in enumerate(data.get(section, [])):
+            identifier = f"local.{section}.{index}"
+            if error := local_gate_template_error(command):
+                raise ValueError(f"{identifier}: {error}")
+            add(identifier, command, data.get(f"{section}_toolchains", []))
     for rule in data.get("rule", []):
         tools = rule.get("toolchains", [])
         gate_access = rule.get("cargo_target_access")
@@ -1649,6 +1657,26 @@ def clippy_diagnostic_format_error(arguments: Sequence[str]) -> str | None:
                 "toolchain (rust-lang/cargo#17519); use human diagnostics"
             )
     return None
+
+
+def local_command_section_errors(
+    policies: Sequence[ToolchainPolicy],
+    sections: Mapping[str, tuple[Sequence[str], Sequence[str]]],
+) -> list[str]:
+    """The `always` and `repair` sections share one contract: bindable
+    command templates and a closed declared toolchain set."""
+    errors: list[str] = []
+    for section, (commands, toolchains) in sections.items():
+        for index, command in enumerate(commands):
+            if not isinstance(command, str):
+                errors.append(f"local.{section}.{index}: command must be a string")
+            elif error := local_gate_template_error(command):
+                errors.append(f"local.{section}.{index}: {error}")
+        try:
+            toolchain_closure(policies, toolchains)
+        except ValueError as exc:
+            errors.append(f"local {section}: {exc}")
+    return errors
 
 
 def local_gate_template_error(command: str) -> str | None:
@@ -1827,6 +1855,8 @@ class ProofPlan:
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
     always_toolchains: tuple[str, ...] = ()
+    repair: tuple[str, ...] = ()
+    repair_toolchains: tuple[str, ...] = ()
     pinned_assets: Mapping[str, Mapping] = dataclass_field(default_factory=dict)
 
     def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
@@ -2028,6 +2058,8 @@ class ProofPlan:
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
+            repair=tuple(data.get("repair", [])),
+            repair_toolchains=tuple(data.get("repair_toolchains", [])),
             pinned_assets=load_pinned_assets(data),
         )
         errors = plan.validate() + plan_policy_errors(data)
@@ -3390,13 +3422,15 @@ class ProofPlan:
                         )
         local_names: set[str] = set()
         local_toolchain_names = {policy.name for policy in self.toolchain_policies}
-        for index, command in enumerate(self.always):
-            if error := local_gate_template_error(command):
-                errors.append(f"local.always.{index}: {error}")
-        try:
-            toolchain_closure(self.toolchain_policies, self.always_toolchains)
-        except ValueError as exc:
-            errors.append(f"local always: {exc}")
+        errors.extend(
+            local_command_section_errors(
+                self.toolchain_policies,
+                {
+                    "always": (self.always, self.always_toolchains),
+                    "repair": (self.repair, self.repair_toolchains),
+                },
+            )
+        )
         for rule in self.local_rules:
             if field_error := local_rule_field_error(rule):
                 errors.append(field_error)

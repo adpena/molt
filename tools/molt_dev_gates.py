@@ -22,7 +22,8 @@ from tools.molt_dev_policy import Deferred, GateEnvironment, LandingMode
 from tools.proof_plan import CargoTargetAccess
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 import datetime as dt
 import hashlib
 import json
@@ -55,8 +56,35 @@ LOCAL_GATE_FAMILY = "local_integration"
 CONCURRENT_GATE_BYTES = 1 << 30
 
 
+class CancelReason(StrEnum):
+    """Why a runtime's owner stops its gates; each owner names its own."""
+
+    # A higher-priority landing request preempts a closed postsubmit run.
+    PENDING_LANDING = "postsubmit cancelled for a pending landing request"
+    # The lane precheck's try run reached its budget (PRECHECK_BUDGET).
+    PRECHECK_BUDGET = "the precheck try run reached its budget"
+
+    @property
+    def stops_on_unresolved_closure(self) -> bool:
+        """Whether a cancelled gate whose guard closure stays indeterminate
+        stops the runner. A postsubmit verdict needs proven custody (HF-655).
+        A budget refusal names the gate and its unresolved closure instead:
+        the precheck proves nothing for it, and the batch reruns it in its own
+        sandbox."""
+        return self is CancelReason.PENDING_LANDING
+
+
 class GateCancellation(DriverError):
-    """A higher-priority landing cancelled a closed postsubmit execution."""
+    """The runtime's owner stopped its gates for ``reason``.
+
+    ``unresolved`` names each cancelled gate whose guard closure stayed
+    indeterminate, with the guard's diagnostic.
+    """
+
+    def __init__(self, reason: CancelReason, unresolved: tuple[str, ...] = ()) -> None:
+        super().__init__(reason.value)
+        self.reason = reason
+        self.unresolved = unresolved
 
 
 class Gate(Protocol):
@@ -300,7 +328,11 @@ class GateRuntime:
     toolchain_policies: tuple[ToolchainPolicy, ...] = ()
     mode: LandingMode = LandingMode.PRESUBMIT
     cancelled: Callable[[], bool] = lambda: False
+    cancel_reason: CancelReason = CancelReason.PENDING_LANDING
     deferred: tuple[Deferred, ...] = ()
+    # Every gate that passed, in completion order: the typed outcome a caller
+    # reads instead of matching rendered commands.
+    passed: list[Gate] = field(default_factory=list)
 
 
 def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
@@ -342,7 +374,7 @@ def _pytest_report_command(
 
 def _check_cancellation(runtime: GateRuntime) -> None:
     if runtime.cancelled():
-        raise GateCancellation("postsubmit cancelled for a pending landing request")
+        raise GateCancellation(runtime.cancel_reason)
 
 
 def display(command: str | tuple[str, ...]) -> str:
@@ -668,10 +700,20 @@ def _run_serial_gate(
                 gate=shown,
                 before=before,
             )
-    if not collection:
+    # A cancelled gate reached no outcome; as in an executor block, its time
+    # is no gate's result.
+    if not collection and classified["status"] != "cancelled":
         gate_seconds.append((elapsed, shown))
     runtime.check_source()
     if classified["cancellation_cleanup"] is not None:
+        if (
+            runtime.cancelled()
+            and not runtime.cancel_reason.stops_on_unresolved_closure
+        ):
+            raise GateCancellation(
+                runtime.cancel_reason,
+                unresolved=(f"{shown}: {classified['cancellation_cleanup']}",),
+            )
         raise DriverError(
             f"guard cancellation cleanup failed: {classified['cancellation_cleanup']}"
         )
@@ -688,6 +730,8 @@ def _run_serial_gate(
         sys.stderr.flush()
         timings = [*gate_seconds, (elapsed, shown)] if collection else gate_seconds
         raise gate_failure(rc, elapsed, shown, timings, record)
+    if not collection:
+        runtime.passed.append(gate)
     runtime.ok(
         f"pytest collection passed in {elapsed:.1f} s (execution still required): {shown}"
         if collection
@@ -942,6 +986,8 @@ def _run_executor_block(
 
     runner_errors: list[BaseException] = []
     control_failures: list[str] = []
+    # Cancelled gates whose guard closure stayed indeterminate.
+    unresolved: list[str] = []
     for command in commands:
         outcome = outcomes.get(command.id)
         record = records.get(command.id, {})
@@ -958,7 +1004,7 @@ def _run_executor_block(
                 + (f" (guard cleanup: {cleanup})" if cleanup else "")
             )
             if cleanup:
-                control_failures.append(f"at {shown}: {cleanup}")
+                unresolved.append(f"{shown}: {cleanup}")
             continue
         if outcome is None:
             control_failures.append(f"before {shown}")
@@ -997,6 +1043,7 @@ def _run_executor_block(
                 f"at {shown}: {record.get('failure_reason') or status}"
             )
             continue
+        runtime.passed.append(command.gate)
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
     if (
         runtime.cancelled()
@@ -1034,6 +1081,7 @@ def _run_executor_block(
             record,
         )
         for evidence in (
+            *(f"gate block also stopped at {item}" for item in unresolved),
             *(f"gate block also stopped {control}" for control in control_failures),
             *(f"gate runner also failed: {error!r}" for error in runner_errors),
         ):
@@ -1042,6 +1090,15 @@ def _run_executor_block(
         if runner_errors:
             failure.guard_errors = tuple(runner_errors)
         raise failure
+    if (
+        unresolved
+        and not runner_errors
+        and not control_failures
+        and runtime.cancelled()
+        and not runtime.cancel_reason.stops_on_unresolved_closure
+    ):
+        raise GateCancellation(runtime.cancel_reason, unresolved=tuple(unresolved))
+    control_failures.extend(f"at {item}" for item in unresolved)
     if runner_errors:
         error = runner_errors[0]
         if len(runner_errors) > 1:

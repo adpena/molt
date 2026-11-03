@@ -583,6 +583,12 @@ _FILES = {
         def scan():
             return sorted(SOURCES.rglob("*.rs"))
     """,
+    "tools/uses_reader.py": """
+        from tools.data_reader import load
+
+        def render():
+            return load()
+    """,
     "tools/gen_table.py": "OUTPUT = 'src/pkg/table_generated.py'\n",
     "tools/gen_host.py": "OUTPUT = 'config/host_generated.toml'\n",
     "src/pkg/table_generated.py": "TABLE = 1\n",
@@ -696,6 +702,29 @@ def test_generator_provenance(graph):
     assert _select(graph, "tools/gen_table.py") == {"tests/test_generator_sync.py"}
     assert _select(graph, "tools/gen_host.py") == {"tests/test_host_reader.py"}
     assert _select(graph, "config/host_generated.toml") == {"tests/test_host_reader.py"}
+
+
+def test_programs_reached_follow_every_hop_of_execution_and_data(graph):
+    programs = ("tools/data_reader.py", "tools/uses_reader.py", "src/pkg/__init__.py")
+    # uses_reader runs data_reader.load, which reads config/data.toml two hops
+    # away; a test's first-hop inputs would not reach it, a program's do.
+    assert graph.programs_reached(["config/data.toml"], programs) == (
+        "tools/data_reader.py",
+        "tools/uses_reader.py",
+    )
+    # A scanned directory stands for every file under it. uses_reader binds
+    # only data_reader.load, so the scan function's directory is not its input.
+    assert graph.programs_reached(["runtime/crate/src/b.rs"], programs) == (
+        "tools/data_reader.py",
+    )
+    # pkg.main imports heavy in its body: the execution closure reaches it.
+    assert graph.programs_reached(["src/pkg/heavy.py"], programs) == (
+        "src/pkg/__init__.py",
+    )
+    assert graph.programs_reached(["tools/uses_reader.py"], programs) == (
+        "tools/uses_reader.py",
+    )
+    assert graph.programs_reached(["config/other.toml"], programs) == ()
 
 
 def test_untouched_inputs_select_nothing(graph):
@@ -929,6 +958,29 @@ def test_graph_pytest_is_failure_first_and_maxfail_one(landing_graph):
         for argument in gate.command
         if argument.startswith("tests/")
     ] == ["tests/test_recent.py", "tests/test_changed.py", "tests/test_direct.py"]
+
+
+def test_presubmit_graph_cohorts_are_the_lane_try_run(landing_graph):
+    commands = _landing_commands(landing_graph)
+    config = GateConfig(
+        pytest_memory_units=PytestMemoryUnits(commands, root=landing_graph.tree.root),
+        commands=tuple(commands),
+        dependency_graph=lambda: landing_graph,
+    )
+    gates, _ = config.select(["src/pkg/hub.py", "tests/test_changed.py"])
+    # The changed test and the hub's direct reader run in the lane; the
+    # importer of an importer (test_transitive) is postsubmit's.
+    assert all(gate.try_run and gate.precheck and not gate.static for gate in gates)
+    assert sorted(
+        argument
+        for gate in gates
+        for argument in gate.command
+        if argument.startswith("tests/")
+    ) == ["tests/test_changed.py", "tests/test_direct.py"]
+    post, _ = config.select(
+        ["src/pkg/hub.py", "tests/test_changed.py"], mode=LandingMode.POSTSUBMIT
+    )
+    assert post and not any(gate.precheck for gate in post)
 
 
 def test_postsubmit_observes_only_the_qualified_command_cohort(
