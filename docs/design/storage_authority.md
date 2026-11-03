@@ -239,7 +239,8 @@ archival. The retired guard marker's `temporary_artifacts` outcome and the
 landing's existing bounded stream tails carry the failure result; deleting a
 scratch generation does not delete the landing receipt. No tool reads a
 retained payload. A failed deletion keeps the payload retained and indexed,
-records each attempt, and is retried by at most three guard exits, then
+records its attempt count with a bounded error sample, and is retried by at
+most three guard exits, then
 reported as an error until explicit cleanup retries it. Errors in the
 shared root, `pending/` and `removing/` namespaces are diagnostic whether
 raised or returned, and cannot change that child's exit or become

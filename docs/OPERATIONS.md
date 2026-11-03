@@ -693,14 +693,16 @@ proven process-tree closure, the scratch collector keeps the newest three
 failed payloads within 2 GiB and deletes older payloads with their generation
 receipts. A failed payload larger than the byte bound is deleted by its own
 guard's exit sweep. A dead guard uses the same closure and identity checks,
-without archiving. A deletion that fails leaves the payload retained and
-indexed, and the owner records each attempt's error. Guard exits retry it up
-to three times; after that each sweep reports it as an error naming every
-attempt, and only explicit cleanup retries it. Active, indeterminate, foreign
-and malformed custody stays protected. Errors in the namespaces every run
-shares (the root, `pending/` and `removing/`) are diagnostics, raised or
-returned: they never change the child exit or create an infrastructure
-failure. When `pending/` refuses a run's own index, that run deletes its
+without archiving. Every deletion first checks the payload's identity and
+its allocation receipt; a payload without its receipt is blocked and reported
+once. A deletion that fails leaves the payload retained and indexed; the owner
+records the attempt count and the first and last three errors, each cut to 512
+characters. Guard exits retry it up to three times; after that each sweep
+reports it as an error, and only explicit cleanup retries it. Active,
+indeterminate, foreign and malformed custody stays protected. Errors in the
+namespaces every run shares (the root, `pending/` and `removing/`) are
+diagnostics, raised or returned: they never change the child exit or create
+an infrastructure failure. When `pending/` refuses a run's own index, that run deletes its
 payload at once; if that deletion fails, the payload stays without an index
 until explicit cleanup finds it. A failure of the current run's own closure or
 scratch finalization still fails the run, and so does a clean run whose own
