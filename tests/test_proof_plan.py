@@ -981,6 +981,22 @@ def test_pytest_memory_units_read_the_declared_unit_and_targets(tmp_path) -> Non
         (
             {
                 "argv": ["python", "-m", "pytest"],
+                "pytest": ["tests/test_proof_plan.py"],
+                "pytest_observed_inputs": 1,
+            },
+            "pytest_observed_inputs requires a boolean and whole Python test files",
+        ),
+        (
+            {
+                "argv": ["python", "-m", "pytest"],
+                "pytest": ["tests/test_proof_plan.py::test_one"],
+                "pytest_observed_inputs": True,
+            },
+            "pytest_observed_inputs requires a boolean and whole Python test files",
+        ),
+        (
+            {
+                "argv": ["python", "-m", "pytest"],
                 "pytest": ["tests/test_proof_plan.py", "tests/test_proof_plan.py"],
             },
             "targets must be unique",
@@ -7313,6 +7329,19 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
         )
 
 
+# The guard's record of a Cargo command killed before any compiler
+# observation, with an incomplete interruption inventory (HF-655).
+_UNOBSERVED_QUARANTINE = {
+    "ownership_status": "unobserved",
+    "errors": [],
+    "moved_paths": [],
+    "ownership_observations": [],
+    "recovery_observations": [],
+    "interruption_inventory_complete": False,
+    "interruption_inventory_error": "interruption snapshot unavailable",
+}
+
+
 @pytest.mark.parametrize(
     "metrics, returncode, expected",
     [
@@ -7408,6 +7437,35 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
             124,
             "global",
         ),
+        # HF-655: a kill before any compiler observation is terminal without
+        # an inventory; the deadline stays the command's own failure.
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+                "cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE,
+            },
+            124,
+            "partition",
+        ),
+        # An observed compiler or a move is never "unobserved".
+        *(
+            (
+                {
+                    "timed_out": True,
+                    "termination_reports": [
+                        {"remaining_pids": [], "remaining_pgids": []}
+                    ],
+                    "cargo_incremental_quarantine": {
+                        **_UNOBSERVED_QUARANTINE,
+                        field: [{"rustc_pid": 1}],
+                    },
+                },
+                124,
+                "global",
+            )
+            for field in ("ownership_observations", "moved_paths")
+        ),
     ],
 )
 def test_executor_failure_scope_uses_guard_and_quarantine_authority(
@@ -7496,6 +7554,7 @@ def test_executor_missing_guard_outcome_is_a_global_stop() -> None:
             },
             "Cargo quarantine ownership or recovery is unresolved",
         ),
+        ({"cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE}, None),
     ],
 )
 @pytest.mark.parametrize(
@@ -7708,11 +7767,11 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
-    # Windows Job lifetime accounting fences unseen births through termination.
-    # Ordinary POSIX snapshots cannot establish that stronger negative fact.
-    assert record["failure_scope"] == (
-        "partition" if sys.platform == "win32" else "global"
-    ), record
+    # No compiler ran in the timed partition. Windows Job lifetime accounting
+    # fences unseen births and records recovery as unnecessary; a POSIX
+    # snapshot cannot, but with no observed compiler there is nothing to
+    # recover (`unobserved`, HF-655). Either way the deadline is the command's.
+    assert record["failure_scope"] == "partition", record
     # The kill leaves the completed incremental cache exactly as it was.
     assert sorted(path.name for path in incremental.iterdir()) == compiled
 
@@ -9068,6 +9127,8 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
         )
     else:
         command = next(command for command in PLAN.commands if command.id == owner)
+        if owner == "python.unit.cli.import-collection":
+            assert command.data["pytest_observed_inputs"] is True
         if owner == "wasm.host.runner-fixtures":
             # This relocated case compiles both empty and nonempty C objects.
             assert (

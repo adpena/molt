@@ -22,9 +22,12 @@ The same scoreboard owns the primitive instruction axis (HF-459):
 python tools/perf_scoreboard.py primitives --cpython 3.12.16 --out-dir <new-evidence-directory>
 ```
 
-Methodology v26 records the HF-657 primitive ratio/noise recalibration, which
+Methodology v27 records the HF-657 primitive ratio/noise recalibration, which
 changes diagnostic verdicts without changing workloads or release acceptance.
-Methodology v25 publishes the shared non-citable diagnostic provenance; v24
+Methodology v26 makes each program's own directory its project
+(`MOLT_PROJECT_ROOT`), so an `--out-dir` inside a checkout no longer compiles
+the primitives against that checkout's sources and environment; v25 publishes
+the shared non-citable diagnostic provenance; v24
 rejects nonfinite or invalid perf running percentages;
 v23 strengthened the identity witness's observable checksum, and v22 introduced
 this diagnostic axis and its ratio ratchet. This mode does not

@@ -83,23 +83,25 @@
 
 # adpena LAN inventory (verified 2026-04-27)
 # molt   = Raspberry Pi (Debian 13 trixie, aarch64) at 192.168.1.213
-# macmini = Intel Mac mini (macOS 15.7.5, x86_64) at 192.168.1.112
+# macmini = Intel Mac mini (macOS 15.7.5, x86_64, 6 cores, 8 GB), Tailscale name alejandros-mac-mini
 # Proof hosts additionally declare os, custody_root, checkout, bootstrap python,
 # launcher and proof_cells (proof-plan command ids). An empty proof_cells list
 # admits no trunk workload. OS/launcher facts are validated together.
 
+# Verified over Tailscale on 2026-11-02 (Command Line Tools, git, uv, rustup). No system changes.
 [[host]]
 name = "macmini"
-hostname = "192.168.1.112"
+hostname = "alejandros-mac-mini"
 user = "adpena"
 target = "x86_64-apple-darwin"
-remote_dir = "/tmp/molt_test"
+remote_dir = "/Users/adpena/Molt/scratch/trunk-loop"
 os = "macos"
 shell = "bash"
 custody_root = "/Users/adpena/Molt"
 checkout = "/Users/adpena/Molt/molt-src"
+python = "/Users/adpena/Molt/envs/molt-dx-py312/bin/python"
 launcher = "posix-session"
-proof_cells = []
+proof_cells = ["portability.cargo-custody.macos", "portability.queue.macos"]
 
 # Pi disabled until disk is freed (was 100% full at audit time).
 # Re-enable after pruning ~/PycharmProjects (9.4G) or installing a USB SSD.

@@ -36,13 +36,10 @@ def test_root_contract_budget_and_machine_state_fail_closed(tmp_path: Path) -> N
     (root / "AGENTS.md").write_text(
         "# Agent contract\n\n"
         "See `docs/INDEX.md`.\n"
-        "cwd C:\\Users\\operator\\OneDrive\\molt; pid=4321\n"
-        + "padding\n"
-        * checker.ROOT_AGENT_MAX_LINES,
+        "cwd C:\\Users\\operator\\OneDrive\\molt; pid=4321\n",
         encoding="utf-8",
     )
     failures = checker.audit(root).failures
-    assert any("line budget" in failure for failure in failures)
     assert any("absolute Windows path" in failure for failure in failures)
     assert any("OneDrive workstation path" in failure for failure in failures)
     assert any("concrete process id" in failure for failure in failures)

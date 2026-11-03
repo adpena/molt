@@ -160,6 +160,29 @@ def test_declared_primitive_programs_have_independent_cpython_oracles(
         assert capsys.readouterr().out == expected[primitive.name] + "\n"
 
 
+def test_primitive_program_is_its_own_project_inside_a_checkout(tmp_path, monkeypatch):
+    from molt.cli.project_roots import _find_project_root
+
+    checkout = tmp_path / "checkout"
+    out = checkout / "proof-receipts" / "primitive-instructions"
+    out.mkdir(parents=True)
+    (checkout / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\n", encoding="utf-8"
+    )
+    program = out / "loop.py"
+    program.write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
+    # Unpinned, the build would adopt the enclosing checkout and its sources.
+    assert _find_project_root(program) == checkout.resolve()
+
+    ambient = {"MOLT_PROJECT_ROOT": str(checkout), "PATH": "/bin"}
+    env = primitive_axis.primitive_build_env(ambient, {"MOLT_BUILD": "x"}, out)
+    assert env["PATH"] == "/bin" and env["MOLT_BUILD"] == "x"
+    assert (env["PYTHONHASHSEED"], env["MOLT_KEEP_SYMBOLS"]) == ("0", "1")
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", env["MOLT_PROJECT_ROOT"])
+    assert _find_project_root(program) == out.resolve()
+
+
 def test_id_witness_rejects_a_nonunique_identity_provider(monkeypatch, capsys):
     primitive = next(p for p in primitive_axis.PRIMITIVES if p.name == "id")
     monkeypatch.setattr("sys.argv", ["primitive.py", "100"])

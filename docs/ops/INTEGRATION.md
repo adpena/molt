@@ -636,7 +636,8 @@ which outlives every lane it retires; the runner's OS file lock, not the
 process table, decides which runner works.
 
 The runner always runs main's pinned controller. Each batch takes the
-bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
+bisection plan's next group, else the oldest `MAX_BATCH` requests (1 while the
+per-candidate pass rate is low; `tools/molt_dev_queue.py` states when to raise it):
 
 1. Materialize the candidate in the queue's repository-keyed external worktree
    (`<external-custody-root>/worktrees/landing-sandbox-<repository-key>`),

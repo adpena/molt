@@ -50,6 +50,8 @@ _SCHEMA = "molt-build-record-v12"
 _SESSION_ENVIRONMENT_KEYS = frozenset(
     {
         "_",
+        # The agent's execution request id changes on every shell command.
+        "CODEX_TOOL_CALL_ID",
         "COLORTERM",
         "COLUMNS",
         "ITERM_PROFILE",

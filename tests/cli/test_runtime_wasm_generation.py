@@ -196,17 +196,22 @@ def _publish_pair(
 
 
 @pytest.mark.parametrize(
-    "state", ["both", "other-only", "other-selected", "substituted-receipt"]
+    "state",
+    ["both", "other-only", "other-selected", "substituted-receipt", "evicted"],
 )
 def test_signature_gate_selects_only_checkout_input_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
     from molt.cli import artifact_state, runtime_paths
+    from molt.cli import runtime_wasm_cache as cache
+    from molt.process_environment import ProcessEnvironment
     from tests import test_wasm_runtime_call_signature_authority as gate
 
+    monkeypatch.setattr(cache, "_default_molt_cache", lambda: tmp_path / "cache")
     # Publish two independently identified families into the same selection
-    # root, just as two landing candidates do. The previous candidate's bytes
-    # and expected record are valid, but cannot prove this candidate.
+    # root, just as two landing candidates do, and into the shared
+    # content-addressed cache, as their builds do. The previous candidate's
+    # bytes and expected record are valid, but cannot prove this candidate.
     other, other_shared, other_reloc = _publish_pair(
         tmp_path, pair_seed="other", shared=b"previous candidate exports"
     )
@@ -214,6 +219,22 @@ def test_signature_gate_selects_only_checkout_input_identity(
     current, shared, reloc = _publish_pair(
         tmp_path, pair_seed="current", shared=b"current candidate exports"
     )
+    for seed, shared_identity, reloc_identity in (
+        ("other", other_shared, other_reloc),
+        ("current", shared, reloc),
+    ):
+        if state == "evicted" and seed == "current":
+            continue
+        assert (
+            cache.publish_runtime_wasm_pair_to_shared_cache(
+                shared=tmp_path / f"source-{seed}" / "shared.wasm",
+                reloc=tmp_path / f"source-{seed}" / "reloc.wasm",
+                shared_identity=shared_identity,
+                reloc_identity=reloc_identity,
+                cargo_environment=runtime_cargo_environment_inputs(),
+            )
+            is None
+        )
     expected = RuntimeWasmExpectedPair(
         shared, reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
     )
@@ -244,12 +265,16 @@ def test_signature_gate_selects_only_checkout_input_identity(
         lambda *_args: tmp_path / "molt_runtime.wasm",
     )
     monkeypatch.setattr(
-        gate, "_checkout_expected_runtime_pair", lambda *_args: expected
+        gate,
+        "_checkout_expected_runtime_pair",
+        lambda *_args: (expected, ProcessEnvironment(os.environ)),
     )
 
-    if state == "both":
+    if state in {"both", "other-selected"}:
+        # Another candidate's build may displace the shared root selection
+        # (HF-658); the gate admits this checkout's family regardless.
         selected = gate._runtime_signature_generation(tmp_path)
-        assert selected.shared == current.shared != other.shared
+        assert selected.shared.read_bytes() == b"current candidate exports"
         assert selected.shared_identity == shared
         assert selected.reloc_identity == reloc
     else:

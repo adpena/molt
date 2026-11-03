@@ -694,7 +694,9 @@ def _quarantine_cargo_incremental_state(
     Cargo passes the profile incremental root; Rustc chooses private sessions
     inside it. This is reproducible whole-profile cache recovery, not proof of
     command-owned units or generations. Other profiles and old evidence remain.
-    Unknown process closure, waiting Cargo and unobserved wrappers defer.
+    Unknown process closure and unobserved wrappers defer. A closed command
+    with no observed compiler, such as Cargo still waiting on a lock, is
+    terminal as ``unobserved``: nothing is moved.
     Cargo-compatible exclusion is not authority over unsupported manual Rustc
     writers which bypass Cargo locks; no generic inactive-directory claim.
     """
@@ -769,9 +771,22 @@ def _quarantine_cargo_incremental_state(
                 ownership_observations=tuple(observations),
                 interruption_inventory_complete=True,
             )
-        if not observations:
-            raise ValueError(
-                "no birth-custodied rustc incremental observations; recovery deferred"
+        if not observations and not eligible_observations:
+            # Recovery acts only on compilers the guard observed. With none
+            # observed it has nothing to move; an empty sample never proves
+            # that no rustc ran. Rustc's session protocol owns what such a
+            # compiler left: it loads only finalized session directories and
+            # deletes unlocked unfinalized ones (rustc_incremental persist/fs.rs).
+            return CargoIncrementalQuarantine(
+                reason=reason,
+                recorded_at=recorded_at,
+                target_dir=str(target_dir),
+                quarantine_dir=None,
+                command=tuple(command),
+                cwd=str(cwd),
+                ownership_status="unobserved",
+                interruption_inventory_complete=interruption_inventory_complete,
+                interruption_inventory_error=interruption_inventory_error,
             )
         if not eligible_observations or not eligible_observations.issubset(
             set(observations)
