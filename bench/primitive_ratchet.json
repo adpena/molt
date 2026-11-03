@@ -1,120 +1,120 @@
 {
   "axes": {
     "dataclass_construction/per_op": {
-      "noise_bound": 0.022,
-      "ratio": 265.08395454203327
+      "noise_bound": 0.017,
+      "ratio": 252.24786758446382
     },
     "dataclass_construction/startup": {
-      "noise_bound": 0.174,
-      "ratio": 2.183041599711924
+      "noise_bound": 0.178,
+      "ratio": 2.155732717974594
     },
     "dynamic_call/per_op": {
-      "noise_bound": 0.019,
-      "ratio": 3.454535063549813
+      "noise_bound": 0.017,
+      "ratio": 3.092342761848761
     },
     "dynamic_call/startup": {
-      "noise_bound": 0.208,
-      "ratio": 2.2323724518428323
+      "noise_bound": 0.242,
+      "ratio": 2.2192838645187174
     },
     "empty/startup": {
-      "noise_bound": 0.207,
-      "ratio": 2.2212378277244853
+      "noise_bound": 0.154,
+      "ratio": 2.219013854794005
     },
     "getattr_miss/per_op": {
-      "noise_bound": 0.019,
-      "ratio": 3.254578434696044
+      "noise_bound": 0.015,
+      "ratio": 3.018087644872208
     },
     "getattr_miss/startup": {
-      "noise_bound": 0.221,
-      "ratio": 2.2260183234859716
+      "noise_bound": 0.222,
+      "ratio": 2.220653926416742
     },
     "id/per_op": {
-      "noise_bound": 0.037,
-      "ratio": 0.7768164596880036
+      "noise_bound": 0.044,
+      "ratio": 0.7361675752871106
     },
     "id/startup": {
-      "noise_bound": 0.193,
-      "ratio": 2.2106185286154427
+      "noise_bound": 0.195,
+      "ratio": 2.221032010617589
     },
     "isinstance/per_op": {
       "noise_bound": 0.014,
-      "ratio": 9.113377325819268
+      "ratio": 8.47186120166826
     },
     "isinstance/startup": {
-      "noise_bound": 0.225,
-      "ratio": 2.2277553376068107
+      "noise_bound": 0.215,
+      "ratio": 2.2105247799386225
     },
     "loop/per_op": {
-      "noise_bound": 0.09,
-      "ratio": 0.7555876777304001
+      "noise_bound": 0.11,
+      "ratio": 0.7192657653717632
     },
     "loop/startup": {
-      "noise_bound": 0.186,
-      "ratio": 2.219903652308123
+      "noise_bound": 0.198,
+      "ratio": 2.2190503014878113
     },
     "memo_get/per_op": {
-      "noise_bound": 0.016,
-      "ratio": 2.0701093661791554
+      "noise_bound": 0.012,
+      "ratio": 1.882375661160717
     },
     "memo_get/startup": {
-      "noise_bound": 0.21,
-      "ratio": 2.2314643527404976
+      "noise_bound": 0.214,
+      "ratio": 2.2247269348888645
     },
     "memo_set/per_op": {
       "noise_bound": 0.023,
-      "ratio": 1.4412660332701057
+      "ratio": 1.343765494125862
     },
     "memo_set/startup": {
-      "noise_bound": 0.192,
-      "ratio": 2.213758146684355
+      "noise_bound": 0.202,
+      "ratio": 2.2198313097028146
     },
     "new_and_update/per_op": {
-      "noise_bound": 0.025,
-      "ratio": 16.892532940107152
+      "noise_bound": 0.008,
+      "ratio": 15.913139405017327
     },
     "new_and_update/startup": {
-      "noise_bound": 0.196,
-      "ratio": 2.2136059333322824
+      "noise_bound": 0.204,
+      "ratio": 2.217936515209141
     },
     "plain_construction/per_op": {
-      "noise_bound": 0.035,
-      "ratio": 9.365611385176942
+      "noise_bound": 0.029,
+      "ratio": 8.705451077002136
     },
     "plain_construction/startup": {
-      "noise_bound": 0.179,
-      "ratio": 2.226463895421809
+      "noise_bound": 0.221,
+      "ratio": 2.1946670895048173
     },
     "recursion/per_op": {
-      "noise_bound": 0.01,
-      "ratio": 7.8277367956538395
+      "noise_bound": 0.005,
+      "ratio": 7.079445545934909
     },
     "recursion/startup": {
-      "noise_bound": 0.218,
-      "ratio": 2.2141744244256447
+      "noise_bound": 0.207,
+      "ratio": 2.202244349705186
     },
     "reduce_ex/per_op": {
-      "noise_bound": 0.084,
-      "ratio": 26.25743639224096
+      "noise_bound": 0.005,
+      "ratio": 24.722774747352943
     },
     "reduce_ex/startup": {
-      "noise_bound": 0.194,
-      "ratio": 2.230689744243429
+      "noise_bound": 0.166,
+      "ratio": 2.231537881436922
     },
     "tuple_unpack/per_op": {
-      "noise_bound": 0.01,
-      "ratio": 2.9360871934685853
+      "noise_bound": 0.005,
+      "ratio": 2.7989799225849996
     },
     "tuple_unpack/startup": {
-      "noise_bound": 0.182,
-      "ratio": 2.221573938263825
+      "noise_bound": 0.179,
+      "ratio": 2.212043605718631
     },
     "type_dispatch/per_op": {
-      "noise_bound": 0.008,
-      "ratio": 12.379636105188169
+      "noise_bound": 0.063,
+      "ratio": 11.239494831546672
     },
     "type_dispatch/startup": {
-      "noise_bound": 0.208,
-      "ratio": 2.223213999170484
+      "noise_bound": 0.197,
+      "ratio": 2.2124651851976025
     }
   },
   "identity": {
@@ -138,13 +138,13 @@
     },
     "workloads_sha256": "b27186503a5c84cbd8b872897cbb43d38a8fb9f048b00cfb64675bb01b750c6a"
   },
-  "noise_bound": 0.225,
+  "noise_bound": 0.242,
   "noise_rule": "per axis: 2 * maximum paired-ratio deviation from median, rounded up to 0.001; zero is exact",
   "provenance": {
     "authoritative": false,
     "authoritative_reason": "non-canonical lane (tools/perf_scoreboard.py primitives); the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15`",
     "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15",
-    "git_rev": "f99af2808ec9633b9b3c1b7d03a6797218b5ac5d",
+    "git_rev": "6b1a5d3b6c02e6394dee3e5419dbff6121860c18",
     "lane": "tools/perf_scoreboard.py primitives",
     "requested_profile": "release",
     "source": "non-canonical"
