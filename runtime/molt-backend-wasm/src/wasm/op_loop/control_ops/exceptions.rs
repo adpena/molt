@@ -1,7 +1,6 @@
 use super::{ControlKind, ControlOpContext};
 use crate::OpIR;
 use crate::wasm_abi::TAG_EXCEPTION_INDEX;
-use crate::wasm_binary::emit_call;
 use std::borrow::Cow;
 use wasm_encoder::{BlockType, Catch, Function, Instruction, ValType};
 
@@ -96,6 +95,7 @@ mod tests {
     use super::*;
     use crate::representation_plan::ScalarRepresentationPlan;
     use crate::wasm::WasmFrameLocals;
+    use crate::wasm_binary::emit_call;
     use crate::wasm_import_tracking::TrackedImportIds;
     use crate::wasm_values::ConstantCache;
     use std::collections::BTreeMap;
