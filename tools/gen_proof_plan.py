@@ -222,6 +222,8 @@ def _json_projection(plan: ProofPlan) -> str:
         {
             "always": plan.always,
             "always_toolchains": plan.always_toolchains,
+            "repair": plan.repair,
+            "repair_toolchains": plan.repair_toolchains,
             "rule": plan.local_rules,
         },
         memory_units=PytestMemoryUnits(
@@ -294,6 +296,8 @@ def _json_projection(plan: ProofPlan) -> str:
         "local": {
             "always": list(plan.always),
             "always_command_ids": local_ids.get("local.always", []),
+            "repair": list(plan.repair),
+            "repair_command_ids": local_ids.get("local.repair", []),
             "commands": local_commands,
             "toolchains": {
                 identifier: list(plan.toolchain_closure(declaration.toolchains))

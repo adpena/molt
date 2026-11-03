@@ -319,6 +319,36 @@ owner = "oracle-cell"
     assert set(evidence.rglob("*")) == before
 
 
+def test_candidate_controller_landing_refuses_while_a_runner_holds_the_queue(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A live runner is main's controller; it would fail a request whose plan
+    # only the candidate controller reads (presubmit lane, 2026-11-02).
+    from tools import molt_dev_queue as queue
+
+    checkout = _start(family, "candidate-busy")
+    _commit_file(checkout, "source.py", "VALUE = 1\n", "candidate")
+    paths = queue.queue_paths(checkout)
+    monkeypatch.setattr(queue, "_runner_lock_free", lambda _paths: False)
+    started: list[object] = []
+    monkeypatch.setattr(
+        queue, "_start_queue_runner", lambda *args: started.append(args)
+    )
+
+    def land(*flags: str) -> int:
+        return queue.cmd_land(
+            molt_dev.build_parser().parse_args(
+                ["land", "--repo", str(checkout), "--no-precheck", *flags]
+            )
+        )
+
+    assert land("--candidate-controller") == EXIT_FAIL
+    assert not queue.pending(paths)
+    assert not started
+    assert land() == EXIT_OK
+    assert len(queue.pending(paths)) == 1
+
+
 def _ref(repo: Path, ref: str) -> str | None:
     proc = _git(repo, "rev-parse", "--verify", "--quiet", ref, check=False)
     return proc.stdout.strip() if proc.returncode == 0 else None
