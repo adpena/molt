@@ -3,7 +3,6 @@ use crate::runtime_flags::{self, RuntimeFlag};
 use std::alloc::Layout;
 #[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -874,29 +873,6 @@ pub(crate) struct PtrSlot(pub(crate) *mut u8);
 // Raw pointers are guarded by locks; it is safe to share slots across threads.
 unsafe impl Send for PtrSlot {}
 unsafe impl Sync for PtrSlot {}
-
-/// Per-instance projection of sealed class storage onto a dataclass vector.
-/// Logical dataclass fields remain first; hidden declared rows follow them.
-#[derive(Clone, Copy)]
-pub(crate) struct DataclassField {
-    pub(crate) name: u64,
-    pub(crate) kind: class_layout::ClassFieldKind,
-    pub(crate) slot_offset: Option<usize>,
-}
-
-pub(crate) struct DataclassDesc {
-    pub(crate) name: String,
-    pub(crate) field_names: Vec<String>,
-    // Immutable physical-layout projection, prepared before class publication.
-    pub(crate) field_layout: Vec<DataclassField>,
-    pub(crate) field_name_to_index: HashMap<String, usize>,
-    pub(crate) frozen: bool,
-    pub(crate) repr: bool,
-    pub(crate) slots: bool,
-    pub(crate) allows_dict: bool,
-    pub(crate) field_flags: Vec<u8>,
-    pub(crate) hash_mode: u8,
-}
 
 pub(crate) struct Buffer2D {
     pub(crate) rows: u64,
@@ -2574,7 +2550,6 @@ pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
         match object_type_id(ptr) {
             TYPE_ID_TYPE => return class_storage::class_generic_dict_bits_ptr(ptr),
             TYPE_ID_FUNCTION => return layout::function_dict_bits_ptr(ptr),
-            TYPE_ID_DATACLASS => return dataclass_dict_bits_ptr(ptr),
             TYPE_ID_EXCEPTION => return crate::builtins::exceptions::exception_dict_bits_ptr(ptr),
             TYPE_ID_FILE_HANDLE => {
                 // Exact and extended IO objects share this one dictionary owner.
@@ -3327,21 +3302,6 @@ pub(crate) unsafe fn memoryview_strides(ptr: *mut u8) -> Option<&'static [isize]
             return None;
         }
         Some(&*strides_ptr)
-    }
-}
-
-pub(crate) unsafe fn dataclass_desc_ptr(ptr: *mut u8) -> *mut DataclassDesc {
-    unsafe { *(ptr as *const *mut DataclassDesc) }
-}
-
-pub(crate) unsafe fn dataclass_fields_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *const *mut Vec<u64>) }
-}
-
-pub(crate) unsafe fn dataclass_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
-    unsafe {
-        ptr.add(std::mem::size_of::<*mut DataclassDesc>() + std::mem::size_of::<*mut Vec<u64>>())
-            as *mut u64
     }
 }
 
@@ -4610,13 +4570,7 @@ unsafe fn dec_ref_ptr_terminal_body(
                     drop_detached_tracked_vec(memoryview_shape_ptr(ptr));
                     drop_detached_tracked_vec(memoryview_strides_ptr(ptr));
                 }
-                Some(HeapDropPolicy::Dataclass) => {
-                    drop_detached_tracked_vec(dataclass_fields_ptr(ptr));
-                    let desc = dataclass_desc_ptr(ptr);
-                    if !desc.is_null() {
-                        drop(Box::from_raw(desc));
-                    }
-                }
+
                 Some(HeapDropPolicy::Map) => drop_detached_tracked_vec(map_iters_ptr(ptr)),
                 Some(HeapDropPolicy::WeakContainer) => {
                     weak_container::weakcontainer_drop_detached_state(ptr)

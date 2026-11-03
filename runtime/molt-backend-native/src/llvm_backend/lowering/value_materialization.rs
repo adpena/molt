@@ -951,7 +951,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
     }
 
-    /// A fixed word range for one operation (list, tuple, dataclass,
+    /// A fixed word range for one operation (list, tuple,
     /// class-definition or unpack transport). Every execution of the operation
     /// reuses this static entry-block slot; allocating where the operation runs
     /// would grow the stack on each loop iteration.

@@ -69,6 +69,8 @@ pub unsafe fn release_runtime_slot_bits(bits: u64) {
 unsafe extern "C" {
     // Itertools-specific helpers (from molt-runtime/itertools_bridge.rs):
     fn molt_itertools_alloc_instance_for_class(class_bits: u64) -> u64;
+    fn molt_itertools_validate_constructor_class(actual: u64, expected: u64) -> bool;
+    fn molt_itertools_constructor_repr(instance: u64, first: u64, second: u64) -> u64;
     fn molt_itertools_call_callable1(call_bits: u64, arg0_bits: u64) -> u64;
     fn molt_itertools_call_callable2_bridge(call_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64;
     fn molt_itertools_tuple_from_iter(iter_bits: u64) -> u64;
@@ -84,7 +86,6 @@ unsafe extern "C" {
         defaults_ptr: *const u64,
         defaults_len: usize,
     ) -> u64;
-    fn molt_itertools_alloc_kwd_mark() -> u64;
     fn molt_itertools_object_class_bits(ptr: *mut u8) -> u64;
 
     // Already-existing C API exports from molt-runtime:
@@ -330,8 +331,12 @@ pub fn alloc_itertools_class(
     }
 }
 
-pub fn alloc_kwd_mark(_py: &PyToken) -> u64 {
-    unsafe { molt_itertools_alloc_kwd_mark() }
+pub fn validate_constructor_class(_py: &PyToken, actual: u64, expected: u64) -> bool {
+    unsafe { molt_itertools_validate_constructor_class(actual, expected) }
+}
+
+pub fn constructor_repr(_py: &PyToken, instance: u64, first: u64, second: u64) -> u64 {
+    unsafe { molt_itertools_constructor_repr(instance, first, second) }
 }
 
 pub fn missing_bits(_py: &PyToken) -> u64 {

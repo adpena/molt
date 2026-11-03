@@ -1,0 +1,1857 @@
+# Public native Python object identity and publication authority.
+# CPython 3.12 / 3.14 census is the independent oracle.
+
+[object.molt_abc_get_cache_token]
+kind = "builtin_function_or_method"
+name = "get_cache_token"
+qualname = "get_cache_token"
+module = "_abc"
+bindings = ["_abc.get_cache_token"]
+
+[object.molt_abs_builtin]
+kind = "builtin_function_or_method"
+name = "abs"
+qualname = "abs"
+module = "builtins"
+bindings = ["builtins.abs"]
+
+[object.molt_aiter]
+kind = "builtin_function_or_method"
+name = "aiter"
+qualname = "aiter"
+module = "builtins"
+bindings = ["builtins.aiter"]
+
+[object.molt_all_builtin]
+kind = "builtin_function_or_method"
+name = "all"
+qualname = "all"
+module = "builtins"
+bindings = ["builtins.all"]
+
+[object.molt_anext_builtin]
+kind = "builtin_function_or_method"
+name = "anext"
+qualname = "anext"
+module = "builtins"
+bindings = ["builtins.anext"]
+
+[object.molt_any_builtin]
+kind = "builtin_function_or_method"
+name = "any"
+qualname = "any"
+module = "builtins"
+bindings = ["builtins.any"]
+
+[object.molt_ascii_from_obj]
+kind = "builtin_function_or_method"
+name = "ascii"
+qualname = "ascii"
+module = "builtins"
+bindings = ["builtins.ascii"]
+
+[object.molt_bin_builtin]
+kind = "builtin_function_or_method"
+name = "bin"
+qualname = "bin"
+module = "builtins"
+bindings = ["builtins.bin"]
+
+[object.molt_binascii_a2b_base64]
+kind = "builtin_function_or_method"
+name = "a2b_base64"
+qualname = "a2b_base64"
+module = "binascii"
+bindings = ["binascii.a2b_base64"]
+
+[object.molt_binascii_a2b_hex]
+kind = "builtin_function_or_method"
+name = "a2b_hex"
+qualname = "a2b_hex"
+module = "binascii"
+bindings = ["binascii.a2b_hex"]
+
+[object.molt_binascii_a2b_qp]
+kind = "builtin_function_or_method"
+name = "a2b_qp"
+qualname = "a2b_qp"
+module = "binascii"
+bindings = ["binascii.a2b_qp"]
+
+[object.molt_binascii_a2b_uu]
+kind = "builtin_function_or_method"
+name = "a2b_uu"
+qualname = "a2b_uu"
+module = "binascii"
+bindings = ["binascii.a2b_uu"]
+
+[object.molt_binascii_b2a_base64]
+kind = "builtin_function_or_method"
+name = "b2a_base64"
+qualname = "b2a_base64"
+module = "binascii"
+bindings = ["binascii.b2a_base64"]
+
+[object.molt_binascii_b2a_hex]
+kind = "builtin_function_or_method"
+name = "b2a_hex"
+qualname = "b2a_hex"
+module = "binascii"
+bindings = ["binascii.b2a_hex"]
+
+[object.molt_binascii_b2a_qp]
+kind = "builtin_function_or_method"
+name = "b2a_qp"
+qualname = "b2a_qp"
+module = "binascii"
+bindings = ["binascii.b2a_qp"]
+
+[object.molt_binascii_b2a_uu]
+kind = "builtin_function_or_method"
+name = "b2a_uu"
+qualname = "b2a_uu"
+module = "binascii"
+bindings = ["binascii.b2a_uu"]
+
+[object.molt_binascii_crc_hqx]
+kind = "builtin_function_or_method"
+name = "crc_hqx"
+qualname = "crc_hqx"
+module = "binascii"
+bindings = ["binascii.crc_hqx"]
+
+[object.molt_binascii_hexlify]
+kind = "builtin_function_or_method"
+name = "hexlify"
+qualname = "hexlify"
+module = "binascii"
+bindings = ["binascii.hexlify"]
+
+[object.molt_binascii_unhexlify]
+kind = "builtin_function_or_method"
+name = "unhexlify"
+qualname = "unhexlify"
+module = "binascii"
+bindings = ["binascii.unhexlify"]
+
+[object.molt_callable_builtin]
+kind = "builtin_function_or_method"
+name = "callable"
+qualname = "callable"
+module = "builtins"
+bindings = ["builtins.callable"]
+
+[object.molt_chr]
+kind = "builtin_function_or_method"
+name = "chr"
+qualname = "chr"
+module = "builtins"
+bindings = ["builtins.chr"]
+
+[object.molt_compile_builtin]
+kind = "builtin_function_or_method"
+name = "compile"
+qualname = "compile"
+module = "builtins"
+bindings = ["builtins.compile"]
+
+[object.molt_copyreg_newobj_ex]
+signature = "cls, args, kwargs"
+arguments = "cls, args, kwargs"
+kind = "function"
+name = "__newobj_ex__"
+qualname = "__newobj_ex__"
+module = "copyreg"
+bindings = ["copyreg.__newobj_ex__"]
+
+[object.molt_copyreg_reconstructor]
+signature = "cls, base, state"
+arguments = "cls, base, state"
+kind = "function"
+name = "_reconstructor"
+qualname = "_reconstructor"
+module = "copyreg"
+bindings = ["copyreg._reconstructor"]
+
+[object.molt_copyreg_reduce_ex]
+signature = "self, proto"
+arguments = "self, proto"
+kind = "function"
+name = "_reduce_ex"
+qualname = "_reduce_ex"
+module = "copyreg"
+bindings = ["copyreg._reduce_ex"]
+
+[object.molt_del_attr_name]
+kind = "builtin_function_or_method"
+name = "delattr"
+qualname = "delattr"
+module = "builtins"
+bindings = ["builtins.delattr"]
+
+[object.molt_dir_builtin]
+kind = "builtin_function_or_method"
+name = "dir"
+qualname = "dir"
+module = "builtins"
+bindings = ["builtins.dir"]
+
+[object.molt_divmod_builtin]
+kind = "builtin_function_or_method"
+name = "divmod"
+qualname = "divmod"
+module = "builtins"
+bindings = ["builtins.divmod"]
+
+[object.molt_enumerate_builtin]
+kind = "type"
+name = "enumerate"
+qualname = "enumerate"
+module = "builtins"
+bindings = ["builtins.enumerate"]
+
+[object.molt_filter_builtin]
+kind = "type"
+name = "filter"
+qualname = "filter"
+module = "builtins"
+bindings = ["builtins.filter"]
+
+[object.molt_format_builtin]
+kind = "builtin_function_or_method"
+name = "format"
+qualname = "format"
+module = "builtins"
+bindings = ["builtins.format"]
+
+[object.molt_functools_cmp_to_key]
+kind = "builtin_function_or_method"
+name = "cmp_to_key"
+qualname = "cmp_to_key"
+module = "_functools"
+bindings = ["functools.cmp_to_key", "_functools.cmp_to_key"]
+publisher = "_functools.cmp_to_key"
+
+[object.molt_functools_partial_type]
+class_factory = "partial_class"
+instance_shape = "FunctoolsPartial"
+kind = "type"
+name = "partial"
+qualname = "partial"
+module = "functools"
+bindings = ["functools.partial", "_functools.partial"]
+
+[object.molt_functools_partial_type.constructor]
+callback = "molt_functools_partial_new"
+posonly = ["cls"]
+vararg = "args"
+varkw = "keywords"
+
+[object.molt_functools_total_ordering]
+signature = "cls"
+arguments = "cls"
+kind = "function"
+name = "total_ordering"
+qualname = "total_ordering"
+module = "functools"
+bindings = ["functools.total_ordering"]
+
+[object.molt_getattr_builtin]
+kind = "builtin_function_or_method"
+name = "getattr"
+qualname = "getattr"
+module = "builtins"
+bindings = ["builtins.getattr"]
+
+[object.molt_globals_builtin]
+kind = "builtin_function_or_method"
+name = "globals"
+qualname = "globals"
+module = "builtins"
+bindings = ["builtins.globals"]
+
+[object.molt_has_attr_name]
+kind = "builtin_function_or_method"
+name = "hasattr"
+qualname = "hasattr"
+module = "builtins"
+bindings = ["builtins.hasattr"]
+
+[object.molt_hash_builtin]
+kind = "builtin_function_or_method"
+name = "hash"
+qualname = "hash"
+module = "builtins"
+bindings = ["builtins.hash"]
+
+[object.molt_hex_builtin]
+kind = "builtin_function_or_method"
+name = "hex"
+qualname = "hex"
+module = "builtins"
+bindings = ["builtins.hex"]
+
+[object.molt_id]
+kind = "builtin_function_or_method"
+name = "id"
+qualname = "id"
+module = "builtins"
+bindings = ["builtins.id"]
+
+[object.molt_importlib_import_transaction]
+kind = "builtin_function_or_method"
+name = "__import__"
+qualname = "__import__"
+module = "builtins"
+bindings = ["builtins.__import__"]
+
+[object.molt_importlib_module_from_spec]
+signature = "spec"
+arguments = "spec"
+kind = "function"
+name = "module_from_spec"
+qualname = "module_from_spec"
+module = "_frozen_importlib"
+bindings = ["_frozen_importlib.module_from_spec"]
+
+[object.molt_importlib_spec_from_loader]
+signature = "name, loader, *, origin=None, is_package=None"
+arguments = "name, loader, origin, is_package, __import__(\"importlib.machinery\", fromlist=(\"ModuleSpec\",))"
+kind = "function"
+name = "spec_from_loader"
+qualname = "spec_from_loader"
+module = "_frozen_importlib"
+bindings = ["_frozen_importlib.spec_from_loader"]
+
+[object.molt_isinstance]
+kind = "builtin_function_or_method"
+name = "isinstance"
+qualname = "isinstance"
+module = "builtins"
+bindings = ["builtins.isinstance"]
+
+[object.molt_issubclass]
+kind = "builtin_function_or_method"
+name = "issubclass"
+qualname = "issubclass"
+module = "builtins"
+bindings = ["builtins.issubclass"]
+
+[object.molt_iter_builtin]
+kind = "builtin_function_or_method"
+name = "iter"
+qualname = "iter"
+module = "builtins"
+bindings = ["builtins.iter"]
+
+[object.molt_itertools_accumulate_type]
+class_factory = "accumulate_class"
+instance_shape = "ItertoolsAccumulate"
+kind = "type"
+name = "accumulate"
+qualname = "accumulate"
+module = "itertools"
+bindings = ["itertools.accumulate"]
+
+[object.molt_itertools_accumulate_type.constructor]
+callback = "molt_itertools_accumulate_new"
+posonly = ["cls"]
+positional = ["iterable", "func"]
+defaults = ["None"]
+kwonly = ["initial"]
+kwdefaults = ["None"]
+
+[object.molt_itertools_batched_type]
+class_factory = "batched_class"
+instance_shape = "ItertoolsBatched"
+kind = "type"
+name = "batched"
+qualname = "batched"
+module = "itertools"
+bindings = ["itertools.batched"]
+
+[object.molt_itertools_batched_type.constructor]
+callback = "molt_itertools_batched_new"
+posonly = ["cls"]
+positional = ["iterable", "n"]
+kwonly = ["strict"]
+kwdefaults = ["False"]
+
+[object.molt_itertools_batched_type.constructor_312]
+callback = "molt_itertools_batched_new_312"
+posonly = ["cls"]
+positional = ["iterable", "n"]
+
+[object.molt_itertools_chain_type]
+class_factory = "chain_class"
+instance_shape = "ItertoolsChain"
+kind = "type"
+name = "chain"
+qualname = "chain"
+module = "itertools"
+bindings = ["itertools.chain"]
+
+[object.molt_itertools_chain_type.constructor]
+callback = "molt_itertools_chain_new"
+posonly = ["cls"]
+vararg = "iterables"
+
+[object.molt_itertools_combinations_type]
+class_factory = "combinations_class"
+instance_shape = "ItertoolsCombinations"
+kind = "type"
+name = "combinations"
+qualname = "combinations"
+module = "itertools"
+bindings = ["itertools.combinations"]
+
+[object.molt_itertools_combinations_type.constructor]
+callback = "molt_itertools_combinations_new"
+posonly = ["cls"]
+positional = ["iterable", "r"]
+
+[object.molt_itertools_combinations_with_replacement_type]
+class_factory = "combinations_with_replacement_class"
+instance_shape = "ItertoolsCombinationsWithReplacement"
+kind = "type"
+name = "combinations_with_replacement"
+qualname = "combinations_with_replacement"
+module = "itertools"
+bindings = ["itertools.combinations_with_replacement"]
+
+[object.molt_itertools_combinations_with_replacement_type.constructor]
+callback = "molt_itertools_combinations_with_replacement_new"
+posonly = ["cls"]
+positional = ["iterable", "r"]
+
+[object.molt_itertools_compress_type]
+class_factory = "compress_class"
+instance_shape = "ItertoolsCompress"
+kind = "type"
+name = "compress"
+qualname = "compress"
+module = "itertools"
+bindings = ["itertools.compress"]
+
+[object.molt_itertools_compress_type.constructor]
+callback = "molt_itertools_compress_new"
+posonly = ["cls"]
+positional = ["data", "selectors"]
+
+[object.molt_itertools_count_type]
+class_factory = "count_class"
+instance_shape = "ItertoolsCount"
+kind = "type"
+name = "count"
+qualname = "count"
+module = "itertools"
+bindings = ["itertools.count"]
+
+[object.molt_itertools_count_type.constructor]
+callback = "molt_itertools_count_new"
+posonly = ["cls"]
+positional = ["start", "step"]
+defaults = ["0", "1"]
+
+[object.molt_itertools_cycle_type]
+class_factory = "cycle_class"
+instance_shape = "ItertoolsCycle"
+kind = "type"
+name = "cycle"
+qualname = "cycle"
+module = "itertools"
+bindings = ["itertools.cycle"]
+
+[object.molt_itertools_cycle_type.constructor]
+callback = "molt_itertools_cycle_new"
+posonly = ["cls", "iterable"]
+
+[object.molt_itertools_dropwhile_type]
+class_factory = "dropwhile_class"
+instance_shape = "ItertoolsDropwhile"
+kind = "type"
+name = "dropwhile"
+qualname = "dropwhile"
+module = "itertools"
+bindings = ["itertools.dropwhile"]
+
+[object.molt_itertools_dropwhile_type.constructor]
+callback = "molt_itertools_dropwhile_new"
+posonly = ["cls", "predicate", "iterable"]
+
+[object.molt_itertools_filterfalse_type]
+class_factory = "filterfalse_class"
+instance_shape = "ItertoolsFilterfalse"
+kind = "type"
+name = "filterfalse"
+qualname = "filterfalse"
+module = "itertools"
+bindings = ["itertools.filterfalse"]
+
+[object.molt_itertools_filterfalse_type.constructor]
+callback = "molt_itertools_filterfalse_new"
+posonly = ["cls", "function", "iterable"]
+
+[object.molt_itertools_groupby_type]
+class_factory = "groupby_class"
+instance_shape = "ItertoolsGroupby"
+kind = "type"
+name = "groupby"
+qualname = "groupby"
+module = "itertools"
+bindings = ["itertools.groupby"]
+
+[object.molt_itertools_groupby_type.constructor]
+callback = "molt_itertools_groupby_new"
+posonly = ["cls"]
+positional = ["iterable", "key"]
+defaults = ["None"]
+
+[object.molt_itertools_islice_type]
+class_factory = "islice_class"
+instance_shape = "ItertoolsIslice"
+kind = "type"
+name = "islice"
+qualname = "islice"
+module = "itertools"
+bindings = ["itertools.islice"]
+
+[object.molt_itertools_islice_type.constructor]
+callback = "molt_itertools_islice_new"
+posonly = ["cls", "iterable", "start", "stop", "step"]
+defaults = ["Missing", "Missing"]
+
+[object.molt_itertools_pairwise_type]
+class_factory = "pairwise_class"
+instance_shape = "ItertoolsPairwise"
+kind = "type"
+name = "pairwise"
+qualname = "pairwise"
+module = "itertools"
+bindings = ["itertools.pairwise"]
+
+[object.molt_itertools_pairwise_type.constructor]
+callback = "molt_itertools_pairwise_new"
+posonly = ["cls", "iterable"]
+
+[object.molt_itertools_permutations_type]
+class_factory = "permutations_class"
+instance_shape = "ItertoolsPermutations"
+kind = "type"
+name = "permutations"
+qualname = "permutations"
+module = "itertools"
+bindings = ["itertools.permutations"]
+
+[object.molt_itertools_permutations_type.constructor]
+callback = "molt_itertools_permutations_new"
+posonly = ["cls"]
+positional = ["iterable", "r"]
+defaults = ["None"]
+
+[object.molt_itertools_product_type]
+class_factory = "product_class"
+instance_shape = "ItertoolsProduct"
+kind = "type"
+name = "product"
+qualname = "product"
+module = "itertools"
+bindings = ["itertools.product"]
+
+[object.molt_itertools_product_type.constructor]
+callback = "molt_itertools_product_new"
+posonly = ["cls"]
+vararg = "iterables"
+kwonly = ["repeat"]
+kwdefaults = ["1"]
+
+[object.molt_itertools_repeat_type]
+class_factory = "repeat_class"
+instance_shape = "ItertoolsRepeat"
+kind = "type"
+name = "repeat"
+qualname = "repeat"
+module = "itertools"
+bindings = ["itertools.repeat"]
+
+[object.molt_itertools_repeat_type.constructor]
+callback = "molt_itertools_repeat_new"
+posonly = ["cls"]
+positional = ["object", "times"]
+defaults = ["Missing"]
+
+[object.molt_itertools_starmap_type]
+class_factory = "starmap_class"
+instance_shape = "ItertoolsStarmap"
+kind = "type"
+name = "starmap"
+qualname = "starmap"
+module = "itertools"
+bindings = ["itertools.starmap"]
+
+[object.molt_itertools_starmap_type.constructor]
+callback = "molt_itertools_starmap_new"
+posonly = ["cls", "function", "iterable"]
+
+[object.molt_itertools_takewhile_type]
+class_factory = "takewhile_class"
+instance_shape = "ItertoolsTakewhile"
+kind = "type"
+name = "takewhile"
+qualname = "takewhile"
+module = "itertools"
+bindings = ["itertools.takewhile"]
+
+[object.molt_itertools_takewhile_type.constructor]
+callback = "molt_itertools_takewhile_new"
+posonly = ["cls", "predicate", "iterable"]
+
+[object.molt_itertools_zip_longest_type]
+class_factory = "zip_longest_class"
+instance_shape = "ItertoolsZipLongest"
+kind = "type"
+name = "zip_longest"
+qualname = "zip_longest"
+module = "itertools"
+bindings = ["itertools.zip_longest"]
+
+[object.molt_itertools_zip_longest_type.constructor]
+callback = "molt_itertools_zip_longest_new"
+posonly = ["cls"]
+vararg = "iterables"
+kwonly = ["fillvalue"]
+kwdefaults = ["None"]
+
+[object.molt_json_encode_basestring_ascii_obj]
+kind = "builtin_function_or_method"
+name = "encode_basestring_ascii"
+qualname = "encode_basestring_ascii"
+module = "_json"
+bindings = ["_json.encode_basestring_ascii"]
+
+[object.molt_json_encode_basestring_obj]
+kind = "builtin_function_or_method"
+name = "encode_basestring"
+qualname = "encode_basestring"
+module = "_json"
+bindings = ["_json.encode_basestring"]
+
+[object.molt_json_scanstring_obj]
+kind = "builtin_function_or_method"
+name = "scanstring"
+qualname = "scanstring"
+module = "_json"
+bindings = ["_json.scanstring"]
+
+[object.molt_len]
+kind = "builtin_function_or_method"
+name = "len"
+qualname = "len"
+module = "builtins"
+bindings = ["builtins.len"]
+
+[object.molt_locals_builtin]
+kind = "builtin_function_or_method"
+name = "locals"
+qualname = "locals"
+module = "builtins"
+bindings = ["builtins.locals"]
+
+[object.molt_map_builtin]
+kind = "type"
+name = "map"
+qualname = "map"
+module = "builtins"
+bindings = ["builtins.map"]
+
+[object.molt_math_acos]
+kind = "builtin_function_or_method"
+name = "acos"
+qualname = "acos"
+module = "math"
+bindings = ["math.acos"]
+
+[object.molt_math_acosh]
+kind = "builtin_function_or_method"
+name = "acosh"
+qualname = "acosh"
+module = "math"
+bindings = ["math.acosh"]
+
+[object.molt_math_asin]
+kind = "builtin_function_or_method"
+name = "asin"
+qualname = "asin"
+module = "math"
+bindings = ["math.asin"]
+
+[object.molt_math_asinh]
+kind = "builtin_function_or_method"
+name = "asinh"
+qualname = "asinh"
+module = "math"
+bindings = ["math.asinh"]
+
+[object.molt_math_atan]
+kind = "builtin_function_or_method"
+name = "atan"
+qualname = "atan"
+module = "math"
+bindings = ["math.atan"]
+
+[object.molt_math_atan2]
+kind = "builtin_function_or_method"
+name = "atan2"
+qualname = "atan2"
+module = "math"
+bindings = ["math.atan2"]
+
+[object.molt_math_atanh]
+kind = "builtin_function_or_method"
+name = "atanh"
+qualname = "atanh"
+module = "math"
+bindings = ["math.atanh"]
+
+[object.molt_math_ceil]
+kind = "builtin_function_or_method"
+name = "ceil"
+qualname = "ceil"
+module = "math"
+bindings = ["math.ceil"]
+
+[object.molt_math_comb]
+kind = "builtin_function_or_method"
+name = "comb"
+qualname = "comb"
+module = "math"
+bindings = ["math.comb"]
+
+[object.molt_math_copysign]
+kind = "builtin_function_or_method"
+name = "copysign"
+qualname = "copysign"
+module = "math"
+bindings = ["math.copysign"]
+
+[object.molt_math_cos]
+kind = "builtin_function_or_method"
+name = "cos"
+qualname = "cos"
+module = "math"
+bindings = ["math.cos"]
+
+[object.molt_math_cosh]
+kind = "builtin_function_or_method"
+name = "cosh"
+qualname = "cosh"
+module = "math"
+bindings = ["math.cosh"]
+
+[object.molt_math_degrees]
+kind = "builtin_function_or_method"
+name = "degrees"
+qualname = "degrees"
+module = "math"
+bindings = ["math.degrees"]
+
+[object.molt_math_dist]
+kind = "builtin_function_or_method"
+name = "dist"
+qualname = "dist"
+module = "math"
+bindings = ["math.dist"]
+
+[object.molt_math_erf]
+kind = "builtin_function_or_method"
+name = "erf"
+qualname = "erf"
+module = "math"
+bindings = ["math.erf"]
+
+[object.molt_math_erfc]
+kind = "builtin_function_or_method"
+name = "erfc"
+qualname = "erfc"
+module = "math"
+bindings = ["math.erfc"]
+
+[object.molt_math_exp]
+kind = "builtin_function_or_method"
+name = "exp"
+qualname = "exp"
+module = "math"
+bindings = ["math.exp"]
+
+[object.molt_math_expm1]
+kind = "builtin_function_or_method"
+name = "expm1"
+qualname = "expm1"
+module = "math"
+bindings = ["math.expm1"]
+
+[object.molt_math_fabs]
+kind = "builtin_function_or_method"
+name = "fabs"
+qualname = "fabs"
+module = "math"
+bindings = ["math.fabs"]
+
+[object.molt_math_factorial]
+kind = "builtin_function_or_method"
+name = "factorial"
+qualname = "factorial"
+module = "math"
+bindings = ["math.factorial"]
+
+[object.molt_math_floor]
+kind = "builtin_function_or_method"
+name = "floor"
+qualname = "floor"
+module = "math"
+bindings = ["math.floor"]
+
+[object.molt_math_fmod]
+kind = "builtin_function_or_method"
+name = "fmod"
+qualname = "fmod"
+module = "math"
+bindings = ["math.fmod"]
+
+[object.molt_math_frexp]
+kind = "builtin_function_or_method"
+name = "frexp"
+qualname = "frexp"
+module = "math"
+bindings = ["math.frexp"]
+
+[object.molt_math_fsum]
+kind = "builtin_function_or_method"
+name = "fsum"
+qualname = "fsum"
+module = "math"
+bindings = ["math.fsum"]
+
+[object.molt_math_gamma]
+kind = "builtin_function_or_method"
+name = "gamma"
+qualname = "gamma"
+module = "math"
+bindings = ["math.gamma"]
+
+[object.molt_math_isfinite]
+kind = "builtin_function_or_method"
+name = "isfinite"
+qualname = "isfinite"
+module = "math"
+bindings = ["math.isfinite"]
+
+[object.molt_math_isinf]
+kind = "builtin_function_or_method"
+name = "isinf"
+qualname = "isinf"
+module = "math"
+bindings = ["math.isinf"]
+
+[object.molt_math_isnan]
+kind = "builtin_function_or_method"
+name = "isnan"
+qualname = "isnan"
+module = "math"
+bindings = ["math.isnan"]
+
+[object.molt_math_isqrt]
+kind = "builtin_function_or_method"
+name = "isqrt"
+qualname = "isqrt"
+module = "math"
+bindings = ["math.isqrt"]
+
+[object.molt_math_ldexp]
+kind = "builtin_function_or_method"
+name = "ldexp"
+qualname = "ldexp"
+module = "math"
+bindings = ["math.ldexp"]
+
+[object.molt_math_lgamma]
+kind = "builtin_function_or_method"
+name = "lgamma"
+qualname = "lgamma"
+module = "math"
+bindings = ["math.lgamma"]
+
+[object.molt_math_log10]
+kind = "builtin_function_or_method"
+name = "log10"
+qualname = "log10"
+module = "math"
+bindings = ["math.log10"]
+
+[object.molt_math_log1p]
+kind = "builtin_function_or_method"
+name = "log1p"
+qualname = "log1p"
+module = "math"
+bindings = ["math.log1p"]
+
+[object.molt_math_log2]
+kind = "builtin_function_or_method"
+name = "log2"
+qualname = "log2"
+module = "math"
+bindings = ["math.log2"]
+
+[object.molt_math_modf]
+kind = "builtin_function_or_method"
+name = "modf"
+qualname = "modf"
+module = "math"
+bindings = ["math.modf"]
+
+[object.molt_math_nextafter]
+kind = "builtin_function_or_method"
+name = "nextafter"
+qualname = "nextafter"
+module = "math"
+bindings = ["math.nextafter"]
+
+[object.molt_math_radians]
+kind = "builtin_function_or_method"
+name = "radians"
+qualname = "radians"
+module = "math"
+bindings = ["math.radians"]
+
+[object.molt_math_remainder]
+kind = "builtin_function_or_method"
+name = "remainder"
+qualname = "remainder"
+module = "math"
+bindings = ["math.remainder"]
+
+[object.molt_math_sin]
+kind = "builtin_function_or_method"
+name = "sin"
+qualname = "sin"
+module = "math"
+bindings = ["math.sin"]
+
+[object.molt_math_sinh]
+kind = "builtin_function_or_method"
+name = "sinh"
+qualname = "sinh"
+module = "math"
+bindings = ["math.sinh"]
+
+[object.molt_math_sqrt]
+kind = "builtin_function_or_method"
+name = "sqrt"
+qualname = "sqrt"
+module = "math"
+bindings = ["math.sqrt"]
+
+[object.molt_math_tan]
+kind = "builtin_function_or_method"
+name = "tan"
+qualname = "tan"
+module = "math"
+bindings = ["math.tan"]
+
+[object.molt_math_tanh]
+kind = "builtin_function_or_method"
+name = "tanh"
+qualname = "tanh"
+module = "math"
+bindings = ["math.tanh"]
+
+[object.molt_math_trunc]
+kind = "builtin_function_or_method"
+name = "trunc"
+qualname = "trunc"
+module = "math"
+bindings = ["math.trunc"]
+
+[object.molt_math_ulp]
+kind = "builtin_function_or_method"
+name = "ulp"
+qualname = "ulp"
+module = "math"
+bindings = ["math.ulp"]
+
+[object.molt_max_builtin]
+kind = "builtin_function_or_method"
+name = "max"
+qualname = "max"
+module = "builtins"
+bindings = ["builtins.max"]
+
+[object.molt_min_builtin]
+kind = "builtin_function_or_method"
+name = "min"
+qualname = "min"
+module = "builtins"
+bindings = ["builtins.min"]
+
+[object.molt_next_builtin]
+kind = "builtin_function_or_method"
+name = "next"
+qualname = "next"
+module = "builtins"
+bindings = ["builtins.next"]
+
+[object.molt_oct_builtin]
+kind = "builtin_function_or_method"
+name = "oct"
+qualname = "oct"
+module = "builtins"
+bindings = ["builtins.oct"]
+
+[object.molt_opcode_get_specialization_stats]
+kind = "builtin_function_or_method"
+name = "get_specialization_stats"
+qualname = "get_specialization_stats"
+module = "_opcode"
+bindings = ["_opcode.get_specialization_stats"]
+
+[object.molt_opcode_stack_effect]
+kind = "builtin_function_or_method"
+name = "stack_effect"
+qualname = "stack_effect"
+module = "_opcode"
+bindings = ["_opcode.stack_effect"]
+
+[object.molt_open_builtin]
+kind = "builtin_function_or_method"
+name = "open"
+qualname = "open"
+module = "_io"
+bindings = ["builtins.open"]
+
+[object.molt_operator_abs]
+kind = "builtin_function_or_method"
+name = "abs"
+qualname = "abs"
+module = "_operator"
+bindings = ["_operator.abs"]
+
+[object.molt_operator_add]
+kind = "builtin_function_or_method"
+name = "add"
+qualname = "add"
+module = "_operator"
+bindings = ["_operator.add"]
+
+[object.molt_operator_and]
+kind = "builtin_function_or_method"
+name = "and_"
+qualname = "and_"
+module = "_operator"
+bindings = ["_operator.and_"]
+
+[object.molt_operator_concat]
+kind = "builtin_function_or_method"
+name = "concat"
+qualname = "concat"
+module = "_operator"
+bindings = ["_operator.concat"]
+
+[object.molt_operator_contains]
+kind = "builtin_function_or_method"
+name = "contains"
+qualname = "contains"
+module = "_operator"
+bindings = ["_operator.contains"]
+
+[object.molt_operator_countof]
+kind = "builtin_function_or_method"
+name = "countOf"
+qualname = "countOf"
+module = "_operator"
+bindings = ["_operator.countOf"]
+
+[object.molt_operator_delitem]
+kind = "builtin_function_or_method"
+name = "delitem"
+qualname = "delitem"
+module = "_operator"
+bindings = ["_operator.delitem"]
+
+[object.molt_operator_eq]
+kind = "builtin_function_or_method"
+name = "eq"
+qualname = "eq"
+module = "_operator"
+bindings = ["_operator.eq"]
+
+[object.molt_operator_floordiv]
+kind = "builtin_function_or_method"
+name = "floordiv"
+qualname = "floordiv"
+module = "_operator"
+bindings = ["_operator.floordiv"]
+
+[object.molt_operator_ge]
+kind = "builtin_function_or_method"
+name = "ge"
+qualname = "ge"
+module = "_operator"
+bindings = ["_operator.ge"]
+
+[object.molt_operator_getitem]
+kind = "builtin_function_or_method"
+name = "getitem"
+qualname = "getitem"
+module = "_operator"
+bindings = ["_operator.getitem"]
+
+[object.molt_operator_gt]
+kind = "builtin_function_or_method"
+name = "gt"
+qualname = "gt"
+module = "_operator"
+bindings = ["_operator.gt"]
+
+[object.molt_operator_iadd]
+kind = "builtin_function_or_method"
+name = "iadd"
+qualname = "iadd"
+module = "_operator"
+bindings = ["_operator.iadd"]
+
+[object.molt_operator_iand]
+kind = "builtin_function_or_method"
+name = "iand"
+qualname = "iand"
+module = "_operator"
+bindings = ["_operator.iand"]
+
+[object.molt_operator_iconcat]
+kind = "builtin_function_or_method"
+name = "iconcat"
+qualname = "iconcat"
+module = "_operator"
+bindings = ["_operator.iconcat"]
+
+[object.molt_operator_ifloordiv]
+kind = "builtin_function_or_method"
+name = "ifloordiv"
+qualname = "ifloordiv"
+module = "_operator"
+bindings = ["_operator.ifloordiv"]
+
+[object.molt_operator_ilshift]
+kind = "builtin_function_or_method"
+name = "ilshift"
+qualname = "ilshift"
+module = "_operator"
+bindings = ["_operator.ilshift"]
+
+[object.molt_operator_imatmul]
+kind = "builtin_function_or_method"
+name = "imatmul"
+qualname = "imatmul"
+module = "_operator"
+bindings = ["_operator.imatmul"]
+
+[object.molt_operator_imod]
+kind = "builtin_function_or_method"
+name = "imod"
+qualname = "imod"
+module = "_operator"
+bindings = ["_operator.imod"]
+
+[object.molt_operator_imul]
+kind = "builtin_function_or_method"
+name = "imul"
+qualname = "imul"
+module = "_operator"
+bindings = ["_operator.imul"]
+
+[object.molt_operator_index]
+kind = "builtin_function_or_method"
+name = "index"
+qualname = "index"
+module = "_operator"
+bindings = ["_operator.index"]
+
+[object.molt_operator_inv]
+kind = "builtin_function_or_method"
+name = "inv"
+qualname = "inv"
+module = "_operator"
+bindings = ["_operator.inv"]
+
+[object.molt_operator_invert]
+kind = "builtin_function_or_method"
+name = "invert"
+qualname = "invert"
+module = "_operator"
+bindings = ["_operator.invert"]
+
+[object.molt_operator_ior]
+kind = "builtin_function_or_method"
+name = "ior"
+qualname = "ior"
+module = "_operator"
+bindings = ["_operator.ior"]
+
+[object.molt_operator_ipow]
+kind = "builtin_function_or_method"
+name = "ipow"
+qualname = "ipow"
+module = "_operator"
+bindings = ["_operator.ipow"]
+
+[object.molt_operator_irshift]
+kind = "builtin_function_or_method"
+name = "irshift"
+qualname = "irshift"
+module = "_operator"
+bindings = ["_operator.irshift"]
+
+[object.molt_operator_is]
+kind = "builtin_function_or_method"
+name = "is_"
+qualname = "is_"
+module = "_operator"
+bindings = ["_operator.is_"]
+
+[object.molt_operator_is_not]
+kind = "builtin_function_or_method"
+name = "is_not"
+qualname = "is_not"
+module = "_operator"
+bindings = ["_operator.is_not"]
+
+[object.molt_operator_isub]
+kind = "builtin_function_or_method"
+name = "isub"
+qualname = "isub"
+module = "_operator"
+bindings = ["_operator.isub"]
+
+[object.molt_operator_itruediv]
+kind = "builtin_function_or_method"
+name = "itruediv"
+qualname = "itruediv"
+module = "_operator"
+bindings = ["_operator.itruediv"]
+
+[object.molt_operator_ixor]
+kind = "builtin_function_or_method"
+name = "ixor"
+qualname = "ixor"
+module = "_operator"
+bindings = ["_operator.ixor"]
+
+[object.molt_operator_le]
+kind = "builtin_function_or_method"
+name = "le"
+qualname = "le"
+module = "_operator"
+bindings = ["_operator.le"]
+
+[object.molt_operator_length_hint]
+kind = "builtin_function_or_method"
+name = "length_hint"
+qualname = "length_hint"
+module = "_operator"
+bindings = ["_operator.length_hint"]
+
+[object.molt_operator_lshift]
+kind = "builtin_function_or_method"
+name = "lshift"
+qualname = "lshift"
+module = "_operator"
+bindings = ["_operator.lshift"]
+
+[object.molt_operator_lt]
+kind = "builtin_function_or_method"
+name = "lt"
+qualname = "lt"
+module = "_operator"
+bindings = ["_operator.lt"]
+
+[object.molt_operator_matmul]
+kind = "builtin_function_or_method"
+name = "matmul"
+qualname = "matmul"
+module = "_operator"
+bindings = ["_operator.matmul"]
+
+[object.molt_operator_mod]
+kind = "builtin_function_or_method"
+name = "mod"
+qualname = "mod"
+module = "_operator"
+bindings = ["_operator.mod"]
+
+[object.molt_operator_mul]
+kind = "builtin_function_or_method"
+name = "mul"
+qualname = "mul"
+module = "_operator"
+bindings = ["_operator.mul"]
+
+[object.molt_operator_ne]
+kind = "builtin_function_or_method"
+name = "ne"
+qualname = "ne"
+module = "_operator"
+bindings = ["_operator.ne"]
+
+[object.molt_operator_neg]
+kind = "builtin_function_or_method"
+name = "neg"
+qualname = "neg"
+module = "_operator"
+bindings = ["_operator.neg"]
+
+[object.molt_operator_not]
+kind = "builtin_function_or_method"
+name = "not_"
+qualname = "not_"
+module = "_operator"
+bindings = ["_operator.not_"]
+
+[object.molt_operator_or]
+kind = "builtin_function_or_method"
+name = "or_"
+qualname = "or_"
+module = "_operator"
+bindings = ["_operator.or_"]
+
+[object.molt_operator_pos]
+kind = "builtin_function_or_method"
+name = "pos"
+qualname = "pos"
+module = "_operator"
+bindings = ["_operator.pos"]
+
+[object.molt_operator_pow]
+kind = "builtin_function_or_method"
+name = "pow"
+qualname = "pow"
+module = "_operator"
+bindings = ["_operator.pow"]
+
+[object.molt_operator_rshift]
+kind = "builtin_function_or_method"
+name = "rshift"
+qualname = "rshift"
+module = "_operator"
+bindings = ["_operator.rshift"]
+
+[object.molt_operator_setitem]
+kind = "builtin_function_or_method"
+name = "setitem"
+qualname = "setitem"
+module = "_operator"
+bindings = ["_operator.setitem"]
+
+[object.molt_operator_sub]
+kind = "builtin_function_or_method"
+name = "sub"
+qualname = "sub"
+module = "_operator"
+bindings = ["_operator.sub"]
+
+[object.molt_operator_truediv]
+kind = "builtin_function_or_method"
+name = "truediv"
+qualname = "truediv"
+module = "_operator"
+bindings = ["_operator.truediv"]
+
+[object.molt_operator_truth]
+kind = "builtin_function_or_method"
+name = "truth"
+qualname = "truth"
+module = "_operator"
+bindings = ["_operator.truth"]
+
+[object.molt_operator_xor]
+kind = "builtin_function_or_method"
+name = "xor"
+qualname = "xor"
+module = "_operator"
+bindings = ["_operator.xor"]
+
+[object.molt_ord]
+kind = "builtin_function_or_method"
+name = "ord"
+qualname = "ord"
+module = "builtins"
+bindings = ["builtins.ord"]
+
+[object.molt_pow_mod]
+kind = "builtin_function_or_method"
+name = "pow"
+qualname = "pow"
+module = "builtins"
+bindings = ["builtins.pow"]
+
+[object.molt_print_builtin]
+kind = "builtin_function_or_method"
+name = "print"
+qualname = "print"
+module = "builtins"
+bindings = ["builtins.print"]
+
+[object.molt_process_spawn]
+kind = "builtin_function_or_method"
+name = "fork_exec"
+qualname = "fork_exec"
+module = "_posixsubprocess"
+bindings = ["_posixsubprocess.fork_exec"]
+
+[object.molt_repr_builtin]
+kind = "builtin_function_or_method"
+name = "repr"
+qualname = "repr"
+module = "builtins"
+bindings = ["builtins.repr"]
+
+[object.molt_reversed_builtin]
+kind = "type"
+name = "reversed"
+qualname = "reversed"
+module = "builtins"
+bindings = ["builtins.reversed"]
+
+[object.molt_round_builtin]
+kind = "builtin_function_or_method"
+name = "round"
+qualname = "round"
+module = "builtins"
+bindings = ["builtins.round"]
+
+[object.molt_select_select]
+kind = "builtin_function_or_method"
+name = "select"
+qualname = "select"
+module = "select"
+bindings = ["select.select"]
+
+[object.molt_set_attr_name]
+kind = "builtin_function_or_method"
+name = "setattr"
+qualname = "setattr"
+module = "builtins"
+bindings = ["builtins.setattr"]
+
+[object.molt_signal_default_int_handler]
+kind = "builtin_function_or_method"
+name = "default_int_handler"
+qualname = "default_int_handler"
+module = "_signal"
+bindings = ["signal.default_int_handler", "_signal.default_int_handler"]
+
+[object.molt_sorted_builtin]
+kind = "builtin_function_or_method"
+name = "sorted"
+qualname = "sorted"
+module = "builtins"
+bindings = ["builtins.sorted"]
+
+[object.molt_string_formatter_field_name_split]
+kind = "builtin_function_or_method"
+name = "formatter_field_name_split"
+qualname = "formatter_field_name_split"
+module = "_string"
+bindings = ["_string.formatter_field_name_split"]
+
+[object.molt_string_formatter_parse]
+kind = "builtin_function_or_method"
+name = "formatter_parser"
+qualname = "formatter_parser"
+module = "_string"
+bindings = ["_string.formatter_parser"]
+
+[object.molt_sum_builtin]
+kind = "builtin_function_or_method"
+name = "sum"
+qualname = "sum"
+module = "builtins"
+bindings = ["builtins.sum"]
+
+[object.molt_time_monotonic]
+kind = "builtin_function_or_method"
+name = "monotonic"
+qualname = "monotonic"
+module = "time"
+bindings = ["socketserver.time", "time.monotonic"]
+
+[object.molt_vars_builtin]
+kind = "builtin_function_or_method"
+name = "vars"
+qualname = "vars"
+module = "builtins"
+bindings = ["builtins.vars"]
+
+[object.molt_zip_builtin]
+kind = "type"
+name = "zip"
+qualname = "zip"
+module = "builtins"
+bindings = ["builtins.zip"]
+
+[object.molt_time_monotonic_ns]
+kind = "builtin_function_or_method"
+name = "monotonic_ns"
+qualname = "monotonic_ns"
+module = "time"
+bindings = ["time.monotonic_ns"]
+
+[object.molt_time_perf_counter]
+kind = "builtin_function_or_method"
+name = "perf_counter"
+qualname = "perf_counter"
+module = "time"
+bindings = ["time.perf_counter"]
+
+[object.molt_time_perf_counter_ns]
+kind = "builtin_function_or_method"
+name = "perf_counter_ns"
+qualname = "perf_counter_ns"
+module = "time"
+bindings = ["time.perf_counter_ns"]
+
+[object.molt_time_process_time]
+kind = "builtin_function_or_method"
+name = "process_time"
+qualname = "process_time"
+module = "time"
+bindings = ["time.process_time"]
+
+[object.molt_time_process_time_ns]
+kind = "builtin_function_or_method"
+name = "process_time_ns"
+qualname = "process_time_ns"
+module = "time"
+bindings = ["time.process_time_ns"]
+
+[object.molt_itertools_tee]
+kind = "builtin_function_or_method"
+name = "tee"
+qualname = "tee"
+module = "itertools"
+bindings = ["itertools.tee"]
+
+[object.molt_math_perm]
+kind = "builtin_function_or_method"
+name = "perm"
+qualname = "perm"
+module = "math"
+bindings = ["math.perm"]
+
+[object.molt_binascii_crc32]
+kind = "builtin_function_or_method"
+name = "crc32"
+qualname = "crc32"
+module = "binascii"
+bindings = ["binascii.crc32"]
+
+[object.molt_math_gcd]
+kind = "builtin_function_or_method"
+name = "gcd"
+qualname = "gcd"
+module = "math"
+bindings = ["math.gcd"]
+[object.molt_math_gcd.call]
+vararg = "integers"
+
+[object.molt_math_lcm]
+kind = "builtin_function_or_method"
+name = "lcm"
+qualname = "lcm"
+module = "math"
+bindings = ["math.lcm"]
+[object.molt_math_lcm.call]
+vararg = "integers"
+
+[object.molt_math_hypot]
+kind = "builtin_function_or_method"
+name = "hypot"
+qualname = "hypot"
+module = "math"
+bindings = ["math.hypot"]
+[object.molt_math_hypot.call]
+vararg = "coordinates"
+
+[object.molt_math_prod]
+kind = "builtin_function_or_method"
+name = "prod"
+qualname = "prod"
+module = "math"
+bindings = ["math.prod"]
+[object.molt_math_prod.call]
+posonly = ["iterable"]
+kwonly = ["start"]
+kwdefaults = ["1"]
+
+[object.molt_math_isclose]
+kind = "builtin_function_or_method"
+name = "isclose"
+qualname = "isclose"
+module = "math"
+bindings = ["math.isclose"]
+[object.molt_math_isclose.call]
+positional = ["a", "b"]
+kwonly = ["rel_tol", "abs_tol"]
+kwdefaults = ["1e-9", "0.0"]
+
+[object.molt_functools_reduce]
+kind = "builtin_function_or_method"
+name = "reduce"
+qualname = "reduce"
+module = "_functools"
+bindings = ["functools.reduce", "_functools.reduce"]
+publisher = "_functools.reduce"
+[object.molt_functools_reduce.call]
+posonly = ["function", "iterable"]
+positional = ["initial"]
+defaults = ["Missing"]
+[object.molt_functools_reduce.call_before_314]
+posonly = ["function", "iterable", "initial"]
+defaults = ["Missing"]
+
+[object.molt_time_time]
+kind = "builtin_function_or_method"
+name = "time"
+qualname = "time"
+module = "time"
+bindings = ["time.time"]
+producer = "compiled"
+
+[object.molt_time_time_ns]
+kind = "builtin_function_or_method"
+name = "time_ns"
+qualname = "time_ns"
+module = "time"
+bindings = ["time.time_ns"]
+producer = "compiled"
+
+[object.molt_time_sleep]
+kind = "builtin_function_or_method"
+name = "sleep"
+qualname = "sleep"
+module = "time"
+bindings = ["time.sleep"]
+producer = "compiled"
+
+[object.molt_time_localtime]
+kind = "builtin_function_or_method"
+name = "localtime"
+qualname = "localtime"
+module = "time"
+bindings = ["time.localtime"]
+producer = "compiled"
+
+[object.molt_time_gmtime]
+kind = "builtin_function_or_method"
+name = "gmtime"
+qualname = "gmtime"
+module = "time"
+bindings = ["time.gmtime"]
+producer = "compiled"
+
+[object.molt_time_strftime]
+kind = "builtin_function_or_method"
+name = "strftime"
+qualname = "strftime"
+module = "time"
+bindings = ["time.strftime"]
+producer = "compiled"
+
+[object.molt_time_asctime]
+kind = "builtin_function_or_method"
+name = "asctime"
+qualname = "asctime"
+module = "time"
+bindings = ["time.asctime"]
+producer = "compiled"
+
+[object.molt_time_ctime]
+kind = "builtin_function_or_method"
+name = "ctime"
+qualname = "ctime"
+module = "time"
+bindings = ["time.ctime"]
+producer = "compiled"
+
+[object.molt_time_mktime]
+kind = "builtin_function_or_method"
+name = "mktime"
+qualname = "mktime"
+module = "time"
+bindings = ["time.mktime"]
+producer = "compiled"
+
+[object.molt_time_tzset]
+kind = "builtin_function_or_method"
+name = "tzset"
+qualname = "tzset"
+module = "time"
+bindings = ["time.tzset"]
+producer = "compiled"
+
+[object.molt_time_strptime]
+kind = "builtin_function_or_method"
+name = "strptime"
+qualname = "strptime"
+module = "time"
+bindings = ["time.strptime"]
+producer = "compiled"
+
+[object.molt_time_get_clock_info]
+kind = "builtin_function_or_method"
+name = "get_clock_info"
+qualname = "get_clock_info"
+module = "time"
+bindings = ["time.get_clock_info"]
+producer = "compiled"
+
+[object.molt_signal_signal]
+kind = "builtin_function_or_method"
+name = "signal"
+qualname = "signal"
+module = "_signal"
+bindings = ["_signal.signal"]
+producer = "compiled"
+
+[object.molt_signal_getsignal]
+kind = "builtin_function_or_method"
+name = "getsignal"
+qualname = "getsignal"
+module = "_signal"
+bindings = ["_signal.getsignal"]
+producer = "compiled"
+
+[object.molt_signal_raise_signal]
+kind = "builtin_function_or_method"
+name = "raise_signal"
+qualname = "raise_signal"
+module = "_signal"
+bindings = ["_signal.raise_signal", "signal.raise_signal"]
+producer = "compiled"
+publisher = "_signal.raise_signal"
+
+[object.molt_signal_alarm]
+kind = "builtin_function_or_method"
+name = "alarm"
+qualname = "alarm"
+module = "_signal"
+bindings = ["_signal.alarm", "signal.alarm"]
+producer = "compiled"
+publisher = "_signal.alarm"
+
+[object.molt_signal_pause]
+kind = "builtin_function_or_method"
+name = "pause"
+qualname = "pause"
+module = "_signal"
+bindings = ["_signal.pause", "signal.pause"]
+producer = "compiled"
+publisher = "_signal.pause"
+
+[object.molt_signal_set_wakeup_fd]
+kind = "builtin_function_or_method"
+name = "set_wakeup_fd"
+qualname = "set_wakeup_fd"
+module = "_signal"
+bindings = ["_signal.set_wakeup_fd", "signal.set_wakeup_fd"]
+producer = "compiled"
+publisher = "_signal.set_wakeup_fd"
+
+[object.molt_signal_valid_signals]
+kind = "builtin_function_or_method"
+name = "valid_signals"
+qualname = "valid_signals"
+module = "_signal"
+bindings = ["_signal.valid_signals"]
+producer = "compiled"
+
+[object.molt_signal_strsignal]
+kind = "builtin_function_or_method"
+name = "strsignal"
+qualname = "strsignal"
+module = "_signal"
+bindings = ["_signal.strsignal", "signal.strsignal"]
+producer = "compiled"
+publisher = "_signal.strsignal"
+
+[object.molt_signal_pthread_sigmask]
+kind = "builtin_function_or_method"
+name = "pthread_sigmask"
+qualname = "pthread_sigmask"
+module = "_signal"
+bindings = ["_signal.pthread_sigmask"]
+producer = "compiled"
+
+[object.molt_signal_pthread_kill]
+kind = "builtin_function_or_method"
+name = "pthread_kill"
+qualname = "pthread_kill"
+module = "_signal"
+bindings = ["_signal.pthread_kill", "signal.pthread_kill"]
+producer = "compiled"
+publisher = "_signal.pthread_kill"
+
+[object.molt_signal_sigpending]
+kind = "builtin_function_or_method"
+name = "sigpending"
+qualname = "sigpending"
+module = "_signal"
+bindings = ["_signal.sigpending"]
+producer = "compiled"
+
+[object.molt_signal_sigwait]
+kind = "builtin_function_or_method"
+name = "sigwait"
+qualname = "sigwait"
+module = "_signal"
+bindings = ["_signal.sigwait"]
+producer = "compiled"
+
+[object.molt_math_log]
+kind = "builtin_function_or_method"
+name = "log"
+qualname = "log"
+module = "math"
+bindings = ["math.log"]
+producer = "compiled"
+
+[object.molt_math_sumprod]
+kind = "builtin_function_or_method"
+name = "sumprod"
+qualname = "sumprod"
+module = "math"
+bindings = ["math.sumprod"]
+producer = "compiled"
+
+[object.molt_select_poll]
+kind = "builtin_function_or_method"
+name = "poll"
+qualname = "poll"
+module = "select"
+bindings = ["select.poll"]
+
+[object.molt_operator_call]
+kind = "builtin_function_or_method"
+name = "call"
+qualname = "call"
+module = "_operator"
+bindings = ["_operator.call", "operator.call"]
+producer = "compiled"
+publisher = "_operator.call"
+
+[object.molt_operator_index_of]
+kind = "builtin_function_or_method"
+name = "indexOf"
+qualname = "indexOf"
+module = "_operator"
+bindings = ["_operator.indexOf", "operator.indexOf"]
+producer = "compiled"
+publisher = "_operator.indexOf"

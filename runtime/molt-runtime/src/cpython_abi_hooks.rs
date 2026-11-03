@@ -4906,6 +4906,7 @@ unsafe extern "C" fn hook_register_c_function(
                 cache: None,
                 text_signature: None,
                 fixed_convention: None,
+                identity: None,
             };
             let configured = crate::builtins::functions::native_callable::configure_native_callable(
                 &_py, func_ptr, spec,

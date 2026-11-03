@@ -1468,3 +1468,20 @@ fn runtime_test_transactions_preserve_terminal_failures() {
         );
     }
 }
+
+/// Own the actual public class while a low-level constructor ownership proof runs.
+pub(crate) fn with_public_type_class(
+    getter: extern "C" fn() -> u64,
+    body: impl FnOnce(u64) -> u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let class = getter();
+        let owner = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), class)
+        };
+        if crate::exception_pending(py) || crate::obj_from_bits(class).as_ptr().is_none() {
+            return crate::MoltObject::none().bits();
+        }
+        body(owner.bits())
+    })
+}

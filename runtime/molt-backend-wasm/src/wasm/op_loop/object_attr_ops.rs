@@ -8,8 +8,6 @@ use wasm_encoder::Function;
 mod attribute_ops;
 #[path = "object_attr_ops/class_ops/mod.rs"]
 mod class_ops;
-#[path = "object_attr_ops/dataclass_ops.rs"]
-mod dataclass_ops;
 #[path = "object_attr_ops/method_ops/mod.rs"]
 mod method_ops;
 
@@ -25,9 +23,6 @@ pub(super) fn emit_object_attr_op(
     reloc_enabled: bool,
     op_idx: usize,
 ) -> bool {
-    if dataclass_ops::emit_dataclass_op(func, op, import_ids, locals, reloc_enabled) {
-        return true;
-    }
     if class_ops::emit_class_object_op(
         func,
         op,

@@ -388,10 +388,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
             }
         }
         if !crate::object::heap_kind_has_class_shape(type_id)
-            && !matches!(
-                type_id,
-                TYPE_ID_DATACLASS | TYPE_ID_TYPE | TYPE_ID_EXCEPTION
-            )
+            && !matches!(type_id, TYPE_ID_TYPE | TYPE_ID_EXCEPTION)
         {
             let class_bits = type_of_bits(_py, obj_bits);
             if let Some(class) = obj_from_bits(class_bits).as_ptr()
@@ -518,10 +515,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
         // Fixed-shape builtins also inherit ordinary class attributes even
         // when their semantic type is derived rather than stored in a header.
         if !crate::object::heap_kind_has_class_shape(type_id)
-            && !matches!(
-                type_id,
-                TYPE_ID_DATACLASS | TYPE_ID_EXCEPTION | TYPE_ID_FUNCTION | TYPE_ID_TYPE
-            )
+            && !matches!(type_id, TYPE_ID_EXCEPTION | TYPE_ID_FUNCTION | TYPE_ID_TYPE)
         {
             let result = crate::builtins::attr::object_attr_lookup_with_mode(
                 _py, obj_ptr, attr_bits, suppress, mode,
@@ -1201,11 +1195,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
             }
             return Ok(None);
         }
-        if type_id == TYPE_ID_DATACLASS {
-            return crate::builtins::attr::dataclass_attr_lookup_with_mode(
-                _py, obj_ptr, attr_bits, None, suppress, mode,
-            );
-        }
+
         if crate::object::heap_kind_has_class_shape(type_id) {
             return crate::builtins::attr::object_attr_lookup_with_mode(
                 _py, obj_ptr, attr_bits, suppress, mode,
@@ -1291,17 +1281,7 @@ pub(crate) unsafe fn raise_attribute_miss(
                 let message = format!("type object '{class_name}' has no attribute '{attr_name}'");
                 attr_error_with_obj_message(py, &message, attr_name, obj_bits);
             }
-            TYPE_ID_DATACLASS => {
-                let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                let name = if desc_ptr.is_null() {
-                    ""
-                } else {
-                    let name = &(*desc_ptr).name;
-                    name.as_str()
-                };
-                let label = if name.is_empty() { "dataclass" } else { name };
-                attr_error_with_obj(py, label, attr_name, obj_bits);
-            }
+
             _ => {
                 attr_error_with_obj(
                     py,

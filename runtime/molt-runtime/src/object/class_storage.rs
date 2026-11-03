@@ -454,8 +454,11 @@ pub(crate) enum ClassReferenceSlot {
     /// Captured native creation module; zero for ordinary Python heap classes.
     /// Static classes also use it for their immutable public module metadata.
     NativeModule = 13,
+    /// An unpublished initializer candidate, consumed by the dataclass transform.
+    /// Never projected into the Python class namespace or inherited.
+    DataclassInitTemplate = 16,
     /// Conditional tail after the definition (14) and native-next (15) scalars.
-    StructSequence = 16,
+    StructSequence = 17,
 }
 
 /// Capture the native constructor module before publication. Static types retire
@@ -647,7 +650,7 @@ pub(crate) enum ClassReferenceRelease {
 }
 
 impl ClassReferenceSlot {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Name,
         Self::Bases,
         Self::Mro,
@@ -658,6 +661,7 @@ impl ClassReferenceSlot {
         Self::InstanceDictionary,
         Self::CreationDoc,
         Self::NativeModule,
+        Self::DataclassInitTemplate,
         Self::StructSequence,
     ];
 
@@ -669,7 +673,10 @@ impl ClassReferenceSlot {
     /// namespaces and annotation callbacks can close arbitrary cycles.
     const fn released_by(self, phase: ClassReferenceRelease) -> bool {
         match self {
-            Self::Mro | Self::Dictionary | Self::InstanceDictionary => true,
+            Self::Mro
+            | Self::Dictionary
+            | Self::InstanceDictionary
+            | Self::DataclassInitTemplate => true,
             Self::Name
             | Self::Qualname
             | Self::Bases
@@ -1066,6 +1073,9 @@ impl RuntimeClassRetirement {
                         }
                         ClassReferenceSlot::StructSequence => {
                             crate::builtins::structseq::assert_spec_shape(bits);
+                        }
+                        ClassReferenceSlot::DataclassInitTemplate => {
+                            panic!("native retirement cohort contains a Python dataclass template");
                         }
                         ClassReferenceSlot::FieldLayout => {
                             self.assert_exact_metadata(py, bits, crate::TYPE_ID_TUPLE);
@@ -1624,7 +1634,7 @@ mod tests {
             assert_eq!(fixture.words[last], 0x9ab1_3476);
             assert_eq!(super::super::layout::CLASS_DEFINITION_WORD, 14);
             assert_eq!(super::super::layout::CLASS_NATIVE_NEXT_WORD, 15);
-            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 16);
+            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 17);
             assert_eq!(
                 ClassReferenceSlot::StructSequence as usize,
                 super::super::layout::CLASS_PAYLOAD_WORDS

@@ -41,6 +41,7 @@ from molt.frontend.exception_kinds_generated import (
     BUILTIN_EXCEPTION_NAMES,
 )
 from molt.frontend.module_publication import SourceModulePublication
+from molt.frontend.dataclass_init import DataclassInitField
 from molt.type_facts import normalize_type_hint
 
 _LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
@@ -865,11 +866,8 @@ class ClassInfo(TypedDict, total=False):
     dynamic: bool
     static: bool
     dataclass: bool
-    frozen: bool
-    repr: bool
-    slots: bool
     dataclass_params: dict[str, bool]
-    dataclass_init_requires_binding: bool
+    dataclass_init_projection: tuple[DataclassInitField, ...] | None
     methods: dict[str, MethodInfo]
     pending_methods: set[str]
     layout_version: int

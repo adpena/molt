@@ -104,6 +104,84 @@ fn function(py: &PyToken<'_>, symbol: &str, target: *const (), arity: u64) -> u6
 }
 
 #[test]
+fn dictionary_write_sites_use_live_storage_and_observe_descriptor_publication() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let class_name = name(py, b"DictionaryWriteOwner");
+        let namespace = crate::molt_dict_new(0);
+        let class = crate::builtins::types::molt_type_new(
+            crate::builtin_classes(py).type_obj,
+            class_name,
+            MoltObject::none().bits(),
+            namespace,
+            MoltObject::none().bits(),
+        );
+        let object = instance(py, class);
+        let other = instance(py, class);
+        let value = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
+        let before = refcount(value);
+        for target in [object, other, object] {
+            write(target, value, 0x5601);
+            let got = read(target, 0x5602);
+            assert_eq!(got, value);
+            dec_ref_bits(py, got);
+        }
+        assert_eq!(refcount(value), before + 2);
+        let replacement = crate::molt_dict_new(0);
+        unsafe {
+            crate::object::field_storage::replace_dictionary(
+                py,
+                obj_from_bits(object).as_ptr().unwrap(),
+                Some(replacement),
+            )
+            .unwrap();
+        }
+        assert_eq!(refcount(value), before + 1);
+        write(object, value, 0x5601);
+        assert_eq!(refcount(value), before + 2);
+
+        let get = function(
+            py,
+            "field_site_descriptor_get",
+            descriptor_get as *const (),
+            1,
+        );
+        let set = function(
+            py,
+            "field_site_descriptor_set",
+            descriptor_set as *const (),
+            2,
+        );
+        let property = crate::molt_property_new(get, set, MoltObject::none().bits());
+        let field = name(py, FIELD);
+        crate::molt_set_attr_name(class, field, property);
+        SETTER_VALUE.store(0, Ordering::SeqCst);
+        write(object, MoltObject::from_int(17).bits(), 0x5601);
+        assert_eq!(
+            SETTER_VALUE.load(Ordering::SeqCst),
+            MoltObject::from_int(17).bits()
+        );
+        assert_eq!(read(object, 0x5602), MoltObject::from_int(99).bits());
+        assert!(!exception_pending(py));
+        for bits in [
+            field,
+            property,
+            get,
+            set,
+            replacement,
+            object,
+            other,
+            value,
+            class,
+            namespace,
+            class_name,
+        ] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
 fn warm_sites_read_and_write_inferred_fields_with_generic_ownership() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {

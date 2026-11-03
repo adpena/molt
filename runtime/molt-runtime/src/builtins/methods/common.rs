@@ -304,6 +304,29 @@ fn builtin_func_bits_with_metadata(
     })
 }
 
+/// Allocate an owned standalone native callable using the ordinary binder.
+pub(crate) fn alloc_builtin_function_with_signature(
+    py: &PyToken<'_>,
+    spec: NativeCallableSpec<'_>,
+    fn_ptr: u64,
+    signature: crate::intrinsics::public_objects_generated::PublicSignatureSpec,
+    defaults: &[u64],
+) -> u64 {
+    alloc_builtin_function_with_metadata(
+        py,
+        spec,
+        fn_ptr,
+        signature.arity,
+        BuiltinFunctionMetadata::Signature {
+            defaults,
+            positional_only: signature.posonly,
+            arg_names: signature.positional,
+            has_vararg: signature.vararg,
+            has_varkw: signature.varkw,
+        },
+    )
+}
+
 pub(crate) fn init_native_callable(
     py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,

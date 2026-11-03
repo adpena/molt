@@ -3158,6 +3158,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_native_callable_reduce",
+        import: WasmRuntimeImport::NativeCallableReduce,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_compatibility_error",
         import: WasmRuntimeImport::CompatibilityError,
         arity: 1,
@@ -7148,24 +7153,9 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 4,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_post_init",
-        import: WasmRuntimeImport::DataclassesPostInit,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_dataclasses_set_field_metadata",
         import: WasmRuntimeImport::DataclassesSetFieldMetadata,
         arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_is_initvar",
-        import: WasmRuntimeImport::DataclassesIsInitvar,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_is_kw_only_sentinel",
-        import: WasmRuntimeImport::DataclassesIsKwOnlySentinel,
-        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_staticmethod_type_new",
@@ -7713,29 +7703,34 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_kwd_mark",
-        import: WasmRuntimeImport::ItertoolsKwdMark,
-        arity: 0,
+        runtime_name: "molt_itertools_reduce",
+        import: WasmRuntimeImport::ItertoolsReduce,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_chain",
-        import: WasmRuntimeImport::ItertoolsChain,
-        arity: 1,
+        runtime_name: "molt_itertools_setstate",
+        import: WasmRuntimeImport::ItertoolsSetstate,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_chain_new",
+        import: WasmRuntimeImport::ItertoolsChainNew,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_itertools_chain_from_iterable",
         import: WasmRuntimeImport::ItertoolsChainFromIterable,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_islice",
-        import: WasmRuntimeImport::ItertoolsIslice,
-        arity: 4,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_repeat",
-        import: WasmRuntimeImport::ItertoolsRepeat,
         arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_islice_new",
+        import: WasmRuntimeImport::ItertoolsIsliceNew,
+        arity: 5,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_repeat_new",
+        import: WasmRuntimeImport::ItertoolsRepeatNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_itertools_repeat_type",
@@ -7743,79 +7738,79 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_count",
-        import: WasmRuntimeImport::ItertoolsCount,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_cycle",
-        import: WasmRuntimeImport::ItertoolsCycle,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_accumulate",
-        import: WasmRuntimeImport::ItertoolsAccumulate,
+        runtime_name: "molt_itertools_count_new",
+        import: WasmRuntimeImport::ItertoolsCountNew,
         arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_batched",
-        import: WasmRuntimeImport::ItertoolsBatched,
+        runtime_name: "molt_itertools_cycle_new",
+        import: WasmRuntimeImport::ItertoolsCycleNew,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_accumulate_new",
+        import: WasmRuntimeImport::ItertoolsAccumulateNew,
+        arity: 4,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_batched_new",
+        import: WasmRuntimeImport::ItertoolsBatchedNew,
+        arity: 4,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_compress_new",
+        import: WasmRuntimeImport::ItertoolsCompressNew,
         arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_compress",
-        import: WasmRuntimeImport::ItertoolsCompress,
+        runtime_name: "molt_itertools_combinations_with_replacement_new",
+        import: WasmRuntimeImport::ItertoolsCombinationsWithReplacementNew,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_dropwhile_new",
+        import: WasmRuntimeImport::ItertoolsDropwhileNew,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_filterfalse_new",
+        import: WasmRuntimeImport::ItertoolsFilterfalseNew,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_pairwise_new",
+        import: WasmRuntimeImport::ItertoolsPairwiseNew,
         arity: 2,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_combinations_with_replacement",
-        import: WasmRuntimeImport::ItertoolsCombinationsWithReplacement,
-        arity: 2,
+        runtime_name: "molt_itertools_product_new",
+        import: WasmRuntimeImport::ItertoolsProductNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_dropwhile",
-        import: WasmRuntimeImport::ItertoolsDropwhile,
-        arity: 2,
+        runtime_name: "molt_itertools_permutations_new",
+        import: WasmRuntimeImport::ItertoolsPermutationsNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_filterfalse",
-        import: WasmRuntimeImport::ItertoolsFilterfalse,
-        arity: 2,
+        runtime_name: "molt_itertools_combinations_new",
+        import: WasmRuntimeImport::ItertoolsCombinationsNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_pairwise",
-        import: WasmRuntimeImport::ItertoolsPairwise,
-        arity: 1,
+        runtime_name: "molt_itertools_groupby_new",
+        import: WasmRuntimeImport::ItertoolsGroupbyNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_product",
-        import: WasmRuntimeImport::ItertoolsProduct,
-        arity: 2,
+        runtime_name: "molt_itertools_starmap_new",
+        import: WasmRuntimeImport::ItertoolsStarmapNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_permutations",
-        import: WasmRuntimeImport::ItertoolsPermutations,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_combinations",
-        import: WasmRuntimeImport::ItertoolsCombinations,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_groupby",
-        import: WasmRuntimeImport::ItertoolsGroupby,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_starmap",
-        import: WasmRuntimeImport::ItertoolsStarmap,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_takewhile",
-        import: WasmRuntimeImport::ItertoolsTakewhile,
-        arity: 2,
+        runtime_name: "molt_itertools_takewhile_new",
+        import: WasmRuntimeImport::ItertoolsTakewhileNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_itertools_tee",
@@ -7823,9 +7818,9 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_itertools_zip_longest",
-        import: WasmRuntimeImport::ItertoolsZipLongest,
-        arity: 2,
+        runtime_name: "molt_itertools_zip_longest_new",
+        import: WasmRuntimeImport::ItertoolsZipLongestNew,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_functools_kwd_mark",
@@ -7853,8 +7848,43 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_functools_partial",
-        import: WasmRuntimeImport::FunctoolsPartial,
+        runtime_name: "molt_functools_partial_type",
+        import: WasmRuntimeImport::FunctoolsPartialType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_functools_partial_new",
+        import: WasmRuntimeImport::FunctoolsPartialNew,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_functools_partial_reduce",
+        import: WasmRuntimeImport::FunctoolsPartialReduce,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_functools_partial_setstate",
+        import: WasmRuntimeImport::FunctoolsPartialSetstate,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_functools_partial_member_get",
+        import: WasmRuntimeImport::FunctoolsPartialMemberGet,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_functools_partial_dictionary_set",
+        import: WasmRuntimeImport::FunctoolsPartialDictionarySet,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_functools_partial_dictionary_delete",
+        import: WasmRuntimeImport::FunctoolsPartialDictionaryDelete,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_functools_partial_get",
+        import: WasmRuntimeImport::FunctoolsPartialGet,
         arity: 3,
     },
     RuntimeCallableImportSpec {
@@ -11698,13 +11728,18 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_check_default_order",
-        import: WasmRuntimeImport::DataclassesCheckDefaultOrder,
-        arity: 1,
+        runtime_name: "molt_dataclasses_set_init_template",
+        import: WasmRuntimeImport::DataclassesSetInitTemplate,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_field_flags",
-        import: WasmRuntimeImport::DataclassesFieldFlags,
+        runtime_name: "molt_dataclasses_init",
+        import: WasmRuntimeImport::DataclassesInit,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_dataclasses_init_globals",
+        import: WasmRuntimeImport::DataclassesInitGlobals,
         arity: 1,
     },
     RuntimeCallableImportSpec {
@@ -11826,6 +11861,101 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_dict_count_elements",
         import: WasmRuntimeImport::DictCountElements,
         arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_accumulate_type",
+        import: WasmRuntimeImport::ItertoolsAccumulateType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_batched_type",
+        import: WasmRuntimeImport::ItertoolsBatchedType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_chain_type",
+        import: WasmRuntimeImport::ItertoolsChainType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_combinations_type",
+        import: WasmRuntimeImport::ItertoolsCombinationsType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_combinations_with_replacement_type",
+        import: WasmRuntimeImport::ItertoolsCombinationsWithReplacementType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_compress_type",
+        import: WasmRuntimeImport::ItertoolsCompressType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_count_type",
+        import: WasmRuntimeImport::ItertoolsCountType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_cycle_type",
+        import: WasmRuntimeImport::ItertoolsCycleType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_dropwhile_type",
+        import: WasmRuntimeImport::ItertoolsDropwhileType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_filterfalse_type",
+        import: WasmRuntimeImport::ItertoolsFilterfalseType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_groupby_type",
+        import: WasmRuntimeImport::ItertoolsGroupbyType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_islice_type",
+        import: WasmRuntimeImport::ItertoolsIsliceType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_pairwise_type",
+        import: WasmRuntimeImport::ItertoolsPairwiseType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_permutations_type",
+        import: WasmRuntimeImport::ItertoolsPermutationsType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_product_type",
+        import: WasmRuntimeImport::ItertoolsProductType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_starmap_type",
+        import: WasmRuntimeImport::ItertoolsStarmapType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_takewhile_type",
+        import: WasmRuntimeImport::ItertoolsTakewhileType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_zip_longest_type",
+        import: WasmRuntimeImport::ItertoolsZipLongestType,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_itertools_batched_new_312",
+        import: WasmRuntimeImport::ItertoolsBatchedNew312,
+        arity: 3,
     },
 ];
 
@@ -12164,6 +12294,15 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
     },
     ReservedRuntimeCallableSpec {
         index: 35,
+        runtime_name: "molt_dataclasses_init_trampoline",
+        import_name: "dataclasses_init_trampoline",
+        import: WasmRuntimeImport::DataclassesInitTrampoline,
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Trampoline,
+        trampoline_abi: RuntimeCallableTrampolineAbi::CallFrame,
+    },
+    ReservedRuntimeCallableSpec {
+        index: 36,
         runtime_name: "molt_coroutine_send_method",
         import_name: "coroutine_send_method",
         import: WasmRuntimeImport::CoroutineSendMethod,
@@ -12172,7 +12311,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 36,
+        index: 37,
         runtime_name: "molt_coroutine_throw_method",
         import_name: "coroutine_throw_method",
         import: WasmRuntimeImport::CoroutineThrowMethod,
@@ -12181,7 +12320,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 37,
+        index: 38,
         runtime_name: "molt_coroutine_close_method",
         import_name: "coroutine_close_method",
         import: WasmRuntimeImport::CoroutineCloseMethod,
@@ -12190,7 +12329,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 38,
+        index: 39,
         runtime_name: "molt_awaitable_await",
         import_name: "awaitable_await",
         import: WasmRuntimeImport::AwaitableAwait,
@@ -12199,7 +12338,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 39,
+        index: 40,
         runtime_name: "molt_coroutine_wrapper_iter",
         import_name: "coroutine_wrapper_iter",
         import: WasmRuntimeImport::CoroutineWrapperIter,
@@ -12208,7 +12347,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 40,
+        index: 41,
         runtime_name: "molt_coroutine_wrapper_next",
         import_name: "coroutine_wrapper_next",
         import: WasmRuntimeImport::CoroutineWrapperNext,
@@ -12217,7 +12356,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 41,
+        index: 42,
         runtime_name: "molt_asyncgen_awaitable_self",
         import_name: "asyncgen_awaitable_self",
         import: WasmRuntimeImport::AsyncgenAwaitableSelf,
@@ -12226,7 +12365,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 42,
+        index: 43,
         runtime_name: "molt_asyncgen_awaitable_next",
         import_name: "asyncgen_awaitable_next",
         import: WasmRuntimeImport::AsyncgenAwaitableNext,
@@ -12235,7 +12374,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 43,
+        index: 44,
         runtime_name: "molt_asyncgen_awaitable_send",
         import_name: "asyncgen_awaitable_send",
         import: WasmRuntimeImport::AsyncgenAwaitableSend,
@@ -12244,7 +12383,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 44,
+        index: 45,
         runtime_name: "molt_asyncgen_awaitable_throw",
         import_name: "asyncgen_awaitable_throw",
         import: WasmRuntimeImport::AsyncgenAwaitableThrow,
@@ -12253,7 +12392,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 45,
+        index: 46,
         runtime_name: "molt_asyncgen_awaitable_close",
         import_name: "asyncgen_awaitable_close",
         import: WasmRuntimeImport::AsyncgenAwaitableClose,
@@ -12262,7 +12401,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 46,
+        index: 47,
         runtime_name: "molt_generator_throw_method",
         import_name: "generator_throw_method",
         import: WasmRuntimeImport::GeneratorThrowMethod,
@@ -12271,7 +12410,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 47,
+        index: 48,
         runtime_name: "molt_contextvars_types",
         import_name: "contextvars_types",
         import: WasmRuntimeImport::ContextvarsTypes,
@@ -12280,7 +12419,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 48,
+        index: 49,
         runtime_name: "molt_contextvars_copy_current",
         import_name: "contextvars_copy_current",
         import: WasmRuntimeImport::ContextvarsCopyCurrent,
@@ -12289,7 +12428,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 49,
+        index: 50,
         runtime_name: "molt_contextvars_new",
         import_name: "contextvars_new",
         import: WasmRuntimeImport::ContextvarsNew,
@@ -12298,7 +12437,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 50,
+        index: 51,
         runtime_name: "molt_contextvars_token_new",
         import_name: "contextvars_token_new",
         import: WasmRuntimeImport::ContextvarsTokenNew,
@@ -12307,7 +12446,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 51,
+        index: 52,
         runtime_name: "molt_contextvars_missing_new",
         import_name: "contextvars_missing_new",
         import: WasmRuntimeImport::ContextvarsMissingNew,
@@ -12316,7 +12455,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 52,
+        index: 53,
         runtime_name: "molt_contextvars_keys_new",
         import_name: "contextvars_keys_new",
         import: WasmRuntimeImport::ContextvarsKeysNew,
@@ -12325,7 +12464,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 53,
+        index: 54,
         runtime_name: "molt_contextvars_values_new",
         import_name: "contextvars_values_new",
         import: WasmRuntimeImport::ContextvarsValuesNew,
@@ -12334,7 +12473,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 54,
+        index: 55,
         runtime_name: "molt_contextvars_items_new",
         import_name: "contextvars_items_new",
         import: WasmRuntimeImport::ContextvarsItemsNew,
@@ -12343,7 +12482,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 55,
+        index: 56,
         runtime_name: "molt_contextvars_var_new",
         import_name: "contextvars_var_new",
         import: WasmRuntimeImport::ContextvarsVarNew,
@@ -12352,7 +12491,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 56,
+        index: 57,
         runtime_name: "molt_contextvars_var_get",
         import_name: "contextvars_var_get",
         import: WasmRuntimeImport::ContextvarsVarGet,
@@ -12361,7 +12500,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 57,
+        index: 58,
         runtime_name: "molt_contextvars_var_set",
         import_name: "contextvars_var_set",
         import: WasmRuntimeImport::ContextvarsVarSet,
@@ -12370,7 +12509,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 58,
+        index: 59,
         runtime_name: "molt_contextvars_var_reset",
         import_name: "contextvars_var_reset",
         import: WasmRuntimeImport::ContextvarsVarReset,
@@ -12379,7 +12518,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 59,
+        index: 60,
         runtime_name: "molt_contextvars_var_hash",
         import_name: "contextvars_var_hash",
         import: WasmRuntimeImport::ContextvarsVarHash,
@@ -12388,7 +12527,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 60,
+        index: 61,
         runtime_name: "molt_contextvars_copy",
         import_name: "contextvars_copy",
         import: WasmRuntimeImport::ContextvarsCopy,
@@ -12397,7 +12536,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 61,
+        index: 62,
         runtime_name: "molt_contextvars_len",
         import_name: "contextvars_len",
         import: WasmRuntimeImport::ContextvarsLen,
@@ -12406,7 +12545,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 62,
+        index: 63,
         runtime_name: "molt_contextvars_getitem",
         import_name: "contextvars_getitem",
         import: WasmRuntimeImport::ContextvarsGetitem,
@@ -12415,7 +12554,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 63,
+        index: 64,
         runtime_name: "molt_contextvars_contains",
         import_name: "contextvars_contains",
         import: WasmRuntimeImport::ContextvarsContains,
@@ -12424,7 +12563,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 64,
+        index: 65,
         runtime_name: "molt_contextvars_get",
         import_name: "contextvars_get",
         import: WasmRuntimeImport::ContextvarsGet,
@@ -12433,7 +12572,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 65,
+        index: 66,
         runtime_name: "molt_contextvars_run",
         import_name: "contextvars_run",
         import: WasmRuntimeImport::ContextvarsRun,
@@ -12442,7 +12581,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 66,
+        index: 67,
         runtime_name: "molt_contextvars_keys",
         import_name: "contextvars_keys",
         import: WasmRuntimeImport::ContextvarsKeys,
@@ -12451,7 +12590,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 67,
+        index: 68,
         runtime_name: "molt_contextvars_values",
         import_name: "contextvars_values",
         import: WasmRuntimeImport::ContextvarsValues,
@@ -12460,7 +12599,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 68,
+        index: 69,
         runtime_name: "molt_contextvars_items",
         import_name: "contextvars_items",
         import: WasmRuntimeImport::ContextvarsItems,
@@ -12469,7 +12608,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 69,
+        index: 70,
         runtime_name: "molt_contextvars_iter_self",
         import_name: "contextvars_iter_self",
         import: WasmRuntimeImport::ContextvarsIterSelf,
@@ -12478,7 +12617,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 70,
+        index: 71,
         runtime_name: "molt_contextvars_iter_next",
         import_name: "contextvars_iter_next",
         import: WasmRuntimeImport::ContextvarsIterNext,
@@ -12487,7 +12626,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 71,
+        index: 72,
         runtime_name: "molt_contextvars_eq",
         import_name: "contextvars_eq",
         import: WasmRuntimeImport::ContextvarsEq,
@@ -12496,7 +12635,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 72,
+        index: 73,
         runtime_name: "molt_contextvars_ne",
         import_name: "contextvars_ne",
         import: WasmRuntimeImport::ContextvarsNe,
@@ -12505,7 +12644,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 73,
+        index: 74,
         runtime_name: "molt_contextvars_property",
         import_name: "contextvars_property",
         import: WasmRuntimeImport::ContextvarsProperty,
@@ -12514,7 +12653,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 74,
+        index: 75,
         runtime_name: "molt_contextvars_token_enter",
         import_name: "contextvars_token_enter",
         import: WasmRuntimeImport::ContextvarsTokenEnter,
@@ -12523,7 +12662,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 75,
+        index: 76,
         runtime_name: "molt_contextvars_token_exit",
         import_name: "contextvars_token_exit",
         import: WasmRuntimeImport::ContextvarsTokenExit,
@@ -12532,7 +12671,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 76,
+        index: 77,
         runtime_name: "molt_contextvars_var_repr",
         import_name: "contextvars_var_repr",
         import: WasmRuntimeImport::ContextvarsVarRepr,
@@ -12541,7 +12680,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 77,
+        index: 78,
         runtime_name: "molt_contextvars_token_repr",
         import_name: "contextvars_token_repr",
         import: WasmRuntimeImport::ContextvarsTokenRepr,
@@ -12550,7 +12689,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 78,
+        index: 79,
         runtime_name: "molt_contextvars_missing_repr",
         import_name: "contextvars_missing_repr",
         import: WasmRuntimeImport::ContextvarsMissingRepr,
@@ -13260,6 +13399,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_structseq_type" => Some(WasmRuntimeImport::StructseqType),
         "molt_structseq_new" => Some(WasmRuntimeImport::StructseqNew),
         "molt_os_stat_result_type" => Some(WasmRuntimeImport::OsStatResultType),
+        "molt_native_callable_reduce" => Some(WasmRuntimeImport::NativeCallableReduce),
         "molt_compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
         "molt_tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "molt_tk_app_new" => Some(WasmRuntimeImport::TkAppNew),
@@ -14262,13 +14402,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_dataclasses_asdict" => Some(WasmRuntimeImport::DataclassesAsdict),
         "molt_dataclasses_astuple" => Some(WasmRuntimeImport::DataclassesAstuple),
         "molt_dataclasses_replace" => Some(WasmRuntimeImport::DataclassesReplace),
-        "molt_dataclasses_post_init" => Some(WasmRuntimeImport::DataclassesPostInit),
         "molt_dataclasses_set_field_metadata" => {
             Some(WasmRuntimeImport::DataclassesSetFieldMetadata)
-        }
-        "molt_dataclasses_is_initvar" => Some(WasmRuntimeImport::DataclassesIsInitvar),
-        "molt_dataclasses_is_kw_only_sentinel" => {
-            Some(WasmRuntimeImport::DataclassesIsKwOnlySentinel)
         }
         "molt_staticmethod_type_new" => Some(WasmRuntimeImport::StaticmethodTypeNew),
         "molt_staticmethod_init" => Some(WasmRuntimeImport::StaticmethodInit),
@@ -14381,37 +14516,49 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_operator_itemgetter_type" => Some(WasmRuntimeImport::OperatorItemgetterType),
         "molt_operator_attrgetter_type" => Some(WasmRuntimeImport::OperatorAttrgetterType),
         "molt_operator_methodcaller_type" => Some(WasmRuntimeImport::OperatorMethodcallerType),
-        "molt_itertools_kwd_mark" => Some(WasmRuntimeImport::ItertoolsKwdMark),
-        "molt_itertools_chain" => Some(WasmRuntimeImport::ItertoolsChain),
+        "molt_itertools_reduce" => Some(WasmRuntimeImport::ItertoolsReduce),
+        "molt_itertools_setstate" => Some(WasmRuntimeImport::ItertoolsSetstate),
+        "molt_itertools_chain_new" => Some(WasmRuntimeImport::ItertoolsChainNew),
         "molt_itertools_chain_from_iterable" => Some(WasmRuntimeImport::ItertoolsChainFromIterable),
-        "molt_itertools_islice" => Some(WasmRuntimeImport::ItertoolsIslice),
-        "molt_itertools_repeat" => Some(WasmRuntimeImport::ItertoolsRepeat),
+        "molt_itertools_islice_new" => Some(WasmRuntimeImport::ItertoolsIsliceNew),
+        "molt_itertools_repeat_new" => Some(WasmRuntimeImport::ItertoolsRepeatNew),
         "molt_itertools_repeat_type" => Some(WasmRuntimeImport::ItertoolsRepeatType),
-        "molt_itertools_count" => Some(WasmRuntimeImport::ItertoolsCount),
-        "molt_itertools_cycle" => Some(WasmRuntimeImport::ItertoolsCycle),
-        "molt_itertools_accumulate" => Some(WasmRuntimeImport::ItertoolsAccumulate),
-        "molt_itertools_batched" => Some(WasmRuntimeImport::ItertoolsBatched),
-        "molt_itertools_compress" => Some(WasmRuntimeImport::ItertoolsCompress),
-        "molt_itertools_combinations_with_replacement" => {
-            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacement)
+        "molt_itertools_count_new" => Some(WasmRuntimeImport::ItertoolsCountNew),
+        "molt_itertools_cycle_new" => Some(WasmRuntimeImport::ItertoolsCycleNew),
+        "molt_itertools_accumulate_new" => Some(WasmRuntimeImport::ItertoolsAccumulateNew),
+        "molt_itertools_batched_new" => Some(WasmRuntimeImport::ItertoolsBatchedNew),
+        "molt_itertools_compress_new" => Some(WasmRuntimeImport::ItertoolsCompressNew),
+        "molt_itertools_combinations_with_replacement_new" => {
+            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacementNew)
         }
-        "molt_itertools_dropwhile" => Some(WasmRuntimeImport::ItertoolsDropwhile),
-        "molt_itertools_filterfalse" => Some(WasmRuntimeImport::ItertoolsFilterfalse),
-        "molt_itertools_pairwise" => Some(WasmRuntimeImport::ItertoolsPairwise),
-        "molt_itertools_product" => Some(WasmRuntimeImport::ItertoolsProduct),
-        "molt_itertools_permutations" => Some(WasmRuntimeImport::ItertoolsPermutations),
-        "molt_itertools_combinations" => Some(WasmRuntimeImport::ItertoolsCombinations),
-        "molt_itertools_groupby" => Some(WasmRuntimeImport::ItertoolsGroupby),
-        "molt_itertools_starmap" => Some(WasmRuntimeImport::ItertoolsStarmap),
-        "molt_itertools_takewhile" => Some(WasmRuntimeImport::ItertoolsTakewhile),
+        "molt_itertools_dropwhile_new" => Some(WasmRuntimeImport::ItertoolsDropwhileNew),
+        "molt_itertools_filterfalse_new" => Some(WasmRuntimeImport::ItertoolsFilterfalseNew),
+        "molt_itertools_pairwise_new" => Some(WasmRuntimeImport::ItertoolsPairwiseNew),
+        "molt_itertools_product_new" => Some(WasmRuntimeImport::ItertoolsProductNew),
+        "molt_itertools_permutations_new" => Some(WasmRuntimeImport::ItertoolsPermutationsNew),
+        "molt_itertools_combinations_new" => Some(WasmRuntimeImport::ItertoolsCombinationsNew),
+        "molt_itertools_groupby_new" => Some(WasmRuntimeImport::ItertoolsGroupbyNew),
+        "molt_itertools_starmap_new" => Some(WasmRuntimeImport::ItertoolsStarmapNew),
+        "molt_itertools_takewhile_new" => Some(WasmRuntimeImport::ItertoolsTakewhileNew),
         "molt_itertools_tee" => Some(WasmRuntimeImport::ItertoolsTee),
-        "molt_itertools_zip_longest" => Some(WasmRuntimeImport::ItertoolsZipLongest),
+        "molt_itertools_zip_longest_new" => Some(WasmRuntimeImport::ItertoolsZipLongestNew),
         "molt_functools_kwd_mark" => Some(WasmRuntimeImport::FunctoolsKwdMark),
         "molt_functools_update_wrapper" => Some(WasmRuntimeImport::FunctoolsUpdateWrapper),
         "molt_functools_wraps" => Some(WasmRuntimeImport::FunctoolsWraps),
         "molt_functools_cmp_to_key" => Some(WasmRuntimeImport::FunctoolsCmpToKey),
         "molt_functools_total_ordering" => Some(WasmRuntimeImport::FunctoolsTotalOrdering),
-        "molt_functools_partial" => Some(WasmRuntimeImport::FunctoolsPartial),
+        "molt_functools_partial_type" => Some(WasmRuntimeImport::FunctoolsPartialType),
+        "molt_functools_partial_new" => Some(WasmRuntimeImport::FunctoolsPartialNew),
+        "molt_functools_partial_reduce" => Some(WasmRuntimeImport::FunctoolsPartialReduce),
+        "molt_functools_partial_setstate" => Some(WasmRuntimeImport::FunctoolsPartialSetstate),
+        "molt_functools_partial_member_get" => Some(WasmRuntimeImport::FunctoolsPartialMemberGet),
+        "molt_functools_partial_dictionary_set" => {
+            Some(WasmRuntimeImport::FunctoolsPartialDictionarySet)
+        }
+        "molt_functools_partial_dictionary_delete" => {
+            Some(WasmRuntimeImport::FunctoolsPartialDictionaryDelete)
+        }
+        "molt_functools_partial_get" => Some(WasmRuntimeImport::FunctoolsPartialGet),
         "molt_functools_reduce" => Some(WasmRuntimeImport::FunctoolsReduce),
         "molt_functools_lru_cache" => Some(WasmRuntimeImport::FunctoolsLruCache),
         "molt_keyword_lists" => Some(WasmRuntimeImport::KeywordLists),
@@ -15268,10 +15415,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_csv_dialect_lookup_name" => Some(WasmRuntimeImport::CsvDialectLookupName),
         "molt_csv_validate_dialect" => Some(WasmRuntimeImport::CsvValidateDialect),
         "molt_csv_validate_fmtparams" => Some(WasmRuntimeImport::CsvValidateFmtparams),
-        "molt_dataclasses_check_default_order" => {
-            Some(WasmRuntimeImport::DataclassesCheckDefaultOrder)
-        }
-        "molt_dataclasses_field_flags" => Some(WasmRuntimeImport::DataclassesFieldFlags),
+        "molt_dataclasses_set_init_template" => Some(WasmRuntimeImport::DataclassesSetInitTemplate),
+        "molt_dataclasses_init" => Some(WasmRuntimeImport::DataclassesInit),
+        "molt_dataclasses_init_globals" => Some(WasmRuntimeImport::DataclassesInitGlobals),
         "molt_json_default_separators" => Some(WasmRuntimeImport::JsonDefaultSeparators),
         "molt_json_format_decode_error" => Some(WasmRuntimeImport::JsonFormatDecodeError),
         "molt_json_parse_error_msg" => Some(WasmRuntimeImport::JsonParseErrorMsg),
@@ -15296,6 +15442,27 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_xml_register_namespace" => Some(WasmRuntimeImport::XmlRegisterNamespace),
         "molt_iterator_throw" => Some(WasmRuntimeImport::IteratorThrow),
         "molt_dict_count_elements" => Some(WasmRuntimeImport::DictCountElements),
+        "molt_itertools_accumulate_type" => Some(WasmRuntimeImport::ItertoolsAccumulateType),
+        "molt_itertools_batched_type" => Some(WasmRuntimeImport::ItertoolsBatchedType),
+        "molt_itertools_chain_type" => Some(WasmRuntimeImport::ItertoolsChainType),
+        "molt_itertools_combinations_type" => Some(WasmRuntimeImport::ItertoolsCombinationsType),
+        "molt_itertools_combinations_with_replacement_type" => {
+            Some(WasmRuntimeImport::ItertoolsCombinationsWithReplacementType)
+        }
+        "molt_itertools_compress_type" => Some(WasmRuntimeImport::ItertoolsCompressType),
+        "molt_itertools_count_type" => Some(WasmRuntimeImport::ItertoolsCountType),
+        "molt_itertools_cycle_type" => Some(WasmRuntimeImport::ItertoolsCycleType),
+        "molt_itertools_dropwhile_type" => Some(WasmRuntimeImport::ItertoolsDropwhileType),
+        "molt_itertools_filterfalse_type" => Some(WasmRuntimeImport::ItertoolsFilterfalseType),
+        "molt_itertools_groupby_type" => Some(WasmRuntimeImport::ItertoolsGroupbyType),
+        "molt_itertools_islice_type" => Some(WasmRuntimeImport::ItertoolsIsliceType),
+        "molt_itertools_pairwise_type" => Some(WasmRuntimeImport::ItertoolsPairwiseType),
+        "molt_itertools_permutations_type" => Some(WasmRuntimeImport::ItertoolsPermutationsType),
+        "molt_itertools_product_type" => Some(WasmRuntimeImport::ItertoolsProductType),
+        "molt_itertools_starmap_type" => Some(WasmRuntimeImport::ItertoolsStarmapType),
+        "molt_itertools_takewhile_type" => Some(WasmRuntimeImport::ItertoolsTakewhileType),
+        "molt_itertools_zip_longest_type" => Some(WasmRuntimeImport::ItertoolsZipLongestType),
+        "molt_itertools_batched_new_312" => Some(WasmRuntimeImport::ItertoolsBatchedNew312),
         "molt_type_call" => Some(WasmRuntimeImport::TypeCall),
         "molt_type_new" => Some(WasmRuntimeImport::TypeNew),
         "molt_type_init" => Some(WasmRuntimeImport::TypeInit),
@@ -15349,6 +15516,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_importlib_module_spec_has_location_set" => {
             Some(WasmRuntimeImport::ImportlibModuleSpecHasLocationSet)
         }
+        "molt_dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
         _ => None,
     }
 }

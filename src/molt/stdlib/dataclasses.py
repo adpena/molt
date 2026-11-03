@@ -13,10 +13,11 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+import builtins as _builtins
 import sys as _sys
 from reprlib import recursive_repr
 from types import MappingProxyType, MemberDescriptorType
-from typing import Any, Callable, ClassVar, cast
+from typing import Any, ClassVar, _GenericAlias, cast
 
 _MOLT_DATACLASSES_MAKE_DATACLASS = _require_intrinsic("molt_dataclasses_make_dataclass")
 _MOLT_DATACLASSES_IS_DATACLASS = _require_intrinsic("molt_dataclasses_is_dataclass")
@@ -27,17 +28,10 @@ _MOLT_DATACLASSES_REPLACE = _require_intrinsic("molt_dataclasses_replace")
 _MOLT_DATACLASSES_REPR = _require_intrinsic("molt_dataclasses_repr")
 _MOLT_DATACLASSES_EQ = _require_intrinsic("molt_dataclasses_eq")
 _MOLT_DATACLASSES_HASH_FN = _require_intrinsic("molt_dataclasses_hash_fn")
-_MOLT_DATACLASSES_CHECK_DEFAULT_ORDER = _require_intrinsic(
-    "molt_dataclasses_check_default_order"
-)
-_MOLT_DATACLASSES_FIELD_FLAGS = _require_intrinsic("molt_dataclasses_field_flags")
-_MOLT_DATACLASSES_POST_INIT = _require_intrinsic("molt_dataclasses_post_init")
+_MOLT_DATACLASSES_INIT = _require_intrinsic("molt_dataclasses_init")
+_MOLT_DATACLASSES_INIT_GLOBALS = _require_intrinsic("molt_dataclasses_init_globals")
 _MOLT_DATACLASSES_SET_FIELD_METADATA = _require_intrinsic(
     "molt_dataclasses_set_field_metadata"
-)
-_MOLT_DATACLASSES_IS_INITVAR = _require_intrinsic("molt_dataclasses_is_initvar")
-_MOLT_DATACLASSES_IS_KW_ONLY_SENTINEL = _require_intrinsic(
-    "molt_dataclasses_is_kw_only_sentinel"
 )
 
 
@@ -236,35 +230,40 @@ def field(
 
 
 def _is_classvar(annotation) -> bool:
-    try:
-        if annotation is ClassVar:
-            return True
-        origin = getattr(annotation, "__origin__", None)
-        return origin is ClassVar
-    except Exception:
-        return False
+    return annotation is ClassVar or (
+        isinstance(annotation, _GenericAlias) and annotation.__origin__ is ClassVar
+    )
 
 
 def _is_initvar(annotation) -> bool:
-    if annotation is InitVar:
-        return True
-    if isinstance(annotation, InitVar):
-        return True
-    return bool(_MOLT_DATACLASSES_IS_INITVAR(annotation))
+    return annotation is InitVar or type(annotation) is InitVar
 
 
 def _is_kw_only(annotation) -> bool:
-    if annotation is KW_ONLY or isinstance(annotation, _KW_ONLY_TYPE):
-        return True
-    return bool(_MOLT_DATACLASSES_IS_KW_ONLY_SENTINEL(annotation))
+    return annotation is KW_ONLY
 
 
-def _check_default_order(fields: dict[str, Field]) -> None:
-    _MOLT_DATACLASSES_CHECK_DEFAULT_ORDER(fields)
-
-
-def _dataclass_field_flags(fields: dict[str, Field]) -> tuple[int, ...]:
-    return _MOLT_DATACLASSES_FIELD_FLAGS(fields)
+def _annotation_binding(annotation, cls, module):
+    """Resolve CPython's bare/qualified marker prefix without evaluating it."""
+    if not isinstance(annotation, str):
+        return None
+    namespace = getattr(_sys.modules.get(cls.__module__), "__dict__", {})
+    text = annotation.lstrip()
+    end = 0
+    while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        end += 1
+    if not end:
+        return None
+    first = text[:end]
+    if text[end:end + 1] != ".":
+        return namespace.get(first)
+    if namespace.get(first) is not module:
+        return None
+    start = end + 1
+    end = start
+    while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        end += 1
+    return module.__dict__.get(text[start:end]) if end > start else None
 
 
 def _should_set_hash(
@@ -285,119 +284,122 @@ def _should_set_hash(
     return "none"
 
 
-def _dataclass_hash_mode(
-    *,
-    has_explicit_hash: bool,
-    hash_is_none: bool,
-    eq: bool,
-    frozen: bool,
-    unsafe_hash: bool,
-) -> int:
-    if unsafe_hash:
-        return 1
-    if hash_is_none:
-        return 2
-    if has_explicit_hash:
-        return 3
-    if not eq:
-        return 0
-    if frozen:
-        return 1
-    return 2
 
 
-def _dataclass_init(self, *args, **kwargs):
-    cls = self.__class__
-    fields_map = getattr(cls, "__dataclass_fields__", None)
-    if fields_map is None:
-        raise TypeError("dataclass __init__ called on non-dataclass instance")
-    params = getattr(cls, "__dataclass_params__", None)
-    frozen = getattr(params, "frozen", False)
-    positional: list[Field] = []
-    kw_only: list[Field] = []
-    initvars: list[Field] = []
-    for field_obj in fields_map.values():
-        if field_obj._field_type not in (_FIELD, _FIELD_INITVAR):
-            continue
-        if not field_obj.init:
-            continue
-        if field_obj.kw_only:
-            kw_only.append(field_obj)
-        else:
-            positional.append(field_obj)
-        if field_obj._field_type is _FIELD_INITVAR:
-            initvars.append(field_obj)
-    init_name = f"{cls.__name__}.__init__"
-    if len(args) > len(positional):
-        total = len(positional) + 1
-        given = len(args) + 1
-        raise TypeError(
-            f"{init_name}() takes {total} positional arguments but {given} were given"
+class _HAS_DEFAULT_FACTORY_CLASS:
+    def __repr__(self):
+        return "<factory>"
+
+
+_HAS_DEFAULT_FACTORY = _HAS_DEFAULT_FACTORY_CLASS()
+
+
+def _dataclass_init_factory(cls, fields_map, frozen, slots, has_post_init, globals):
+    """Snapshot the initializer contract once, at the actual transformation.
+
+    Field metadata is public and mutable. Neither signature binding nor body
+    execution reads it again after this snapshot. The runtime creates a real
+    function (or instantiates a matching compiled template), with ordinary
+    defaults, keyword defaults, cells, code and descriptor binding.
+    """
+    init_fields = [
+        f for f in fields_map.values()
+        if f._field_type in (_FIELD, _FIELD_INITVAR)
+    ]
+    positional = [f for f in init_fields if f.init and not f.kw_only]
+    keyword_only = [f for f in init_fields if f.init and f.kw_only]
+    previous_default = None
+    for f in positional:
+        if f.default is not MISSING or f.default_factory is not MISSING:
+            previous_default = f
+        elif previous_default is not None:
+            message = f"non-default argument {f.name!r} follows default argument"
+            if _sys.version_info >= (3, 13):
+                message += f" {previous_default.name!r}"
+            raise TypeError(message)
+    receiver = "__dataclass_self__" if "self" in fields_map else "self"
+    parameter_fields = positional + keyword_only
+    parameter_names = [receiver] + [f.name for f in parameter_fields]
+    if receiver in parameter_names[1:]:
+        raise SyntaxError(
+            f"duplicate argument {receiver!r} in function definition",
+            ("<string>", 2, 0, None),
         )
-    values: dict[str, object] = {}
-    for idx, field_obj in enumerate(positional):
-        field_name = cast(str, field_obj.name)
-        if idx < len(args):
-            if field_name in kwargs:
-                raise TypeError(
-                    f"{init_name}() got multiple values for argument '{field_name}'"
-                )
-            values[field_name] = args[idx]
-            continue
-        if field_name in kwargs:
-            values[field_name] = kwargs.pop(field_name)
-            continue
-        if field_obj.default is not MISSING:
-            values[field_name] = field_obj.default
-        elif field_obj.default_factory is not MISSING:
-            factory = cast(Callable[[], object], field_obj.default_factory)
-            values[field_name] = factory()
+    parameter_indices = {name: i for i, name in enumerate(parameter_names)}
+    captures = {}
+    defaults = []
+    kwdefaults = {}
+    annotations = {"return": None}
+    for f in parameter_fields:
+        annotations[f.name] = f.type
+        if f.default_factory is not MISSING:
+            default = _HAS_DEFAULT_FACTORY
+        elif f.default is not MISSING:
+            default = f.default
         else:
-            raise TypeError(
-                f"{init_name}() missing 1 required positional argument: '{field_name}'"
-            )
-    for field_obj in kw_only:
-        field_name = cast(str, field_obj.name)
-        if field_name in kwargs:
-            values[field_name] = kwargs.pop(field_name)
             continue
-        if field_obj.default is not MISSING:
-            values[field_name] = field_obj.default
-        elif field_obj.default_factory is not MISSING:
-            factory = cast(Callable[[], object], field_obj.default_factory)
-            values[field_name] = factory()
+        if f.kw_only:
+            kwdefaults[f.name] = default
         else:
-            raise TypeError(
-                f"{init_name}() missing 1 required keyword-only argument: '{field_name}'"
-            )
-    if kwargs:
-        unexpected = next(iter(kwargs))
-        raise TypeError(
-            f"{init_name}() got an unexpected keyword argument '{unexpected}'"
-        )
-    initvar_values: list[object] = []
-    for field_obj in fields_map.values():
-        if field_obj._field_type is _FIELD:
-            field_name = cast(str, field_obj.name)
-            if field_obj.init:
-                val = values[field_name]
-            else:
-                if field_obj.default is not MISSING:
-                    val = field_obj.default
-                elif field_obj.default_factory is not MISSING:
-                    factory = cast(Callable[[], object], field_obj.default_factory)
-                    val = factory()
-                else:
-                    continue
-            if frozen:
-                object.__setattr__(self, field_name, val)
-            else:
-                setattr(self, field_name, val)
-        elif field_obj._field_type is _FIELD_INITVAR and field_obj.init:
-            field_name = cast(str, field_obj.name)
-            initvar_values.append(values[field_name])
-    if getattr(self.__class__, "__molt_dataclass_has_post_init__", False):
-        _MOLT_DATACLASSES_POST_INIT(self, initvar_values)
+            defaults.append(default)
+
+    schema_fields = []
+    stores = []
+    post_init_inputs = []
+    for f in init_fields:
+        field_name = f.name
+        is_initvar = f._field_type is _FIELD_INITVAR
+        default_kind = 2 if f.default_factory is not MISSING else int(f.default is not MISSING)
+        schema_fields.append((field_name, bool(f.init), bool(f.kw_only), is_initvar, default_kind))
+        if is_initvar:
+            if has_post_init:
+                # init=False InitVars have a global read in CPython's body.
+                post_init_inputs.append((field_name, parameter_indices.get(field_name, -1)))
+            continue
+        parameter = parameter_indices[field_name] if f.init else -1
+        capture = None
+        if default_kind == 2:
+            capture = "__dataclass_dflt_" + field_name + "__"
+            captures[capture] = f.default_factory
+            if f.init:
+                captures["__dataclass_HAS_DEFAULT_FACTORY__"] = _HAS_DEFAULT_FACTORY
+        elif not f.init:
+            if not slots or default_kind != 1:
+                # Ordinary init-disabled defaults live on non-slotted classes.
+                continue
+            capture = "__dataclass_dflt_" + field_name + "__"
+            captures[capture] = f.default
+        if frozen:
+            captures["__dataclass_builtins_object__"] = object
+        stores.append((field_name, parameter, capture, default_kind == 2))
+
+    capture_names = tuple(sorted(name for name in captures if name not in parameter_indices))
+    capture_indices = {name: i for i, name in enumerate(capture_names)}
+    def binding(name):
+        if name is None or name not in captures:
+            return (-1, -1)
+        if name in parameter_indices:
+            return (parameter_indices[name], -1)
+        return (-1, capture_indices[name])
+
+    operations = tuple(
+        (name, parameter, *binding(capture), factory)
+        for name, parameter, capture, factory in stores
+    )
+    schema = (bool(frozen), bool(slots), bool(has_post_init), tuple(schema_fields), receiver)
+    spec = (
+        tuple(parameter_names), len(positional) + 1,
+        tuple(defaults) if defaults else None, kwdefaults if kwdefaults else None,
+        capture_names, tuple(captures[name] for name in capture_names), operations,
+        tuple(post_init_inputs),
+        binding("__dataclass_HAS_DEFAULT_FACTORY__"),
+        binding("__dataclass_builtins_object__"),
+        annotations,
+        globals,
+        dict.get(globals, "__name__"),
+        _builtins,
+    )
+    return _MOLT_DATACLASSES_INIT(cls, schema, spec)
 
 
 @recursive_repr()
@@ -541,6 +543,13 @@ def _molt_apply_dataclass(
     slots: bool,
     weakref_slot: bool,
 ):
+    if cls.__module__ in _sys.modules:
+        # Capture the function environment, not an arbitrary namespace writer.
+        # The native function-construction boundary reads this dictionary and
+        # supplies only a missing __builtins__ entry, as CPython's exec does.
+        globals = _MOLT_DATACLASSES_INIT_GLOBALS(_sys.modules[cls.__module__])
+    else:
+        globals = {}
     if order and not eq:
         raise ValueError("eq must be true if order is true")
     if weakref_slot and not slots:
@@ -563,7 +572,7 @@ def _molt_apply_dataclass(
         raise TypeError(f"Cannot overwrite attribute __hash__ in class {cls.__name__}")
 
     fields: dict[str, Field] = {}
-    for base in cls.__mro__[1:]:
+    for base in reversed(cls.__mro__[1:]):
         base_fields = getattr(base, "__dataclass_fields__", None)
         if base_fields:
             for name, field_obj in base_fields.items():
@@ -571,9 +580,17 @@ def _molt_apply_dataclass(
 
     annotations = getattr(cls, "__annotations__", {}) or {}
     kw_only_marker = kw_only
+    kw_only_seen = False
     own_fields: list[Field] = []
     for name, annotation in annotations.items():
-        if _is_kw_only(annotation):
+        dataclasses_module = _sys.modules.get(__name__)
+        typing_module = _sys.modules.get("typing")
+        marker = _annotation_binding(annotation, cls, dataclasses_module)
+        typing_marker = _annotation_binding(annotation, cls, typing_module)
+        if _is_kw_only(annotation) or marker is KW_ONLY:
+            if kw_only_seen:
+                raise TypeError(f"{name!r} is KW_ONLY, but KW_ONLY has already been specified")
+            kw_only_seen = True
             kw_only_marker = True
             continue
         # CPython reads the default through the class attribute protocol, so
@@ -588,18 +605,21 @@ def _molt_apply_dataclass(
             field_obj = Field(default)
         field_obj.name = name
         field_obj.type = annotation
-        if _is_classvar(annotation):
+        if _is_classvar(annotation) or typing_marker is ClassVar:
             field_obj._field_type = _FIELD_CLASSVAR
-        elif _is_initvar(annotation):
+        elif _is_initvar(annotation) or marker is InitVar:
             field_obj._field_type = _FIELD_INITVAR
         else:
             field_obj._field_type = _FIELD
-        if field_obj.kw_only is MISSING:
-            field_obj.kw_only = kw_only_marker
+        if field_obj._field_type in (_FIELD_CLASSVAR, _FIELD_INITVAR) and field_obj.default_factory is not MISSING:
+            raise TypeError(f"field {name} cannot have a default factory")
+        if field_obj._field_type in (_FIELD, _FIELD_INITVAR):
+            if field_obj.kw_only is MISSING:
+                field_obj.kw_only = kw_only_marker
+        elif field_obj.kw_only is not MISSING:
+            raise TypeError(f"field {name} is a ClassVar but specifies kw_only")
         fields[name] = field_obj
         own_fields.append(field_obj)
-
-    _check_default_order(fields)
 
     # Only a ``field()`` object is replaced: by its default, or removed when
     # it has none. Any other class attribute, a descriptor included, stays.
@@ -625,21 +645,12 @@ def _molt_apply_dataclass(
     )
     cls.__dataclass_fields__ = fields
     cls.__dataclass_params__ = params
-    cls.__molt_dataclass_has_post_init__ = callable(getattr(cls, "__post_init__", None))
+    has_post_init = hasattr(cls, "__post_init__")
 
-    user_init_marker = cls.__dict__.get("__molt_dataclass_user_init__", MISSING)
-    from_make_dataclass = bool(cls.__dict__.get("__molt_make_dataclass__", False))
-    user_defined_init = False
-    if user_init_marker is not MISSING:
-        user_defined_init = bool(user_init_marker)
-    if init and from_make_dataclass:
-        if not user_defined_init:
-            cls.__init__ = _dataclass_init
-    elif init and (
-        "__init__" not in cls.__dict__
-        or cls.__dict__.get("__init__") is object.__init__
-    ):
-        cls.__init__ = _dataclass_init
+    if init and "__init__" not in cls.__dict__:
+        cls.__init__ = _dataclass_init_factory(cls, fields, frozen, slots, has_post_init, globals)
+    else:
+        _MOLT_DATACLASSES_INIT(cls, None, None)
     if repr and (
         "__repr__" not in cls.__dict__
         or cls.__dict__.get("__repr__") is object.__repr__
@@ -673,9 +684,7 @@ def _molt_apply_dataclass(
                 self, other, compare_names, lambda a, b: a >= b
             )
 
-    hash_obj = cls.__dict__.get("__hash__", MISSING)
     has_explicit_hash = "__hash__" in cls.__dict__
-    hash_is_none = has_explicit_hash and hash_obj is None
     hash_action = _should_set_hash(
         has_explicit_hash=has_explicit_hash,
         eq=eq,
@@ -704,27 +713,6 @@ def _molt_apply_dataclass(
     if slots:
         cls = _add_slots(cls, fields, frozen=frozen, weakref_slot=weakref_slot)
 
-    cls.__molt_dataclass_field_names__ = tuple(
-        field_obj.name
-        for field_obj in fields.values()
-        if field_obj._field_type is _FIELD
-    )
-    flags = 0
-    if frozen:
-        flags |= 0x1
-    if repr:
-        flags |= 0x4
-    if slots:
-        flags |= 0x8
-    cls.__molt_dataclass_flags__ = flags
-    cls.__molt_dataclass_field_flags__ = _dataclass_field_flags(fields)
-    cls.__molt_dataclass_hash__ = _dataclass_hash_mode(
-        has_explicit_hash=has_explicit_hash,
-        hash_is_none=hash_is_none,
-        eq=eq,
-        frozen=frozen,
-        unsafe_hash=unsafe_hash,
-    )
     return cls
 
 
@@ -893,12 +881,6 @@ def make_dataclass(
             slots=slots,
             weakref_slot=weakref_slot,
         )
-    if isinstance(result, type):
-        user_defined_init = bool(
-            result.__dict__.get("__molt_dataclass_user_init__", False)
-        )
-        if init and not user_defined_init:
-            result.__init__ = _dataclass_init
     return result
 
 

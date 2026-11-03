@@ -428,6 +428,136 @@ pub(crate) fn frame_stack_enter_homes(plan: FramePlan) -> bool {
     true
 }
 
+/// A synchronous Python body implemented by a runtime plan. It has the same
+/// homes, live locals, namespace and exit custody as a compiled Python entry.
+/// No code-slot registry or secondary locals dictionary is introduced.
+pub(crate) struct PythonFunctionFrame<'a, 'py> {
+    py: &'a PyToken<'py>,
+    homes: *mut u64,
+    code: u64,
+    depth: usize,
+}
+
+impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
+    /// On success adopts each argument. On failure adopts none. `cells` are
+    /// borrowed lexical cells; their frame owners are retained separately.
+    pub(crate) fn adopt(
+        py: &'a PyToken<'py>,
+        context: [u64; 3],
+        plan: FramePlan,
+        arguments: &[u64],
+        cells: &[u64],
+    ) -> Result<Self, ()> {
+        use molt_codegen_abi::{FRAME_HOME_CELL, FRAME_HOME_PLAIN, FRAME_HOME_WORDS};
+        let [globals, builtins, code] = context;
+        if !plan.optimized || plan.homes as usize != arguments.len() + cells.len() {
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "runtime body disagrees with Python frame layout",
+            );
+            return Err(());
+        }
+        for bits in context {
+            inc_ref_bits(py, bits);
+        }
+        frame_stack_push_owned(py, code, globals, builtins, 0);
+        let depth = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
+        let mut frame = Self {
+            py,
+            homes: std::ptr::null_mut(),
+            code,
+            depth,
+        };
+        if !frame_stack_enter_homes(plan) {
+            crate::record_memory_error_without_allocation(py);
+            return Err(());
+        }
+        let homes = bindings::molt_frame_homes(plan.homes as u64);
+        if exception_pending(py) {
+            return Err(());
+        }
+        frame.homes = crate::provenance::abi::mut_ptr::<u64>(homes).unwrap();
+        // No fallible work or callbacks remain before the argument transfer.
+        for (slot, &value) in arguments.iter().enumerate() {
+            unsafe {
+                frame
+                    .homes
+                    .add(slot * FRAME_HOME_WORDS)
+                    .write(FRAME_HOME_PLAIN as u64);
+                frame.homes.add(slot * FRAME_HOME_WORDS + 1).write(value);
+            }
+        }
+        for (index, &cell) in cells.iter().enumerate() {
+            inc_ref_bits(py, cell);
+            let slot = arguments.len() + index;
+            unsafe {
+                frame
+                    .homes
+                    .add(slot * FRAME_HOME_WORDS)
+                    .write(FRAME_HOME_CELL as u64);
+                frame.homes.add(slot * FRAME_HOME_WORDS + 1).write(cell);
+            }
+        }
+        // The new entry has no displaced context and therefore no release.
+        FRAME_STACK.with(|stack| {
+            stack
+                .borrow_mut()
+                .last_mut()
+                .unwrap()
+                .python_context
+                .argument_zero = if arguments.is_empty() {
+                PythonArgumentZero::NoArgument
+            } else {
+                PythonArgumentZero::Home
+            };
+        });
+        Ok(frame)
+    }
+
+    /// A fresh owned read observes PEP 667 writes made by an earlier callback.
+    pub(crate) fn argument(&self, slot: usize) -> Result<u64, ()> {
+        let home = unsafe { self.homes.add(slot * molt_codegen_abi::FRAME_HOME_WORDS) };
+        let value = bindings::molt_frame_home_load(home as usize as u64);
+        if exception_pending(self.py) {
+            return Err(());
+        }
+        if crate::is_missing_bits(self.py, value) {
+            let code = obj_from_bits(self.code).as_ptr().unwrap();
+            let names = unsafe { crate::object::layout::code_varnames_bits(code) };
+            let name = unsafe {
+                crate::object::seq_access::with_immutable_tuple_slice(
+                    obj_from_bits(names).as_ptr().unwrap(),
+                    |items| items[slot],
+                )
+            }
+            .unwrap();
+            let name = string_obj_to_owned(obj_from_bits(name)).unwrap();
+            raise_exception::<()>(
+                self.py,
+                BuiltinExc::UnboundLocalError,
+                &format!(
+                    "cannot access local variable '{name}' where it is not associated with a value"
+                ),
+            );
+            return Err(());
+        }
+        inc_ref_bits(self.py, value);
+        Ok(value)
+    }
+}
+
+impl Drop for PythonFunctionFrame<'_, '_> {
+    fn drop(&mut self) {
+        assert_eq!(
+            FRAME_STACK.with(|stack| stack.borrow().len()),
+            self.depth + 1,
+            "runtime Python frame custody is not LIFO"
+        );
+        frame_stack_pop(self.py);
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
     crate::gil_assert();

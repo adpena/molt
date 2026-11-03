@@ -1685,21 +1685,8 @@ fn lower_preserved_list_pop_calls_runtime() {
 }
 
 #[test]
-fn lower_preserved_dataclass_new_values_calls_runtime_with_value_slice() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let ir = lower_preserved_kind_ir(&backend, OpKind::DataclassNewValues, 5, true, None)
-        .expect("dataclass_new_values must lower through its value-slice runtime call");
-    assert!(ir.contains("molt_dataclass_new_from_values"), "{ir}");
-    assert!(ir.contains("alloca i64, i64 2"), "{ir}");
-}
-
-#[test]
 fn preserved_word_ranges_use_static_entry_block_slots() {
-    for (kind, operand_count, result_count) in [
-        (OpKind::UnpackSequence, 1, 2),
-        (OpKind::DataclassNewValues, 5, 1),
-    ] {
+    for (kind, operand_count, result_count) in [(OpKind::UnpackSequence, 1, 2)] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let mut func = TirFunction::new(

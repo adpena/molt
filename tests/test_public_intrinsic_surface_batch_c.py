@@ -13,11 +13,12 @@ _PROBE = f"""
 import base64 as _host_base64
 import binascii as _host_binascii
 import copy as _host_copy
+import math as _host_math
 import importlib.util
 import operator as _host_operator
 import sys
 import types
-from tests.stdlib_intrinsic_registry import install_registry
+from tests.stdlib_intrinsic_registry import install_registry, record_builtin_promotion
 
 
 def _load_module(name, path_text):
@@ -31,7 +32,7 @@ def _load_module(name, path_text):
 
 _operator_mod = types.ModuleType("_operator")
 _names = [
-    "abs","add","and_","attrgetter","concat","contains","countOf","delitem","eq",
+    "call","indexOf","abs","add","and_","attrgetter","concat","contains","countOf","delitem","eq",
     "floordiv","ge","getitem","gt","iadd","iand","iconcat","ifloordiv","ilshift",
     "imatmul","imod","imul","index","inv","invert","ior","ipow","irshift","is_",
     "is_not","isub","itemgetter","itruediv","ixor","le","length_hint","lshift","lt",
@@ -47,6 +48,7 @@ sys.modules["_operator"] = _operator_mod
 
 
 install_registry({{
+    "molt_function_set_builtin": record_builtin_promotion,
     "molt_math_isfinite": lambda x: True,
     "molt_math_isinf": lambda x: False,
     "molt_math_isnan": lambda x: False,
@@ -85,7 +87,7 @@ install_registry({{
     "molt_math_fsum": lambda xs: float(sum(xs)),
     "molt_math_factorial": lambda n: 120,
     "molt_math_comb": lambda n, k: 10,
-    "molt_math_perm": lambda n, k=None: 20,
+    "molt_math_perm": _host_math.perm,
     "molt_math_degrees": lambda x: x * 10,
     "molt_math_radians": lambda x: x / 10,
     "molt_math_dist": lambda p, q: 5.0,
@@ -95,11 +97,11 @@ install_registry({{
     "molt_math_remainder": lambda x, y: 0.0,
     "molt_math_log": lambda x: 2.0,
     "molt_math_fma": lambda x, y, z: x * y + z,
-    "molt_math_isclose": lambda a, b, rel_tol, abs_tol: abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol),
-    "molt_math_prod": lambda iterable, start: start * 6,
-    "molt_math_gcd": lambda ints: 6,
-    "molt_math_lcm": lambda ints: 12,
-    "molt_math_hypot": lambda coords: 5.0,
+    "molt_math_isclose": _host_math.isclose,
+    "molt_math_prod": _host_math.prod,
+    "molt_math_gcd": _host_math.gcd,
+    "molt_math_lcm": _host_math.lcm,
+    "molt_math_hypot": _host_math.hypot,
     "molt_uuid_getnode": lambda: 0xAABBCCDDEEFF,
     "molt_uuid_uuid1_bytes": lambda node, clock_seq: bytes.fromhex("12345678123412348123abcdef123456"),
     "molt_uuid_uuid3_bytes": lambda ns, name: bytes.fromhex("33333333123412348123abcdef123456"),
@@ -117,7 +119,7 @@ install_registry({{
     "molt_binascii_b2a_qp": lambda b, quotetabs=False, istext=True, header=False: bytes(b),
     "molt_binascii_a2b_uu": lambda s: bytes(s),
     "molt_binascii_b2a_uu": lambda b, backtick=False: bytes(b),
-    "molt_binascii_crc32": lambda data, value=0: 123,
+    "molt_binascii_crc32": _host_binascii.crc32,
     "molt_binascii_crc_hqx": lambda data, value: 321,
     "molt_copy_deepcopy": lambda obj, memo, copier, sentinel: _host_copy._deepcopy_dispatch[type(obj)](obj, memo, copier),
     "molt_operator_truth": lambda value=True: bool(value),

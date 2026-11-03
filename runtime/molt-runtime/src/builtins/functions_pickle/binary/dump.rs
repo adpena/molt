@@ -922,7 +922,6 @@ fn pickle_default_instance_state(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
     ptr: *mut u8,
-    type_id: u32,
 ) -> Result<Option<u64>, u64> {
     if let Some(getstate_bits) = pickle_attr_optional(_py, obj_bits, crate::NameId::DunderGetstate)?
     {
@@ -933,8 +932,7 @@ fn pickle_default_instance_state(
         }
         return Ok(Some(state_bits));
     }
-    if unsafe { crate::object::object_has_class_shape(ptr) } || type_id == crate::TYPE_ID_DATACLASS
-    {
+    if unsafe { crate::object::object_has_class_shape(ptr) } {
         let state = crate::object::ops_builtins::molt_object_getstate(obj_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, state);
@@ -952,10 +950,7 @@ fn pickle_dump_default_instance(
     ptr: *mut u8,
     type_id: u32,
 ) -> Result<bool, u64> {
-    if (type_id != crate::TYPE_ID_OBJECT && type_id != crate::TYPE_ID_DATACLASS)
-        || (type_id == crate::TYPE_ID_OBJECT
-            && !unsafe { crate::object::object_has_class_shape(ptr) })
-    {
+    if type_id != crate::TYPE_ID_OBJECT || !unsafe { crate::object::object_has_class_shape(ptr) } {
         return Ok(false);
     }
     let cls_bits = unsafe { object_class_bits(ptr) };
@@ -999,7 +994,7 @@ fn pickle_dump_default_instance(
         }
 
         let _ = pickle_memo_store_if_absent(state, obj_bits);
-        if let Some(state_bits) = pickle_default_instance_state(_py, obj_bits, ptr, type_id)? {
+        if let Some(state_bits) = pickle_default_instance_state(_py, obj_bits, ptr)? {
             if !obj_from_bits(state_bits).is_none() {
                 pickle_dump_obj_binary(_py, state, state_bits, true)?;
                 state.push(PICKLE_OP_BUILD);

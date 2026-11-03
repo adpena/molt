@@ -422,6 +422,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         class_node: ast.ClassDef,
         item: ast.FunctionDef,
         defaults: tuple[MoltValue, MoltValue],
+        *,
+        bind_receiver: bool = True,
     ) -> MethodInfo:
         method_name = item.name
         method_qualname = self._definition_qualname(item)
@@ -527,8 +529,12 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
             self.unbound_check_names = set(self.scope_assigned)
             for idx, arg in enumerate(arg_nodes):
-                hint = self._class_method_receiver_hint(
-                    self._class_id_for_definition(class_node), descriptor, idx
+                hint = (
+                    self._class_method_receiver_hint(
+                        self._class_id_for_definition(class_node), descriptor, idx
+                    )
+                    if bind_receiver
+                    else None
                 )
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)

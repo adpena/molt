@@ -163,7 +163,16 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let value = MoltObject::from_int(19).bits();
-            let source = crate::molt_itertools_repeat(value, MoltObject::from_int(4).bits());
+            let source = crate::test_support::with_public_type_class(
+                crate::molt_itertools_repeat_type,
+                |public_class| {
+                    crate::molt_itertools_repeat_new(
+                        public_class,
+                        value,
+                        MoltObject::from_int(4).bits(),
+                    )
+                },
+            );
             let readers = crate::molt_itertools_tee(source, MoltObject::from_int(1).bits());
             assert!(!exception_pending(py));
             let reader = seq_access::item(obj_from_bits(readers).as_ptr().unwrap(), 0).unwrap();

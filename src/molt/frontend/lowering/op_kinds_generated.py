@@ -171,10 +171,6 @@ FrontendOpKind = Literal[
     'CONTEXT_EXIT',
     'COPY',
     'COPY_VAR',
-    'DATACLASS_GET',
-    'DATACLASS_NEW_VALUES',
-    'DATACLASS_SET',
-    'DATACLASS_SET_CLASS',
     'DEC_REF',
     'DELATTR',
     'DELATTR_GENERIC_OBJ',
@@ -710,10 +706,6 @@ WireOpKind = Literal[
     'context_exit',
     'copy',
     'copy_var',
-    'dataclass_get',
-    'dataclass_new_values',
-    'dataclass_set',
-    'dataclass_set_class',
     'dec_ref',
     'del_attr',
     'del_attr_generic_obj',
@@ -1241,10 +1233,6 @@ class FrontendKinds:
     CONTEXT_EXIT: Final = 'CONTEXT_EXIT'
     COPY: Final = 'COPY'
     COPY_VAR: Final = 'COPY_VAR'
-    DATACLASS_GET: Final = 'DATACLASS_GET'
-    DATACLASS_NEW_VALUES: Final = 'DATACLASS_NEW_VALUES'
-    DATACLASS_SET: Final = 'DATACLASS_SET'
-    DATACLASS_SET_CLASS: Final = 'DATACLASS_SET_CLASS'
     DEC_REF: Final = 'DEC_REF'
     DELATTR: Final = 'DELATTR'
     DELATTR_GENERIC_OBJ: Final = 'DELATTR_GENERIC_OBJ'
@@ -1780,10 +1768,6 @@ class WireKinds:
     CONTEXT_EXIT: Final = 'context_exit'
     COPY: Final = 'copy'
     COPY_VAR: Final = 'copy_var'
-    DATACLASS_GET: Final = 'dataclass_get'
-    DATACLASS_NEW_VALUES: Final = 'dataclass_new_values'
-    DATACLASS_SET: Final = 'dataclass_set'
-    DATACLASS_SET_CLASS: Final = 'dataclass_set_class'
     DEC_REF: Final = 'dec_ref'
     DEL_ATTR: Final = 'del_attr'
     DEL_ATTR_GENERIC_OBJ: Final = 'del_attr_generic_obj'
@@ -2312,10 +2296,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'CONTEXT_EXIT': 'context_exit',
     'COPY': 'copy',
     'COPY_VAR': 'copy_var',
-    'DATACLASS_GET': 'dataclass_get',
-    'DATACLASS_NEW_VALUES': 'dataclass_new_values',
-    'DATACLASS_SET': 'dataclass_set',
-    'DATACLASS_SET_CLASS': 'dataclass_set_class',
     'DEC_REF': 'dec_ref',
     'DELATTR_GENERIC_OBJ': 'del_attr_generic_obj',
     'DELATTR_GENERIC_PTR': 'del_attr_generic_ptr',
@@ -3099,10 +3079,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "context_exit",
         "copy",
         "copy_var",
-        "dataclass_get",
-        "dataclass_new_values",
-        "dataclass_set",
-        "dataclass_set_class",
         "dec_ref",
         "del_attr",
         "del_attr_generic_obj",
@@ -3663,10 +3639,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "CONTEXT_EXIT",
         "COPY",
         "COPY_VAR",
-        "DATACLASS_GET",
-        "DATACLASS_NEW_VALUES",
-        "DATACLASS_SET",
-        "DATACLASS_SET_CLASS",
         "DEC_REF",
         "DELATTR",
         "DELATTR_GENERIC_OBJ",
@@ -6429,10 +6401,6 @@ BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[WireOpKind] = frozenset(
         "contains",
         "context_enter",
         "context_exit",
-        "dataclass_get",
-        "dataclass_new_values",
-        "dataclass_set",
-        "dataclass_set_class",
         "dict_clear",
         "dict_copy",
         "dict_from_obj",

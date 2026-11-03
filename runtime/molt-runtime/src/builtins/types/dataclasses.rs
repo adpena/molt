@@ -1,14 +1,18 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::object::seq_access::{locked_len, snapshot};
+use crate::object::seq_access::snapshot;
 
 mod field_runtime;
+mod initializer;
 mod projection;
 
-pub use field_runtime::{
-    molt_dataclasses_check_default_order, molt_dataclasses_eq, molt_dataclasses_field_flags,
-    molt_dataclasses_hash_fn, molt_dataclasses_repr,
+pub(crate) use initializer::{clone_code_init_plan, drop_code_init_plan};
+pub use initializer::{
+    molt_dataclasses_init, molt_dataclasses_init_globals, molt_dataclasses_init_trampoline,
+    molt_dataclasses_set_init_template,
 };
+
+pub use field_runtime::{molt_dataclasses_eq, molt_dataclasses_hash_fn, molt_dataclasses_repr};
 pub use projection::{
     molt_dataclasses_asdict, molt_dataclasses_astuple, molt_dataclasses_fields,
     molt_dataclasses_is_dataclass, molt_dataclasses_replace,
@@ -117,58 +121,6 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                     break 'compute;
                 }
             }
-            let Some(init_name_bits) = crate::NameId::DunderInit.owned_bits(_py) else {
-                result_bits = MoltObject::none().bits();
-                break 'compute;
-            };
-            let has_user_init = unsafe { dict_get_in_place(_py, body_ptr, init_name_bits) };
-            dec_ref_bits(_py, init_name_bits);
-            let has_user_init = match has_user_init {
-                Ok(value) => value.is_some(),
-                Err(()) => {
-                    result_bits = MoltObject::none().bits();
-                    break 'compute;
-                }
-            };
-            let Some(user_init_marker_bits) =
-                crate::NameId::DunderMoltDataclassUserInit.owned_bits(_py)
-            else {
-                result_bits = MoltObject::none().bits();
-                break 'compute;
-            };
-            let completed = unsafe {
-                dict_set_in_place(
-                    _py,
-                    body_ptr,
-                    user_init_marker_bits,
-                    MoltObject::from_bool(has_user_init).bits(),
-                )
-            };
-            dec_ref_bits(_py, user_init_marker_bits);
-            if !completed {
-                result_bits = MoltObject::none().bits();
-                break 'compute;
-            }
-            let Some(make_dataclass_marker_bits) =
-                crate::NameId::DunderMoltMakeDataclass.owned_bits(_py)
-            else {
-                result_bits = MoltObject::none().bits();
-                break 'compute;
-            };
-            let completed = unsafe {
-                dict_set_in_place(
-                    _py,
-                    body_ptr,
-                    make_dataclass_marker_bits,
-                    MoltObject::from_bool(true).bits(),
-                )
-            };
-            dec_ref_bits(_py, make_dataclass_marker_bits);
-            if !completed {
-                result_bits = MoltObject::none().bits();
-                break 'compute;
-            }
-
             let Some(annotations_name_bits) = crate::NameId::DunderAnnotations.owned_bits(_py)
             else {
                 result_bits = MoltObject::none().bits();
@@ -421,98 +373,6 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// __post_init__ support
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// `molt_dataclasses_post_init(instance, *initvar_values) -> None`
-///
-/// Calls `instance.__post_init__(*initvar_values)` if it exists.  This is
-/// invoked at the end of the generated `__init__` for dataclasses that define
-/// a `__post_init__` method.
-///
-/// `initvar_values_bits` is a tuple of the InitVar field values in declaration
-/// order.  If the instance has no `__post_init__` method, this is a no-op.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_post_init(instance_bits: u64, initvar_values_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-
-        // Look up __post_init__ on the instance.
-        let Some(post_init_name_bits) = crate::NameId::DunderPostInit.owned_bits(_py) else {
-            return MoltObject::none().bits();
-        };
-        let method_bits = crate::builtins::attributes::molt_get_attr_name_default(
-            instance_bits,
-            post_init_name_bits,
-            missing,
-        );
-        dec_ref_bits(_py, post_init_name_bits);
-
-        if exception_pending(_py) {
-            // __post_init__ not found or attribute error — clear and return.
-            if !crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::none().bits();
-        }
-        if method_bits == missing {
-            // No __post_init__ method — nothing to do.
-            return MoltObject::none().bits();
-        }
-
-        // Call __post_init__ with the InitVar values.
-        // initvar_values_bits may be a tuple (possibly empty) or None.
-        let args_ptr = obj_from_bits(initvar_values_bits)
-            .as_ptr()
-            .filter(|ptr| unsafe {
-                let ty = object_type_id(*ptr);
-                ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST
-            });
-        let has_args = args_ptr.is_some_and(|ptr| unsafe { locked_len(ptr) != 0 });
-
-        let result_bits = if has_args {
-            // Materialize the call vector atomically, pinning every argument
-            // through the reentrant __post_init__ call.
-            let args_ptr = args_ptr.expect("non-empty InitVar sequence");
-            let Some(args) =
-                (unsafe { snapshot(_py, args_ptr, "InitVar argument allocation failed") })
-            else {
-                dec_ref_bits(_py, method_bits);
-                return MoltObject::none().bits();
-            };
-            // Use the CallArgs builder to push positional args.
-            let builder_bits = crate::molt_callargs_new(args.len() as u64, 0);
-            for &arg_bits in args.iter() {
-                unsafe {
-                    let _ = crate::molt_callargs_push_pos(builder_bits, arg_bits);
-                }
-            }
-            crate::molt_call_bind(method_bits, builder_bits)
-        } else {
-            // No initvar args — call with zero args.
-            unsafe { call_callable0(_py, method_bits) }
-        };
-
-        dec_ref_bits(_py, method_bits);
-
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-
-        // __post_init__ return value is discarded.
-        if obj_from_bits(result_bits).as_ptr().is_some() {
-            dec_ref_bits(_py, result_bits);
-        }
-
-        MoltObject::none().bits()
-    })
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// field() metadata support
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// `molt_dataclasses_set_field_metadata(field_obj, metadata_dict) -> None`
 ///
 /// Sets the `metadata` attribute on a Field object, wrapping the given dict
@@ -541,103 +401,5 @@ pub extern "C" fn molt_dataclasses_set_field_metadata(field_bits: u64, metadata_
         dec_ref_bits(_py, meta_name_bits);
 
         MoltObject::none().bits()
-    })
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// InitVar / KW_ONLY sentinel support
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// `molt_dataclasses_is_initvar(obj) -> bool`
-///
-/// Checks if `obj` is an InitVar descriptor (has `__molt_initvar__` marker or
-/// its class name is "InitVar").
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-
-        // Check for __molt_initvar__ marker attribute.
-        if let Some(marker_bits) = crate::NameId::DunderMoltInitvar.owned_bits(_py) {
-            let val = crate::builtins::attributes::molt_get_attr_name_default(
-                obj_bits,
-                marker_bits,
-                missing,
-            );
-            dec_ref_bits(_py, marker_bits);
-            if exception_pending(_py) {
-                clear_exception(_py);
-            } else if val != missing && is_truthy(_py, obj_from_bits(val)) {
-                return MoltObject::from_bool(true).bits();
-            }
-        }
-
-        // Fall back: check class name.
-        let cls_bits = type_of_bits(_py, obj_bits);
-        if let Some(name_bits) = crate::NameId::DunderName.owned_bits(_py) {
-            let name_val = crate::builtins::attributes::molt_get_attr_name_default(
-                cls_bits, name_bits, missing,
-            );
-            dec_ref_bits(_py, name_bits);
-            if !exception_pending(_py)
-                && name_val != missing
-                && let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val))
-                && name_str == "InitVar"
-            {
-                return MoltObject::from_bool(true).bits();
-            }
-            if exception_pending(_py) {
-                clear_exception(_py);
-            }
-        }
-
-        MoltObject::from_bool(false).bits()
-    })
-}
-
-/// `molt_dataclasses_is_kw_only_sentinel(obj) -> bool`
-///
-/// Checks if `obj` is the KW_ONLY sentinel (has `__molt_kw_only__` marker or
-/// its class name is "KW_ONLY" in the `dataclasses` module).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-
-        // Check for __molt_kw_only__ marker attribute.
-        if let Some(marker_bits) = crate::NameId::DunderMoltKwOnly.owned_bits(_py) {
-            let val = crate::builtins::attributes::molt_get_attr_name_default(
-                obj_bits,
-                marker_bits,
-                missing,
-            );
-            dec_ref_bits(_py, marker_bits);
-            if exception_pending(_py) {
-                clear_exception(_py);
-            } else if val != missing && is_truthy(_py, obj_from_bits(val)) {
-                return MoltObject::from_bool(true).bits();
-            }
-        }
-
-        // Fall back: check class name.
-        let cls_bits = type_of_bits(_py, obj_bits);
-        if let Some(name_bits) = crate::NameId::DunderName.owned_bits(_py) {
-            let name_val = crate::builtins::attributes::molt_get_attr_name_default(
-                cls_bits, name_bits, missing,
-            );
-            dec_ref_bits(_py, name_bits);
-            if !exception_pending(_py)
-                && name_val != missing
-                && let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val))
-                && (name_str == "KW_ONLY" || name_str == "_KW_ONLY_TYPE")
-            {
-                return MoltObject::from_bool(true).bits();
-            }
-            if exception_pending(_py) {
-                clear_exception(_py);
-            }
-        }
-
-        MoltObject::from_bool(false).bits()
     })
 }

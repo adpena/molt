@@ -1317,6 +1317,8 @@ def _retire_lane(
         rc = molt_dev_retire.release_slot(driver.Git(worktree), worktree, upstream)
         if rc != EXIT_OK:
             return rc
+        if cleared := molt_dev_retire.clear_slot_scratch(worktree):
+            _ok(f"deleted {cleared} lane scratch entr{'y' if cleared == 1 else 'ies'}")
     elif worktree is not None:
         _step(f"remove worktree {worktree}")
         rc = molt_dev_retire.cleanup_worktree(

@@ -4,6 +4,179 @@ use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::*;
 use molt_runtime_core::ObjectShapeId;
+use molt_runtime_core::ProtectedRuntimeValue as Value;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_reduce(instance: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(pointer) = obj_from_bits(instance).as_ptr() else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "expected an itertools iterator",
+            );
+        };
+        crate::itertools_reduce(
+            py.core_token(),
+            crate::object::object_shape_id(pointer),
+            instance,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_setstate(instance: u64, state: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(pointer) = obj_from_bits(instance).as_ptr() else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "expected an itertools iterator",
+            );
+        };
+        if crate::object::object_shape_id(pointer) == ObjectShapeId::ItertoolsChain
+            && let Some(state_pointer) = obj_from_bits(state)
+                .as_ptr()
+                .filter(|&p| unsafe { object_type_id(p) } == TYPE_ID_TUPLE)
+        {
+            let Some(items) =
+                (unsafe { crate::object::seq_access::snapshot(py, state_pointer, "chain state") })
+            else {
+                return MoltObject::none().bits();
+            };
+            for &value in items.iter() {
+                match unsafe { crate::builtins::attr::is_iterator_bits(py, value) } {
+                    Ok(true) => (),
+                    Ok(false) => {
+                        return raise_exception::<u64>(
+                            py,
+                            BuiltinExc::TypeError,
+                            "Arguments must be iterators.",
+                        );
+                    }
+                    Err(()) => return MoltObject::none().bits(),
+                }
+            }
+        }
+        crate::itertools_setstate(
+            py.core_token(),
+            crate::object::object_shape_id(pointer),
+            instance,
+            state,
+        )
+    })
+}
+
+pub(crate) fn constructor_repr(
+    py: &crate::PyToken<'_>,
+    instance: u64,
+    first: u64,
+    second: u64,
+) -> u64 {
+    let first = Value::retain(py.core_token(), first);
+    let second = Value::retain(py.core_token(), second);
+    let Some(pointer) = obj_from_bits(instance).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    let include_second = match crate::object::object_shape_id(pointer) {
+        ObjectShapeId::ItertoolsRepeat => {
+            to_i64(obj_from_bits(second.bits())).is_some_and(|times| times >= 0)
+        }
+        ObjectShapeId::ItertoolsCount => {
+            use molt_cpython_abi::api::numbers::{PyLong_AsLongAndOverflow, PyLong_Check};
+            let step = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(second.bits())
+            };
+            if step.is_null() {
+                crate::cpython_abi_hooks::propagate_native_failure(py, "count repr step");
+                return MoltObject::none().bits();
+            }
+            let mut overflow = 0;
+            !(unsafe { PyLong_Check(step) } != 0
+                && unsafe { PyLong_AsLongAndOverflow(step, &mut overflow) } == 1
+                && overflow == 0)
+        }
+        _ => {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid iterator repr declaration",
+            );
+        }
+    };
+    let first_repr = crate::molt_repr_from_obj(first.bits());
+    let first_repr = unsafe { Value::from_owned_bits(py.core_token(), first_repr) };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let second_repr = if include_second {
+        let bits = crate::molt_repr_from_obj(second.bits());
+        if exception_pending(py) {
+            dec_ref_bits(py, bits);
+            return MoltObject::none().bits();
+        }
+        Some(unsafe { Value::from_owned_bits(py.core_token(), bits) })
+    } else {
+        None
+    };
+    let class = unsafe { object_class_bits(pointer) };
+    let name = unsafe { class_name_bits(obj_from_bits(class).as_ptr().unwrap()) };
+    let mut output = Vec::new();
+    unsafe {
+        if crate::object::ops_format::with_string_bytes(obj_from_bits(name), |bytes| {
+            output.extend_from_slice(bytes)
+        })
+        .is_none()
+        {
+            return MoltObject::none().bits();
+        }
+        output.push(b'(');
+        if crate::object::ops_format::with_string_bytes(obj_from_bits(first_repr.bits()), |bytes| {
+            output.extend_from_slice(bytes)
+        })
+        .is_none()
+        {
+            return MoltObject::none().bits();
+        }
+        if let Some(second_repr) = second_repr {
+            output.extend_from_slice(b", ");
+            if crate::object::ops_format::with_string_bytes(
+                obj_from_bits(second_repr.bits()),
+                |bytes| output.extend_from_slice(bytes),
+            )
+            .is_none()
+            {
+                return MoltObject::none().bits();
+            }
+        }
+    }
+    output.push(b')');
+    let text = alloc_string(py, &output);
+    if text.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(text).bits()
+    }
+}
+
+pub(crate) fn validate_constructor_class(
+    py: &crate::PyToken<'_>,
+    actual: u64,
+    expected: u64,
+) -> bool {
+    match crate::issubclass_runtime(py, actual, expected) {
+        Some(true) => true,
+        Some(false) => {
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "itertools.__new__ requires a subtype of its declaring type",
+            );
+            false
+        }
+        None => false,
+    }
+}
 
 /// Release a constructor-owned class that has not reached its runtime slot.
 fn discard_itertools_class(py: &crate::PyToken<'_>, class: u64) -> u64 {
@@ -37,6 +210,17 @@ pub(crate) fn alloc_itertools_class(
     next_fn: u64,
     constructor: Option<(u64, u64, &[u64])>,
 ) -> u64 {
+    let public_id =
+        crate::intrinsics::public_objects_generated::PublicObjectId::from_instance_shape(shape);
+    let identity = public_id.map(|id| id.identity());
+    if identity.is_some() && !name.is_empty() {
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "public itertools identity belongs to its declaration",
+        );
+    }
+    let name = identity.map_or(name, |identity| identity.name.as_str());
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
@@ -180,7 +364,57 @@ pub(crate) fn alloc_itertools_class(
             );
         }
     }
-    if let Some((callback, arity, defaults)) = constructor
+    if shape == ObjectShapeId::ItertoolsChain
+        && crate::builtins::methods::builtin_func_bits(
+            py,
+            NativeCallableSpec::declared(
+                NativeCallableKind::ClassMethodDescriptor,
+                class_bits,
+                crate::NameId::FromIterable,
+            ),
+            crate::molt_itertools_chain_from_iterable as *const () as usize as u64,
+            2,
+        ) == 0
+    {
+        return discard_itertools_class(py, class_bits);
+    }
+    let repr = match shape {
+        ObjectShapeId::ItertoolsCount => {
+            Some(crate::molt_itertools_count_repr as *const () as usize as u64)
+        }
+        ObjectShapeId::ItertoolsRepeat => {
+            Some(crate::molt_itertools_repeat_repr as *const () as usize as u64)
+        }
+        _ => None,
+    };
+    if let Some(callback) = repr
+        && crate::builtins::methods::builtin_func_bits(
+            py,
+            NativeCallableSpec::declared(
+                NativeCallableKind::WrapperDescriptor,
+                class_bits,
+                crate::NameId::DunderRepr,
+            ),
+            callback,
+            1,
+        ) == 0
+    {
+        return discard_itertools_class(py, class_bits);
+    }
+    if let Some(identity) = public_id {
+        if constructor.is_some()
+            || !crate::intrinsics::public_objects::declare_constructor(py, identity, class_bits)
+        {
+            if !exception_pending(py) {
+                raise_exception::<u64>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "duplicate public constructor declaration",
+                );
+            }
+            return discard_itertools_class(py, class_bits);
+        }
+    } else if let Some((callback, arity, defaults)) = constructor
         && crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
             py,
             NativeCallableSpec::constructor(class_bits),
@@ -191,8 +425,54 @@ pub(crate) fn alloc_itertools_class(
     {
         return discard_itertools_class(py, class_bits);
     }
+    // CPython removed the itertools pickle protocol in 3.14. Batched and
+    // pairwise never implemented it; their object reducer rejects the layout.
+    if public_id.is_some()
+        && !matches!(
+            shape,
+            ObjectShapeId::ItertoolsBatched | ObjectShapeId::ItertoolsPairwise
+        )
+        && !crate::object::ops_sys::runtime_target_at_least(py, 3, 14)
+    {
+        let mut methods = vec![(
+            crate::NameId::DunderReduce,
+            molt_itertools_reduce as *const () as usize as u64,
+            1,
+        )];
+        if !matches!(
+            shape,
+            ObjectShapeId::ItertoolsCount
+                | ObjectShapeId::ItertoolsRepeat
+                | ObjectShapeId::ItertoolsCompress
+                | ObjectShapeId::ItertoolsFilterfalse
+                | ObjectShapeId::ItertoolsStarmap
+        ) {
+            methods.push((
+                crate::NameId::DunderSetstate,
+                molt_itertools_setstate as *const () as usize as u64,
+                2,
+            ));
+        }
+        for (name, callback, arity) in methods {
+            if crate::builtins::methods::builtin_func_bits(
+                py,
+                NativeCallableSpec::declared(
+                    NativeCallableKind::MethodDescriptor,
+                    class_bits,
+                    name,
+                ),
+                callback,
+                arity,
+            ) == 0
+            {
+                return discard_itertools_class(py, class_bits);
+            }
+        }
+    }
     let module_key = crate::NameId::DunderModule.owned_bits(py);
-    let module_value = crate::NameId::Itertools.owned_bits(py);
+    let module_value = identity
+        .map_or(crate::NameId::Itertools, |identity| identity.module)
+        .owned_bits(py);
     let (Some(module_key), Some(module_value)) = (module_key, module_value) else {
         for bits in module_key.into_iter().chain(module_value) {
             dec_ref_bits(py, bits);
@@ -284,7 +564,16 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let value = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             let value_ptr = obj_from_bits(value).as_ptr().unwrap();
-            let source = crate::molt_itertools_repeat(value, MoltObject::from_int(900).bits());
+            let source = crate::test_support::with_public_type_class(
+                crate::molt_itertools_repeat_type,
+                |public_class| {
+                    crate::molt_itertools_repeat_new(
+                        public_class,
+                        value,
+                        MoltObject::from_int(900).bits(),
+                    )
+                },
+            );
             // Measure the same source protocol independently. Repeat currently
             // takes generic descriptor dispatch, whose temporary allocations
             // belong to source advancement rather than tee cache storage.
@@ -447,13 +736,10 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             // Both profiles call these same exports: reduced builds include the
             // source in-tree, while edge/full builds use the satellite bridge.
-            for (get, minimum_owners) in [
-                (crate::molt_itertools_kwd_mark as extern "C" fn() -> u64, 2),
-                (
-                    crate::molt_itertools_repeat_type as extern "C" fn() -> u64,
-                    3,
-                ),
-            ] {
+            for (get, minimum_owners) in [(
+                crate::molt_itertools_repeat_type as extern "C" fn() -> u64,
+                3,
+            )] {
                 let first = get();
                 assert!(!exception_pending(py));
                 let ptr = obj_from_bits(first).as_ptr().expect("cached heap result");
@@ -489,7 +775,7 @@ mod tests {
             let shape = ObjectShapeId::ItertoolsCount;
             let class_bits = alloc_itertools_class(
                 py,
-                "count",
+                "",
                 24,
                 shape,
                 crate::molt_itertools_iter_self as *const () as usize as u64,
@@ -499,6 +785,11 @@ mod tests {
             let class_ptr = obj_from_bits(class_bits)
                 .as_ptr()
                 .expect("itertools class allocation must succeed");
+            assert_eq!(
+                crate::string_obj_to_owned(obj_from_bits(unsafe { class_name_bits(class_ptr) }))
+                    .as_deref(),
+                Some("count")
+            );
             assert_eq!(
                 unsafe { crate::object::class_instance_shape_id(class_ptr) },
                 shape
@@ -519,8 +810,26 @@ mod tests {
                 value
             }
             let value = MoltObject::from_int(17).bits();
-            let repeat = crate::molt_itertools_repeat(value, MoltObject::from_int(2).bits());
-            let count = crate::molt_itertools_count(value, MoltObject::from_int(3).bits());
+            let repeat = crate::test_support::with_public_type_class(
+                crate::molt_itertools_repeat_type,
+                |public_class| {
+                    crate::molt_itertools_repeat_new(
+                        public_class,
+                        value,
+                        MoltObject::from_int(2).bits(),
+                    )
+                },
+            );
+            let count = crate::test_support::with_public_type_class(
+                crate::molt_itertools_count_type,
+                |public_class| {
+                    crate::molt_itertools_count_new(
+                        public_class,
+                        value,
+                        MoltObject::from_int(3).bits(),
+                    )
+                },
+            );
             assert!(!exception_pending(py));
             let repeat_class =
                 unsafe { object_class_bits(obj_from_bits(repeat).as_ptr().unwrap()) };
@@ -629,7 +938,10 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let int = |value| MoltObject::from_int(value).bits();
-            let count = crate::molt_itertools_count(int(5), int(2));
+            let count = crate::test_support::with_public_type_class(
+                crate::molt_itertools_count_type,
+                |public_class| crate::molt_itertools_count_new(public_class, int(5), int(2)),
+            );
             let source = MoltObject::from_ptr(alloc_tuple(py, &[int(1)])).bits();
             let tees = crate::molt_itertools_tee(source, int(1));
             assert!(!exception_pending(py));

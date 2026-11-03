@@ -473,7 +473,7 @@ fn explicit_object_defaults_mutate_managed_storage_without_projection() {
                 crate::builtin_classes(py).list,
             ] {
                 let class = attribute_class(py, base, false);
-                let receiver = snapshot_receiver(py, class, false);
+                let receiver = snapshot_receiver(py, class);
                 let pointer = obj_from_bits(receiver).as_ptr().unwrap();
                 let field = crate::dynamic_attr_name_bits(py, b"unprojected_object_field").unwrap();
                 CALLS.with(|calls| calls.set([0; 6]));
@@ -657,7 +657,7 @@ fn managed_mutation_projection_profile() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let class = snapshot_class(py, b"MutationProjectionProfile");
-            let receiver = snapshot_receiver(py, class, false);
+            let receiver = snapshot_receiver(py, class);
             let pointer = obj_from_bits(receiver).as_ptr().unwrap();
             let name = crate::dynamic_attr_name_bits(py, b"profile_field").unwrap();
             let setter =

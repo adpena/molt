@@ -443,6 +443,16 @@ module stores (HF-276).
   sources. Sources:
   https://github.com/python/cpython/blob/v3.12.0/Lib/importlib/_bootstrap_external.py,
   https://github.com/python/cpython/blob/v3.12.0/Lib/zipfile/__init__.py.
+- *CPython public-object identity.* [F] A module-level builtin reduces to its
+  name, so pickle stores it by reference (`meth_reduce`,
+  `Objects/methodobject.c`). A static type's spec name splits at its last dot
+  into `__module__` and `__qualname__` (`typeobject.c`); `functools.partial`
+  and `itertools.chain` are types with those spec names, and
+  `partial_reduce` returns `(type, (func,), state)`. The pure-Python twin is a
+  type too (`class partial`, `Lib/functools.py`). Sources:
+  https://github.com/python/cpython/blob/v3.12.0/Objects/methodobject.c,
+  https://github.com/python/cpython/blob/v3.12.0/Modules/_functoolsmodule.c,
+  https://github.com/python/cpython/blob/v3.12.0/Modules/itertoolsmodule.c.
 
 **Adopt.** [I] Generate the frozen set per CPython version from
 `freeze_modules.py` and give it precedence in the import authority (HF-558).
@@ -451,6 +461,60 @@ substitutes (HF-559). Admit discovered packages through one typed policy
 modeled on `collect_submodules` (HF-578). Serve resources through
 `TraversableResources` over the compiled payload (HF-383).
 `docs/design/foundation/import_bedrock_frozen_module_layer.md` owns the store.
+Each public stdlib object takes its kind, name, qualname and module from one
+declaration, checked against a host-CPython census; types stay types
+(HF-647, HF-665).
+
+The declaration is `runtime/molt-runtime/src/intrinsics/public_objects.toml`.
+`tools/gen_intrinsics.py` projects its closed kind, name, qualname, module,
+publication sites and native constructor signatures into Python and Rust.
+The runtime registry and the WASM callable publication table carry the same
+`PublicObjectId`; neither owns another spelling table. Python-function rows
+produce compiled Python wrappers. Intrinsic-backed public builtin functions
+share the registry's materialization across compiled acquisitions and later
+provider imports. This lets core `copyreg` retain the canonical union-recipe
+callables without importing `functools` or `operator` into the micro graph.
+Internal implementation handles remain private to their compiled callers.
+Adapted builtins declare a unique compiled producer and reuse the native
+callable promotion already used by `_io` and `_locale`; they retain their
+source binder without another wrapper callable.
+The census shares its observation code between each `-I -S` host oracle and
+a fresh compiled process. Host probes restore only the standard builtin
+site objects, without loading site packages. Application entry points such as
+`idlelib.idle` are excluded (its pinned `idle.py` unconditionally calls `pyshell.main`).
+Native-type rows produce cached class getters
+and explicit-class constructors, so ordinary construction and subclassing use
+the existing class call binder. Instance shapes select their declared identity;
+bridge profiles share the implementation rather than reconstructing its names.
+Native function signatures use that same projection and ordinary binder:
+variadic math inputs become one tuple ABI argument, keyword-only arguments keep
+their declared defaults, and positional-only names reject keyword binding.
+Registry reuse proves every generated signature field and the public identity.
+The compiler-owned intrinsic ABI remains fully positional; source publication
+and its callers use the public binder. `reduce` omission uses the canonical
+Missing singleton, independently of the functools cache-key marker, and only
+the Python 3.14 target accepts `initial` as a keyword.
+When two modules export the same native function, generated reexports import
+that object from its declared publisher. `_functools` publishes `reduce` and
+`cmp_to_key`; `functools` imports them without a cycle or another materialization.
+Cached native type getters already share their class object.
+
+Partial state normalization copies tuple and dictionary subclasses at the same
+boundary as CPython's `partial_setstate`, then publishes and releases each field
+in order so reentrant finalizers observe the same transitions. Its native
+`__dict__` descriptor owns the admitted Python 3.12 source's legacy arbitrary-object
+slot; the pinned 3.13.17 source and 3.14 reject that state (the original 3.13.0
+source differs, so the source pin and exact interpreter matter). Ordinary dictionary storage admission remains
+strict. Cycle retains its source lazily in its existing owned edge and uses a
+closed saving/restored-source/replaying phase; it does not add a resource owner.
+
+`tools/cpython_census/public_objects.py` observes each shipped module in a fresh
+CPython process and can emit static-import compiled consumers. The checked-in
+3.12 and 3.14 Darwin fixtures retain import failures and exclusions as evidence.
+They are host observations, not a portability or compiled-equivalence claim.
+`tests/test_gen_intrinsics.py` checks every declared publication against those
+independent observations. The public-consumer proof cells own compiled behavior;
+the V1 ledger owns outstanding gaps and release qualification.
 
 **Refuse.** [I] Run-time hook code that patches modules, and any pretence of a
 module the build did not admit.

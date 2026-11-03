@@ -14,7 +14,7 @@ import functools as _host_functools
 import importlib.util
 import sys
 from tests.stdlib_intrinsic_registry import (
-    install_registry, struct_sequence_intrinsics, bind_struct_sequence_module
+    install_registry, struct_sequence_intrinsics, bind_struct_sequence_module, record_builtin_promotion
 )
 
 
@@ -146,24 +146,7 @@ def _functools_wraps(wrapped, assigned, updated):
     return _decorator
 
 
-def _functools_partial(func, args, kwargs):
-    def _wrapped(*more_args, **more_kwargs):
-        merged = dict(kwargs)
-        merged.update(more_kwargs)
-        return func(*args, *more_args, **merged)
 
-    return _wrapped
-
-
-def _functools_reduce(function, iterable, initializer):
-    iterator = iter(iterable)
-    if initializer is _KW_MARK:
-        acc = next(iterator)
-    else:
-        acc = initializer
-    for item in iterator:
-        acc = function(acc, item)
-    return acc
 
 
 def _functools_lru_cache(user_function, maxsize, typed, cache_info_type):
@@ -202,6 +185,7 @@ _TIME_SLEEPS = []
 
 _NATIVE_RECORDS = struct_sequence_intrinsics()
 install_registry({{
+    "molt_function_set_builtin": record_builtin_promotion,
     **_NATIVE_RECORDS,
     "molt_time_monotonic": lambda: 1.25,
     "molt_time_monotonic_ns": lambda: 125,
@@ -295,8 +279,8 @@ install_registry({{
     "molt_functools_kwd_mark": lambda: _KW_MARK,
     "molt_functools_update_wrapper": _functools_update_wrapper,
     "molt_functools_wraps": _functools_wraps,
-    "molt_functools_partial": _functools_partial,
-    "molt_functools_reduce": _functools_reduce,
+    "molt_functools_partial_type": lambda: _host_functools.partial,
+    "molt_functools_reduce": _host_functools.reduce,
     "molt_functools_lru_cache": _functools_lru_cache,
     "molt_functools_singledispatch_new": _sd_new,
     "molt_functools_singledispatch_register": _sd_register,
@@ -355,12 +339,14 @@ checks = {{
         and time_mod.get_clock_info("time").implementation == "stub"
         and _TIME_SLEEPS == [0.25]
         and _ASYNC_SLEEPS == []
+        and not hasattr(time_mod, "timegm")
+        and not any(name in vars(time_mod) for name in ("Any", "TYPE_CHECKING", "ClockInfo"))
         and "molt_time_monotonic" not in time_mod.__dict__
         and "molt_async_sleep" not in time_mod.__dict__
         and "molt_capabilities_has" not in time_mod.__dict__
     ),
     "contextlib": (
-        contextlib_mod.nullcontext("x") == "x"
+        contextlib_mod.nullcontext("x").__enter__() == "x"
         and entered is True
         and closer.closed is True
         and "molt_context_null" not in contextlib_mod.__dict__
@@ -383,7 +369,7 @@ checks = {{
     "functools": (
         partial_add(5) == 9
         and functools_mod.reduce(_adder, [1, 2, 3], 0) == 6
-        and "molt_functools_partial" not in functools_mod.__dict__
+        and "molt_functools_partial_type" not in functools_mod.__dict__
         and "molt_functools_cmp_to_key" not in functools_mod.__dict__
     ),
 }}

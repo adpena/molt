@@ -14,7 +14,6 @@ from molt.frontend._types import (
     BuiltinClass,
     ClassId,
     ClassInfo,
-    DeclaredClass,
     MethodInfo,
     MoltOp,
     MoltValue,
@@ -166,76 +165,6 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             for idx, cell in spills:
                 values[idx] = self._consume_scratch_cell(cell)
         return values
-
-    def _try_emit_static_dataclass_constructor(
-        self,
-        node: ast.Call,
-        class_id: ClassId,
-        class_info: ClassInfo,
-        class_ref: MoltValue,
-    ) -> MoltValue | None:
-        dataclass_params = class_info.get("dataclass_params", {})
-        field_order = class_info.get("field_order", [])
-        methods = class_info.get("methods", {})
-        if not isinstance(dataclass_params, dict) or not isinstance(field_order, list):
-            return None
-        if (
-            class_info.get("dynamic")
-            or not class_info.get("constructor_binding_proven")
-            or class_info.get("slots")
-            or class_info.get("custom_metaclass")
-            or class_info.get("decorated")
-            or class_info.get("class_attrs")
-            or not dataclass_params.get("init", True)
-            or dataclass_params.get("kw_only", False)
-            or class_info.get("dataclass_init_requires_binding")
-            or methods.get("__init__") is not None
-            or methods.get("__post_init__") is not None
-            or methods.get("__setattr__") is not None
-            or methods.get("__getattribute__") is not None
-            or node.keywords
-            or any(isinstance(arg, ast.Starred) for arg in node.args)
-            or len(node.args) != len(field_order)
-        ):
-            return None
-
-        values = self._emit_call_args(list(node.args))
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[class_id.name], result=name_val))
-        field_name_vals: list[MoltValue] = []
-        for field in field_order:
-            field_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[field], result=field_val))
-            field_name_vals.append(field_val)
-        field_names_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(
-            MoltOp(kind="TUPLE_NEW", args=field_name_vals, result=field_names_tuple)
-        )
-        flags = 0
-        if class_info.get("frozen"):
-            flags |= 0x1
-        if class_info.get("repr"):
-            flags |= 0x4
-        if class_info.get("slots"):
-            flags |= 0x8
-        flags_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[flags], result=flags_val))
-        res = MoltValue(self.next_var(), type_hint=DeclaredClass(class_id))
-        self.emit(
-            MoltOp(
-                kind="DATACLASS_NEW_VALUES",
-                args=[name_val, field_names_tuple, flags_val] + values,
-                result=res,
-            )
-        )
-        self.emit(
-            MoltOp(
-                kind="DATACLASS_SET_CLASS",
-                args=[res, class_ref],
-                result=MoltValue("none"),
-            )
-        )
-        return res
 
     def _emit_inline_expression(
         self, expression: ast.expr, bindings: dict[str, MoltValue]

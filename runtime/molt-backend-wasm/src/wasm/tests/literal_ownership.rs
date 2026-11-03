@@ -267,11 +267,6 @@ fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
         (molt_ir::OpKind::DictNew, vec![]),
         (molt_ir::OpKind::DictNew, vec!["p2", "p4"]),
         (molt_ir::OpKind::DictNew, vec!["p0", "p1", "p2", "p1"]),
-        (molt_ir::OpKind::DataclassNewValues, vec!["p0", "p1", "p2"]),
-        (
-            molt_ir::OpKind::DataclassNewValues,
-            vec!["p0", "p1", "p2", "p3", "p4"],
-        ),
     ] {
         for (shape, out) in [
             ("absent", None),
@@ -331,8 +326,7 @@ for (const test of config.cases) {
   assert.ok(!imported.some(name => name.startsWith('list_builder') || name === 'tuple_builder_finish'),
     test.name + ': fixed-arity construction needs no builder custody');
   const values = test.args.map(arg => operands[Number(arg.slice(1))]);
-  const fixed = test.kind === 'dataclass_new_values' ? values.slice(0, 3) : [];
-  const words = test.kind === 'dataclass_new_values' ? values.slice(3) : values;
+  const words = values;
   for (const failure of ['success', 'scratch', 'constructor']) {
     if (failure === 'scratch' && words.length === 0) continue;
     const name = test.name + '/' + failure;
@@ -387,10 +381,6 @@ for (const test of config.cases) {
       },
       tuple_from_values: (ptr, len) => construct(ptr, len),
       list_from_values: (ptr, len) => construct(ptr, len),
-      dataclass_new_from_values: (nameBits, fields, ptr, len, flags) => {
-        assert.deepEqual([nameBits, fields, flags], fixed, name + ': fixed operands');
-        return construct(ptr, len);
-      },
       exception_pending: () => pending ? 1n : 0n,
       dec_ref_obj: bits => {
         if (bits === none) return;
@@ -521,7 +511,6 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
         (molt_ir::OpKind::DictNew, 0, 0),
         (molt_ir::OpKind::SetNew, 0, 0),
         (molt_ir::OpKind::FrozensetNew, 0, 0),
-        (molt_ir::OpKind::DataclassNewValues, 3, 0),
         (molt_ir::OpKind::TupleIndex, 2, 0),
         (molt_ir::OpKind::GetAttrName, 2, 0),
         (molt_ir::OpKind::GenSend, 2, 0),

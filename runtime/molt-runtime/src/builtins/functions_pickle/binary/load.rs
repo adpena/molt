@@ -353,17 +353,14 @@ pub(crate) fn pickle_apply_newobj(
     Ok(out_bits)
 }
 
-/// Initialize all typed field slots (and dataclass field values) to the missing
+/// Initialize all typed field slots to the missing
 /// sentinel. Called after NEWOBJ to ensure fields not populated by BUILD are
 /// correctly absent.
 fn pickle_init_missing_fields(_py: &crate::PyToken<'_>, inst_bits: u64) {
     let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
         return;
     };
-    let type_id = unsafe { object_type_id(inst_ptr) };
-    if unsafe { crate::object::object_has_class_shape(inst_ptr) }
-        || type_id == crate::TYPE_ID_DATACLASS
-    {
+    if unsafe { crate::object::object_has_class_shape(inst_ptr) } {
         unsafe { crate::object::field_storage::reset(_py, inst_ptr) };
     }
 }

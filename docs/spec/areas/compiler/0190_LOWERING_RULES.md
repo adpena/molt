@@ -20,6 +20,80 @@ do not require per-function frontend binding lists. Native exports still require
 their declared callable ABI metadata. This rule is independent of target/backend
 and does not broaden import admission or the verified subset.
 
+## Dataclass initializers
+
+The dataclass transform owns the executed field/signature schema. For an exact
+or finite possible dataclass decorator binding, the frontend projects a candidate ordinary function
+through its existing AST/function pipeline. Exact binding remains required for
+class-layout classification; a possible binding authorizes only a proposal.
+The class retains that candidate
+privately until transformation; no temporary Python attribute or constructor
+bypass is installed. An unused proposal is cleared after the innermost decorator
+without extending its input class through outer decorators. Decoration compares
+the actual schema before selecting the
+candidate, so class-body, descriptor, metaclass and subclass callbacks can change
+annotations or defaults without selecting stale code. Defaults and factories are
+captured from the executed transform, never evaluated again from the source AST.
+A non-class metaclass result declines candidate storage and reaches the real
+decorator's validation. The transform captures its module globals before field
+callbacks; an absent module supplies an empty namespace with normal builtins.
+Environment capture reads the selected module dictionary through
+`molt_dataclasses_init_globals`; it does not publish an arbitrary namespace
+writer. The function-construction boundary supplies only a missing
+`__builtins__` key from the captured builtins module, matching CPython's generated
+function `exec`. Existing entries and the captured dictionary's identity survive
+field callbacks. Neither this read nor the initializer's lexical captures
+requires activating unrelated module bodies or their deferred imports.
+
+An initializer has ordinary parameters, keyword defaults, cells and attribute
+stores. It is the same function for construction, direct `__init__`, inherited
+and `super` calls, `replace` and `make_dataclass`. Its normal binder rejects bad
+arguments before the first factory. Field metadata mutation after decoration
+does not rewrite the initializer. Non-slotted init-disabled ordinary defaults
+remain class attributes; factories and slotted defaults initialize instances.
+Frozen writes use the captured base object's `__setattr__` protocol.
+Instances use ordinary class storage. Dataclass-specific heap tags, field
+vectors and allocation/access operations are retired; slots and dictionaries
+have the same layout, ownership and descriptor authorities as other classes.
+The shared generic write-site cache admits dictionary storage when the real
+class has the default mutation protocol, no class attribute of that name and
+no inferred field. Its class/type-version guard invalidates descriptor or
+custom-setter changes. Hits use the canonical dictionary transaction and its
+live backing, including first insertion, replacement and callback ownership.
+Annotation markers use actual identities; private marker attributes and
+same-spelled user classes cannot classify a field as InitVar or keyword-only.
+Default ordering uses sentinel identity, runs only for a generated initializer,
+and preserves the target Python version's diagnostic.
+
+These field/default rules follow CPython 3.12's
+[`_field_init` and `_init_fn`](https://github.com/python/cpython/blob/v3.12.16/Lib/dataclasses.py).
+String annotations resolve marker prefixes through their defining module's
+actual bindings, without runtime source compilation or evaluation.
+
+Runtime shapes use the same signature/default/capture contract with an immutable,
+index-only body plan retained by the code object. The function owns its mutable
+defaults and lexical cells. Parameter bindings shadow same-named generated
+captures through precomputed, typed argument/cell inputs. Code cloning, function
+reconstruction and code replacement therefore preserve the correct body separately from those captures.
+The runtime body uses the canonical Python frame homes and parameter custody,
+including callback-visible frames and target-version locals mutation. It does
+not partition Fields, format an initializer name or build a values dictionary
+per construction. Static templates and runtime plans both use ordinary class
+dispatch, including metaclass calls, `__new__` and initializer return validation.
+
+This is the HF-668 contract; the performance and release verdict belongs to
+`docs/agent/V1_HANDOFF_FINDINGS.md`. The slice gate compares matched dataclass and
+plain-class instruction slopes (at most 1.10), and does not establish the V1
+per-primitive CPython budget. Required execution cells include native and WASM;
+serializer checks alone do not qualify either target.
+
+A finite possible user-class binding selects ordinary builder transport and
+the existing generic call-site cache. It does not prove that a decorator's
+result is a class: function and other callable results retain their real
+binding behavior. The callee is captured before argument callbacks, just as
+for fixed-arity generic transport. No class allocation or initializer call is
+emitted separately from the canonical runtime class protocol.
+
 ## Runtime protocol and exception identity
 
 An `await` operand is an ordinary Python expression. Its callable, argument
@@ -926,14 +1000,14 @@ boxes stay owned until construction ends, so a shared box is never released
 while a later entry borrows it. Fixed boxed LLVM container operations use the shared runtime
 call emitter; specialized builders and out-buffer protocols retain explicit
 custody for their additional resources.
-Fixed-arity lists, tuples and dataclass field values use canonical runtime constructors
-that borrow a contiguous word range (`molt_list_from_values`, `molt_tuple_from_values`,
-`molt_dataclass_new_from_values`). The constructor refuses to allocate while an
+Fixed-arity lists and tuples use canonical runtime constructors
+that borrow a contiguous word range (`molt_list_from_values`, `molt_tuple_from_values`).
+The constructor refuses to allocate while an
 exception is pending, copies and retains every word in one constructor transaction, and
 returns None only with an exception pending, so no builder owner, per-element
 failure branch or partial publication exists. Native Cranelift passes a stack
-slot and LLVM one static entry-block slot (as for unpack, class-definition and
-dataclass ranges), so construction in a loop never grows the stack. WASM passes
+slot and LLVM one static entry-block slot (as for unpack and class-definition
+ranges), so construction in a loop never grows the stack. WASM passes
 a scratch allocation private to that one construction and freed before the next
 operation; no static buffer is shared with a reentrant callback, another
 activation or another thread. Dynamic streaming construction retains the list
