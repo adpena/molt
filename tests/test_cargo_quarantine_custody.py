@@ -974,7 +974,10 @@ pub fn hold(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     std::fs::write(root.join("rustc-ready.tmp"), std::process::id().to_string()).unwrap();
     std::fs::rename(root.join("rustc-ready.tmp"), root.join("rustc-ready")).unwrap();
-    while !root.join("release").exists() {
+    // Bounded: a test killed before its release must not leave this rustc
+    // holding Cargo's locks on the gate host.
+    let start = std::time::Instant::now();
+    while !root.join("release").exists() && start.elapsed().as_secs() < 60 {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     proc_macro::TokenStream::new()
