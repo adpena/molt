@@ -1344,6 +1344,7 @@
         "docs/spec/STATUS.md",
         "docs/agent/AGENTS.full.md",
         "tests/proof_queue_owned_roots.py",
+        "tests/fixtures/guard_scratch_v*.py",
         "tests/cli/test_cli_smoke.py/**",
         "tests/test_durable_identity_state_machine.py/**",
         "tests/test_dx_run_context.py/**",

@@ -448,7 +448,7 @@ def _probe_source_build_python(
         errors="replace",
         check=False,
         env=ProcessEnvironment(probe_environment),
-        timeout=120,
+        timeout=python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
