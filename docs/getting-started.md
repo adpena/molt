@@ -66,6 +66,10 @@ It does not upgrade existing system tools or reset an existing checkout.
 Missing C tools are reported with installation guidance; system installation
 remains an operator step. See [farm provisioning](design/trunk_loop.md#provision-before-testing)
 for physical disk admission and the WSL settings boundary.
+The Mac landing runner can opt into Linux gate execution with
+`MOLT_LANDING_GATE_HOST=molt-gate`; see the
+[remote landing contract](design/trunk_loop.md#opt-in-remote-landing-gates).
+The Mac continues to own the queue, merge and push.
 
 For the LLVM backend, follow the [pinned SDK contract](spec/areas/tooling/0001-toolchains.md#canonical-llvm-sdk-readiness);
 default admission requires its managed installation and reports the bootstrap

@@ -33,6 +33,7 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
                     "config": "[wsl2]\nmemory=24GB\nswap=4GB\nvmIdleTimeout=-1\n",
                     "disk_bytes": 80 * 1024**3,
                     "vhdx": host.wsl_vhdx,
+                    "pending": False,
                 }
             )
 
@@ -40,6 +41,8 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
             scripts.append(script)
             if "lsblk -bdno SIZE" in script:
                 return str(80 * 1024**3)
+            if script.startswith("df -Pk / |"):
+                return str(2 * 1024**2)
             if script.startswith("$d=Get-PSDrive"):
                 return json.dumps({"free": 30 * 1024**3})
             if script.startswith(("df -Pk", "p=")):
@@ -70,30 +73,105 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
         assert any(script.startswith("df -Pk /mnt/c ") for script in scripts)
 
 
-def test_settings_stop_precedes_install_and_capacity(monkeypatch):
+@pytest.mark.parametrize("used_gib", [61, 81])
+def test_used_budget_refuses_before_disk_mutation(used_gib):
     class Transport:
-        def windows_command(self, _script):
+        def windows_command(self, script):
+            assert "Get-ChildItem" in script
             return json.dumps(
                 {
                     "config": "[wsl2]\nmemory=24GB\nswap=4GB\nvmIdleTimeout=-1\n",
                     "disk_bytes": 1024**4,
+                    "pending": False,
                 }
             )
 
         def shell_command(self, script, **_kwargs):
-            # Even if a filesystem is shrunk separately, its block device is
-            # still the full 1 TiB: only the latter can prove the VHD cap.
-            assert "lsblk -bdno SIZE" in script
-            assert "findmnt -bno SIZE" not in script
-            return str(1024**4)
+            if "lsblk -bdno SIZE" in script:
+                return str(1024**4)
+            assert script.startswith("df -Pk / |")
+            return str(used_gib * 1024**2)
 
-    with pytest.raises(
-        ValueError, match="Windows settings change required.*--resize 80GB"
-    ):
-        trunk_loop.provision_host(
-            SimpleNamespace(inventory=cross_run.DEFAULT_INVENTORY, host="molt-gate"),
-            transport=Transport(),
+    with pytest.raises(ValueError, match="used bytes.*exceeds 80 GiB disk budget"):
+        trunk_loop.admit_wsl_profile(
+            host_named("molt-gate"), Transport(), provision_disk=True
         )
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_wsl_shrink_trim_compact_then_readmit_and_second_admission_does_nothing(
+    interrupted,
+):
+    events = []
+    disk = 1024**4
+    pending = False
+    fail_compact = interrupted
+
+    class Transport:
+        def windows_command(self, script, **kwargs):
+            nonlocal disk, pending, fail_compact
+            if "Get-ChildItem" in script:
+                return json.dumps(
+                    {
+                        "config": "[wsl2]\nmemory=24GB\nswap=4GB\nvmIdleTimeout=-1\n",
+                        "pending": pending,
+                    }
+                )
+            if script == "wsl.exe --version":
+                return "WSL version: 3.0.3.0"
+            events.append(script)
+            assert "sparse" not in script
+            assert "MoltCodonUbuntu" not in script
+            assert (
+                script.index("--terminate")
+                < script.index("--list --running --quiet")
+                < script.index("if ($running.Count)")
+                < script.index("--shutdown")
+                < script.index("--manage")
+            )
+            if "--resize 80GB" in script:
+                assert "WriteAllText" in script
+                pending = True
+                assert "--terminate 'molt-gate'" in script
+                disk = 80 * 1024**3
+            else:
+                assert "--user root -- fstrim -av" in script
+                assert (
+                    script.index("fstrim")
+                    < script.index("--terminate")
+                    < script.index("--compact")
+                )
+                if fail_compact:
+                    fail_compact = False
+                    raise RuntimeError("compaction interrupted")
+                assert "Remove-Item -LiteralPath" in script
+                pending = False
+            return ""
+
+        def shell_command(self, script):
+            if "lsblk -bdno SIZE" in script:
+                return str(disk)
+            if "flock -n" in script:
+                return ""
+            assert script.startswith("df -Pk / |")
+            return str(2 * 1024**2)
+
+    transport = Transport()
+    if interrupted:
+        with pytest.raises(RuntimeError, match="compaction interrupted"):
+            trunk_loop.admit_wsl_profile(
+                host_named("molt-gate"), transport, provision_disk=True
+            )
+        assert pending
+    first = trunk_loop.admit_wsl_profile(
+        host_named("molt-gate"), transport, provision_disk=True
+    )
+    second = trunk_loop.admit_wsl_profile(
+        host_named("molt-gate"), transport, provision_disk=True
+    )
+    assert first == second
+    assert first["disk_bytes"] == 80 * 1024**3
+    assert len(events) == (3 if interrupted else 2)
 
 
 def test_low_physical_space_refuses_before_install():
