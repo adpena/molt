@@ -1034,7 +1034,12 @@ def test_actual_cargo_held_profile_locks_defer_recovery(
                     ],
                     cwd=tmp_path,
                     env=env,
-                    timeout=40,
+                    # A hang bound only: Cargo first compiles the held-rustc
+                    # proc-macro, then holds rustc while the test samples
+                    # (capped at 60 s). Under landing-gate load the
+                    # build-script variant exceeded 40 s (try run
+                    # 20261103T114201Z, HF-623).
+                    timeout=240,
                     capture_output=True,
                     text=True,
                 )
@@ -1055,7 +1060,8 @@ def test_actual_cargo_held_profile_locks_defer_recovery(
     worker = threading.Thread(target=run)
     worker.start()
     try:
-        deadline = time.perf_counter() + 25
+        # Ready waits for the proc-macro compile; same cause as Cargo's bound.
+        deadline = time.perf_counter() + 180
         while (
             not ready.exists() and worker.is_alive() and time.perf_counter() < deadline
         ):
@@ -1097,7 +1103,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(
         assert any("coordinate is active" in error for error in receipt.errors)
     finally:
         release.write_text("release", encoding="utf-8")
-        worker.join(timeout=45)
+        worker.join(timeout=260)
     assert not worker.is_alive()
     assert len(outcome) == 1 and not isinstance(outcome[0], BaseException)
     assert outcome[0].returncode == 0, outcome[0].stderr
