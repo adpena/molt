@@ -780,6 +780,11 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
             *(["op-kind-registry"] if reads_op_kind_sources else []),
             "rust-clippy-changed",
             "tir-midend",
+            *(
+                ["pending-call-source-authority"]
+                if path == "runtime/molt-ir/src/tir/ops.rs"
+                else []
+            ),
         ]
     rule = next(rule for rule in matched if rule.name == "tir-midend")
     assert set(rule.gates) <= set(gates)
@@ -904,6 +909,7 @@ def test_committed_source_checks_precede_complete_native_build_selection():
         "native-object-emission",
         "backend-luau",
         "tir-midend",
+        "pending-call-source-authority",
     ]
     lint_gate = (
         "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
@@ -949,6 +955,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry():
         "rust-clippy-changed",
         "backend-luau",
         "tir-midend",
+        "pending-call-source-authority",
     ]
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_op_kinds.py --check" not in gates
