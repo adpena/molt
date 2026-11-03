@@ -105,9 +105,17 @@ class LandingStatus(StrEnum):
 
 
 class PostsubmitStatus(StrEnum):
+    """Main's health verdict (docs/design/landing_queue.md, HF-655).
+
+    Only RED implicates main's commits: a ``CandidateFailure``, such as a
+    gate's own failure or a failing test in this run's JUnit. A runner, guard
+    or storage stop with no such evidence is INCONCLUSIVE.
+    """
+
     GREEN = "green"
     RED = "red"
     CANCELLED = "cancelled"
+    INCONCLUSIVE = "inconclusive"
 
 
 def last_green(git) -> str | None:
@@ -157,7 +165,11 @@ def recent_postsubmit_failures(
         match PostsubmitStatus(record["status"]):
             case PostsubmitStatus.RED:
                 failed.update(dict.fromkeys(record["failing_tests"]))
-            case PostsubmitStatus.GREEN | PostsubmitStatus.CANCELLED:
+            case (
+                PostsubmitStatus.GREEN
+                | PostsubmitStatus.CANCELLED
+                | PostsubmitStatus.INCONCLUSIVE
+            ):
                 pass
             case state:
                 assert_never(state)
@@ -219,6 +231,7 @@ def _run_postsubmit_gates(
     from molt.dx import RunContext
     from tools.molt_dev_policy import select_landing_gates
     from tools.molt_dev_gates import (
+        CancelReason,
         admit_selected_output_capacity,
         gate_runs_pytest,
         run_selected_gates,
@@ -258,6 +271,7 @@ def _run_postsubmit_gates(
         receipt_kind="postsubmit",
         mode=LandingMode.POSTSUBMIT,
         cancelled=cancelled,
+        cancel_reason=CancelReason.PENDING_LANDING,
         deferred=prepared.deferred,
     )
     runtime = replace(runtime, output_dir=output, receipt_path=output / "receipt.json")
@@ -326,7 +340,9 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
         deferred = list(_run_postsubmit_gates(sandbox, head, green, cancelled, output))
         failed = _postsubmit_failures(output, sandbox.repo)
         if failed:
-            raise DriverError("passing gates contain failing pytest reports")
+            # This run's own JUnit lists failing tests: a failing test is a
+            # failure of main, even when its gate's command passed.
+            raise CandidateFailure("passing gates contain failing pytest reports")
         git.fetch(args.remote, args.branch)
         if cancelled() or git.rev_parse(f"{args.remote}/{args.branch}") != head:
             state = PostsubmitStatus.CANCELLED
@@ -337,16 +353,23 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             state = PostsubmitStatus.GREEN
     except GateCancellation as exc:
         state, error = PostsubmitStatus.CANCELLED, str(exc)
-    except (DriverError, OSError, ValueError) as exc:
+    except CandidateFailure as exc:
+        # Main's own commits decided this failure (a gate failed for its own
+        # reason, or main's gate policy is invalid).
         state, error = PostsubmitStatus.RED, str(exc)
+    except (DriverError, OSError, ValueError) as exc:
+        # A runner, guard or storage stop cannot implicate main's commits.
+        state, error = PostsubmitStatus.INCONCLUSIVE, str(exc)
     if state is not PostsubmitStatus.GREEN:
         try:
             deferred = read_deferred()
             failed = _postsubmit_failures(output, sandbox.repo)
         except (DriverError, OSError, ValueError) as exc:
+            # The receipt records the read error; the verdict stands.
             error = f"{error}; {exc}"
-            if state is not PostsubmitStatus.CANCELLED:
-                state = PostsubmitStatus.RED
+    if state is not PostsubmitStatus.RED:
+        # Only a candidate failure implicates commits or proposes reverts.
+        suspects, reverts = [], []
     _write_json(
         receipt,
         {
@@ -382,6 +405,8 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             )
         case PostsubmitStatus.CANCELLED:
             _step("postsubmit cancelled; landing takes priority")
+        case PostsubmitStatus.INCONCLUSIVE:
+            _warn(f"postsubmit inconclusive at {head}: {error}; receipt {receipt}")
         case _:
             assert_never(state)
     return state
@@ -827,25 +852,40 @@ def cmd_land(args: argparse.Namespace) -> int:
             f"{git.short(head)} is already on {args.remote}/{args.branch}; checkout retained"
         )
         return EXIT_OK
+    precheck = None
     if not already_landed and not args.no_precheck:
-        from tools.molt_dev_precheck import precheck_landing
+        from tools.molt_dev_precheck import precheck_landing, repair_landing
 
-        precheck_landing(
-            git,
-            repo,
-            head=head,
-            upstream=upstream,
-            session_id=os.environ.get("MOLT_SESSION_ID", "devtool"),
+        session_id = os.environ.get("MOLT_SESSION_ID", "devtool")
+        # The repair commit is the lane's new tip; the precheck and the
+        # request take it, never the stale tip.
+        head = repair_landing(
+            git, repo, head=head, upstream=upstream, session_id=session_id
+        )
+        precheck = precheck_landing(
+            git, repo, head=head, upstream=upstream, session_id=session_id
         )
     if args.precheck_only:
         # A worker's handoff check: the same controller, selection and gate
         # environment as a landing, and no queue state or runner.
+        if precheck is not None and not precheck.complete:
+            _fail(f"precheck incomplete for {git.short(head)}; nothing queued")
+            return EXIT_FAIL
         _ok(
             f"{git.short(head)} is already on {args.remote}/{args.branch}; nothing to check"
             if already_landed
             else f"precheck passed for {git.short(head)}; nothing queued"
         )
         return EXIT_OK
+    if args.candidate_controller and not _runner_lock_free(paths):
+        # A running runner is main's pinned controller: it would take this
+        # request and refuse the candidate's own plan, so queue nothing.
+        _fail(
+            "a landing runner holds the queue, and it would land this request "
+            "with main's controller; wait until `molt_dev.py queue status` "
+            "shows it idle, then run land --candidate-controller again"
+        )
+        return EXIT_FAIL
     request = enqueue(paths, head=head, worktree=repo, branch=branch)
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
@@ -1316,7 +1356,9 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
                 case PostsubmitStatus.GREEN:
                     _ok("landing queue is empty; main is green")
                     return EXIT_OK
-                case PostsubmitStatus.RED:
+                case PostsubmitStatus.RED | PostsubmitStatus.INCONCLUSIVE:
+                    # An inconclusive run waits for an explicit `queue run`;
+                    # the runner does not retry infrastructure in a loop.
                     return EXIT_FAIL
                 case PostsubmitStatus.CANCELLED:
                     # A request may have withdrawn, or upstream may have moved
@@ -1428,14 +1470,15 @@ def add_queue_arguments(
     precheck.add_argument(
         "--no-precheck",
         action="store_true",
-        help="queue without first running the lane's static gates in the lane "
+        help="queue without first repairing the lane and running its precheck "
         "(the batch still runs every gate)",
     )
     precheck.add_argument(
         "--precheck-only",
         action="store_true",
-        help="run the lane's static gates exactly as land does, then stop: "
-        "nothing is queued and no runner starts (a worker's handoff check)",
+        help="repair and precheck the lane exactly as land does, then stop: "
+        "nothing is queued and no runner starts (a worker's handoff check); "
+        "a precheck the budget cut short exits 1",
     )
     add_pinned_controller_arguments(p_land)
     p_land.set_defaults(func=cmd_land)

@@ -716,6 +716,11 @@ inventory reads until the Job is empty; even a short-lived unseen child changes
 that generation. A changed generation, unknown arguments or an unfenced POSIX
 snapshot leaves recovery uncertain and preserves the global stop. Missing
 observations alone cannot establish that state.
+A closed command killed before the guard observed any compiler records
+`unobserved`: recovery acts only on observed compilers, so nothing is moved,
+and no inventory is required. Rustc's incremental session protocol owns any
+session directory an unseen compiler left: rustc loads only finalized
+sessions and deletes unlocked unfinalized ones (HF-655).
 Rustc and in-process Clippy share one compiler-argument authority. Unexpanded
 response files and unknown compiler wrappers cannot grant recovery ownership.
 Quarantining an observed cache is insufficient if another compiler's ownership

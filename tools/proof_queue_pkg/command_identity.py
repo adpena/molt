@@ -33,6 +33,7 @@ from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
 from molt.python_environment_identity import (
     PYTHON_CAPTURE_SCHEMA,
+    PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     PythonEnvironmentIdentityError,
     python_environment_executable_files,
     python_identity_probe_arguments,
@@ -881,7 +882,7 @@ def _python_identity(
                 command,
                 cwd=admission._execution_source_paths(envelope, cwd=cwd),
                 env=env,
-                timeout=120.0,
+                timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
             ),
             purpose="proof Python identity probe",
         )

@@ -57,7 +57,18 @@ pub(super) fn emit_op_loop_runtime_call(
         }
     }
 
-    emit_call(func, context.reloc_enabled, context.import_ids[call.import]);
+    if op.is_async_work_poll() {
+        assert_eq!(op.kind, molt_ir::OpKind::ExceptionFinallyPendingObserver);
+        super::super::pending_work::emit_poll(
+            func,
+            context.locals,
+            context.import_ids,
+            context.reloc_enabled,
+            true,
+        );
+    } else {
+        emit_call(func, context.reloc_enabled, context.import_ids[call.import]);
+    }
     if matches!(
         op.kind,
         molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType

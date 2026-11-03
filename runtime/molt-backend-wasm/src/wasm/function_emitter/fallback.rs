@@ -30,7 +30,7 @@ pub(super) fn emit_fallback_function_body(
             frame.dispatch_locals(),
         );
     }
-    frame.emit_entry_initializers(&mut func);
+    frame.emit_entry_initializers(&mut func, import_ids, reloc_enabled);
     frame.emit_guard_profile_flag(&mut func, reloc_enabled, import_ids);
     // All function ABIs preserve pending Python exceptions. Only structured
     // bodies lower authored handlers with WASM EH; dispatch keeps explicit edges.

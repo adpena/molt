@@ -511,22 +511,30 @@ impl SimpleBackend {
             .ops
             .iter()
             .any(|op| matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc));
-        let thread_record_fn = (inline_exception_checks || makes_direct_python_calls).then(|| {
-            import_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                &mut builder,
-                &mut import_refs,
-                "molt_thread_record",
-                &[],
-                &[types::I64],
-            )
-        });
+        let has_async_work_polls = func_ir.ops.iter().any(OpIR::is_async_work_poll);
+        let thread_record_fn = (inline_exception_checks
+            || makes_direct_python_calls
+            || has_async_work_polls)
+            .then(|| {
+                import_func_ref(
+                    &mut self.module,
+                    &mut self.import_ids,
+                    &mut builder,
+                    &mut import_refs,
+                    "molt_thread_record",
+                    &[],
+                    &[types::I64],
+                )
+            });
         let thread_record_slot = thread_record_fn.map(|_| {
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
         });
         // The pending-exception byte is the record's first byte.
         let exc_flag_ptr_slot = thread_record_slot.filter(|_| inline_exception_checks);
+        let work_ptr_slot = has_async_work_polls.then(|| {
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
+        });
+        let pending_work_slots = work_ptr_slot.zip(thread_record_slot);
         let local_profile_struct = needs_field_store_profile.then(|| {
             import_func_ref(
                 &mut self.module,
@@ -660,6 +668,17 @@ impl SimpleBackend {
             let call = builder.ins().call(record_fn_ref, &[]);
             let record = builder.inst_results(call)[0];
             builder.ins().stack_store(pointer_type, record, slot, 0);
+            if let Some(work_slot) = work_ptr_slot {
+                let word_ptr = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::trusted(),
+                    record,
+                    molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
+                );
+                builder
+                    .ins()
+                    .stack_store(pointer_type, word_ptr, work_slot, 0);
+            }
         }
 
         // ── Entry-block variable initialization ──────────────────────────
@@ -1858,6 +1877,7 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
+                        pending_work_slots,
                         &nbc,
                     );
                 }
@@ -1920,6 +1940,7 @@ impl SimpleBackend {
                         local_dec_ref_obj,
                         local_exc_pending_fast,
                         exc_flag_ptr_slot,
+                        pending_work_slots,
                         &maybe_debug_seal,
                         &nbc,
                     );

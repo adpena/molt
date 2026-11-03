@@ -112,8 +112,8 @@ only the targets a BUILD-file edit changes for the same reason.
    costs O(log N) extra runs and the others still land.
 5. **Receipts.** Every candidate leaves one receipt: each command's cell,
    host, duration, peak RSS and result. Longest-first ordering reads it.
-6. **Main health receipts.** Postsubmit records green, red or cancelled in the
-   existing integration evidence store. Failure records order later presubmits;
+6. **Main health receipts.** Postsubmit records green, red, cancelled or
+   inconclusive in the existing integration evidence store. Failure records order later presubmits;
    no verdict reuse or action-record store is implemented here.
 7. **Integration custody.** The existing integration lock, source fences and
    exact-commit push confirmation remain authoritative. No new pre-push hook or
@@ -142,6 +142,18 @@ error. The runner then services the request, and postsubmit selects the newest
 head. A passing run re-fetches main before `git update-ref refs/molt/last-green
 <head> <old>`; an absent old ref uses Git's zero object ID. A changed head cancels
 the result, and a failed compare-and-swap cannot overwrite another writer.
+
+`PostsubmitStatus` is the verdict authority. RED requires a
+`CandidateFailure`: a gate failed for its own reason, this run's own JUnit lists
+a failing test (even when its gate's command passed), or main's own gate policy
+is invalid. Any other driver, guard or storage stop, with no evidence of a
+candidate failure, is INCONCLUSIVE, with its error in the receipt; so is a
+failed last-green compare-and-swap. CANCELLED
+requires a closed cancellation. Only RED lists suspects and restoration
+commands, and only RED orders later presubmits. An inconclusive run exits
+unsuccessfully and waits for an explicit `queue run`. LUCI Buildbucket makes
+the same split: FAILURE for the input, INFRA_FAILURE for the infrastructure
+(https://chromium.googlesource.com/infra/luci/luci-go/+/ad07866c5533/buildbucket/proto/common.proto).
 
 Red receipts list every commit since the previous green as suspect. Restoration
 commands walk first parents newest first, using `git revert --no-edit -m 1` for
@@ -177,8 +189,11 @@ The code that decides whether a change lands is never the change.
   the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
   and `.python-version` extracts into
   `<artifact-root>/molt-state/controllers/<repository>/<key>`, where the key is the digest of
-  those tree and blob ids. `uv sync --frozen --no-dev` builds the
-  controller's environment from main's lock, and the driver runs there as
+  those tree and blob ids. `uv sync --frozen --no-dev --group controller`
+  builds the controller's environment from main's lock. The `controller`
+  group holds pytest and pytest-xdist: gate selection reads pytest arguments
+  with pytest's own parser and installed plugin options (HF-179, HF-655). A
+  source from before that group syncs without it. The driver runs there as
   `python -I`, so no module, dependency version or `PYTHON*` setting comes
   from the candidate. The candidate still supplies its declared data: gate
   selection from its `tools/proof_plan.toml`, and its tests. A change to the
@@ -373,13 +388,25 @@ One runner owns main. Agents enqueue and continue.
   Scale", EuroSys 2019) ranks speculative builds by their chance to land.
 - **Design.** `molt_dev.py land` checks the lane, runs its precheck, and
   writes one request under `<git-common-dir>/molt/landing-queue/`, then
-  returns. The precheck runs, in the lane, the selected gates that only read
-  the candidate's files (`SelectedGate.precheck`: toolchains within
-  `PRECHECK_TOOLCHAINS`, not a pytest session; `tools/molt_dev_precheck.py`),
-  so a lint, format, generator or policy failure costs that lane alone instead
-  of a batch bisection; GitHub's merge queue likewise admits only changes whose
-  required checks passed, and Zuul runs its check pipeline before its gate
-  pipeline. `--no-precheck` skips it; the batch still runs every gate.
+  returns. It first applies the lane plan's `repair` steps and commits what
+  they change, so a stale projection never reaches a gate. The precheck then
+  runs, in the lane, the selected gates that only read the candidate's files
+  (`SelectedGate.static`: toolchains within `PRECHECK_TOOLCHAINS`, not a
+  pytest session) and the try run (`SelectedGate.try_run`: the dependency
+  graph's presubmit cohorts and the gates of `precheck = true` rules, such as
+  changed-crate Clippy; `tools/molt_dev_precheck.py`) within
+  `PRECHECK_BUDGET` (the static gates run to their verdict outside it; the
+  budget clock starts with the try run; repairs are unbounded and outside the
+  15-minute claim), so a lint, format, generator, policy or direct-reader
+  test failure costs that lane alone instead of a batch run; GitHub's merge
+  queue likewise admits only changes whose required checks passed, Zuul runs
+  its check pipeline before its gate pipeline, and Chromium's commit queue and
+  Google's TAP run a fast presubmit of affected targets. The budget cancels
+  what is still running, names every refused gate and queues the lane, as a
+  disk-capacity refusal of the try run does; the batch still runs every gate.
+  The repair commit runs the installed hooks, takes only the lane's own diff
+  and declared generator outputs, and is refused for a branch that a pending
+  request pins. `--no-precheck` skips repairs and precheck.
   `--precheck-only` runs it and stops: nothing is queued and no runner
   starts, so a worker proves its handoff on the landing path itself. It
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned

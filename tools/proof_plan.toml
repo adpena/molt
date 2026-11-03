@@ -504,6 +504,17 @@ always = [
   "python tools/check_perf_plane_gate.py",
 ]
 
+# Mechanical repairs the read-only gates above ask for. `land` applies them in
+# the lane before its precheck and commits what they change as its own commit;
+# `fix` applies them to a checkout. Generators run only where the change since
+# the merge base reaches their inputs or outputs (tools/generators.py).
+repair_toolchains = ["python", "generators"]
+repair = [
+  "python tools/encoding_gate.py --fix",
+  "python -m ruff format .",
+  "python tools/generators.py write --changed-since {integration_upstream_commit}",
+]
+
 receipt_schema = "molt.proof-receipt.v4"
 
 # Each modeled CI or scheduled job declares a positive job_reserve_seconds.
@@ -5020,7 +5031,7 @@ pytest = [
 [[rule]]
 name = "committed-gate-policy"
 toolchains = ["python", "uv"]
-plan_entities = ["rule", "always", "always_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy", "pinned_asset"]
+plan_entities = ["rule", "always", "always_toolchains", "repair", "repair_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy", "pinned_asset"]
 description = "The committed proof plan's gate selection and the tests that read its toolchain policies."
 globs = [
   "tests/test_committed_gate_policy.py",
@@ -5605,7 +5616,7 @@ pytest_select = [
 [[rule]]
 name = "ci-wiring"
 toolchains = ["python"]
-plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "pinned_asset", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
+plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "repair_toolchains", "repair", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "pinned_asset", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
 description = "CI workflows or pyproject: the CI-topology contract test."
 globs = [
   ".github/actions/**",
@@ -6053,6 +6064,9 @@ pytest = [
 [[rule]]
 name = "rust-clippy-changed"
 toolchains = ["python", "rustc", "cargo"]
+# Lint answers for the lane alone and replays cached crates, so `land` runs it
+# in the lane before it queues (HF-710).
+precheck = true
 description = "Clippy with Cargo-owned warning denial and the proof plan's feature, target and profile cells for every Cargo package a change reaches."
 globs = [
   "runtime/**",
@@ -6622,7 +6636,7 @@ cache_domain = "cargo-workspace"
 id = "runtime.public-consumers.native"
 description = "Compile and execute the runtime ownership, mapping, numeric, path, encoding, stream and shared-call consumers against CPython 3.12 on native targets."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "release", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--json"]
-differential_cases = ["tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/stdlib/copy_deep_nesting.py", "tests/differential/stdlib/asyncio_task_basic.py", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/asyncio_tls_open_connection_invalid_host_intrinsic.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py"]
+differential_cases = ["tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/stdlib/copyreg_helpers.py", "tests/differential/stdlib/copy_deep_nesting.py", "tests/differential/stdlib/asyncio_task_basic.py", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/asyncio_tls_open_connection_invalid_host_intrinsic.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
@@ -6634,7 +6648,7 @@ cache_domain = "cargo-workspace"
 id = "runtime.public-consumers.wasm"
 description = "Compile and execute the shared mapping, numeric, serialization and error consumers against CPython 3.12 on WASM; native process and thread cells remain separate."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "release", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--json"]
-differential_cases = ["tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py"]
+differential_cases = ["tests/differential/basic/deep_release.py", "tests/differential/basic/deep_release_finalizers.py", "tests/differential/stdlib/object_reduce_implicit_copyreg.py", "tests/differential/stdlib/copy_version_surface.py", "tests/differential/stdlib/object_reduce_protocol.py", "tests/differential/stdlib/copy_basic.py", "tests/differential/stdlib/pickle_basic.py", "tests/differential/stdlib/copy_protocol.py", "tests/differential/stdlib/copyreg_helpers.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/stdlib/socket_constants_errors.py", "tests/differential/stdlib/socket_dns_failure_parity.py", "tests/differential/stdlib/io_isatty_regular_file.py", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/stdlib/pickle_int_width.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "wasm-browser"

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -1719,3 +1719,22 @@ def test_digest_reuse_survives_device_renumbering(tmp_path, monkeypatch):
         .sha256
         == expected
     )
+
+
+def test_unchanged_cache_lookup_never_publishes_a_sqlite_transaction(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    path = _settled_file(tmp_path / "input", b"independent byte oracle")
+    store = tmp_path / "cache.sqlite"
+    cold = identity.FileDigestCache(store, max_age_ns=10**18)
+    expected = cold.identity(path, label="cold cache input")
+    cold.flush()
+    _no_rehash(monkeypatch)
+    with closing(identity.sqlite3.connect(store)) as observer:
+        before = observer.execute("PRAGMA data_version").fetchone()[0]
+        warm = identity.FileDigestCache(store, max_age_ns=10**18)
+        assert warm.identity(path, label="warm cache input") == expected
+        # SQLite's independent connection counter observes committed writes,
+        # including an unchanged PRAGMA user_version assignment.
+        assert observer.execute("PRAGMA data_version").fetchone()[0] == before

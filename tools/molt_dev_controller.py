@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import time
+import tomllib
 import argparse
 import atexit
 from contextlib import ExitStack
@@ -73,12 +74,21 @@ def _sync_environment(root: Path, *, environment: Mapping[str, str]) -> None:
     env = dict(environment)
     env["UV_PROJECT_ENVIRONMENT"] = str(root / ENVIRONMENT_NAME)
     env.pop("VIRTUAL_ENV", None)
+    # The pinned source declares its own closure. A source from before the
+    # `controller` group has none, and uv refuses an undeclared group.
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    groups = (
+        ("--group", "controller")
+        if "controller" in project.get("dependency-groups", {})
+        else ()
+    )
     proc = _COMMANDS.run(
         [
             _uv_executable(),
             "sync",
             "--frozen",
             "--no-dev",
+            *groups,
             "--no-install-project",
             "--quiet",
             "--project",
