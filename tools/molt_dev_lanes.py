@@ -1235,7 +1235,12 @@ def _retire_lane(
     worktree = _lane_worktree(worktrees, branch)
     if worktree is not None:
         validate_lane_handoff(git, branch, worktree, tip, ignore_globs=ignore_globs)
-    elif recorded_worktree.exists():
+    elif recorded_worktree.exists() and not any(
+        Path(record["path"]).resolve() == recorded_worktree for record in worktrees
+    ):
+        # A registered path is another lane's reused slot or a released one;
+        # only an unregistered directory is a stray this retirement must not
+        # take (HF-753).
         raise DriverError(
             f"{recorded_worktree} exists outside its managed Git registration"
         )
