@@ -33,7 +33,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-SCHEMA = "molt.trunk-run.v1"
+SCHEMA = "molt.trunk-run.v2"
 
 
 def authorities():
@@ -59,9 +59,231 @@ def ps(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def uv_python(*argv: str) -> list[str]:
+    return ["uv", "run", "--locked", "python", "-B", *argv]
+
+
+def provision_script(host, *, repository: str, uv_version: str) -> str:
+    """The documented local workflow, with report-only system prerequisites.
+
+    Official user installers own their binaries; uv owns Python and the lock.
+    Never import Molt before uv has resolved the project's dependencies.
+    """
+    checkout = host.checkout
+    if host.is_windows:
+        return f"""$ErrorActionPreference='Stop'
+$env:UV_PROJECT_ENVIRONMENT=$null
+$env:VIRTUAL_ENV=$null
+$env:MOLT_VENV=$null
+$env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"
+foreach ($tool in @('git','cl.exe','link.exe')) {{
+ if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {{
+  throw 'Missing system toolchain; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"; then use its developer shell'
+ }}
+}}
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {{
+ Invoke-RestMethod https://astral.sh/uv/{uv_version}/install.ps1 | Invoke-Expression
+}}
+if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {{
+ $installer=Join-Path $env:TEMP ('molt-rustup-'+[guid]::NewGuid().ToString('N')+'.exe')
+ try {{
+  Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile $installer
+  & $installer -y --no-modify-path --default-toolchain none
+  $installExit=$LASTEXITCODE
+ }} finally {{
+  if (Test-Path -LiteralPath $installer) {{ Remove-Item -LiteralPath $installer }}
+ }}
+ if ($installExit) {{ exit $installExit }}
+}}
+if (-not (Test-Path -LiteralPath {ps(checkout)})) {{
+ New-Item -ItemType Directory -Force -Path {ps(host.custody_root)} | Out-Null
+ & git clone -- {ps(repository)} {ps(checkout)}
+ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+}} else {{
+ & git -C {ps(checkout)} fetch origin
+ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+}}
+Set-Location -LiteralPath {ps(checkout)}
+& rustup show active-toolchain
+if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+& uv sync --locked --group dev
+if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+& uv run --locked molt doctor --json
+if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+"""
+    system_command = (
+        "xcode-select --install"
+        if host.os == authorities().HostOS.MACOS
+        else "sudo apt-get update && sudo apt-get install git curl clang lld build-essential"
+    )
+    return f"""set -eu
+unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+for tool in git curl cc; do
+ command -v "$tool" >/dev/null || {{ echo {shlex.quote("Missing system prerequisites; run: " + system_command)} >&2; exit 2; }}
+done
+if ! command -v uv >/dev/null; then
+ installer=$(mktemp)
+ trap 'rm -f "$installer"' EXIT
+ curl -LsSf https://astral.sh/uv/{uv_version}/install.sh -o "$installer"
+ sh "$installer"
+ rm "$installer"
+fi
+if ! command -v rustup >/dev/null; then
+ installer=$(mktemp)
+ trap 'rm -f "$installer"' EXIT
+ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$installer"
+ sh "$installer" -y --no-modify-path --default-toolchain none
+ rm "$installer"
+fi
+mkdir -p {shlex.quote(host.custody_root)}
+if test -e {shlex.quote(checkout)}; then
+ git -C {shlex.quote(checkout)} fetch origin
+else
+ git clone -- {shlex.quote(repository)} {shlex.quote(checkout)}
+fi
+cd {shlex.quote(checkout)}
+rustup show active-toolchain
+uv sync --locked --group dev
+uv run --locked molt doctor --json
+"""
+
+
+def wsl_profile_script(host) -> str:
+    """Read registered backing-disk identity and the Windows VM profile."""
+    return f"""$ErrorActionPreference='Stop'
+$key=Get-ChildItem HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss | Where-Object {{ (Get-ItemProperty $_.PSPath).DistributionName -eq {ps(host.wsl_distribution)} }}
+if (@($key).Count -ne 1) {{ throw 'WSL distribution identity is ambiguous' }}
+$base=(Get-ItemProperty $key.PSPath).BasePath
+$actual=[IO.Path]::Combine($base,'ext4.vhdx')
+if ($actual -cne {ps(host.wsl_vhdx)}) {{ throw "WSL backing disk changed: $actual" }}
+$config=[IO.File]::ReadAllText((Join-Path $env:USERPROFILE '.wslconfig'))
+[pscustomobject]@{{config=$config;vhdx=$actual}} | ConvertTo-Json -Compress
+"""
+
+
+def admit_wsl_profile(host, transport) -> dict:
+    profile = json.loads(transport.windows_command(wsl_profile_script(host)))
+    # A shrunk filesystem can still inhabit an oversized VHD. Query the root
+    # block device, independently of both filesystem size and physical free space.
+    profile["disk_bytes"] = int(
+        transport.shell_command(
+            'set -eu\nroot_device=$(findmnt -nro SOURCE /)\nlsblk -bdno SIZE "$root_device"'
+        )
+    )
+    import configparser
+
+    config = configparser.ConfigParser()
+    config.read_string(profile["config"])
+    expected = {
+        "memory": f"{host.wsl_memory_gb}GB",
+        "swap": f"{host.wsl_swap_gb}GB",
+        "vmIdleTimeout": "-1",
+    }
+    changes = [
+        f"{k}={v}"
+        for k, v in expected.items()
+        if config.get("wsl2", k, fallback=None) != v
+    ]
+    if profile["disk_bytes"] > host.wsl_disk_gb * 1024**3:
+        changes.append(
+            f"wsl --manage {host.wsl_distribution} --resize {host.wsl_disk_gb}GB"
+        )
+    if changes:
+        raise ValueError(
+            "Windows settings change required; return to integrator before applying host profile: "
+            + "; ".join(changes)
+            + f" (observed disk bytes={profile['disk_bytes']}, budget GiB={host.wsl_disk_gb})"
+        )
+    return profile
+
+
+def provision_host(args, *, transport=None) -> dict:
+    cross = authorities()
+    host = next(
+        (h for h in cross.parse_inventory(args.inventory) if h.name == args.host), None
+    )
+    if host is None or host.transport != "ssh" or not host.checkout:
+        raise ValueError("provision requires an inventoried SSH proof host")
+    host_paths(host, "provision")
+    transport = transport or cross.SSHTransport(host)
+    profile = admit_wsl_profile(host, transport) if host.wsl_distribution else None
+    # Report capacity BEFORE downloading a toolchain or cloning the repository.
+    if host.is_windows:
+        disk = "$d=Get-PSDrive C; [pscustomobject]@{free=$d.Free} | ConvertTo-Json -Compress"
+        free = json.loads(transport.shell_command(disk))["free"]
+    else:
+        # ext4's virtual size is not Windows' available NVMe space.
+        path = "/mnt/c" if host.wsl_distribution else host.custody_root
+        # An uncreated checkout/custody root still belongs to its existing
+        # ancestor's filesystem, which may differ from /.
+        probe = (
+            f"df -Pk {shlex.quote(path)}"
+            if host.wsl_distribution
+            else f'p={shlex.quote(path)}; while ! test -e "$p"; do p=$(dirname "$p"); done; df -Pk "$p"'
+        )
+        free = (
+            int(transport.shell_command(probe + " | tail -1 | awk '{print $4}'")) * 1024
+        )
+    if free < host.proof_build_gb * 1024**3:
+        raise ValueError(
+            f"{host.name}: {free} bytes free; needs {host.proof_build_gb} GiB proof headroom"
+        )
+    import tomllib
+
+    releases = tomllib.loads(
+        (_REPO_ROOT / "config/tool_releases.toml").read_text(encoding="utf-8")
+    )
+    repository = checked(["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"])
+    result = transport.shell_command(
+        provision_script(
+            host,
+            repository=repository,
+            uv_version=releases["tools"]["uv"]["version"],
+        ),
+        timeout=1800,
+    )
+    retention = json.loads(
+        transport.shell_command(
+            remote_argv(
+                host,
+                uv_python("-c", RETENTION_STATUS),
+                cwd=host.checkout,
+            )
+        )
+    )
+    record = {
+        "host": host.name,
+        "free_bytes": free,
+        "proof_build_gb": host.proof_build_gb,
+        "wsl": profile,
+        "install_log": result,
+        "retention": retention,
+    }
+    print(json.dumps(record), flush=True)
+    return record
+
+
+# Inspect only the existing maintenance owner's bounded epoch directory. No
+# sweep is launched merely to report its status; absence is explicitly unknown.
+RETENTION_STATUS = r"""
+import json
+from molt.default_paths import _default_molt_cache
+root=_default_molt_cache()
+epochs=root/'logs'/'cache_retention'/'automatic'
+latest=max(epochs.iterdir(),key=lambda p:p.stat().st_mtime,default=None) if epochs.is_dir() else None
+rc=latest/'rc' if latest is not None else None
+print(json.dumps({'cache':str(root),'epoch':str(latest) if latest else None,
+'returncode':int(rc.read_text().strip()) if rc is not None and rc.is_file() else None}))
+"""
+
+
 def remote_argv(host, argv: list[str], *, cwd: str | None = None) -> str:
     if host.is_windows:
-        prefix = "$ErrorActionPreference='Stop'; "
+        prefix = (
+            "$ErrorActionPreference='Stop'; "
+            '$env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"; '
+        )
         if cwd:
             prefix += f"Set-Location -LiteralPath {ps(cwd)}; "
         return (
@@ -70,7 +292,9 @@ def remote_argv(host, argv: list[str], *, cwd: str | None = None) -> str:
             + " ".join(ps(a) for a in argv)
             + "; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
         )
-    prefix = "" if cwd is None else f"cd {shlex.quote(cwd)} && "
+    prefix = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; '
+    if cwd is not None:
+        prefix += f"cd {shlex.quote(cwd)} && "
     return prefix + shlex.join(argv)
 
 
@@ -101,7 +325,7 @@ def detached_script(host, argv: list[str], directory: str) -> str:
             "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
             "print(json.dumps({'ReturnValue':0,'ProcessId':p.pid}))"
         )
-        return shlex.join([host.python, "-B", "-c", code, directory, *argv])
+        return remote_argv(host, uv_python("-c", code, directory, *argv), cwd=directory)
     raise ValueError(f"{host.name}: no admitted detached launcher")
 
 
@@ -164,12 +388,7 @@ def selected_host(inventory: Path, name: str, cells: list[str]):
     host = next((h for h in cross.parse_inventory(inventory) if h.name == name), None)
     if host is None:
         raise ValueError(f"unknown host {name!r}")
-    if (
-        host.transport != "ssh"
-        or not host.python
-        or not host.launcher
-        or not host.proof_cells
-    ):
+    if host.transport != "ssh" or not host.launcher or not host.proof_cells:
         raise ValueError(f"{name}: no admitted SSH proof host configuration")
     if not cells or len(set(cells)) != len(cells) or set(cells) - set(host.proof_cells):
         raise ValueError(f"{name}: select unique commands from {host.proof_cells}")
@@ -222,7 +441,7 @@ print(json.dumps({'toolchains':names,'releases':tools,'commands':{k:dict(v.data)
 
 def describe(host, transport, checkout: str, cells: list[str]) -> dict:
     raw = transport.shell_command(
-        remote_argv(host, [host.python, "-B", "-c", DESCRIBE, *cells], cwd=checkout),
+        remote_argv(host, uv_python("-c", DESCRIBE, *cells), cwd=checkout),
         timeout=180,
     )
     result = json.loads(raw)
@@ -243,6 +462,8 @@ def seed_inputs(descriptor: dict, transport, local: Path) -> list[dict]:
     )
     seeds = []
     for name, item in descriptor["releases"].items():
+        if name == "uv":
+            continue  # Official host prerequisite; never ship our own uv binary.
         asset = item["asset"]
         archive = provision_archive(
             url=asset["url"],
@@ -337,6 +558,8 @@ def start(args) -> Path:
         ]
     )
     transport = cross.SSHTransport(host)
+    if host.wsl_distribution:
+        admit_wsl_profile(host, transport)
     checkout, control = host_paths(host, transport._nonce)
     from molt.dx import artifact_root
 
@@ -399,17 +622,13 @@ def start(args) -> Path:
     write_json(record_path, record)
     transport.push([record_path])
     path_type = PureWindowsPath if host.is_windows else PurePosixPath
-    argv = [
-        host.python,
-        "-B",
+    argv = uv_python(
         str(path_type(control) / "tools" / "trunk_loop.py"),
         "_worker",
         "--record",
         transport.remote_path("run.json"),
-    ]
-    pid = acknowledge(
-        transport.shell_command(detached_script(host, argv, transport.execution_dir))
     )
+    pid = acknowledge(transport.shell_command(detached_script(host, argv, control)))
     record.update(
         state="launched", launcher_pid=pid, launched_at=datetime.now(UTC).isoformat()
     )
@@ -560,7 +779,9 @@ def worker_environment(record: dict) -> dict[str, str]:
         PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8"
     )
     root = Path(record["host"]["custody_root"])
-    baseline["CARGO_HOME"] = str(root / ".cargo")
+    # One reusable Cargo workspace domain per host, independent of run worktree.
+    baseline["CARGO_TARGET_DIR"] = str(root / "cache" / "cargo-workspace")
+    baseline["MOLT_DIFF_CARGO_TARGET_DIR"] = baseline["CARGO_TARGET_DIR"]
     baseline["RUSTUP_AUTO_INSTALL"] = "0"
     env = dict(
         RunContext(Path(record["checkout"])).dx_env(ProcessEnvironment(baseline))
@@ -611,7 +832,7 @@ def fixture_roots(record: dict, env: dict[str, str]) -> dict:
     return declarations
 
 
-def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
+def provision(record: dict, stage: Path) -> dict[str, str]:
     from molt import checkout_provisioning
     from molt.dx import canonical_toolchain_root
     from molt.tool_releases import (
@@ -628,7 +849,10 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
     tool_root = canonical_toolchain_root(checkout, env, require_exists=False)
     from molt.disk_capacity import require_build_capacity
 
-    require_build_capacity((stage, checkout, tool_root), env=env)
+    capacity_paths = [stage, checkout, tool_root]
+    if record["host"].get("wsl_distribution"):
+        capacity_paths.append(Path("/mnt/c"))
+    require_build_capacity(tuple(capacity_paths), env=env)
     for seed in record["seeds"]:
         release = tool_release(seed["name"], checkout)
         asset = host_asset(release)
@@ -664,7 +888,7 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
         "print(json.dumps({'toolchains':n,'fingerprints':a.fingerprints}))"
     )
     result = authorities()._guarded_run(
-        [str(python), "-B", "-c", code, *record["cells"]],
+        uv_python("-c", code, *record["cells"]),
         cwd=checkout,
         env=env,
         timeout=900,
@@ -686,7 +910,7 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
             "fixture_roots": roots,
         },
     )
-    return python, env
+    return env
 
 
 def worker(record_path: Path) -> int:
@@ -740,22 +964,20 @@ def worker(record_path: Path) -> int:
                 ]
             ):
                 raise ValueError("remote source has tracked edits")
-        python, env = provision(record, stage)
+        env = provision(record, stage)
         (stage / "trunk_timings.py").write_text(TIMINGS_PLUGIN, encoding="utf-8")
         env["PYTHONPATH"] += os.pathsep + str(stage)
         status = "success"
         for cell in record["cells"]:
             directory = stage / cell
             directory.mkdir(exist_ok=False)
-            argv = [
-                str(python),
-                "-B",
+            argv = uv_python(
                 str(Path(record["checkout"]) / "tools" / "proof_plan.py"),
                 "--run-command",
                 cell,
                 "--receipt",
                 str(directory / "receipt.json"),
-            ]
+            )
             write_json(
                 directory / "cmd.json",
                 {"argv": argv, "commit": record["commit"], "cwd": record["checkout"]},
@@ -875,6 +1097,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--commit", required=True)
     run.add_argument("--cell", action="append", required=True)
     run.add_argument("--no-wait", action="store_true")
+    setup = sub.add_parser("provision")
+    setup.add_argument(
+        "--inventory", type=Path, default=_REPO_ROOT / "tools/cross_hosts.toml"
+    )
+    setup.add_argument("--host", required=True)
     get = sub.add_parser("collect")
     get.add_argument("--record", type=Path, required=True)
     get.add_argument("--no-wait", action="store_true")
@@ -885,6 +1112,9 @@ def main(argv: list[str] | None = None) -> int:
         return worker(args.record)
     authorities()
     try:
+        if args.action == "provision":
+            provision_host(args)
+            return 0
         if args.action == "collect":
             return collect(args.record, wait=not args.no_wait)
         record = start(args)

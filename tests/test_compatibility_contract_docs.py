@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
 import shlex
 
 from markdown_it import MarkdownIt
@@ -97,21 +98,23 @@ def test_source_quickstart_commands_use_uv_and_match_cli(rel_path: str) -> None:
                 continue
             assert words[:1] == ["uv"], f"Unmanaged quickstart command: {line}"
             if words[1:2] == ["sync"]:
-                assert words == [
-                    "uv",
-                    "sync",
-                    "--group",
-                    "dev",
-                    "--python",
-                    bootstrap_python,
-                ], line
+                sync = argparse.ArgumentParser(allow_abbrev=False)
+                sync.add_argument("--locked", action="store_true")
+                sync.add_argument("--group", action="append")
+                sync.add_argument("--python", default=bootstrap_python)
+                options = sync.parse_args(words[2:])
+                assert options.group == ["dev"], line
+                assert options.python == bootstrap_python, line
                 continue
             # The frontend is CPython 3.12+ and at least as new as the target
             # a command selects with --python-version.
-            assert words[:3] == ["uv", "run", "--python"]
-            frontend = tuple(int(part) for part in words[3].split("."))
+            assert words[:2] == ["uv", "run"], line
+            run = argparse.ArgumentParser(allow_abbrev=False)
+            run.add_argument("--locked", action="store_true")
+            run.add_argument("--python", default=bootstrap_python)
+            options, payload = run.parse_known_args(words[2:])
+            frontend = tuple(int(part) for part in options.python.split("."))
             assert frontend >= (3, 12), line
-            payload = words[4:]
             if payload[:3] == ["python", "-m", "molt.cli"]:
                 payload = payload[3:]
             else:
