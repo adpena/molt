@@ -76,7 +76,7 @@ pub(super) fn importlib_reader_files_traversable_bits(
     _py: &PyToken<'_>,
     reader_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    let files_name = intern_runtime_static_name(_py, b"files");
+    let files_name = crate::NameId::Files.bits(_py);
     let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, files_name)? else {
         return Ok(None);
     };
@@ -95,7 +95,7 @@ pub(super) fn importlib_traversable_joinpath_bits(
     traversable_bits: u64,
     name: &str,
 ) -> Result<Option<u64>, u64> {
-    let joinpath_name = intern_runtime_static_name(_py, b"joinpath");
+    let joinpath_name = crate::NameId::Joinpath.bits(_py);
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, joinpath_name)?
     else {
         return Ok(None);
@@ -144,7 +144,7 @@ pub(super) fn importlib_traversable_iterdir_names(
     _py: &PyToken<'_>,
     traversable_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    let iterdir_name = intern_runtime_static_name(_py, b"iterdir");
+    let iterdir_name = crate::NameId::Iterdir.bits(_py);
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, iterdir_name)?
     else {
         return Ok(Vec::new());
@@ -159,7 +159,7 @@ pub(super) fn importlib_traversable_iterdir_names(
     let Some(mut iterator) = iterator else {
         return Err(MoltObject::none().bits());
     };
-    let name_attr = intern_runtime_static_name(_py, b"name");
+    let name_attr = crate::NameId::Name.bits(_py);
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     while let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? {
@@ -208,7 +208,7 @@ pub(super) fn importlib_traversable_is_file(
     _py: &PyToken<'_>,
     traversable_bits: u64,
 ) -> Result<bool, u64> {
-    let is_file_name = intern_runtime_static_name(_py, b"is_file");
+    let is_file_name = crate::NameId::IsFile.bits(_py);
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, is_file_name)?
     else {
         return Ok(false);
@@ -245,7 +245,7 @@ pub(super) fn importlib_traversable_is_dir(
     _py: &PyToken<'_>,
     traversable_bits: u64,
 ) -> Result<bool, u64> {
-    let is_dir_name = intern_runtime_static_name(_py, b"is_dir");
+    let is_dir_name = crate::NameId::IsDir.bits(_py);
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, is_dir_name)? {
         let value_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -292,7 +292,7 @@ pub(super) fn importlib_traversable_exists(
     _py: &PyToken<'_>,
     traversable_bits: u64,
 ) -> Result<bool, u64> {
-    let exists_name = intern_runtime_static_name(_py, b"exists");
+    let exists_name = crate::NameId::Exists.bits(_py);
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, exists_name)? {
         let value_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -341,7 +341,7 @@ pub(super) fn importlib_traversable_open_bytes(
     _py: &PyToken<'_>,
     traversable_bits: u64,
 ) -> Result<Vec<u8>, u64> {
-    let open_name = intern_runtime_static_name(_py, b"open");
+    let open_name = crate::NameId::Open.bits(_py);
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, open_name)?
     else {
         return Err(raise_exception::<_>(
@@ -363,7 +363,7 @@ pub(super) fn importlib_traversable_open_bytes(
         }
         return Ok(bytes);
     }
-    let read_name = intern_runtime_static_name(_py, b"read");
+    let read_name = crate::NameId::Read.bits(_py);
     let read_bits = match importlib_reader_lookup_callable(_py, handle_bits, read_name)? {
         Some(bits) => bits,
         None => {
@@ -385,7 +385,7 @@ pub(super) fn importlib_traversable_open_bytes(
         }
         return Err(MoltObject::none().bits());
     }
-    let close_name = intern_runtime_static_name(_py, b"close");
+    let close_name = crate::NameId::Close.bits(_py);
     if let Some(close_bits) = importlib_reader_lookup_callable(_py, handle_bits, close_name)? {
         let _ = unsafe { call_callable0(_py, close_bits) };
         dec_ref_bits(_py, close_bits);

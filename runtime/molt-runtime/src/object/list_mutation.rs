@@ -1413,10 +1413,10 @@ mod tests {
     }
 
     fn finalizer_items(py: &PyToken<'_>) -> (u64, Vec<u64>) {
-        let name = crate::attr_name_bits_from_bytes(py, b"SequenceReleaseItem").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"SequenceReleaseItem").unwrap();
         let class = crate::molt_class_new(name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
-        let del_name = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let del_name = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let function = alloc_runtime_function_obj(
             py,
             runtime_fn_addr("sequence_record_release", record_release as *const ()),

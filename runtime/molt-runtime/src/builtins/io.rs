@@ -106,7 +106,7 @@ pub use attributes::molt_io_member_get;
 // IOBase's marker is an ordinary attribute: its presence, even with a false
 // value, closes the base protocol independently of a concrete stream's backend.
 fn io_base_is_closed(py: &PyToken<'_>, object: u64) -> Result<bool, u64> {
-    let Some(name) = attr_name_bits_from_bytes(py, b"__IOBase_closed") else {
+    let Some(name) = crate::NameId::PrivateIOBaseClosed.owned_bits(py) else {
         return Err(MoltObject::none().bits());
     };
     let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
@@ -121,8 +121,8 @@ fn io_base_is_closed(py: &PyToken<'_>, object: u64) -> Result<bool, u64> {
 
 // Ordinary attribute lookup deliberately honors instance and subclass overrides.
 // The callable is owned, and no file backing borrow or lock crosses the call.
-fn io_call_noargs(py: &PyToken<'_>, object: u64, name: &[u8]) -> u64 {
-    let Some(name) = attr_name_bits_from_bytes(py, name) else {
+fn io_call_noargs(py: &PyToken<'_>, object: u64, name: crate::NameId) -> u64 {
+    let Some(name) = name.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());

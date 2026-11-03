@@ -1645,7 +1645,7 @@ mod tests {
     }
 
     fn dynamic_limit(py: &PyToken<'_>, create_on_drop: bool) -> (u64, u64) {
-        let name = attr_name_bits_from_bytes(py, b"ExecutorLimitContract").unwrap();
+        let name = dynamic_attr_name_bits(py, b"ExecutorLimitContract").unwrap();
         let class = molt_class_new(name);
         dec_ref_bits(py, name);
         molt_class_set_base(class, builtin_classes(py).object);
@@ -1658,7 +1658,7 @@ mod tests {
             ));
         }
         for (name, address, arity) in methods {
-            let name = attr_name_bits_from_bytes(py, name).unwrap();
+            let name = dynamic_attr_name_bits(py, name).unwrap();
             let function = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
                 crate::provenance::abi::expose_function_address(address),
@@ -2846,14 +2846,14 @@ mod tests {
             crate::with_gil_entry_nopanic!(py, {
                 RETIRE_FINALIZERS.store(0, Ordering::Release);
                 RETIRE_REENTRY_OK.store(false, Ordering::Release);
-                let name = attr_name_bits_from_bytes(py, b"ExecutorRetireReentry").unwrap();
+                let name = dynamic_attr_name_bits(py, b"ExecutorRetireReentry").unwrap();
                 let class = molt_class_new(name);
                 dec_ref_bits(py, name);
                 molt_class_set_base(class, builtin_classes(py).object);
                 let class_ptr = obj_from_bits(class).as_ptr().unwrap();
                 unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
                 let method = native_callable(py, retirement_finalizer as *const ());
-                let key = attr_name_bits_from_bytes(py, b"__del__").unwrap();
+                let key = dynamic_attr_name_bits(py, b"__del__").unwrap();
                 molt_set_attr_name(class, key, method);
                 dec_ref_bits(py, key);
                 dec_ref_bits(py, method);

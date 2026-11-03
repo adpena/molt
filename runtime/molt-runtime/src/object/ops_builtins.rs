@@ -1275,7 +1275,7 @@ mod direct_call_tests {
                 }
                 assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 1);
 
-                let vararg_name = attr_name_bits_from_bytes(py, b"__molt_vararg__").unwrap();
+                let vararg_name = dynamic_attr_name_bits(py, b"__molt_vararg__").unwrap();
                 assert!(crate::call::class_init::function_set_attr_bits(
                     py,
                     function,
@@ -1631,7 +1631,9 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
 pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
-        if let Some(result) = super::ops_arith::unary_subtype_result(_py, obj, b"__abs__") {
+        if let Some(result) =
+            super::ops_arith::unary_subtype_result(_py, obj, crate::NameId::DunderAbs)
+        {
             return result;
         }
         if let Some(i) = index_i64_integral_bits(obj.bits()) {
@@ -1654,7 +1656,11 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
             return float_result_bits(_py, value.re.hypot(value.im));
         }
         if let Some(method) = unsafe {
-            match crate::builtins::attr::lookup_special_method(_py, val_bits, b"__abs__") {
+            match crate::builtins::attr::lookup_special_method(
+                _py,
+                val_bits,
+                crate::NameId::DunderAbs,
+            ) {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }
@@ -1678,8 +1684,8 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             _py,
             lhs,
             rhs,
-            b"__divmod__",
-            b"__rdivmod__",
+            crate::NameId::DunderDivmod,
+            crate::NameId::DunderRdivmod,
             "divmod()",
         ) {
             return result;
@@ -1830,8 +1836,7 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
             // re-entrant and uses the existing token.
             return crate::molt_locals_builtin();
         }
-        let dict_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
+        let dict_name_bits = crate::NameId::DunderDict.bits(_py);
         let dict_bits = molt_get_attr_name_default(obj_bits, dict_name_bits, missing);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -2103,7 +2108,7 @@ pub(crate) fn object_getattribute(
                 || crate::builtins::attributes::is_numeric_scalar_attr_receiver(_py, obj_bits)
             {
                 if let Some(val) =
-                    crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, &attr_name)?
+                    crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, name_bits)?
                 {
                     return Ok(Some(val));
                 }
@@ -2337,7 +2342,7 @@ pub extern "C" fn molt_object_eq(self_bits: u64, other_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_ne(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+        let name = crate::NameId::DunderEq.bits(_py);
         let outcome = crate::object::ops_compare::rich_compare_method_value(
             _py,
             obj_from_bits(self_bits),
@@ -2401,7 +2406,7 @@ pub extern "C" fn molt_print_builtin(
         }
 
         fn write_piece(_py: &PyToken<'_>, file: u64, value: u64) -> bool {
-            let name = intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+            let name = crate::NameId::Write.bits(_py);
             if exception_pending(_py) {
                 return false;
             }
@@ -2458,8 +2463,7 @@ pub extern "C" fn molt_print_builtin(
                 }
                 stdout
             } else {
-                let name =
-                    intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
+                let name = crate::NameId::Stdout.bits(_py);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -2496,7 +2500,7 @@ pub extern "C" fn molt_print_builtin(
             return MoltObject::none().bits();
         }
         if do_flush {
-            let name = intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+            let name = crate::NameId::Flush.bits(_py);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -2637,8 +2641,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         };
         inc_ref_bits(_py, sys_bits);
 
-        let stdout_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
+        let stdout_name_bits = crate::NameId::Stdout.bits(_py);
         let stdout_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, sys_bits);
@@ -2666,8 +2669,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         if stdout_is_handle {
             let _ = molt_file_write(stdout_bits, prompt_str_bits);
         } else {
-            let write_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+            let write_name_bits = crate::NameId::Write.bits(_py);
             let write_method_bits = molt_get_attr_name(stdout_bits, write_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, prompt_str_bits);
@@ -2691,8 +2693,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
             let _ = molt_file_flush(stdout_bits);
         } else {
             let missing = missing_bits(_py);
-            let flush_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+            let flush_name_bits = crate::NameId::Flush.bits(_py);
             let flush_bits = molt_getattr_builtin(stdout_bits, flush_name_bits, missing);
             if exception_pending(_py) {
                 dec_ref_bits(_py, prompt_str_bits);
@@ -2729,8 +2730,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         dec_ref_bits(_py, prompt_str_bits);
         dec_ref_bits(_py, stdout_bits);
 
-        let stdin_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.stdin_name, b"stdin");
+        let stdin_name_bits = crate::NameId::Stdin.bits(_py);
         let stdin_bits = molt_module_get_attr(sys_bits, stdin_name_bits);
         dec_ref_bits(_py, sys_bits);
         if exception_pending(_py) {
@@ -2749,8 +2749,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         let line_bits = if stdin_is_handle {
             molt_file_readline(stdin_bits, MoltObject::from_int(-1).bits())
         } else {
-            let readline_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.readline_name, b"readline");
+            let readline_name_bits = crate::NameId::Readline.bits(_py);
             let method_bits = molt_get_attr_name(stdin_bits, readline_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, stdin_bits);

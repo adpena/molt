@@ -100,7 +100,7 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
         let bits = GLOBAL_BRIDGE
             .molt_value_for_pyobj(&raw mut receiver.object)
             .unwrap();
-        let name = attr_name_bits_from_bytes(&py, b"field").unwrap();
+        let name = dynamic_attr_name_bits(&py, b"field").unwrap();
         let none = MoltObject::none().bits();
         for (legacy, malformed) in [(false, false), (false, true), (true, false), (true, true)] {
             kind.tp_getattro = if legacy { None } else { Some(attribute_get) };

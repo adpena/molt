@@ -40,7 +40,7 @@ pub(super) unsafe fn is_writer(py: &PyToken<'_>, pointer: *mut u8) -> bool {
     (unsafe { buffered_class(py, pointer) }) == Some(builtin_classes(py).buffered_writer)
 }
 
-fn overrides(py: &PyToken<'_>, pointer: *mut u8, names: &[&[u8]]) -> bool {
+fn overrides(py: &PyToken<'_>, pointer: *mut u8, names: &[crate::NameId]) -> bool {
     unsafe {
         let Some(dictionary) = obj_from_bits(instance_dict_bits(pointer)).as_ptr() else {
             return false;
@@ -50,8 +50,8 @@ fn overrides(py: &PyToken<'_>, pointer: *mut u8, names: &[&[u8]]) -> bool {
                 crate::dict_exact_string_lookup(
                     py,
                     dictionary,
-                    name,
-                    crate::hash_string_bytes(py, name) as u64
+                    name.as_str().as_bytes(),
+                    crate::hash_string_bytes(py, name.as_str().as_bytes()) as u64
                 ),
                 crate::ExactStringLookup::Absent
             )
@@ -59,7 +59,12 @@ fn overrides(py: &PyToken<'_>, pointer: *mut u8, names: &[&[u8]]) -> bool {
     }
 }
 
-pub(super) fn raw_callbacks(py: &PyToken<'_>, class: u64, raw: u64, methods: &[&[u8]]) -> bool {
+pub(super) fn raw_callbacks(
+    py: &PyToken<'_>,
+    class: u64,
+    raw: u64,
+    methods: &[crate::NameId],
+) -> bool {
     let classes = builtin_classes(py);
     let Some(pointer) = obj_from_bits(raw).as_ptr() else {
         return true;
@@ -85,7 +90,7 @@ pub(super) fn raw_callbacks(py: &PyToken<'_>, class: u64, raw: u64, methods: &[&
 pub(super) unsafe fn prepare(
     py: &PyToken<'_>,
     pointer: *mut u8,
-    methods: &[&[u8]],
+    methods: &[crate::NameId],
     self_flush: bool,
 ) -> Result<(), u64> {
     unsafe {
@@ -98,7 +103,7 @@ pub(super) unsafe fn prepare(
         {
             return Ok(());
         }
-        let own_override = self_flush && overrides(py, pointer, &[b"flush"]);
+        let own_override = self_flush && overrides(py, pointer, &[crate::NameId::Flush]);
         if !own_override
             && (handle.buffer_bits == 0 || !raw_callbacks(py, class, handle.buffer_bits, methods))
         {
@@ -148,8 +153,8 @@ pub(super) fn owned<'a>(py: &'a PyToken<'_>, bits: u64) -> OwnedRuntimeValue<'a>
     unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), bits) }
 }
 
-pub(super) fn call(py: &PyToken<'_>, raw: u64, name: &[u8], argument: Option<u64>) -> u64 {
-    let Some(key) = attr_name_bits_from_bytes(py, name) else {
+pub(super) fn call(py: &PyToken<'_>, raw: u64, name: crate::NameId, argument: Option<u64>) -> u64 {
+    let Some(key) = name.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let _key = owned(py, key);
@@ -182,7 +187,7 @@ pub(super) fn closed(py: &PyToken<'_>, raw: u64) -> Result<bool, u64> {
             }
         }
     }
-    let Some(key) = attr_name_bits_from_bytes(py, b"closed") else {
+    let Some(key) = crate::NameId::Closed.owned_bits(py) else {
         return Err(MoltObject::none().bits());
     };
     let _key = owned(py, key);
@@ -402,13 +407,17 @@ pub(super) unsafe fn initialize(
         (*file_handle_ptr(pointer)).attachment = FileAttachment::Uninitialized;
     }
     let class = unsafe { object_class_bits(pointer) };
-    let capability: &[u8] = if readable { b"readable" } else { b"writable" };
+    let capability: crate::NameId = if readable {
+        crate::NameId::Readable
+    } else {
+        crate::NameId::Writable
+    };
     let capability_error = if readable {
         "File or stream is not readable."
     } else {
         "File or stream is not writable."
     };
-    let callback = raw_callbacks(py, class, raw, &[capability, b"tell"]);
+    let callback = raw_callbacks(py, class, raw, &[capability, crate::NameId::Tell]);
     if callback {
         let supported = owned(py, call(py, raw, capability, None));
         if exception_pending(py) {
@@ -509,7 +518,7 @@ pub(super) unsafe fn initialize(
     let initial_position = if callback {
         // _buffered_init probes tell, including its integer conversion, and
         // deliberately clears unsupported/invalid position errors.
-        let position = owned(py, call(py, raw, b"tell", None));
+        let position = owned(py, call(py, raw, crate::NameId::Tell, None));
         let position = (!exception_pending(py))
             .then(|| off_t(py, position.bits()))
             .flatten();
@@ -630,7 +639,7 @@ pub(super) unsafe fn close(py: &PyToken<'_>, bits: u64, pointer: *mut u8) -> u64
         }
     }
     let _scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
-    let result = io_call_noargs(py, bits, b"flush");
+    let result = io_call_noargs(py, bits, crate::NameId::Flush);
     let flush_error = crate::builtins::exceptions::take_raised(py);
     dec_ref_bits(py, result);
     let _operation = match unsafe { Operation::enter(py, pointer, true) } {
@@ -647,7 +656,7 @@ pub(super) unsafe fn close(py: &PyToken<'_>, bits: u64, pointer: *mut u8) -> u64
             return error;
         }
     };
-    let result = call(py, raw.bits(), b"close", None);
+    let result = call(py, raw.bits(), crate::NameId::Close, None);
     unsafe {
         let handle = &mut *file_handle_ptr(pointer);
         handle.read_buf = Vec::new();
@@ -684,7 +693,7 @@ pub(super) unsafe fn detach(py: &PyToken<'_>, bits: u64, pointer: *mut u8) -> u6
         }
     }
     drop(raw);
-    let result = io_call_noargs(py, bits, b"flush");
+    let result = io_call_noargs(py, bits, crate::NameId::Flush);
     dec_ref_bits(py, result);
     if exception_pending(py) {
         return MoltObject::none().bits();
@@ -698,14 +707,19 @@ pub(super) unsafe fn detach(py: &PyToken<'_>, bits: u64, pointer: *mut u8) -> u6
     std::mem::replace(&mut handle.buffer_bits, MoltObject::none().bits())
 }
 
-pub(super) unsafe fn query(py: &PyToken<'_>, bits: u64, pointer: *mut u8, name: &[u8]) -> u64 {
+pub(super) unsafe fn query(
+    py: &PyToken<'_>,
+    bits: u64,
+    pointer: *mut u8,
+    name: crate::NameId,
+) -> u64 {
     let _owner = OwnedRuntimeValue::retain(py.core_token(), bits);
     let raw = match unsafe { raw_owner(py, pointer) } {
         Ok(raw) => raw,
         Err(error) => return error,
     };
     let implicit = raw.bits() == bits && unsafe { (*file_handle_ptr(pointer)).buffer_bits == 0 };
-    if [b"readable".as_slice(), b"writable"].contains(&name)
+    if [crate::NameId::Readable, crate::NameId::Writable].contains(&name)
         && (implicit
             || !raw_callbacks(
                 py,
@@ -721,7 +735,7 @@ pub(super) unsafe fn query(py: &PyToken<'_>, bits: u64, pointer: *mut u8, name: 
         if file_handle_is_closed(handle) {
             return raise_exception(py, BuiltinExc::ValueError, "I/O operation on closed file");
         }
-        return MoltObject::from_bool(if name == b"readable" {
+        return MoltObject::from_bool(if name == crate::NameId::Readable {
             handle.readable
         } else {
             handle.writable

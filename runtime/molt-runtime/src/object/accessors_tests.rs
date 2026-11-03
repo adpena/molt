@@ -1,7 +1,7 @@
 use super::*;
 use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use crate::object::builders::alloc_class_instance;
-use crate::{attr_name_bits_from_bytes, exception_pending, header_from_obj_ptr};
+use crate::{dynamic_attr_name_bits, exception_pending, header_from_obj_ptr};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct FieldAbi {
@@ -37,12 +37,12 @@ const FIELD_ABIS: [FieldAbi; 2] = [
 ];
 
 fn field_object(_py: &PyToken<'_>) -> (u64, u64) {
-    let name = attr_name_bits_from_bytes(_py, b"FieldOwner").unwrap();
-    let field = attr_name_bits_from_bytes(_py, b"field").unwrap();
+    let name = dynamic_attr_name_bits(_py, b"FieldOwner").unwrap();
+    let field = dynamic_attr_name_bits(_py, b"field").unwrap();
     let class = crate::molt_class_new(name);
     assert!(obj_from_bits(class).as_ptr().is_some());
-    let offsets_key = attr_name_bits_from_bytes(_py, b"__molt_field_offsets__").unwrap();
-    let size_key = attr_name_bits_from_bytes(_py, b"__molt_layout_size__").unwrap();
+    let offsets_key = dynamic_attr_name_bits(_py, b"__molt_field_offsets__").unwrap();
+    let size_key = dynamic_attr_name_bits(_py, b"__molt_layout_size__").unwrap();
     let offsets = crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(0).bits()]);
     assert!(!offsets.is_null());
     let offsets_bits = MoltObject::from_ptr(offsets).bits();
@@ -61,7 +61,7 @@ fn field_object(_py: &PyToken<'_>) -> (u64, u64) {
 }
 
 fn materialize_dict(_py: &PyToken<'_>, object: u64) -> u64 {
-    let key = attr_name_bits_from_bytes(_py, b"__dict__").unwrap();
+    let key = dynamic_attr_name_bits(_py, b"__dict__").unwrap();
     let dict = crate::molt_get_attr_name(object, key);
     dec_ref_bits(_py, key);
     assert!(obj_from_bits(dict).as_ptr().is_some());
@@ -316,7 +316,7 @@ fn mutable_frame_candidate_survives_late_finalizer_resurrection_on_heap() {
             molt_object_field_set(result, 0, MoltObject::from_int(73).bits());
         }
         assert!(storage.iter().all(|&word| word == u64::MAX));
-        let name = attr_name_bits_from_bytes(_py, b"__del__").unwrap();
+        let name = dynamic_attr_name_bits(_py, b"__del__").unwrap();
         let finalizer = callable(_py, "resurrect_frame_candidate", resurrect_frame_candidate);
         crate::molt_set_attr_name(class, name, finalizer);
         assert!(!exception_pending(_py));
@@ -345,7 +345,7 @@ fn immutable_finalizing_class_still_requires_heap_storage() {
     crate::with_gil_entry_nopanic!(_py, {
         let (heap, field) = field_object(_py);
         let class = unsafe { object_class_bits(obj_from_bits(heap).as_ptr().unwrap()) };
-        let name = attr_name_bits_from_bytes(_py, b"__del__").unwrap();
+        let name = dynamic_attr_name_bits(_py, b"__del__").unwrap();
         let finalizer = callable(_py, "frame_finalizer_payload", callable_payload);
         crate::molt_set_attr_name(class, name, finalizer);
         assert!(!exception_pending(_py));
@@ -374,7 +374,7 @@ fn immutable_frame_candidate_with_mutable_base_remains_heap_owned() {
     crate::with_gil_entry_nopanic!(_py, {
         let (parent_object, field) = field_object(_py);
         let parent = unsafe { object_class_bits(obj_from_bits(parent_object).as_ptr().unwrap()) };
-        let name = attr_name_bits_from_bytes(_py, b"ImmutableChild").unwrap();
+        let name = dynamic_attr_name_bits(_py, b"ImmutableChild").unwrap();
         let class = crate::molt_class_new(name);
         crate::molt_class_set_base(class, parent);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();

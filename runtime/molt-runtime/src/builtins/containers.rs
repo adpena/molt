@@ -34,54 +34,51 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
 
 }, {
 
-        "__new__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
+        crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::constructor(builtin_classes(_py).dict).with_text_signature("($type, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::dict_new),
         )),
-        "__init__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__init__").with_text_signature("($self, /, *args, **kwargs)"),
+        crate::NameId::DunderInit => Some(crate::builtins::methods::builtin_variadic_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderInit).with_text_signature("($self, /, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::dict_init),
         )),
-        "__repr__" => Some(builtin_func_bits(
+        crate::NameId::DunderRepr => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__repr__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderRepr).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_format::dict_repr_slot),
             1,
         )),
-        "__or__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
-                builtin_classes(_py).dict, "__or__"),
+        crate::NameId::DunderOr => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderOr),
             fn_addr!(crate::object::ops_arith::native_slots::dict_or_slot), 2,
         )),
-        "__ror__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
-                builtin_classes(_py).dict, "__ror__"),
+        crate::NameId::DunderRor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderRor),
             fn_addr!(crate::object::ops_arith::native_slots::dict_ror_slot), 2,
         )),
-        "__ior__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
-                builtin_classes(_py).dict, "__ior__"),
+        crate::NameId::DunderIor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderIor),
             fn_addr!(crate::object::ops_arith::native_slots::dict_ior_slot), 2,
         )),
-        "keys" => Some(builtin_func_bits(
+        crate::NameId::Keys => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "keys"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Keys),
             fn_addr!(dict_keys_method),
             1,
         )),
-        "values" => Some(builtin_func_bits(
+        crate::NameId::Values => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "values"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Values),
             fn_addr!(dict_values_method),
             1,
         )),
-        "items" => Some(builtin_func_bits(
+        crate::NameId::Items => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "items"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Items),
             fn_addr!(dict_items_method),
             1,
         )),
-        "get" => {
+        crate::NameId::Get => {
             if cfg!(target_arch = "wasm32")
                 && runtime_flags::enabled(RuntimeFlag::MOLT_WASM_DICT_METHOD_DEBUG)
             {
@@ -93,41 +90,41 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
             let none = MoltObject::none().bits();
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "get").with_text_signature("($self, key, default=None, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Get).with_text_signature("($self, key, default=None, /)"),
                 fn_addr!(dict_get_method),
                 3,
                 &[none],
             ))
         },
-        "pop" => {
+        crate::NameId::Pop => {
             let miss = crate::builtins::methods::missing_bits(_py);
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "pop").with_text_signature("($self, key, default=<unrepresentable>, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Pop).with_text_signature("($self, key, default=<unrepresentable>, /)"),
                 fn_addr!(molt_dict_pop_method),
                 3,
                 &[miss],
             ))
         },
-        "clear" => Some(builtin_func_bits(
+        crate::NameId::Clear => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "clear"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Clear),
             fn_addr!(dict_clear_method),
             1,
         )),
-        "copy" => Some(builtin_func_bits(
+        crate::NameId::Copy => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "copy"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Copy),
             fn_addr!(dict_copy_method),
             1,
         )),
-        "popitem" => Some(builtin_func_bits(
+        crate::NameId::Popitem => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "popitem").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Popitem).with_text_signature("($self, /)"),
             fn_addr!(dict_popitem_method),
             1,
         )),
-        "setdefault" => {
+        crate::NameId::Setdefault => {
             if cfg!(target_arch = "wasm32")
                 && runtime_flags::enabled(RuntimeFlag::MOLT_WASM_DICT_METHOD_DEBUG)
             {
@@ -139,23 +136,23 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
             let none = MoltObject::none().bits();
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "setdefault").with_text_signature("($self, key, default=None, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Setdefault).with_text_signature("($self, key, default=None, /)"),
                 fn_addr!(dict_setdefault_method),
                 3,
                 &[none],
             ))
         },
-        "update" => {
+        crate::NameId::Update => {
             let miss = crate::builtins::methods::missing_bits(_py);
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "update"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::Update),
                 fn_addr!(dict_update_method),
                 2,
                 &[miss],
             ))
         },
-        "fromkeys" => {
+        crate::NameId::Fromkeys => {
             if cfg!(target_arch = "wasm32")
                 && runtime_flags::enabled(RuntimeFlag::MOLT_WASM_DICT_METHOD_DEBUG)
             {
@@ -167,51 +164,51 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
             let none = MoltObject::none().bits();
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).dict, "fromkeys").with_text_signature("($type, iterable, value=None, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).dict, crate::NameId::Fromkeys).with_text_signature("($type, iterable, value=None, /)"),
                 fn_addr!(dict_fromkeys_method),
                 3,
                 &[none],
             ))
         },
-        "__getitem__" => Some(builtin_func_bits(
+        crate::NameId::DunderGetitem => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "__getitem__").with_text_signature("($self, key, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::DunderGetitem).with_text_signature("($self, key, /)"),
             fn_addr!(crate::object::ops::molt_getitem_builtin),
             2,
         )),
-        "__setitem__" => Some(builtin_func_bits(
+        crate::NameId::DunderSetitem => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__setitem__").with_text_signature("($self, key, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderSetitem).with_text_signature("($self, key, value, /)"),
             fn_addr!(crate::object::ops::molt_setitem_builtin_method),
             3,
         )),
-        "__delitem__" => Some(builtin_func_bits(
+        crate::NameId::DunderDelitem => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__delitem__").with_text_signature("($self, key, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderDelitem).with_text_signature("($self, key, /)"),
             fn_addr!(crate::object::ops::molt_delitem_builtin_method),
             2,
         )),
-        "__iter__" => Some(builtin_func_bits(
+        crate::NameId::DunderIter => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__iter__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderIter).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
+        crate::NameId::DunderLen => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__len__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, crate::NameId::DunderLen).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
+        crate::NameId::DunderContains => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "__contains__").with_text_signature("($self, key, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::DunderContains).with_text_signature("($self, key, /)"),
             fn_addr!(crate::object::ops::molt_contains_builtin),
             2,
         )),
-        "__reversed__" => Some(builtin_func_bits(
+        crate::NameId::DunderReversed => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, "__reversed__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).dict, crate::NameId::DunderReversed).with_text_signature("($self, /)"),
             fn_addr!(molt_reversed_builtin),
             1,
         )),
@@ -221,192 +218,192 @@ crate::builtins::methods::native_method_table!(set_method_bits, publish_set_meth
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Set, {
 
 }, {
-        "__reduce__" => Some(builtin_func_bits(
+        crate::NameId::DunderReduce => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "__reduce__"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::DunderReduce),
             fn_addr!(crate::molt_set_reduce),
             1,
         )),
-        "__or__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__or__"),
+        crate::NameId::DunderOr => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderOr),
             fn_addr!(crate::object::ops_arith::native_slots::set_or_slot), 2,
         )),
-        "__ror__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__ror__"),
+        crate::NameId::DunderRor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderRor),
             fn_addr!(crate::object::ops_arith::native_slots::set_ror_slot), 2,
         )),
-        "__and__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__and__"),
+        crate::NameId::DunderAnd => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderAnd),
             fn_addr!(crate::object::ops_arith::native_slots::set_and_slot), 2,
         )),
-        "__rand__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__rand__"),
+        crate::NameId::DunderRand => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderRand),
             fn_addr!(crate::object::ops_arith::native_slots::set_rand_slot), 2,
         )),
-        "__sub__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__sub__"),
+        crate::NameId::DunderSub => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderSub),
             fn_addr!(crate::object::ops_arith::native_slots::set_sub_slot), 2,
         )),
-        "__rsub__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__rsub__"),
+        crate::NameId::DunderRsub => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderRsub),
             fn_addr!(crate::object::ops_arith::native_slots::set_rsub_slot), 2,
         )),
-        "__xor__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__xor__"),
+        crate::NameId::DunderXor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderXor),
             fn_addr!(crate::object::ops_arith::native_slots::set_xor_slot), 2,
         )),
-        "__rxor__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__rxor__"),
+        crate::NameId::DunderRxor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderRxor),
             fn_addr!(crate::object::ops_arith::native_slots::set_rxor_slot), 2,
         )),
-        "__ior__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__ior__"),
+        crate::NameId::DunderIor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderIor),
             fn_addr!(crate::object::ops_arith::native_slots::set_ior_slot), 2,
         )),
-        "__iand__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__iand__"),
+        crate::NameId::DunderIand => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderIand),
             fn_addr!(crate::object::ops_arith::native_slots::set_iand_slot), 2,
         )),
-        "__isub__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__isub__"),
+        crate::NameId::DunderIsub => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderIsub),
             fn_addr!(crate::object::ops_arith::native_slots::set_isub_slot), 2,
         )),
-        "__ixor__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__ixor__"),
+        crate::NameId::DunderIxor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderIxor),
             fn_addr!(crate::object::ops_arith::native_slots::set_ixor_slot), 2,
         )),
 
-        "__new__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
+        crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::constructor(builtin_classes(_py).set).with_text_signature("($type, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::set_new),
         )),
-        "__init__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__init__").with_text_signature("($self, /, *args, **kwargs)"),
+        crate::NameId::DunderInit => Some(crate::builtins::methods::builtin_variadic_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderInit).with_text_signature("($self, /, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::set_init),
         )),
-        "add" => Some(builtin_func_bits(
+        crate::NameId::Add => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "add"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Add),
             fn_addr!(molt_set_add),
             2,
         )),
-        "discard" => Some(builtin_func_bits(
+        crate::NameId::Discard => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "discard"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Discard),
             fn_addr!(molt_set_discard),
             2,
         )),
-        "remove" => Some(builtin_func_bits(
+        crate::NameId::Remove => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "remove"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Remove),
             fn_addr!(molt_set_remove),
             2,
         )),
-        "pop" => Some(builtin_func_bits(
+        crate::NameId::Pop => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "pop"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Pop),
             fn_addr!(molt_set_pop),
             1,
         )),
-        "clear" => Some(builtin_func_bits(
+        crate::NameId::Clear => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "clear"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Clear),
             fn_addr!(molt_set_clear),
             1,
         )),
-        "update" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::Update => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "update"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Update),
             fn_addr!(molt_set_update_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "union" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::LowerUnion => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "union"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::LowerUnion),
             fn_addr!(molt_set_union_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "intersection" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::Intersection => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "intersection"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Intersection),
             fn_addr!(molt_set_intersection_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "difference" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::Difference => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "difference"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Difference),
             fn_addr!(molt_set_difference_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "symmetric_difference" => Some(builtin_func_bits(
+        crate::NameId::SymmetricDifference => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "symmetric_difference"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::SymmetricDifference),
             fn_addr!(molt_set_symmetric_difference),
             2,
         )),
-        "intersection_update" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::IntersectionUpdate => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "intersection_update"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::IntersectionUpdate),
             fn_addr!(molt_set_intersection_update_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "difference_update" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::DifferenceUpdate => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "difference_update"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::DifferenceUpdate),
             fn_addr!(molt_set_difference_update_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "symmetric_difference_update" => Some(builtin_func_bits(
+        crate::NameId::SymmetricDifferenceUpdate => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "symmetric_difference_update"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::SymmetricDifferenceUpdate),
             fn_addr!(molt_set_symmetric_difference_update),
             2,
         )),
-        "isdisjoint" => Some(builtin_func_bits(
+        crate::NameId::Isdisjoint => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "isdisjoint"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Isdisjoint),
             fn_addr!(molt_set_isdisjoint),
             2,
         )),
-        "issubset" => Some(builtin_func_bits(
+        crate::NameId::Issubset => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "issubset").with_text_signature("($self, other, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Issubset).with_text_signature("($self, other, /)"),
             fn_addr!(molt_set_issubset),
             2,
         )),
-        "issuperset" => Some(builtin_func_bits(
+        crate::NameId::Issuperset => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "issuperset").with_text_signature("($self, other, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Issuperset).with_text_signature("($self, other, /)"),
             fn_addr!(molt_set_issuperset),
             2,
         )),
-        "copy" => Some(builtin_func_bits(
+        crate::NameId::Copy => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "copy"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::Copy),
             fn_addr!(molt_set_copy_method),
             1,
         )),
-        "__iter__" => Some(builtin_func_bits(
+        crate::NameId::DunderIter => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__iter__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderIter).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
+        crate::NameId::DunderLen => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, "__len__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).set, crate::NameId::DunderLen).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
+        crate::NameId::DunderContains => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, "__contains__"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).set, crate::NameId::DunderContains),
             fn_addr!(crate::object::ops_set::molt_set_contains),
             2,
         )),
@@ -416,115 +413,115 @@ crate::builtins::methods::native_method_table!(frozenset_method_bits, publish_fr
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Frozenset, {
 
 }, {
-        "__reduce__" => Some(builtin_func_bits(
+        crate::NameId::DunderReduce => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "__reduce__"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderReduce),
             fn_addr!(crate::molt_set_reduce),
             1,
         )),
-        "__or__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__or__"),
+        crate::NameId::DunderOr => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderOr),
             fn_addr!(crate::object::ops_arith::native_slots::set_or_slot), 2,
         )),
-        "__ror__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__ror__"),
+        crate::NameId::DunderRor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderRor),
             fn_addr!(crate::object::ops_arith::native_slots::set_ror_slot), 2,
         )),
-        "__and__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__and__"),
+        crate::NameId::DunderAnd => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderAnd),
             fn_addr!(crate::object::ops_arith::native_slots::set_and_slot), 2,
         )),
-        "__rand__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__rand__"),
+        crate::NameId::DunderRand => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderRand),
             fn_addr!(crate::object::ops_arith::native_slots::set_rand_slot), 2,
         )),
-        "__sub__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__sub__"),
+        crate::NameId::DunderSub => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderSub),
             fn_addr!(crate::object::ops_arith::native_slots::set_sub_slot), 2,
         )),
-        "__rsub__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__rsub__"),
+        crate::NameId::DunderRsub => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderRsub),
             fn_addr!(crate::object::ops_arith::native_slots::set_rsub_slot), 2,
         )),
-        "__xor__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__xor__"),
+        crate::NameId::DunderXor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderXor),
             fn_addr!(crate::object::ops_arith::native_slots::set_xor_slot), 2,
         )),
-        "__rxor__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__rxor__"),
+        crate::NameId::DunderRxor => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderRxor),
             fn_addr!(crate::object::ops_arith::native_slots::set_rxor_slot), 2,
         )),
 
-        "__new__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
+        crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::constructor(builtin_classes(_py).frozenset).with_text_signature("($type, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::frozenset_new),
         )),
-        "union" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::LowerUnion => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "union"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::LowerUnion),
             fn_addr!(molt_frozenset_union_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "intersection" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::Intersection => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "intersection"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::Intersection),
             fn_addr!(molt_frozenset_intersection_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "difference" => Some(builtin_func_bits_with_bind_kind(
+        crate::NameId::Difference => Some(builtin_func_bits_with_bind_kind(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "difference"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::Difference),
             fn_addr!(molt_frozenset_difference_multi),
             2,
             BIND_KIND_PACKED_BUILTIN,
         )),
-        "symmetric_difference" => Some(builtin_func_bits(
+        crate::NameId::SymmetricDifference => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "symmetric_difference"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::SymmetricDifference),
             fn_addr!(molt_frozenset_symmetric_difference),
             2,
         )),
-        "isdisjoint" => Some(builtin_func_bits(
+        crate::NameId::Isdisjoint => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "isdisjoint"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::Isdisjoint),
             fn_addr!(molt_frozenset_isdisjoint),
             2,
         )),
-        "issubset" => Some(builtin_func_bits(
+        crate::NameId::Issubset => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "issubset").with_text_signature("($self, other, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::Issubset).with_text_signature("($self, other, /)"),
             fn_addr!(molt_frozenset_issubset),
             2,
         )),
-        "issuperset" => Some(builtin_func_bits(
+        crate::NameId::Issuperset => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "issuperset").with_text_signature("($self, other, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::Issuperset).with_text_signature("($self, other, /)"),
             fn_addr!(molt_frozenset_issuperset),
             2,
         )),
-        "copy" => Some(builtin_func_bits(
+        crate::NameId::Copy => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "copy"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::Copy),
             fn_addr!(molt_frozenset_copy_method),
             1,
         )),
-        "__iter__" => Some(builtin_func_bits(
+        crate::NameId::DunderIter => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__iter__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderIter).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_iter::builtin_iter_slot),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
+        crate::NameId::DunderLen => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, "__len__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderLen).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_sys::molt_len_builtin),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
+        crate::NameId::DunderContains => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, "__contains__"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).frozenset, crate::NameId::DunderContains),
             fn_addr!(crate::object::ops_set::molt_set_contains),
             2,
         )),
@@ -533,159 +530,159 @@ crate::builtins::methods::native_method_table!(frozenset_method_bits, publish_fr
 crate::builtins::methods::native_method_table!(list_method_bits, publish_list_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::List, {
 
 }, {
-        "__new__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
+        crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::constructor(builtin_classes(_py).list).with_text_signature("($type, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::list_new),
         )),
-        "append" => Some(builtin_func_bits(
+        crate::NameId::Append => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "append").with_text_signature("($self, object, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Append).with_text_signature("($self, object, /)"),
             fn_addr!(molt_list_append),
             2,
         )),
-        "extend" => Some(builtin_func_bits(
+        crate::NameId::Extend => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "extend").with_text_signature("($self, iterable, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Extend).with_text_signature("($self, iterable, /)"),
             fn_addr!(molt_list_extend),
             2,
         )),
-        "insert" => Some(builtin_func_bits(
+        crate::NameId::Insert => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "insert").with_text_signature("($self, index, object, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Insert).with_text_signature("($self, index, object, /)"),
             fn_addr!(molt_list_insert),
             3,
         )),
-        "remove" => Some(builtin_func_bits(
+        crate::NameId::Remove => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "remove").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Remove).with_text_signature("($self, value, /)"),
             fn_addr!(molt_list_remove),
             2,
         )),
-        "pop" => {
+        crate::NameId::Pop => {
             let last_index = MoltObject::from_int(-1).bits();
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "pop").with_text_signature("($self, index=-1, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Pop).with_text_signature("($self, index=-1, /)"),
                 fn_addr!(molt_list_pop),
                 2,
                 &[last_index],
             ))
         },
-        "clear" => Some(builtin_func_bits(
+        crate::NameId::Clear => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "clear").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Clear).with_text_signature("($self, /)"),
             fn_addr!(molt_list_clear),
             1,
         )),
-        "__init__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__init__").with_text_signature("($self, /, *args, **kwargs)"),
+        crate::NameId::DunderInit => Some(crate::builtins::methods::builtin_variadic_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderInit).with_text_signature("($self, /, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::list_init),
         )),
-        "copy" => Some(builtin_func_bits(
+        crate::NameId::Copy => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "copy").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Copy).with_text_signature("($self, /)"),
             fn_addr!(molt_list_copy),
             1,
         )),
-        "reverse" => Some(builtin_func_bits(
+        crate::NameId::Reverse => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "reverse").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Reverse).with_text_signature("($self, /)"),
             fn_addr!(molt_list_reverse),
             1,
         )),
-        "count" => Some(builtin_func_bits(
+        crate::NameId::Count => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "count").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Count).with_text_signature("($self, value, /)"),
             fn_addr!(molt_list_count),
             2,
         )),
-        "index" => Some(builtin_func_bits(
+        crate::NameId::Index => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "index").with_text_signature("($self, value, start=0, stop=sys.maxsize, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Index).with_text_signature("($self, value, start=0, stop=sys.maxsize, /)"),
             fn_addr!(molt_list_index_range),
             4,
         )),
-        "sort" => Some(builtin_func_bits(
+        crate::NameId::Sort => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "sort").with_text_signature("($self, /, *, key=None, reverse=False)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::Sort).with_text_signature("($self, /, *, key=None, reverse=False)"),
             fn_addr!(molt_list_sort),
             3,
         )),
-        "__add__" => Some(builtin_func_bits(
+        crate::NameId::DunderAdd => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__add__").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderAdd).with_text_signature("($self, value, /)"),
             fn_addr!(molt_list_add_method),
             2,
         )),
-        "__mul__" => Some(builtin_func_bits(
+        crate::NameId::DunderMul => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__mul__").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderMul).with_text_signature("($self, value, /)"),
             fn_addr!(molt_list_mul_method),
             2,
         )),
-        "__rmul__" => Some(builtin_func_bits(
+        crate::NameId::DunderRmul => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__rmul__").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderRmul).with_text_signature("($self, value, /)"),
             fn_addr!(molt_list_mul_method),
             2,
         )),
-        "__iadd__" => Some(builtin_func_bits(
+        crate::NameId::DunderIadd => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__iadd__").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderIadd).with_text_signature("($self, value, /)"),
             fn_addr!(crate::object::ops_list::list_iadd_slot),
             2,
         )),
-        "__imul__" => Some(builtin_func_bits(
+        crate::NameId::DunderImul => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__imul__").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderImul).with_text_signature("($self, value, /)"),
             fn_addr!(molt_list_imul_method),
             2,
         )),
-        "__getitem__" => Some(builtin_func_bits(
+        crate::NameId::DunderGetitem => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "__getitem__").with_text_signature("($self, index, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::DunderGetitem).with_text_signature("($self, index, /)"),
             fn_addr!(crate::object::ops_list::list_getitem_slot),
             2,
         )),
-        "__setitem__" => Some(builtin_func_bits(
+        crate::NameId::DunderSetitem => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__setitem__").with_text_signature("($self, key, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderSetitem).with_text_signature("($self, key, value, /)"),
             fn_addr!(crate::object::ops_list::list_setitem_slot),
             3,
         )),
-        "__delitem__" => Some(builtin_func_bits(
+        crate::NameId::DunderDelitem => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__delitem__").with_text_signature("($self, key, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderDelitem).with_text_signature("($self, key, /)"),
             fn_addr!(crate::object::ops_list::list_delitem_slot),
             2,
         )),
-        "__iter__" => Some(builtin_func_bits(
+        crate::NameId::DunderIter => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__iter__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderIter).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_list::list_iter_slot),
             1,
         )),
-        "__len__" => Some(builtin_func_bits(
+        crate::NameId::DunderLen => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__len__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderLen).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_list::list_len_slot),
             1,
         )),
-        "__contains__" => Some(builtin_func_bits(
+        crate::NameId::DunderContains => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__contains__").with_text_signature("($self, key, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderContains).with_text_signature("($self, key, /)"),
             fn_addr!(crate::object::ops_list::list_contains_slot),
             2,
         )),
-        "__reversed__" => Some(builtin_func_bits(
+        crate::NameId::DunderReversed => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, "__reversed__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).list, crate::NameId::DunderReversed).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_list::list_reversed_slot),
             1,
         )),
-        "__repr__" => Some(builtin_func_bits(
+        crate::NameId::DunderRepr => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, "__repr__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).list, crate::NameId::DunderRepr).with_text_signature("($self, /)"),
             fn_addr!(crate::object::ops_format::list_repr_slot),
             1,
         )),
@@ -738,64 +735,64 @@ crate::builtins::methods::native_method_table!(tuple_method_bits, publish_tuple_
 
 
 }, {
-        "__getnewargs__" => Some(builtin_func_bits(
+        crate::NameId::DunderGetnewargs => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).tuple, "__getnewargs__"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderGetnewargs),
             fn_addr!(crate::molt_tuple_getnewargs),
             1,
         )),
-        "__mul__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__mul__"),
+        crate::NameId::DunderMul => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderMul),
             fn_addr!(crate::object::ops_arith::native_slots::sequence_repeat_slot), 2,
         )),
-        "__rmul__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__rmul__"),
+        crate::NameId::DunderRmul => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderRmul),
             fn_addr!(crate::object::ops_arith::native_slots::sequence_repeat_slot), 2,
         )),
-        "__add__" => Some(builtin_func_bits(
-            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__add__"),
+        crate::NameId::DunderAdd => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderAdd),
             fn_addr!(crate::object::ops_arith::native_slots::sequence_add_slot), 2,
         )),
-        "__new__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
+        crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::constructor(builtin_classes(_py).tuple).with_text_signature("($type, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::tuple_new),
         )),
-        "count" => Some(builtin_func_bits(
+        crate::NameId::Count => Some(builtin_func_bits(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).tuple, "count").with_text_signature("($self, value, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).tuple, crate::NameId::Count).with_text_signature("($self, value, /)"),
                 fn_addr!(molt_tuple_count),
                 2,
             )),
-        "index" => Some(builtin_func_bits(
+        crate::NameId::Index => Some(builtin_func_bits(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).tuple, "index").with_text_signature("($self, value, start=0, stop=sys.maxsize, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).tuple, crate::NameId::Index).with_text_signature("($self, value, start=0, stop=sys.maxsize, /)"),
                 fn_addr!(molt_tuple_index_range),
                 4,
             )),
             // Subclasses resolve these inherited slots through normal special
             // lookup. The builtin slot entries consume physical tuple storage;
             // they must not redispatch a subclass override recursively.,
-        "__iter__" => Some(builtin_func_bits(
+        crate::NameId::DunderIter => Some(builtin_func_bits(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__iter__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderIter).with_text_signature("($self, /)"),
                 fn_addr!(tuple_iter_slot),
                 1,
             )),
-        "__len__" => Some(builtin_func_bits(
+        crate::NameId::DunderLen => Some(builtin_func_bits(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__len__").with_text_signature("($self, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderLen).with_text_signature("($self, /)"),
                 fn_addr!(tuple_len_slot),
                 1,
             )),
-        "__getitem__" => Some(builtin_func_bits(
+        crate::NameId::DunderGetitem => Some(builtin_func_bits(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__getitem__").with_text_signature("($self, key, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderGetitem).with_text_signature("($self, key, /)"),
                 fn_addr!(tuple_getitem_slot),
                 2,
             )),
-        "__contains__" => Some(builtin_func_bits(
+        crate::NameId::DunderContains => Some(builtin_func_bits(
                 _py,
-            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, "__contains__").with_text_signature("($self, key, /)"),
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).tuple, crate::NameId::DunderContains).with_text_signature("($self, key, /)"),
                 fn_addr!(tuple_contains_slot),
                 2,
             )),

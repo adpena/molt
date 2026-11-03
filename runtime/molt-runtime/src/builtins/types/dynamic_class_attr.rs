@@ -10,11 +10,11 @@ struct AttrValue {
 fn dynamic_class_attr_get(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    name: &str,
+    name: crate::NameId,
     default_bits: u64,
 ) -> Option<AttrValue> {
     let missing = missing_bits(_py);
-    let name_bits = attr_name_bits_from_bytes(_py, name.as_bytes())?;
+    let name_bits = name.owned_bits(_py)?;
     let val_bits = crate::molt_get_attr_name_default(obj_bits, name_bits, missing);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
@@ -32,8 +32,13 @@ fn dynamic_class_attr_get(
     })
 }
 
-fn dynamic_class_attr_set(_py: &PyToken<'_>, obj_bits: u64, name: &str, value_bits: u64) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
+fn dynamic_class_attr_set(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    name: crate::NameId,
+    value_bits: u64,
+) -> bool {
+    let Some(name_bits) = name.owned_bits(_py) else {
         return false;
     };
     let _ = molt_set_attr_name(obj_bits, name_bits, value_bits);
@@ -132,7 +137,9 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
         let mut effective_doc = doc_bits;
         let overwrite_doc = obj_from_bits(doc_bits).is_none();
         if overwrite_doc {
-            let Some(fget_doc) = dynamic_class_attr_get(_py, fget_bits, "__doc__", none) else {
+            let Some(fget_doc) =
+                dynamic_class_attr_get(_py, fget_bits, crate::NameId::DunderDoc, none)
+            else {
                 return MoltObject::none().bits();
             };
             effective_doc = fget_doc.bits;
@@ -143,7 +150,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
         let Some(is_abstract) = dynamic_class_attr_get(
             _py,
             fget_bits,
-            "__isabstractmethod__",
+            crate::NameId::DunderIsabstractmethod,
             MoltObject::from_bool(false).bits(),
         ) else {
             return MoltObject::none().bits();
@@ -153,20 +160,20 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
             dec_ref_bits(_py, is_abstract.bits);
         }
 
-        if !dynamic_class_attr_set(_py, self_bits, "fget", fget_bits)
-            || !dynamic_class_attr_set(_py, self_bits, "fset", fset_bits)
-            || !dynamic_class_attr_set(_py, self_bits, "fdel", fdel_bits)
-            || !dynamic_class_attr_set(_py, self_bits, "__doc__", effective_doc)
+        if !dynamic_class_attr_set(_py, self_bits, crate::NameId::Fget, fget_bits)
+            || !dynamic_class_attr_set(_py, self_bits, crate::NameId::Fset, fset_bits)
+            || !dynamic_class_attr_set(_py, self_bits, crate::NameId::Fdel, fdel_bits)
+            || !dynamic_class_attr_set(_py, self_bits, crate::NameId::DunderDoc, effective_doc)
             || !dynamic_class_attr_set(
                 _py,
                 self_bits,
-                "overwrite_doc",
+                crate::NameId::OverwriteDoc,
                 MoltObject::from_bool(overwrite_doc).bits(),
             )
             || !dynamic_class_attr_set(
                 _py,
                 self_bits,
-                "__isabstractmethod__",
+                crate::NameId::DunderIsabstractmethod,
                 MoltObject::from_bool(is_abstract_flag).bits(),
             )
         {
@@ -251,7 +258,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
             let Some(is_abstract) = dynamic_class_attr_get(
                 _py,
                 self_bits,
-                "__isabstractmethod__",
+                crate::NameId::DunderIsabstractmethod,
                 MoltObject::from_bool(false).bits(),
             ) else {
                 return MoltObject::none().bits();
@@ -267,7 +274,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
             return raise_exception::<_>(_py, BuiltinExc::AttributeError, "");
         }
 
-        let Some(fget) = dynamic_class_attr_get(_py, self_bits, "fget", none) else {
+        let Some(fget) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fget, none) else {
             return MoltObject::none().bits();
         };
         if obj_from_bits(fget.bits).is_none() {
@@ -295,7 +302,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_set(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let none = MoltObject::none().bits();
-        let Some(fset) = dynamic_class_attr_get(_py, self_bits, "fset", none) else {
+        let Some(fset) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fset, none) else {
             return MoltObject::none().bits();
         };
         if obj_from_bits(fset.bits).is_none() {
@@ -319,7 +326,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_set(
 pub extern "C" fn molt_types_dynamic_class_attr_delete(self_bits: u64, instance_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let none = MoltObject::none().bits();
-        let Some(fdel) = dynamic_class_attr_get(_py, self_bits, "fdel", none) else {
+        let Some(fdel) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fdel, none) else {
             return MoltObject::none().bits();
         };
         if obj_from_bits(fdel.bits).is_none() {
@@ -363,19 +370,19 @@ pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits
         let Some(overwrite_doc) = dynamic_class_attr_get(
             _py,
             self_bits,
-            "overwrite_doc",
+            crate::NameId::OverwriteDoc,
             MoltObject::from_bool(false).bits(),
         ) else {
             return MoltObject::none().bits();
         };
         let overwrite_doc_flag = is_truthy(_py, obj_from_bits(overwrite_doc.bits));
-        let Some(fset) = dynamic_class_attr_get(_py, self_bits, "fset", none) else {
+        let Some(fset) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fset, none) else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
             return MoltObject::none().bits();
         };
-        let Some(fdel) = dynamic_class_attr_get(_py, self_bits, "fdel", none) else {
+        let Some(fdel) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fdel, none) else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
@@ -387,7 +394,9 @@ pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits
         let mut doc_bits = none;
         let mut doc_owned = false;
         if overwrite_doc_flag {
-            if let Some(fdoc) = dynamic_class_attr_get(_py, fget_bits, "__doc__", none) {
+            if let Some(fdoc) =
+                dynamic_class_attr_get(_py, fget_bits, crate::NameId::DunderDoc, none)
+            {
                 doc_bits = fdoc.bits;
                 doc_owned = fdoc.owned;
             } else {
@@ -404,7 +413,9 @@ pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits
             }
         }
         if obj_from_bits(doc_bits).is_none() {
-            if let Some(self_doc) = dynamic_class_attr_get(_py, self_bits, "__doc__", none) {
+            if let Some(self_doc) =
+                dynamic_class_attr_get(_py, self_bits, crate::NameId::DunderDoc, none)
+            {
                 if doc_owned {
                     dec_ref_bits(_py, doc_bits);
                 }
@@ -430,7 +441,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits
             && !dynamic_class_attr_set(
                 _py,
                 out,
-                "overwrite_doc",
+                crate::NameId::OverwriteDoc,
                 MoltObject::from_bool(overwrite_doc_flag).bits(),
             )
         {
@@ -472,19 +483,19 @@ pub extern "C" fn molt_types_dynamic_class_attr_setter(self_bits: u64, fset_bits
         let Some(overwrite_doc) = dynamic_class_attr_get(
             _py,
             self_bits,
-            "overwrite_doc",
+            crate::NameId::OverwriteDoc,
             MoltObject::from_bool(false).bits(),
         ) else {
             return MoltObject::none().bits();
         };
         let overwrite_doc_flag = is_truthy(_py, obj_from_bits(overwrite_doc.bits));
-        let Some(fget) = dynamic_class_attr_get(_py, self_bits, "fget", none) else {
+        let Some(fget) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fget, none) else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
             return MoltObject::none().bits();
         };
-        let Some(fdel) = dynamic_class_attr_get(_py, self_bits, "fdel", none) else {
+        let Some(fdel) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fdel, none) else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
@@ -493,7 +504,8 @@ pub extern "C" fn molt_types_dynamic_class_attr_setter(self_bits: u64, fset_bits
             }
             return MoltObject::none().bits();
         };
-        let Some(doc) = dynamic_class_attr_get(_py, self_bits, "__doc__", none) else {
+        let Some(doc) = dynamic_class_attr_get(_py, self_bits, crate::NameId::DunderDoc, none)
+        else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
@@ -511,7 +523,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_setter(self_bits: u64, fset_bits
             && !dynamic_class_attr_set(
                 _py,
                 out,
-                "overwrite_doc",
+                crate::NameId::OverwriteDoc,
                 MoltObject::from_bool(overwrite_doc_flag).bits(),
             )
         {
@@ -552,19 +564,19 @@ pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bit
         let Some(overwrite_doc) = dynamic_class_attr_get(
             _py,
             self_bits,
-            "overwrite_doc",
+            crate::NameId::OverwriteDoc,
             MoltObject::from_bool(false).bits(),
         ) else {
             return MoltObject::none().bits();
         };
         let overwrite_doc_flag = is_truthy(_py, obj_from_bits(overwrite_doc.bits));
-        let Some(fget) = dynamic_class_attr_get(_py, self_bits, "fget", none) else {
+        let Some(fget) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fget, none) else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
             return MoltObject::none().bits();
         };
-        let Some(fset) = dynamic_class_attr_get(_py, self_bits, "fset", none) else {
+        let Some(fset) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fset, none) else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
@@ -573,7 +585,8 @@ pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bit
             }
             return MoltObject::none().bits();
         };
-        let Some(doc) = dynamic_class_attr_get(_py, self_bits, "__doc__", none) else {
+        let Some(doc) = dynamic_class_attr_get(_py, self_bits, crate::NameId::DunderDoc, none)
+        else {
             if overwrite_doc.owned {
                 dec_ref_bits(_py, overwrite_doc.bits);
             }
@@ -591,7 +604,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bit
             && !dynamic_class_attr_set(
                 _py,
                 out,
-                "overwrite_doc",
+                crate::NameId::OverwriteDoc,
                 MoltObject::from_bool(overwrite_doc_flag).bits(),
             )
         {
@@ -630,45 +643,45 @@ pub(crate) fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     let signature = RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true);
     let methods = [
         RuntimeClassMethodSpec::with_signature(
-            "__init__",
+            crate::NameId::DunderInit,
             NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_init as *const () as usize as u64,
             3,
             signature,
         ),
         RuntimeClassMethodSpec::with_signature(
-            "__get__",
+            crate::NameId::DunderGet,
             NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_get as *const () as usize as u64,
             3,
             signature,
         ),
         RuntimeClassMethodSpec::fixed(
-            "__set__",
+            crate::NameId::DunderSet,
             NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_set as *const () as usize as u64,
             3,
         ),
         RuntimeClassMethodSpec::fixed(
-            "__delete__",
+            crate::NameId::DunderDelete,
             NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_delete as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "getter",
+            crate::NameId::Getter,
             NativeCallableKind::MethodDescriptor,
             molt_types_dynamic_class_attr_getter as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "setter",
+            crate::NameId::Setter,
             NativeCallableKind::MethodDescriptor,
             molt_types_dynamic_class_attr_setter as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "deleter",
+            crate::NameId::Deleter,
             NativeCallableKind::MethodDescriptor,
             molt_types_dynamic_class_attr_deleter as *const () as usize as u64,
             2,

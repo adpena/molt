@@ -157,6 +157,8 @@ def _cache_input_files() -> tuple[Path, ...]:
     files = {
         Path(__file__).resolve(),
         BUILTIN_CALLABLES.resolve(),
+        ROOT / "tools/gen_runtime_names.py",
+        ROOT / "runtime/molt-ir/src/tir/runtime_names.toml",
         *(path.resolve() for path in generator_pkg.glob("*.py")),
         *(path.resolve() for path in op_kinds_pkg.glob("*.py")),
         *(path.resolve() for path in generator_input_files()),
@@ -1894,6 +1896,9 @@ def _rust_str_slice(values: list[str]) -> str:
 def render_runtime_callables_rs(data: dict) -> str:
     from molt.builtin_callables import BuiltinBindingPolicy
 
+    from tools.gen_runtime_names import load_names
+
+    name_ids = {spelling: identity for identity, spelling in load_names().items()}
     lines: list[str] = [_runtime_callables_header("//")]
     lines.extend(["#![allow(dead_code)]\n\n", "use super::*;\n\n"])
 
@@ -1985,6 +1990,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "#[derive(Clone, Copy)]\n",
             "pub(crate) struct PythonBuiltinFunctionInfo {\n",
             "    pub(crate) python_name: &'static str,\n",
+            "    pub(crate) name_id: crate::NameId,\n",
             "    pub(crate) python_module: &'static str,\n",
             "    pub(crate) text_signature: Option<&'static str>,\n",
             "    pub(crate) runtime_name: &'static str,\n",
@@ -2141,6 +2147,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             [
                 "        PythonBuiltinFunctionInfo {\n",
                 f'            python_name: "{entry["python_name"]}",\n',
+                f"            name_id: crate::NameId::{name_ids[entry['python_name']]},\n",
                 f"            python_module: {_rust_str_lit(entry['python_module'])},\n",
                 f"            text_signature: {_rust_optional_str(entry['text_signature'])},\n",
                 f'            runtime_name: "{entry["runtime_name"]}",\n',

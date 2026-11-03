@@ -598,7 +598,7 @@ unsafe fn prepare_dataclass_class_metadata(
         let mut projection_owners = Vec::new();
         for index in 0..logical_len {
             let name = (&(*desc).field_names)[index].as_bytes();
-            let key = attr_name_bits_from_bytes(py, name).ok_or(())?;
+            let key = dynamic_attr_name_bits(py, name).ok_or(())?;
             projection_owners.push(crate::PtrDropGuard::new(
                 obj_from_bits(key).as_ptr().unwrap(),
             ));
@@ -640,8 +640,9 @@ unsafe fn prepare_dataclass_class_metadata(
         // Reset the private projection on retry with a different validated class.
         (*desc).field_flags.clear();
         (*desc).hash_mode = 0;
-        let flags_name =
-            attr_name_bits_from_bytes(py, b"__molt_dataclass_field_flags__").ok_or(())?;
+        let flags_name = crate::NameId::DunderMoltDataclassFieldFlags
+            .owned_bits(py)
+            .ok_or(())?;
         let lookup = class_attr_lookup_raw_mro(py, class, flags_name);
         dec_ref_bits(py, flags_name);
         if let Some(flags) = lookup?
@@ -660,7 +661,9 @@ unsafe fn prepare_dataclass_class_metadata(
                 (*desc).field_flags = flags;
             }
         }
-        let hash_name = attr_name_bits_from_bytes(py, b"__molt_dataclass_hash__").ok_or(())?;
+        let hash_name = crate::NameId::DunderMoltDataclassHash
+            .owned_bits(py)
+            .ok_or(())?;
         let lookup = class_attr_lookup_raw_mro(py, class, hash_name);
         dec_ref_bits(py, hash_name);
         if let Some(hash) = lookup?

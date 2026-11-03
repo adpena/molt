@@ -30,7 +30,12 @@ pub fn global_type_version() -> u64 {
 
 #[inline(always)]
 pub fn bump_type_version() -> u64 {
-    GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::AcqRel) + 1
+    GLOBAL_TYPE_VERSION
+        .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |version| {
+            version.checked_add(1)
+        })
+        .expect("global type generation exhausted")
+        + 1
 }
 
 pub(crate) mod accessors;
@@ -3727,7 +3732,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
             }
         },
         || {
-            let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
+            let Some(del_name_bits) = crate::NameId::DunderDel.owned_bits(py) else {
                 return;
             };
             let _del_name_owner = obj_from_bits(del_name_bits)
@@ -5141,7 +5146,7 @@ mod tests {
             unsafe { super::class_finish_definition(_py, class_ptr) }
                 .expect("seal replacement class before measuring assignment ownership");
             assert!(unsafe { super::class_definition_is_finished(class_ptr) });
-            let dict_name = crate::attr_name_bits_from_bytes(_py, b"__dict__")
+            let dict_name = crate::dynamic_attr_name_bits(_py, b"__dict__")
                 .expect("instance dictionary descriptor name");
             let namespace = crate::obj_from_bits(unsafe { crate::class_dict_bits(class_ptr) })
                 .as_ptr()

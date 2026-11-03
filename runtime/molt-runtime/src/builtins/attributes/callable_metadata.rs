@@ -94,8 +94,7 @@ pub(crate) unsafe fn read(
                 );
             });
         }
-        let value =
-            crate::call::function::function_metadata_bits(py, object, field.name().as_bytes());
+        let value = crate::call::function::function_metadata_bits(py, object, field);
         if obj_from_bits(value).is_none()
             && matches!(field, Field::Name | Field::QualName | Field::Owner)
         {
@@ -145,7 +144,12 @@ pub(crate) unsafe fn write(
             }
         } else {
             let value = value.unwrap_or(MoltObject::none().bits());
-            if !crate::call::class_init::function_set_attr_name(py, object, b"__module__", value) {
+            if !crate::call::class_init::function_set_attr_name(
+                py,
+                object,
+                crate::NameId::DunderModule,
+                value,
+            ) {
                 return Err(());
             }
         }
@@ -184,7 +188,7 @@ unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[CallableMetadat
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
         let kind = NativeCallableKind::from_class(py, owner);
         for field in fields {
-            let Some(name) = attr_name_bits_from_bytes(py, field.name().as_bytes()) else {
+            let Some(name) = field.name_id().owned_bits(py) else {
                 return false;
             };
             // CPython's methodobject/descrobject/funcobject declaration kind

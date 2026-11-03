@@ -188,7 +188,7 @@ mod dict_order_tests {
     }
 
     fn install(py: &PyToken<'_>, class: u64, name: &[u8], target: *const (), arity: u64) {
-        let name = attr_name_bits_from_bytes(py, name).unwrap();
+        let name = dynamic_attr_name_bits(py, name).unwrap();
         let function = MoltObject::from_ptr(alloc_runtime_function_obj(
             py,
             runtime_fn_addr("json_order_callback", target),
@@ -203,7 +203,7 @@ mod dict_order_tests {
     }
 
     fn subclass(py: &PyToken<'_>, base: u64) -> u64 {
-        let name = attr_name_bits_from_bytes(py, b"JsonOrderProbe").unwrap();
+        let name = dynamic_attr_name_bits(py, b"JsonOrderProbe").unwrap();
         let class = molt_class_new(name);
         dec_ref_bits(py, name);
         let result = molt_class_set_base(class, base);

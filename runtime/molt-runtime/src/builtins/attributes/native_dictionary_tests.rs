@@ -37,7 +37,7 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
         unsafe {
             WRITTEN.store(u64::MAX, Ordering::Relaxed);
             DELETED.store(u64::MAX, Ordering::Relaxed);
-            let name = attr_name_bits_from_bytes(py, b"SubscriptionTuple").unwrap();
+            let name = dynamic_attr_name_bits(py, b"SubscriptionTuple").unwrap();
             let class = molt_class_new(name);
             molt_class_set_base(class, builtin_classes(py).tuple);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
@@ -47,7 +47,7 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
                 (b"__setitem__".as_slice(), fn_addr!(set), 3),
                 (b"__delitem__".as_slice(), fn_addr!(delete), 2),
             ] {
-                let name = attr_name_bits_from_bytes(py, name).unwrap();
+                let name = dynamic_attr_name_bits(py, name).unwrap();
                 let function = alloc_function_obj(py, target, arity);
                 let function = MoltObject::from_ptr(function).bits();
                 assert!(dict_set_in_place(py, namespace, name, function));
@@ -138,9 +138,9 @@ fn native_function_public_dictionary_policy_preserves_private_metadata() {
             let managed = alloc_function_obj(py, fn_addr!(molt_len), 1);
             assert!(!managed.is_null());
             let managed_bits = MoltObject::from_ptr(managed).bits();
-            let name = attr_name_bits_from_bytes(py, b"extra").unwrap();
-            let dictionary = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
-            let module = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+            let name = dynamic_attr_name_bits(py, b"extra").unwrap();
+            let dictionary = dynamic_attr_name_bits(py, b"__dict__").unwrap();
+            let module = dynamic_attr_name_bits(py, b"__module__").unwrap();
             let value = MoltObject::from_int(37).bits();
             assert!(crate::call::class_init::function_set_attr_bits(
                 py, native, name, value
@@ -222,7 +222,7 @@ fn native_tuple_and_io_dictionaries_have_one_traversed_cleared_owner() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let classes = builtin_classes(py);
-            let name = attr_name_bits_from_bytes(py, b"NativeDictionaryTuple").unwrap();
+            let name = dynamic_attr_name_bits(py, b"NativeDictionaryTuple").unwrap();
             let class = molt_class_new(name);
             molt_class_set_base(class, classes.tuple);
             assert!(!exception_pending(py));
@@ -238,9 +238,9 @@ fn native_tuple_and_io_dictionaries_have_one_traversed_cleared_owner() {
             let io = crate::builtins::io::molt_bytesio_new(classes.bytes_io, empty_bits);
             dec_ref_bits(py, empty_bits);
             assert!(obj_from_bits(io).as_ptr().is_some());
-            let key = attr_name_bits_from_bytes(py, b"extra").unwrap();
-            let dict_key = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
-            let closed_key = attr_name_bits_from_bytes(py, b"closed").unwrap();
+            let key = dynamic_attr_name_bits(py, b"extra").unwrap();
+            let dict_key = dynamic_attr_name_bits(py, b"__dict__").unwrap();
+            let closed_key = dynamic_attr_name_bits(py, b"closed").unwrap();
             for owner in [tuple, io] {
                 let pointer = obj_from_bits(owner).as_ptr().unwrap();
                 molt_set_attr_name(owner, key, item_bits);
@@ -329,9 +329,9 @@ fn sequence_getitem_declarations_own_lookup_namespace_and_descriptor_metadata() 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let classes = builtin_classes(py);
-        let key = attr_name_bits_from_bytes(py, b"__getitem__").unwrap();
-        let owner_key = attr_name_bits_from_bytes(py, b"__objclass__").unwrap();
-        let signature_key = attr_name_bits_from_bytes(py, b"__text_signature__").unwrap();
+        let key = dynamic_attr_name_bits(py, b"__getitem__").unwrap();
+        let owner_key = dynamic_attr_name_bits(py, b"__objclass__").unwrap();
+        let signature_key = dynamic_attr_name_bits(py, b"__text_signature__").unwrap();
         for (owner, kind, signature) in [
             (classes.bytes, classes.wrapper_descriptor, "($self, key, /)"),
             (
@@ -349,10 +349,13 @@ fn sequence_getitem_declarations_own_lookup_namespace_and_descriptor_metadata() 
                 "($self, key, /)",
             ),
         ] {
-            let descriptor =
-                crate::builtins::methods::builtin_class_method_bits(py, owner, "__getitem__")
-                    .expect("native lookup succeeds")
-                    .expect("every builtin sequence declares its subscription descriptor");
+            let descriptor = crate::builtins::methods::builtin_class_method_bits(
+                py,
+                owner,
+                crate::NameId::DunderGetitem,
+            )
+            .expect("native lookup succeeds")
+            .expect("every builtin sequence declares its subscription descriptor");
             assert_eq!(type_of_bits(py, descriptor), kind);
             let pointer = obj_from_bits(descriptor).as_ptr().unwrap();
             unsafe {
@@ -396,7 +399,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let classes = builtin_classes(py);
-            let key = attr_name_bits_from_bytes(py, b"fromkeys").unwrap();
+            let key = dynamic_attr_name_bits(py, b"fromkeys").unwrap();
             // Materialize the class dictionary before looking up this member.
             assert!(crate::builtins::methods::publish_builtin_class_methods(
                 py,
@@ -412,17 +415,27 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                 classes.classmethod_descriptor
             );
             assert_eq!(
-                crate::builtins::methods::builtin_class_method_bits(py, classes.dict, "fromkeys"),
+                crate::builtins::methods::builtin_class_method_bits(
+                    py,
+                    classes.dict,
+                    crate::NameId::Fromkeys
+                ),
                 Ok(Some(class_descriptor))
             );
-            let append =
-                crate::builtins::methods::builtin_class_method_bits(py, classes.list, "append")
-                    .expect("method lookup succeeds")
-                    .unwrap();
-            let length =
-                crate::builtins::methods::builtin_class_method_bits(py, classes.list, "__len__")
-                    .expect("method lookup succeeds")
-                    .unwrap();
+            let append = crate::builtins::methods::builtin_class_method_bits(
+                py,
+                classes.list,
+                crate::NameId::Append,
+            )
+            .expect("method lookup succeeds")
+            .unwrap();
+            let length = crate::builtins::methods::builtin_class_method_bits(
+                py,
+                classes.list,
+                crate::NameId::DunderLen,
+            )
+            .expect("method lookup succeeds")
+            .unwrap();
             assert_eq!(type_of_bits(py, append), classes.method_descriptor);
             assert_eq!(type_of_bits(py, length), classes.wrapper_descriptor);
             let list_ptr = alloc_list(py, &[]);
@@ -449,7 +462,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                     b"__func__",
                     b"__molt_arg_names__",
                 ] {
-                    let name = attr_name_bits_from_bytes(py, name).unwrap();
+                    let name = dynamic_attr_name_bits(py, name).unwrap();
                     assert!(
                         attr_lookup_ptr(py, pointer, name)
                             .expect("operation succeeds")
@@ -458,7 +471,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, name);
                 }
-                let name = attr_name_bits_from_bytes(py, b"__qualname__").unwrap();
+                let name = dynamic_attr_name_bits(py, b"__qualname__").unwrap();
                 let qualified = attr_lookup_ptr(py, pointer, name)
                     .expect("operation succeeds")
                     .unwrap();
@@ -470,7 +483,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                 dec_ref_bits(py, qualified);
                 dec_ref_bits(py, name);
             }
-            let get = attr_name_bits_from_bytes(py, b"__get__").unwrap();
+            let get = dynamic_attr_name_bits(py, b"__get__").unwrap();
             assert!(
                 attr_lookup_ptr(py, obj_from_bits(bound_append).as_ptr().unwrap(), get)
                     .expect("operation succeeds")
@@ -506,7 +519,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
             // around a native callable, and delegates reads to its function.
             let managed_ptr = alloc_function_obj(py, fn_addr!(molt_len), 1);
             let managed = MoltObject::from_ptr(managed_ptr).bits();
-            let extra = attr_name_bits_from_bytes(py, b"extra").unwrap();
+            let extra = dynamic_attr_name_bits(py, b"extra").unwrap();
             assert!(crate::call::class_init::function_set_attr_bits(
                 py,
                 managed_ptr,
@@ -558,10 +571,13 @@ fn native_bound_callable_module_has_one_independent_traced_edge() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let classes = builtin_classes(py);
-            let descriptor =
-                crate::builtins::methods::builtin_class_method_bits(py, classes.list, "append")
-                    .expect("method lookup succeeds")
-                    .unwrap();
+            let descriptor = crate::builtins::methods::builtin_class_method_bits(
+                py,
+                classes.list,
+                crate::NameId::Append,
+            )
+            .expect("method lookup succeeds")
+            .unwrap();
             let list = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             let first = descriptor_bind(py, descriptor, Some(classes.list), Some(list))
                 .expect("operation succeeds")
@@ -573,7 +589,7 @@ fn native_bound_callable_module_has_one_independent_traced_edge() {
             let value_ptr = alloc_list(py, &[]);
             let value = MoltObject::from_ptr(value_ptr).bits();
             let before = (*header_from_obj_ptr(value_ptr)).ref_count_snapshot();
-            let module = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+            let module = dynamic_attr_name_bits(py, b"__module__").unwrap();
             molt_set_attr_name(first, module, value);
             assert!(!exception_pending(py));
             assert_eq!(
@@ -789,7 +805,7 @@ fn native_spec_module_preserves_descriptors_and_retires_warning_failures() {
             };
             for action in [b"error".as_slice(), b"ignore".as_slice()] {
                 crate::molt_warnings_resetwarnings();
-                let action_bits = crate::attr_name_bits_from_bytes(py, action).unwrap();
+                let action_bits = crate::dynamic_attr_name_bits(py, action).unwrap();
                 let category = crate::builtins::exceptions::exception_class_bits(
                     py,
                     BuiltinExc::DeprecationWarning,
@@ -1180,8 +1196,8 @@ fn function_dictionary_descriptor_vars_generic_reads_and_gc_share_one_owner() {
             assert!(!function.is_null() && !receiver.is_null());
             let function_bits = MoltObject::from_ptr(function).bits();
             let receiver_bits = MoltObject::from_ptr(receiver).bits();
-            let key = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
-            let extra = attr_name_bits_from_bytes(py, b"extra").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__dict__").unwrap();
+            let extra = dynamic_attr_name_bits(py, b"extra").unwrap();
             assert_eq!(crate::instance_dict_bits(function), 0);
             assert_eq!(
                 crate::object::instance_dict_bits_ptr(function),
@@ -1319,8 +1335,8 @@ fn native_callable_module_assignment_failure_preserves_the_physical_owner() {
             );
             assert!(!callable.is_null());
             let callable_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(callable).unwrap();
-            let module_key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
-            let module = attr_name_bits_from_bytes(py, b"unchanged_module").unwrap();
+            let module_key = dynamic_attr_name_bits(py, b"__module__").unwrap();
+            let module = dynamic_attr_name_bits(py, b"unchanged_module").unwrap();
             molt_set_attr_name(callable_bits, module_key, module);
             assert!(
                 !exception_pending(py),
@@ -1337,10 +1353,10 @@ fn native_callable_module_assignment_failure_preserves_the_physical_owner() {
             // internal name slot of a valid cold class to exercise real bridge
             // admission failure, without replacing a hook or synthesizing an
             // exception. Restore the invariant before assertions/retirement.
-            let name = attr_name_bits_from_bytes(py, b"ModuleValue").unwrap();
+            let name = dynamic_attr_name_bits(py, b"ModuleValue").unwrap();
             let unrepresentable = molt_class_new(name);
             assert!(!exception_pending(py));
-            let bad_name = attr_name_bits_from_bytes(py, b"Module\0Value").unwrap();
+            let bad_name = dynamic_attr_name_bits(py, b"Module\0Value").unwrap();
             let class_ptr = obj_from_bits(unrepresentable).as_ptr().unwrap();
             crate::object::class_storage::ClassReferenceSlot::Name
                 .replace_borrowed(py, class_ptr, bad_name);
@@ -1390,8 +1406,8 @@ fn function_typed_metadata_survives_public_dictionary_replacement_and_clears_onc
             let value_bits = MoltObject::from_ptr(value).bits();
             let defaults = alloc_tuple(py, &[value_bits]);
             let defaults_bits = MoltObject::from_ptr(defaults).bits();
-            let key = attr_name_bits_from_bytes(py, b"__defaults__").unwrap();
-            let dict_key = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__defaults__").unwrap();
+            let dict_key = dynamic_attr_name_bits(py, b"__dict__").unwrap();
             assert!(crate::call::class_init::function_set_attr_bits(
                 py,
                 function,
@@ -1455,7 +1471,7 @@ fn type_abstract_state_is_local_latched_and_updates_only_existing_c_views() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = attr_name_bits_from_bytes(py, b"AbstractState").unwrap();
+            let name = dynamic_attr_name_bits(py, b"AbstractState").unwrap();
             let class = crate::molt_class_new(name);
             let child = crate::molt_class_new(name);
             dec_ref_bits(py, name);
@@ -1465,7 +1481,7 @@ fn type_abstract_state_is_local_latched_and_updates_only_existing_c_views() {
             let child_ptr = obj_from_bits(child).as_ptr().unwrap();
             crate::object::class_finish_definition(py, class_ptr).unwrap();
             crate::object::class_finish_definition(py, child_ptr).unwrap();
-            let key = attr_name_bits_from_bytes(py, b"__abstractmethods__").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__abstractmethods__").unwrap();
             let values =
                 MoltObject::from_ptr(alloc_list(py, &[MoltObject::from_int(1).bits()])).bits();
             assert!(!GLOBAL_BRIDGE.type_has_projection(class));
@@ -1599,7 +1615,7 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = attr_name_bits_from_bytes(py, b"MetadataPublication").unwrap();
+            let name = dynamic_attr_name_bits(py, b"MetadataPublication").unwrap();
             let class = molt_class_new(name);
             molt_class_set_base(class, builtin_classes(py).object);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
@@ -1627,7 +1643,7 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
                     (typeobj::TypeAttributeField::Annotations, dictionary),
                     (typeobj::TypeAttributeField::AbstractMethods, methods),
                 ] {
-                    let key = attr_name_bits_from_bytes(py, field.name().as_bytes()).unwrap();
+                    let key = dynamic_attr_name_bits(py, field.name().as_bytes()).unwrap();
                     assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 1);
                     WATCHES.store(0, Ordering::Relaxed);
                     let epoch = class_layout_version_bits(class_ptr);
@@ -1669,7 +1685,7 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
                     )
                     .expect_err("invalid type name is rejected");
                 } else {
-                    let key = attr_name_bits_from_bytes(py, b"__name__").unwrap();
+                    let key = dynamic_attr_name_bits(py, b"__name__").unwrap();
                     molt_set_attr_name(class, key, MoltObject::from_int(1).bits());
                     dec_ref_bits(py, key);
                 }
@@ -1695,7 +1711,7 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
 
             let finalizer_class = molt_class_new(name);
             molt_class_set_base(finalizer_class, builtin_classes(py).object);
-            let finalizer_key = attr_name_bits_from_bytes(py, b"__del__").unwrap();
+            let finalizer_key = dynamic_attr_name_bits(py, b"__del__").unwrap();
             let function =
                 MoltObject::from_ptr(alloc_function_obj(py, fn_addr!(retired), 1)).bits();
             molt_set_attr_name(finalizer_class, finalizer_key, function);
@@ -1751,8 +1767,8 @@ fn class_creation_doc_is_private_traced_and_independent_of_mutable_namespace() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             for guarded in [false, true] {
-                let name = attr_name_bits_from_bytes(py, b"BirthDoc").unwrap();
-                let key = attr_name_bits_from_bytes(py, b"__doc__").unwrap();
+                let name = dynamic_attr_name_bits(py, b"BirthDoc").unwrap();
+                let key = dynamic_attr_name_bits(py, b"__doc__").unwrap();
                 let doc = MoltObject::from_ptr(alloc_string(
                     py,
                     b"BirthDoc(a, b)\n--\n\nOriginal.\0ignored",
@@ -1807,7 +1823,7 @@ fn class_creation_doc_is_private_traced_and_independent_of_mutable_namespace() {
                     (b"Renamed".as_slice(), None),
                     (b"BirthDoc".as_slice(), Some("(a, b)")),
                 ] {
-                    let current = attr_name_bits_from_bytes(py, current).unwrap();
+                    let current = dynamic_attr_name_bits(py, current).unwrap();
                     type_metadata::write(py, class, Field::Name, Some(current))
                         .expect("name assignment succeeds");
                     let result = type_metadata::read(py, class, Field::TextSignature)
@@ -1837,7 +1853,7 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
     static FAIL_EQUALITY: AtomicBool = AtomicBool::new(false);
     extern "C" fn module_key_hash(_self: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            let key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__module__").unwrap();
             let hash = crate::molt_hash_builtin(key);
             dec_ref_bits(py, key);
             hash
@@ -1858,9 +1874,9 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
-            let parent_name = attr_name_bits_from_bytes(py, b"ModuleParent").unwrap();
-            let child_name = attr_name_bits_from_bytes(py, b"ModuleChild").unwrap();
+            let key = dynamic_attr_name_bits(py, b"__module__").unwrap();
+            let parent_name = dynamic_attr_name_bits(py, b"ModuleParent").unwrap();
+            let child_name = dynamic_attr_name_bits(py, b"ModuleChild").unwrap();
             let parent = molt_class_new(parent_name);
             molt_class_set_base(parent, builtin_classes(py).object);
             let child = molt_class_new(child_name);
@@ -1880,7 +1896,7 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
             // A same-hash key equal to __module__ must not be skipped by a
             // physical string-byte probe, and its equality errors must escape.
             FAIL_EQUALITY.store(false, Ordering::Relaxed);
-            let key_name = attr_name_bits_from_bytes(py, b"ModuleNamespaceKey").unwrap();
+            let key_name = dynamic_attr_name_bits(py, b"ModuleNamespaceKey").unwrap();
             let key_class = molt_class_new(key_name);
             molt_class_set_base(key_class, builtin_classes(py).object);
             let key_class_ptr = obj_from_bits(key_class).as_ptr().unwrap();
@@ -1891,7 +1907,7 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
                 (b"__hash__".as_slice(), fn_addr!(module_key_hash), 1),
                 (b"__eq__".as_slice(), fn_addr!(module_key_equal), 2),
             ] {
-                let name = attr_name_bits_from_bytes(py, name).unwrap();
+                let name = dynamic_attr_name_bits(py, name).unwrap();
                 let function = MoltObject::from_ptr(alloc_function_obj(py, address, arity)).bits();
                 assert!(dict_set_in_place(py, key_dictionary, name, function));
                 dec_ref_bits(py, function);

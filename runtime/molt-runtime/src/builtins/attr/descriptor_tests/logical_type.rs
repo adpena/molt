@@ -370,7 +370,7 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             );
             assert_eq!(
                 new,
-                crate::builtins::methods::type_method_bits(py, "__new__")
+                crate::builtins::methods::type_method_bits(py, crate::NameId::DunderNew)
                     .expect("method lookup succeeds")
                     .unwrap()
             );

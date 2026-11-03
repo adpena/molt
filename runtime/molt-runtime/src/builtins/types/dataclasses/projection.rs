@@ -19,7 +19,8 @@ pub(in crate::builtins::types::dataclasses) fn dataclasses_fields_dict_bits(
     cls_bits: u64,
     missing: u64,
 ) -> Option<u64> {
-    let fields_bits = dc_getattr_default_bits(_py, cls_bits, b"__dataclass_fields__", missing)?;
+    let fields_bits =
+        dc_getattr_default_bits(_py, cls_bits, crate::NameId::DunderDataclassFields, missing)?;
     if exception_pending(_py) {
         clear_exception(_py);
         return None;
@@ -66,7 +67,12 @@ fn dataclasses_collect_fields_by_tag<'a, 'py>(
     }?;
     for (index, pair) in order.as_chunks::<2>().0.iter().enumerate() {
         let field_obj_bits = pair[1];
-        let tag_bits = dc_getattr_default_bits(_py, field_obj_bits, b"_field_type", missing)?;
+        let tag_bits = dc_getattr_default_bits(
+            _py,
+            field_obj_bits,
+            crate::NameId::PrivateFieldType,
+            missing,
+        )?;
         if exception_pending(_py) {
             return None;
         }
@@ -125,7 +131,7 @@ fn dataclasses_deepcopy(_py: &PyToken<'_>, value_bits: u64) -> u64 {
         return MoltObject::none().bits();
     }
     let memo_bits = MoltObject::from_ptr(memo_ptr).bits();
-    let Some(deepcopy_name_bits) = attr_name_bits_from_bytes(_py, b"__deepcopy__") else {
+    let Some(deepcopy_name_bits) = crate::NameId::DunderDeepcopy.owned_bits(_py) else {
         dec_ref_bits(_py, memo_bits);
         return MoltObject::none().bits();
     };
@@ -224,7 +230,7 @@ fn dataclasses_asdict_inner(
         else {
             return MoltObject::none().bits();
         };
-        let Some(name_name_bits) = attr_name_bits_from_bytes(_py, b"name") else {
+        let Some(name_name_bits) = crate::NameId::Name.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
         let mut item_bits: Vec<u64> = Vec::with_capacity(field_objs.len());
@@ -371,7 +377,7 @@ fn dataclasses_astuple_inner(
         else {
             return MoltObject::none().bits();
         };
-        let Some(name_name_bits) = attr_name_bits_from_bytes(_py, b"name") else {
+        let Some(name_name_bits) = crate::NameId::Name.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
         let mut values: Vec<u64> = Vec::with_capacity(field_objs.len());
@@ -504,7 +510,7 @@ pub extern "C" fn molt_dataclasses_is_dataclass(obj_bits: u64) -> u64 {
                 return MoltObject::from_bool(false).bits();
             }
         }
-        let Some(fields_name_bits) = attr_name_bits_from_bytes(_py, b"__dataclass_fields__") else {
+        let Some(fields_name_bits) = crate::NameId::DunderDataclassFields.owned_bits(_py) else {
             return MoltObject::from_bool(false).bits();
         };
         let mut has_fields = false;
@@ -650,18 +656,18 @@ pub extern "C" fn molt_dataclasses_replace(
             dec_ref_bits(_py, values_bits);
             return MoltObject::none().bits();
         };
-        let Some(field_type_name_bits) = attr_name_bits_from_bytes(_py, b"_field_type") else {
+        let Some(field_type_name_bits) = crate::NameId::PrivateFieldType.owned_bits(_py) else {
             dec_ref_bits(_py, changes_copy_bits);
             dec_ref_bits(_py, values_bits);
             return MoltObject::none().bits();
         };
-        let Some(name_name_bits) = attr_name_bits_from_bytes(_py, b"name") else {
+        let Some(name_name_bits) = crate::NameId::Name.owned_bits(_py) else {
             dec_ref_bits(_py, field_type_name_bits);
             dec_ref_bits(_py, changes_copy_bits);
             dec_ref_bits(_py, values_bits);
             return MoltObject::none().bits();
         };
-        let Some(init_name_bits) = attr_name_bits_from_bytes(_py, b"init") else {
+        let Some(init_name_bits) = crate::NameId::Init.owned_bits(_py) else {
             dec_ref_bits(_py, name_name_bits);
             dec_ref_bits(_py, field_type_name_bits);
             dec_ref_bits(_py, changes_copy_bits);

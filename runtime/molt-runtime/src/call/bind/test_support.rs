@@ -219,5 +219,5 @@ pub(super) extern "C" fn compiled_second_arg_returns_owned_arg(
 /// another metadata-name allowlist here makes new binder fields fail in the
 /// fixture before they ever reach their production consumer.
 pub(super) fn intern_metadata_name(_py: &crate::PyToken<'_>, name: &'static [u8]) -> u64 {
-    crate::attr_name_bits_from_bytes(_py, name).expect("metadata name")
+    crate::dynamic_attr_name_bits(_py, name).expect("metadata name")
 }

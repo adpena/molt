@@ -8,8 +8,8 @@ pub(crate) mod type_policy;
 use crate::builtins::attr::{class_attr_lookup_raw_mro, descriptor_bind};
 use crate::{
     MoltObject, PyToken, TYPE_ID_STATICMETHOD, TYPE_ID_TYPE, builtin_classes, dec_ref_bits,
-    inc_ref_bits, intern_static_name, obj_from_bits, object_class_bits, object_type_id,
-    raise_exception, raise_not_callable, runtime_state, staticmethod_func_bits,
+    inc_ref_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    raise_not_callable, staticmethod_func_bits,
 };
 
 /// Preserve the caller's handler-stack baseline across every runtime invocation.
@@ -240,8 +240,7 @@ pub(crate) unsafe fn lookup_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> Ca
         // arbitrary user code and drop their original owners.
         inc_ref_bits(_py, class_bits);
         inc_ref_bits(_py, obj_bits);
-        let call_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
+        let call_name_bits = crate::NameId::DunderCall.bits(_py);
         let result = match class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits) {
             Ok(Some(raw_bits)) => {
                 match descriptor_bind(_py, raw_bits, Some(class_bits), Some(obj_bits)) {
@@ -282,8 +281,7 @@ pub(crate) unsafe fn has_type_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> 
         // currently derive presence from their declaration namespace; dispatch
         // separately owns fallible descriptor binding.
         molt_cpython_abi::api::errors::with_preserved_error(|| {
-            let call_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
+            let call_name_bits = crate::NameId::DunderCall.bits(_py);
             matches!(
                 class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits),
                 Ok(Some(_))

@@ -7,16 +7,16 @@ fn compiled_finder_binds_defaults_on_class_instance_and_subclass() {
         let builtin = compiled_loader_builtin_class(py);
         let instance = molt_importlib_compiled_loader();
         let child_name =
-            attr_name_bits_from_bytes(py, b"CatalogFinderSubclass").expect("subclass name");
+            dynamic_attr_name_bits(py, b"CatalogFinderSubclass").expect("subclass name");
         let child = crate::molt_class_new(child_name);
         let outcome = crate::molt_class_set_base(child, builtin);
         dec_ref_bits(py, outcome);
         assert!(!exception_pending(py));
-        let missing = attr_name_bits_from_bytes(py, b"__molt_catalog_finder_missing_control__")
+        let missing = dynamic_attr_name_bits(py, b"__molt_catalog_finder_missing_control__")
             .expect("missing name");
         let marker = MoltObject::from_int(39).bits();
         for receiver in [builtin, instance, child] {
-            let key = attr_name_bits_from_bytes(py, b"find_spec").expect("finder key");
+            let key = dynamic_attr_name_bits(py, b"find_spec").expect("finder key");
             let find = crate::builtins::attributes::get_attr_name(py, receiver, key)
                 .expect("bound finder");
             dec_ref_bits(py, key);

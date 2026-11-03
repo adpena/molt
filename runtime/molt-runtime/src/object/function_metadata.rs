@@ -69,32 +69,34 @@ impl FunctionMetadataField {
         Self::ALL.get(value as usize).copied()
     }
 
-    pub(crate) const fn name(self) -> &'static str {
+    pub(crate) const fn name_id(self) -> crate::NameId {
         match self {
-            Self::Name => "__name__",
-            Self::QualName => "__qualname__",
-            Self::Doc => "__doc__",
-            Self::TextSignature => "__text_signature__",
-            Self::Module => "__module__",
-            Self::SelfValue => "__self__",
-            Self::Owner => "__objclass__",
-            Self::Defaults => "__defaults__",
-            Self::KeywordDefaults => "__kwdefaults__",
-            Self::ArgumentNames => "__molt_arg_names__",
-            Self::PositionalOnly => "__molt_posonly__",
-            Self::KeywordOnlyNames => "__molt_kwonly_names__",
-            Self::Varargs => "__molt_vararg__",
-            Self::VarKeywords => "__molt_varkw__",
-            Self::BindKind => "__molt_bind_kind__",
+            Self::Name => crate::NameId::DunderName,
+            Self::QualName => crate::NameId::DunderQualname,
+            Self::Doc => crate::NameId::DunderDoc,
+            Self::TextSignature => crate::NameId::DunderTextSignature,
+            Self::Module => crate::NameId::DunderModule,
+            Self::SelfValue => crate::NameId::DunderSelf,
+            Self::Owner => crate::NameId::DunderObjclass,
+            Self::Defaults => crate::NameId::DunderDefaults,
+            Self::KeywordDefaults => crate::NameId::DunderKwdefaults,
+            Self::ArgumentNames => crate::NameId::DunderMoltArgNames,
+            Self::PositionalOnly => crate::NameId::DunderMoltPosonly,
+            Self::KeywordOnlyNames => crate::NameId::DunderMoltKwonlyNames,
+            Self::Varargs => crate::NameId::DunderMoltVararg,
+            Self::VarKeywords => crate::NameId::DunderMoltVarkw,
+            Self::BindKind => crate::NameId::DunderMoltBindKind,
         }
     }
-
-    pub(crate) fn from_name(name: &[u8]) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|field| field.name().as_bytes() == name)
+    pub(crate) const fn name(self) -> &'static str {
+        self.name_id().as_str()
     }
-
+    pub(crate) fn from_name(name: &[u8]) -> Option<Self> {
+        Self::from_id(crate::NameId::from_bytes(name)?)
+    }
+    pub(crate) fn from_id(name: crate::NameId) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.name_id() == name)
+    }
     unsafe fn slot(self, function: *mut u8) -> *mut u64 {
         unsafe {
             debug_assert_eq!(object_type_id(function), TYPE_ID_FUNCTION);
@@ -126,12 +128,7 @@ impl FunctionMetadataField {
             crate::gil_assert();
             // Published code has already taken ownership of these facts.
             // Internal initializer replay cannot retain a stale second copy.
-            if super::layout::function_code_signature_metadata_bits(
-                function,
-                self.name().as_bytes(),
-            )
-            .is_some()
-            {
+            if super::layout::function_code_signature_metadata_bits(function, self).is_some() {
                 return MetadataRetirement {
                     py,
                     bits: self.take(function),
@@ -173,10 +170,9 @@ pub(crate) unsafe fn initialize(function: *mut u8) {
 
 /// One internal projection. Published code facts supersede setup fields;
 /// absent facts never fall back to user-writable dictionary entries.
-pub(crate) unsafe fn metadata_bits(function: *mut u8, name: &[u8]) -> Option<u64> {
+pub(crate) unsafe fn metadata_bits(function: *mut u8, field: FunctionMetadataField) -> Option<u64> {
     unsafe {
-        let field = FunctionMetadataField::from_name(name)?;
-        super::layout::function_code_signature_metadata_bits(function, name)
+        super::layout::function_code_signature_metadata_bits(function, field)
             .or_else(|| field.load(function))
     }
 }

@@ -34,7 +34,7 @@ pub(super) fn round(py: &PyToken<'_>, value: u64, digits: u64, supplied: bool) -
         }
     }
     let method = unsafe {
-        match crate::builtins::attr::lookup_special_method(py, value, b"__round__") {
+        match crate::builtins::attr::lookup_special_method(py, value, crate::NameId::DunderRound) {
             Ok(value) => value,
             Err(()) => return MoltObject::none().bits(),
         }

@@ -54,14 +54,17 @@ pub(crate) extern "C" fn raw_io_base_read(self_bits: u64, size_bits: u64) -> u64
             return MoltObject::none().bits();
         }
         if size < 0 {
-            return call(py, self_bits, b"readall", None);
+            return call(py, self_bits, crate::NameId::Readall, None);
         }
         let pointer = crate::object::builders::alloc_bytearray_with_len(py, size as usize);
         if pointer.is_null() {
             return MoltObject::none().bits();
         }
         let buffer = owned(py, MoltObject::from_ptr(pointer).bits());
-        let result = owned(py, call(py, self_bits, b"readinto", Some(buffer.bits())));
+        let result = owned(
+            py,
+            call(py, self_bits, crate::NameId::Readinto, Some(buffer.bits())),
+        );
         if exception_pending(py) || obj_from_bits(result.bits()).is_none() {
             return result.into_bits();
         }
@@ -160,7 +163,7 @@ pub(crate) extern "C" fn raw_io_base_readall(self_bits: u64) -> u64 {
         let mut chunks = ReadChunks(Vec::new());
         let mut output = Vec::new();
         loop {
-            let result = owned(py, call(py, self_bits, b"read", Some(size)));
+            let result = owned(py, call(py, self_bits, crate::NameId::Read, Some(size)));
             if exception_pending(py) {
                 if trap_eintr(py) {
                     continue;

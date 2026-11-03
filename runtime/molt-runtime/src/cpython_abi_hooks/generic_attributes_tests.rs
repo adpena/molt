@@ -597,7 +597,7 @@ fn function(py: &crate::PyToken<'_>, target: *const (), arity: u64) -> u64 {
 }
 
 fn member(py: &crate::PyToken<'_>, class: u64, name: &[u8], value: u64) {
-    let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let key = crate::dynamic_attr_name_bits(py, name).unwrap();
     crate::molt_set_attr_name(class, key, value);
     dec_ref_bits(py, key);
     assert!(!crate::exception_pending(py));
@@ -610,7 +610,7 @@ fn method(py: &crate::PyToken<'_>, class: u64, name: &[u8], target: *const (), a
 }
 
 fn attribute_class(py: &crate::PyToken<'_>, base: u64, dictless: bool) -> u64 {
-    let name = crate::attr_name_bits_from_bytes(py, b"ManagedGenericAttributes").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"ManagedGenericAttributes").unwrap();
     let class = crate::molt_class_new(name);
     dec_ref_bits(py, name);
     crate::molt_class_set_base(class, base);
@@ -713,8 +713,7 @@ fn explicit_native_wrappers_skip_managed_dispatch_but_keep_native_ancestors() {
                 };
                 let class = attribute_class(py, base, false);
                 let receiver = if native_override {
-                    let name =
-                        crate::attr_name_bits_from_bytes(py, b"SetterClassInstance").unwrap();
+                    let name = crate::dynamic_attr_name_bits(py, b"SetterClassInstance").unwrap();
                     let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
                     let namespace = crate::molt_dict_new(0);
                     let value = crate::builtins::types::molt_type_new(
@@ -961,7 +960,7 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
         }
         let descriptor_name = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::attr_name_bits_from_bytes(&py, b"OptionalDescriptor").unwrap(),
+            crate::dynamic_attr_name_bits(&py, b"OptionalDescriptor").unwrap(),
         );
         let descriptor_class = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
@@ -1045,7 +1044,7 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
 
 extern "C" fn colliding_hash(_receiver: u64) -> u64 {
     with_gil(|py| {
-        let name = crate::attr_name_bits_from_bytes(&py, b"shadow").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
         let result = crate::molt_hash_builtin(name);
         dec_ref_bits(&py, name);
         result
@@ -1066,7 +1065,7 @@ fn managed_generic_suppressed_dictionary_attribute_error_continues_to_class() {
         let class = attribute_class(&py, crate::builtin_classes(&py).list, false);
         let bits = crate::call::bind::call_bind_borrowed(&py, class, None, &[], &[], &[]);
         let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
-        let key_name = crate::attr_name_bits_from_bytes(&py, b"CollidingAttributeKey").unwrap();
+        let key_name = crate::dynamic_attr_name_bits(&py, b"CollidingAttributeKey").unwrap();
         let key_class = crate::molt_class_new(key_name);
         dec_ref_bits(&py, key_name);
         method(&py, key_class, b"__hash__", colliding_hash as *const (), 1);
@@ -1212,12 +1211,12 @@ fn managed_generic_numeric_subclasses_share_logical_attribute_identity() {
                     crate::molt_float_new(class, input)
                 };
                 assert!(!crate::exception_pending(&py));
-                let class_name = crate::attr_name_bits_from_bytes(&py, b"__class__").unwrap();
-                let marker = crate::attr_name_bits_from_bytes(&py, b"marker").unwrap();
-                let data = crate::attr_name_bits_from_bytes(&py, b"managed").unwrap();
-                let shadow = crate::attr_name_bits_from_bytes(&py, b"shadow").unwrap();
-                let conjugate = crate::attr_name_bits_from_bytes(&py, b"conjugate").unwrap();
-                let float = crate::attr_name_bits_from_bytes(&py, b"__float__").unwrap();
+                let class_name = crate::dynamic_attr_name_bits(&py, b"__class__").unwrap();
+                let marker = crate::dynamic_attr_name_bits(&py, b"marker").unwrap();
+                let data = crate::dynamic_attr_name_bits(&py, b"managed").unwrap();
+                let shadow = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
+                let conjugate = crate::dynamic_attr_name_bits(&py, b"conjugate").unwrap();
+                let float = crate::dynamic_attr_name_bits(&py, b"__float__").unwrap();
                 let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
                     &py,
                     &[
@@ -1340,8 +1339,8 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let classes = crate::builtin_classes(py);
-            let name = crate::attr_name_bits_from_bytes(py, b"__class__").unwrap();
-            let index = crate::attr_name_bits_from_bytes(py, b"__index__").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"__class__").unwrap();
+            let index = crate::dynamic_attr_name_bits(py, b"__index__").unwrap();
             let default = MoltObject::from_int(703).bits();
             for (base, dictless, dataclass) in [
                 (classes.object, false, false),
@@ -1410,10 +1409,13 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 refcount::Py_DECREF(c_receiver);
 
                 // Implicit protocols use the shared lookup authority in every tier.
-                let special =
-                    crate::builtins::attr::lookup_special_method_bits(py, receiver, index)
-                        .expect("special lookup succeeds")
-                        .expect("present __index__ protocol");
+                let special = crate::builtins::attr::lookup_special_method(
+                    py,
+                    receiver,
+                    crate::NameId::DunderIndex,
+                )
+                .expect("special lookup succeeds")
+                .expect("present __index__ protocol");
                 let result =
                     crate::call::bind::call_bind_borrowed(py, special, None, &[], &[], &[]);
                 assert_eq!(result, MoltObject::from_int(42).bits());
@@ -1446,7 +1448,11 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 }
                 member(py, class, b"__index__", MoltObject::from_float(0.0).bits());
                 assert_eq!(
-                    crate::builtins::attr::lookup_special_method_bits(py, receiver, index),
+                    crate::builtins::attr::lookup_special_method(
+                        py,
+                        receiver,
+                        crate::NameId::DunderIndex
+                    ),
                     Ok(Some(0)),
                     "a present zero-bit protocol value is not a miss"
                 );
@@ -1540,7 +1546,7 @@ thread_local! {
 }
 
 fn snapshot_class(py: &crate::PyToken<'_>, name: &[u8]) -> u64 {
-    let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let name = crate::dynamic_attr_name_bits(py, name).unwrap();
     let class = crate::molt_class_new(name);
     dec_ref_bits(py, name);
     crate::molt_class_set_base(class, crate::builtin_classes(py).object);
@@ -1556,7 +1562,7 @@ fn snapshot_receiver(py: &crate::PyToken<'_>, class: u64, dataclass: bool) -> u6
     if !dataclass {
         return unsafe { crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]) };
     }
-    let name = crate::attr_name_bits_from_bytes(py, b"SnapshotRecord").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"SnapshotRecord").unwrap();
     let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
     let receiver = crate::molt_dataclass_new(name, empty, empty, MoltObject::from_int(0).bits());
     crate::molt_dataclass_set_class(receiver, class);
@@ -1570,17 +1576,17 @@ extern "C" fn mutating_equality(_receiver: u64, _other: u64) -> u64 {
     record(5);
     with_gil(|py| {
         let [class, receiver, next_class, value] = SNAPSHOT_MUTATION.with(Cell::get);
-        let name = crate::attr_name_bits_from_bytes(&py, b"shadow").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
         crate::molt_set_attr_name(class, name, value);
         dec_ref_bits(&py, name);
         if next_class != 0 {
-            let name = crate::attr_name_bits_from_bytes(&py, b"__class__").unwrap();
+            let name = crate::dynamic_attr_name_bits(&py, b"__class__").unwrap();
             crate::molt_object_setattr(receiver, name, next_class);
             dec_ref_bits(&py, name);
         }
         // A real nested lookup retires the cache's descriptor reference. The
         // interrupted lookup must own its original selection independently.
-        let flush = crate::attr_name_bits_from_bytes(&py, b"cache_flush").unwrap();
+        let flush = crate::dynamic_attr_name_bits(&py, b"cache_flush").unwrap();
         let result = crate::molt_object_getattribute(receiver, flush);
         dec_ref_bits(&py, result);
         dec_ref_bits(&py, flush);
@@ -1613,9 +1619,9 @@ fn managed_generic_dictionary_mutation_retains_initial_class_value_and_miss() {
                 for variant in 0..3 {
                     CALLS.with(|calls| calls.set([0; 6]));
                     let class = snapshot_class(&py, b"SnapshotOwner");
-                    let old = crate::attr_name_bits_from_bytes(&py, b"old").unwrap();
-                    let new = crate::attr_name_bits_from_bytes(&py, b"new").unwrap();
-                    let name = crate::attr_name_bits_from_bytes(&py, b"shadow").unwrap();
+                    let old = crate::dynamic_attr_name_bits(&py, b"old").unwrap();
+                    let new = crate::dynamic_attr_name_bits(&py, b"new").unwrap();
+                    let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
                     if present {
                         member(&py, class, b"shadow", old);
                     }
@@ -1708,7 +1714,7 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
                 )
                 .unwrap();
             }
-            let name = crate::attr_name_bits_from_bytes(&py, b"shadow").unwrap();
+            let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
             SNAPSHOT_MUTATION.with(|context| {
                 context.set([class, receiver, next_class, MoltObject::from_int(99).bits()])
             });
@@ -1763,7 +1769,7 @@ fn managed_generic_descriptor_cache_keeps_lossless_name_identity() {
                     spelling,
                     MoltObject::from_int(index as i64).bits(),
                 );
-                names.push(crate::attr_name_bits_from_bytes(&py, spelling).unwrap());
+                names.push(crate::dynamic_attr_name_bits(&py, spelling).unwrap());
             }
             let receiver = snapshot_receiver(&py, class, dataclass);
             let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(&py, &[])).bits();
@@ -1927,10 +1933,8 @@ fn getattribute_callable_retires_under_its_exact_error_before_fallback() {
             drop(value);
             drop(callable); // Only the actual namespace and operation may retain it.
             let receiver = ExceptionValue::adopt(py, snapshot_receiver(py, class.bits(), false));
-            let name = ExceptionValue::adopt(
-                py,
-                crate::attr_name_bits_from_bytes(py, b"missing").unwrap(),
-            );
+            let name =
+                ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, b"missing").unwrap());
             let result =
                 ExceptionValue::adopt(py, crate::molt_get_attr_name(receiver.bits(), name.bits()));
             assert_eq!(result.bits(), MoltObject::from_int(71).bits());
@@ -1967,10 +1971,8 @@ fn fallible_type_publication_preserves_prior_on_success_and_selects_new_failure(
         unsafe {
             let class = ExceptionValue::adopt(py, snapshot_class(py, b"FalliblePublication"));
             let class_ptr = obj_from_bits(class.bits()).as_ptr().unwrap();
-            let name = ExceptionValue::adopt(
-                py,
-                crate::attr_name_bits_from_bytes(py, b"__call__").unwrap(),
-            );
+            let name =
+                ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, b"__call__").unwrap());
             let failure_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
                 BuiltinExc::RuntimeError,
@@ -2010,7 +2012,7 @@ fn fallible_type_publication_preserves_prior_on_success_and_selects_new_failure(
             let key = ExceptionValue::adopt(py, snapshot_receiver(py, key_class.bits(), false));
             let child_name = ExceptionValue::adopt(
                 py,
-                crate::attr_name_bits_from_bytes(py, b"PublicationDescendant").unwrap(),
+                crate::dynamic_attr_name_bits(py, b"PublicationDescendant").unwrap(),
             );
             let child = ExceptionValue::adopt(py, crate::molt_class_new(child_name.bits()));
             let base_result =

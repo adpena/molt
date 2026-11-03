@@ -117,7 +117,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                     break 'compute;
                 }
             }
-            let Some(init_name_bits) = attr_name_bits_from_bytes(_py, b"__init__") else {
+            let Some(init_name_bits) = crate::NameId::DunderInit.owned_bits(_py) else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             };
@@ -131,7 +131,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 }
             };
             let Some(user_init_marker_bits) =
-                attr_name_bits_from_bytes(_py, b"__molt_dataclass_user_init__")
+                crate::NameId::DunderMoltDataclassUserInit.owned_bits(_py)
             else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
@@ -150,7 +150,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 break 'compute;
             }
             let Some(make_dataclass_marker_bits) =
-                attr_name_bits_from_bytes(_py, b"__molt_make_dataclass__")
+                crate::NameId::DunderMoltMakeDataclass.owned_bits(_py)
             else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
@@ -169,7 +169,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 break 'compute;
             }
 
-            let Some(annotations_name_bits) = attr_name_bits_from_bytes(_py, b"__annotations__")
+            let Some(annotations_name_bits) = crate::NameId::DunderAnnotations.owned_bits(_py)
             else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
@@ -368,7 +368,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 break 'compute;
             }
 
-            let Some(annotations_key_bits) = attr_name_bits_from_bytes(_py, b"__annotations__")
+            let Some(annotations_key_bits) = crate::NameId::DunderAnnotations.owned_bits(_py)
             else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
@@ -381,7 +381,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 break 'compute;
             }
 
-            let Some(module_name_bits) = attr_name_bits_from_bytes(_py, b"__module__") else {
+            let Some(module_name_bits) = crate::NameId::DunderModule.owned_bits(_py) else {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             };
@@ -439,7 +439,7 @@ pub extern "C" fn molt_dataclasses_post_init(instance_bits: u64, initvar_values_
         let missing = missing_bits(_py);
 
         // Look up __post_init__ on the instance.
-        let Some(post_init_name_bits) = attr_name_bits_from_bytes(_py, b"__post_init__") else {
+        let Some(post_init_name_bits) = crate::NameId::DunderPostInit.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
         let method_bits = crate::builtins::attributes::molt_get_attr_name_default(
@@ -521,7 +521,7 @@ pub extern "C" fn molt_dataclasses_post_init(instance_bits: u64, initvar_values_
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_set_field_metadata(field_bits: u64, metadata_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(meta_name_bits) = attr_name_bits_from_bytes(_py, b"metadata") else {
+        let Some(meta_name_bits) = crate::NameId::Metadata.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
 
@@ -558,7 +558,7 @@ pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
         let missing = missing_bits(_py);
 
         // Check for __molt_initvar__ marker attribute.
-        if let Some(marker_bits) = attr_name_bits_from_bytes(_py, b"__molt_initvar__") {
+        if let Some(marker_bits) = crate::NameId::DunderMoltInitvar.owned_bits(_py) {
             let val = crate::builtins::attributes::molt_get_attr_name_default(
                 obj_bits,
                 marker_bits,
@@ -574,7 +574,7 @@ pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
 
         // Fall back: check class name.
         let cls_bits = type_of_bits(_py, obj_bits);
-        if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
+        if let Some(name_bits) = crate::NameId::DunderName.owned_bits(_py) {
             let name_val = crate::builtins::attributes::molt_get_attr_name_default(
                 cls_bits, name_bits, missing,
             );
@@ -605,7 +605,7 @@ pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
         let missing = missing_bits(_py);
 
         // Check for __molt_kw_only__ marker attribute.
-        if let Some(marker_bits) = attr_name_bits_from_bytes(_py, b"__molt_kw_only__") {
+        if let Some(marker_bits) = crate::NameId::DunderMoltKwOnly.owned_bits(_py) {
             let val = crate::builtins::attributes::molt_get_attr_name_default(
                 obj_bits,
                 marker_bits,
@@ -621,7 +621,7 @@ pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
 
         // Fall back: check class name.
         let cls_bits = type_of_bits(_py, obj_bits);
-        if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
+        if let Some(name_bits) = crate::NameId::DunderName.owned_bits(_py) {
             let name_val = crate::builtins::attributes::molt_get_attr_name_default(
                 cls_bits, name_bits, missing,
             );

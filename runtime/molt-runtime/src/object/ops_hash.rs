@@ -913,7 +913,7 @@ unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> Result<HashDeclaratio
         if is_builtin_class_bits(py, class_bits) && crate::object::class_is_immutable(py, class) {
             return Ok(HashDeclaration::Builtin);
         }
-        let hash_name = intern_static_name(py, &runtime_state(py).interned.hash_name, b"__hash__");
+        let hash_name = crate::NameId::DunderHash.bits(py);
         if obj_from_bits(hash_name).is_none() {
             return Err(());
         }
@@ -1090,8 +1090,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
 
 unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8) -> Option<i64> {
     unsafe {
-        let hash_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
+        let hash_name_bits = crate::NameId::DunderHash.bits(_py);
         let class_bits = type_of_bits(_py, obj.bits());
         let default_type_hashable = class_bits == builtin_classes(_py).type_obj;
         if obj_from_bits(hash_name_bits).is_none() {

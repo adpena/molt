@@ -712,7 +712,7 @@ fn linecache_loader_get_source_impl(
     loader_bits: u64,
     module_name: &str,
 ) -> Result<Option<String>, u64> {
-    let get_source_name = intern_runtime_static_name(_py, b"get_source");
+    let get_source_name = crate::NameId::GetSource.bits(_py);
     let Some(call_bits) = importlib_reader_lookup_callable(_py, loader_bits, get_source_name)?
     else {
         return Ok(None);
@@ -804,15 +804,11 @@ pub(crate) fn getattr_optional_bits(
 }
 
 fn importlib_module_spec_is_package_bits(_py: &PyToken<'_>, module_bits: u64) -> Result<bool, u64> {
-    let spec_name = intern_runtime_static_name(_py, b"__spec__");
+    let spec_name = crate::NameId::DunderSpec.bits(_py);
     let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? else {
         return Ok(false);
     };
-    let submodule_search_locations_name = intern_static_name(
-        _py,
-        runtime_static_name_slot(_py, b"submodule_search_locations"),
-        b"submodule_search_locations",
-    );
+    let submodule_search_locations_name = crate::NameId::SubmoduleSearchLocations.bits(_py);
     let locations_bits = getattr_optional_bits(_py, spec_bits, submodule_search_locations_name)?;
     if !obj_from_bits(spec_bits).is_none() {
         dec_ref_bits(_py, spec_bits);
@@ -834,7 +830,7 @@ fn traceback_exception_suppress_context_bits(
     if obj_from_bits(value_bits).is_none() {
         return Ok(false);
     }
-    let suppress_context_name = intern_runtime_static_name(_py, b"__suppress_context__");
+    let suppress_context_name = crate::NameId::DunderSuppressContext.bits(_py);
     let Some(suppress_bits) = getattr_optional_bits(_py, value_bits, suppress_context_name)? else {
         return Ok(false);
     };
@@ -1182,7 +1178,7 @@ pub(crate) fn raise_known_import_absence(py: &PyToken<'_>, absence: KnownImportA
         KnownImportAbsence::Provider(name) => name,
         KnownImportAbsence::Dependency(name) => name.to_owned(),
     };
-    let Some(key) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+    let Some(key) = dynamic_attr_name_bits(py, name.as_bytes()) else {
         return MoltObject::none().bits();
     };
     let error = crate::builtins::exceptions::raise_module_not_found(
@@ -1311,17 +1307,16 @@ fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, Stri
 fn importlib_required_callable(
     _py: &PyToken<'_>,
     target_bits: u64,
-    name_slot: &AtomicU64,
-    name: &'static [u8],
+    name: crate::NameId,
     owner: &str,
 ) -> Result<u64, u64> {
-    let attr_name = intern_static_name(_py, name_slot, name);
+    let attr_name = name.bits(_py);
     match importlib_reader_lookup_callable(_py, target_bits, attr_name)? {
         Some(bits) => Ok(bits),
         None => Err(raise_exception::<_>(
             _py,
             BuiltinExc::RuntimeError,
-            &format!("{owner}.{} is unavailable", String::from_utf8_lossy(name)),
+            &format!("{owner}.{} is unavailable", name.as_str()),
         )),
     }
 }
@@ -1329,17 +1324,16 @@ fn importlib_required_callable(
 fn importlib_required_attribute(
     _py: &PyToken<'_>,
     target_bits: u64,
-    name_slot: &AtomicU64,
-    name: &'static [u8],
+    name: crate::NameId,
     owner: &str,
 ) -> Result<u64, u64> {
-    let attr_name = intern_static_name(_py, name_slot, name);
+    let attr_name = name.bits(_py);
     match getattr_optional_bits(_py, target_bits, attr_name)? {
         Some(bits) => Ok(bits),
         None => Err(raise_exception::<_>(
             _py,
             BuiltinExc::RuntimeError,
-            &format!("{owner}.{} is unavailable", String::from_utf8_lossy(name)),
+            &format!("{owner}.{} is unavailable", name.as_str()),
         )),
     }
 }
@@ -1347,11 +1341,10 @@ fn importlib_required_attribute(
 fn importlib_set_attr(
     _py: &PyToken<'_>,
     target_bits: u64,
-    slot: &AtomicU64,
-    name: &'static [u8],
+    name: crate::NameId,
     value_bits: u64,
 ) -> Result<(), u64> {
-    let attr_name = intern_static_name(_py, slot, name);
+    let attr_name = name.bits(_py);
     let result_bits = crate::molt_set_attr_name(target_bits, attr_name, value_bits);
     if !obj_from_bits(result_bits).is_none() {
         dec_ref_bits(_py, result_bits);
@@ -1367,13 +1360,12 @@ fn importlib_set_attr(
 fn importlib_machinery_member(
     py: &PyToken<'_>,
     namespace: u64,
-    slot: &AtomicU64,
-    name: &'static [u8],
+    name: crate::NameId,
 ) -> Result<u64, u64> {
     if let Some(dictionary) = obj_from_bits(namespace).as_ptr()
         && unsafe { object_type_id(dictionary) == TYPE_ID_DICT }
     {
-        let key = intern_static_name(py, slot, name);
+        let key = name.bits(py);
         if key == 0 {
             return Err(MoltObject::none().bits());
         }
@@ -1386,23 +1378,19 @@ fn importlib_machinery_member(
         return Err(raise_exception::<_>(
             py,
             BuiltinExc::RuntimeError,
-            &format!(
-                "importlib.machinery.{} is unavailable",
-                String::from_utf8_lossy(name)
-            ),
+            &format!("importlib.machinery.{} is unavailable", name.as_str()),
         ));
     }
-    importlib_required_attribute(py, namespace, slot, name, "importlib.machinery")
+    importlib_required_attribute(py, namespace, name, "importlib.machinery")
 }
 
 fn importlib_machinery_loader_instance(
     _py: &PyToken<'_>,
     machinery_bits: u64,
-    class_slot: &AtomicU64,
-    class_name: &'static [u8],
+    class_name: crate::NameId,
     args: &[u64],
 ) -> Result<u64, u64> {
-    let loader_cls_bits = importlib_machinery_member(_py, machinery_bits, class_slot, class_name)?;
+    let loader_cls_bits = importlib_machinery_member(_py, machinery_bits, class_name)?;
     let loader_bits = call_callable_positional(_py, loader_cls_bits, args)?;
     dec_ref_bits(_py, loader_cls_bits);
     if exception_pending(_py) {
@@ -1434,8 +1422,7 @@ fn importlib_find_spec_object_bits(
         "source" => match importlib_machinery_loader_instance(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"SourceFileLoader"),
-            b"SourceFileLoader",
+            crate::NameId::SourceFileLoader,
             &[fullname_bits, origin_bits],
         ) {
             Ok(bits) => bits,
@@ -1452,8 +1439,7 @@ fn importlib_find_spec_object_bits(
         "extension" => match importlib_machinery_loader_instance(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"ExtensionFileLoader"),
-            b"ExtensionFileLoader",
+            crate::NameId::ExtensionFileLoader,
             &[fullname_bits, origin_bits],
         ) {
             Ok(bits) => bits,
@@ -1470,8 +1456,7 @@ fn importlib_find_spec_object_bits(
         "bytecode" => match importlib_machinery_loader_instance(
             _py,
             machinery_bits,
-            runtime_static_name_slot(_py, b"SourcelessFileLoader"),
-            b"SourcelessFileLoader",
+            crate::NameId::SourcelessFileLoader,
             &[fullname_bits, origin_bits],
         ) {
             Ok(bits) => bits,
@@ -1542,8 +1527,7 @@ fn importlib_find_spec_object_bits(
             let out = importlib_machinery_loader_instance(
                 _py,
                 machinery_bits,
-                runtime_static_name_slot(_py, b"_ZipSourceLoader"),
-                b"_ZipSourceLoader",
+                crate::NameId::ZipSourceLoader,
                 &[fullname_bits, zip_archive_bits, zip_inner_path_bits],
             );
             if !obj_from_bits(zip_archive_bits).is_none() {
@@ -1582,26 +1566,22 @@ fn importlib_find_spec_object_bits(
     };
 
     let is_package_bits = MoltObject::from_bool(payload.is_package).bits();
-    let module_spec_cls_bits = match importlib_machinery_member(
-        _py,
-        machinery_bits,
-        runtime_static_name_slot(_py, b"ModuleSpec"),
-        b"ModuleSpec",
-    ) {
-        Ok(bits) => bits,
-        Err(err) => {
-            if !obj_from_bits(fullname_bits).is_none() {
-                dec_ref_bits(_py, fullname_bits);
+    let module_spec_cls_bits =
+        match importlib_machinery_member(_py, machinery_bits, crate::NameId::ModuleSpec) {
+            Ok(bits) => bits,
+            Err(err) => {
+                if !obj_from_bits(fullname_bits).is_none() {
+                    dec_ref_bits(_py, fullname_bits);
+                }
+                if !obj_from_bits(origin_bits).is_none() {
+                    dec_ref_bits(_py, origin_bits);
+                }
+                if !obj_from_bits(loader_bits).is_none() {
+                    dec_ref_bits(_py, loader_bits);
+                }
+                return Err(err);
             }
-            if !obj_from_bits(origin_bits).is_none() {
-                dec_ref_bits(_py, origin_bits);
-            }
-            if !obj_from_bits(loader_bits).is_none() {
-                dec_ref_bits(_py, loader_bits);
-            }
-            return Err(err);
-        }
-    };
+        };
     let spec_bits = match call_callable_positional(
         _py,
         module_spec_cls_bits,
@@ -1655,8 +1635,7 @@ fn importlib_find_spec_object_bits(
         let out = importlib_set_attr(
             _py,
             spec_bits,
-            runtime_static_name_slot(_py, b"submodule_search_locations"),
-            b"submodule_search_locations",
+            crate::NameId::SubmoduleSearchLocations,
             locations_bits,
         );
         if !obj_from_bits(locations_bits).is_none() {
@@ -1700,13 +1679,7 @@ fn importlib_find_spec_object_bits(
         },
         None => MoltObject::none().bits(),
     };
-    if let Err(err) = importlib_set_attr(
-        _py,
-        spec_bits,
-        runtime_static_name_slot(_py, b"cached"),
-        b"cached",
-        cached_bits,
-    ) {
+    if let Err(err) = importlib_set_attr(_py, spec_bits, crate::NameId::Cached, cached_bits) {
         if !obj_from_bits(cached_bits).is_none() {
             dec_ref_bits(_py, cached_bits);
         }
@@ -1732,8 +1705,7 @@ fn importlib_find_spec_object_bits(
     if let Err(err) = importlib_set_attr(
         _py,
         spec_bits,
-        runtime_static_name_slot(_py, b"has_location"),
-        b"has_location",
+        crate::NameId::HasLocation,
         has_location_bits,
     ) {
         if !obj_from_bits(spec_bits).is_none() {
@@ -1779,15 +1751,15 @@ pub(crate) fn compiled_namespace_spec(
         py,
         importlib_module_support_bits(py, crate::ptr_from_bits(dictionary), "importlib.machinery")?,
     );
-    let read = |object, name: &[u8]| -> Result<ExceptionValue<'_, '_>, u64> {
-        let key = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, name).ok_or(none)?);
+    let read = |object, name: crate::NameId| -> Result<ExceptionValue<'_, '_>, u64> {
+        let key = ExceptionValue::adopt(py, name.owned_bits(py).ok_or(none)?);
         crate::builtins::attributes::get_attr_name(py, object, key.bits())
             .map(|bits| ExceptionValue::adopt(py, bits))
             .map_err(|()| none)
     };
-    let path_class = read(machinery.bits(), b"_NamespacePath")?;
-    let finder = read(machinery.bits(), b"PathFinder")?;
-    let get_spec = read(finder.bits(), b"_get_spec")?;
+    let path_class = read(machinery.bits(), crate::NameId::PrivateNamespacePath)?;
+    let finder = read(machinery.bits(), crate::NameId::PathFinder)?;
+    let get_spec = read(finder.bits(), crate::NameId::PrivateGetSpec)?;
     let mut directories = Vec::new();
     for portion in portions.iter() {
         directories.push(ExceptionValue::adopt(py, alloc_str_bits(py, portion)?));
@@ -1815,7 +1787,9 @@ pub(crate) fn compiled_namespace_spec(
     );
     let key = ExceptionValue::adopt(
         py,
-        attr_name_bits_from_bytes(py, b"submodule_search_locations").ok_or(none)?,
+        crate::NameId::SubmoduleSearchLocations
+            .owned_bits(py)
+            .ok_or(none)?,
     );
     crate::builtins::attributes::mutate_attr_name(
         py,
@@ -1968,7 +1942,7 @@ fn importlib_import_via_spec(
                 crate::builtins::exceptions::raise_key_error_with_key::<u64>(_py, parent_key.bits())
             })?;
         let parent = ExceptionValue::pin(_py, parent);
-        let key = intern_runtime_static_name(_py, b"__path__");
+        let key = crate::NameId::DunderPath.bits(_py);
         if key == 0 {
             return Err(MoltObject::none().bits());
         }
@@ -2027,7 +2001,7 @@ fn importlib_import_via_spec(
             }
         };
         let path = ExceptionValue::adopt(_py, bits);
-        let spec_key = intern_runtime_static_name(_py, b"__spec__");
+        let spec_key = crate::NameId::DunderSpec.bits(_py);
         if spec_key == 0 {
             return Err(MoltObject::none().bits());
         }
@@ -2136,7 +2110,7 @@ pub(crate) fn spec_is_initializing(
     policy: crate::builtins::module_table::ModuleImportPolicy,
 ) -> Result<bool, u64> {
     let result = (|| {
-        let key = intern_runtime_static_name(py, b"_initializing");
+        let key = crate::NameId::Initializing.bits(py);
         if key == 0 {
             return Err(MoltObject::none().bits());
         }
@@ -2156,7 +2130,7 @@ pub(crate) fn public_module_is_initializing(
     policy: crate::builtins::module_table::ModuleImportPolicy,
 ) -> Result<bool, u64> {
     let result = (|| {
-        let key = intern_runtime_static_name(py, b"__spec__");
+        let key = crate::NameId::DunderSpec.bits(py);
         if key == 0 {
             return Err(MoltObject::none().bits());
         }
@@ -2215,7 +2189,8 @@ fn importlib_warn_legacy_loader(
     loader: crate::builtins::exceptions::ExceptionValue<'_, '_>,
 ) -> Result<(), u64> {
     use crate::builtins::exceptions::ExceptionValue;
-    let key = crate::attr_name_bits_from_bytes(py, b"__qualname__")
+    let key = crate::NameId::DunderQualname
+        .owned_bits(py)
         .ok_or_else(|| MoltObject::none().bits())?;
     let key = ExceptionValue::adopt(py, key);
     let label = match getattr_optional_bits(py, loader.bits(), key.bits())? {
@@ -2295,8 +2270,8 @@ fn importlib_spec_execution_transaction(
     let mut existing_owner = existing.map(|bits| ExceptionValue::pin(py, bits));
     let spec = ExceptionValue::pin(py, spec_bits);
     let dictionary = MoltObject::from_ptr(modules_ptr).bits();
-    let loader_name = intern_runtime_static_name(py, b"loader");
-    let exec_name = intern_runtime_static_name(py, b"exec_module");
+    let loader_name = crate::NameId::Loader.bits(py);
+    let exec_name = crate::NameId::ExecModule.bits(py);
     if loader_name == 0 || exec_name == 0 {
         return Err(MoltObject::none().bits());
     }
@@ -2324,7 +2299,7 @@ fn importlib_spec_execution_transaction(
             }
             importlib_warn_legacy_loader(py, read_loader()?)?;
             let loader = read_loader()?;
-            let load_name = intern_runtime_static_name(py, b"load_module");
+            let load_name = crate::NameId::LoadModule.bits(py);
             if load_name == 0 {
                 return Err(MoltObject::none().bits());
             }
@@ -2405,7 +2380,7 @@ fn importlib_spec_execution_transaction(
             obj_from_bits(loader.bits()).is_none()
         };
         if namespace {
-            let locations_name = intern_runtime_static_name(py, b"submodule_search_locations");
+            let locations_name = crate::NameId::SubmoduleSearchLocations.bits(py);
             if locations_name == 0 {
                 return Err(MoltObject::none().bits());
             }
@@ -2453,7 +2428,7 @@ fn importlib_spec_execution_transaction(
             if !present && options.allow_load_module_fallback {
                 importlib_warn_legacy_loader(py, read_loader()?)?;
                 let loader = read_loader()?;
-                let key = intern_runtime_static_name(py, b"load_module");
+                let key = crate::NameId::LoadModule.bits(py);
                 if key == 0 {
                     return Err(MoltObject::none().bits());
                 }

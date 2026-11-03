@@ -387,14 +387,14 @@ fn format_slice(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
 }
 
 /// Look up a string-valued attribute in a namespace with normal dict key
-/// equality. `attr_name_bits_from_bytes` returns an owned reference, including
+/// equality. `dynamic_attr_name_bits` returns an owned reference, including
 /// when the name is cached, so release it after the borrowed dict lookup.
 fn dict_get_attr_string(
     _py: &PyToken<'_>,
     dict_ptr: *mut u8,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<Option<Vec<u8>>, ()> {
-    let key_bits = attr_name_bits_from_bytes(_py, name).ok_or(())?;
+    let key_bits = name.owned_bits(_py).ok_or(())?;
     let value = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) }
         .map(|value| value.and_then(|bits| string_obj_bytes(obj_from_bits(bits))));
     dec_ref_bits(_py, key_bits);
@@ -957,7 +957,7 @@ pub(crate) fn format_obj_str_output(_py: &PyToken<'_>, obj: MoltObject) -> Forma
                 }
                 return format_obj_output(_py, obj);
             }
-            if let Some(rendered) = try_format_special_method(_py, ptr, "__str__") {
+            if let Some(rendered) = try_format_special_method(_py, ptr, crate::NameId::DunderStr) {
                 return rendered;
             }
             if exception_pending(_py) {
@@ -1029,30 +1029,31 @@ pub(crate) unsafe fn invoke_format_method(
 pub(crate) unsafe fn try_format_special_method_bits(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    slot: &str,
+    slot: crate::NameId,
 ) -> Option<u64> {
     unsafe {
-        let method =
-            match lookup_special_method(py, MoltObject::from_ptr(ptr).bits(), slot.as_bytes()) {
-                Ok(Some(method)) => method,
-                Ok(None) => return None,
-                Err(()) => {
-                    // Only failed descriptor binding is suppressed by the pre-3.14 repr rule.
-                    if slot == "__repr__" && !super::ops_sys::runtime_target_at_least(py, 3, 14) {
-                        clear_exception(py);
-                        return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
-                    }
-                    return Some(MoltObject::none().bits());
+        let method = match lookup_special_method(py, MoltObject::from_ptr(ptr).bits(), slot) {
+            Ok(Some(method)) => method,
+            Ok(None) => return None,
+            Err(()) => {
+                // Only failed descriptor binding is suppressed by the pre-3.14 repr rule.
+                if slot == crate::NameId::DunderRepr
+                    && !super::ops_sys::runtime_target_at_least(py, 3, 14)
+                {
+                    clear_exception(py);
+                    return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
                 }
-            };
-        Some(invoke_format_method(py, method, slot, None))
+                return Some(MoltObject::none().bits());
+            }
+        };
+        Some(invoke_format_method(py, method, slot.as_str(), None))
     }
 }
 
 unsafe fn try_format_special_method(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    slot: &str,
+    slot: crate::NameId,
 ) -> Option<FormatOutput> {
     unsafe { try_format_special_method_bits(py, ptr, slot) }.map(FormatOutput::OwnedString)
 }
@@ -1069,7 +1070,7 @@ unsafe fn try_subclass_repr_override(
         }
         let class = obj_from_bits(class_bits).as_ptr()?;
         let base = obj_from_bits(builtin_class_bits).as_ptr()?;
-        let name = intern_static_name(py, &runtime_state(py).interned.repr_name, b"__repr__");
+        let name = crate::NameId::DunderRepr.bits(py);
         if (match class_attr_lookup_raw_mro(py, class, name) {
             Ok(raw) => raw,
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
@@ -1079,7 +1080,7 @@ unsafe fn try_subclass_repr_override(
         }) {
             return None;
         }
-        try_format_special_method(py, ptr, "__repr__")
+        try_format_special_method(py, ptr, crate::NameId::DunderRepr)
     }
 }
 
@@ -1115,8 +1116,7 @@ pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> O
             }
             let class = obj_from_bits(class_bits).as_ptr()?;
             let base = obj_from_bits(base_bits).as_ptr()?;
-            let name =
-                intern_static_name(py, &runtime_state(py).interned.format_name, b"__format__");
+            let name = crate::NameId::DunderFormat.bits(py);
             if (match class_attr_lookup_raw_mro(py, class, name) {
                 Ok(raw) => raw,
                 Err(()) => return Some(MoltObject::none().bits()),
@@ -1127,7 +1127,7 @@ pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> O
                 return None;
             }
         }
-        match lookup_special_method(py, obj.bits(), b"__format__") {
+        match lookup_special_method(py, obj.bits(), crate::NameId::DunderFormat) {
             Ok(Some(method)) => Some(invoke_format_method(py, method, "__format__", Some(spec))),
             Ok(None) => None,
             Err(()) => Some(MoltObject::none().bits()),
@@ -1266,8 +1266,7 @@ unsafe fn try_subclass_str_or_repr_override(
             return None;
         }
 
-        let str_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
+        let str_name_bits = crate::NameId::DunderStr.bits(_py);
         let raw_str = match class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits) {
             Ok(raw) => raw,
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
@@ -1277,7 +1276,7 @@ unsafe fn try_subclass_str_or_repr_override(
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
         };
         if raw_str.is_some() && raw_str != base_str {
-            return try_format_special_method(_py, ptr, "__str__");
+            return try_format_special_method(_py, ptr, crate::NameId::DunderStr);
         }
 
         let object_ptr = obj_from_bits(builtin_classes(_py).object).as_ptr()?;
@@ -1291,8 +1290,7 @@ unsafe fn try_subclass_str_or_repr_override(
             // semantics when only the subclass's __repr__ changes.
             return None;
         }
-        let repr_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
+        let repr_name_bits = crate::NameId::DunderRepr.bits(_py);
         let raw_repr = match class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits) {
             Ok(raw) => raw,
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
@@ -1302,7 +1300,7 @@ unsafe fn try_subclass_str_or_repr_override(
             Err(()) => return Some(FormatOutput::OwnedString(MoltObject::none().bits())),
         };
         if raw_repr.is_some() && raw_repr != base_repr {
-            return try_format_special_method(_py, ptr, "__repr__");
+            return try_format_special_method(_py, ptr, crate::NameId::DunderRepr);
         }
         None
     }
@@ -1313,7 +1311,7 @@ pub(crate) unsafe fn format_module_default(py: &PyToken<'_>, ptr: *mut u8) -> Fo
         let Some(dictionary) = obj_from_bits(module_dict_bits(ptr)).as_ptr() else {
             return "<module '?'>".into();
         };
-        let name = match dict_get_attr_string(py, dictionary, b"__name__") {
+        let name = match dict_get_attr_string(py, dictionary, crate::NameId::DunderName) {
             Ok(name) => name.unwrap_or_else(|| b"?".to_vec()),
             Err(()) => return "".into(),
         };
@@ -1321,10 +1319,11 @@ pub(crate) unsafe fn format_module_default(py: &PyToken<'_>, ptr: *mut u8) -> Fo
         out.push_bytes(&name);
         out.push('\'');
         if !exception_pending(py)
-            && let Some(file) = match dict_get_attr_string(py, dictionary, b"__file__") {
-                Ok(file) => file,
-                Err(()) => return "".into(),
-            }
+            && let Some(file) =
+                match dict_get_attr_string(py, dictionary, crate::NameId::DunderFile) {
+                    Ok(file) => file,
+                    Err(()) => return "".into(),
+                }
         {
             out.push_str(" from '");
             out.push_bytes(&file);
@@ -1460,7 +1459,7 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                 return "Ellipsis".into();
             }
             if type_id == TYPE_ID_EXCEPTION {
-                return try_format_special_method(_py, ptr, "__repr__")
+                return try_format_special_method(_py, ptr, crate::NameId::DunderRepr)
                     .unwrap_or_else(|| format_default_object_repr(_py, ptr));
             }
             if type_id == TYPE_ID_CONTEXT_MANAGER {
@@ -1774,7 +1773,7 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
             if type_id == TYPE_ID_ITER {
                 return "<iter>".into();
             }
-            if let Some(rendered) = try_format_special_method(_py, ptr, "__repr__") {
+            if let Some(rendered) = try_format_special_method(_py, ptr, crate::NameId::DunderRepr) {
                 return rendered;
             }
             return format_default_object_repr(_py, ptr);
@@ -1789,7 +1788,7 @@ mod tests {
         FormatSpec, assemble_number, format_default_object_repr, format_obj_str,
         format_string_repr_bytes, zero_pad_grouped,
     };
-    use crate::builtins::attr::attr_name_bits_from_bytes;
+    use crate::builtins::attr::dynamic_attr_name_bits;
     use crate::object::ops::unicode_data;
     use crate::{
         alloc_dict_with_pairs, alloc_module_obj, alloc_string, alloc_tuple, dict_set_in_place,
@@ -1967,10 +1966,10 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"SequenceRetirement").unwrap();
+            let name = dynamic_attr_name_bits(py, b"SequenceRetirement").unwrap();
             let class = crate::molt_class_new(name);
             crate::molt_class_set_base(class, crate::builtin_classes(py).object);
-            let finalizer_name = attr_name_bits_from_bytes(py, b"__del__").unwrap();
+            let finalizer_name = dynamic_attr_name_bits(py, b"__del__").unwrap();
             let finalizer = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr(
@@ -2088,12 +2087,12 @@ mod tests {
 
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"DictViewReprError").unwrap();
+            let name = dynamic_attr_name_bits(py, b"DictViewReprError").unwrap();
             let class = crate::molt_class_new(name);
             crate::molt_class_set_base(class, crate::builtin_classes(py).object);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
-            let repr_name = attr_name_bits_from_bytes(py, b"__repr__").unwrap();
+            let repr_name = dynamic_attr_name_bits(py, b"__repr__").unwrap();
             let function = alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr(
@@ -2289,7 +2288,7 @@ mod tests {
 
             let dict_bits = unsafe { module_dict_bits(module_ptr) };
             let dict_ptr = obj_from_bits(dict_bits).as_ptr().expect("module dict");
-            let file_key = attr_name_bits_from_bytes(_py, b"__file__").expect("__file__ key");
+            let file_key = dynamic_attr_name_bits(_py, b"__file__").expect("__file__ key");
             let file_ptr = alloc_string(_py, b"/tmp/pathlib.py");
             assert!(!file_ptr.is_null());
             let file_bits = MoltObject::from_ptr(file_ptr).bits();
@@ -2318,8 +2317,8 @@ mod tests {
             let dict_ptr = alloc_dict_with_pairs(_py, &[]);
             assert!(!dict_ptr.is_null());
             let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-            let module_key = attr_name_bits_from_bytes(_py, b"__module__").unwrap();
-            let qual_key = attr_name_bits_from_bytes(_py, b"__qualname__").unwrap();
+            let module_key = dynamic_attr_name_bits(_py, b"__module__").unwrap();
+            let qual_key = dynamic_attr_name_bits(_py, b"__qualname__").unwrap();
             let module_ptr = alloc_string(_py, b"pkg");
             let qual_ptr = alloc_string(_py, b"Outer.C");
             assert!(!module_ptr.is_null() && !qual_ptr.is_null());

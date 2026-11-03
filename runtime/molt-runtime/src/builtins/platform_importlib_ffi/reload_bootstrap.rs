@@ -493,8 +493,8 @@ pub(in super::super) fn importlib_finish_initial_defaults(
                 .map_err(|()| MoltObject::none().bits())?;
             Ok(ExceptionValue::adopt(py, bits))
         };
-        let meta_name = intern_runtime_static_name(py, b"meta_path");
-        let hooks_name = intern_runtime_static_name(py, b"path_hooks");
+        let meta_name = crate::NameId::MetaPath.bits(py);
+        let hooks_name = crate::NameId::PathHooks.bits(py);
         if meta_name == 0 || hooks_name == 0 {
             return Err(MoltObject::none().bits());
         }
@@ -507,14 +507,10 @@ pub(in super::super) fn importlib_finish_initial_defaults(
         }
         let path_finder = ExceptionValue::adopt(
             py,
-            importlib_machinery_member(
-                py,
-                machinery,
-                runtime_static_name_slot(py, b"PathFinder"),
-                b"PathFinder",
-            )?,
+            importlib_machinery_member(py, machinery, crate::NameId::PathFinder)?,
         );
-        let defaults_name = attr_name_bits_from_bytes(py, b"_default_path_hooks")
+        let defaults_name = crate::NameId::PrivateDefaultPathHooks
+            .owned_bits(py)
             .ok_or_else(|| MoltObject::none().bits())?;
         let defaults_name = ExceptionValue::adopt(py, defaults_name);
         let defaults = crate::object::ops::molt_getitem_builtin(machinery, defaults_name.bits());

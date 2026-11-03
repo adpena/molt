@@ -8,16 +8,16 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
     let builtins = builtin_classes(py);
     let none = MoltObject::none().bits();
 }, {
-    "__buffer__" => builtin_buffer_method_bits(py, class_bits, false),
-    "__release_buffer__" => builtin_buffer_method_bits(py, class_bits, true),
-    "__class_getitem__" if [builtins.list, builtins.dict, builtins.tuple, builtins.set, builtins.frozenset, builtins.type_obj].contains(&class_bits) => Some(builtin_func_bits(
-        py, NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, class_bits, "__class_getitem__"), fn_addr!(molt_generic_alias_new), 2,
+    crate::NameId::DunderBuffer => builtin_buffer_method_bits(py, class_bits, false),
+    crate::NameId::DunderReleaseBuffer => builtin_buffer_method_bits(py, class_bits, true),
+    crate::NameId::DunderClassGetitem [if [builtins.list, builtins.dict, builtins.tuple, builtins.set, builtins.frozenset, builtins.type_obj].contains(&class_bits) ] => Some(builtin_func_bits(
+        py, NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, class_bits, crate::NameId::DunderClassGetitem), fn_addr!(molt_generic_alias_new), 2,
     )),
-    "__get__" if [builtins.method_descriptor, builtins.wrapper_descriptor, builtins.classmethod_descriptor].contains(&class_bits) => Some(builtin_func_bits_with_defaults_tuple(
-        py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class_bits, "__get__"),
+    crate::NameId::DunderGet [if [builtins.method_descriptor, builtins.wrapper_descriptor, builtins.classmethod_descriptor].contains(&class_bits) ] => Some(builtin_func_bits_with_defaults_tuple(
+        py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class_bits, crate::NameId::DunderGet),
         fn_addr!(molt_function_descriptor_get), 3, &[none],
     )),
-    "__new__" => {
+    crate::NameId::DunderNew => {
         let spec = NativeCallableSpec::constructor(class_bits);
         if class_bits == builtins.generic_alias {
             Some(builtin_func_bits(py, spec, fn_addr!(molt_generic_alias_type_new), 3))
@@ -31,7 +31,7 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
             Some(crate::builtins::methods::builtin_variadic_func_bits(py, spec, fn_addr!(crate::builtins::weakref_type::weakref_new_method)))
         } else { io_constructor_bits(py, class_bits, true) }
     },
-    "__init__" => io_constructor_bits(py, class_bits, false),
+    crate::NameId::DunderInit => io_constructor_bits(py, class_bits, false),
 });
 
 // These runtime builtin namespaces have process-owned physical buffer slots.
@@ -64,9 +64,9 @@ fn builtin_buffer_method_bits(py: &PyToken<'_>, class: u64, release: bool) -> Op
             return None;
         }
         let name = if release {
-            "__release_buffer__"
+            crate::NameId::DunderReleaseBuffer
         } else {
-            "__buffer__"
+            crate::NameId::DunderBuffer
         };
         Some(super::common::init_native_callable(
             py,
@@ -103,7 +103,11 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
     let spec = if is_new {
         NativeCallableSpec::constructor(class)
     } else {
-        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__init__")
+        NativeCallableSpec::declared(
+            NativeCallableKind::WrapperDescriptor,
+            class,
+            crate::NameId::DunderInit,
+        )
     };
     let bind = |new, init, names: &[&[u8]], defaults: &[u64]| {
         Some(builtin_func_bits_with_signature(
@@ -200,7 +204,7 @@ macro_rules! native_method_families {
     (@publish $py:ident, $publish:path) => { $publish($py) };
     (iterators { $( $iterator:ident $(=> $iter_lookup:path, $iter_publish:path)?; )* }
      ordinary { $( $field:ident => $lookup:path, $publish:path; )* }) => {
-        fn declared_method(py: &PyToken<'_>, class: u64, name: &str) -> Result<Option<u64>, ()> {
+        fn declared_method(py: &PyToken<'_>, class: u64, name: crate::NameId) -> Result<Option<u64>, ()> {
             let classes = builtin_classes(py);
             $(if class == classes.$iterator {
                 if let Some(method) = native_iterator_method_bits(py, class, name)? {
@@ -228,12 +232,12 @@ macro_rules! native_method_families {
 // ordinary receiver check before entering the shared native iteration engine.
 super::native_method_table!(native_iterator_method_bits, publish_native_iterator_methods,
     py, name, [class], {}, {
-    "__iter__" => Some(super::builtin_func_bits(py,
-        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__iter__")
+    crate::NameId::DunderIter => Some(super::builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, crate::NameId::DunderIter)
             .with_text_signature("($self, /)"),
         fn_addr!(crate::object::ops_iter::builtin_iter_slot), 1)),
-    "__next__" => Some(super::builtin_func_bits(py,
-        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__next__")
+    crate::NameId::DunderNext => Some(super::builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, crate::NameId::DunderNext)
             .with_text_signature("($self, /)"),
         fn_addr!(crate::object::ops_iter::builtin_next_slot), 1)),
 });
@@ -323,7 +327,7 @@ fn io_class(py: &PyToken<'_>, class: u64) -> bool {
 pub(crate) fn builtin_class_method_bits(
     py: &PyToken<'_>,
     class: u64,
-    name: &str,
+    name: crate::NameId,
 ) -> Result<Option<u64>, ()> {
     {
         if let Some(bits) = builtin_special_method_bits(py, class, name)? {
@@ -340,9 +344,9 @@ pub(crate) fn builtin_class_method_bits(
         } else if class == b.complex {
             super::numeric::complex_class_method_bits(py, name)
         } else if issubclass_bits(class, b.base_exception) {
-            if matches!(name, "__str__" | "__repr__") {
+            if matches!(name, crate::NameId::DunderStr | crate::NameId::DunderRepr) {
                 crate::builtins::exceptions::exception_render_method_bits(py, class, name)
-            } else if name == "__init__" {
+            } else if name == crate::NameId::DunderInit {
                 let owner = if class == b.exception_group {
                     b.base_exception_group
                 } else {
@@ -399,8 +403,12 @@ pub(crate) fn publish_builtin_class_methods(py: &PyToken<'_>, class: u64) -> boo
             } else {
                 class
             };
-            if crate::builtins::exceptions::exception_method_bits_for_owner(py, owner, "__init__")
-                .is_err()
+            if crate::builtins::exceptions::exception_method_bits_for_owner(
+                py,
+                owner,
+                crate::NameId::DunderInit,
+            )
+            .is_err()
             {
                 return false;
             }

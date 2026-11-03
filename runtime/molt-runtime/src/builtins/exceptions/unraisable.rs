@@ -377,7 +377,7 @@ pub(super) fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
     };
     inc_ref_bits(_py, sys_bits);
 
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = dynamic_attr_name_bits(_py, name) else {
         dec_ref_bits(_py, sys_bits);
         return MoltObject::none().bits();
     };
@@ -788,7 +788,7 @@ mod tests {
                 string_obj_to_owned(obj_from_bits(unsafe { class_name_bits(class_ptr) })),
                 Some("UnraisableHookArgs".to_string())
             );
-            let module_name = crate::attr_name_bits_from_bytes(_py, b"__module__").unwrap();
+            let module_name = crate::dynamic_attr_name_bits(_py, b"__module__").unwrap();
             let module = molt_get_attr_name(class_bits, module_name);
             assert!(!exception_pending(_py));
             assert_eq!(
@@ -822,7 +822,11 @@ mod tests {
             );
             assert_eq!(
                 unsafe {
-                    crate::call::function::function_metadata_bits(_py, repr_ptr, b"__objclass__")
+                    crate::call::function::function_metadata_bits(
+                        _py,
+                        repr_ptr,
+                        crate::object::function_metadata::FunctionMetadataField::Owner,
+                    )
                 },
                 class_bits
             );
@@ -853,7 +857,7 @@ mod tests {
             let source_ptr = alloc_tuple(_py, &fields);
             assert!(!source_ptr.is_null());
             let source_bits = MoltObject::from_ptr(source_ptr).bits();
-            let new_name = attr_name_bits_from_bytes(_py, b"__new__").unwrap();
+            let new_name = dynamic_attr_name_bits(_py, b"__new__").unwrap();
             let constructor = molt_get_attr_name(args_bits, new_name);
             assert_eq!(constructor, class_dict_value(_py, class_bits, "__new__"));
             let builder = crate::molt_callargs_new(

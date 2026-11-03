@@ -24,7 +24,9 @@ pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> R
         };
         return Ok(status != 0);
     }
-    unsafe { crate::builtins::attr::has_special_method(_py, obj_bits, b"__getitem__") }
+    unsafe {
+        crate::builtins::attr::has_special_method(_py, obj_bits, crate::NameId::DunderGetitem)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -92,7 +94,7 @@ pub(crate) fn index_impl(
                     if let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         obj_bits,
-                        b"__getitem__",
+                        crate::NameId::DunderGetitem,
                     ) {
                         Ok(value) => value,
                         Err(()) => return Err(()),
@@ -927,7 +929,7 @@ pub(crate) fn index_impl(
                         && let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                             _py,
                             obj_bits,
-                            b"__missing__",
+                            crate::NameId::DunderMissing,
                         ) {
                             Ok(value) => value,
                             Err(()) => return Err(()),
@@ -961,8 +963,9 @@ pub(crate) fn index_impl(
                     // Try explicit __class_getitem__ first (handles custom
                     // implementations in user-defined classes).
                     {
-                        let name_bits =
-                            attr_name_bits_from_bytes(_py, b"__class_getitem__").ok_or(())?;
+                        let name_bits = crate::NameId::DunderClassGetitem
+                            .owned_bits(_py)
+                            .ok_or(())?;
                         let lookup = class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits);
                         dec_ref_bits(_py, name_bits);
                         let lookup = match lookup {
@@ -1006,8 +1009,9 @@ pub(crate) fn index_impl(
                     // 3.12/3.13/3.14. This removes molt's prior unconditional
                     // default-GenericAlias-for-every-type divergence.
                     {
-                        let cgi_name_bits =
-                            attr_name_bits_from_bytes(_py, b"__class_getitem__").ok_or(())?;
+                        let cgi_name_bits = crate::NameId::DunderClassGetitem
+                            .owned_bits(_py)
+                            .ok_or(())?;
                         let present = class_attr_lookup_raw_mro(_py, ptr, cgi_name_bits);
                         dec_ref_bits(_py, cgi_name_bits);
                         let present = match present {
@@ -1175,7 +1179,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     if let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         obj_bits,
-                        b"__setitem__",
+                        crate::NameId::DunderSetitem,
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
@@ -1771,7 +1775,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         obj_bits,
-                        b"__delitem__",
+                        crate::NameId::DunderDelitem,
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
@@ -2175,7 +2179,7 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     && let Some(method) = match crate::builtins::attr::lookup_special_method(
                         _py,
                         container_bits,
-                        b"__contains__",
+                        crate::NameId::DunderContains,
                     ) {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
@@ -2289,7 +2293,7 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                 if let Some(call_bits) = match crate::builtins::attr::lookup_special_method(
                     _py,
                     container_bits,
-                    b"__contains__",
+                    crate::NameId::DunderContains,
                 ) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),

@@ -277,8 +277,7 @@ pub(crate) unsafe fn construct_exception_from_args(
             );
         }
 
-        let new_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
+        let new_name_bits = crate::NameId::DunderNew.bits(_py);
         let new = match class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) {
             Ok(value) => value,
             Err(()) => return MoltObject::none().bits(),
@@ -331,8 +330,7 @@ pub(crate) unsafe fn construct_exception_from_args(
         let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
             return inst_bits;
         };
-        let init_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
+        let init_name_bits = crate::NameId::DunderInit.bits(_py);
         let init_bits =
             match class_attr_lookup(_py, class_ptr, class_ptr, Some(inst_ptr), init_name_bits) {
                 Ok(Some(value)) => value,
@@ -558,8 +556,8 @@ pub(crate) unsafe fn construct_regular_class(
                 ),
             );
         }
-        let new_name = intern_static_name(py, &runtime_state(py).interned.new_name, b"__new__");
-        let init_name = intern_static_name(py, &runtime_state(py).interned.init_name, b"__init__");
+        let new_name = crate::NameId::DunderNew.bits(py);
+        let init_name = crate::NameId::DunderInit.bits(py);
         let new = match class_attr_lookup_raw_mro(py, class, new_name) {
             Ok(value) => value,
             Err(()) => return MoltObject::none().bits(),
@@ -738,9 +736,11 @@ pub(crate) unsafe fn function_attr_bits(
             && object_type_id(attr_ptr) == TYPE_ID_STRING
         {
             let name = std::slice::from_raw_parts(string_bytes(attr_ptr), string_len(attr_ptr));
-            if crate::object::function_metadata::FunctionMetadataField::from_name(name).is_some() {
+            if let Some(field) =
+                crate::object::function_metadata::FunctionMetadataField::from_name(name)
+            {
                 return Ok(crate::object::function_metadata::metadata_bits(
-                    func_ptr, name,
+                    func_ptr, field,
                 ));
             }
         }
@@ -836,11 +836,11 @@ pub(crate) unsafe fn function_set_attr_bits_deferred<'a, 'py>(
 pub(crate) unsafe fn function_set_attr_name(
     py: &PyToken<'_>,
     func_ptr: *mut u8,
-    name: &[u8],
+    name: crate::NameId,
     value: u64,
 ) -> bool {
     unsafe {
-        let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+        let Some(name_bits) = name.owned_bits(py) else {
             if !exception_pending(py) {
                 raise_exception::<u64>(
                     py,
@@ -951,7 +951,7 @@ mod tests {
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), corrupt);
                 let _ = molt_exception_clear();
-                let key = attr_name_bits_from_bytes(py, b"corrupt_read").unwrap();
+                let key = dynamic_attr_name_bits(py, b"corrupt_read").unwrap();
                 assert!(crate::builtins::attributes::attr_lookup_ptr(py, function, key).is_err());
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), corrupt);
@@ -1158,7 +1158,7 @@ mod tests {
             assert!(!object_name.is_null());
             let _object_name = crate::PtrDropGuard::new(object_name);
             let object_name = MoltObject::from_ptr(object_name).bits();
-            let new_name = crate::attr_name_bits_from_bytes(py, b"__new__").unwrap();
+            let new_name = crate::dynamic_attr_name_bits(py, b"__new__").unwrap();
             let new = crate::molt_get_attr_name(class, new_name);
             dec_ref_bits(py, new_name);
             assert!(!exception_pending(py));

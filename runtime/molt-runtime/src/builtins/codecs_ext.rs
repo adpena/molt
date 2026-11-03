@@ -1493,10 +1493,10 @@ mod identity_snapshot_tests {
     fn identity_dict_hash_callback_cannot_retire_later_input_handles() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"IdentitySnapshotKey").unwrap();
+            let name = dynamic_attr_name_bits(py, b"IdentitySnapshotKey").unwrap();
             let class = crate::molt_class_new(name);
             crate::molt_class_set_base(class, crate::builtin_classes(py).object);
-            let hash_name = attr_name_bits_from_bytes(py, b"__hash__").unwrap();
+            let hash_name = dynamic_attr_name_bits(py, b"__hash__").unwrap();
             let hash = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr("identity_key_hash", identity_key_hash as *const ()),

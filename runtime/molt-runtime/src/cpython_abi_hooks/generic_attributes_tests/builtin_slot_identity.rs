@@ -262,12 +262,12 @@ fn same_named_python_functions_never_acquire_builtin_slot_identity_and_deletion_
             let base = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));
             let child = class_with_slots(c"identity.SpoofedChild", base.as_ptr(), vec![]);
             let spoof = function(py, spoofed_constructor as *const (), 1);
-            let name_key = crate::attr_name_bits_from_bytes(py, b"__name__").unwrap();
+            let name_key = crate::dynamic_attr_name_bits(py, b"__name__").unwrap();
             for (name, slot) in [
                 (b"__init__".as_slice(), slots::Py_tp_init),
                 (b"__new__".as_slice(), slots::Py_tp_new),
             ] {
-                let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+                let key = crate::dynamic_attr_name_bits(py, name).unwrap();
                 crate::molt_set_attr_name(spoof, name_key, key);
                 assert!(!crate::exception_pending(py));
                 crate::molt_set_attr_name(class, key, spoof);
@@ -308,7 +308,7 @@ fn managed_exception_descendant_preserves_native_exception_slots() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = crate::attr_name_bits_from_bytes(py, b"PhysicalExceptionSlots").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"PhysicalExceptionSlots").unwrap();
             let class = crate::molt_class_new(name);
             crate::molt_class_set_base(class, crate::builtin_classes(py).base_exception);
             crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())

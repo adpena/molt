@@ -55,7 +55,7 @@ extern "C" fn name_equal(left: u64, right: u64) -> u64 {
 }
 
 fn new_class(py: &crate::PyToken<'_>, name: &[u8], base: u64) -> u64 {
-    let name = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, name).unwrap());
+    let name = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
     let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
     crate::molt_class_set_base(class.bits(), base);
     assert!(!crate::exception_pending(py));
@@ -69,7 +69,7 @@ fn finish_class(py: &crate::PyToken<'_>, class: u64) {
 
 fn subclass_name(py: &crate::PyToken<'_>) -> (u64, u64, u64) {
     HASH_FAIL.with(|slot| slot.set(false));
-    let spelling = crate::attr_name_bits_from_bytes(py, b"mutation_name_identity").unwrap();
+    let spelling = crate::dynamic_attr_name_bits(py, b"mutation_name_identity").unwrap();
     let spelling_owner = ExceptionValue::adopt(py, spelling);
     let ordinary_hash = crate::molt_hash_builtin(spelling);
     let alternate = MoltObject::from_int(if ordinary_hash == MoltObject::from_int(137).bits() {

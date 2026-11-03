@@ -46,10 +46,10 @@ extern "C" fn mutate_dictionary_during_add(self_bits: u64, _other: u64) -> u64 {
 }
 
 fn arithmetic_value(py: &PyToken<'_>, method_name: &[u8]) -> (u64, u64, u64) {
-    let name = attr_name_bits_from_bytes(py, b"ReentrantIncrementValue").unwrap();
+    let name = dynamic_attr_name_bits(py, b"ReentrantIncrementValue").unwrap();
     let class = crate::molt_class_new(name);
     crate::molt_class_set_base(class, builtin_classes(py).object);
-    let method = attr_name_bits_from_bytes(py, method_name).unwrap();
+    let method = dynamic_attr_name_bits(py, method_name).unwrap();
     let function = alloc_runtime_function_obj(
         py,
         runtime_fn_addr(

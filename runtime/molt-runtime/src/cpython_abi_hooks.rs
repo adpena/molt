@@ -2071,7 +2071,7 @@ fn sys_module_attr_borrowed(
                 };
             };
             let module_ptr = MoltObject::from_bits(module).as_ptr().unwrap();
-            let Some(name) = crate::attr_name_bits_from_bytes(&py, attr) else {
+            let Some(name) = crate::dynamic_attr_name_bits(&py, attr) else {
                 return BorrowedHandleResult::error();
             };
             let _name_owner =
@@ -3588,6 +3588,18 @@ unsafe extern "C" fn hook_type_dict_borrowed(type_bits: u64) -> BorrowedHandleRe
     })
 }
 
+unsafe extern "C" fn hook_type_modified(type_bits: u64) {
+    with_gil(|_py| unsafe {
+        let class = crate::obj_from_bits(type_bits)
+            .as_ptr()
+            .filter(|ptr| object_type_id(*ptr) == crate::TYPE_ID_TYPE)
+            .expect("type invalidation requires a live runtime type");
+        // Also advances the global MRO dependency epoch, invalidating inherited
+        // observations and call/field/protocol caches through the same authority.
+        crate::class_bump_layout_version(class);
+    });
+}
+
 unsafe extern "C" fn hook_type_lookup_borrowed(
     type_bits: u64,
     name_bits: u64,
@@ -4885,7 +4897,11 @@ unsafe extern "C" fn hook_register_c_function(
                     crate::builtins::functions::native_callable::NativeCallableKind::Function
                 },
                 owner,
-                name: Some(&public_name),
+                name: Some(
+                    crate::builtins::functions::native_callable::NativeCallableName::External(
+                        &public_name,
+                    ),
+                ),
                 self_bits: None,
                 cache: None,
                 text_signature: None,
@@ -5613,6 +5629,7 @@ pub fn register_cpython_hooks() -> bool {
                 type_metadata: hook_type_metadata,
                 builtin_slot_owner: hook_builtin_slot_owner,
                 type_lookup_borrowed: hook_type_lookup_borrowed,
+                type_modified: hook_type_modified,
                 object_set_attr: hook_object_set_attr,
                 descriptor_protocol: hook_descriptor_protocol,
                 descriptor_get: hook_descriptor_get,
@@ -8152,7 +8169,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
         with_gil(|py| unsafe {
-            let qualname = crate::attr_name_bits_from_bytes(&py, b"__qualname__").unwrap();
+            let qualname = crate::dynamic_attr_name_bits(&py, b"__qualname__").unwrap();
             let register_and_check = |receiver, self_is_null, expected: &str| {
                 let function = hook_register_c_function(
                     gil_bench_noargs as *const () as usize as u64,
@@ -8348,7 +8365,7 @@ mod tests {
                         b"ExceptionGroup"
                     );
                     let renamed =
-                        crate::attr_name_bits_from_bytes(&py, b"RenamedExceptionGroup").unwrap();
+                        crate::dynamic_attr_name_bits(&py, b"RenamedExceptionGroup").unwrap();
                     assert!(crate::class_set_name_bits(
                         &py,
                         crate::obj_from_bits(group_bits).as_ptr().unwrap(),
@@ -9838,7 +9855,7 @@ mod tests {
         // Hook registration installs callbacks. Ordered finder admission also
         // needs the real sys namespace and its early BuiltinImporter producer.
         let _sys_restore = with_gil(|py| {
-            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
             let restore = ModuleCacheRestore::new(&py, name);
             let module_ptr = alloc_module_obj(&py, name);
             assert!(!module_ptr.is_null());
@@ -10080,7 +10097,7 @@ mod tests {
                 2 => {
                     // Drop public, private and registry owners during equality.
                     // Only the interpreter role may keep this namespace alive.
-                    let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+                    let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
                     crate::builtins::modules::molt_module_cache_del(name);
                     let sys = SYS_LOOKUP_MODULE.load(AtomicOrdering::SeqCst);
                     let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
@@ -10132,11 +10149,11 @@ mod tests {
     }
 
     fn sys_lookup_key(py: &crate::PyToken<'_>) -> (u64, u64) {
-        let name = crate::attr_name_bits_from_bytes(py, b"SysLookupKey").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"SysLookupKey").unwrap();
         let class = crate::molt_class_new(name);
         crate::molt_class_set_base(class, crate::builtin_classes(py).object);
         dec_ref_bits(py, name);
-        let eq = crate::attr_name_bits_from_bytes(py, b"__eq__").unwrap();
+        let eq = crate::dynamic_attr_name_bits(py, b"__eq__").unwrap();
         let function = sys_lookup_function(py, sys_lookup_key_eq as *const (), 2);
         crate::molt_set_attr_name(class, eq, function);
         dec_ref_bits(py, eq);
@@ -10153,7 +10170,7 @@ mod tests {
     fn pysys_getobject_equality_owns_namespace_across_public_replacement_and_deletion() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         with_gil(|py| unsafe {
-            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
             let _restore = ModuleCacheRestore::new(&py, name);
             let sys = MoltObject::from_ptr(alloc_module_obj(&py, name)).bits();
             // Same-named publication has no interpreter authority.
@@ -10223,7 +10240,7 @@ mod tests {
         with_gil(|py| unsafe {
             let state = crate::runtime_state(&py);
             let previous = crate::object::ops_sys::runtime_target_python_info(state);
-            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
             let _restore = ModuleCacheRestore::new(&py, name);
             let sys = MoltObject::from_ptr(alloc_module_obj(&py, name)).bits();
             crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
@@ -10240,7 +10257,7 @@ mod tests {
                 MoltObject::from_int(17).bits(),
                 crate::object::ops_hash::hash_string_bytes(&py, b"molt_sys_probe") as u64,
             ));
-            let hook_name = crate::attr_name_bits_from_bytes(&py, b"unraisablehook").unwrap();
+            let hook_name = crate::dynamic_attr_name_bits(&py, b"unraisablehook").unwrap();
             let hook = sys_lookup_function(&py, sys_lookup_unraisable as *const (), 1);
             crate::builtins::modules::molt_module_set_attr(sys, hook_name, hook);
             dec_ref_bits(&py, hook_name);
@@ -10301,7 +10318,7 @@ mod tests {
             }
             // Import custody does not consult the mutable sys.modules
             // attribute. Its dedicated hook cannot invoke this raising key.
-            let modules_name = crate::attr_name_bits_from_bytes(&py, b"modules").unwrap();
+            let modules_name = crate::dynamic_attr_name_bits(&py, b"modules").unwrap();
             crate::dict_del_in_place(&py, dict, modules_name)
                 .expect("sys namespace deletion must succeed whether or not modules is present");
             let (modules_key, modules_class) = sys_lookup_key(&py);
@@ -10334,11 +10351,11 @@ mod tests {
     fn pysys_getobject_never_calls_module_getattr_or_restores_deleted_entries() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         with_gil(|py| unsafe {
-            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
             let _restore = ModuleCacheRestore::new(&py, name);
             let sys = MoltObject::from_ptr(alloc_module_obj(&py, name)).bits();
             crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-            let hook_name = crate::attr_name_bits_from_bytes(&py, b"__getattr__").unwrap();
+            let hook_name = crate::dynamic_attr_name_bits(&py, b"__getattr__").unwrap();
             let hook = sys_lookup_function(&py, sys_lookup_getattr_trap as *const (), 1);
             crate::builtins::modules::molt_module_set_attr(sys, hook_name, hook);
             SYS_LOOKUP_GETATTR_CALLS.store(0, AtomicOrdering::SeqCst);
@@ -10349,7 +10366,7 @@ mod tests {
             assert_eq!(SYS_LOOKUP_GETATTR_CALLS.load(AtomicOrdering::SeqCst), 0);
             assert!(!crate::exception_pending(&py));
 
-            let key = crate::attr_name_bits_from_bytes(&py, b"molt_namespace_probe").unwrap();
+            let key = crate::dynamic_attr_name_bits(&py, b"molt_namespace_probe").unwrap();
             let stored =
                 MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(33).bits()]))
                     .bits();

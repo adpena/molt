@@ -81,8 +81,8 @@ fn native_c_names_share_creation_identity_and_heap_rename_publication() {
                     b"ShortName".as_slice(),
                 ),
             ] {
-                let key = attr_name_bits_from_bytes(py, key).unwrap();
-                let value = attr_name_bits_from_bytes(py, value).unwrap();
+                let key = dynamic_attr_name_bits(py, key).unwrap();
+                let value = dynamic_attr_name_bits(py, value).unwrap();
                 let result = crate::molt_set_attr_name(class, key, value);
                 dec_ref_bits(py, result);
                 dec_ref_bits(py, key);
@@ -216,7 +216,7 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
                 let base = exception_class_bits(py, BuiltinExc::PickleError);
                 assert!(crate::issubclass_bits(class, base));
             }
-            let module_key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+            let module_key = dynamic_attr_name_bits(py, b"__module__").unwrap();
             let observed = crate::molt_get_attr_name(class, module_key);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(observed)).as_deref(),
@@ -226,14 +226,14 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
             dec_ref_bits(py, module_key);
             let original = unsafe { crate::class_name_bits(ptr) };
             inc_ref_bits(py, original);
-            let renamed = attr_name_bits_from_bytes(py, b"RenamedModuleException").unwrap();
+            let renamed = dynamic_attr_name_bits(py, b"RenamedModuleException").unwrap();
             assert!(unsafe { crate::class_set_name_bits(py, ptr, renamed) });
             assert_eq!(exception_class_bits(py, name), class);
             assert!(is_builtin_exception_class_bits(py, class));
             assert!(unsafe { crate::class_set_name_bits(py, ptr, original) });
             dec_ref_bits(py, original);
             dec_ref_bits(py, renamed);
-            let fake_name = attr_name_bits_from_bytes(py, name.name().as_bytes()).unwrap();
+            let fake_name = dynamic_attr_name_bits(py, name.name().as_bytes()).unwrap();
             let fake = crate::molt_class_new(fake_name);
             dec_ref_bits(py, fake_name);
             let result = crate::molt_class_set_base(fake, builtin_classes(py).base_exception);
@@ -364,7 +364,7 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
         dec_ref_bits(py, partial);
         // Static origin and immutability belong to the actual class, never its
         // inherited native shape. A SimpleNamespace subclass is a mutable heap.
-        let name = attr_name_bits_from_bytes(py, b"NamespaceChild").unwrap();
+        let name = dynamic_attr_name_bits(py, b"NamespaceChild").unwrap();
         let child = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         let result = crate::molt_class_set_base(child, simplenamespace_class(py));
@@ -378,7 +378,7 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
         assert_namespace_mutability(py, child, false);
         dec_ref_bits(py, child);
         // Admission consumes the same explicit BASETYPE fact as C flags.
-        let name = attr_name_bits_from_bytes(py, b"RejectedMethodChild").unwrap();
+        let name = dynamic_attr_name_bits(py, b"RejectedMethodChild").unwrap();
         let child = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         let result = crate::molt_class_set_base(child, method_class(py));
@@ -407,7 +407,7 @@ fn annotations_admit_immutable_heap_types_but_reject_static_types() {
             },
             |_, _| true,
         );
-        let field = attr_name_bits_from_bytes(py, b"__annotations__").unwrap();
+        let field = dynamic_attr_name_bits(py, b"__annotations__").unwrap();
         for class in [
             mappingproxy_class(py),
             method_class(py),
@@ -459,7 +459,7 @@ extern "C" fn class_annotation_evaluator(format: u64) -> u64 {
             );
         }
         ANNOTATION_EVALUATIONS.fetch_add(1, AtomicOrdering::Relaxed);
-        let name = attr_name_bits_from_bytes(py, b"answer").unwrap();
+        let name = dynamic_attr_name_bits(py, b"answer").unwrap();
         let dictionary = alloc_dict_with_pairs(py, &[name, MoltObject::from_int(42).bits()]);
         dec_ref_bits(py, name);
         MoltObject::from_ptr(dictionary).bits()
@@ -491,7 +491,7 @@ fn immutable_heap_evaluator_and_cache_follow_target_annotation_semantics() {
                     native_slots: None,
                 },
                 |_, namespace| {
-                    let name = attr_name_bits_from_bytes(py, b"__annotate__").unwrap();
+                    let name = dynamic_attr_name_bits(py, b"__annotate__").unwrap();
                     let function = crate::builtins::functions::alloc_runtime_function_obj(
                         py,
                         crate::builtins::functions::runtime_fn_addr(
@@ -601,7 +601,7 @@ fn heap_c_view_names_are_owned_and_follow_runtime_metadata_mutation() {
                     true,
                 ),
             ] {
-                let key = attr_name_bits_from_bytes(py, attribute).unwrap();
+                let key = dynamic_attr_name_bits(py, attribute).unwrap();
                 let value_bits =
                     MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, value))
                         .bits();

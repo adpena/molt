@@ -51,7 +51,7 @@ pub(super) fn resolve_file_handle_ptr(
         }
         return Ok(handle_ptr);
     }
-    let name_bits = intern_static_name(_py, &runtime_state(_py).interned.handle_name, b"_handle");
+    let name_bits = crate::NameId::PrivateHandle.bits(_py);
     let missing = missing_bits(_py);
     let attr_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
     if exception_pending(_py) {

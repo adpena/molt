@@ -85,12 +85,12 @@ fn collect_parameters(py: &PyToken<'_>, arguments: u64) -> Result<u64, ()> {
         }
         return Err(());
     };
-    let Some(substitution_name) = attr_name_bits_from_bytes(py, b"__typing_subst__") else {
+    let Some(substitution_name) = crate::NameId::DunderTypingSubst.owned_bits(py) else {
         return Err(());
     };
     let substitution_name =
         unsafe { ProtectedRuntimeValue::from_owned_bits(py.core_token(), substitution_name) };
-    let Some(parameters_name) = attr_name_bits_from_bytes(py, b"__parameters__") else {
+    let Some(parameters_name) = crate::NameId::DunderParameters.owned_bits(py) else {
         return Err(());
     };
     let parameters_name =

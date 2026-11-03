@@ -14,12 +14,12 @@ use crate::builtins::types::{
     SELF_RUNTIME_ARGUMENT_NAMES, init_cached_runtime_class,
 };
 use crate::{
-    PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
-    inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy, issubclass_runtime,
-    molt_is_callable, molt_repr_from_obj, molt_set_attr_name, obj_from_bits, object_class_bits,
-    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
+    PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_string, alloc_tuple, builtin_classes,
+    call_callable2, class_dict_bits, dec_ref_bits, dict_get_in_place, dict_set_in_place,
+    dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
+    is_truthy, issubclass_runtime, molt_is_callable, molt_repr_from_obj, molt_set_attr_name,
+    obj_from_bits, object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64,
+    type_of_bits,
 };
 
 /// The runtime-owned functools objects: the keyword marker and the three
@@ -228,14 +228,14 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
     let methods = [
         RuntimeClassMethodSpec::with_signature(
-            "__call__",
+            crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_partial_call as *const () as usize as u64,
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
-            "__repr__",
+            crate::NameId::DunderRepr,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_partial_repr as *const () as usize as u64,
             1,
@@ -264,37 +264,37 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
     let methods = [
         RuntimeClassMethodSpec::fixed(
-            "__lt__",
+            crate::NameId::DunderLt,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_lt as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "__le__",
+            crate::NameId::DunderLe,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_le as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "__gt__",
+            crate::NameId::DunderGt,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_gt as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "__ge__",
+            crate::NameId::DunderGe,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_ge as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "__eq__",
+            crate::NameId::DunderEq,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_eq as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
-            "__ne__",
+            crate::NameId::DunderNe,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_cmpkey_ne as *const () as usize as u64,
             2,
@@ -319,26 +319,26 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
     let functools = &crate::runtime_state(_py).functools;
     let methods = [
         RuntimeClassMethodSpec::with_signature(
-            "__call__",
+            crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_lru_call as *const () as usize as u64,
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
-            "__get__",
+            crate::NameId::DunderGet,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_lru_descriptor_get as *const () as usize as u64,
             3,
         ),
         RuntimeClassMethodSpec::fixed(
-            "cache_info",
+            crate::NameId::CacheInfo,
             NativeCallableKind::MethodDescriptor,
             crate::molt_functools_lru_cache_info as *const () as usize as u64,
             1,
         ),
         RuntimeClassMethodSpec::fixed(
-            "cache_clear",
+            crate::NameId::CacheClear,
             NativeCallableKind::MethodDescriptor,
             crate::molt_functools_lru_cache_clear as *const () as usize as u64,
             1,
@@ -709,7 +709,7 @@ fn update_wrapper_members(
                         dec_ref_bits(py, target);
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
-                    let Some(update_name) = attr_name_bits_from_bytes(py, b"update") else {
+                    let Some(update_name) = crate::NameId::Update.owned_bits(py) else {
                         dec_ref_bits(py, target);
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     };
@@ -760,11 +760,7 @@ pub extern "C" fn molt_functools_update_wrapper(
         {
             return MoltObject::none().bits();
         }
-        let name = intern_static_name(
-            py,
-            &crate::runtime_state(py).interned.wrapped_name,
-            b"__wrapped__",
-        );
+        let name = crate::NameId::DunderWrapped.bits(py);
         let result = molt_set_attr_name(wrapper_bits, name, wrapped_bits);
         dec_ref_bits(py, result);
         if exception_pending(py) {
@@ -1052,14 +1048,10 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
         }
-        let lt_name =
-            intern_static_name(_py, &crate::runtime_state(_py).interned.lt_name, b"__lt__");
-        let le_name =
-            intern_static_name(_py, &crate::runtime_state(_py).interned.le_name, b"__le__");
-        let gt_name =
-            intern_static_name(_py, &crate::runtime_state(_py).interned.gt_name, b"__gt__");
-        let ge_name =
-            intern_static_name(_py, &crate::runtime_state(_py).interned.ge_name, b"__ge__");
+        let lt_name = crate::NameId::DunderLt.bits(_py);
+        let le_name = crate::NameId::DunderLe.bits(_py);
+        let gt_name = crate::NameId::DunderGt.bits(_py);
+        let ge_name = crate::NameId::DunderGe.bits(_py);
         let root = if match unsafe { dict_get_in_place(_py, dict_ptr, lt_name) } {
             Ok(value) => value.is_some(),
             Err(()) => return MoltObject::none().bits(),
@@ -1087,7 +1079,7 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                 "total_ordering requires at least one ordering operation: < <= > >=",
             );
         };
-        let mut missing: Vec<(&'static str, i64, i64, i64)> = Vec::new();
+        let mut missing: Vec<(crate::NameId, i64, i64, i64)> = Vec::new();
         // op_code: 0=lt,1=le,2=gt,3=ge; swap, negate
         match root {
             "lt" => {
@@ -1095,19 +1087,19 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__gt__", 0, 1, 0));
+                    missing.push((crate::NameId::DunderGt, 0, 1, 0));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, le_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__le__", 0, 1, 1));
+                    missing.push((crate::NameId::DunderLe, 0, 1, 1));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, ge_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__ge__", 0, 0, 1));
+                    missing.push((crate::NameId::DunderGe, 0, 0, 1));
                 }
             }
             "le" => {
@@ -1115,19 +1107,19 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__ge__", 1, 1, 0));
+                    missing.push((crate::NameId::DunderGe, 1, 1, 0));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, lt_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__lt__", 1, 1, 1));
+                    missing.push((crate::NameId::DunderLt, 1, 1, 1));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, gt_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__gt__", 1, 0, 1));
+                    missing.push((crate::NameId::DunderGt, 1, 0, 1));
                 }
             }
             "gt" => {
@@ -1135,19 +1127,19 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__lt__", 2, 1, 0));
+                    missing.push((crate::NameId::DunderLt, 2, 1, 0));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, ge_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__ge__", 2, 1, 1));
+                    missing.push((crate::NameId::DunderGe, 2, 1, 1));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, le_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__le__", 2, 0, 1));
+                    missing.push((crate::NameId::DunderLe, 2, 0, 1));
                 }
             }
             _ => {
@@ -1155,19 +1147,19 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__le__", 3, 1, 0));
+                    missing.push((crate::NameId::DunderLe, 3, 1, 0));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, gt_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__gt__", 3, 1, 1));
+                    missing.push((crate::NameId::DunderGt, 3, 1, 1));
                 }
                 if match unsafe { dict_get_in_place(_py, dict_ptr, lt_name) } {
                     Ok(value) => value.is_none(),
                     Err(()) => return MoltObject::none().bits(),
                 } {
-                    missing.push(("__lt__", 3, 0, 1));
+                    missing.push((crate::NameId::DunderLt, 3, 0, 1));
                 }
             }
         }
@@ -1203,7 +1195,7 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
             };
             dec_ref_bits(_py, closure_bits);
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
-            let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
+            let Some(name_bits) = name.owned_bits(_py) else {
                 dec_ref_bits(_py, func_bits);
                 continue;
             };
@@ -2389,7 +2381,7 @@ mod tests {
             let marker_refs =
                 || unsafe { (*crate::header_from_obj_ptr(marker_ptr)).ref_count_snapshot() };
             let marker_baseline = marker_refs();
-            let name = crate::attr_name_bits_from_bytes(py, b"cache_parameters").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"cache_parameters").unwrap();
             assert_eq!(unsafe { crate::instance_dict_bits(wrapper_ptr) }, 0);
             let set_result = crate::molt_set_attr_name(wrapper, name, marker);
             dec_ref_bits(py, set_result);

@@ -39,9 +39,9 @@ use crate::object::builders::CanonicalObjectCache;
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::object::weakref::WeakContainerCookie;
 use crate::{
-    AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, InternedNames,
-    MethodCache, MoltObject, MoltScheduler, ProcessRegistry, PtrSlot, PyToken, RuntimeStaticNames,
-    SleepQueue, default_cancel_tokens,
+    AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, MethodCache,
+    MoltObject, MoltScheduler, ProcessRegistry, PtrSlot, PyToken, RuntimeNames, SleepQueue,
+    default_cancel_tokens,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ThreadPool, ThreadTaskState};
@@ -390,8 +390,7 @@ pub(crate) struct RuntimeState {
     pub(crate) interpreter_finalizing: AtomicBool,
     pub(crate) builtin_classes: std::sync::atomic::AtomicPtr<BuiltinClasses>,
     pub(crate) cpython: crate::cpython_abi_hooks::CpythonRuntimeState,
-    pub(crate) interned: InternedNames,
-    pub(crate) runtime_static_names: RuntimeStaticNames,
+    pub(crate) names: RuntimeNames,
     pub(crate) method_cache: MethodCache,
     pub(crate) special_cache: SpecialCache,
     pub(crate) canonical_objects: CanonicalObjectCache,
@@ -546,8 +545,7 @@ impl RuntimeState {
             interpreter_finalizing: AtomicBool::new(false),
             builtin_classes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             cpython: crate::cpython_abi_hooks::CpythonRuntimeState::new(),
-            interned: InternedNames::new(),
-            runtime_static_names: RuntimeStaticNames::new(),
+            names: RuntimeNames::new(),
             method_cache: MethodCache::new(),
             special_cache: SpecialCache::new(),
             canonical_objects: CanonicalObjectCache::new(),

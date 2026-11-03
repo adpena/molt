@@ -180,15 +180,15 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
         ] {
             let class = obj_from_bits(owner).as_ptr().unwrap();
             let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
-            for field in fields {
-                let Some(name) = attr_name_bits_from_bytes(py, field.name().as_bytes()) else {
+            for &field in fields {
+                let Some(name) = crate::NameId::from(field).owned_bits(py) else {
                     return false;
                 };
                 let descriptor = crate::builtins::types::alloc_native_descriptor(
                     py,
                     crate::builtins::types::NativeDescriptorSpec {
                         flavor: crate::object::layout::NativeDescriptorFlavor::RootMetadata,
-                        operation: *field as u32,
+                        operation: field as u32,
                         owner,
                         name,
                         doc: MoltObject::none().bits(),
@@ -255,7 +255,7 @@ unsafe fn read_namespace_metadata(
                 Ok(MoltObject::from_ptr(result).bits())
             };
         }
-        match annotation_entry(py, class, field.name().as_bytes()) {
+        match annotation_entry(py, class, crate::NameId::from(field)) {
             Some(value) if field == Field::Doc => {
                 crate::builtins::attr::descriptor_bind(py, value, Some(bits), None)?.ok_or(())
             }
@@ -302,7 +302,7 @@ unsafe fn write_namespace_metadata(
         } else {
             false
         };
-        let name = attr_name_bits_from_bytes(py, field.name().as_bytes()).ok_or(())?;
+        let name = crate::NameId::from(field).owned_bits(py).ok_or(())?;
         let _name =
             crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("metadata name"));
         let mut publication = super::TypeMutation::prepare(py, class, name).ok_or(())?;
@@ -311,7 +311,7 @@ unsafe fn write_namespace_metadata(
         }
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
         if field == Field::Module && crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
-            let firstline = attr_name_bits_from_bytes(py, b"__firstlineno__").ok_or(())?;
+            let firstline = crate::NameId::DunderFirstlineno.owned_bits(py).ok_or(())?;
             let _firstline =
                 crate::PtrDropGuard::preserving(obj_from_bits(firstline).as_ptr().unwrap());
             let retired = crate::object::ops::dict_del_deferred(py, dictionary, firstline)?;
@@ -355,10 +355,10 @@ unsafe fn write_namespace_metadata(
 
 // Class annotations have exactly one storage owner: the class namespace.
 // Python 3.14 separates explicit values from generated evaluators/lazy caches.
-unsafe fn annotation_entry(py: &PyToken<'_>, class: *mut u8, key: &[u8]) -> Option<u64> {
+unsafe fn annotation_entry(py: &PyToken<'_>, class: *mut u8, key: crate::NameId) -> Option<u64> {
     unsafe {
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr()?;
-        crate::object::ops::dict_get_str_bytes_borrowed(py, dictionary, key)
+        crate::object::ops::dict_get_str_bytes_borrowed(py, dictionary, key.as_str().as_bytes())
     }
 }
 
@@ -368,7 +368,7 @@ unsafe fn annotation_entry(py: &PyToken<'_>, class: *mut u8, key: &[u8]) -> Opti
 unsafe fn update_annotations_namespace(
     py: &PyToken<'_>,
     class: *mut u8,
-    updates: &[(&[u8], Option<u64>)],
+    updates: &[(crate::NameId, Option<u64>)],
 ) -> bool {
     unsafe {
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
@@ -377,7 +377,7 @@ unsafe fn update_annotations_namespace(
         let mut publication = None;
         let result = (|| {
             for (name, _) in updates {
-                names.push(attr_name_bits_from_bytes(py, name).ok_or(())?);
+                names.push(name.owned_bits(py).ok_or(())?);
             }
             publication =
                 Some(super::TypeMutation::prepare(py, class, *names.first().ok_or(())?).ok_or(())?);
@@ -425,10 +425,10 @@ pub(crate) unsafe fn read_type_annotations(
             return raise_exception::<_>(py, BuiltinExc::AttributeError, field.name());
         }
         let deferred = pep649_enabled(py);
-        let public_key = field.name().as_bytes();
-        let cache_key: &[u8] = match field {
-            Field::Annotate if deferred => b"__annotate_func__",
-            Field::Annotations if deferred => b"__annotations_cache__",
+        let public_key = crate::NameId::from(field);
+        let cache_key: crate::NameId = match field {
+            Field::Annotate if deferred => crate::NameId::DunderAnnotateFunc,
+            Field::Annotations if deferred => crate::NameId::DunderAnnotationsCache,
             _ => public_key,
         };
         let existing = annotation_entry(py, class, public_key)
@@ -448,7 +448,7 @@ pub(crate) unsafe fn read_type_annotations(
                 .then_some(none);
         }
         let result = if deferred {
-            let name = attr_name_bits_from_bytes(py, b"__annotate__")?;
+            let name = crate::NameId::DunderAnnotate.owned_bits(py)?;
             // The owning normal lookup includes metaclass overrides. Its result
             // must survive removal/replacement of the namespace's last edge.
             let annotate = molt_get_attr_name(class_bits, name);
@@ -510,7 +510,7 @@ unsafe fn write_type_annotations(
 ) -> Result<(), ()> {
     unsafe {
         let deferred = pep649_enabled(py);
-        let mut updates: Vec<(&[u8], Option<u64>)> = Vec::with_capacity(4);
+        let mut updates: Vec<(crate::NameId, Option<u64>)> = Vec::with_capacity(4);
         if field == Field::Annotate && deferred {
             let Some(value) = value else {
                 raise_exception::<()>(
@@ -531,16 +531,16 @@ unsafe fn write_type_annotations(
                     return Err(());
                 }
             }
-            updates.push((b"__annotate_func__", Some(value)));
+            updates.push((crate::NameId::DunderAnnotateFunc, Some(value)));
             if !obj_from_bits(value).is_none() {
-                updates.push((b"__annotations_cache__", None));
+                updates.push((crate::NameId::DunderAnnotationsCache, None));
             }
         } else {
-            let explicit = annotation_entry(py, class, field.name().as_bytes());
+            let explicit = annotation_entry(py, class, crate::NameId::from(field));
             let key = if deferred && field == Field::Annotations && explicit.is_none() {
-                b"__annotations_cache__".as_slice()
+                crate::NameId::DunderAnnotationsCache
             } else {
-                field.name().as_bytes()
+                crate::NameId::from(field)
             };
             if value.is_none() && annotation_entry(py, class, key).is_none() {
                 raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
@@ -549,10 +549,10 @@ unsafe fn write_type_annotations(
             updates.push((key, value));
             if field == Field::Annotations && deferred {
                 if explicit.is_some() {
-                    updates.push((b"__annotations_cache__", None));
+                    updates.push((crate::NameId::DunderAnnotationsCache, None));
                 }
-                updates.push((b"__annotate_func__", None));
-                updates.push((b"__annotate__", None));
+                updates.push((crate::NameId::DunderAnnotateFunc, None));
+                updates.push((crate::NameId::DunderAnnotate, None));
             }
         }
         if update_annotations_namespace(py, class, &updates) {

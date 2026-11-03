@@ -272,7 +272,7 @@ pub(crate) fn bind_named<const N: usize>(
         );
     }
     for (slot, name) in parameter_bits.iter_mut().zip(names) {
-        let bits = attr_name_bits_from_bytes(py, name.as_bytes())?;
+        let bits = dynamic_attr_name_bits(py, name.as_bytes())?;
         *slot = bits;
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
             owners.push(PtrDropGuard::preserving(ptr));

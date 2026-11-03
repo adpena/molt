@@ -102,7 +102,7 @@ extern "C" fn replacement_iteration(_: u64) -> u64 {
 
 unsafe fn list_subtype(py: &PyToken<'_>, iter: *const ()) -> u64 {
     unsafe {
-        let name = crate::attr_name_bits_from_bytes(py, b"SequenceProtocolList").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"SequenceProtocolList").unwrap();
         let class = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         crate::molt_class_set_base(class, builtin_classes(py).list);
@@ -112,7 +112,7 @@ unsafe fn list_subtype(py: &PyToken<'_>, iter: *const ()) -> u64 {
             1,
         ))
         .bits();
-        let key = crate::attr_name_bits_from_bytes(py, b"__iter__").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"__iter__").unwrap();
         crate::molt_set_attr_name(class, key, method);
         dec_ref_bits(py, key);
         dec_ref_bits(py, method);
@@ -485,7 +485,7 @@ fn projection_install(py: &PyToken<'_>, class: u64, name: &[u8], callback: *cons
         1,
     ))
     .bits();
-    let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let key = crate::dynamic_attr_name_bits(py, name).unwrap();
     crate::molt_set_attr_name(class, key, method);
     dec_ref_bits(py, key);
     dec_ref_bits(py, method);
@@ -497,7 +497,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
     use molt_cpython_abi::api::numbers;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::attr_name_bits_from_bytes(&py, b"ProjectedIterator").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"ProjectedIterator").unwrap();
         let class = crate::molt_class_new(name);
         dec_ref_bits(&py, name);
         crate::molt_class_set_base(class, builtin_classes(&py).object);
@@ -516,7 +516,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
             "completion",
         ))
         .bits();
-        let value_name = crate::attr_name_bits_from_bytes(&py, b"value").unwrap();
+        let value_name = crate::dynamic_attr_name_bits(&py, b"value").unwrap();
         crate::molt_set_attr_name(stop, value_name, payload);
         dec_ref_bits(&py, value_name);
         assert!(!crate::exception_pending(&py));
@@ -828,7 +828,7 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
             2,
         ))
         .bits();
-        let key = crate::attr_name_bits_from_bytes(&py, b"__imul__").unwrap();
+        let key = crate::dynamic_attr_name_bits(&py, b"__imul__").unwrap();
         crate::molt_set_attr_name(class, key, method);
         assert!(!crate::exception_pending(&py));
         assert!(

@@ -76,7 +76,12 @@ fn set_field(py: &PyToken<'_>, error: u64, field: ExceptionTypedField, value: u6
     assert!(!exception_pending(py));
 }
 
-fn call_declared(py: &PyToken<'_>, owner: crate::BuiltinExc, name: &str, error: u64) -> u64 {
+fn call_declared(
+    py: &PyToken<'_>,
+    owner: crate::BuiltinExc,
+    name: crate::NameId,
+    error: u64,
+) -> u64 {
     let descriptor = exception_render_method_bits(py, exception_class_bits(py, owner), name)
         .expect("method lookup succeeds")
         .expect("declaring descriptor must exist before C publication");
@@ -253,19 +258,34 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     assert_eq!(
         assert_text(
             py,
-            call_declared(py, crate::BuiltinExc::BaseException, "__str__", key.bits()),
+            call_declared(
+                py,
+                crate::BuiltinExc::BaseException,
+                crate::NameId::DunderStr,
+                key.bits()
+            ),
             b"message"
         ),
         message.bits()
     );
     assert_text(
         py,
-        call_declared(py, crate::BuiltinExc::BaseException, "__repr__", key.bits()),
+        call_declared(
+            py,
+            crate::BuiltinExc::BaseException,
+            crate::NameId::DunderRepr,
+            key.bits(),
+        ),
         b"KeyError('message')",
     );
     let invalid = ExceptionValue::adopt(
         py,
-        call_declared(py, crate::BuiltinExc::KeyError, "__str__", empty.bits()),
+        call_declared(
+            py,
+            crate::BuiltinExc::KeyError,
+            crate::NameId::DunderStr,
+            empty.bits(),
+        ),
     );
     assert!(
         exception_pending(py),
@@ -287,13 +307,13 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     ] {
         let class = exception_class_bits(py, name);
         assert!(
-            exception_render_method_bits(py, class, "__str__")
+            exception_render_method_bits(py, class, crate::NameId::DunderStr)
                 .expect("renderer lookup succeeds")
                 .is_none(),
             "{name} inherits str"
         );
         assert!(
-            exception_render_method_bits(py, class, "__repr__")
+            exception_render_method_bits(py, class, crate::NameId::DunderRepr)
                 .expect("renderer lookup succeeds")
                 .is_none(),
             "{name} inherits repr"
@@ -344,7 +364,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
             call_declared(
                 py,
                 crate::BuiltinExc::BaseException,
-                "__str__",
+                crate::NameId::DunderStr,
                 error.bits(),
             ),
             b"new args",
@@ -523,7 +543,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         call_declared(
             py,
             crate::BuiltinExc::BaseException,
-            "__str__",
+            crate::NameId::DunderStr,
             payload.bits(),
         ),
         b"",
@@ -542,7 +562,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         call_declared(
             py,
             crate::BuiltinExc::BaseException,
-            "__repr__",
+            crate::NameId::DunderRepr,
             payload.bits(),
         ),
         b"Named()",
@@ -836,7 +856,7 @@ mod native_fields {
                         call_declared(
                             py,
                             crate::BuiltinExc::BaseExceptionGroup,
-                            "__str__",
+                            crate::NameId::DunderStr,
                             group.bits(),
                         ),
                         expected,

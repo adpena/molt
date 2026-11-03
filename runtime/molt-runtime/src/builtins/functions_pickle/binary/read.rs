@@ -118,9 +118,9 @@ pub(crate) fn pickle_decode_utf8(
 pub(crate) fn pickle_attr_optional(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<Option<u64>, u64> {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
     let missing = missing_bits(_py);
@@ -151,12 +151,12 @@ pub(crate) fn pickle_attr_required(
     _py: &crate::PyToken<'_>,
     error: PickleError,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<u64, u64> {
     match pickle_attr_optional(_py, obj_bits, name)? {
         Some(bits) => Ok(bits),
         None => {
-            let name_text = std::str::from_utf8(name).unwrap_or("attribute");
+            let name_text = name.as_str();
             let msg = format!("pickle: missing required attribute {name_text}");
             Err(error.raise(_py, &msg))
         }

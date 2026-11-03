@@ -55,7 +55,12 @@ unsafe fn raw_read<T: ?Sized>(
     let implicit = unsafe { (*file_handle_ptr(pointer)).buffer_bits == 0 }
         && raw == MoltObject::from_ptr(pointer).bits();
     if implicit
-        || !buffered::raw_callbacks(py, builtin_classes(py).buffered_reader, raw, &[b"readinto"])
+        || !buffered::raw_callbacks(
+            py,
+            builtin_classes(py).buffered_reader,
+            raw,
+            &[crate::NameId::Readinto],
+        )
     {
         let (state, memory) = unsafe {
             let handle = &*file_handle_ptr(obj_from_bits(raw).as_ptr().unwrap());
@@ -114,7 +119,10 @@ unsafe fn raw_read<T: ?Sized>(
         )
     }?;
     let result = loop {
-        let result = owned(py, call(py, raw, b"readinto", Some(view.bits())));
+        let result = owned(
+            py,
+            call(py, raw, crate::NameId::Readinto, Some(view.bits())),
+        );
         if !exception_pending(py) {
             break result;
         }
@@ -248,7 +256,7 @@ unsafe fn read_all(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> u64 {
     } else {
         OwnedRuntimeValue::retain(py.core_token(), raw)
     };
-    let Some(name) = attr_name_bits_from_bytes(py, b"readall") else {
+    let Some(name) = crate::NameId::Readall.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let _name = owned(py, name);
@@ -261,7 +269,7 @@ unsafe fn read_all(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> u64 {
             py,
             match &readall {
                 Some(function) => unsafe { call_callable0(py, function.bits()) },
-                None => call(py, raw.bits(), b"read", None),
+                None => call(py, raw.bits(), crate::NameId::Read, None),
             },
         );
         if exception_pending(py) {
@@ -353,8 +361,14 @@ pub(super) unsafe fn read(
         return bytes(py, &[]);
     }
     if length == -1 {
-        if let Err(error) = unsafe { buffered::prepare(py, pointer, &[b"readall", b"read"], false) }
-        {
+        if let Err(error) = unsafe {
+            buffered::prepare(
+                py,
+                pointer,
+                &[crate::NameId::Readall, crate::NameId::Read],
+                false,
+            )
+        } {
             return error;
         }
         let _operation = match unsafe { Operation::enter(py, pointer, true) } {
@@ -383,7 +397,8 @@ pub(super) unsafe fn read(
         }
         return result;
     }
-    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[b"readinto"], false) } {
+    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[crate::NameId::Readinto], false) }
+    {
         return error;
     }
     let _operation = match unsafe { Operation::enter(py, pointer, true) } {
@@ -473,7 +488,8 @@ pub(super) unsafe fn readinto(
     if written == buffer.len() {
         return int_bits_from_i64(py, written as i64);
     }
-    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[b"readinto"], false) } {
+    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[crate::NameId::Readinto], false) }
+    {
         return error;
     }
     let _operation = match unsafe { Operation::enter(py, pointer, true) } {
@@ -544,7 +560,8 @@ pub(super) unsafe fn peek(py: &PyToken<'_>, bits: u64, pointer: *mut u8, size: u
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[b"readinto"], false) } {
+    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[crate::NameId::Readinto], false) }
+    {
         return error;
     }
     let _operation = match unsafe { Operation::enter(py, pointer, true) } {
@@ -609,7 +626,8 @@ pub(super) unsafe fn readline(py: &PyToken<'_>, bits: u64, pointer: *mut u8, siz
         }
         return result;
     }
-    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[b"readinto"], false) } {
+    if let Err(error) = unsafe { buffered::prepare(py, pointer, &[crate::NameId::Readinto], false) }
+    {
         return error;
     }
     let _operation = match unsafe { Operation::enter(py, pointer, true) } {
@@ -705,7 +723,12 @@ unsafe fn raw_tell(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> Result<i64, 
     let implicit = raw == MoltObject::from_ptr(pointer).bits()
         && unsafe { (*file_handle_ptr(pointer)).buffer_bits == 0 };
     if implicit
-        || !buffered::raw_callbacks(py, builtin_classes(py).buffered_reader, raw, &[b"tell"])
+        || !buffered::raw_callbacks(
+            py,
+            builtin_classes(py).buffered_reader,
+            raw,
+            &[crate::NameId::Tell],
+        )
     {
         let position = unsafe {
             let handle = &*file_handle_ptr(obj_from_bits(raw).as_ptr().unwrap());
@@ -729,7 +752,7 @@ unsafe fn raw_tell(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> Result<i64, 
         }
         return Ok(position);
     }
-    let value = owned(py, call(py, raw, b"tell", None));
+    let value = owned(py, call(py, raw, crate::NameId::Tell, None));
     if exception_pending(py) {
         return Err(MoltObject::none().bits());
     }
@@ -792,16 +815,25 @@ pub(super) unsafe fn seek(
             &format!("whence value {whence} unsupported"),
         );
     }
-    if let Err(error) =
-        unsafe { buffered::prepare(py, pointer, &[b"seekable", b"tell", b"seek"], false) }
-    {
+    if let Err(error) = unsafe {
+        buffered::prepare(
+            py,
+            pointer,
+            &[
+                crate::NameId::Seekable,
+                crate::NameId::Tell,
+                crate::NameId::Seek,
+            ],
+            false,
+        )
+    } {
         return error;
     }
     let raw = match unsafe { checked_raw(py, pointer, "seek of closed file") } {
         Ok(raw) => raw,
         Err(error) => return error,
     };
-    let seekable = owned(py, call(py, raw.bits(), b"seekable", None));
+    let seekable = owned(py, call(py, raw.bits(), crate::NameId::Seekable, None));
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
@@ -876,7 +908,7 @@ pub(super) unsafe fn seek(
     } else {
         raw
     };
-    let Some(name) = attr_name_bits_from_bytes(py, b"seek") else {
+    let Some(name) = crate::NameId::Seek.owned_bits(py) else {
         return MoltObject::none().bits();
     };
     let _name = owned(py, name);

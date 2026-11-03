@@ -141,7 +141,7 @@ fn checked_type_observers_reject_terminal_managed_pins_without_resurrection() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         assert!(super::register_cpython_hooks());
-        let name = crate::attr_name_bits_from_bytes(&py, b"TerminalWatcherSubject").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"TerminalWatcherSubject").unwrap();
         let namespace = crate::alloc_dict_with_pairs(&py, &[]);
         assert!(!namespace.is_null());
         let namespace = crate::bits_from_ptr(namespace);

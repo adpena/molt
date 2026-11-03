@@ -43,8 +43,8 @@ fn callback_dict_subclass(_py: &PyToken<'_>) -> (u64, u64, u64) {
     );
     assert!(!function.is_null());
     let function = MoltObject::from_ptr(function).bits();
-    let name = attr_name_bits_from_bytes(_py, b"LookupDict").unwrap();
-    let slot = attr_name_bits_from_bytes(_py, b"__getitem__").unwrap();
+    let name = dynamic_attr_name_bits(_py, b"LookupDict").unwrap();
+    let slot = dynamic_attr_name_bits(_py, b"__getitem__").unwrap();
     let namespace = alloc_dict_with_pairs(_py, &[slot, function]);
     let bases = alloc_tuple(_py, &[builtin_classes(_py).dict]);
     assert!(!namespace.is_null() && !bases.is_null());
@@ -106,8 +106,8 @@ fn relative_import_reads_subclass_globals_backing_without_mapping_callbacks() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         let (globals, class, function) = callback_dict_subclass(_py);
-        let package_key = attr_name_bits_from_bytes(_py, b"__package__").unwrap();
-        let empty = attr_name_bits_from_bytes(_py, b"").unwrap();
+        let package_key = dynamic_attr_name_bits(_py, b"__package__").unwrap();
+        let empty = dynamic_attr_name_bits(_py, b"").unwrap();
         let storage = crate::builtins::frames::globals_namespace_storage_ptr(_py, globals)
             .expect("dictionary storage resolution succeeds")
             .expect("dict subclass backing");
@@ -138,8 +138,8 @@ fn relative_import_reads_subclass_globals_backing_without_mapping_callbacks() {
 fn exact_dict_lookup_owns_hits_and_reports_clean_misses() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
-        let absent = attr_name_bits_from_bytes(_py, b"absent").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"bound").unwrap();
+        let absent = dynamic_attr_name_bits(_py, b"absent").unwrap();
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let namespace = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, value])).bits();
         let value_before = refcount(value);
@@ -167,7 +167,7 @@ fn exact_dict_lookup_owns_hits_and_reports_clean_misses() {
 fn namespace_get_dispatches_dict_subclass_getitem_and_preserves_owners() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"bound").unwrap();
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let (namespace, class, function) = callback_dict_subclass(_py);
         let value_before = refcount(value);
@@ -196,7 +196,7 @@ fn namespace_get_dispatches_dict_subclass_getitem_and_preserves_owners() {
 fn framed_global_store_uses_dict_subclass_storage_without_replacing_identity() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"stored").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"stored").unwrap();
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let (globals, class, function) = callback_dict_subclass(_py);
         let globals_ptr = obj_from_bits(globals).as_ptr().unwrap();
@@ -228,9 +228,9 @@ fn framed_global_store_uses_dict_subclass_storage_without_replacing_identity() {
 fn foreign_module_set_does_not_redirect_into_active_function_globals() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"foreign_value").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"foreign_value").unwrap();
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
-        let module_name = attr_name_bits_from_bytes(_py, b"foreign_namespace_target").unwrap();
+        let module_name = dynamic_attr_name_bits(_py, b"foreign_namespace_target").unwrap();
         let module = molt_module_new(module_name);
         let (globals, class, function) = callback_dict_subclass(_py);
         assert!(!obj_from_bits(module).is_none());
@@ -265,7 +265,7 @@ fn foreign_module_set_does_not_redirect_into_active_function_globals() {
 fn global_dict_subclass_key_error_falls_back_to_captured_builtins() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"bound").unwrap();
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let (globals, class, function) = callback_dict_subclass(_py);
         let builtins = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, value])).bits();
@@ -302,7 +302,7 @@ fn global_dict_subclass_key_error_falls_back_to_captured_builtins() {
 fn global_dict_subclass_value_error_propagates_without_builtins_fallback() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"bound").unwrap();
         let fallback = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let (globals, class, function) = callback_dict_subclass(_py);
         let builtins = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, fallback])).bits();
@@ -336,7 +336,7 @@ fn global_dict_subclass_value_error_propagates_without_builtins_fallback() {
 fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let key = attr_name_bits_from_bytes(_py, b"len").unwrap();
+        let key = dynamic_attr_name_bits(_py, b"len").unwrap();
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let globals = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[])).bits();
         let (builtins, class, function) = callback_dict_subclass(_py);

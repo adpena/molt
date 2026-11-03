@@ -3,7 +3,7 @@ use crate::builtins::frames::{frame_stack_pop, frame_stack_push_owned};
 use crate::object::ops::{dict_del_in_place, dict_set_in_place};
 
 fn key(py: &PyToken<'_>, name: &[u8]) -> u64 {
-    attr_name_bits_from_bytes(py, name).unwrap()
+    dynamic_attr_name_bits(py, name).unwrap()
 }
 
 fn guard_bits(dict: *mut u8) -> u64 {

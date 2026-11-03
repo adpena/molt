@@ -200,7 +200,14 @@ pub(super) unsafe fn remember_field_site(
                     == Some(AttributeMutation::Generic)
             }
         };
-        if !default_protocol || class_namespace_lookup_mro_pure(py, class, name, None) != Some(None)
+        if !default_protocol
+            || class_namespace_lookup_mro_pure(
+                py,
+                class,
+                name_bits,
+                None,
+                crate::builtins::attr::NamespacePreparation::Unresolved,
+            ) != Some(None)
         {
             return Ok(());
         }
