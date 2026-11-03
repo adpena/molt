@@ -135,10 +135,10 @@ class RepairScopeRefusal(RepairRefusal):
 
     def __init__(self, paths: tuple[str, ...]) -> None:
         super().__init__(
-            "the repairs left changes outside the lane's diff since its merge base "
-            "and the generator manifest's declared outputs; another writer touched "
-            "the checkout, so nothing was committed:\n"
-            + "\n".join(f"      {path}" for path in paths)
+            "the checkout changed paths outside the lane's diff since its merge "
+            "base and the generator manifest's declared outputs (another writer, "
+            "or a generator output family the manifest does not list); nothing "
+            "was committed:\n" + "\n".join(f"      {path}" for path in paths)
         )
         self.paths = paths
 
@@ -376,10 +376,13 @@ def precheck_landing(
     if not trial:
         _say(gate_time_summary(gate_seconds))
         return PrecheckResult(passed, None, budget)
+    from molt.disk_capacity import DiskCapacityError
+
+    # Only the capacity verdict is a refusal; any other fault stays a fault.
+    cargo_outputs = config.cargo_outputs(prepared.environments, trial)
     try:
-        cargo_outputs = config.cargo_outputs(prepared.environments, trial)
         capacity = admit_selected_output_capacity(cargo_outputs, prepared.environments)
-    except (ValueError, OSError, KeyError) as exc:
+    except DiskCapacityError as exc:
         result = PrecheckResult(
             passed,
             TryRunRefusal(RefusalReason.DISK_CAPACITY, tuple(trial), str(exc)),
@@ -407,12 +410,19 @@ def precheck_landing(
     except GateCancellation as cancellation:
         if cancellation.reason is not CancelReason.PRECHECK_BUDGET:
             raise
-        refusal = TryRunRefusal(
-            RefusalReason.BUDGET,
-            tuple(gate for gate in trial if gate not in tried_runtime.passed),
-            f"{budget.seconds:.0f} s ran out after "
-            f"{time.monotonic() - started:.0f} s of try run",
-        )
+        refused = tuple(gate for gate in trial if gate not in tried_runtime.passed)
+        # The deadline can pass after the last gate finished: nothing refused.
+        if refused:
+            refusal = TryRunRefusal(
+                RefusalReason.BUDGET,
+                refused,
+                f"{budget.seconds:.0f} s ran out after "
+                f"{time.monotonic() - started:.0f} s of try run"
+                + "".join(
+                    f"; guard closure unresolved for {item}"
+                    for item in cancellation.unresolved
+                ),
+            )
     _say(gate_time_summary(gate_seconds))
     result = PrecheckResult((*passed, *tried_runtime.passed), refusal, budget)
     if refusal is not None:

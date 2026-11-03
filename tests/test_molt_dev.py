@@ -3458,6 +3458,57 @@ def test_postsubmit_pending_landing_cancels_through_guard_and_preserves_custody(
         assert not isinstance(caught.value, molt_dev_gates.GateCancellation)
 
 
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("defect", ["closure", "infrastructure"])
+def test_budget_cancellation_names_an_unresolved_closure_as_its_refusal(
+    tmp_path, parallel, defect
+):
+    from dataclasses import replace
+
+    requested = False
+    launched = []
+
+    def run(command, repo, environment, cancelled, streams=None):
+        nonlocal requested
+        requested = True  # The budget runs out after this gate launched.
+        launched.append(command)
+        return _gate_outcome(
+            137,
+            "",
+            "",
+            cancelled=True,
+            descendants_closed=defect != "closure",
+            infrastructure_failure=_INDETERMINATE_CUSTODY
+            if defect == "infrastructure"
+            else None,
+        )
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "logs"
+        ),
+        cancelled=lambda: requested,
+        cancel_reason=molt_dev_gates.CancelReason.PRECHECK_BUDGET,
+        run_captured_gate=run,
+    )
+    gates = [
+        SelectedGate(
+            ("python", "-m", "pytest", f"test_{n}.py"), ("python",), pytest=True
+        )
+        for n in range(2 if parallel else 1)
+    ]
+    # A process tree whose guard closure stays indeterminate after the budget
+    # cancels it is the refusal, named, never a runner stop.
+    with pytest.raises(molt_dev_gates.GateCancellation) as caught:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+    assert caught.value.reason is molt_dev_gates.CancelReason.PRECHECK_BUDGET
+    assert caught.value.unresolved
+    assert {item.partition(":")[0] for item in caught.value.unresolved} <= {
+        molt_dev_gates.display(command) for command in launched
+    }
+    assert runtime.passed == []
+
+
 def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
     tmp_path, monkeypatch
 ):
@@ -6506,15 +6557,24 @@ def test_land_try_run_failure_queues_nothing(
     assert "batch" not in counter.read_text(encoding="utf-8").split()
 
 
+@pytest.mark.parametrize(
+    "slow",
+    [
+        "sleep 120",
+        # A shell with a child: real try-run gates (pytest with xdist, cargo
+        # under clippy) are process trees.
+        "sleep 1 && sleep 120",
+    ],
+    ids=["single-process", "process-tree"],
+)
 def test_land_budget_refuses_unfinished_gates_by_name_and_still_queues(
-    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys, slow
 ):
     from tools import molt_dev_policy
     from tools import molt_dev_queue as queue
 
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
-    slow = "sleep 120"
     _publish_policy(work, _try_run_policy(counter, try_gate=slow))
     lane = work.parent / "lane-slow"
     head = _lane(work, "slow", {"a.py": "a = 1\n"})
@@ -6572,6 +6632,37 @@ def test_land_static_gates_run_outside_the_try_run_budget(
     assert "      sleep 120" in shown
 
 
+def test_land_complete_try_run_is_not_refused_when_the_deadline_passes_after_it(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from tools import molt_dev_precheck
+    from tools.molt_dev_gates import CancelReason, GateCancellation
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    lane = work.parent / "lane-just-in-time"
+    _lane(work, "just-in-time", {"a.py": "a = 1\n"})
+    run = molt_dev_precheck.run_selected_gates
+
+    def deadline_after_the_last_gate(gates, runtime, *args, **kwargs):
+        run(gates, runtime, *args, **kwargs)
+        # Every gate passed; the runner's final check then sees the deadline.
+        if runtime.cancel_reason is CancelReason.PRECHECK_BUDGET:
+            raise GateCancellation(CancelReason.PRECHECK_BUDGET)
+
+    monkeypatch.setattr(
+        molt_dev_precheck, "run_selected_gates", deadline_after_the_last_gate
+    )
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (EXIT_OK)
+    assert sorted(counter.read_text(encoding="utf-8").split()) == ["static", "try"]
+    assert "refused" not in "".join(capsys.readouterr())
+
+
 def test_land_static_failure_stops_land_even_past_the_budget(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
@@ -6596,9 +6687,11 @@ def test_land_static_failure_stops_land_even_past_the_budget(
     assert queue.pending(queue.queue_paths(lane)) == []
 
 
+@pytest.mark.parametrize("verdict", [True, False], ids=["capacity", "fault"])
 def test_land_names_a_disk_capacity_refusal_and_queues(
-    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys, verdict
 ):
+    from molt.disk_capacity import DiskCapacityError
     from tools import molt_dev_precheck
     from tools import molt_dev_queue as queue
 
@@ -6612,10 +6705,20 @@ def test_land_names_a_disk_capacity_refusal_and_queues(
     head = _lane(work, "full-disk", {"a.py": "a = 1\n"})
 
     def full(*_args, **_kwargs):
-        raise OSError("target volume below its build headroom")
+        if verdict:
+            raise DiskCapacityError(
+                "target volume below its build headroom", {"status": "insufficient"}
+            )
+        raise OSError("statfs failed: a controller fault, not a capacity verdict")
 
     monkeypatch.setattr(molt_dev_precheck, "admit_selected_output_capacity", full)
 
+    if not verdict:
+        # Only the capacity verdict is a refusal; another fault stays a fault.
+        with pytest.raises(OSError, match="controller fault"):
+            _land_without_runner(drv, monkeypatch, lane)
+        assert queue.pending(queue.queue_paths(lane)) == []
+        return
     assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
 
     shown = "".join(capsys.readouterr())
