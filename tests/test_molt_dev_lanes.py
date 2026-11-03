@@ -1282,8 +1282,20 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     state.mkdir(parents=True)
     (state / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
 
+    scratch = dx.scratch_root(worktree, create=True)
+    (scratch / "clone").mkdir()
+    (scratch / "clone" / "big.bin").write_bytes(b"x" * 64)
+    (scratch / "measure.json").write_text("{}", encoding="utf-8")
+
     assert lanes.cmd_lane_retire(_args(family, slug="landed")) == 0
     _assert_released(main, worktree)
+    # Lane scratch goes with the lane; the slot keeps its scratch binding.
+    assert sorted(p.name for p in scratch.iterdir()) == sorted(
+        n
+        for n in (".molt-state-owner.json", ".molt-last-use")
+        if (scratch / n).exists()
+    )
+    assert (scratch / ".molt-state-owner.json").exists()
     assert _registered(main) == [main.resolve(), worktree.resolve()]
     assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == tip
     assert _ref(main, "refs/heads/lane/landed") is None
