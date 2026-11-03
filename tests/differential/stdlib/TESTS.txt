@@ -1242,6 +1242,7 @@ tests/differential/stdlib/importlib_module_reload.py
 tests/differential/stdlib/importlib_module_spec.py
 tests/differential/stdlib/importlib_namespace_path_protocol.py
 tests/differential/stdlib/importlib_optional_import_intrinsic.py
+tests/differential/stdlib/importlib_package_defers_util.py
 tests/differential/stdlib/importlib_package_path_identity.py
 tests/differential/stdlib/importlib_path_identity_ns/child.py
 tests/differential/stdlib/importlib_path_identity_pkg/__init__.py
