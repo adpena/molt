@@ -217,7 +217,7 @@ impl SimpleBackend {
                 .map(|(_, tir_func)| {
                     (
                         tir_func.name.clone(),
-                        crate::representation_plan::LlvmReprFacts::build(tir_func),
+                        crate::representation_plan::ProducerCarrierPlan::build(tir_func),
                     )
                 })
                 .collect();

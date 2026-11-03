@@ -9,7 +9,7 @@ fn lower_i64_add_overflow_safe_uses_native_add() {
     // marked overflow-safe by the representation plan. The backend may then
     // emit a raw machine `add` instead of routing through the runtime.
     let (func, v_sum) = build_i64_add_func();
-    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+    let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     // A native machine `add` is sound only when BOTH operands and the result
     // are value-range-proven exact-i64 carriers. The two `i64` parameters
     // (entry args %0/%1) carry as boxed `DynBox` unless proven overflow-safe

@@ -104,7 +104,7 @@ fn assert_canonical_binding_carriers(func: &TirFunction, boxed: &[ValueId], raw:
         assert_eq!(native.get(value), repr.get(value), "{value:?}");
     }
     #[cfg(feature = "llvm")]
-    assert_eq!(repr, LlvmReprFacts::build(func).repr_by_value);
+    assert_eq!(repr, ProducerCarrierPlan::build(func).repr_by_value);
 }
 
 #[test]
@@ -808,7 +808,7 @@ fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
         }
         #[cfg(feature = "llvm")]
         {
-            let facts = LlvmReprFacts::build(&func);
+            let facts = ProducerCarrierPlan::build(&func);
             assert_eq!(repr_by_value_for(&func, Some(&range)), facts.repr_by_value);
             assert_eq!(facts.effective_param_types(&func), vec![TirType::DynBox]);
             assert_eq!(facts.effective_return_type(&func), TirType::DynBox);
@@ -952,7 +952,7 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
             }
             #[cfg(feature = "llvm")]
             {
-                let facts = LlvmReprFacts::build(&func);
+                let facts = ProducerCarrierPlan::build(&func);
                 assert_eq!(repr, facts.repr_by_value);
                 assert_eq!(facts.effective_value_type(phi, &ty), expected_carrier);
                 assert_eq!(facts.effective_return_type(&func), expected_carrier);
@@ -1012,7 +1012,7 @@ fn indexed_checked_status_and_exact_boolean_copies_keep_distinct_carriers() {
             );
         }
         #[cfg(feature = "llvm")]
-        assert_eq!(repr, LlvmReprFacts::build(&func).repr_by_value);
+        assert_eq!(repr, ProducerCarrierPlan::build(&func).repr_by_value);
     }
 }
 
@@ -1464,7 +1464,7 @@ fn reachable_heap_incoming_poisons_raw_loop_phi() {
 }
 
 /// CROSS-BACKEND SINGLE SOURCE OF TRUTH: the WASM path (`repr_by_value_for`)
-/// and the LLVM path (`LlvmReprFacts::build` → same `repr_by_value_for` with
+/// and the LLVM path (`ProducerCarrierPlan::build` → same `repr_by_value_for` with
 /// the same `ValueRange`) derive the IDENTICAL `Repr` per `ValueId`. A
 /// divergence here is the native-vs-wasm trusted-unbox bug; this test is the
 /// firewall against it.
@@ -1474,7 +1474,7 @@ fn wasm_and_llvm_derive_identical_repr_from_one_value_range() {
     let (func, _iv, _next) = range_loop_tir(0, 10);
     let vr = value_range_for(&func);
     let wasm_map = repr_by_value_for(&func, Some(&vr));
-    let llvm_facts = LlvmReprFacts::build(&func);
+    let llvm_facts = ProducerCarrierPlan::build(&func);
     assert_eq!(
         wasm_map, llvm_facts.repr_by_value,
         "WASM and LLVM must derive the same Repr per ValueId from the same ValueRange"

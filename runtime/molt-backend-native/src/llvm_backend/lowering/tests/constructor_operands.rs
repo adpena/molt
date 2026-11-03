@@ -1940,7 +1940,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             // is not projected into TIR. The canonical producer must treat an
             // opaque TIR call as a boxed observation; this manual map does not
             // qualify a producer exemption for a raw native call operand.
-            let mut facts = crate::representation_plan::LlvmReprFacts::default();
+            let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
             facts
                 .repr_by_value
                 .insert(view_id.unwrap(), crate::Repr::RawI64FullDeopt);
@@ -2048,11 +2048,11 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             // may instead keep a raw home with stable tagged observations.
             backend.function_repr_facts.insert(
                 func.name.clone(),
-                crate::representation_plan::LlvmReprFacts::default(),
+                crate::representation_plan::ProducerCarrierPlan::default(),
             );
             continue;
         }
-        let facts = crate::representation_plan::LlvmReprFacts::build(func);
+        let facts = crate::representation_plan::ProducerCarrierPlan::build(func);
         for op in func.blocks.values().flat_map(|block| &block.ops) {
             if matches!(op.origin, Some(OpKind::FrameHomeStore)) {
                 for &view in &op.results {
@@ -2184,7 +2184,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             },
         );
     }
-    let facts = crate::representation_plan::LlvmReprFacts::build(&numeric);
+    let facts = crate::representation_plan::ProducerCarrierPlan::build(&numeric);
     for value in [wide, view, alias, sum, expected] {
         assert!(
             facts.is_full_deopt_int(value),
@@ -2653,7 +2653,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         backend
             .function_repr_facts
             .entry(func.name.clone())
-            .or_insert_with(|| crate::representation_plan::LlvmReprFacts::build(func));
+            .or_insert_with(|| crate::representation_plan::ProducerCarrierPlan::build(func));
         let lowered = lower_tir_to_llvm(func, &backend);
         assert_entry_only_allocas(lowered, &lowered.print_to_string().to_string());
     }

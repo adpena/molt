@@ -1300,7 +1300,7 @@ mod numeric_family_tests {
             // Lowerer-only raw-ABI control. Parameter annotations alone are
             // deliberately boxed in production; this test exercises the
             // machine float operation's zero, NaN and remainder-sign rules.
-            let mut facts = crate::representation_plan::LlvmReprFacts::default();
+            let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
             for value in [ValueId(0), ValueId(1), result] {
                 facts.repr_by_value.insert(value, crate::Repr::FloatUnboxed);
             }

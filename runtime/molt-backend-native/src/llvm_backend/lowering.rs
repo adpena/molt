@@ -73,7 +73,7 @@ fn require_function_linkage_abi<'a>(
             .function_repr_facts
             .get(&func.name)
             .cloned()
-            .unwrap_or_else(|| crate::representation_plan::LlvmReprFacts::build(func));
+            .unwrap_or_else(|| crate::representation_plan::ProducerCarrierPlan::build(func));
         std::borrow::Cow::Owned(crate::NativeFunctionLinkageAbi {
             source_signature: crate::ir::ExternFunctionSignature {
                 arity: func.param_types.len(),
@@ -492,7 +492,7 @@ struct FunctionLowering<'ctx, 'func> {
     /// `ScalarRepresentationPlan`. Drives the overflow-safe integer-carrier and
     /// container dispatch decisions so the LLVM backend reads the same typed
     /// facts as the native/WASM/Luau backends instead of trusting `TirType`.
-    repr_facts: crate::representation_plan::LlvmReprFacts,
+    repr_facts: crate::representation_plan::ProducerCarrierPlan,
     /// The entry slot holding the base address of the binding homes that own
     /// a synchronous Python frame's bindings, once `molt_frame_homes` lent it.
     frame_homes: Option<inkwell::values::PointerValue<'ctx>>,

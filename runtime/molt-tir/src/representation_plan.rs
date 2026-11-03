@@ -29,11 +29,10 @@ pub use molt_passes::representation_facts::{
 /// native build, and all consumers must serialize the same carrier decision
 /// before provider bodies are partitioned away.
 pub fn native_linkage_types(tir_func: &TirFunction) -> (Vec<TirType>, TirType) {
-    let value_range = value_range_for(tir_func);
-    let repr_by_value = repr_by_value_for(tir_func, Some(&value_range));
+    let plan = ProducerCarrierPlan::build(tir_func);
     (
-        effective_param_types_from_repr(tir_func, &repr_by_value),
-        effective_return_type_from_repr(tir_func, &repr_by_value),
+        plan.effective_param_types(tir_func),
+        plan.effective_return_type(tir_func),
     )
 }
 
@@ -231,9 +230,9 @@ impl<'a> FloatComparisonOperands<'a> {
     }
 }
 
-/// Per-function representation facts consumed by the LLVM backend.
+/// Shared producer-proven physical carriers for a TIR function.
 ///
-/// The LLVM backend lowers `TirFunction` (SSA `ValueId`s) directly. This struct
+/// Backends lower `TirFunction` (SSA `ValueId`s) directly. This plan
 /// carries the same value-keyed representation proof the WASM/LIR path consumes:
 /// every backend decision here is derived from the post-pipeline TIR function
 /// being lowered.
@@ -244,8 +243,7 @@ impl<'a> FloatComparisonOperands<'a> {
 /// I64` with no overflow proof, so unbounded integer arithmetic must stay
 /// boxed/runtime-backed until a range proof exists).
 #[derive(Clone, Debug, Default)]
-#[cfg(feature = "llvm")]
-pub struct LlvmReprFacts {
+pub struct ProducerCarrierPlan {
     /// The representation lattice element per TIR `ValueId`: the value-keyed
     /// source of truth. Exact scalar provenance authorizes Bool/Float carriers;
     /// annotations alone stay boxed. Inline-int47 carriers raise to
@@ -260,10 +258,8 @@ pub struct LlvmReprFacts {
     pub repr_by_value: HashMap<ValueId, Repr>,
 }
 
-#[cfg(feature = "llvm")]
-impl LlvmReprFacts {
-    /// Build the LLVM representation facts from the post-pipeline TIR function
-    /// the LLVM backend is about to lower.
+impl ProducerCarrierPlan {
+    /// Build carrier facts from the exact TIR function being lowered.
     pub fn build(tir_func: &TirFunction) -> Self {
         let vr = value_range_for(tir_func);
         let repr_by_value = repr_by_value_for(tir_func, Some(&vr));

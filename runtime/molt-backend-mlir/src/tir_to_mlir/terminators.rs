@@ -53,14 +53,14 @@ pub(super) fn emit_terminator<'c, 'a>(
                     ctx,
                     block,
                     value,
-                    &tir_func.return_type,
+                    &value_map.return_type,
                     location,
                 )?]
             } else {
                 vec![zero_value_for_return_type(
                     ctx,
                     block,
-                    &tir_func.return_type,
+                    &value_map.return_type,
                     location,
                 )]
             };
@@ -203,7 +203,7 @@ pub(super) fn emit_terminator<'c, 'a>(
                 block.append_operation(func::r#return(&[], location));
             } else {
                 let zero_val =
-                    zero_value_for_return_type(ctx, block, &tir_func.return_type, location);
+                    zero_value_for_return_type(ctx, block, &value_map.return_type, location);
                 block.append_operation(func::r#return(&[zero_val], location));
             }
         }
@@ -285,7 +285,9 @@ fn resolve_edge_args<'c, 'a>(
                 ctx,
                 block,
                 resolve_value(value_map, value_id)?,
-                &target_arg.ty,
+                value_map.type_of(target_arg.id).ok_or_else(|| {
+                    format!("missing carrier for block argument %{}", target_arg.id.0)
+                })?,
                 location,
             )
         })

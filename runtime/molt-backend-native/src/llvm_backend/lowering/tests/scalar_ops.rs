@@ -27,7 +27,7 @@ fn none_annotation_cannot_replace_a_borrowed_boxed_word() {
     };
     backend.function_repr_facts.insert(
         func.name.clone(),
-        crate::representation_plan::LlvmReprFacts::build(&func),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
     );
     let function = lower_tir_to_llvm(&func, &backend);
     backend.module.verify().unwrap();
@@ -85,7 +85,7 @@ fn annotation_only_unbox_preserves_a_boxed_owner_and_its_refcounts() {
         };
         backend.function_repr_facts.insert(
             func.name.clone(),
-            crate::representation_plan::LlvmReprFacts::build(&func),
+            crate::representation_plan::ProducerCarrierPlan::build(&func),
         );
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         backend.module.verify().unwrap();
@@ -1014,7 +1014,7 @@ fn lower_i64_comparison() {
     // The raw `icmp slt` path needs both operands proven exact-i64 carriers;
     // an unproven `i64` parameter carries boxed (`DynBox`) and dispatches the
     // comparison through the runtime. Prove the two parameters here.
-    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+    let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     for v in [ValueId(0), ValueId(1)] {
         facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
     }
@@ -1087,7 +1087,7 @@ fn lower_box_i64() {
         // `box(x)` emits the NaN-boxing arithmetic only when `x` is a RAW i64.
         // An unproven `i64` parameter carries already-boxed (`DynBox`), for which
         // `box` is a no-op; prove the parameter raw so the box path is exercised.
-        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+        let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
         facts
             .repr_by_value
             .insert(ValueId(0), crate::Repr::RawI64Safe);
@@ -1238,7 +1238,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
     // The plan proves the masked accumulator chain RawI64Safe (what the
     // value-range phi narrowing yields end to end). The ConstInts are I64 by
     // their own lowering; the proof here is for the phi + the two op results.
-    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+    let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     for v in [s_phi, shl, band] {
         facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
     }

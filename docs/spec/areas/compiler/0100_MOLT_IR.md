@@ -141,6 +141,12 @@ rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
   [Python's annotation semantics](https://docs.python.org/3.12/reference/compound_stmts.html#function-definitions)
   and [LLVM's typed phi inputs](https://llvm.org/docs/LangRef.html#phi-instruction):
   incoming edges reconcile to the producer-proven slot, never an annotation.
+  Progressive MLIR consumes the same `ProducerCarrierPlan` for signatures,
+  block arguments, returns and operand classification. It has no Molt runtime
+  provider: preflight refuses a parameter, block argument or returned value
+  without a producer-proven raw carrier, naming the function and SSA value.
+  An annotated entry parameter is unsupported; constants flowing into internal
+  block parameters can prove a raw carrier. No boxed MLIR ABI is invented.
   Exact scalar loops retain their producer proof in functions with exception
   polls: only resolved exception targets and explicit handler entries impose
   conservative handler inputs. An ordinary control-flow label or a poll in the
