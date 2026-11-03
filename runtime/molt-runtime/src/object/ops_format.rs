@@ -735,14 +735,14 @@ fn format_dataclass(_py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     }
 }
 
-struct ReprGuard {
+pub(crate) struct ReprGuard {
     ptr: *mut u8,
     active: bool,
     depth_active: bool,
 }
 
 impl ReprGuard {
-    fn new(_py: &PyToken<'_>, ptr: *mut u8) -> Self {
+    pub(crate) fn new(_py: &PyToken<'_>, ptr: *mut u8) -> Self {
         if !repr_depth_enter() {
             let _ = raise_exception::<u64>(
                 _py,
@@ -776,7 +776,7 @@ impl ReprGuard {
         }
     }
 
-    fn active(&self) -> bool {
+    pub(crate) fn active(&self) -> bool {
         self.active
     }
 }

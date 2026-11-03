@@ -26,6 +26,12 @@ retired. Function binding reads its existing typed metadata fields directly,
 preserving published-code signature precedence. Native method tables,
 native callable declarations and class-method publication also use `NameId`.
 Generated builtin and intrinsic declarations carry checked registry identities.
+Public callable identity remains declared once in `runtime/molt-runtime/src/intrinsics/public_objects.toml`;
+`tools/gen_intrinsics.py` projects its name, qualified name and module through `NameId`.
+Builtin and intrinsic declarations retain only `PublicObjectId`, so neither
+repeats a public spelling or carries a parallel name ID. The name generator
+follows intrinsic generation so its consumer census sees the current projection.
+Public metadata materialization acquires the typed slots directly.
 C-extension callable display names remain unbounded external values, represented
 explicitly by `NativeCallableName::External`; known declarations use `Known(NameId)`.
 Their lookup boundary decodes a dynamic name once; generated method dispatch

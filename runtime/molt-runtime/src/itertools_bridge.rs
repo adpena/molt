@@ -56,6 +56,20 @@ pub extern "C" fn molt_itertools_release_slot_bits(bits: u64) {
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_validate_constructor_class(actual: u64, expected: u64) -> bool {
+    crate::with_gil_entry_nopanic!(py, {
+        crate::itertools_class::validate_constructor_class(py, actual, expected)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_constructor_repr(instance: u64, first: u64, second: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        crate::itertools_class::constructor_repr(py, instance, first, second)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_instance_for_class(class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
@@ -168,11 +182,6 @@ pub extern "C" fn molt_itertools_alloc_class(
             constructor,
         )
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_alloc_kwd_mark() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { crate::state::cache::alloc_kwd_mark(_py) })
 }
 
 #[unsafe(no_mangle)]

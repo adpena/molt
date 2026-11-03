@@ -8,6 +8,10 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
     let builtins = builtin_classes(py);
     let none = MoltObject::none().bits();
 }, {
+    crate::NameId::DunderReduce [if [builtins.builtin_function_or_method, builtins.builtin_method].contains(&class_bits) ] => Some(builtin_func_bits(
+        py, NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class_bits, crate::NameId::DunderReduce),
+        fn_addr!(crate::builtins::functions::native_callable::molt_native_callable_reduce), 1,
+    )),
     crate::NameId::DunderBuffer => builtin_buffer_method_bits(py, class_bits, false),
     crate::NameId::DunderReleaseBuffer => builtin_buffer_method_bits(py, class_bits, true),
     crate::NameId::DunderClassGetitem [if [builtins.list, builtins.dict, builtins.tuple, builtins.set, builtins.frozenset, builtins.type_obj].contains(&class_bits) ] => Some(builtin_func_bits(

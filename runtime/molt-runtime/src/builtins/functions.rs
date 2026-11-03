@@ -60,6 +60,7 @@ mod wasm_callables_generated;
 
 pub use compile_codeop::*;
 pub use function_abi::*;
+pub use native_callable::molt_native_callable_reduce;
 pub use opcode_payload::*;
 pub use tokenize::*;
 

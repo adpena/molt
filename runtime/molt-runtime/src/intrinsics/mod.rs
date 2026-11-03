@@ -1,6 +1,9 @@
 pub(crate) mod capabilities;
 #[allow(dead_code)]
 mod generated;
+pub(crate) mod public_objects;
+#[allow(dead_code)]
+pub(crate) mod public_objects_generated;
 pub(crate) mod registry;
 
 #[allow(unused_imports)]

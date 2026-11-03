@@ -340,6 +340,7 @@ pub(crate) struct RuntimeMethodSignature<'a> {
     arg_names: &'a [&'a [u8]],
     has_vararg: bool,
     has_varkw: bool,
+    positional_only: usize,
 }
 
 pub(crate) const NO_RUNTIME_ARGUMENT_NAMES: &[&[u8]] = &[];
@@ -351,7 +352,13 @@ impl<'a> RuntimeMethodSignature<'a> {
             arg_names,
             has_vararg,
             has_varkw,
+            positional_only: 0,
         }
+    }
+
+    pub(crate) const fn with_positional_only(mut self, count: usize) -> Self {
+        self.positional_only = count;
+        self
     }
 }
 
@@ -436,7 +443,7 @@ pub(crate) fn configure_runtime_class_methods(
                 method.fn_ptr,
                 method.arity,
                 &[],
-                0,
+                signature.positional_only,
                 signature.arg_names,
                 signature.has_vararg,
                 signature.has_varkw,

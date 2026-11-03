@@ -1,9 +1,25 @@
 """Purpose: differential coverage for copyreg helper functions."""
 
-import copy
 import copyreg
+
+# Resolve the recipe before importing the modules that publish its callables.
+union = int | str
+union_recipe = copyreg.pickle_union(union)
+
+import copy
+import functools
+import operator
 import pickle
 import types
+
+print("union reducer", copyreg.dispatch_table[types.UnionType] is copyreg.pickle_union)
+print("complex reducer", copyreg.dispatch_table[complex] is copyreg.pickle_complex)
+print("union public identities", union_recipe[0] is functools.reduce,
+      union_recipe[1][0] is operator.or_)
+print("union arguments", union_recipe[1][1] == (int, str))
+print("union rebuild", union_recipe[0](*union_recipe[1]) == union)
+print("union copy", copy.copy(union) == union)
+print("union pickle", pickle.loads(pickle.dumps(union)) == union)
 
 
 class NewObj:

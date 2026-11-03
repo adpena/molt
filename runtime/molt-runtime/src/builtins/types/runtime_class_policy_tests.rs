@@ -291,13 +291,10 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         let bank = builtin_classes(py);
-        let args = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
-        let partial = crate::builtins::functools::molt_functools_partial(
-            bank.int,
-            args,
-            MoltObject::none().bits(),
+        let partial = crate::test_support::with_public_type_class(
+            crate::molt_functools_partial_type,
+            |class| unsafe { crate::call_callable1(py, class, bank.int) },
         );
-        dec_ref_bits(py, args);
         assert!(!exception_pending(py));
         let operator_classes = [
             crate::builtins::operator::molt_operator_itemgetter_type(),

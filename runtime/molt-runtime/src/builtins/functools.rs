@@ -1,5 +1,8 @@
 use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::NativeCallableKind;
+mod partial_identity;
+pub use partial_identity::*;
+include!("functools/public_types_generated.rs");
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Mutex;
@@ -17,9 +20,8 @@ use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_string, alloc_tuple, builtin_classes,
     call_callable2, class_dict_bits, dec_ref_bits, dict_get_in_place, dict_set_in_place,
     dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
-    is_truthy, issubclass_runtime, molt_is_callable, molt_repr_from_obj, molt_set_attr_name,
-    obj_from_bits, object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64,
-    type_of_bits,
+    is_truthy, issubclass_runtime, molt_is_callable, molt_set_attr_name, obj_from_bits,
+    object_class_bits, object_type_id, raise_exception, to_i64, type_of_bits,
 };
 
 /// The runtime-owned functools objects: the keyword marker and the three
@@ -225,14 +227,36 @@ pub extern "C" fn molt_functools_kwd_mark() -> u64 {
 }
 
 fn partial_class(_py: &PyToken<'_>) -> u64 {
+    let identity =
+        crate::intrinsics::public_objects_generated::PublicObjectId::FunctoolsPartialType
+            .identity();
     let functools = &crate::runtime_state(_py).functools;
     let methods = [
+        RuntimeClassMethodSpec::fixed(
+            crate::NameId::DunderReduce,
+            NativeCallableKind::MethodDescriptor,
+            molt_functools_partial_reduce as *const () as usize as u64,
+            1,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            crate::NameId::DunderSetstate,
+            NativeCallableKind::MethodDescriptor,
+            molt_functools_partial_setstate as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            crate::NameId::DunderClassGetitem,
+            NativeCallableKind::ClassMethodDescriptor,
+            crate::molt_generic_alias_new as *const () as usize as u64,
+            2,
+        ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
             crate::molt_functools_partial_call as *const () as usize as u64,
             3,
-            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
+            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true)
+                .with_positional_only(1),
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderRepr,
@@ -241,13 +265,13 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
             1,
         ),
     ];
-    init_cached_runtime_class(
+    crate::builtins::types::init_cached_runtime_class_configured(
         _py,
         &functools.partial_class,
-        "partial",
+        identity.name.as_str(),
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, true),
-            native_module: Some("functools"),
+            native_module: Some(identity.module.as_str()),
             layout_size: 32,
             instance_shape: Some(crate::object::ObjectShapeId::FunctoolsPartial),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
@@ -256,7 +280,11 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
                 variable_sized: false,
             }),
         },
-        &methods,
+        |class, namespace| {
+            crate::builtins::types::configure_runtime_class_methods(_py, class, namespace, &methods)
+                && crate::intrinsics::public_objects::declare_constructor(_py, crate::intrinsics::public_objects_generated::PublicObjectId::FunctoolsPartialType, class)
+                && partial_identity::publish_members(_py, class, namespace)
+        },
     )
 }
 
@@ -516,42 +544,6 @@ fn release_owned_lru_key_parts(_py: &PyToken<'_>, parts: &[u64]) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial(func_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let callable = is_truthy(_py, obj_from_bits(molt_is_callable(func_bits)));
-        if !callable {
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "partial() requires a callable",
-            );
-        }
-        let class_bits = partial_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        if obj_from_bits(inst_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-        unsafe {
-            partial_set_func_bits(inst_ptr, func_bits);
-            partial_set_args_bits(inst_ptr, args_bits);
-            partial_set_kwargs_bits(inst_ptr, kwargs_bits);
-        }
-        inc_ref_bits(_py, func_bits);
-        if args_bits != 0 && !obj_from_bits(args_bits).is_none() {
-            inc_ref_bits(_py, args_bits);
-        }
-        if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-            inc_ref_bits(_py, kwargs_bits);
-        }
-        inst_bits
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_partial_call(
     self_bits: u64,
     args_bits: u64,
@@ -562,70 +554,45 @@ pub extern "C" fn molt_functools_partial_call(
         let func_bits = unsafe { partial_func_bits(self_ptr) };
         let stored_args_bits = unsafe { partial_args_bits(self_ptr) };
         let stored_kwargs_bits = unsafe { partial_kwargs_bits(self_ptr) };
+        // __setstate__ may replace the fields during argument binding or the
+        // call. Pin their existing storage, using the GIL custody we already
+        // hold rather than re-entering the public reference-count ABI.
+        let _inputs = [func_bits, stored_args_bits, stored_kwargs_bits].map(|bits| {
+            inc_ref_bits(_py, bits);
+            crate::PtrDropGuard::preserving(crate::ptr_from_bits(bits))
+        });
         let mut pos: Vec<u64> = Vec::new();
         extend_positional_from_call_arg(stored_args_bits, &mut pos);
         extend_positional_from_call_arg(args_bits, &mut pos);
-        let merged_kwargs_bits =
-            if stored_kwargs_bits != 0 && !obj_from_bits(stored_kwargs_bits).is_none() {
-                let copy_bits = crate::dict_copy_method(stored_kwargs_bits) as u64;
-                if exception_pending(_py) {
+        let merged_kwargs_bits = if obj_from_bits(stored_kwargs_bits)
+            .as_ptr()
+            .is_some_and(|pointer| unsafe { crate::dict_len(pointer) } != 0)
+        {
+            let copy_bits = crate::dict_copy_method(stored_kwargs_bits) as u64;
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
+                let completed = unsafe {
+                    dict_update_apply(_py, copy_bits, dict_update_set_in_place, kwargs_bits)
+                };
+                if !completed {
+                    dec_ref_bits(_py, copy_bits);
                     return MoltObject::none().bits();
                 }
-                if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-                    let completed = unsafe {
-                        dict_update_apply(_py, copy_bits, dict_update_set_in_place, kwargs_bits)
-                    };
-                    if !completed {
-                        dec_ref_bits(_py, copy_bits);
-                        return MoltObject::none().bits();
-                    }
-                }
-                copy_bits
-            } else if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-                inc_ref_bits(_py, kwargs_bits);
-                kwargs_bits
-            } else {
-                MoltObject::none().bits()
-            };
+            }
+            copy_bits
+        } else if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
+            inc_ref_bits(_py, kwargs_bits);
+            kwargs_bits
+        } else {
+            MoltObject::none().bits()
+        };
         let result = unsafe {
             crate::call::bind::call_bind_capi(_py, func_bits, None, &pos, merged_kwargs_bits)
         };
         dec_ref_bits(_py, merged_kwargs_bits);
         result
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
-        let func_bits = unsafe { partial_func_bits(self_ptr) };
-        let args_bits = unsafe { partial_args_bits(self_ptr) };
-        let kwargs_bits = unsafe { partial_kwargs_bits(self_ptr) };
-        let func_repr_bits = molt_repr_from_obj(func_bits);
-        let func_repr = string_obj_to_owned(obj_from_bits(func_repr_bits)).unwrap_or_default();
-        dec_ref_bits(_py, func_repr_bits);
-        let args_repr_bits = molt_repr_from_obj(args_bits);
-        let args_repr = string_obj_to_owned(obj_from_bits(args_repr_bits)).unwrap_or_default();
-        dec_ref_bits(_py, args_repr_bits);
-        let mut out = String::new();
-        out.push_str("functools.partial(");
-        out.push_str(&func_repr);
-        out.push_str(", ");
-        out.push_str(&args_repr);
-        if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-            let kw_repr_bits = molt_repr_from_obj(kwargs_bits);
-            let kw_repr = string_obj_to_owned(obj_from_bits(kw_repr_bits)).unwrap_or_default();
-            dec_ref_bits(_py, kw_repr_bits);
-            out.push_str(", ");
-            out.push_str(&kw_repr);
-        }
-        out.push(')');
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(out_ptr).bits()
     })
 }
 
@@ -638,7 +605,7 @@ pub extern "C" fn molt_functools_reduce(
     crate::with_gil_entry_nopanic!(_py, {
         use molt_runtime_core::OwnedRuntimeValue;
 
-        let missing = kwd_mark_bits(_py);
+        let missing = crate::builtins::methods::missing_bits(_py);
         if missing == 0 || exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -2670,10 +2637,8 @@ mod tests {
             assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
             crate::with_gil_entry_nopanic!(py, {
                 let none = MoltObject::none().bits();
-                for get in [
-                    molt_functools_kwd_mark as extern "C" fn() -> u64,
-                    crate::molt_itertools_kwd_mark,
-                ] {
+                {
+                    let get = molt_functools_kwd_mark as extern "C" fn() -> u64;
                     let failed = {
                         let _budget = DenyKwdMarkAllocations::enter();
                         get()
@@ -2742,7 +2707,12 @@ mod tests {
 
                 let values = [0, 1, 2, 3, 4].map(|value| MoltObject::from_int(value).bits());
                 let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
-                let sliced = crate::molt_itertools_islice(sequence, two, none, none);
+                let sliced = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_islice_type,
+                    |public_class| {
+                        crate::molt_itertools_islice_new(public_class, sequence, two, none, none)
+                    },
+                );
                 assert!(!crate::exception_pending(py));
                 {
                     let mut iterator =
@@ -2791,8 +2761,17 @@ mod tests {
             let values = [1, 2].map(|value| MoltObject::from_int(value).bits());
             let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
             let iterator = crate::molt_iter(sequence);
-            let accumulated =
-                crate::molt_itertools_accumulate(sequence, none, MoltObject::from_int(10).bits());
+            let accumulated = crate::test_support::with_public_type_class(
+                crate::molt_itertools_accumulate_type,
+                |public_class| {
+                    crate::molt_itertools_accumulate_new(
+                        public_class,
+                        sequence,
+                        none,
+                        MoltObject::from_int(10).bits(),
+                    )
+                },
+            );
             let marker = molt_functools_kwd_mark();
             dec_ref_bits(py, marker);
             assert!(!crate::exception_pending(py));
@@ -2810,8 +2789,24 @@ mod tests {
                         super::molt_functools_reduce(crate::builtin_classes(py).int, iterator, none)
                     }
                     1 => super::make_lru_key(py, args, kwargs, false),
-                    2 => crate::molt_itertools_islice(iterator, values[0], none, none),
-                    3 => crate::molt_itertools_accumulate(iterator, none, none),
+                    2 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_islice_type,
+                        |public_class| {
+                            crate::molt_itertools_islice_new(
+                                public_class,
+                                iterator,
+                                values[0],
+                                none,
+                                none,
+                            )
+                        },
+                    ),
+                    3 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_accumulate_type,
+                        |public_class| {
+                            crate::molt_itertools_accumulate_new(public_class, iterator, none, none)
+                        },
+                    ),
                     _ => crate::molt_itertools_accumulate_next(accumulated),
                 };
                 assert_eq!(result, none);
@@ -2930,29 +2925,37 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let none = MoltObject::none().bits();
-            let marker = crate::molt_itertools_kwd_mark();
+            let marker = crate::builtins::methods::missing_bits(py);
             let marker_refs = iterator_owned_refs(marker);
             let ints = [1, 2].map(|value| MoltObject::from_int(value).bits());
             let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &ints)).bits();
             let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
             for advance in [false, true] {
-                for _ in 0..marker_refs.saturating_add(8) {
-                    let accumulated = crate::molt_itertools_accumulate(sequence, none, marker);
-                    assert_eq!(iterator_owned_refs(marker), marker_refs);
-                    if advance {
-                        for expected in [1, 3] {
-                            let value = crate::molt_itertools_accumulate_next(accumulated);
-                            assert!(!crate::exception_pending(py));
-                            assert_eq!(to_i64(obj_from_bits(value)), Some(expected));
-                            dec_ref_bits(py, value);
-                        }
+                let accumulated = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_accumulate_type,
+                    |public_class| {
+                        crate::molt_itertools_accumulate_new(public_class, sequence, none, marker)
+                    },
+                );
+                assert_eq!(iterator_owned_refs(marker), marker_refs);
+                if advance {
+                    for expected in [1, 3] {
+                        let value = crate::molt_itertools_accumulate_next(accumulated);
+                        assert!(!crate::exception_pending(py));
+                        assert_eq!(to_i64(obj_from_bits(value)), Some(expected));
+                        dec_ref_bits(py, value);
                     }
-                    dec_ref_bits(py, accumulated);
-                    assert_eq!(iterator_owned_refs(marker), marker_refs);
                 }
+                dec_ref_bits(py, accumulated);
+                assert_eq!(iterator_owned_refs(marker), marker_refs);
             }
             for initial in [marker, none] {
-                let accumulated = crate::molt_itertools_accumulate(sequence, none, initial);
+                let accumulated = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_accumulate_type,
+                    |public_class| {
+                        crate::molt_itertools_accumulate_new(public_class, sequence, none, initial)
+                    },
+                );
                 for expected in [1, 3] {
                     let value = crate::molt_itertools_accumulate_next(accumulated);
                     assert_eq!(to_i64(obj_from_bits(value)), Some(expected));
@@ -2960,14 +2963,29 @@ mod tests {
                 }
                 iterator_owned_drain(py, accumulated, 0, true);
                 dec_ref_bits(py, accumulated);
-                let accumulated = crate::molt_itertools_accumulate(empty, none, initial);
+                let accumulated = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_accumulate_type,
+                    |public_class| {
+                        crate::molt_itertools_accumulate_new(public_class, empty, none, initial)
+                    },
+                );
                 iterator_owned_drain(py, accumulated, 0, true);
                 dec_ref_bits(py, accumulated);
             }
             for initial in [0.0_f64, -0.0_f64] {
                 for input in [sequence, empty] {
                     let initial_bits = MoltObject::from_float(initial).bits();
-                    let accumulated = crate::molt_itertools_accumulate(input, none, initial_bits);
+                    let accumulated = crate::test_support::with_public_type_class(
+                        crate::molt_itertools_accumulate_type,
+                        |public_class| {
+                            crate::molt_itertools_accumulate_new(
+                                public_class,
+                                input,
+                                none,
+                                initial_bits,
+                            )
+                        },
+                    );
                     let value = crate::molt_itertools_accumulate_next(accumulated);
                     assert!(!crate::exception_pending(py));
                     assert_eq!(
@@ -2991,7 +3009,12 @@ mod tests {
             let baseline = iterator_owned_refs(initial);
             let left_baseline = iterator_owned_refs(left);
             for count in 0..=3 {
-                let accumulated = crate::molt_itertools_accumulate(lists, none, initial);
+                let accumulated = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_accumulate_type,
+                    |public_class| {
+                        crate::molt_itertools_accumulate_new(public_class, lists, none, initial)
+                    },
+                );
                 assert_eq!(iterator_owned_refs(initial), baseline + 1);
                 for index in 0..count {
                     let value = crate::molt_itertools_accumulate_next(accumulated);
@@ -3040,66 +3063,228 @@ mod tests {
                 iterator_owned_function(py, iterator_owned_heap_predicate as *const (), 1);
             let predicate_result = iterator_owned_list(py, &[9]);
             ITERATOR_OWNED_PREDICATE_RESULT.store(predicate_result, Ordering::SeqCst);
-            let marker_itertools = crate::molt_itertools_kwd_mark();
+            let marker_itertools = crate::builtins::methods::missing_bits(py);
             let baseline = values.map(iterator_owned_refs);
             let sequence_refs = iterator_owned_refs(sequence);
             for mode in 0..18 {
                 let (iter, count, exhaust) = match mode {
-                    0 => (crate::molt_itertools_chain(outer), 3, true),
-                    1 => (
-                        crate::molt_itertools_islice(sequence, int(1), int(3), int(1)),
-                        2,
+                    0 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_chain_type,
+                            |public_class| crate::molt_itertools_chain_new(public_class, outer),
+                        ),
+                        3,
                         true,
                     ),
-                    2 => (crate::molt_itertools_cycle(sequence), 5, false),
-                    3 => (
-                        crate::molt_itertools_batched(
-                            sequence,
-                            int(2),
-                            MoltObject::from_bool(false).bits(),
+                    1 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_islice_type,
+                            |public_class| {
+                                crate::molt_itertools_islice_new(
+                                    public_class,
+                                    sequence,
+                                    int(1),
+                                    int(3),
+                                    int(1),
+                                )
+                            },
                         ),
                         2,
                         true,
                     ),
-                    4 => (crate::molt_itertools_compress(sequence, selectors), 1, true),
-                    5 => (
-                        crate::molt_itertools_compress(sequence, short_selectors),
+                    2 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_cycle_type,
+                            |public_class| crate::molt_itertools_cycle_new(public_class, sequence),
+                        ),
+                        5,
+                        false,
+                    ),
+                    3 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_batched_type,
+                            |public_class| {
+                                crate::molt_itertools_batched_new(
+                                    public_class,
+                                    sequence,
+                                    int(2),
+                                    MoltObject::from_bool(false).bits(),
+                                )
+                            },
+                        ),
+                        2,
+                        true,
+                    ),
+                    4 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_compress_type,
+                            |public_class| {
+                                crate::molt_itertools_compress_new(
+                                    public_class,
+                                    sequence,
+                                    selectors,
+                                )
+                            },
+                        ),
                         1,
                         true,
                     ),
-                    6 => (crate::molt_itertools_dropwhile(truth, sequence), 0, true),
-                    7 => (crate::molt_itertools_dropwhile(falsity, sequence), 3, true),
-                    8 => (crate::molt_itertools_filterfalse(none, sequence), 0, true),
-                    9 => (
-                        crate::molt_itertools_filterfalse(falsity, sequence),
+                    5 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_compress_type,
+                            |public_class| {
+                                crate::molt_itertools_compress_new(
+                                    public_class,
+                                    sequence,
+                                    short_selectors,
+                                )
+                            },
+                        ),
+                        1,
+                        true,
+                    ),
+                    6 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_dropwhile_type,
+                            |public_class| {
+                                crate::molt_itertools_dropwhile_new(public_class, truth, sequence)
+                            },
+                        ),
+                        0,
+                        true,
+                    ),
+                    7 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_dropwhile_type,
+                            |public_class| {
+                                crate::molt_itertools_dropwhile_new(public_class, falsity, sequence)
+                            },
+                        ),
                         3,
                         true,
                     ),
-                    10 => (crate::molt_itertools_pairwise(sequence), 2, true),
-                    11 => (crate::molt_itertools_starmap(right, args), 2, true),
-                    12 => (crate::molt_itertools_takewhile(truth, sequence), 3, true),
+                    8 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_filterfalse_type,
+                            |public_class| {
+                                crate::molt_itertools_filterfalse_new(public_class, none, sequence)
+                            },
+                        ),
+                        0,
+                        true,
+                    ),
+                    9 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_filterfalse_type,
+                            |public_class| {
+                                crate::molt_itertools_filterfalse_new(
+                                    public_class,
+                                    falsity,
+                                    sequence,
+                                )
+                            },
+                        ),
+                        3,
+                        true,
+                    ),
+                    10 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_pairwise_type,
+                            |public_class| {
+                                crate::molt_itertools_pairwise_new(public_class, sequence)
+                            },
+                        ),
+                        2,
+                        true,
+                    ),
+                    11 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_starmap_type,
+                            |public_class| {
+                                crate::molt_itertools_starmap_new(public_class, right, args)
+                            },
+                        ),
+                        2,
+                        true,
+                    ),
+                    12 => (
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_takewhile_type,
+                            |public_class| {
+                                crate::molt_itertools_takewhile_new(public_class, truth, sequence)
+                            },
+                        ),
+                        3,
+                        true,
+                    ),
                     13 => (
-                        crate::molt_itertools_zip_longest(zipped, values[0]),
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_zip_longest_type,
+                            |public_class| {
+                                crate::molt_itertools_zip_longest_new(
+                                    public_class,
+                                    zipped,
+                                    values[0],
+                                )
+                            },
+                        ),
                         3,
                         true,
                     ),
                     14 => (
-                        crate::molt_itertools_dropwhile(heap_predicate, sequence),
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_dropwhile_type,
+                            |public_class| {
+                                crate::molt_itertools_dropwhile_new(
+                                    public_class,
+                                    heap_predicate,
+                                    sequence,
+                                )
+                            },
+                        ),
                         0,
                         true,
                     ),
                     15 => (
-                        crate::molt_itertools_filterfalse(heap_predicate, sequence),
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_filterfalse_type,
+                            |public_class| {
+                                crate::molt_itertools_filterfalse_new(
+                                    public_class,
+                                    heap_predicate,
+                                    sequence,
+                                )
+                            },
+                        ),
                         0,
                         true,
                     ),
                     16 => (
-                        crate::molt_itertools_takewhile(heap_predicate, sequence),
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_takewhile_type,
+                            |public_class| {
+                                crate::molt_itertools_takewhile_new(
+                                    public_class,
+                                    heap_predicate,
+                                    sequence,
+                                )
+                            },
+                        ),
                         3,
                         true,
                     ),
                     _ => (
-                        crate::molt_itertools_accumulate(sequence, none, marker_itertools),
+                        crate::test_support::with_public_type_class(
+                            crate::molt_itertools_accumulate_type,
+                            |public_class| {
+                                crate::molt_itertools_accumulate_new(
+                                    public_class,
+                                    sequence,
+                                    none,
+                                    marker_itertools,
+                                )
+                            },
+                        ),
                         3,
                         true,
                     ),
@@ -3119,11 +3304,23 @@ mod tests {
                     "iterator owner {mode}"
                 );
             }
-            let stopped = crate::molt_itertools_takewhile(falsity, sequence);
+            let stopped = crate::test_support::with_public_type_class(
+                crate::molt_itertools_takewhile_type,
+                |public_class| crate::molt_itertools_takewhile_new(public_class, falsity, sequence),
+            );
             iterator_owned_drain(py, stopped, 0, true);
             dec_ref_bits(py, stopped);
-            let strict =
-                crate::molt_itertools_batched(sequence, int(2), MoltObject::from_bool(true).bits());
+            let strict = crate::test_support::with_public_type_class(
+                crate::molt_itertools_batched_type,
+                |public_class| {
+                    crate::molt_itertools_batched_new(
+                        public_class,
+                        sequence,
+                        int(2),
+                        MoltObject::from_bool(true).bits(),
+                    )
+                },
+            );
             {
                 let mut iter = crate::object::iterable::OwnedIterator::new(py, strict).unwrap();
                 dec_ref_bits(py, iter.next().unwrap().unwrap());
@@ -3139,7 +3336,8 @@ mod tests {
                 iterator_owned_drain(py, child, 3, true);
             }
             dec_ref_bits(py, tee);
-            let marker = molt_functools_kwd_mark();
+            let marker = crate::builtins::methods::missing_bits(py);
+            inc_ref_bits(py, marker);
             for initial in [marker, values[0]] {
                 let result = super::molt_functools_reduce(right, sequence, initial);
                 assert_eq!(result, values[2]);
@@ -3191,12 +3389,47 @@ mod tests {
             let sequence_refs = iterator_owned_refs(sequence);
             for mode in 0..6 {
                 let iter = match mode {
-                    0 => crate::molt_itertools_dropwhile(failure, sequence),
-                    1 => crate::molt_itertools_filterfalse(failure, sequence),
-                    2 => crate::molt_itertools_takewhile(failure, sequence),
-                    3 => crate::molt_itertools_groupby(sequence, failure),
-                    4 => crate::molt_itertools_starmap(failure2, args),
-                    _ => crate::molt_itertools_accumulate(sequence, failure2, values[0]),
+                    0 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_dropwhile_type,
+                        |public_class| {
+                            crate::molt_itertools_dropwhile_new(public_class, failure, sequence)
+                        },
+                    ),
+                    1 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_filterfalse_type,
+                        |public_class| {
+                            crate::molt_itertools_filterfalse_new(public_class, failure, sequence)
+                        },
+                    ),
+                    2 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_takewhile_type,
+                        |public_class| {
+                            crate::molt_itertools_takewhile_new(public_class, failure, sequence)
+                        },
+                    ),
+                    3 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_groupby_type,
+                        |public_class| {
+                            crate::molt_itertools_groupby_new(public_class, sequence, failure)
+                        },
+                    ),
+                    4 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_starmap_type,
+                        |public_class| {
+                            crate::molt_itertools_starmap_new(public_class, failure2, args)
+                        },
+                    ),
+                    _ => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_accumulate_type,
+                        |public_class| {
+                            crate::molt_itertools_accumulate_new(
+                                public_class,
+                                sequence,
+                                failure2,
+                                values[0],
+                            )
+                        },
+                    ),
                 };
                 assert!(!crate::exception_pending(py));
                 if mode == 5 {
@@ -3219,7 +3452,8 @@ mod tests {
                 assert_eq!(values.map(iterator_owned_refs), baseline, "callback {mode}");
                 assert_eq!(iterator_owned_refs(sequence), sequence_refs);
             }
-            let marker = molt_functools_kwd_mark();
+            let marker = crate::builtins::methods::missing_bits(py);
+            inc_ref_bits(py, marker);
             let result = super::molt_functools_reduce(failure2, sequence, marker);
             assert_eq!(result, none);
             assert!(crate::exception_pending(py));
@@ -3243,7 +3477,16 @@ mod tests {
             for keep_grouper in [true, false] {
                 let value = iterator_owned_list(py, &[7]);
                 let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &[value, value])).bits();
-                let parent = crate::molt_itertools_groupby(sequence, MoltObject::none().bits());
+                let parent = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_groupby_type,
+                    |public_class| {
+                        crate::molt_itertools_groupby_new(
+                            public_class,
+                            sequence,
+                            MoltObject::none().bits(),
+                        )
+                    },
+                );
                 let pair = crate::molt_itertools_groupby_next(parent);
                 assert!(!crate::exception_pending(py));
                 let pair_ptr = obj_from_bits(pair).as_ptr().unwrap();
@@ -3340,7 +3583,10 @@ mod tests {
             let b = iterator_owned_list(py, &[1]);
             let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &[a, a, b, a])).bits();
             let baseline = [a, b].map(iterator_owned_refs);
-            let parent = crate::molt_itertools_groupby(sequence, none);
+            let parent = crate::test_support::with_public_type_class(
+                crate::molt_itertools_groupby_type,
+                |public_class| crate::molt_itertools_groupby_new(public_class, sequence, none),
+            );
             let first = crate::molt_itertools_groupby_next(parent);
             let first_ptr = obj_from_bits(first).as_ptr().unwrap();
             let first_group = unsafe { crate::object::seq_access::item(first_ptr, 1) }.unwrap();
@@ -3367,7 +3613,10 @@ mod tests {
             // Presence facts must not consume the +0.0 value encoding.
             let zero = MoltObject::from_float(0.0).bits();
             let input = MoltObject::from_ptr(crate::alloc_tuple(py, &[zero, zero, none])).bits();
-            let parent = crate::molt_itertools_groupby(input, none);
+            let parent = crate::test_support::with_public_type_class(
+                crate::molt_itertools_groupby_type,
+                |public_class| crate::molt_itertools_groupby_new(public_class, input, none),
+            );
             for (expected, count) in [(zero, 2), (none, 1)] {
                 let pair = crate::molt_itertools_groupby_next(parent);
                 assert!(!crate::exception_pending(py));
@@ -3444,10 +3693,16 @@ mod tests {
             let source = unsafe {
                 crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
             };
-            let batch = crate::molt_itertools_batched(
-                source,
-                MoltObject::from_int(3).bits(),
-                MoltObject::from_bool(false).bits(),
+            let batch = crate::test_support::with_public_type_class(
+                crate::molt_itertools_batched_type,
+                |public_class| {
+                    crate::molt_itertools_batched_new(
+                        public_class,
+                        source,
+                        MoltObject::from_int(3).bits(),
+                        MoltObject::from_bool(false).bits(),
+                    )
+                },
             );
             assert!(!crate::exception_pending(py));
             BATCHED_RETIRE_TARGET.store(batch, Ordering::SeqCst);
@@ -3561,7 +3816,16 @@ mod tests {
             for at_truth in [false, true] {
                 GROUPBY_DRAIN_AT_TRUTH.store(at_truth, Ordering::SeqCst);
                 GROUPBY_DRAIN_HOOK.store(0, Ordering::SeqCst);
-                let parent = crate::molt_itertools_groupby(sequence, MoltObject::none().bits());
+                let parent = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_groupby_type,
+                    |public_class| {
+                        crate::molt_itertools_groupby_new(
+                            public_class,
+                            sequence,
+                            MoltObject::none().bits(),
+                        )
+                    },
+                );
                 let first = crate::molt_itertools_groupby_next(parent);
                 assert!(!crate::exception_pending(py));
                 let ptr = obj_from_bits(first).as_ptr().unwrap();
@@ -3710,7 +3974,17 @@ mod tests {
                 let initial = unsafe {
                     crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
                 };
-                let accumulated = crate::molt_itertools_accumulate(sequence, callback, initial);
+                let accumulated = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_accumulate_type,
+                    |public_class| {
+                        crate::molt_itertools_accumulate_new(
+                            public_class,
+                            sequence,
+                            callback,
+                            initial,
+                        )
+                    },
+                );
                 let yielded = crate::molt_itertools_accumulate_next(accumulated);
                 assert_eq!(yielded, initial);
                 dec_ref_bits(py, yielded);
@@ -3780,33 +4054,74 @@ mod tests {
             let callback =
                 iterator_owned_function(py, iterator_owned_one_then_fail as *const (), 2);
             let right = iterator_owned_function(py, iterator_owned_right as *const (), 2);
-            let marker = molt_functools_kwd_mark();
+            let marker = crate::builtins::methods::missing_bits(py);
+            inc_ref_bits(py, marker);
             let baseline = iterator_owned_refs(value);
             for mode in 0..5 {
                 ITERATOR_OWNED_CALLBACK_COUNT.store(0, Ordering::SeqCst);
-                let source = crate::molt_itertools_starmap(callback, args);
+                let source = crate::test_support::with_public_type_class(
+                    crate::molt_itertools_starmap_type,
+                    |public_class| crate::molt_itertools_starmap_new(public_class, callback, args),
+                );
                 let mut consumer = none;
                 let mut outer = none;
                 match mode {
-                    0 => assert_eq!(crate::molt_itertools_cycle(source), none),
+                    0 => {
+                        consumer = crate::test_support::with_public_type_class(
+                            crate::molt_itertools_cycle_type,
+                            |public_class| crate::molt_itertools_cycle_new(public_class, source),
+                        );
+                        assert!(!crate::exception_pending(py), "cycle construction is lazy");
+                    }
                     1 => {
-                        consumer = crate::molt_itertools_batched(
-                            source,
-                            int(3),
-                            MoltObject::from_bool(false).bits(),
+                        consumer = crate::test_support::with_public_type_class(
+                            crate::molt_itertools_batched_type,
+                            |public_class| {
+                                crate::molt_itertools_batched_new(
+                                    public_class,
+                                    source,
+                                    int(3),
+                                    MoltObject::from_bool(false).bits(),
+                                )
+                            },
                         )
                     }
                     2 => {
                         outer =
                             MoltObject::from_ptr(crate::alloc_tuple(py, &[source, source])).bits();
-                        consumer = crate::molt_itertools_zip_longest(outer, none);
+                        consumer = crate::test_support::with_public_type_class(
+                            crate::molt_itertools_zip_longest_type,
+                            |public_class| {
+                                crate::molt_itertools_zip_longest_new(public_class, outer, none)
+                            },
+                        );
                     }
                     3 => assert_eq!(super::molt_functools_reduce(right, source, marker), none),
-                    _ => consumer = crate::molt_itertools_islice(source, int(1), int(2), int(1)),
+                    _ => {
+                        consumer = crate::test_support::with_public_type_class(
+                            crate::molt_itertools_islice_type,
+                            |public_class| {
+                                crate::molt_itertools_islice_new(
+                                    public_class,
+                                    source,
+                                    int(1),
+                                    int(2),
+                                    int(1),
+                                )
+                            },
+                        )
+                    }
                 }
                 if consumer != none {
                     let mut iter =
                         crate::object::iterable::OwnedIterator::new(py, consumer).unwrap();
+                    if mode == 0 {
+                        // cycle saves the first successful item lazily, before
+                        // the source's second advance raises.
+                        let first = iter.next().unwrap().expect("first cycle source item");
+                        assert_eq!(first, value);
+                        dec_ref_bits(py, first);
+                    }
                     assert!(iter.next().is_err(), "partial input {mode}");
                 }
                 assert!(crate::exception_pending(py), "partial input {mode}");
@@ -3821,13 +4136,27 @@ mod tests {
             let outer = MoltObject::from_ptr(crate::alloc_tuple(py, &[sequence, sequence])).bits();
             for mode in 0..3 {
                 let consumer = match mode {
-                    0 => crate::molt_itertools_batched(
-                        sequence,
-                        int(2),
-                        MoltObject::from_bool(false).bits(),
+                    0 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_batched_type,
+                        |public_class| {
+                            crate::molt_itertools_batched_new(
+                                public_class,
+                                sequence,
+                                int(2),
+                                MoltObject::from_bool(false).bits(),
+                            )
+                        },
                     ),
-                    1 => crate::molt_itertools_zip_longest(outer, none),
-                    _ => crate::molt_itertools_pairwise(sequence),
+                    1 => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_zip_longest_type,
+                        |public_class| {
+                            crate::molt_itertools_zip_longest_new(public_class, outer, none)
+                        },
+                    ),
+                    _ => crate::test_support::with_public_type_class(
+                        crate::molt_itertools_pairwise_type,
+                        |public_class| crate::molt_itertools_pairwise_new(public_class, sequence),
+                    ),
                 };
                 assert!(!crate::exception_pending(py));
                 {

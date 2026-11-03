@@ -7,6 +7,81 @@ use std::sync::atomic::AtomicU64;
 
 use crate::object::function_metadata::FunctionMetadataField as Field;
 
+/// CPython methodobject.c meth_reduce: module builtins reduce by public name;
+/// bound builtins reduce through getattr on their actual retained receiver.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_native_callable_reduce(function: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(pointer) = obj_from_bits(function).as_ptr() else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "expected a builtin function",
+            );
+        };
+        if unsafe { object_type_id(pointer) } != TYPE_ID_FUNCTION
+            || !matches!(
+                NativeCallableKind::from_class(py, unsafe { object_class_bits(pointer) }),
+                Some(NativeCallableKind::Function | NativeCallableKind::CMethod)
+            )
+        {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "expected a builtin function",
+            );
+        }
+        let Some(name) = (unsafe { Field::Name.load(pointer) }) else {
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "builtin function has no public name",
+            );
+        };
+        inc_ref_bits(py, name);
+        let name_owner = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), name)
+        };
+        let receiver =
+            unsafe { Field::SelfValue.load(pointer) }.unwrap_or(MoltObject::none().bits());
+        if obj_from_bits(receiver).is_none()
+            || obj_from_bits(receiver)
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_MODULE)
+        {
+            return name_owner.into_bits();
+        }
+        inc_ref_bits(py, receiver);
+        let receiver = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), receiver)
+        };
+        let getattr = match super::lookup_builtin_name(py, "getattr") {
+            Ok(Some(bits)) => bits,
+            Ok(None) => return raise_exception::<u64>(py, BuiltinExc::AttributeError, "getattr"),
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let getattr = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), getattr)
+        };
+        let args = alloc_tuple(py, &[receiver.bits(), name_owner.bits()]);
+        if args.is_null() {
+            return MoltObject::none().bits();
+        }
+        let args = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(args).bits(),
+            )
+        };
+        let result = alloc_tuple(py, &[getattr.bits(), args.bits()]);
+        if result.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(result).bits()
+        }
+    })
+}
+
 /// Declared callable attributes: mutable tail fields or a read-only projection
 /// of an owner that already lives in the function prefix. Projected attributes
 /// cannot enter the physical metadata mutation or GC-storage APIs.
@@ -188,6 +263,7 @@ pub(crate) struct NativeCallableSpec<'a> {
     pub(crate) cache: Option<&'a AtomicU64>,
     pub(crate) text_signature: Option<&'a str>,
     pub(crate) fixed_convention: Option<molt_cpython_abi::api::cfunction::CFunctionConvention>,
+    pub(crate) identity: Option<crate::intrinsics::public_objects_generated::PublicObjectIdentity>,
 }
 
 impl<'a> NativeCallableSpec<'a> {
@@ -207,6 +283,7 @@ impl<'a> NativeCallableSpec<'a> {
             cache: None,
             text_signature: None,
             fixed_convention: None,
+            identity: None,
         }
     }
 
@@ -223,6 +300,7 @@ impl<'a> NativeCallableSpec<'a> {
             cache: None,
             text_signature: None,
             fixed_convention: None,
+            identity: None,
         }
     }
 
@@ -235,6 +313,7 @@ impl<'a> NativeCallableSpec<'a> {
             cache: None,
             text_signature: None,
             fixed_convention: None,
+            identity: None,
         }
     }
 
@@ -340,7 +419,11 @@ pub(crate) unsafe fn configure_native_callable(
                 })
             })
         });
-        let name = if let Some(name) = spec.name {
+        let name = if let Some(name) = spec
+            .identity
+            .map(|identity| NativeCallableName::Known(identity.name))
+            .or(spec.name)
+        {
             let Some(bits) = name.owned_bits(py) else {
                 return false;
             };
@@ -348,7 +431,12 @@ pub(crate) unsafe fn configure_native_callable(
         } else {
             None
         };
-        let qualified = if let Some(name) = spec.name {
+        let qualified = if let Some(identity) = spec.identity {
+            let Some(bits) = identity.qualname.owned_bits(py) else {
+                return false;
+            };
+            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+        } else if let Some(name) = spec.name {
             let mut bytes = if let Some(owner) = spec.owner {
                 let Ok(mut bytes) = owner_qualname_bytes(py, owner) else {
                     return false;
@@ -360,6 +448,14 @@ pub(crate) unsafe fn configure_native_callable(
             };
             bytes.extend_from_slice(name.bytes());
             let Some(bits) = dynamic_attr_name_bits(py, &bytes) else {
+                return false;
+            };
+            Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
+        } else {
+            None
+        };
+        let module = if let Some(identity) = spec.identity {
+            let Some(bits) = identity.module.owned_bits(py) else {
                 return false;
             };
             Some((bits, crate::PtrDropGuard::preserving(ptr_from_bits(bits))))
@@ -529,6 +625,7 @@ pub(crate) unsafe fn configure_native_callable(
             ),
             (Field::Name, name.as_ref().map(|(bits, _)| *bits)),
             (Field::QualName, qualified.as_ref().map(|(bits, _)| *bits)),
+            (Field::Module, module.as_ref().map(|(bits, _)| *bits)),
             (Field::TextSignature, text_signature),
             (Field::SelfValue, spec.self_bits),
             (Field::BindKind, fixed_kind),

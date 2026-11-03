@@ -140,6 +140,7 @@ mod ipaddress_bridge;
 #[cfg(feature = "stdlib_itertools")]
 mod itertools_bridge;
 mod itertools_class;
+pub use itertools_class::{molt_itertools_reduce, molt_itertools_setstate};
 #[cfg(feature = "stdlib_logging_ext")]
 mod logging_bridge;
 #[cfg(feature = "stdlib_math")]

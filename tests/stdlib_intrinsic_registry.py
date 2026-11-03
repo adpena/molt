@@ -62,6 +62,22 @@ def capability_grants() -> dict[str, Callable[..., bool]]:
     return {name: _grant for name in _CAPABILITY_CHECKS}
 
 
+def record_builtin_promotion(function: Callable[..., object]) -> None:
+    """Check an adapter's promotion request against CPython's real boundary.
+
+    Host source tests exercise adapter bodies, not Molt's native class mutation;
+    compiled differential/census proofs own the resulting callable kind.
+    """
+    import importlib
+    from types import BuiltinFunctionType, FunctionType
+
+    assert isinstance(function, FunctionType)
+    expected = getattr(importlib.import_module(function.__module__), function.__name__)
+    assert isinstance(expected, BuiltinFunctionType)
+    for name in ("__name__", "__qualname__", "__module__"):
+        assert getattr(function, name) == getattr(expected, name)
+
+
 def _load_resolver() -> ModuleType:
     spec = importlib.util.spec_from_file_location("_intrinsics", RESOLVER)
     if spec is None or spec.loader is None:
