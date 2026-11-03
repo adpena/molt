@@ -6244,6 +6244,54 @@ def test_executor_binds_the_verified_checkout_commit_into_source_bound_argv(
     assert record["argv"][-1] == proof_plan.PROOF_SOURCE_COMMIT_PLACEHOLDER
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the PATH decoy is a POSIX shell script")
+def test_a_bare_python_argv0_runs_the_admitted_environment_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HF-755: the first ``python3`` on PATH (Xcode's on macOS) never runs a proof."""
+    decoy = tmp_path / "decoy-bin"
+    decoy.mkdir()
+    decoy_ran = tmp_path / "decoy-ran"
+    for name in ("python", "python3"):
+        script = decoy / name
+        script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(decoy_ran))}\nexit 3\n")
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(decoy), os.environ["PATH"])))
+    output = tmp_path / "interpreter.txt"
+    producer = _synthetic_executor_command("synthetic.bare-python")
+    producer = replace(
+        producer,
+        data={
+            **producer.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
+            # The child reports the interpreter that actually ran it.
+            "argv": [
+                "python3",
+                "-c",
+                "import pathlib, sys; "
+                "pathlib.Path(sys.argv[1]).write_text(sys.executable, encoding='utf-8')",
+                str(output),
+            ],
+        },
+    )
+    plan = _synthetic_executor_plan((producer,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        _admit_synthetic_python,
+    )
+    assert (
+        proof_plan.execute_commands(plan, (producer,), tmp_path / "receipt.json") == 0
+    )
+
+    assert not decoy_ran.exists()
+    assert output.read_text(encoding="utf-8") == sys.executable
+    # A path-qualified interpreter is the row's explicit choice and stays as written.
+    explicit = replace(producer, data={**producer.data, "argv": ["/opt/python3", "-V"]})
+    assert proof_plan.resolved_command_argv(explicit) == ("/opt/python3", "-V")
+
+
 def test_source_bound_commands_bind_one_whole_placeholder_in_ci_tiers() -> None:
     row = next(
         command
