@@ -4086,9 +4086,9 @@ def test_historical_retirement_decoder_rejects_changed_custody(tmp_path, field, 
     historical = _historical_retirement(
         root, tmp_path, reason="test", owner="owner", kind="scratch"
     )
-    payload = json.loads(historical.record_path.read_text())
+    payload = json.loads(historical.record_path.read_text(encoding="utf-8"))
     payload[field] = value
-    historical.record_path.write_text(json.dumps(payload))
+    historical.record_path.write_text(json.dumps(payload), encoding="utf-8")
     assert cs.read_soft_retirement(historical.record_path, tmp_path) is None
     assert (historical.path / "keep").read_bytes() == b"retain unknown state"
 
@@ -4229,9 +4229,9 @@ def test_backlog_cleanup_keeps_busy_or_unproven_state(tmp_path, protection):
         now=now - HOUR,
     )
     if protection == "unknown":
-        value = json.loads(held.record_path.read_text())
+        value = json.loads(held.record_path.read_text(encoding="utf-8"))
         value["kind"] = "unregistered"
-        held.record_path.write_text(json.dumps(value))
+        held.record_path.write_text(json.dumps(value), encoding="utf-8")
     env = {"CARGO_TARGET_DIR": str(held.path)} if protection == "path" else {}
     with ExitStack() as stack:
         if protection == "native-lock":
