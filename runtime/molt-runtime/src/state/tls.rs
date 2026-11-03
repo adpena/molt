@@ -44,6 +44,10 @@ pub(crate) struct ExecutionTls {
         Cell<Option<crate::state::runtime_state::RuntimeWorkerOrigin>>,
     /// The runtime state this thread initialized or attached to.
     pub(crate) runtime_state: Cell<*mut RuntimeState>,
+    /// The runtime state this thread's admission custody runs, resolved once
+    /// when the custody begins (`state::runtime_state::bind_execution_state`),
+    /// or null. Null is always safe: readers then resolve in full.
+    pub(crate) bound_state: Cell<*const RuntimeState>,
     /// Whether this thread ordered its destructor-bearing thread-locals.
     pub(crate) tls_guard_touched: Cell<bool>,
     /// Borrowed from the outermost terminal release until its queue drains.
@@ -84,6 +88,7 @@ thread_local! {
             #[cfg(not(target_arch = "wasm32"))]
             retained_worker_origin: Cell::new(None),
             runtime_state: Cell::new(std::ptr::null_mut()),
+            bound_state: Cell::new(std::ptr::null()),
             tls_guard_touched: Cell::new(false),
             terminal_release: Cell::new(std::ptr::null()),
         }
@@ -108,7 +113,7 @@ pub(crate) fn execution_tls() -> &'static ExecutionTls {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_record() -> u64 {
     let tls = execution_tls();
-    let state = super::runtime_state::runtime_state_for_gil_in(tls)
+    let state = super::runtime_state::admitted_runtime_state_in(tls)
         .expect("compiled thread record requires an attached runtime");
     tls.pending_work_ptr
         .set(state.pending_work.word_ptr() as u64);
