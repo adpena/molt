@@ -7153,24 +7153,9 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 4,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_post_init",
-        import: WasmRuntimeImport::DataclassesPostInit,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_dataclasses_set_field_metadata",
         import: WasmRuntimeImport::DataclassesSetFieldMetadata,
         arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_is_initvar",
-        import: WasmRuntimeImport::DataclassesIsInitvar,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_is_kw_only_sentinel",
-        import: WasmRuntimeImport::DataclassesIsKwOnlySentinel,
-        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_staticmethod_type_new",
@@ -11743,13 +11728,18 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_check_default_order",
-        import: WasmRuntimeImport::DataclassesCheckDefaultOrder,
-        arity: 1,
+        runtime_name: "molt_dataclasses_set_init_template",
+        import: WasmRuntimeImport::DataclassesSetInitTemplate,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_dataclasses_field_flags",
-        import: WasmRuntimeImport::DataclassesFieldFlags,
+        runtime_name: "molt_dataclasses_init",
+        import: WasmRuntimeImport::DataclassesInit,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_dataclasses_init_globals",
+        import: WasmRuntimeImport::DataclassesInitGlobals,
         arity: 1,
     },
     RuntimeCallableImportSpec {
@@ -12304,6 +12294,15 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
     },
     ReservedRuntimeCallableSpec {
         index: 35,
+        runtime_name: "molt_dataclasses_init_trampoline",
+        import_name: "dataclasses_init_trampoline",
+        import: WasmRuntimeImport::DataclassesInitTrampoline,
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Trampoline,
+        trampoline_abi: RuntimeCallableTrampolineAbi::CallFrame,
+    },
+    ReservedRuntimeCallableSpec {
+        index: 36,
         runtime_name: "molt_coroutine_send_method",
         import_name: "coroutine_send_method",
         import: WasmRuntimeImport::CoroutineSendMethod,
@@ -12312,7 +12311,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 36,
+        index: 37,
         runtime_name: "molt_coroutine_throw_method",
         import_name: "coroutine_throw_method",
         import: WasmRuntimeImport::CoroutineThrowMethod,
@@ -12321,7 +12320,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 37,
+        index: 38,
         runtime_name: "molt_coroutine_close_method",
         import_name: "coroutine_close_method",
         import: WasmRuntimeImport::CoroutineCloseMethod,
@@ -12330,7 +12329,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 38,
+        index: 39,
         runtime_name: "molt_awaitable_await",
         import_name: "awaitable_await",
         import: WasmRuntimeImport::AwaitableAwait,
@@ -12339,7 +12338,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 39,
+        index: 40,
         runtime_name: "molt_coroutine_wrapper_iter",
         import_name: "coroutine_wrapper_iter",
         import: WasmRuntimeImport::CoroutineWrapperIter,
@@ -12348,7 +12347,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 40,
+        index: 41,
         runtime_name: "molt_coroutine_wrapper_next",
         import_name: "coroutine_wrapper_next",
         import: WasmRuntimeImport::CoroutineWrapperNext,
@@ -12357,7 +12356,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 41,
+        index: 42,
         runtime_name: "molt_asyncgen_awaitable_self",
         import_name: "asyncgen_awaitable_self",
         import: WasmRuntimeImport::AsyncgenAwaitableSelf,
@@ -12366,7 +12365,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 42,
+        index: 43,
         runtime_name: "molt_asyncgen_awaitable_next",
         import_name: "asyncgen_awaitable_next",
         import: WasmRuntimeImport::AsyncgenAwaitableNext,
@@ -12375,7 +12374,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 43,
+        index: 44,
         runtime_name: "molt_asyncgen_awaitable_send",
         import_name: "asyncgen_awaitable_send",
         import: WasmRuntimeImport::AsyncgenAwaitableSend,
@@ -12384,7 +12383,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 44,
+        index: 45,
         runtime_name: "molt_asyncgen_awaitable_throw",
         import_name: "asyncgen_awaitable_throw",
         import: WasmRuntimeImport::AsyncgenAwaitableThrow,
@@ -12393,7 +12392,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 45,
+        index: 46,
         runtime_name: "molt_asyncgen_awaitable_close",
         import_name: "asyncgen_awaitable_close",
         import: WasmRuntimeImport::AsyncgenAwaitableClose,
@@ -12402,7 +12401,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 46,
+        index: 47,
         runtime_name: "molt_generator_throw_method",
         import_name: "generator_throw_method",
         import: WasmRuntimeImport::GeneratorThrowMethod,
@@ -12411,7 +12410,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 47,
+        index: 48,
         runtime_name: "molt_contextvars_types",
         import_name: "contextvars_types",
         import: WasmRuntimeImport::ContextvarsTypes,
@@ -12420,7 +12419,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 48,
+        index: 49,
         runtime_name: "molt_contextvars_copy_current",
         import_name: "contextvars_copy_current",
         import: WasmRuntimeImport::ContextvarsCopyCurrent,
@@ -12429,7 +12428,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 49,
+        index: 50,
         runtime_name: "molt_contextvars_new",
         import_name: "contextvars_new",
         import: WasmRuntimeImport::ContextvarsNew,
@@ -12438,7 +12437,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 50,
+        index: 51,
         runtime_name: "molt_contextvars_token_new",
         import_name: "contextvars_token_new",
         import: WasmRuntimeImport::ContextvarsTokenNew,
@@ -12447,7 +12446,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 51,
+        index: 52,
         runtime_name: "molt_contextvars_missing_new",
         import_name: "contextvars_missing_new",
         import: WasmRuntimeImport::ContextvarsMissingNew,
@@ -12456,7 +12455,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 52,
+        index: 53,
         runtime_name: "molt_contextvars_keys_new",
         import_name: "contextvars_keys_new",
         import: WasmRuntimeImport::ContextvarsKeysNew,
@@ -12465,7 +12464,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 53,
+        index: 54,
         runtime_name: "molt_contextvars_values_new",
         import_name: "contextvars_values_new",
         import: WasmRuntimeImport::ContextvarsValuesNew,
@@ -12474,7 +12473,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 54,
+        index: 55,
         runtime_name: "molt_contextvars_items_new",
         import_name: "contextvars_items_new",
         import: WasmRuntimeImport::ContextvarsItemsNew,
@@ -12483,7 +12482,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 55,
+        index: 56,
         runtime_name: "molt_contextvars_var_new",
         import_name: "contextvars_var_new",
         import: WasmRuntimeImport::ContextvarsVarNew,
@@ -12492,7 +12491,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 56,
+        index: 57,
         runtime_name: "molt_contextvars_var_get",
         import_name: "contextvars_var_get",
         import: WasmRuntimeImport::ContextvarsVarGet,
@@ -12501,7 +12500,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 57,
+        index: 58,
         runtime_name: "molt_contextvars_var_set",
         import_name: "contextvars_var_set",
         import: WasmRuntimeImport::ContextvarsVarSet,
@@ -12510,7 +12509,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 58,
+        index: 59,
         runtime_name: "molt_contextvars_var_reset",
         import_name: "contextvars_var_reset",
         import: WasmRuntimeImport::ContextvarsVarReset,
@@ -12519,7 +12518,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 59,
+        index: 60,
         runtime_name: "molt_contextvars_var_hash",
         import_name: "contextvars_var_hash",
         import: WasmRuntimeImport::ContextvarsVarHash,
@@ -12528,7 +12527,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 60,
+        index: 61,
         runtime_name: "molt_contextvars_copy",
         import_name: "contextvars_copy",
         import: WasmRuntimeImport::ContextvarsCopy,
@@ -12537,7 +12536,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 61,
+        index: 62,
         runtime_name: "molt_contextvars_len",
         import_name: "contextvars_len",
         import: WasmRuntimeImport::ContextvarsLen,
@@ -12546,7 +12545,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 62,
+        index: 63,
         runtime_name: "molt_contextvars_getitem",
         import_name: "contextvars_getitem",
         import: WasmRuntimeImport::ContextvarsGetitem,
@@ -12555,7 +12554,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 63,
+        index: 64,
         runtime_name: "molt_contextvars_contains",
         import_name: "contextvars_contains",
         import: WasmRuntimeImport::ContextvarsContains,
@@ -12564,7 +12563,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 64,
+        index: 65,
         runtime_name: "molt_contextvars_get",
         import_name: "contextvars_get",
         import: WasmRuntimeImport::ContextvarsGet,
@@ -12573,7 +12572,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 65,
+        index: 66,
         runtime_name: "molt_contextvars_run",
         import_name: "contextvars_run",
         import: WasmRuntimeImport::ContextvarsRun,
@@ -12582,7 +12581,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 66,
+        index: 67,
         runtime_name: "molt_contextvars_keys",
         import_name: "contextvars_keys",
         import: WasmRuntimeImport::ContextvarsKeys,
@@ -12591,7 +12590,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 67,
+        index: 68,
         runtime_name: "molt_contextvars_values",
         import_name: "contextvars_values",
         import: WasmRuntimeImport::ContextvarsValues,
@@ -12600,7 +12599,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 68,
+        index: 69,
         runtime_name: "molt_contextvars_items",
         import_name: "contextvars_items",
         import: WasmRuntimeImport::ContextvarsItems,
@@ -12609,7 +12608,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 69,
+        index: 70,
         runtime_name: "molt_contextvars_iter_self",
         import_name: "contextvars_iter_self",
         import: WasmRuntimeImport::ContextvarsIterSelf,
@@ -12618,7 +12617,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 70,
+        index: 71,
         runtime_name: "molt_contextvars_iter_next",
         import_name: "contextvars_iter_next",
         import: WasmRuntimeImport::ContextvarsIterNext,
@@ -12627,7 +12626,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 71,
+        index: 72,
         runtime_name: "molt_contextvars_eq",
         import_name: "contextvars_eq",
         import: WasmRuntimeImport::ContextvarsEq,
@@ -12636,7 +12635,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 72,
+        index: 73,
         runtime_name: "molt_contextvars_ne",
         import_name: "contextvars_ne",
         import: WasmRuntimeImport::ContextvarsNe,
@@ -12645,7 +12644,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 73,
+        index: 74,
         runtime_name: "molt_contextvars_property",
         import_name: "contextvars_property",
         import: WasmRuntimeImport::ContextvarsProperty,
@@ -12654,7 +12653,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 74,
+        index: 75,
         runtime_name: "molt_contextvars_token_enter",
         import_name: "contextvars_token_enter",
         import: WasmRuntimeImport::ContextvarsTokenEnter,
@@ -12663,7 +12662,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 75,
+        index: 76,
         runtime_name: "molt_contextvars_token_exit",
         import_name: "contextvars_token_exit",
         import: WasmRuntimeImport::ContextvarsTokenExit,
@@ -12672,7 +12671,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 76,
+        index: 77,
         runtime_name: "molt_contextvars_var_repr",
         import_name: "contextvars_var_repr",
         import: WasmRuntimeImport::ContextvarsVarRepr,
@@ -12681,7 +12680,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 77,
+        index: 78,
         runtime_name: "molt_contextvars_token_repr",
         import_name: "contextvars_token_repr",
         import: WasmRuntimeImport::ContextvarsTokenRepr,
@@ -12690,7 +12689,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     ReservedRuntimeCallableSpec {
-        index: 78,
+        index: 79,
         runtime_name: "molt_contextvars_missing_repr",
         import_name: "contextvars_missing_repr",
         import: WasmRuntimeImport::ContextvarsMissingRepr,
@@ -14403,13 +14402,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_dataclasses_asdict" => Some(WasmRuntimeImport::DataclassesAsdict),
         "molt_dataclasses_astuple" => Some(WasmRuntimeImport::DataclassesAstuple),
         "molt_dataclasses_replace" => Some(WasmRuntimeImport::DataclassesReplace),
-        "molt_dataclasses_post_init" => Some(WasmRuntimeImport::DataclassesPostInit),
         "molt_dataclasses_set_field_metadata" => {
             Some(WasmRuntimeImport::DataclassesSetFieldMetadata)
-        }
-        "molt_dataclasses_is_initvar" => Some(WasmRuntimeImport::DataclassesIsInitvar),
-        "molt_dataclasses_is_kw_only_sentinel" => {
-            Some(WasmRuntimeImport::DataclassesIsKwOnlySentinel)
         }
         "molt_staticmethod_type_new" => Some(WasmRuntimeImport::StaticmethodTypeNew),
         "molt_staticmethod_init" => Some(WasmRuntimeImport::StaticmethodInit),
@@ -15421,10 +15415,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_csv_dialect_lookup_name" => Some(WasmRuntimeImport::CsvDialectLookupName),
         "molt_csv_validate_dialect" => Some(WasmRuntimeImport::CsvValidateDialect),
         "molt_csv_validate_fmtparams" => Some(WasmRuntimeImport::CsvValidateFmtparams),
-        "molt_dataclasses_check_default_order" => {
-            Some(WasmRuntimeImport::DataclassesCheckDefaultOrder)
-        }
-        "molt_dataclasses_field_flags" => Some(WasmRuntimeImport::DataclassesFieldFlags),
+        "molt_dataclasses_set_init_template" => Some(WasmRuntimeImport::DataclassesSetInitTemplate),
+        "molt_dataclasses_init" => Some(WasmRuntimeImport::DataclassesInit),
+        "molt_dataclasses_init_globals" => Some(WasmRuntimeImport::DataclassesInitGlobals),
         "molt_json_default_separators" => Some(WasmRuntimeImport::JsonDefaultSeparators),
         "molt_json_format_decode_error" => Some(WasmRuntimeImport::JsonFormatDecodeError),
         "molt_json_parse_error_msg" => Some(WasmRuntimeImport::JsonParseErrorMsg),
@@ -15523,6 +15516,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_importlib_module_spec_has_location_set" => {
             Some(WasmRuntimeImport::ImportlibModuleSpecHasLocationSet)
         }
+        "molt_dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
         _ => None,
     }
 }

@@ -1970,20 +1970,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "sys_version_info",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassGet,
-        name: "dataclass_get",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassNewFromValues,
-        name: "dataclass_new_from_values",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassSet,
-        name: "dataclass_set",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassSetClass,
-        name: "dataclass_set_class",
+        import: WasmRuntimeImport::DataclassesInitTrampoline,
+        name: "dataclasses_init_trampoline",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ChanDrop,
@@ -7314,20 +7302,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "dataclasses_replace",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassesPostInit,
-        name: "dataclasses_post_init",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesSetFieldMetadata,
         name: "dataclasses_set_field_metadata",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassesIsInitvar,
-        name: "dataclasses_is_initvar",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassesIsKwOnlySentinel,
-        name: "dataclasses_is_kw_only_sentinel",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::StaticmethodTypeNew,
@@ -10986,12 +10962,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "csv_validate_fmtparams",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassesCheckDefaultOrder,
-        name: "dataclasses_check_default_order",
+        import: WasmRuntimeImport::DataclassesSetInitTemplate,
+        name: "dataclasses_set_init_template",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassesFieldFlags,
-        name: "dataclasses_field_flags",
+        import: WasmRuntimeImport::DataclassesInit,
+        name: "dataclasses_init",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::DataclassesInitGlobals,
+        name: "dataclasses_init_globals",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::JsonDefaultSeparators,
@@ -12158,14 +12138,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_sys_version" => Some(WasmRuntimeImport::SysVersion),
         "sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
         "molt_sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
-        "dataclass_get" => Some(WasmRuntimeImport::DataclassGet),
-        "molt_dataclass_get" => Some(WasmRuntimeImport::DataclassGet),
-        "dataclass_new_from_values" => Some(WasmRuntimeImport::DataclassNewFromValues),
-        "molt_dataclass_new_from_values" => Some(WasmRuntimeImport::DataclassNewFromValues),
-        "dataclass_set" => Some(WasmRuntimeImport::DataclassSet),
-        "molt_dataclass_set" => Some(WasmRuntimeImport::DataclassSet),
-        "dataclass_set_class" => Some(WasmRuntimeImport::DataclassSetClass),
-        "molt_dataclass_set_class" => Some(WasmRuntimeImport::DataclassSetClass),
+        "dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
+        "molt_dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
         "chan_drop" => Some(WasmRuntimeImport::ChanDrop),
         "molt_chan_drop" => Some(WasmRuntimeImport::ChanDrop),
         "chan_new" => Some(WasmRuntimeImport::ChanNew),
@@ -15400,17 +15374,9 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_dataclasses_astuple" => Some(WasmRuntimeImport::DataclassesAstuple),
         "dataclasses_replace" => Some(WasmRuntimeImport::DataclassesReplace),
         "molt_dataclasses_replace" => Some(WasmRuntimeImport::DataclassesReplace),
-        "dataclasses_post_init" => Some(WasmRuntimeImport::DataclassesPostInit),
-        "molt_dataclasses_post_init" => Some(WasmRuntimeImport::DataclassesPostInit),
         "dataclasses_set_field_metadata" => Some(WasmRuntimeImport::DataclassesSetFieldMetadata),
         "molt_dataclasses_set_field_metadata" => {
             Some(WasmRuntimeImport::DataclassesSetFieldMetadata)
-        }
-        "dataclasses_is_initvar" => Some(WasmRuntimeImport::DataclassesIsInitvar),
-        "molt_dataclasses_is_initvar" => Some(WasmRuntimeImport::DataclassesIsInitvar),
-        "dataclasses_is_kw_only_sentinel" => Some(WasmRuntimeImport::DataclassesIsKwOnlySentinel),
-        "molt_dataclasses_is_kw_only_sentinel" => {
-            Some(WasmRuntimeImport::DataclassesIsKwOnlySentinel)
         }
         "staticmethod_type_new" => Some(WasmRuntimeImport::StaticmethodTypeNew),
         "molt_staticmethod_type_new" => Some(WasmRuntimeImport::StaticmethodTypeNew),
@@ -17374,12 +17340,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_csv_validate_dialect" => Some(WasmRuntimeImport::CsvValidateDialect),
         "csv_validate_fmtparams" => Some(WasmRuntimeImport::CsvValidateFmtparams),
         "molt_csv_validate_fmtparams" => Some(WasmRuntimeImport::CsvValidateFmtparams),
-        "dataclasses_check_default_order" => Some(WasmRuntimeImport::DataclassesCheckDefaultOrder),
-        "molt_dataclasses_check_default_order" => {
-            Some(WasmRuntimeImport::DataclassesCheckDefaultOrder)
-        }
-        "dataclasses_field_flags" => Some(WasmRuntimeImport::DataclassesFieldFlags),
-        "molt_dataclasses_field_flags" => Some(WasmRuntimeImport::DataclassesFieldFlags),
+        "dataclasses_set_init_template" => Some(WasmRuntimeImport::DataclassesSetInitTemplate),
+        "molt_dataclasses_set_init_template" => Some(WasmRuntimeImport::DataclassesSetInitTemplate),
+        "dataclasses_init" => Some(WasmRuntimeImport::DataclassesInit),
+        "molt_dataclasses_init" => Some(WasmRuntimeImport::DataclassesInit),
+        "dataclasses_init_globals" => Some(WasmRuntimeImport::DataclassesInitGlobals),
+        "molt_dataclasses_init_globals" => Some(WasmRuntimeImport::DataclassesInitGlobals),
         "json_default_separators" => Some(WasmRuntimeImport::JsonDefaultSeparators),
         "molt_json_default_separators" => Some(WasmRuntimeImport::JsonDefaultSeparators),
         "json_format_decode_error" => Some(WasmRuntimeImport::JsonFormatDecodeError),

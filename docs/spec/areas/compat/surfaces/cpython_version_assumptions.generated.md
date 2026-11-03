@@ -7,8 +7,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 69
-- `operational-tooling` files: 71
-- `scattered-assumption` files: 353
+- `operational-tooling` files: 72
+- `scattered-assumption` files: 352
 
 ## Files
 
@@ -91,7 +91,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/compression/__init__.py` | 1 | scattered-assumption | `3.14` |
 | `src/molt/stdlib/copy.py` | 3 | operational-tooling | `3.12` |
 | `src/molt/stdlib/csv.py` | 2 | operational-tooling | `_sys.version_info` |
-| `src/molt/stdlib/dataclasses.py` | 1 | scattered-assumption | `3.12` |
+| `src/molt/stdlib/dataclasses.py` | 2 | operational-tooling | `3.12` |
 | `src/molt/stdlib/decimal.py` | 1 | scattered-assumption | `3.11` |
 | `src/molt/stdlib/difflib.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/email/feedparser.py` | 8 | operational-tooling | `3.12` |
