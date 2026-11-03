@@ -383,6 +383,10 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
         "cas-race",
         "bootstrap",
         "deferred",
+        "invalid-policy",
+        "passing-gate-failing-junit",
+        "runner-fault",
+        "unresolved-cancellation",
     ],
 )
 def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
@@ -410,6 +414,20 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         assert selected.head_sha() == head == commit and green == starting_green
         assert queue.last_green(selected) == starting_green
         output.mkdir(parents=True)
+        if outcome == "invalid-policy":
+            # Main's own gate policy is invalid: its commits decided this.
+            raise CandidateFailure("invalid local gate binding; executed=0")
+        if outcome == "runner-fault":
+            raise OSError("runner storage unavailable")
+        if outcome == "unresolved-cancellation":
+            # HF-655: a landing preempted postsubmit, and the cancelled gate's
+            # guard left its Cargo custody unresolved. No gate failed.
+            queue.enqueue(paths, head=head, worktree=repo, branch="lane/next")
+            assert cancelled()
+            raise DriverError(
+                "gate block stopped at cargo test: Cargo quarantine ownership "
+                "or recovery is unresolved"
+            )
         if outcome == "deferred":
             selection = molt_dev_gates.prerequisite_receipt_path(
                 output / "receipt.json"
@@ -429,6 +447,16 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
                 ),
                 encoding="utf-8",
             )
+        if outcome == "passing-gate-failing-junit":
+            # The gate's command passed, but this run's own JUnit lists a
+            # failing test: a failing test is a failure.
+            (output / "gate-001.junit.xml").write_text(
+                '<testsuites><testsuite><testcase file="tests/test_value.py" '
+                'classname="tests.test_value" name="test_value">'
+                '<failure message="independent assertion"/></testcase></testsuite></testsuites>',
+                encoding="utf-8",
+            )
+            return ()
         if outcome == "red":
             (output / "gate-001.junit.xml").write_text(
                 '<testsuites><testsuite><testcase file="tests/test_value.py" '
@@ -469,7 +497,9 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     (record,) = queue.postsubmit_results(paths)
     expected = (
         "red"
-        if outcome == "cas-race"
+        if outcome in {"invalid-policy", "passing-gate-failing-junit"}
+        else "inconclusive"
+        if outcome in {"cas-race", "runner-fault", "unresolved-cancellation"}
         else "cancelled"
         if outcome.startswith("cancelled")
         else "green"
@@ -478,10 +508,17 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
     )
     assert record["status"] == state.value == expected
     assert record["commit"] == head and record["last_green"] == starting_green
-    assert record["suspects"] == ([head, base] if starting_green is None else [head])
+    # Only a candidate failure implicates commits or proposes a restoration.
+    assert record["suspects"] == ([head] if expected == "red" else [])
     assert record["revert_commands"] == (
-        [] if starting_green is None else [f"git revert --no-edit {head}"]
+        [f"git revert --no-edit {head}"] if expected == "red" else []
     )
+    if expected == "inconclusive":
+        assert record["error"]
+        assert queue.recent_postsubmit_failures(paths) == ()
+    if outcome == "passing-gate-failing-junit":
+        assert record["failing_tests"] == ["tests/test_value.py::test_value"]
+        assert queue.recent_postsubmit_failures(paths) == tuple(record["failing_tests"])
     assert git.head_sha() == head, "postsubmit never reverts main on its own"
     assert queue.last_green(git) == (
         head if outcome in {"green", "cas-race", "bootstrap", "deferred"} else base
@@ -9653,6 +9690,53 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
     )
     log = (state / "run.log").read_text(encoding="utf-8")
     assert ("independent owner cleanup failure" in log) is cleanup_fails
+
+
+def test_pinned_controller_environment_reads_gate_pytest_arguments(
+    tmp_path, driver_seed
+):
+    """The `--no-dev` controller closure runs postsubmit's pytest reader (HF-655).
+
+    Postsubmit selection reads each pytest gate's targets with pytest's own
+    parser inside the pinned controller. A runner died there with
+    `No module named '_pytest'` after a landing. The development image has
+    pytest, so this probe runs the reader under the controller's interpreter
+    and isolated startup. `--testrunuid` is an xdist option: its separate value
+    names an existing directory, which reads as a target without xdist.
+    """
+    from molt.dx import RunContext
+    from tools import molt_dev_controller
+    from tools.venv_exec import venv_python
+
+    cache = tmp_path / "controller"
+    copy_driver_trees(cache, seed=driver_seed)
+    molt_dev_controller._sync_environment(
+        cache, environment=RunContext(REPO_ROOT).canonical_env(os.environ)
+    )
+    probe = f"""
+import sys
+from pathlib import Path
+sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
+from tools.proof_command_argv import pytest_run_selections
+print(pytest_run_selections(
+    ("-q", "-n", "auto", "--testrunuid", "tests", "tests/test_molt_dev.py"),
+    root=Path({str(REPO_ROOT)!r}),
+))
+"""
+    completed = run_guarded_test_process(
+        [
+            str(venv_python(cache / molt_dev_controller.ENVIRONMENT_NAME)),
+            "-I",
+            "-B",
+            "-c",
+            probe,
+        ],
+        cwd=tmp_path,
+        env=ProcessEnvironment(os.environ),
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == "('tests/test_molt_dev.py',)"
 
 
 @pytest.mark.parametrize("outcome", [0, 1])
