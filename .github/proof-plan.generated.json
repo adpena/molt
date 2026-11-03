@@ -9786,6 +9786,7 @@
       "local.native-toolchain-transfer.pytest": "none",
       "local.op-kind-registry.0": "none",
       "local.op-kind-registry.pytest": "none",
+      "local.pending-call-source-authority.0": "shared",
       "local.performance-measurement.0": "none",
       "local.performance-measurement.pytest-select-0": "none",
       "local.phase-exit-manifest.0": "none",
@@ -9947,6 +9948,7 @@
       "local.native-toolchain-transfer.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_native_toolchain_transfer.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_prepare.py",
       "local.op-kind-registry.0": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
+      "local.pending-call-source-authority.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --test pending_call_authority",
       "local.performance-measurement.0": "python tools/perf_methodology.py --check",
       "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_bench_evidence.py tests/test_bench_suites.py tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
       "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
@@ -13000,6 +13002,42 @@
       },
       {
         "command_ids": [
+          "local.pending-call-source-authority.0"
+        ],
+        "description": "The pending-call authority test reads these sources in other crates; a change to one runs it (HF-657's LLVM move left main red unseen).",
+        "gates": [
+          "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --test pending_call_authority"
+        ],
+        "globs": [
+          "include/molt/Python.h",
+          "runtime/molt-backend-luau/src/luau/compile_pipeline.rs",
+          "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
+          "runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs",
+          "runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs",
+          "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
+          "runtime/molt-backend-rust/src/rust.rs",
+          "runtime/molt-backend-wasm/src/wasm/op_loop/control_ops/exceptions.rs",
+          "runtime/molt-ir/src/tir/op_kinds.toml",
+          "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+          "runtime/molt-ir/src/tir/ops.rs",
+          "runtime/molt-ir/src/tir/target_info.rs",
+          "runtime/molt-passes/src/tir/pass_manager.rs",
+          "runtime/molt-passes/src/tir/passes/async_work_poll.rs",
+          "runtime/molt-runtime/src/builtins/exceptions/exception_state_abi.rs",
+          "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+          "runtime/molt-runtime/src/state/lifecycle.rs",
+          "runtime/molt-runtime/src/state/runtime_state.rs",
+          "runtime/molt-tir/src/target_admission.rs",
+          "runtime/molt-tir/src/target_admission/runtime.rs"
+        ],
+        "name": "pending-call-source-authority",
+        "toolchains": [
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
           "local.compression-stream-state.0"
         ],
         "description": "Compression engine and bounded stream state use one small Cargo graph, with the existing native integer oracle.",
@@ -13593,6 +13631,11 @@
       "local.op-kind-registry.pytest": [
         "python",
         "rustfmt"
+      ],
+      "local.pending-call-source-authority.0": [
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.performance-measurement.0": [
         "python",

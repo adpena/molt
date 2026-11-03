@@ -7001,6 +7001,34 @@ globs = [
 gates = ["cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4"]
 
 [[rule]]
+name = "pending-call-source-authority"
+toolchains = ["rustc", "cargo"]
+description = "The pending-call authority test reads these sources in other crates; a change to one runs it (HF-657's LLVM move left main red unseen)."
+globs = [
+  "include/molt/Python.h",
+  "runtime/molt-backend-luau/src/luau/compile_pipeline.rs",
+  "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
+  "runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs",
+  "runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs",
+  "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
+  "runtime/molt-backend-rust/src/rust.rs",
+  "runtime/molt-backend-wasm/src/wasm/op_loop/control_ops/exceptions.rs",
+  "runtime/molt-ir/src/tir/op_kinds.toml",
+  "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+  "runtime/molt-ir/src/tir/ops.rs",
+  "runtime/molt-ir/src/tir/target_info.rs",
+  "runtime/molt-passes/src/tir/pass_manager.rs",
+  "runtime/molt-passes/src/tir/passes/async_work_poll.rs",
+  "runtime/molt-runtime/src/builtins/exceptions/exception_state_abi.rs",
+  "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+  "runtime/molt-runtime/src/state/lifecycle.rs",
+  "runtime/molt-runtime/src/state/runtime_state.rs",
+  "runtime/molt-tir/src/target_admission.rs",
+  "runtime/molt-tir/src/target_admission/runtime.rs",
+]
+gates = ["cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --test pending_call_authority"]
+
+[[rule]]
 name = "compression-stream-state"
 toolchains = ["rustc", "cargo", "python"]
 description = "Compression engine and bounded stream state use one small Cargo graph, with the existing native integer oracle."
