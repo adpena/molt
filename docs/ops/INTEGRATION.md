@@ -644,7 +644,23 @@ guards cancel running gates, later gates never start, and `land` names each
 refused gate, then queues; the batch runs every selected gate. A try run that
 the disk-capacity check refuses is named and queued the same way. It then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
-the commit. Enrollment of a managed `lane/<slug>` is a cooperative handoff:
+the commit.
+
+Immediately before it writes the request (after the repair and the precheck,
+and also with `--no-precheck`), `land` classifies the lane from Git. A ledger
+lane changes only the paths in `LEDGER_PATHS` (`tools/molt_dev_policy.py`):
+the findings ledger and `tests/findings/finding_ids.py`. Any other change,
+including a mixed one, is a code lane, and this check never refuses it. Only
+the integrator submits ledger lanes, one at a time, so `ledger_edit.py
+next-key` cannot hand out a key twice. `land` refuses a ledger lane with
+`LandingRefusal` (exit 1, nothing queued) for one of two reasons
+(`LandingRefusalReason`, checked in this order):
+
+- `ledger-missing` names a lane head without the ledger. A ledger lane never
+  deletes the ledger: restore it in the lane and land again.
+- `ledger-pending` names the ledger request that is already queued. Wait for
+  its result, update the lane from main and land again; or withdraw that
+  request (`queue withdraw`) and land one lane with both edits. Enrollment of a managed `lane/<slug>` is a cooperative handoff:
 stop editing it until the request closes. Its canonical lane record, exact
 worktree and tip must match. The runner automatically retires the managed lane
 through `lane retire` after publication. Ordinary branches and detached
@@ -653,9 +669,19 @@ the detached-run protocol below, under a unique name, from the main worktree,
 which outlives every lane it retires; the runner's OS file lock, not the
 process table, decides which runner works.
 
-The runner always runs main's pinned controller. Each batch takes the
-bisection plan's next group, else the oldest `MAX_BATCH` requests (1 while the
-per-candidate pass rate is low; `tools/molt_dev_queue.py` states when to raise it):
+The runner always runs main's pinned controller. Before each batch it
+classifies every ready request from Git, never from a stored field. Ledger
+lanes run first, one at a time: a ledger lane that closes no row goes ahead of
+every other request. A ledger lane that closes a row (a row open at its merge
+base is not open at its head) keeps its enqueue place, so it never overtakes a
+code lane that may still cite the row. A request that Git cannot classify (for
+example a head with no history in common with main) records `failed` with
+Git's error, and the other requests still run. A host-wide Git failure during
+classification therefore records every ready request `failed`: fix the host,
+then land them again. Each batch takes the bisection plan's next group, else
+the first request in that order and the requests of the same class behind it,
+up to `MAX_BATCH` (1 while the per-candidate pass rate is low;
+`tools/molt_dev_queue.py` states when to raise it):
 
 1. Materialize the candidate in the queue's repository-keyed external worktree
    (`<external-custody-root>/worktrees/landing-sandbox-<repository-key>`),
