@@ -4174,7 +4174,7 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
 def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
     from tools import disk_guard
     from tests.test_dx_run_context import _git
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
 
     main = tmp_path / "molt-src"
     main.mkdir()
@@ -4183,8 +4183,8 @@ def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
     receipts.mkdir(parents=True)
     now = time.time()
     for name, age in {
-        "old": RETIREMENT_WINDOW_S + 60,
-        "recent": RETIREMENT_WINDOW_S - 60,
+        "old": INTEGRATION_EVIDENCE_IDLE_S + 60,
+        "recent": INTEGRATION_EVIDENCE_IDLE_S - 60,
     }.items():
         receipt = receipts / f"{name}.gates.json"
         receipt.write_text("{}", encoding="utf-8")
@@ -4212,7 +4212,7 @@ def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
 def test_gate_receipts_stay_while_the_integration_lock_is_held(tmp_path):
     from tools import disk_guard
     from tests.test_dx_run_context import _git
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     main = tmp_path / "molt-src"
@@ -4223,7 +4223,7 @@ def test_gate_receipts_stay_while_the_integration_lock_is_held(tmp_path):
     receipt = receipts / "old.gates.json"
     receipt.write_text("{}", encoding="utf-8")
     now = time.time()
-    os.utime(receipt, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    os.utime(receipt, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
     lock = _try_acquire_file_lock(main / ".git/molt-integrate.lock")
     assert lock is not None
     try:

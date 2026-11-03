@@ -51,6 +51,41 @@ provenance does not authorize adoption as disposable state. Byte budgets are
 soft while current versions, recent users or locks protect data; tools report
 residual storage instead of violating liveness.
 
+Eligible regenerable state is physically deleted under its existing exclusive
+retirement custody. Cleanup does not rename it into another retention queue or
+move it into Finder Trash. Its last-use window and live-reader checks still
+apply; there is no additional seven-day delay after those checks admit deletion.
+The existing daily collector and pressure pass share this policy. Pressure
+collection includes the historical `retired/` backlog and checks actual free
+space after each deletion against the configured target. Payload-size estimates
+do not establish reclaimed capacity, and deletion does not require an extra
+recursive size census.
+
+Historical retirement records have a strict reader, with no current writer.
+An explicit bounded, resumable backlog pass uses the same typed ownership,
+guard, lock and identity checks as automatic collection:
+
+```sh
+python tools/disk_guard.py --root "$MOLT_EXT_ROOT" --reclaim-retired --dry-run --json
+python tools/disk_guard.py --root "$MOLT_EXT_ROOT" --reclaim-retired --apply --json
+```
+
+Preview is the default; `--max-roots` and `--budget-seconds` bound a pass between
+deletions. A deletion already admitted, or a required historical activity walk,
+can finish after that deadline. Applied passes retain the existing rotation
+cursor so unknown or busy entries do not prevent later eligible roots from being
+examined. Unproven records, durable evidence and live state remain reported and
+protected. Integration evidence keeps its own named retention policy.
+
+The canonical deletion primitive checks fresh native mount information before
+unsealing or recursively deleting a directory. A mounted root or descendant,
+including a same-device Linux bind mount, or an uncertain inspection refuses
+deletion without changing the tree. File and symlink leaves retain their existing
+semantics. This adds a mount-table query rather than another payload walk or
+process; it is an admission fence, not a lease against a privileged actor changing
+the mount namespace afterward. Linux uses `mountinfo`, macOS uses `getfsstat64`
+and descriptor-derived path spellings, and Windows uses Python's volume APIs.
+
 Evidence compaction creates a gzip tar archive without following links,
 hashes each regular payload from the archive against its source, publishes the
 durable external manifest and checkout index, then removes the represented

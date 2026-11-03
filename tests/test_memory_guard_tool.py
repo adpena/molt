@@ -9401,7 +9401,7 @@ def test_run_guarded_fails_a_clean_run_whose_own_payload_stays_retained(
 
 def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     from tools import disk_guard, harness_memory_guard
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
     from molt.memory_guard_paths import active_guard_marker_dirs_of
 
     now = time.time()
@@ -9410,7 +9410,7 @@ def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     old = directory / "old.json"
     old.write_text('{"diagnostic": "keep my evidence"}', encoding="utf-8")
     original = old.read_bytes()
-    os.utime(old, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    os.utime(old, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
     # Publishing the next incident no longer deletes older evidence.
     fresh = harness_memory_guard._write_incident_record(
         directory, {"recorded_at": "now"}
@@ -9437,7 +9437,7 @@ def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     another = directory / "another.json"
     another.write_bytes(b"another diagnostic")
     for path in (recovery_path, another):
-        os.utime(path, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+        os.utime(path, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
     later = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert not another.exists()  # The collector really ran again.
     assert recovery_path.read_bytes() == recovery_bytes
@@ -9447,7 +9447,7 @@ def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
 
 def test_a_named_record_that_cannot_retire_is_reported(tmp_path, monkeypatch):
     from tools import disk_guard
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
     from molt.memory_guard_paths import active_guard_marker_dirs_of
 
     now = time.time()
@@ -9455,7 +9455,7 @@ def test_a_named_record_that_cannot_retire_is_reported(tmp_path, monkeypatch):
     directory.mkdir(parents=True)
     record = directory / "old.json.tmp"
     record.write_text("crashed write", encoding="utf-8")
-    os.utime(record, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    os.utime(record, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
 
     def refuse(*_args, **_kwargs):
         raise PermissionError("retirement denied")
