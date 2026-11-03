@@ -746,7 +746,7 @@ mod tests {
             } else {
                 TirType::DynBox
             };
-            assert_eq!(lir.param_types, [expected.clone()]);
+            assert_eq!(lir.param_types, [expected]);
             assert_eq!(lir.return_types, [TirType::DynBox]);
             assert_eq!(lir.blocks[&lir.entry_block].args[0].repr, LirRepr::DynBox);
             crate::tir::verify_lir::verify_lir_function(&lir).expect("lowered signature");
