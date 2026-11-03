@@ -70,15 +70,16 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
             context.reloc_enabled,
             false,
         );
+        func.instruction(&Instruction::I64Const(0));
+        func.instruction(&Instruction::I64Ne);
     } else {
-        emit_call(
+        super::super::super::pending_work::emit_exception_pending_test(
             func,
-            context.reloc_enabled,
+            super::super::super::pending_work::thread_record_local(context.locals),
             context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+            context.reloc_enabled,
         );
     }
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
     // A cleanup landing can lie inside the surrounding handler's try region.
     // Its explicit exceptional successor is the authority on every emission
     // route, exactly as in jumpful/stateful dispatch; the lexical try stack
@@ -325,14 +326,20 @@ for(const [word,pending,coldError] of [[0,0,0],[8,0,0],[8,0,1],[0,1,0]]) {
             r#"
 const fs = require('fs'), assert = require('assert/strict');
 const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
-for (const pending of [false, true]) {
+// The thread record (local 0, address 256) holds the pending byte the check
+// tests inline; the reader confirms a set byte. A set byte whose reader
+// repairs it (a stale task slot) is no exception.
+for (const [byte, pending] of [[0, false], [1, true], [1, false]]) {
   const events = [];
+  let reads = 0;
   const app = new WebAssembly.Instance(module, {molt_runtime: {
-    pending: () => pending ? 1n : 0n,
+    pending: () => { reads++; return pending ? 1n : 0n; },
     record: line => { events.push(Number(line)); return 0n; },
   }}).exports;
+  new Uint8Array(app.memory.buffer)[256] = byte;
   assert.equal(app.run(), 0n);
   assert.deepEqual(events, pending ? [2, 3] : [1, 3], 'explicit inner cleanup must precede the outer continuation');
+  assert.equal(reads, byte, 'the reader runs only when the pending byte is set');
 }
 "#,
             &[&path],

@@ -455,21 +455,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    on a mid-iteration raise.  Non-foldable: it observes mutable
             //    runtime state, so the value (and the break) always survive.
             OpCode::ExceptionPending => {
-                let pend_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
-                let raw = self
-                    .backend
-                    .builder
-                    .build_call(pend_fn, &[], "exc_pending")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
+                let raw = self.emit_exception_pending_word("exc_pending");
                 if let Some(&result_id) = op.results.first() {
                     let pending = self
                         .backend
                         .builder
                         .build_int_compare(
                             inkwell::IntPredicate::NE,
-                            raw.into_int_value(),
+                            raw,
                             self.backend.context.i64_type().const_zero(),
                             "exc_pending_bool",
                         )
@@ -517,13 +510,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = if op.is_async_work_poll() {
                     self.emit_async_work_poll(false)
                 } else {
-                    let check_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
-                    self.backend
-                        .builder
-                        .build_call(check_fn, &[], "check_exc")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic()
+                    self.emit_exception_pending_word("check_exc").into()
                 };
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, result);
