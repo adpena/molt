@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 from tools.driver_errors import CandidateFailure, DriverError
@@ -79,6 +80,19 @@ def admit_result(receipt: dict, request: dict) -> None:
 
 
 def run_remote(repo: Path, commit: str, gates, *, host: str) -> list[tuple[float, str]]:
+    try:
+        return _run_remote(repo, commit, gates, host=host)
+    except DriverError:
+        raise
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise DriverError(
+            f"remote landing infrastructure failed on {host}: {exc}"
+        ) from exc
+
+
+def _run_remote(
+    repo: Path, commit: str, gates, *, host: str
+) -> list[tuple[float, str]]:
     from tools import trunk_loop
 
     tree = trunk_loop.checked(["git", "-C", str(repo), "rev-parse", commit + "^{tree}"])

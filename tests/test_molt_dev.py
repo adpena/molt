@@ -8880,6 +8880,22 @@ def test_remote_landing_admission_rejects_substituted_or_partial_success(field, 
         trunk_landing.admit_result(receipt, request)
 
 
+def test_remote_landing_transport_failure_is_infrastructure(drv, tmp_path, monkeypatch):
+    from tools import trunk_landing, trunk_loop
+
+    monkeypatch.setattr(trunk_loop, "checked", lambda *_a, **_k: "2" * 40)
+
+    def failed(*_a, **_k):
+        raise RuntimeError("SSH unavailable")
+
+    monkeypatch.setattr(trunk_loop, "start", failed)
+    with pytest.raises(
+        DriverError, match="infrastructure failed.*SSH unavailable"
+    ) as error:
+        trunk_landing.run_remote(tmp_path, "1" * 40, [], host="molt-gate")
+    assert not isinstance(error.value, CandidateFailure)
+
+
 @pytest.mark.parametrize("farm_failure", [False, True])
 def test_integrate_remote_gate_opt_in_keeps_mac_publication_boundary(
     drv, origin_and_clone, monkeypatch, farm_failure

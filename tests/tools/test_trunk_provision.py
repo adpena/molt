@@ -187,6 +187,40 @@ def test_low_physical_space_refuses_before_install():
         )
 
 
+@pytest.mark.parametrize(
+    "memory,version,diagnostic",
+    [
+        (32, "WSL version: 3.0.3.0", "Windows settings change required"),
+        (24, "WSL version: 3.0.2.0\nKernel version: 3.0.3.0", "reviewed WSL 3.0.3"),
+    ],
+)
+def test_wsl_disk_mutation_refuses_unreviewed_profile_or_engine(
+    memory, version, diagnostic
+):
+    class Transport:
+        def windows_command(self, script):
+            if "Get-ChildItem" in script:
+                return json.dumps(
+                    {
+                        "config": f"[wsl2]\nmemory={memory}GB\nswap=4GB\nvmIdleTimeout=-1\n",
+                        "pending": False,
+                    }
+                )
+            assert script == "wsl.exe --version"
+            return version
+
+        def shell_command(self, script):
+            if "lsblk -bdno SIZE" in script:
+                return str(1024**4)
+            assert script.startswith("df -Pk / |")
+            return str(2 * 1024**2)
+
+    with pytest.raises(ValueError, match=diagnostic):
+        trunk_loop.admit_wsl_profile(
+            host_named("molt-gate"), Transport(), provision_disk=True
+        )
+
+
 @pytest.mark.parametrize("wsl", [False, True])
 def test_worker_capacity_boundary_precedes_tool_installation(
     tmp_path, monkeypatch, wsl

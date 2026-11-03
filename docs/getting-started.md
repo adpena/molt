@@ -65,7 +65,8 @@ the locked development dependencies, then run the doctor command above.
 It does not upgrade existing system tools or reset an existing checkout.
 Missing C tools are reported with installation guidance; system installation
 remains an operator step. See [farm provisioning](design/trunk_loop.md#provision-before-testing)
-for physical disk admission and the WSL settings boundary.
+for physical disk admission, Linux filesystem UUID prerequisites and the WSL
+settings boundary.
 The Mac landing runner can opt into Linux gate execution with
 `MOLT_LANDING_GATE_HOST=molt-gate`; see the
 [remote landing contract](design/trunk_loop.md#opt-in-remote-landing-gates).

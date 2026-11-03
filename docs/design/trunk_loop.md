@@ -111,6 +111,12 @@ The selected command/dependency closure supplies required toolchains. Existing
 (which owns locked `uv sync`) and `proof_plan.admit_toolchains` retain admission.
 Pinned releases use `molt.tool_releases`, not a second downloader or installer.
 Unsupported or absent providers fail provisioning before any test starts.
+Persistent Linux volumes also need the unique filesystem UUID mapping required
+by [durable file identity](durable_file_identity.md). WSL images without
+`/dev/disk/by-uuid` cannot run guarded doctor/proof commands. Providing that
+system prerequisite is an operator step; farm provisioning does not install or
+enable udev, fabricate UUID links, or substitute device numbers for durable
+identity.
 The inventory also selects the two short, disjoint fixture-output roles that
 `ci.yml`'s portability setup supplies. Each run exclusively claims a child and
 admits it through `proof_queue_pkg.cargo_output_layout.declare_root` before tests.

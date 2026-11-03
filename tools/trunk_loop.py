@@ -211,7 +211,9 @@ def admit_wsl_profile(host, transport, *, provision_disk: bool = False) -> dict:
         # WSL 3.0.3 shrinks ext4 BEFORE its VHDX (see the owning design).
         # Refuse unknown implementations rather than probing by mutation.
         version = transport.windows_command("wsl.exe --version").replace("\0", "")
-        if not re.search(r"(?<![\d.])3\.0\.3(?:\.0)?(?![\d.])", version):
+        if not re.fullmatch(
+            r".*:\s*3\.0\.3(?:\.0)?\s*", version.splitlines()[0] if version else ""
+        ):
             raise ValueError(
                 "disk provisioning requires the reviewed WSL 3.0.3 implementation"
             )
