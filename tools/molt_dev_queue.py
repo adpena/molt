@@ -877,6 +877,15 @@ def cmd_land(args: argparse.Namespace) -> int:
             else f"precheck passed for {git.short(head)}; nothing queued"
         )
         return EXIT_OK
+    if args.candidate_controller and not _runner_lock_free(paths):
+        # A running runner is main's pinned controller: it would take this
+        # request and refuse the candidate's own plan, so queue nothing.
+        _fail(
+            "a landing runner holds the queue, and it would land this request "
+            "with main's controller; wait until `molt_dev.py queue status` "
+            "shows it idle, then run land --candidate-controller again"
+        )
+        return EXIT_FAIL
     request = enqueue(paths, head=head, worktree=repo, branch=branch)
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
