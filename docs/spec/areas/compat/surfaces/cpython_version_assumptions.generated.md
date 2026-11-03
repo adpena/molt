@@ -6,8 +6,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 69
-- `operational-tooling` files: 72
+- `authority-routed` files: 68
+- `operational-tooling` files: 74
 - `scattered-assumption` files: 352
 
 ## Files
@@ -24,7 +24,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/cli/extension_scan_surface.py` | 1 | scattered-assumption | `PY_VERSION_HEX` |
 | `src/molt/cli/factgraph.py` | 3 | scattered-assumption | `3.12` |
 | `src/molt/cli/python_import_resolution.py` | 3 | authority-routed | `sys.version_info` |
-| `src/molt/cli/setup_readiness.py` | 2 | authority-routed | `3.12` |
+| `src/molt/cli/setup_readiness.py` | 3 | operational-tooling | `3.12` |
 | `src/molt/cli/source_extension_cython.py` | 2 | scattered-assumption | `3.12` |
 | `src/molt/cli/source_extension_invocation.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/cli/source_extension_toolchain.py` | 1 | authority-routed | `3.0` |
@@ -54,6 +54,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/frontend/visitors/statement_control_flow.py` | 4 | scattered-assumption | `3.12` |
 | `src/molt/gpu/turboquant/codebooks.py` | 1 | scattered-assumption | `3.0` |
 | `src/molt/host_capacity.py` | 1 | scattered-assumption | `3.13` |
+| `src/molt/host_python.py` | 8 | operational-tooling | `3.7` |
 | `src/molt/llvm_wasi_tools.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/python_external_custody.py` | 1 | scattered-assumption | `3.10` |
 | `src/molt/python_interpreter.py` | 5 | authority-routed | `3.12` |
@@ -158,7 +159,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/zipfile/_path/__init__.py` | 6 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/zipfile/_path/glob.py` | 1 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/zipimport.py` | 1 | scattered-assumption | `3.12` |
-| `src/molt/target_python.py` | 8 | authority-routed | `3.12` |
+| `src/molt/target_python.py` | 2 | authority-routed | `sys.version_info` |
 | `src/molt/target_python_policy.py` | 4 | scattered-assumption | `3.12` |
 | `runtime/build_support/errno_feature_visibility.h` | 5 | scattered-assumption | `3.12` |
 | `runtime/builtin_binding_guards.toml` | 1 | scattered-assumption | `3.12` |

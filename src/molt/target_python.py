@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from molt import target_python_policy
+from molt.host_python import require_frontend_python
 from molt._python_release_generated import CPYTHON_RELEASES
 
 
@@ -43,28 +44,6 @@ _SUPPORTED_TARGET_PYTHON_BY_SHORT = {
 _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT[
     target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
 ]
-FRONTEND_PYTHON_REQUIREMENT = "CPython 3.12+ (Python 3.14 requires 3.14.1+)"
-
-
-def frontend_python_supported(
-    version: tuple[int, int, int], *, implementation: str
-) -> bool:
-    # CPython 3.14.0 emits PEP765 compiler warnings in AST-only parsing,
-    # independently of the requested target version. 3.14.1 fixes that defect.
-    # Reject the affected host rather than altering process-wide warning filters.
-    return (
-        implementation == "cpython" and version >= (3, 12, 0) and version != (3, 14, 0)
-    )
-
-
-def require_frontend_python() -> None:
-    if not frontend_python_supported(
-        sys.version_info[:3], implementation=sys.implementation.name
-    ):
-        raise RuntimeError(
-            f"Molt compilation requires {FRONTEND_PYTHON_REQUIREMENT}; "
-            "select a maintained CPython patch release and rerun setup"
-        )
 
 
 def _target_platform_name(value: str | None = None) -> str:

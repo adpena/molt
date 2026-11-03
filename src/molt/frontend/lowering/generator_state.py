@@ -330,9 +330,9 @@ class GeneratorStateMixin(GeneratorMixinBase):
         optimization_profile: MidendProfile = "release",
         pgo_hot_functions: set[str] | None = None,
     ) -> None:
+        from molt.host_python import require_frontend_python
         from molt.target_python import (
             TargetPythonVersion,
-            require_frontend_python,
             require_supported_target_python,
         )
 

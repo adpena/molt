@@ -241,7 +241,7 @@ def compile_to_tir(
     source: str,
     type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
 ) -> dict[str, Any]:
-    from molt.target_python import require_frontend_python
+    from molt.host_python import require_frontend_python
 
     require_frontend_python()
     tree = ast.parse(source)

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from molt.source_root import compiler_source_root
-from molt.target_python import FRONTEND_PYTHON_REQUIREMENT, frontend_python_supported
+from molt.host_python import FRONTEND_PYTHON_REQUIREMENT, frontend_python_supported
 from molt.tool_releases import ToolReleaseError, require_pinned_tool
 from molt.dx import DX_ENV_KEYS, DxProject, configured_artifact_root
 from molt.cli import wasm_toolchain
@@ -282,12 +282,10 @@ def _windows_msvc_env_advice() -> list[str]:
     ]
 
 
-def _python_setup_advice(system: str) -> list[str]:
-    if system == "Darwin":
-        return ["brew install python@3.12", "Ensure python3 is on PATH"]
-    if system == "Windows":
-        return ["winget install Python.Python.3.12", "Reopen your terminal"]
-    return [f"Install {FRONTEND_PYTHON_REQUIREMENT} via your package manager"]
+def _python_setup_advice() -> list[str]:
+    # uv selects the managed CPython; a python3 found on PATH is never the host
+    # (HF-755: on macOS that is the Xcode system interpreter).
+    return ["uv python install 3.12", "uv run --python 3.12 molt ..."]
 
 
 def _uv_setup_advice(system: str) -> list[str]:
@@ -395,7 +393,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         python_ok,
         f"{sys.version.split()[0]} at {sys.executable} (requires {FRONTEND_PYTHON_REQUIREMENT})",
         level="error",
-        advice=_python_setup_advice(system) if not python_ok else None,
+        advice=_python_setup_advice() if not python_ok else None,
     )
 
     uv_path = shutil.which("uv")
