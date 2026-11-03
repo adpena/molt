@@ -256,7 +256,7 @@ def test_agent_coordination_exports_managed_bytecode_write_policy(
     artifacts = tmp_path / "artifacts"
     # The checkout's selection record names its image; a caller's
     # UV_PROJECT_ENVIRONMENT is not consulted (HF-756).
-    image = materialize_development_environment(repo, artifacts, select=True)
+    materialize_development_environment(repo, artifacts, select=True)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "")
