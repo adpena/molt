@@ -9185,6 +9185,7 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
 )
 def test_run_guarded_retention_sweep_health_preserves_primary_result(
     request: pytest.FixtureRequest,
+    capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     child_returncode: int,
@@ -9260,9 +9261,12 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     assert result.temporary_artifacts["retention"]["protected_count"] == 3
     assert result.infrastructure_failure is None
     assert "temporary artifact custody incomplete" not in result.stderr
+    # The warning reaches the guard host's stderr, never the child's output.
+    assert "retention sweep reported errors" not in result.stderr
+    host_stderr = capsys.readouterr().err
     if retention_errors:
-        assert "prior generation receipt unreadable" in result.stderr
-        assert "retention sweep reported errors" in result.stderr
+        assert "prior generation receipt unreadable" in host_stderr
+        assert "retention sweep reported errors" in host_stderr
     if child_returncode == 0:
         assert memory_guard._incident_payload(result) is None
     assert lease.release_calls == 1
