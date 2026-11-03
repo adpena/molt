@@ -21,10 +21,17 @@ boundary. It uses the selected pinned interpreter, refuses non-reproducible or
 non-idempotent producers, and checks each published family against its one
 retained render before returning the complete staging path set.
 
+``--changed-since REV`` selects the generators a change can reach: those whose
+execution closure or data reads (``tools/test_dependency_graph.py``) or
+declared outputs include a path that differs between ``REV`` and the working
+tree. ``land`` repairs a lane this way before its precheck; the full ``check``
+gate still proves every output.
+
 Usage:
     python tools/generators.py check            # exit 1 if any output is stale
     python tools/generators.py write            # rewrite stale outputs
     python tools/generators.py check --only tools/gen_op_kinds.py
+    python tools/generators.py write --changed-since origin/main
 """
 
 from __future__ import annotations
@@ -81,6 +88,7 @@ class Generator:
     upstream: tuple[str, ...]
     reproducible: bool
     toolchains: tuple[str, ...]
+    outputs: tuple[str, ...] = ()
 
 
 def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
@@ -93,6 +101,7 @@ def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
             upstream=tuple(str(item) for item in row.get("upstream_generators", ())),
             reproducible=bool(row.get("ci_checkable", True)),
             toolchains=tuple(row["toolchains"]),
+            outputs=tuple(str(item) for item in row.get("outputs", ())),
         )
         for row in rows
         if row.get("check_mode") and not row.get("discovery_only")
@@ -118,6 +127,37 @@ def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
         placed.add(ready.tool)
         pending.remove(ready)
     return order
+
+
+def changed_generators(
+    generators: list[Generator], since: str, *, root: Path = ROOT
+) -> tuple[str, ...]:
+    """The reproducible generators a change since ``since`` can reach.
+
+    The changed paths are those whose content differs between ``since`` (any
+    tree-ish) and the working tree, deletions included. The dependency graph
+    derives each generator's inputs from its source; a generator whose declared
+    output changed renders it again, since an output is never edited by hand.
+    """
+    from tools.test_dependency_graph import RepositoryTree, load_graph
+
+    graph = load_graph(root)
+    before = RepositoryTree.from_commit(root, since).blobs
+    after = graph.tree.blobs
+    changed = {
+        path
+        for path in before.keys() | after.keys()
+        if before.get(path) != after.get(path)
+    }
+    reproducible = [generator for generator in generators if generator.reproducible]
+    reached = set(
+        graph.programs_reached(changed, (generator.tool for generator in reproducible))
+    )
+    return tuple(
+        generator.tool
+        for generator in reproducible
+        if generator.tool in reached or changed.intersection(generator.outputs)
+    )
 
 
 def load_generator(tool: str) -> ModuleType:
@@ -238,7 +278,15 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
         help="check only named tools; write named tools and declared consumers "
         "(repeatable); host-input tools must be named explicitly",
     )
+    parser.add_argument(
+        "--changed-since",
+        metavar="REV",
+        help="select the generators a change since REV (any tree-ish) reaches; "
+        "write also renders their declared consumers",
+    )
     args = parser.parse_args(argv)
+    if args.changed_since is not None and (args.only or args.action == "merge"):
+        parser.error("--changed-since selects its own generators; drop --only/merge")
     if args.action == "merge":
         if not args.only or args.output_list is None:
             parser.error("merge requires --only and --output-list")
@@ -254,8 +302,18 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
     unknown = sorted(set(args.only) - {g.tool for g in generators})
     if unknown:
         parser.error("not check-mode manifest generators: " + ", ".join(unknown))
-    if args.only:
-        pending = list(dict.fromkeys(args.only))
+    changed_selection = None
+    if args.changed_since is not None:
+        try:
+            changed_selection = changed_generators(generators, args.changed_since)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"cannot select changed generators: {exc}", file=sys.stderr)
+            return 1
+        if not changed_selection:
+            print(f"no generator reads a path changed since {args.changed_since}")
+            return 0
+    if args.only or changed_selection:
+        pending = list(dict.fromkeys(args.only or changed_selection or ()))
         requested = set(pending)
         selected_names = requested.copy()
         if args.action in ("write", "merge"):
@@ -275,7 +333,14 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
                 and not generator.reproducible
                 and generator.tool not in requested
             ]
-            if host_inputs:
+            if host_inputs and changed_selection:
+                # As in the full run: host-input tools render only when named.
+                selected_names -= set(host_inputs)
+                print(
+                    "host-input generators skipped (use --only): "
+                    + ", ".join(host_inputs)
+                )
+            elif host_inputs:
                 parser.error(
                     "downstream host-input generators require explicit --only: "
                     + ", ".join(host_inputs)

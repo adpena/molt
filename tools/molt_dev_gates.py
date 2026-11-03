@@ -668,7 +668,9 @@ def _run_serial_gate(
                 gate=shown,
                 before=before,
             )
-    if not collection:
+    # A cancelled gate reached no outcome; as in an executor block, its time
+    # is no gate's result.
+    if not collection and classified["status"] != "cancelled":
         gate_seconds.append((elapsed, shown))
     runtime.check_source()
     if classified["cancellation_cleanup"] is not None:

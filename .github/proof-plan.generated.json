@@ -11016,6 +11016,8 @@
           "rule",
           "always",
           "always_toolchains",
+          "repair",
+          "repair_toolchains",
           "command",
           "executor_max_workers",
           "resource_policy",
@@ -11843,6 +11845,8 @@
           "authority_inputs",
           "always_toolchains",
           "always",
+          "repair_toolchains",
+          "repair",
           "receipt_schema",
           "executor_max_workers",
           "inventory_hash_workers",
@@ -12326,6 +12330,7 @@
           ".cargo/**"
         ],
         "name": "rust-clippy-changed",
+        "precheck": true,
         "toolchains": [
           "python",
           "rustc",

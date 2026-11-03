@@ -217,6 +217,7 @@ from tools.molt_dev_gates import (  # noqa: E402
     run_selected_gates,
 )
 from tools.molt_dev_policy import (  # noqa: E402
+    GATES_CONFIG_NAME,
     Deferred,
     GateConfig,
     GateEnvironment,
@@ -2003,29 +2004,41 @@ def cmd_difftest(args: argparse.Namespace) -> int:
 def cmd_fix(args: argparse.Namespace) -> int:
     """Apply every mechanical repair the read-only gates ask for, in one pass.
 
+    The checkout's proof plan declares the repairs (``repair``); ``land``
+    applies the same steps to a lane before its precheck, against its merge
+    base. ``fix`` repairs the whole checkout: its base is the empty tree, so
+    every path counts as changed and every reproducible generator renders.
     Pre-commit hooks stay read-only (they must never rewrite another agent's
     unstaged work); this is the one command their failures point to.
     """
+    from tools.molt_dev_precheck import repair_steps
+
     repo = Path(args.repo).resolve()
     context = prepare_gate_environment(
         repo, ProcessEnvironment(os.environ), requires_python=True
     )
-    python = "python"
-    steps = (
-        ("pin text encodings", f"{python} tools/encoding_gate.py --fix"),
-        ("format Python", f"{python} -m ruff format ."),
-        # One interpreter renders every CI-checkable manifest generator in
-        # upstream order (tools/generators.py), then proves them current.
-        ("regenerate stale generated outputs", f"{python} tools/generators.py write"),
-        ("verify generated outputs", f"{python} tools/generators.py check"),
-    )
-    for name, command in steps:
-        _step(name)
-        if run_gate(command, repo, context) != 0:
-            _fail(f"fix: {name} failed")
+    plan = repo / "tools" / GATES_CONFIG_NAME
+    try:
+        config = GateConfig.parse(
+            plan.read_text(encoding="utf-8"), str(plan), root=repo
+        )
+        empty_tree = (
+            Git(repo)
+            ._run(["hash-object", "-t", "tree", "--stdin"], input_text="")
+            .stdout.strip()
+        )
+        steps = repair_steps(config, base=empty_tree)
+    except (OSError, DriverError) as exc:
+        _fail(f"fix: cannot read the declared repairs: {exc}")
+        _collect_driver_maintenance(repo, context.environment)
+        return 1
+    for step in steps:
+        _step(f"repair: {_gate_display(step.command)}")
+        if run_gate(step.command, repo, context) != 0:
+            _fail(f"fix: {_gate_display(step.command)} failed")
             _collect_driver_maintenance(repo, context.environment)
             return 1
-    _say("fix: encodings pinned, formatted, every generated output current")
+    _say(f"fix: {len(steps)} declared repair step(s) applied to the whole checkout")
     _collect_driver_maintenance(repo, context.environment)
     return 0
 

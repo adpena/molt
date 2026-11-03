@@ -1332,17 +1332,27 @@ def test_cmd_fix_uses_the_selected_environment_without_per_command_wrappers(
     (repo / "tools").mkdir()
     for name in ("encoding_gate.py", "generators.py"):
         (repo / "tools" / name).write_text(recorder, encoding="utf-8")
+    # The checkout's plan declares the repairs; fix binds them to the empty
+    # tree, so the generator step renders every reproducible generator.
+    (repo / "tools" / "proof_plan.toml").write_text(
+        'repair = ["python tools/encoding_gate.py --fix", "python -m ruff format .",'
+        ' "python tools/generators.py write --changed-since'
+        ' {integration_upstream_commit}"]\n',
+        encoding="utf-8",
+    )
     (site / "ruff.py").write_text(recorder, encoding="utf-8")
     monkeypatch.setenv("MOLT_VENV", str(selected))
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "wrong uv"))
     assert drv.cmd_fix(_ns(drv, repo=str(repo))) == 0
+    empty_tree = _git(
+        repo, "hash-object", "-t", "tree", "--stdin", input_text=""
+    ).stdout.strip()
     assert [
         json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()
     ] == [
         [str(selected), ["--fix"]],
         [str(selected), ["format", "."]],
-        [str(selected), ["write"]],
-        [str(selected), ["check"]],
+        [str(selected), ["write", "--changed-since", empty_tree]],
     ]
 
 
@@ -6293,6 +6303,190 @@ def test_land_no_precheck_queues_without_running_gates(
 
     assert not counter.exists()
     assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
+
+
+def _publish_policy(work: Path, policy: str) -> None:
+    (work / "tools" / "proof_plan.toml").write_text(policy, encoding="utf-8")
+    _git(work, "add", "--", "tools/proof_plan.toml")
+    _git(work, "commit", "-q", "--no-verify", "-m", "landing policy")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+
+
+def test_land_commits_its_declared_repairs_before_the_precheck(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from tools import molt_dev_queue as queue
+    from tools.molt_dev_precheck import REPAIR_SUBJECT
+
+    _, work = origin_and_clone
+    seen = tmp_path / "gate-saw.txt"
+    # The repair records what changed since the bound base; the gate sees
+    # only what the repaired commit contains.
+    _publish_policy(
+        work,
+        "repair_toolchains = []\n"
+        # Idempotent, as every declared repair is: its own output is excluded.
+        'repair = ["git diff --name-only {integration_upstream_commit} HEAD'
+        " -- . ':(exclude)repaired.txt' > repaired.txt\"]\n"
+        f"always = [{json.dumps(f'git show HEAD:repaired.txt > {shlex.quote(str(seen))}')}]\n",
+    )
+    lane = work.parent / "lane-repair"
+    _lane(work, "repair", {"a.py": "a = 1\n"})
+    # main moves on after the lane branched: the base is the merge base.
+    _commit_file(work, "late.txt", "late\n", "main moves")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    before = _git(lane, "rev-parse", "HEAD").stdout.strip()
+
+    assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
+
+    repaired = _git(lane, "rev-parse", "HEAD").stdout.strip()
+    assert _git(lane, "rev-parse", f"{repaired}^").stdout.strip() == before
+    assert _git(lane, "log", "-1", "--format=%s", repaired).stdout.strip() == (
+        REPAIR_SUBJECT
+    )
+    assert _git(
+        lane, "diff-tree", "--no-commit-id", "--name-only", "-r", repaired
+    ).stdout.split() == ["repaired.txt"]
+    assert seen.read_text(encoding="utf-8").split() == ["a.py"]
+    assert _git(lane, "status", "--porcelain").stdout == ""
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [repaired]
+    # A second landing finds nothing to repair and keeps its tip.
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (EXIT_OK)
+    assert _git(lane, "rev-parse", "HEAD").stdout.strip() == repaired
+
+
+def test_land_queues_nothing_when_a_declared_repair_fails(
+    drv, origin_and_clone, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    _publish_policy(
+        work,
+        'repair_toolchains = []\nrepair = ["false"]\nalways = ["true"]\n',
+    )
+    lane = work.parent / "lane-unrepairable"
+    head = _lane(work, "unrepairable", {"a.py": "a = 1\n"})
+
+    with pytest.raises(CandidateFailure, match="repair failed: false"):
+        _land_without_runner(drv, monkeypatch, lane)
+
+    assert _git(lane, "rev-parse", "HEAD").stdout.strip() == head
+    assert queue.pending(queue.queue_paths(lane)) == []
+
+
+_LANE_TOOL_POLICY = """
+[[toolchain_policy]]
+name = "lane-tool"
+executable = "git"
+version_args = ["--version"]
+version_pattern = ".*"
+setup_value = "git package"
+setup_evidence = ["host::install git"]
+[[matrix_cell]]
+id = "lane-cell"
+[[command]]
+id = "lane-command"
+cell = "lane-cell"
+toolchains = ["lane-tool"]
+"""
+
+
+def _try_run_policy(counter: Path, *, try_gate: str) -> str:
+    # Both rules use a toolchain outside PRECHECK_TOOLCHAINS; only the rule
+    # that declares `precheck` runs in the lane.
+    return (
+        f"""
+always = [{json.dumps(f"echo static >> {shlex.quote(str(counter))}")}]
+[[rule]]
+name = "lane-lint"
+toolchains = ["lane-tool"]
+precheck = true
+globs = ["**"]
+gates = [{json.dumps(try_gate)}]
+[[rule]]
+name = "batch-build"
+toolchains = ["lane-tool"]
+globs = ["**"]
+gates = [{json.dumps(f"echo batch >> {shlex.quote(str(counter))}")}]
+"""
+        + _LANE_TOOL_POLICY
+    )
+
+
+def test_land_precheck_runs_precheck_rules_in_the_lane_and_leaves_builds(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    lane = work.parent / "lane-try"
+    _lane(work, "try", {"a.py": "a = 1\n"})
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (EXIT_OK)
+
+    assert sorted(counter.read_text(encoding="utf-8").split()) == ["static", "try"]
+
+
+def test_land_try_run_failure_queues_nothing(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(work, _try_run_policy(counter, try_gate="test ! -e broken.txt"))
+    lane = work.parent / "lane-try-broken"
+    _lane(work, "try-broken", {"broken.txt": "the try run refuses this\n"})
+
+    with pytest.raises(CandidateFailure, match="test ! -e broken.txt"):
+        _land_without_runner(drv, monkeypatch, lane)
+
+    assert queue.pending(queue.queue_paths(lane)) == []
+    assert "batch" not in counter.read_text(encoding="utf-8").split()
+
+
+def test_land_budget_refuses_unfinished_gates_by_name_and_still_queues(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from tools import molt_dev_policy
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    slow = "sleep 120"
+    _publish_policy(work, _try_run_policy(counter, try_gate=slow))
+    lane = work.parent / "lane-slow"
+    head = _lane(work, "slow", {"a.py": "a = 1\n"})
+    monkeypatch.setattr(
+        molt_dev_policy, "PRECHECK_BUDGET", molt_dev_policy.PrecheckBudget(4.0)
+    )
+    started = time.monotonic()
+
+    # A handoff check cannot claim a precheck the budget cut short.
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (
+        EXIT_FAIL
+    )
+    assert time.monotonic() - started < 90
+    refusal = capsys.readouterr()
+    assert "precheck budget of 4 s ran out" in refusal.err + refusal.out
+    assert f"      {slow}" in refusal.err + refusal.out
+    assert queue.pending(queue.queue_paths(lane)) == []
+
+    # The batch runs every selected gate, so a landing still queues.
+    assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
+    assert counter.read_text(encoding="utf-8").split().count("static") == 2
+
+
+def test_precheck_budget_must_be_positive():
+    from tools.molt_dev_policy import PrecheckBudget
+
+    with pytest.raises(ValueError, match="positive"):
+        PrecheckBudget(0)
 
 
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
