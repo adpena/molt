@@ -1548,7 +1548,7 @@ def _install_held_backend_probe(initializer, initargs, released, entered):
                 "X" * (256 * 1024) + "NATIVE_END\n", "native diagnostic-tail", 1
             )
         assert backend == "wasm"
-        entered.set()
+        entered.wait(timeout=30)
         assert released.wait(15), "test must release the admitted WASM backend"
         return backends.BackendResult("oracle\n", "", 0)
 
@@ -1563,7 +1563,10 @@ def test_live_backend_failure_is_visible_while_later_backend_is_held(
     from concurrent.futures.process import ProcessPoolExecutor
 
     context = molt_diff.compiler_process.worker_context()
-    released, entered = context.Event(), context.Event()
+    # Observe two previews only after both admitted workers reach the held
+    # backend. One Event starts the deadline while the second worker may still
+    # be starting, conflating process startup with progress delivery.
+    released, entered = context.Event(), context.Barrier(3)
     for path in suite.files:
         path.write_text("print('oracle')\n", encoding="utf-8")
     records = tmp_path / "backend-results.jsonl"
@@ -1584,7 +1587,7 @@ def test_live_backend_failure_is_visible_while_later_backend_is_held(
 
     def observe():
         try:
-            assert entered.wait(10), "a later backend must actually start"
+            entered.wait(timeout=30)
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 captured = capfd.readouterr()
@@ -1633,6 +1636,7 @@ def test_live_backend_failure_is_visible_while_later_backend_is_held(
         )
     finally:
         released.set()
+        entered.abort()
         observer.join(timeout=20)
     assert not observer.is_alive()
     assert not seen, seen
