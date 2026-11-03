@@ -12087,7 +12087,7 @@ def test_collect_imports_resolves_canonical_relative_importlib_wrapper() -> None
     assert "importlib.machinery" in imports
 
 
-def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> None:
+def test_collect_imports_real_importlib_init_defers_util() -> None:
     importlib_init = (
         cli_module_resolution._stdlib_root_path() / "importlib" / "__init__.py"
     )
@@ -12103,7 +12103,8 @@ def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> No
     )
 
     assert "importlib.machinery" in imports
-    assert "importlib.util" in imports
+    # As in CPython, the package body leaves importlib.util to its first import.
+    assert "importlib.util" not in imports
     assert "importlib._bootstrap" in imports
     assert "importlib._bootstrap_external" in imports
 
