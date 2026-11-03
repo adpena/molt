@@ -1109,7 +1109,10 @@ def test_recipe_captures_selected_base_with_isolated_probe(monkeypatch, tmp_path
         "--wheel-tag-source",
         str(authority.packaging_tag_source()),
     ]
-    assert options["timeout"] == authority.python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S
+    assert (
+        options["timeout"]
+        == authority.python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S
+    )
     assert "PYTHONPATH" not in options["env"]
     assert "PYTHONHOME" not in options["env"]
     assert options["env"]["PYTHONDONTWRITEBYTECODE"] == "0"
