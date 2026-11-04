@@ -65,7 +65,7 @@ def uv_python(*argv: str) -> list[str]:
 
 
 # The apt packages the documented Linux workflow needs (docs/getting-started.md).
-LINUX_SYSTEM_PACKAGES = ("git", "curl", "clang", "lld", "cmake", "build-essential")
+LINUX_SYSTEM_PACKAGES = ("git", "curl", "clang", "lld", "cmake", "build-essential", "valgrind")
 # A WSL gate guest also runs systemd and udev for root UUID admission (HF-761).
 WSL_GUEST_PACKAGES = (*LINUX_SYSTEM_PACKAGES, "systemd", "systemd-sysv", "udev")
 
