@@ -392,6 +392,87 @@ Check: the existing traceback, `sys._getframe`, warnings `stacklevel`, logging `
 generator and `super()` differential tests on native, LLVM and WASM, plus a new property test that
 raises at random depths and compares the full traceback (file, line, column carets) with CPython.
 
+#### Executing source locations (HF-764)
+
+The location migration can precede the full native-stack record migration. Reuse the existing
+stable-address, chunked frame-home arena and lazy binding owners; do not introduce another frame
+registry or a location cache. This design is reviewed but does not establish implementation or
+backend qualification.
+
+The frontend must preserve each executable expression's start/end line and columns, including
+multiline expressions. At serialization, one deterministic location table belongs to each Python
+code slot, including its inherited module chunks. Emit the table at code creation, using the
+documented [CPython location encoding](https://github.com/python/cpython/blob/v3.12.0/Objects/locations.md).
+The emitted program never reparses source files to recover a location. A typed `LocationId`
+selects a row; `f_lasti` is twice that index, so `co_positions()[f_lasti // 2]` describes the
+executing site. It does not emulate CPython's version-specific bytecode offsets. Differential
+oracles compare the selected source coordinates rather than the representation-specific integer.
+An arbitrary positive offset is insufficient evidence.
+
+An explicit `frame_set_location(LocationId)` publishes before operations that may raise or observe
+Python state, and before every source return, yield, suspension and exceptional exit. Only an
+existing proven pure, non-throwing, non-callback effect fact permits omission; missing facts are
+conservative. The opcode has no SSA operands/results, a nonnegative immediate, no Python callback
+or exception, and an impure side effect. Use the current conservative memory-effect representation
+if it cannot distinguish frame-observation memory. Optimizers may coalesce adjacent redundant
+publications only without an intervening observation, failure, control-flow or terminator boundary;
+they cannot eliminate or move a publication across those boundaries. Backend-generated exits retain
+their originating source terminator's location.
+
+Reserve a raw location word beside each executing frame's binding homes, even for module bodies
+and frames with no local slots. The existing home-base lend supplies its address once per
+invocation, only after successful entry; inherited chunks borrow that same frame's storage.
+Native, LLVM and WASM lower publication to a plain store at one canonical ABI offset. The borrowed
+pointer escapes to the runtime owner: LLVM cannot treat it as private/noalias, and runtime calls
+that observe it cannot be marked `readnone` or `inaccessiblememonly`. Retire the replaced line and
+column update calls together with their consumers. Optional line-debug diagnostics do not own
+frame locations. Measure both the stores and deleted calls before claiming a cost improvement.
+
+Frame objects read the current location through one shared lazy activation owner, as their locals
+views already share binding storage. Materializing a view must not copy a permanently stale
+`f_lineno` into its dictionary. Before stack storage retires, freeze the last location in the
+shared owner and detach its borrowed address, before releases can reenter Python. Retained frame
+views then remain valid after return, recursion and arena reuse. Unobserved ordinary execution
+adds no per-call heap allocation. Include every owned edge in GC traversal, destruction and
+runtime teardown; never retain a pointer into a movable frame-stack vector.
+
+Stateful activations preserve their location in the existing task auxiliary frame context:
+
+- **Created:** the task owns its explicit entry location and optional lazy view. CPython 3.12's
+  unstarted generator reports offset zero and the defining line; it is not an ordinary frame with
+  an absent location (`-1`).
+- **Running:** successful entry copies the saved location to arena storage and reattaches any
+  existing view. The active entry keeps the task alive, and observations share the same owner.
+- **Suspended:** save the latest location in the task context and redirect the view to that saved
+  word before unlinking and returning arena storage. Save it even when no view exists.
+- **Completed:** freeze retained views before task storage retires; new `gi_frame`/`cr_frame`
+  observations return `None`. Close, throw, failed resume, GC and destruction follow the same owner.
+
+Traceback membership stays with the existing exception-handler/propagation protocol, independently
+of location capture. The nearest handler's frame-index boundary selects the raising prefix;
+callers below a handler that catches the exception do not enter the traceback. Each selected entry
+retains its particular activation's shared frame owner and freezes its location when the exception
+becomes pending, before `finally` or cleanup changes the live site. Code identity cannot identify
+an activation under recursion. Bare reraising reuses existing entries; explicit raising prepends
+the newly traversed prefix. `tb_lineno`/`tb_lasti` decode the frozen site while `tb_frame` can
+continue moving. Do not reconstruct offsets by matching only a line or selecting its widest span.
+
+Two independent, serial read-only design reviews required explicit terminal publication, stateful
+view reattachment, exception capture timing and membership, and optimizer memory effects. The
+contracts above incorporate those findings. Required independent adversaries cover retained views
+ending with a pure return, multiline and same-line expressions, callbacks inside optimized loops,
+recursive activations, internally caught and propagating exceptions, bare/explicit reraising,
+cleanup that raises a new exception, and retained views during resumed callbacks after arena reuse.
+Compare exact positions and traceback membership/identity with CPython, on native, LLVM and WASM.
+
+Qualification also requires the owning loop/per-op and recursion/per-op instruction A/B, with
+identical source/toolchain/profile/workload identities and the primitive authority's minimum five
+paired samples and axis noise bound. An increase beyond that bound blocks acceptance; an increase
+inside it is inconclusive, not a win. Repeat only an affected unresolved cell. Do not change the
+performance ratchet or methodology to admit a candidate. Record runtime calls, whole-program time,
+memory and binary size alongside counters. Generated synchronization, touched-reader checks and
+the landing precheck remain separate required evidence.
+
 ### 4.4 Exceptions
 
 Molt keeps the error-return protocol: a failing operation sets `ctx.pending_exception` and returns
