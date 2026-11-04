@@ -64,7 +64,8 @@ official user installers, clone or fetch, admit `rust-toolchain.toml`, synchroni
 the locked development dependencies, then run the strict doctor command above.
 It does not upgrade existing system tools or reset an existing checkout.
 Missing C tools are reported with installation guidance; system installation
-remains an operator step. See [farm provisioning](design/trunk_loop.md#provision-before-testing)
+remains an operator step, except on a WSL gate guest whose inventory record
+approves `install_system_packages`. See [farm provisioning](design/trunk_loop.md#provision-before-testing)
 for physical disk admission, Linux filesystem UUID prerequisites and the WSL
 settings boundary.
 The Mac landing runner can opt into Linux gate execution with

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import io
 import json
+import re
 import os
 import subprocess
 import tarfile
@@ -27,7 +28,9 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     scripts = []
 
     class Transport:
-        def wsl_root_command(self, script):
+        def wsl_root_command(self, script, *, timeout=60):
+            if "dpkg-query" in script:
+                return '{"installed":""}'
             assert "systemd=true" in script
             return '{"changed":false,"restart":false}'
 
@@ -96,7 +99,10 @@ def test_guest_boot_configuration_restart_and_root_uuid_admission(changed, resta
                 else '{"systemd":true,"root_uuid":"root-uuid"}'
             )
 
-        def wsl_root_command(self, script):
+        def wsl_root_command(self, script, *, timeout=60):
+            if "dpkg-query" in script:
+                events.append("packages")
+                return '{"installed":""}'
             events.append("configure")
             return json.dumps({"changed": changed, "restart": restart})
 
@@ -106,13 +112,79 @@ def test_guest_boot_configuration_restart_and_root_uuid_admission(changed, resta
             assert "--shutdown" not in script and "MoltCodonUbuntu" not in script
 
     result = trunk_loop.provision_wsl_guest(host_named("molt-gate"), Transport())
-    assert events == ["lock", "configure", *(["restart"] if restart else []), "admit"]
+    assert events == [
+        "lock",
+        "packages",
+        "configure",
+        *(["restart"] if restart else []),
+        "admit",
+    ]
     assert result == {
         "systemd": True,
         "root_uuid": "root-uuid",
+        "packages_installed": [],
         "config_changed": changed,
         "restarted": restart,
     }
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_guest_packages_install_only_with_the_owner_approval(approved):
+    """The owner approved apt installs for molt-gate alone (2026-11-04)."""
+    roots = []
+
+    class Transport:
+        def shell_command(self, script):
+            return "" if "flock -n" in script else '{"systemd":true,"root_uuid":"u"}'
+
+        def wsl_root_command(self, script, *, timeout=60):
+            roots.append((script, timeout))
+            if "dpkg-query" in script:
+                return '{"installed":"cmake udev"}'
+            return '{"changed":false,"restart":false}'
+
+        def windows_command(self, script):
+            raise AssertionError("no restart was requested")
+
+    host = replace(host_named("molt-gate"), install_system_packages=approved)
+    result = trunk_loop.provision_wsl_guest(host, Transport())
+    package_scripts = [(s, t) for s, t in roots if "dpkg-query" in s]
+    if approved:
+        [(script, timeout)] = package_scripts
+        assert timeout == 1800
+        for package in (*trunk_loop.LINUX_SYSTEM_PACKAGES, "systemd", "udev"):
+            assert f" {package}" in script
+        assert "DEBIAN_FRONTEND=noninteractive" in script
+        assert "apt-get install -y --no-install-recommends $missing" in script
+        assert result["packages_installed"] == ["cmake", "udev"]
+    else:
+        assert package_scripts == []
+        assert result["packages_installed"] == []
+
+
+def test_guest_packages_script_installs_only_missing_packages(tmp_path):
+    """Run the script with fake dpkg-query and apt-get: present packages stay untouched."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "apt.log"
+    (bin_dir / "dpkg-query").write_text(
+        '#!/bin/sh\ncase "$3" in cmake|udev) exit 1;; esac\nprintf "install ok installed"\n'
+    )
+    (bin_dir / "apt-get").write_text(f'#!/bin/sh\necho "$*" >> {log}\n')
+    for tool in bin_dir.iterdir():
+        tool.chmod(0o755)
+    completed = subprocess.run(
+        ["sh", "-c", trunk_loop.wsl_packages_script()],
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(completed.stdout) == {"installed": "cmake udev"}
+    assert log.read_text().splitlines() == [
+        "update",
+        "install -y --no-install-recommends cmake udev",
+    ]
 
 
 def test_guest_missing_uuid_mapping_refuses_after_restart():
@@ -124,7 +196,9 @@ def test_guest_missing_uuid_mapping_refuses_after_restart():
                 "Missing root filesystem UUID mapping: /dev/disk/by-uuid/ for /dev/sdd"
             )
 
-        def wsl_root_command(self, script):
+        def wsl_root_command(self, script, *, timeout=60):
+            if "dpkg-query" in script:
+                return '{"installed":""}'
             return '{"changed":true,"restart":true}'
 
         def windows_command(self, script):
@@ -493,6 +567,26 @@ def test_inventory_rejects_invalid_wsl_custody(tmp_path, field, value):
     inventory = tmp_path / "hosts.toml"
     inventory.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="invalid WSL"):
+        cross_run.parse_inventory(inventory)
+
+
+def test_inventory_scopes_package_approval_to_a_wsl_guest(tmp_path):
+    text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
+    tables = [m.start() for m in re.finditer(r"(?m)^\[\[host\]\]$", text)]
+    second = tables[1]
+    # The first host is not a WSL guest; the approval there is refused.
+    widened = text[:second] + "install_system_packages = true\n\n" + text[second:]
+    inventory = tmp_path / "hosts.toml"
+    inventory.write_text(widened, encoding="utf-8")
+    with pytest.raises(ValueError, match="WSL gate guest only"):
+        cross_run.parse_inventory(inventory)
+    inventory.write_text(
+        text.replace(
+            "install_system_packages = true", 'install_system_packages = "yes"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="boolean approval"):
         cross_run.parse_inventory(inventory)
 
 
