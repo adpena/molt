@@ -68,7 +68,8 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         argument_kind: int | None = None,
     ) -> None:
         """Publish live Python argument custody, never inferred ABI/locals snapshots."""
-        with self._suppress_check_exception():
+        # Publication forwards frame custody; it does not own an error transfer.
+        with self._suppress_check_exception(emit_on_exit=False):
             no_value = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=no_value))
             class_body = self.python_class_body_context
