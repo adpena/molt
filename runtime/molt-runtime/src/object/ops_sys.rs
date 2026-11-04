@@ -1127,7 +1127,9 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                         _py,
                         val,
                         crate::NameId::DunderLen,
-                    ) {
+                    )
+                    .into_result()
+                    {
                         Ok(call_bits) => call_bits,
                         Err(()) => return MoltObject::none().bits(),
                     };

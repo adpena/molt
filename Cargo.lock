@@ -2555,6 +2555,7 @@ name = "molt-gpu-runtime"
 version = "0.1.0"
 dependencies = [
  "molt-gpu",
+ "molt-lang-obj-model",
  "molt-runtime-core",
  "objc2",
  "objc2-foundation",

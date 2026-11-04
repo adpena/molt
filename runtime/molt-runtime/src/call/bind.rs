@@ -1,3 +1,4 @@
+use crate::AttributeLookup;
 use crate::BuiltinExc;
 #[cfg(test)]
 use crate::alloc_string;
@@ -10,8 +11,7 @@ use crate::call::type_policy::{
     callable_matches_runtime_symbol, resolved_new_is_default_object_new,
 };
 use crate::call::{
-    CallAttrLookup, StaticmethodCallTarget, lookup_call_attr, require_call_attr,
-    resolve_staticmethod_call_target,
+    StaticmethodCallTarget, lookup_call_attr, require_call_attr, resolve_staticmethod_call_target,
 };
 use crate::state::recursion::RecursionGuard;
 use crate::state::tls::FRAME_STACK;
@@ -413,7 +413,7 @@ pub(crate) unsafe fn call_bind_with_arguments(
             }
             TYPE_ID_TYPE => {
                 match lookup_call_attr(_py, call_ptr) {
-                    CallAttrLookup::Found(call_attr_bits) => {
+                    AttributeLookup::Found(call_attr_bits) => {
                         if !is_default_type_call(_py, call_attr_bits) {
                             let result = call_bind_with_arguments(_py, call_attr_bits, args);
                             dec_ref_bits(_py, call_attr_bits);
@@ -421,8 +421,8 @@ pub(crate) unsafe fn call_bind_with_arguments(
                         }
                         dec_ref_bits(_py, call_attr_bits);
                     }
-                    CallAttrLookup::Raised => return MoltObject::none().bits(),
-                    CallAttrLookup::Missing => {}
+                    AttributeLookup::Error => return MoltObject::none().bits(),
+                    AttributeLookup::Missing => {}
                 }
                 return call_type_with_arguments(_py, call_ptr, args);
             }

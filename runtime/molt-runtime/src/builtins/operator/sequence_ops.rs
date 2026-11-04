@@ -129,6 +129,7 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
                 obj_bits,
                 crate::NameId::DunderLengthHint,
             )
+            .into_result()
         };
         let method = match method {
             Ok(method) => method,

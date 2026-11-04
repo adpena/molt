@@ -346,18 +346,14 @@ unsafe fn try_object_attr_bits(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let out = molt_get_attr_name(obj_bits, name_bits);
+    let result = lookup_attribute(obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if clear_attribute_error_if_pending() {
-            return Ok(None);
-        }
-        return Err(out);
+    match result {
+        molt_obj_model::AttributeLookup::Found(out) if obj_from_bits(out).is_none() => Ok(None),
+        molt_obj_model::AttributeLookup::Found(out) => Ok(Some(out)),
+        molt_obj_model::AttributeLookup::Missing => Ok(None),
+        molt_obj_model::AttributeLookup::Error => Err(MoltObject::none().bits()),
     }
-    if obj_from_bits(out).is_none() {
-        return Ok(None);
-    }
-    Ok(Some(out))
 }
 
 #[cfg(any(

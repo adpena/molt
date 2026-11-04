@@ -1660,7 +1660,9 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
                 _py,
                 val_bits,
                 crate::NameId::DunderAbs,
-            ) {
+            )
+            .into_result()
+            {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }
@@ -1837,18 +1839,15 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
             return crate::molt_locals_builtin();
         }
         let dict_name_bits = crate::NameId::DunderDict.bits(_py);
-        let dict_bits = molt_get_attr_name_default(obj_bits, dict_name_bits, missing);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if dict_bits == missing {
-            return raise_exception::<_>(
+        match lookup_attribute(_py, obj_bits, dict_name_bits) {
+            AttributeLookup::Found(bits) => bits,
+            AttributeLookup::Error => MoltObject::none().bits(),
+            AttributeLookup::Missing => raise_exception::<_>(
                 _py,
                 BuiltinExc::TypeError,
                 "vars() argument must have __dict__ attribute",
-            );
+            ),
         }
-        dict_bits
     })
 }
 
@@ -1961,14 +1960,11 @@ fn object_getstate_slot_state(py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u
         }
         let mut owner = crate::PtrDropGuard::new(state);
         for &name in names.iter() {
-            let value = crate::molt_get_attr_name(object, name);
-            if exception_pending(py) {
-                dec_ref_bits(py, value);
-                if crate::builtins::attr::clear_attribute_error_if_pending(py) {
-                    continue;
-                }
-                return None;
-            }
+            let value = match lookup_attribute(py, object, name) {
+                AttributeLookup::Found(value) => value,
+                AttributeLookup::Missing => continue,
+                AttributeLookup::Error => return None,
+            };
             let completed = dict_set_in_place(py, state, name, value);
             dec_ref_bits(py, value);
             if !completed {
@@ -2107,7 +2103,8 @@ pub(crate) fn object_getattribute(
                 || crate::builtins::attributes::is_numeric_scalar_attr_receiver(_py, obj_bits)
             {
                 if let Some(val) =
-                    crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, name_bits)?
+                    crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, name_bits)
+                        .into_result()?
                 {
                     return Ok(Some(val));
                 }
@@ -2132,11 +2129,13 @@ pub(crate) fn object_getattribute(
                         obj_ptr,
                         name_bits,
                         molt_cpython_abi::hooks::AttributeAccess::Generic,
-                    ),
+                    )
+                    .into_result(),
                     type_id if crate::object::heap_kind_has_class_shape(type_id) => {
                         crate::builtins::attr::object_attr_lookup_with_policy(
                             _py, obj_ptr, name_bits, suppress,
                         )
+                        .into_result()
                     }
                     TYPE_ID_TYPE => {
                         // Generic lookup sees the physical object dictionary:
@@ -2146,10 +2145,12 @@ pub(crate) fn object_getattribute(
                         crate::builtins::attr::object_attr_lookup_with_policy(
                             _py, obj_ptr, name_bits, suppress,
                         )
+                        .into_result()
                     }
                     _ => crate::builtins::attributes::attr_lookup_ptr_default_with_suppression(
                         _py, obj_ptr, name_bits, suppress,
-                    ),
+                    )
+                    .into_result(),
                 };
                 if let Some(val) = found? {
                     return Ok(Some(val));
@@ -2211,7 +2212,8 @@ pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
                 }
                 let found = crate::builtins::attributes::type_attr_lookup_ptr_default(
                     _py, obj_ptr, name_bits,
-                );
+                )
+                .into_result();
                 match found {
                     Ok(Some(val)) => return val,
                     Err(()) => return MoltObject::none().bits(),

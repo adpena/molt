@@ -754,17 +754,9 @@ fn importlib_reader_lookup_callable(
     target_bits: u64,
     name_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    let missing = missing_bits(_py);
-    let attr_bits = molt_getattr_builtin(target_bits, name_bits, missing);
-    if exception_pending(_py) {
-        if clear_pending_if_kind(_py, &[crate::BuiltinExc::AttributeError]) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if is_missing_bits(_py, attr_bits) {
+    let Some(attr_bits) = getattr_optional_bits(_py, target_bits, name_bits)? else {
         return Ok(None);
-    }
+    };
     let callable_bits = molt_is_callable(attr_bits);
     let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
     if !obj_from_bits(callable_bits).is_none() {
@@ -784,23 +776,9 @@ pub(crate) fn getattr_optional_bits(
     target_bits: u64,
     name_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    // The caller already owns the execution lease and token. Use the same
-    // attribute authority as the public entrypoint without two nested entries.
-    let result = crate::builtins::attributes::get_attr_name(_py, target_bits, name_bits);
-    if exception_pending(_py) {
-        if let Ok(bits) = result {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, bits));
-        }
-        if clear_pending_if_kind(_py, &[crate::BuiltinExc::AttributeError]) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    let attr_bits = result.map_err(|()| MoltObject::none().bits())?;
-    if is_missing_bits(_py, attr_bits) {
-        return Ok(None);
-    }
-    Ok(Some(attr_bits))
+    crate::lookup_attribute(_py, target_bits, name_bits)
+        .into_result()
+        .map_err(|()| MoltObject::none().bits())
 }
 
 fn importlib_module_spec_is_package_bits(_py: &PyToken<'_>, module_bits: u64) -> Result<bool, u64> {

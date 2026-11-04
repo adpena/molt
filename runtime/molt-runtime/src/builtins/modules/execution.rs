@@ -95,7 +95,8 @@ unsafe fn sys_list_attr_bits(_py: &PyToken<'_>, attr: &[u8]) -> Result<Option<u6
             return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
         }
         let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
-        let value_bits = crate::builtins::attributes::attr_lookup_ptr(_py, sys_ptr, attr_bits);
+        let value_bits =
+            crate::builtins::attributes::attr_lookup_ptr(_py, sys_ptr, attr_bits).into_result();
         dec_ref_bits(_py, attr_bits);
         dec_ref_bits(_py, sys_bits);
         let Some(value_bits) = value_bits.map_err(|()| MoltObject::none().bits())? else {

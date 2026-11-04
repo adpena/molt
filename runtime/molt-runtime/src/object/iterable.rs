@@ -43,11 +43,12 @@ pub(crate) fn special_iteration_step(
         SpecialIterationKind::Next => DescriptorArguments::Zero,
         SpecialIterationKind::SequenceItem(index) => DescriptorArguments::One(index),
     };
-    let (value, lookup_failed) =
-        match unsafe { crate::builtins::attr::invoke_special_method(py, receiver, name, args) } {
-            Ok(value) => (value, false),
-            Err(()) => (None, true),
-        };
+    let (value, lookup_failed) = match unsafe {
+        crate::builtins::attr::invoke_special_method(py, receiver, name, args).into_result()
+    } {
+        Ok(value) => (value, false),
+        Err(()) => (None, true),
+    };
     if lookup_failed || (value.is_some() && exception_pending(py)) {
         if let Some(value) = value {
             dec_ref_bits(py, value);

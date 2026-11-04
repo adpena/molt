@@ -2144,10 +2144,12 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
             unsafe {
                 let trunc_name_bits = crate::NameId::DunderTrunc.bits(_py);
-                if let Some(call_bits) = match attr_lookup_ptr(_py, ptr, trunc_name_bits) {
-                    Ok(value) => value,
-                    Err(()) => return MoltObject::none().bits(),
-                } {
+                if let Some(call_bits) =
+                    match attr_lookup_ptr(_py, ptr, trunc_name_bits).into_result() {
+                        Ok(value) => value,
+                        Err(()) => return MoltObject::none().bits(),
+                    }
+                {
                     let res_bits = call_callable0(_py, call_bits);
                     dec_ref_bits(_py, call_bits);
                     return res_bits;
@@ -2630,7 +2632,7 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
             && let Some(name_bits) = crate::NameId::DunderInvert.owned_bits(_py)
         {
             unsafe {
-                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
+                let call_bits = attr_lookup_ptr(_py, ptr, name_bits).into_result();
                 dec_ref_bits(_py, name_bits);
                 let call_bits = match call_bits {
                     Ok(value) => value,
@@ -2658,7 +2660,9 @@ pub(super) fn unary_subtype_result(
     if builtin_operand(py, value) {
         return None;
     }
-    match unsafe { crate::builtins::attr::lookup_special_method(py, value.bits(), name) } {
+    match unsafe {
+        crate::builtins::attr::lookup_special_method(py, value.bits(), name).into_result()
+    } {
         Ok(Some(method)) => {
             let result = unsafe { call_callable0(py, method) };
             dec_ref_bits(py, method);

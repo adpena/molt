@@ -95,7 +95,9 @@ pub(crate) fn index_impl(
                         _py,
                         obj_bits,
                         crate::NameId::DunderGetitem,
-                    ) {
+                    )
+                    .into_result()
+                    {
                         Ok(value) => value,
                         Err(()) => return Err(()),
                     } {
@@ -930,7 +932,9 @@ pub(crate) fn index_impl(
                             _py,
                             obj_bits,
                             crate::NameId::DunderMissing,
-                        ) {
+                        )
+                        .into_result()
+                        {
                             Ok(value) => value,
                             Err(()) => return Err(()),
                         }
@@ -966,7 +970,8 @@ pub(crate) fn index_impl(
                         let name_bits = crate::NameId::DunderClassGetitem
                             .owned_bits(_py)
                             .ok_or(())?;
-                        let lookup = class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits);
+                        let lookup =
+                            class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits).into_result();
                         dec_ref_bits(_py, name_bits);
                         let lookup = match lookup {
                             Ok(value) => value,
@@ -1180,7 +1185,9 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         _py,
                         obj_bits,
                         crate::NameId::DunderSetitem,
-                    ) {
+                    )
+                    .into_result()
+                    {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
                     } {
@@ -1776,7 +1783,9 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         _py,
                         obj_bits,
                         crate::NameId::DunderDelitem,
-                    ) {
+                    )
+                    .into_result()
+                    {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
                     } {
@@ -2180,7 +2189,9 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                         _py,
                         container_bits,
                         crate::NameId::DunderContains,
-                    ) {
+                    )
+                    .into_result()
+                    {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
                     }
@@ -2294,7 +2305,9 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     _py,
                     container_bits,
                     crate::NameId::DunderContains,
-                ) {
+                )
+                .into_result()
+                {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 } {

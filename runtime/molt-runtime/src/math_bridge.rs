@@ -568,6 +568,7 @@ pub extern "C" fn __molt_math_lookup_special_method(
                 MoltObject::from_ptr(ptr).bits(),
                 name,
             )
+            .into_result()
         } {
             Ok(Some(bits)) => {
                 unsafe { *out = bits };

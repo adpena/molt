@@ -1688,6 +1688,7 @@ fn bytes_from_obj_impl(
     if special && matches!(kind, BytesCtorKind::Bytes) {
         let method = match unsafe {
             crate::builtins::attr::lookup_special_method(py, bits, crate::NameId::DunderBytes)
+                .into_result()
         } {
             Ok(method) => method,
             Err(()) => return MoltObject::none().bits(),
