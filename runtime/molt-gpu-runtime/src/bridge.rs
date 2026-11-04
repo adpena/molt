@@ -53,14 +53,9 @@ pub(super) fn molt_exception_clear() -> u64 {
     molt_runtime_core::rt_exception_clear()
 }
 
-#[cfg(any(
-    target_arch = "wasm32",
-    all(target_os = "macos", feature = "metal-backend"),
-    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
-))]
 #[inline]
-pub(super) fn clear_attribute_error_if_pending() -> bool {
-    unsafe { __molt_gpu_clear_attribute_error_if_pending() != 0 }
+pub(super) fn lookup_attribute(obj_bits: u64, name_bits: u64) -> molt_obj_model::AttributeLookup {
+    unsafe { __molt_gpu_lookup_attribute(obj_bits, name_bits) }
 }
 
 #[inline]
@@ -177,12 +172,10 @@ unsafe extern "C" {
         all(not(target_arch = "wasm32"), feature = "webgpu-backend")
     ))]
     fn __molt_gpu_intrinsic_matches(bits: u64, name: *const u8, len: usize) -> i32;
-    #[cfg(any(
-        target_arch = "wasm32",
-        all(target_os = "macos", feature = "metal-backend"),
-        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
-    ))]
-    fn __molt_gpu_clear_attribute_error_if_pending() -> i32;
+    fn __molt_gpu_lookup_attribute(
+        obj_bits: u64,
+        name_bits: u64,
+    ) -> molt_obj_model::AttributeLookup;
     fn __molt_gpu_raise_exception(
         kind_code: u16,
         message_ptr: *const u8,
@@ -423,11 +416,6 @@ pub(super) fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: 
 #[inline]
 pub(super) fn missing_bits(_py: &PyToken) -> u64 {
     unsafe { __molt_gpu_missing_bits() }
-}
-
-#[inline]
-pub(super) fn is_missing_bits(_py: &PyToken, bits: u64) -> bool {
-    bits == unsafe { __molt_gpu_missing_bits() }
 }
 
 #[inline]

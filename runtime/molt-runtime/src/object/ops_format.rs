@@ -960,20 +960,21 @@ pub(crate) unsafe fn try_format_special_method_bits(
     slot: crate::NameId,
 ) -> Option<u64> {
     unsafe {
-        let method = match lookup_special_method(py, MoltObject::from_ptr(ptr).bits(), slot) {
-            Ok(Some(method)) => method,
-            Ok(None) => return None,
-            Err(()) => {
-                // Only failed descriptor binding is suppressed by the pre-3.14 repr rule.
-                if slot == crate::NameId::DunderRepr
-                    && !super::ops_sys::runtime_target_at_least(py, 3, 14)
-                {
-                    clear_exception(py);
-                    return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
+        let method =
+            match lookup_special_method(py, MoltObject::from_ptr(ptr).bits(), slot).into_result() {
+                Ok(Some(method)) => method,
+                Ok(None) => return None,
+                Err(()) => {
+                    // Only failed descriptor binding is suppressed by the pre-3.14 repr rule.
+                    if slot == crate::NameId::DunderRepr
+                        && !super::ops_sys::runtime_target_at_least(py, 3, 14)
+                    {
+                        clear_exception(py);
+                        return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
+                    }
+                    return Some(MoltObject::none().bits());
                 }
-                return Some(MoltObject::none().bits());
-            }
-        };
+            };
         Some(invoke_format_method(py, method, slot.as_str(), None))
     }
 }
@@ -1055,7 +1056,7 @@ pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> O
                 return None;
             }
         }
-        match lookup_special_method(py, obj.bits(), crate::NameId::DunderFormat) {
+        match lookup_special_method(py, obj.bits(), crate::NameId::DunderFormat).into_result() {
             Ok(Some(method)) => Some(invoke_format_method(py, method, "__format__", Some(spec))),
             Ok(None) => None,
             Err(()) => Some(MoltObject::none().bits()),

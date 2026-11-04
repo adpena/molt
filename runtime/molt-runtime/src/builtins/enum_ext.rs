@@ -429,22 +429,19 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-
-        // Get __members__ from the class
         let Some(attr_key) = crate::NameId::DunderMembers.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let members_bits = molt_getattr_builtin(cls_bits, attr_key, missing);
+        let result = crate::lookup_attribute(_py, cls_bits, attr_key);
         dec_ref_bits(_py, attr_key);
-
-        if exception_pending(_py) {
-            clear_exception(_py);
-            return MoltObject::none().bits();
-        }
-        if members_bits == missing {
-            return MoltObject::none().bits();
-        }
+        let members_bits = match result {
+            crate::AttributeLookup::Found(bits) => bits,
+            crate::AttributeLookup::Missing => return MoltObject::none().bits(),
+            crate::AttributeLookup::Error => {
+                clear_exception(_py);
+                return MoltObject::none().bits();
+            }
+        };
 
         // __members__ should be a dict; iterate its key/value pairs looking
         // for a value match while retaining the complete observation through equality callbacks.

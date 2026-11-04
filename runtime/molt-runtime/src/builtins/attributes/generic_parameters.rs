@@ -19,9 +19,11 @@ fn optional_attribute<'py>(
         return Ok(None);
     };
     unsafe {
-        attr_lookup_ptr_allow_missing(py, pointer, name).map(|value| {
-            value.map(|bits| ProtectedRuntimeValue::from_owned_bits(py.core_token(), bits))
-        })
+        lookup_attribute(py, MoltObject::from_ptr(pointer).bits(), name)
+            .into_result()
+            .map(|value| {
+                value.map(|bits| ProtectedRuntimeValue::from_owned_bits(py.core_token(), bits))
+            })
     }
 }
 

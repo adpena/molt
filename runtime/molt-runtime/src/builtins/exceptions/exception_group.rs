@@ -760,9 +760,13 @@ unsafe fn exception_group_copy_metadata(
     if name == 0 {
         return None;
     }
-    let notes = match unsafe {
-        attr_lookup_ptr_allow_missing(py, obj_from_bits(original_bits).as_ptr().unwrap(), name)
-    } {
+    let notes = match lookup_attribute(
+        py,
+        MoltObject::from_ptr(obj_from_bits(original_bits).as_ptr().unwrap()).bits(),
+        name,
+    )
+    .into_result()
+    {
         Ok(Some(notes)) => notes,
         Ok(None) => return Some(()),
         Err(()) => return None,

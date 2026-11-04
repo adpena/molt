@@ -1188,10 +1188,12 @@ pub(crate) fn exact_integer_from_storage(py: &PyToken<'_>, bits: u64) -> Option<
 /// One type-level slot call owns conversion, strict result validation, subtype
 /// warnings, and owned-result transfer. None without an error means absent.
 fn integer_from_special(py: &PyToken<'_>, bits: u64, name: crate::NameId) -> Option<u64> {
-    let callable = match unsafe { crate::builtins::attr::lookup_special_method(py, bits, name) } {
-        Ok(method) => method?,
-        Err(()) => return None,
-    };
+    let callable =
+        match unsafe { crate::builtins::attr::lookup_special_method(py, bits, name).into_result() }
+        {
+            Ok(method) => method?,
+            Err(()) => return None,
+        };
     let callable_owner = obj_from_bits(callable)
         .as_ptr()
         .map(crate::PtrDropGuard::new);
@@ -1388,6 +1390,7 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
     }
     let callable = match unsafe {
         crate::builtins::attr::lookup_special_method(py, bits, crate::NameId::DunderTrunc)
+            .into_result()
     } {
         Ok(method) => method?,
         Err(()) => return None,
@@ -1571,6 +1574,7 @@ pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
     }
     let float_method = match unsafe {
         crate::builtins::attr::lookup_special_method(py, bits, crate::NameId::DunderFloat)
+            .into_result()
     } {
         Ok(method) => method,
         Err(()) => return None,
@@ -3091,6 +3095,7 @@ mod float_conversion_tests {
             reset_callbacks(MoltObject::from_int(99).bits(), true);
             let method = unsafe {
                 crate::builtins::attr::lookup_special_method(py, value, crate::NameId::DunderFloat)
+                    .into_result()
             }
             .expect("special lookup succeeds")
             .unwrap();

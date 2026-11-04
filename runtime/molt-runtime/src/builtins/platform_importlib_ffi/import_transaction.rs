@@ -1161,9 +1161,12 @@ pub(super) fn importlib_transaction_module_all_items(
     if all_name_bits == 0 {
         return Err(MoltObject::none().bits());
     }
-    let all_bits = unsafe {
-        crate::builtins::attr::attr_lookup_ptr_allow_missing(_py, module_ptr, all_name_bits)
-    }
+    let all_bits = crate::builtins::attr::lookup_attribute(
+        _py,
+        MoltObject::from_ptr(module_ptr).bits(),
+        all_name_bits,
+    )
+    .into_result()
     .map_err(|()| MoltObject::none().bits())?;
     let Some(all_bits) = all_bits else {
         return Ok(None);

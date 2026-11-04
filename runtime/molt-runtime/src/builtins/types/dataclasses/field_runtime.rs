@@ -58,9 +58,14 @@ pub(in crate::builtins::types::dataclasses) fn dc_getattr_default_bits(
     default: u64,
 ) -> Option<u64> {
     let name = DcValue::owned(name.owned_bits(py)?);
-    Some(crate::builtins::attributes::molt_get_attr_name_default(
-        object, name.bits, default,
-    ))
+    match crate::lookup_attribute(py, object, name.bits) {
+        crate::AttributeLookup::Found(bits) => Some(bits),
+        crate::AttributeLookup::Missing => {
+            inc_ref_bits(py, default);
+            Some(default)
+        }
+        crate::AttributeLookup::Error => None,
+    }
 }
 
 pub(super) fn dc_truth(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {

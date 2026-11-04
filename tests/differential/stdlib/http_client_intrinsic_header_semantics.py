@@ -37,6 +37,13 @@ print("body", resp.read().decode("ascii"))
 resp.close()
 conn.close()
 
+conn = http.client.HTTPConnection(host, port, timeout=2.0)
+conn.request("UNSUPPORTED", "/")
+resp = conn.getresponse()
+print("unsupported", resp.status, b"Unsupported method" in resp.read())
+resp.close()
+conn.close()
+
 server.shutdown()
 thread.join(timeout=1.0)
 server.server_close()

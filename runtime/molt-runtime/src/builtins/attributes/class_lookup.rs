@@ -154,111 +154,119 @@ pub(super) unsafe fn attribute_lookup_transaction<F>(
     default: DefaultGetattribute,
     mode: AttributeLookupMode<'_>,
     default_lookup: F,
-) -> Result<Option<u64>, ()>
+) -> AttributeLookup
 where
-    F: FnOnce(AttributeLookupMode<'_>) -> Result<Option<u64>, ()>,
+    F: FnOnce(AttributeLookupMode<'_>) -> AttributeLookup,
 {
-    unsafe {
-        let receiver = MoltObject::from_ptr(object).bits();
-        let owner_bits = MoltObject::from_ptr(owner).bits();
-        if plain_attribute_protocol(py, owner, default)? {
-            // The same pins and exception framing as the full transaction,
-            // without resolving hooks the class does not have.
+    AttributeLookup::from_result((|| {
+        unsafe {
+            let receiver = MoltObject::from_ptr(object).bits();
+            let owner_bits = MoltObject::from_ptr(owner).bits();
+            if plain_attribute_protocol(py, owner, default)? {
+                // Keep callback arguments alive, but there is no handler here:
+                // absence is a value and a descriptor failure propagates directly.
+                // Only the __getattr__ branch below catches AttributeError.
+                inc_ref_bits(py, receiver);
+                inc_ref_bits(py, owner_bits);
+                inc_ref_bits(py, name);
+                let result = default_lookup(mode).into_result();
+                dec_ref_bits(py, name);
+                dec_ref_bits(py, owner_bits);
+                dec_ref_bits(py, receiver);
+                return result;
+            }
             inc_ref_bits(py, receiver);
             inc_ref_bits(py, owner_bits);
             inc_ref_bits(py, name);
-            exception_stack_push();
-            let result = default_lookup(mode);
-            exception_stack_pop(py);
+            let mut fallback = None;
+            let mut raw = None;
+            let result = (|| {
+                let fallback_name = crate::NameId::DunderGetattr.bits(py);
+                fallback = class_attr_lookup_raw_mro(py, owner, fallback_name)?;
+                if let Some(bits) = fallback {
+                    inc_ref_bits(py, bits);
+                }
+                let getattribute_name = crate::NameId::DunderGetattribute.bits(py);
+                raw = class_attr_lookup_raw_mro(py, owner, getattribute_name)?;
+                if let Some(bits) = raw {
+                    inc_ref_bits(py, bits);
+                }
+                let custom = match raw {
+                    Some(raw) => !default.admits(py, owner, raw)?,
+                    None => false,
+                };
+                if fallback.is_some() {
+                    traceback_suppress_enter();
+                }
+                exception_stack_push();
+                let result = match raw {
+                    Some(raw) if custom => descriptor_call1(py, raw, owner, Some(receiver), name),
+                    _ => default_lookup(if fallback.is_none() {
+                        mode
+                    } else {
+                        // __getattr__ installs a hook slot rather than generic
+                        // getattro: LOAD_ATTR must receive the bound value.
+                        AttributeLookupMode::Value
+                    })
+                    .into_result(),
+                };
+                // The selected getattribute callable retires with its own failure
+                // still selected, before AttributeError suppression or fallback.
+                if let Some(bits) = raw.take() {
+                    dec_ref_bits(py, bits);
+                }
+                if fallback.is_some() {
+                    traceback_suppress_exit();
+                }
+                let result = match result {
+                    Err(()) if fallback.is_some() && clear_attribute_error_if_pending(py) => {
+                        Ok(None)
+                    }
+                    result => result,
+                };
+                exception_stack_pop(py);
+                match (result, fallback) {
+                    (Ok(None), Some(fallback)) => {
+                        exception_stack_push();
+                        let result = descriptor_call1(py, fallback, owner, Some(receiver), name);
+                        exception_stack_pop(py);
+                        result
+                    }
+                    (result, _) => result,
+                }
+            })();
+            if let Some(bits) = raw {
+                dec_ref_bits(py, bits);
+            }
+            if let Some(bits) = fallback {
+                dec_ref_bits(py, bits);
+            }
             dec_ref_bits(py, name);
             dec_ref_bits(py, owner_bits);
             dec_ref_bits(py, receiver);
-            return result;
+            result
         }
-        inc_ref_bits(py, receiver);
-        inc_ref_bits(py, owner_bits);
-        inc_ref_bits(py, name);
-        let mut fallback = None;
-        let mut raw = None;
-        let result = (|| {
-            let fallback_name = crate::NameId::DunderGetattr.bits(py);
-            fallback = class_attr_lookup_raw_mro(py, owner, fallback_name)?;
-            if let Some(bits) = fallback {
-                inc_ref_bits(py, bits);
-            }
-            let getattribute_name = crate::NameId::DunderGetattribute.bits(py);
-            raw = class_attr_lookup_raw_mro(py, owner, getattribute_name)?;
-            if let Some(bits) = raw {
-                inc_ref_bits(py, bits);
-            }
-            let custom = match raw {
-                Some(raw) => !default.admits(py, owner, raw)?,
-                None => false,
-            };
-            if fallback.is_some() {
-                traceback_suppress_enter();
-            }
-            exception_stack_push();
-            let result = match raw {
-                Some(raw) if custom => descriptor_call1(py, raw, owner, Some(receiver), name),
-                _ => default_lookup(if fallback.is_none() {
-                    mode
-                } else {
-                    // __getattr__ installs a hook slot rather than generic
-                    // getattro: LOAD_ATTR must receive the bound value.
-                    AttributeLookupMode::Value
-                }),
-            };
-            // The selected getattribute callable retires with its own failure
-            // still selected, before AttributeError suppression or fallback.
-            if let Some(bits) = raw.take() {
-                dec_ref_bits(py, bits);
-            }
-            if fallback.is_some() {
-                traceback_suppress_exit();
-            }
-            let result = match result {
-                Err(()) if fallback.is_some() && clear_attribute_error_if_pending(py) => Ok(None),
-                result => result,
-            };
-            exception_stack_pop(py);
-            match (result, fallback) {
-                (Ok(None), Some(fallback)) => {
-                    exception_stack_push();
-                    let result = descriptor_call1(py, fallback, owner, Some(receiver), name);
-                    exception_stack_pop(py);
-                    result
-                }
-                (result, _) => result,
-            }
-        })();
-        if let Some(bits) = raw {
-            dec_ref_bits(py, bits);
-        }
-        if let Some(bits) = fallback {
-            dec_ref_bits(py, bits);
-        }
-        dec_ref_bits(py, name);
-        dec_ref_bits(py, owner_bits);
-        dec_ref_bits(py, receiver);
-        result
-    }
+    })())
 }
 
 pub(crate) unsafe fn type_attr_lookup_ptr(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe { type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, true) }
+) -> AttributeLookup {
+    unsafe {
+        AttributeLookup::from_result(type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, true))
+    }
 }
 
 pub(crate) unsafe fn type_attr_lookup_ptr_default(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe { type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false) }
+) -> AttributeLookup {
+    unsafe {
+        AttributeLookup::from_result(type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false))
+    }
 }
 
 unsafe fn type_attr_lookup_ptr_inner(
@@ -295,8 +303,13 @@ unsafe fn type_attr_lookup_ptr_inner(
                 attr_bits,
                 DefaultGetattribute::Type,
                 AttributeLookupMode::Value,
-                |_| type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false),
-            );
+                |_| {
+                    AttributeLookup::from_result(type_attr_lookup_ptr_inner(
+                        _py, obj_ptr, attr_bits, false,
+                    ))
+                },
+            )
+            .into_result();
         }
         // Capture one metaclass selection before descriptor classification or
         // class-namespace equality can replace its only namespace reference.

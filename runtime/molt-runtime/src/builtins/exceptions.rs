@@ -16,16 +16,16 @@ use crate::{
     FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, MoltHeader, PtrSlot, RuntimeState,
     TRACEBACK_SUPPRESS_COUNT, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_STRING,
     TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_bytes, alloc_class_obj, alloc_list, alloc_string,
-    alloc_tuple, attr_lookup_ptr_allow_missing, builtin_classes, builtin_func_bits,
-    bytes_like_slice, call_callable1, class_break_cycles, class_dict_bits, class_name_bits,
-    class_name_for_error, code_filename_bits, code_name_bits, current_task_key, current_task_ptr,
-    current_token_id, dec_ref_bits, dict_get_in_place, dict_set_in_place, dynamic_attr_name_bits,
-    format_obj, header_from_obj_ptr, inc_ref_bits, index_bigint_from_obj, init_atomic_bits,
-    int_bits_from_i64, is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits,
-    molt_class_set_base, molt_dec_ref, molt_repr_from_obj, molt_str_from_obj, obj_from_bits,
-    object_class_bits, object_type_id, profile_enabled, runtime_state, string_obj_to_owned,
-    task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed, tuple_from_iter_bits,
-    type_name, type_of_bits,
+    alloc_tuple, builtin_classes, builtin_func_bits, bytes_like_slice, call_callable1,
+    class_break_cycles, class_dict_bits, class_name_bits, class_name_for_error, code_filename_bits,
+    code_name_bits, current_task_key, current_task_ptr, current_token_id, dec_ref_bits,
+    dict_get_in_place, dict_set_in_place, dynamic_attr_name_bits, format_obj, header_from_obj_ptr,
+    inc_ref_bits, index_bigint_from_obj, init_atomic_bits, int_bits_from_i64, is_truthy,
+    isinstance_bits, issubclass_bits, lookup_attribute, maybe_ptr_from_bits, molt_class_set_base,
+    molt_dec_ref, molt_repr_from_obj, molt_str_from_obj, obj_from_bits, object_class_bits,
+    object_type_id, profile_enabled, runtime_state, string_obj_to_owned, task_last_exceptions,
+    to_i64, token_is_cancelled, traceback_suppressed, tuple_from_iter_bits, type_name,
+    type_of_bits,
 };
 use molt_obj_model::{
     BuiltinExceptionSpec, ExceptionBaseSpec, ExceptionFieldStorage, ExceptionLayoutKind,
@@ -3226,7 +3226,8 @@ fn resolve_module_exception_class(py: &PyToken<'_>, kind: ModuleExc) -> u64 {
     let Some(name_bits) = dynamic_attr_name_bits(py, spec.name.as_bytes()) else {
         return 0;
     };
-    let found = unsafe { attr_lookup_ptr_allow_missing(py, module_ptr, name_bits) };
+    let found =
+        lookup_attribute(py, MoltObject::from_ptr(module_ptr).bits(), name_bits).into_result();
     dec_ref_bits(py, name_bits);
     let class_bits = match found {
         Ok(Some(bits)) => bits,
@@ -3280,7 +3281,8 @@ fn check_module_exception_class(
         let Some(name_bits) = attribute.owned_bits(py) else {
             return Err(format!("{}: attribute name allocation failed", label()));
         };
-        let value = unsafe { attr_lookup_ptr_allow_missing(py, class_ptr, name_bits) };
+        let value =
+            lookup_attribute(py, MoltObject::from_ptr(class_ptr).bits(), name_bits).into_result();
         dec_ref_bits(py, name_bits);
         let Ok(value) = value else {
             return Err(format!("{}: attribute lookup failed", label()));
@@ -4741,7 +4743,9 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
         let Some(name) = crate::NameId::DunderNotes.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let existing = match unsafe { attr_lookup_ptr_allow_missing(_py, self_ptr, name) } {
+        let existing = match lookup_attribute(_py, MoltObject::from_ptr(self_ptr).bits(), name)
+            .into_result()
+        {
             Ok(value) => value,
             Err(()) => {
                 dec_ref_bits(_py, name);

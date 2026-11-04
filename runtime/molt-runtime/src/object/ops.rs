@@ -1751,7 +1751,8 @@ fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
                 _py,
                 obj.bits(),
                 crate::NameId::DunderBool,
-            )?;
+            )
+            .into_result()?;
             if let Some(call_bits) = call_bits {
                 let mut method = Some(molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                     _py.core_token(),
@@ -1800,7 +1801,8 @@ fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
                 _py,
                 obj.bits(),
                 crate::NameId::DunderLen,
-            )?;
+            )
+            .into_result()?;
             if let Some(call_bits) = call_bits {
                 let method = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                     _py.core_token(),

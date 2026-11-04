@@ -534,10 +534,11 @@ pub use crate::builtins::array_mod::*;
 pub use crate::builtins::ast::*;
 pub use crate::builtins::atexit::*;
 pub(crate) use crate::builtins::attr::{
-    attr_error, attr_error_with_message, attr_error_with_obj, attr_error_with_obj_message,
-    attr_lookup_ptr_allow_missing, class_attr_lookup, class_attr_lookup_raw_mro, descriptor_bind,
+    AttributeLookup, attr_error, attr_error_with_message, attr_error_with_obj,
+    attr_error_with_obj_message, class_attr_lookup, class_attr_lookup_raw_mro, descriptor_bind,
     descriptor_is_data, dynamic_attr_name_bits, instance_bits_for_call, is_iterator_bits,
-    module_attr_lookup, raise_attr_name_type_error, setattr_no_attr_error_with_obj,
+    lookup_attribute, module_attr_lookup, raise_attr_name_type_error,
+    setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::binding_guards::molt_guard_builtin_bindings;

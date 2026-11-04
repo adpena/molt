@@ -178,15 +178,14 @@ pub(crate) unsafe fn asyncio_attr_lookup_allow_missing(
     obj_bits: u64,
     name: crate::NameId,
 ) -> Result<Option<u64>, ()> {
-    unsafe {
-        let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
-            return Ok(None);
-        };
-        let name_bits = name.owned_bits(_py).ok_or(())?;
-        let result = attr_lookup_ptr_allow_missing(_py, obj_ptr, name_bits);
-        dec_ref_bits(_py, name_bits);
-        result
-    }
+    let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
+        return Ok(None);
+    };
+    let name_bits = name.owned_bits(_py).ok_or(())?;
+    let result =
+        lookup_attribute(_py, MoltObject::from_ptr(obj_ptr).bits(), name_bits).into_result();
+    dec_ref_bits(_py, name_bits);
+    result
 }
 
 #[cfg(molt_net)]

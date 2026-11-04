@@ -965,8 +965,24 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         };
 
-        let k_cache_bits = molt_getattr_builtin(k_bits, kv_cache_name, missing);
-        let v_cache_bits = molt_getattr_builtin(v_bits, kv_cache_name, missing);
+        // Keep each successful probe alive and retire it on every later exit,
+        // including an error from the next optional observation.
+        let (k_cache_bits, _k_cache_bits_owner) = match lookup_attribute(k_bits, kv_cache_name) {
+            molt_obj_model::AttributeLookup::Found(bits) => (
+                bits,
+                Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+            ),
+            molt_obj_model::AttributeLookup::Missing => (missing, None),
+            molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+        };
+        let (v_cache_bits, _v_cache_bits_owner) = match lookup_attribute(v_bits, kv_cache_name) {
+            molt_obj_model::AttributeLookup::Found(bits) => (
+                bits,
+                Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+            ),
+            molt_obj_model::AttributeLookup::Missing => (missing, None),
+            molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+        };
         if k_cache_bits == missing || v_cache_bits == missing || k_cache_bits != v_cache_bits {
             return raise_exception::<_>(
                 _py,
@@ -1010,10 +1026,24 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 "turboquant attention expects key/value cache view roles",
             );
         }
-        let runtime_mse_signs_bits =
-            molt_getattr_builtin(k_cache_bits, runtime_mse_signs_name, missing);
-        let runtime_qjl_signs_bits =
-            molt_getattr_builtin(k_cache_bits, runtime_qjl_signs_name, missing);
+        let (runtime_mse_signs_bits, _runtime_mse_signs_bits_owner) =
+            match lookup_attribute(k_cache_bits, runtime_mse_signs_name) {
+                molt_obj_model::AttributeLookup::Found(bits) => (
+                    bits,
+                    Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+                ),
+                molt_obj_model::AttributeLookup::Missing => (missing, None),
+                molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+            };
+        let (runtime_qjl_signs_bits, _runtime_qjl_signs_bits_owner) =
+            match lookup_attribute(k_cache_bits, runtime_qjl_signs_name) {
+                molt_obj_model::AttributeLookup::Found(bits) => (
+                    bits,
+                    Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+                ),
+                molt_obj_model::AttributeLookup::Missing => (missing, None),
+                molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+            };
         let (mse_signs, qjl_signs) =
             if runtime_mse_signs_bits != missing && runtime_qjl_signs_bits != missing {
                 let (mse_signs_tensor, mse_signs_shape) = match unsafe {
@@ -1155,14 +1185,42 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             Some((mask, mask_shape.clone(), strides(&mask_shape)))
         };
 
-        let runtime_key_mse_bits =
-            molt_getattr_builtin(k_cache_bits, runtime_key_mse_rows_name, missing);
-        let runtime_key_sign_bits =
-            molt_getattr_builtin(k_cache_bits, runtime_key_sign_rows_name, missing);
-        let runtime_key_scale_bits =
-            molt_getattr_builtin(k_cache_bits, runtime_key_scale_rows_name, missing);
-        let runtime_value_bits =
-            molt_getattr_builtin(k_cache_bits, runtime_value_rows_name, missing);
+        let (runtime_key_mse_bits, _runtime_key_mse_bits_owner) =
+            match lookup_attribute(k_cache_bits, runtime_key_mse_rows_name) {
+                molt_obj_model::AttributeLookup::Found(bits) => (
+                    bits,
+                    Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+                ),
+                molt_obj_model::AttributeLookup::Missing => (missing, None),
+                molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+            };
+        let (runtime_key_sign_bits, _runtime_key_sign_bits_owner) =
+            match lookup_attribute(k_cache_bits, runtime_key_sign_rows_name) {
+                molt_obj_model::AttributeLookup::Found(bits) => (
+                    bits,
+                    Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+                ),
+                molt_obj_model::AttributeLookup::Missing => (missing, None),
+                molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+            };
+        let (runtime_key_scale_bits, _runtime_key_scale_bits_owner) =
+            match lookup_attribute(k_cache_bits, runtime_key_scale_rows_name) {
+                molt_obj_model::AttributeLookup::Found(bits) => (
+                    bits,
+                    Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+                ),
+                molt_obj_model::AttributeLookup::Missing => (missing, None),
+                molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+            };
+        let (runtime_value_bits, _runtime_value_bits_owner) =
+            match lookup_attribute(k_cache_bits, runtime_value_rows_name) {
+                molt_obj_model::AttributeLookup::Found(bits) => (
+                    bits,
+                    Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
+                ),
+                molt_obj_model::AttributeLookup::Missing => (missing, None),
+                molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
+            };
 
         if runtime_key_mse_bits != missing
             && runtime_key_sign_bits != missing

@@ -244,6 +244,7 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
         }
         let method = match unsafe {
             crate::builtins::attr::lookup_async_special_method(py, bits, crate::NameId::DunderAwait)
+                .into_result()
         } {
             Ok(method) => method,
             Err(()) => return MoltObject::none().bits(),
@@ -910,13 +911,12 @@ fn iterator_resume(
                 };
                 let name = method_name.owned_bits(py);
                 let method = name.ok_or(()).and_then(|name| {
-                    let method = unsafe {
-                        crate::builtins::attr::attr_lookup_ptr_allow_missing(
-                            py,
-                            ptr_from_bits(iterator),
-                            name,
-                        )
-                    };
+                    let method = crate::builtins::attr::lookup_attribute(
+                        py,
+                        MoltObject::from_ptr(ptr_from_bits(iterator)).bits(),
+                        name,
+                    )
+                    .into_result();
                     dec_ref_bits(py, name);
                     method
                 });

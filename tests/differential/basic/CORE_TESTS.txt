@@ -4,6 +4,7 @@
 
 tests/differential/basic/annotation_frame_context.py
 tests/differential/basic/attribute_lookup_transactions.py
+tests/differential/basic/attribute_optional_lookup.py
 tests/differential/basic/branchless_count_semantics.py
 tests/differential/basic/call_argument_expansion_custody.py
 tests/differential/basic/class_annotation_namespace.py

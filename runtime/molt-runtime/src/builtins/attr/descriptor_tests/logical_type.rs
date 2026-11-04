@@ -40,6 +40,7 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
                 unsafe { crate::molt_get_attr_object(receiver, b"__class__".as_ptr(), 9) },
                 unsafe {
                     object_attr_lookup_with_dict(py, receiver, name, dictionary, false)
+                        .into_result()
                         .expect("operation succeeds")
                 }
                 .expect("generic dictionary lookup preserves the logical type"),
@@ -100,6 +101,7 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
                 missing,
             ));
             let result = object_attr_lookup_with_dict(py, future, await_name, dictionary, false)
+                .into_result()
                 .expect("operation succeeds");
             assert_eq!(
                 result,
@@ -296,6 +298,7 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
                 MoltObject::from_int(99).bits(),
             ));
             let own = object_attr_lookup_with_dict(py, proxy, name, dictionary, false)
+                .into_result()
                 .expect("operation succeeds")
                 .unwrap();
             assert_eq!(
@@ -479,6 +482,7 @@ fn logical_type_coroutine_members_share_normal_explicit_and_c_generic_lookup() {
                     dec_ref_bits(py, result);
                 }
                 let result = object_attr_lookup_with_dict(py, coroutine, name, dictionary, false)
+                    .into_result()
                     .expect("operation succeeds")
                     .unwrap();
                 assert_eq!(result, expected);

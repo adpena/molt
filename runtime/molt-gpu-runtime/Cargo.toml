@@ -9,6 +9,7 @@ license = "Apache-2.0"
 [dependencies]
 molt-gpu = { path = "../molt-gpu", default-features = false }
 molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 serde_json.workspace = true
 wgpu = { version = "30", optional = true }
 pollster = { version = "1.0", optional = true }

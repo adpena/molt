@@ -1,6 +1,9 @@
 mod class_cache;
 use crate::BuiltinExc;
 use crate::PyToken;
+
+pub(crate) use molt_obj_model::AttributeLookup;
+
 pub(crate) use class_cache::ClassLookupCache;
 #[cfg(test)]
 mod foreign_descriptor_tests;
@@ -543,7 +546,7 @@ unsafe fn module_attr_lookup_impl(
     policy: ModuleLookupPolicy,
 ) -> Result<Option<u64>, ()> {
     unsafe {
-        if let Some(value) = object_attr_lookup_raw(py, object, name)? {
+        if let Some(value) = object_attr_lookup_raw(py, object, name).into_result()? {
             return Ok(Some(value));
         }
         let Some(dictionary) = obj_from_bits(module_dict_bits(object)).as_ptr() else {
@@ -655,16 +658,30 @@ pub(crate) unsafe fn module_attr_lookup(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     attr_bits: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe { module_attr_lookup_impl(_py, ptr, attr_bits, ModuleLookupPolicy::Required) }
+) -> AttributeLookup {
+    unsafe {
+        AttributeLookup::from_result(module_attr_lookup_impl(
+            _py,
+            ptr,
+            attr_bits,
+            ModuleLookupPolicy::Required,
+        ))
+    }
 }
 
 pub(crate) unsafe fn module_attr_lookup_default(
     py: &PyToken<'_>,
     ptr: *mut u8,
     name: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe { module_attr_lookup_impl(py, ptr, name, ModuleLookupPolicy::Default) }
+) -> AttributeLookup {
+    unsafe {
+        AttributeLookup::from_result(module_attr_lookup_impl(
+            py,
+            ptr,
+            name,
+            ModuleLookupPolicy::Default,
+        ))
+    }
 }
 
 pub(crate) unsafe fn instance_bits_for_call(ptr: *mut u8) -> u64 {
@@ -1274,13 +1291,13 @@ pub(crate) unsafe fn has_special_method(
 }
 
 /// Special methods bypass instance attributes and use a closed runtime protocol identity.
-/// Presence is carried by Option, including a descriptor result of float +0.0.
+/// Found is distinct from Missing, including a descriptor result of float +0.0.
 pub(crate) unsafe fn lookup_special_method(
     py: &PyToken<'_>,
     bits: u64,
     name: crate::NameId,
-) -> Result<Option<u64>, ()> {
-    unsafe {
+) -> AttributeLookup {
+    AttributeLookup::from_result((|| unsafe {
         let name = name.bits(py);
         if name == 0 {
             return Err(());
@@ -1329,8 +1346,8 @@ pub(crate) unsafe fn lookup_special_method(
         let Some(class) = obj_from_bits(type_of_bits(py, bits)).as_ptr() else {
             return Ok(None);
         };
-        class_attr_lookup(py, class, class, Some(instance), name)
-    }
+        class_attr_lookup(py, class, class, Some(instance), name).into_result()
+    })())
 }
 
 /// Invoke an implicit type protocol without materializing a bound method.
@@ -1346,15 +1363,16 @@ pub(crate) unsafe fn invoke_special_method(
     receiver: u64,
     name: crate::NameId,
     args: DescriptorArguments,
-) -> Result<Option<u64>, ()> {
-    unsafe {
+) -> AttributeLookup {
+    AttributeLookup::from_result((|| unsafe {
         let name_bits = name.owned_bits(py).ok_or(())?;
         let result = (|| {
             let Some(instance) = obj_from_bits(receiver).as_ptr() else {
                 return Ok(None);
             };
             if object_type_id(instance) == TYPE_ID_FOREIGN {
-                let Some(callable) = lookup_special_method(py, receiver, name)? else {
+                let Some(callable) = lookup_special_method(py, receiver, name).into_result()?
+                else {
                     return Ok(None);
                 };
                 let result = args.call(py, callable);
@@ -1378,7 +1396,7 @@ pub(crate) unsafe fn invoke_special_method(
         })();
         molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name_bits));
         result
-    }
+    })())
 }
 
 /// Async slot wrappers in CPython before 3.14 replace descriptor lookup
@@ -1387,10 +1405,12 @@ pub(crate) unsafe fn lookup_async_special_method(
     py: &PyToken<'_>,
     bits: u64,
     name: crate::NameId,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe {
         let method = lookup_special_method(py, bits, name);
-        if method.is_err() && !crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+        if matches!(method, AttributeLookup::Error)
+            && !crate::object::ops_sys::runtime_target_at_least(py, 3, 14)
+        {
             crate::clear_exception(py);
             let message = format!(
                 "object {} does not have {} method",
@@ -1555,16 +1575,16 @@ pub(crate) unsafe fn descriptor_is_data(py: &PyToken<'_>, value: u64) -> Result<
 /// Optional normal lookup differs only in its AttributeError policy. Physical
 /// storage and dictionary availability never select whether user hooks run.
 /// Implicit type protocols use lookup_special_method instead.
-pub(crate) unsafe fn attr_lookup_ptr_allow_missing(
-    py: &PyToken<'_>,
-    object: *mut u8,
-    name: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe {
-        match crate::builtins::attributes::attr_lookup_ptr(py, object, name) {
-            Err(()) if clear_attribute_error_if_pending(py) => Ok(None),
-            result => result,
-        }
+pub(crate) fn lookup_attribute(py: &PyToken<'_>, object: u64, name: u64) -> AttributeLookup {
+    let result = crate::builtins::attributes::lookup_attribute_with_mode(
+        py,
+        object,
+        name,
+        AttributeLookupMode::Value,
+    );
+    match result {
+        AttributeLookup::Error if clear_attribute_error_if_pending(py) => AttributeLookup::Missing,
+        result => result,
     }
 }
 
@@ -2165,18 +2185,19 @@ pub(crate) unsafe fn class_attr_lookup(
     owner: *mut u8,
     instance: Option<*mut u8>,
     name: u64,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe {
         crate::gil_assert();
-        let Some(value) = class_attr_lookup_raw_mro(py, class, name)? else {
-            return Ok(None);
-        };
-        descriptor_bind(
-            py,
-            value,
-            (!owner.is_null()).then(|| MoltObject::from_ptr(owner).bits()),
-            instance.map(|ptr| MoltObject::from_ptr(ptr).bits()),
-        )
+        match class_attr_lookup_raw_mro(py, class, name) {
+            Ok(Some(value)) => AttributeLookup::from_result(descriptor_bind(
+                py,
+                value,
+                (!owner.is_null()).then(|| MoltObject::from_ptr(owner).bits()),
+                instance.map(|ptr| MoltObject::from_ptr(ptr).bits()),
+            )),
+            Ok(None) => AttributeLookup::Missing,
+            Err(()) => AttributeLookup::Error,
+        }
     }
 }
 
@@ -2435,7 +2456,7 @@ pub(crate) unsafe fn object_attr_lookup_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe { object_attr_lookup_with_policy(_py, obj_ptr, attr_bits, false) }
 }
 
@@ -2444,7 +2465,7 @@ pub(crate) unsafe fn object_attr_lookup_with_policy(
     obj_ptr: *mut u8,
     attr_bits: u64,
     suppress: bool,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe {
         object_attr_lookup_with_mode(
             _py,
@@ -2462,9 +2483,9 @@ pub(crate) unsafe fn object_attr_lookup_with_mode(
     attr_bits: u64,
     suppress: bool,
     mode: AttributeLookupMode<'_>,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe {
-        object_attr_lookup_inner(
+        AttributeLookup::from_result(object_attr_lookup_inner(
             _py,
             MoltObject::from_ptr(obj_ptr).bits(),
             obj_ptr,
@@ -2472,7 +2493,7 @@ pub(crate) unsafe fn object_attr_lookup_with_mode(
             None,
             suppress,
             mode,
-        )
+        ))
     }
 }
 
@@ -2485,10 +2506,10 @@ pub(crate) unsafe fn object_attr_lookup_with_dict(
     name: u64,
     dictionary: u64,
     suppress: bool,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe {
         let pointer = maybe_ptr_from_bits(object).unwrap_or(std::ptr::null_mut());
-        object_attr_lookup_inner(
+        AttributeLookup::from_result(object_attr_lookup_inner(
             py,
             object,
             pointer,
@@ -2496,7 +2517,7 @@ pub(crate) unsafe fn object_attr_lookup_with_dict(
             Some(dictionary),
             suppress,
             AttributeLookupMode::Value,
-        )
+        ))
     }
 }
 
@@ -2818,10 +2839,9 @@ pub(crate) unsafe fn super_attr_lookup(
     py: &PyToken<'_>,
     proxy: *mut u8,
     name: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe {
-        let names_class =
-            crate::object::ops_format::string_obj_matches_bytes(obj_from_bits(name), b"__class__");
+) -> AttributeLookup {
+    AttributeLookup::from_result((|| unsafe {
+        let names_class = crate::NameId::from_bits(py, name) == Some(crate::NameId::DunderClass);
         let receiver = crate::super_obj_bits(proxy);
         let receiver_class = crate::object::layout::super_receiver_class_bits(proxy);
         if !names_class
@@ -2833,8 +2853,8 @@ pub(crate) unsafe fn super_attr_lookup(
             dec_ref_bits(py, selected);
             return bound;
         }
-        object_attr_lookup_with_policy(py, proxy, name, false)
-    }
+        object_attr_lookup_with_policy(py, proxy, name, false).into_result()
+    })())
 }
 
 /// Optimized super calls consume the same MRO-suffix selection as materialized
