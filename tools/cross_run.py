@@ -331,6 +331,8 @@ class Host:
     wsl_disk_gb: int | None = None
     wsl_memory_gb: int | None = None
     wsl_swap_gb: int | None = None
+    # The WSL release whose disk resize and compaction the design reviewed.
+    wsl_engine_version: str | None = None
     proof_build_gb: int = 20
     launcher: DetachedLauncher | None = None
     proof_cells: tuple[str, ...] = ()
@@ -401,6 +403,7 @@ def parse_inventory(path: Path) -> list[Host]:
             wsl_disk_gb=entry.get("wsl_disk_gb"),
             wsl_memory_gb=entry.get("wsl_memory_gb"),
             wsl_swap_gb=entry.get("wsl_swap_gb"),
+            wsl_engine_version=entry.get("wsl_engine_version"),
             proof_build_gb=entry.get("proof_build_gb", 20),
             launcher=DetachedLauncher(entry["launcher"])
             if "launcher" in entry
@@ -435,6 +438,8 @@ def parse_inventory(path: Path) -> list[Host]:
                 or not re.fullmatch(r"[A-Za-z0-9_-]+", host.wsl_distribution)
                 or not isinstance(host.wsl_vhdx, str)
                 or not host.wsl_vhdx.startswith("C:\\")
+                or not isinstance(host.wsl_engine_version, str)
+                or not re.fullmatch(r"\d+\.\d+\.\d+", host.wsl_engine_version)
                 or any(
                     type(v) is not int or v <= 0
                     for v in (host.wsl_disk_gb, host.wsl_memory_gb, host.wsl_swap_gb)
@@ -449,6 +454,7 @@ def parse_inventory(path: Path) -> list[Host]:
                 host.wsl_disk_gb,
                 host.wsl_memory_gb,
                 host.wsl_swap_gb,
+                host.wsl_engine_version,
             )
         ):
             raise ValueError(f"host {name!r}: WSL profile requires a distribution")

@@ -208,14 +208,17 @@ def admit_wsl_profile(host, transport, *, provision_disk: bool = False) -> dict:
             raise ValueError(
                 f"{host.name}: disk cap differs; run trunk_loop.py provision --host {host.name}"
             )
-        # WSL 3.0.3 shrinks ext4 BEFORE its VHDX (see the owning design).
-        # Refuse unknown implementations rather than probing by mutation.
+        # The reviewed WSL engine shrinks ext4 before its VHDX (see the owning
+        # design). Refuse unknown implementations rather than probing by mutation.
+        reviewed = str(host.wsl_engine_version)
         version = transport.windows_command("wsl.exe --version").replace("\0", "")
         if not re.fullmatch(
-            r".*:\s*3\.0\.3(?:\.0)?\s*", version.splitlines()[0] if version else ""
+            rf".*:\s*{re.escape(reviewed)}(?:\.0)?\s*",
+            version.splitlines()[0] if version else "",
         ):
             raise ValueError(
-                "disk provisioning requires the reviewed WSL 3.0.3 implementation"
+                f"disk provisioning requires the reviewed WSL {reviewed} implementation "
+                f"(tools/cross_hosts.toml wsl_engine_version for {host.name})"
             )
         name = ps(host.wsl_distribution)
         pending = ps(

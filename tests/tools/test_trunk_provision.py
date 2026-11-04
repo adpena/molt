@@ -476,6 +476,7 @@ def test_wsl_transfer_preserves_binary_bytes_and_leaf_identity(tmp_path, monkeyp
         ("wsl_distribution", "gate;echo"),
         ("wsl_disk_gb", 10),
         ("wsl_memory_gb", True),
+        ("wsl_engine_version", "3.0"),
     ],
 )
 def test_inventory_rejects_invalid_wsl_custody(tmp_path, field, value):
