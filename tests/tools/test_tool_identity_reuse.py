@@ -409,6 +409,22 @@ def test_rust_operation_environment_changes_invalidate_probe_reuse(name):
     assert name in command_identity.compile_environment_selection({name: "first"})
 
 
+def test_toolchain_selector_keys_probe_reuse_but_not_compiled_identity():
+    """HF-766: compiled identity binds resolved tool bytes, not the selector.
+
+    rustup resolves RUSTUP_TOOLCHAIN to the bytes a probe then hashes, so the
+    selector decides probe resolution. Its compiled effect is those bytes.
+    """
+    pinned = {"RUSTUP_TOOLCHAIN": "1.99.1"}
+    assert command_identity.compile_environment_selection(pinned) == {}
+    assert command_identity._probe_environment_selection(pinned) == {
+        "RUSTUP_TOOLCHAIN": command_identity.canonical_json_sha256("1.99.1")
+    }
+    assert command_identity._probe_environment_selection(pinned) != (
+        command_identity._probe_environment_selection({"RUSTUP_TOOLCHAIN": "nightly"})
+    )
+
+
 def test_native_dependency_empty_target_controls_remain_compile_and_probe_inputs():
     generic = {"AWS_LC_SYS_CMAKE_BUILDER": "1"}
     control = "AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu"
