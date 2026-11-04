@@ -410,9 +410,11 @@ oracles compare the selected source coordinates rather than the representation-s
 An arbitrary positive offset is insufficient evidence.
 
 An explicit `frame_set_location(LocationId)` publishes before operations that may raise or observe
-Python state, and before every source return, yield, suspension and exceptional exit. Only an
-existing proven pure, non-throwing, non-callback effect fact permits omission; missing facts are
-conservative. The opcode has no SSA operands/results, a nonnegative immediate, no Python callback
+Python state, and before every source return, yield, suspension and exceptional exit. The
+frontend emits it conservatively; the cost addendum below ("Location publication cost") removes
+every publication that no reader can observe, and an Origin edge materializes its own site.
+Only an existing proven pure, non-throwing, non-callback effect fact permits omission; missing
+facts are conservative. The opcode has no SSA operands/results, a nonnegative immediate, no Python callback
 or exception, and an impure side effect. Use the current conservative memory-effect representation
 if it cannot distinguish frame-observation memory. Optimizers may coalesce adjacent redundant
 publications only when every incoming path already carries the required location; they cannot
@@ -502,6 +504,160 @@ inside it is inconclusive, not a win. Repeat only an affected unresolved cell. D
 performance ratchet or methodology to admit a candidate. Record runtime calls, whole-program time,
 memory and binary size alongside counters. Generated synchronization, touched-reader checks and
 the landing precheck remain separate required evidence.
+
+#### Location publication cost (HF-764 correction, 2026-11-04)
+
+The owner's acceptance: the loop primitive costs no more instructions per iteration than base,
+recursion keeps its gain, and every semantic proof stays green.
+
+**Measured anatomy.** Loop primitive, N=1,000,000, `otool -tV` of `_loop__run`. Retired
+instructions rose from ~367.9 to ~401.7 per iteration (+33.8). The executing loop is the
+guarded counted range loop (`molt_guard_builtin_bindings` admits it), not the generic
+`molt_iter_next_unboxed` loop beside it. Its hot path is 128 instructions in base (22 loads,
+12 stores, 9 calls) and 163 in head (41 loads, 20 stores, 9 calls): +35, which matches the
+counter. The generic loop also grew (104 to 128) but does not execute. Head adds 36 instructions
+and drops 1 register move:
+
+1. Six publications per iteration (`frame_set_location` 6, 6, 7, 9, 8, 6): 16 instructions. They
+   precede the header `lt`, the store of `i`, two binding reads, `inplace_add` and the latch
+   `add`. None of these can run Python code: the operands are exact ints, and the stores
+   release only ints.
+2. Six reloads of the frame-home base from a spill slot. Cranelift hoists the loop-invariant
+   location constants 7, 8 and 9 into callee-saved registers; the home base loses its register.
+3. Three pending-exception reads that base does not execute, 4 instructions each, and one spill
+   of the `lt` result for the first: 13 instructions. See M3.
+4. One reload of the loop bound from a spill slot (register pressure).
+
+**M1. An Origin edge materializes its own site.** An Origin check observes the failure of one
+operation, so its location is a constant when one publication reaches it on every path. The
+placement pass (M2) computes it with a forward reaching-publication analysis over the
+conservative stream and records it on the check as the TIR attr `frame_location`; SimpleIR
+carries it as `OpIR.frame_location`. The schema rejects it on any operation that is not an
+Origin check. On the taken Origin edge, native, LLVM and WASM store the constant into the
+frame's location word, then call `molt_exception_frame_origin`. On a check marked
+`async_work_poll`, they also store it at the start of the cold service path, because a pending
+call or signal handler is Python code that can read the frame. A check that no single
+publication reaches gets no attr and stays a reader. The normal path has no store. WASM needs
+no return address: the store is explicit.
+
+**M2. One placement pass deletes unobservable publications.** `frame_location_placement` is the
+last pass of the terminal drop pipeline, so it sees final types and inserted releases. It is a
+backward liveness of the location word over the CFG, exception edges included.
+
+- *Writes:* `frame_set_location`; the taken edge of an Origin check, and the service path of a
+  poll, that carry `frame_location`; function entry. The runtime writes ABSENT at a fresh frame
+  entry (`FrameBindings::enter`) and restores the saved word at a resume, so the word never holds
+  another code object's LocationId.
+- *Reads* (fail-closed: an operation is a read unless the facts below clear it): (a) an
+  operation whose typed effects (`op_effects_with_types` over the exact scalar map) may call
+  Python, except the release callbacks in M2.1. Native frame introspection (`getframe`,
+  `frame_locals`), warnings and attribute access are calls or carriers outside
+  `callback_free_copy_kinds`, so they are reads; (b) a state-machine opcode
+  (`opcode_is_state_machine_table`: suspension saves the word, resume restores it); (c) a
+  `Return` terminator. Every frame-retiring path ends in one and first runs `trace_exit`, also a
+  read: normal return, the pending-error exit, generator completion and backend-generated exits
+  alike. So a `finally` body's last publication before an exceptional exit stays live; (d) an
+  Origin check or a poll without `frame_location`.
+- An Unwind edge forwards the handler's liveness unchanged. A `TryStart` edge needs no term:
+  only `Raise` transfers through it (WASM native EH), and `Raise` is a read (an operation, not a
+  check; its transport check is Unwind).
+
+The pass deletes each publication that no read can observe. Liveness preserves the word's value
+at every read, so every remaining reader sees what the conservative stream showed it. The pass
+only adds attrs and deletes publications, so it is idempotent. Inlining cannot mix two code
+tables in one word: the TIR inliner refuses any callee with an execution context
+(`inliner/eligibility.rs`). A typed target lowering feature, `cold_origin_frame_location` in
+`SimpleIrLoweringFeatures`, gates the pass. It commits a backend to both cold stores and is true
+for native, LLVM and WASM. Luau and Rust keep every publication: Luau publishes line and
+columns with each location and has no code table to recover them from a LocationId, and the
+Rust backend captures no Origin.
+
+**M2.1. Which release callbacks read the location.** A release can start a finalizer
+(`__del__`, a weakref callback) that reads the frame. Two releases are not reads:
+
+1. `DecRef` of a temporary. Drop insertion places it at the value's last use, which is not a
+   CPython release point, so the statement in which such a finalizer runs is not a CPython
+   contract today. Its finalizer sees the frame's last surviving publication.
+2. A frame-home store or clear (`frame_home_store`, `frame_home_clear`) whose previous binding is
+   proven finalizer-free: unbound or an exact builtin scalar. A forward slot-content analysis in
+   the pass proves it. A fresh synchronous frame starts with every home unbound (the arena
+   zeroes them); a stateful or inherited frame starts unknown. A store records whether its value
+   is an exact scalar. A synchronous read (a call that may run Python) makes every slot unknown,
+   because a callback can rebind a local through a PEP 667 proxy. A poll does not: compiled
+   code keeps local bindings in SSA across a poll and does not re-read its homes there, so a
+   poll callback's rebinding is already outside the compiled contract.
+
+Every other release keeps its read: rebinding or `del` of a value not proven finalizer-free
+(`ResourceWarning` lines depend on it), `DeleteVar` and `DelBoundary`. The classification is
+typed: `op_kinds.toml` lists `temporary_release_opcodes` (`DecRef`) and
+`binding_release_copy_kinds` (`frame_home_store`, `frame_home_clear`, whose only Python
+callback is releasing the previous binding of home `value`), rendered as exhaustive
+predicates; the generator rejects a member whose callback capability is false. Out-of-band
+observers, such as `sys._current_frames` or faulthandler from another thread, see the last
+surviving publication. That is a second explicit boundary; CPython's own answer there depends on
+where the eval loop yields.
+
+**M3. Restore base's check set in the counted range loop.** The lane removed the range loop's
+check suppression, so the frontend now emits an Origin check after the header `lt`, after the
+loop-variable store, and after the latch `add`; TIR keeps three of them, because Copy carriers
+(`frame_home_store`, `line`) are conservatively may-raise and the `stop` bound (an
+`operator_index` result) has no exact type. That index machinery cannot raise: `range()` bounds
+come from `_emit_range_bound` (an exact int, or `operator.index`, whose result has exact type
+`int` since CPython 3.10); the index starts at an exact int and adds an exact-int step, and an
+overflow promotes to a big int instead of raising; a simple-name binding stores memory, and a
+finalizer error during its release is unraisable. Resource exhaustion is outside the semantic
+exception lattice (`op_kinds.toml`). So the frontend restores base's suppression scopes around
+the header (`loop_start`, `loop_index_start`, `lt`, `loop_break_if_false`, simple-name binding)
+and the latch (`add`, `loop_index_next`, `loop_continue`), byte for byte. The scope marks those
+operations `exception_source = unwind`, which the event verifier accepts: they produce no Origin
+event. Non-simple targets stay outside the scope, as in base. A frontend test pins the absence
+of checks in that machinery.
+
+**Invariants.**
+
+1. At every read, the word holds the value the conservative stream held there (M2 liveness),
+   except a finalizer of a release that M2.1 exempts, which sees the last surviving publication.
+2. An Origin capture records the failing site's own LocationId on native, LLVM and WASM when one
+   publication reaches its check, and otherwise reads the preserved word (M1).
+3. Measured gate, per backend: the normal path of a loop whose operations cannot call Python,
+   except through M2.1 releases, contains no location store. The absence of home-base reloads
+   is a register-allocation outcome; the `otool` count gates it on native. On LLVM and WASM the
+   cold constant is an immediate at its use.
+4. A target without `cold_origin_frame_location` runs no placement pass.
+
+**Consumers.** SimpleIR schema and transport (`ir.rs`, `ir_schema.rs`, SSA lift,
+`lower_to_simple`, `addressed_program.rs`); `op_kinds.toml` and the generators (two lists);
+`target_info.rs` (feature); the pass and its pipeline slot; native `exception_control.rs`,
+`scalar_carriers.rs` and the frame-home lend predicate; LLVM `op_dispatch.rs`,
+`value_materialization.rs` and the lend predicate; WASM `emission.rs`, `pending_work.rs`, both
+check emitters and the lend predicate; frontend `loop_lowering.py` (M3). A function whose last
+publication the pass deletes still lends its homes when a check carries `frame_location`.
+
+**Tests.** Pass unit tests: a counted loop of exact-int operations keeps no publication; a call
+keeps its publication; a release-only store of a finalizer-free binding does not, and one after
+a call does; `Return`, a state-machine opcode, an Origin check reached by two different
+publications, and an Unwind edge into an observing handler each keep the reaching publication;
+an Origin check reached by one publication gets that `frame_location`. A frontend test: the
+counted range loop's header and latch emit no exceptional check. The nine core cells (frame
+fields, lifecycle, event adversaries on native, LLVM and WASM), the whole
+`tests/test_python_execution_frame.py` and the frontend location witnesses stay green. Cost:
+loop and recursion instructions-retired A/B against `origin/main`, N=1,000,000, five pairs, and
+the static hot-path count from `otool`.
+
+**Prior art.** HotSpot and V8 record a bytecode index at each call site and recover it at
+observation (PcDesc, safepoint tables); Go recovers lines from return PCs (`pclntab`). They pay
+nothing on the hot path but need a readable return address. WASM cannot read one, so Molt keeps
+explicit stores and moves them to the reads, as LLVM's dead-store elimination does for any
+memory location whose loads it can see.
+
+**Review record.** One fresh-context Goldfish design review (egm-design, 2026-11-04) raised two
+blockers and six majors. Adopted: every frame-retiring path is a read (c); entry is a write and
+the runtime initializes the word; fail-closed reads; the inliner fact; `frame_location` computed
+in the pass, not copied from the frontend; M2.1 narrowed from all releases to temporaries and
+proven finalizer-free bindings; M3 made concrete; Invariant 3 made a measured gate. Not adopted:
+passing the LocationId to `molt_exception_frame_origin` as an argument. It is the same constant
+in a register, so it neither removes the hoisting risk nor the poll-path store, and it changes
+the runtime ABI of five backends.
 
 ### 4.4 Exceptions
 
