@@ -27,6 +27,10 @@ impl<T> AttributeLookup<T> {
     }
 
     /// Transfer into a fallible computation while retaining absence explicitly.
+    #[allow(
+        clippy::result_unit_err,
+        reason = "joins unit-error computations; Error preserves the pending Python exception"
+    )]
     #[inline]
     pub fn into_result(self) -> Result<Option<T>, ()> {
         match self {

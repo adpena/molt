@@ -4,9 +4,7 @@ use super::raised_state::{
     RaisedSnapshot, discard_current_raised, release_raised, resolve_raised, take_raised,
 };
 use super::*;
-use crate::{
-    call_callable1, molt_get_attr_name, molt_is_callable, molt_sys_stderr, object_class_bits,
-};
+use crate::{call_callable1, molt_is_callable, molt_sys_stderr, object_class_bits};
 
 fn try_join_text(parts: &[&str]) -> Option<String> {
     let capacity = parts
@@ -691,6 +689,7 @@ fn report_unraisable_exception(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::molt_get_attr_name;
 
     fn ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");

@@ -1,5 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
+use crate::missing_bits;
 
 const LOOKUP_HIT: u64 = 0;
 const LOOKUP_KEY_ERROR: u64 = 1;

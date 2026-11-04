@@ -1406,9 +1406,11 @@ pub(crate) unsafe fn lookup_async_special_method(
     bits: u64,
     name: crate::NameId,
 ) -> AttributeLookup {
-    AttributeLookup::from_result((|| unsafe {
-        let method = lookup_special_method(py, bits, name).into_result();
-        if method.is_err() && !crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+    unsafe {
+        let method = lookup_special_method(py, bits, name);
+        if matches!(method, AttributeLookup::Error)
+            && !crate::object::ops_sys::runtime_target_at_least(py, 3, 14)
+        {
             crate::clear_exception(py);
             let message = format!(
                 "object {} does not have {} method",
@@ -1418,7 +1420,7 @@ pub(crate) unsafe fn lookup_async_special_method(
             raise_exception::<()>(py, BuiltinExc::AttributeError, &message);
         }
         method
-    })())
+    }
 }
 
 pub(crate) unsafe fn is_iterator_bits(_py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {

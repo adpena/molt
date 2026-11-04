@@ -1,5 +1,5 @@
 use super::*;
-use crate::BuiltinExc;
+use crate::{BuiltinExc, missing_bits};
 use std::sync::atomic::Ordering;
 
 #[test]

@@ -28,7 +28,7 @@ use crate::{
     call_callable1, call_callable2, class_mro_vec, clear_exception, dec_ref_bits,
     dict_del_in_place, dict_get_in_place, dict_set_in_place, exception_pending, format_obj_str,
     frame_stack_active_globals_bits, has_capability, inc_ref_bits, init_atomic_bits, is_truthy,
-    missing_bits, module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
     molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
     molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits, object_type_id,
     ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
