@@ -517,6 +517,7 @@ fn raw_module_allocation_seeds_public_name_metadata() {
             assert!(!name_key_ptr.is_null());
             let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
             let found_name_bits = module_attr_lookup(_py, module_ptr, name_key_bits)
+                .into_result()
                 .expect("module name lookup succeeds")
                 .expect("module __name__ exists");
             let found_name = string_obj_to_owned(obj_from_bits(found_name_bits));

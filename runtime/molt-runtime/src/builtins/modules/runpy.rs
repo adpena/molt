@@ -114,15 +114,9 @@ fn runpy_optional_attr(
     target_bits: u64,
     name_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(target_bits, name_bits, missing);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if is_missing_bits(_py, value_bits) {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    crate::lookup_attribute(_py, target_bits, name_bits)
+        .into_result()
+        .map_err(|()| MoltObject::none().bits())
 }
 
 fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, u64> {

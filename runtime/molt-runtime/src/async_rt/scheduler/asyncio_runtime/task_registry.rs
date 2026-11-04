@@ -7,9 +7,8 @@ use crate::PyToken;
 use crate::async_rt::cancellation::current_token_id;
 use crate::{
     MoltObject, alloc_list, alloc_string, bits_from_ptr, call_callable0, dec_ref_bits,
-    exception_pending, inc_ref_bits, is_missing_bits, is_truthy, missing_bits,
-    molt_getattr_builtin, molt_set_add, molt_set_new, obj_from_bits, raise_exception,
-    resolve_task_ptr, runtime_state,
+    exception_pending, inc_ref_bits, is_truthy, molt_set_add, molt_set_new, obj_from_bits,
+    raise_exception, resolve_task_ptr, runtime_state,
 };
 
 use super::super::current_task_ptr;
@@ -102,17 +101,20 @@ fn asyncio_task_registry_current_for_loop_impl(_py: &PyToken<'_>, loop_bits: u64
         return MoltObject::none().bits();
     }
     let loop_name_bits = MoltObject::from_ptr(loop_name_ptr).bits();
-    let missing = missing_bits(_py);
-    let loop_attr_bits = molt_getattr_builtin(task_bits, loop_name_bits, missing);
+    let result = crate::lookup_attribute(_py, task_bits, loop_name_bits);
     dec_ref_bits(_py, loop_name_bits);
-    if exception_pending(_py) {
-        dec_ref_bits(_py, task_bits);
-        return MoltObject::none().bits();
-    }
-    let matches = !is_missing_bits(_py, loop_attr_bits) && loop_attr_bits == loop_bits;
-    if !obj_from_bits(loop_attr_bits).is_none() {
-        dec_ref_bits(_py, loop_attr_bits);
-    }
+    let matches = match result {
+        crate::AttributeLookup::Found(bits) => {
+            let matches = bits == loop_bits;
+            dec_ref_bits(_py, bits);
+            matches
+        }
+        crate::AttributeLookup::Missing => false,
+        crate::AttributeLookup::Error => {
+            dec_ref_bits(_py, task_bits);
+            return MoltObject::none().bits();
+        }
+    };
     if matches {
         task_bits
     } else {
@@ -210,7 +212,6 @@ fn asyncio_task_registry_live_values_impl(
         return Err(MoltObject::none().bits());
     }
     let loop_name_bits = MoltObject::from_ptr(loop_name_ptr).bits();
-    let missing = missing_bits(_py);
     let mut out_bits: Vec<u64> = Vec::new();
 
     for task_bits in values {
@@ -218,8 +219,30 @@ fn asyncio_task_registry_live_values_impl(
             continue;
         }
         if let Some(loop_filter) = target_loop {
-            let loop_attr_bits = molt_getattr_builtin(task_bits, loop_name_bits, missing);
-            if exception_pending(_py) {
+            let matches = match crate::lookup_attribute(_py, task_bits, loop_name_bits) {
+                crate::AttributeLookup::Found(bits) => {
+                    let matches = bits == loop_filter;
+                    dec_ref_bits(_py, bits);
+                    matches
+                }
+                crate::AttributeLookup::Missing => false,
+                crate::AttributeLookup::Error => {
+                    for bits in out_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    dec_ref_bits(_py, done_name_bits);
+                    dec_ref_bits(_py, loop_name_bits);
+                    return Err(MoltObject::none().bits());
+                }
+            };
+            if !matches {
+                continue;
+            }
+        }
+        let done_method_bits = match crate::lookup_attribute(_py, task_bits, done_name_bits) {
+            crate::AttributeLookup::Found(bits) => bits,
+            crate::AttributeLookup::Missing => continue,
+            crate::AttributeLookup::Error => {
                 for bits in out_bits {
                     dec_ref_bits(_py, bits);
                 }
@@ -227,29 +250,7 @@ fn asyncio_task_registry_live_values_impl(
                 dec_ref_bits(_py, loop_name_bits);
                 return Err(MoltObject::none().bits());
             }
-            let matches = !is_missing_bits(_py, loop_attr_bits) && loop_attr_bits == loop_filter;
-            if !obj_from_bits(loop_attr_bits).is_none() {
-                dec_ref_bits(_py, loop_attr_bits);
-            }
-            if !matches {
-                continue;
-            }
-        }
-        let done_method_bits = molt_getattr_builtin(task_bits, done_name_bits, missing);
-        if exception_pending(_py) {
-            for bits in out_bits {
-                dec_ref_bits(_py, bits);
-            }
-            dec_ref_bits(_py, done_name_bits);
-            dec_ref_bits(_py, loop_name_bits);
-            return Err(MoltObject::none().bits());
-        }
-        if is_missing_bits(_py, done_method_bits) {
-            if !obj_from_bits(done_method_bits).is_none() {
-                dec_ref_bits(_py, done_method_bits);
-            }
-            continue;
-        }
+        };
         let done_bits = unsafe { call_callable0(_py, done_method_bits) };
         dec_ref_bits(_py, done_method_bits);
         if exception_pending(_py) {

@@ -1361,6 +1361,25 @@ cache. A class created at run time outside the verified subset takes the
 generic protocol; this planned work does not widen the subset contract.
 HF-685 measures construction before choosing its representation.
 
+The shared lookup boundary is `molt_obj_model::AttributeLookup<T>`: `Found`
+transfers one owned value (runtime bits or a native object, including `None`
+or `0.0`), `Missing` creates no exception, and
+`Error` preserves the pending Python failure. Object, scalar, type, module and
+special-method observers and native C-API generic/type observers use this
+result; raw namespace and descriptor
+computations retain Rust's fallible computation protocol internally. Required
+Python entrypoints construct `AttributeError` after the complete lookup misses.
+`lookup_attribute` implements optional observation, suppressing only a real
+`AttributeError` from a hook or descriptor. Internal optional readers do not
+call required lookup with the public missing-default sentinel. A plain
+attribute transaction pins callback arguments without pushing a synthetic
+exception handler; the fallback transaction still handles `__getattr__`.
+`tests/differential/basic/attribute_optional_lookup.py` covers presence, slots,
+hook and descriptor failures, modules, type protocols and surrounding exception
+state. Source implementation does not establish target qualification; the
+[release ledger](../agent/V1_HANDOFF_FINDINGS.md) owns that evidence and the
+remaining closed-world compilation obligations.
+
 **Refuse.** [I] Name-matched method lowering, exceptions for ordinary misses,
 or applying a single-tree interval test to an arbitrary Python class DAG.
 

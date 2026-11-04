@@ -406,7 +406,9 @@ pub(crate) unsafe fn class_apply_descriptor_names(_py: &PyToken<'_>, class_ptr: 
                 _py,
                 value_bits,
                 crate::NameId::DunderSetName,
-            ) {
+            )
+            .into_result()
+            {
                 Ok(Some(value)) => value,
                 Ok(None) => continue,
                 Err(()) => return false,

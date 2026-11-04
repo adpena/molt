@@ -46,8 +46,8 @@ use crate::{
     builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_type_cache,
     clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
     dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
-    exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush,
-    molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
+    exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush, obj_from_bits,
+    object_type_id, reset_ptr_registry, runtime_state,
 };
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -1368,11 +1368,14 @@ fn flush_stdio_target(_py: &PyToken<'_>, target_bits: u64) {
         }
     }
     let flush_name_bits = crate::NameId::Flush.bits(_py);
-    let flush_bits = molt_get_attr_name(target_bits, flush_name_bits);
-    if exception_pending(_py) {
-        clear_exception(_py);
-        return;
-    }
+    let flush_bits = match crate::lookup_attribute(_py, target_bits, flush_name_bits) {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => return,
+        crate::AttributeLookup::Error => {
+            clear_exception(_py);
+            return;
+        }
+    };
     let res_bits = unsafe { call_callable0(_py, flush_bits) };
     dec_ref_bits(_py, flush_bits);
     dec_ref_bits(_py, res_bits);

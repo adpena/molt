@@ -371,27 +371,26 @@ pub(crate) fn report_captured_unraisable(
     }
 }
 
-pub(super) fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
+pub(super) fn sys_attr_bits(_py: &PyToken<'_>, name: crate::NameId) -> u64 {
     let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py) else {
         return MoltObject::none().bits();
     };
     inc_ref_bits(_py, sys_bits);
-
-    let Some(name_bits) = dynamic_attr_name_bits(_py, name) else {
+    let name = name.bits(_py);
+    if name == 0 {
         dec_ref_bits(_py, sys_bits);
         return MoltObject::none().bits();
-    };
-    let value_bits = molt_get_attr_name(sys_bits, name_bits);
-    dec_ref_bits(_py, name_bits);
-    dec_ref_bits(_py, sys_bits);
-    if exception_pending(_py) || obj_from_bits(value_bits).is_none() {
-        discard_current_raised(_py);
-        if !obj_from_bits(value_bits).is_none() {
-            dec_ref_bits(_py, value_bits);
-        }
-        return MoltObject::none().bits();
     }
-    value_bits
+    let result = crate::lookup_attribute(_py, sys_bits, name);
+    dec_ref_bits(_py, sys_bits);
+    match result {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => MoltObject::none().bits(),
+        crate::AttributeLookup::Error => {
+            discard_current_raised(_py);
+            MoltObject::none().bits()
+        }
+    }
 }
 
 pub(crate) fn context_repr(_py: &PyToken<'_>, context_bits: u64) -> String {
@@ -564,7 +563,7 @@ fn try_hook(
     exc_bits: u64,
     err_msg: Option<&str>,
 ) -> HookOutcome {
-    let hook_bits = sys_attr_bits(_py, b"unraisablehook");
+    let hook_bits = sys_attr_bits(_py, crate::NameId::Unraisablehook);
     if obj_from_bits(hook_bits).is_none()
         || !is_truthy(_py, obj_from_bits(molt_is_callable(hook_bits)))
     {
@@ -624,7 +623,7 @@ fn write_stderr_line(_py: &PyToken<'_>, text: &str) {
         return;
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    let stderr_bits = sys_attr_bits(_py, b"stderr");
+    let stderr_bits = sys_attr_bits(_py, crate::NameId::Stderr);
     let stderr_bits = if obj_from_bits(stderr_bits).is_none() {
         molt_sys_stderr()
     } else {

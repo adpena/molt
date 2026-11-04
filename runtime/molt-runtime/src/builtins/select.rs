@@ -10,8 +10,8 @@ use crate::{
     IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_LIST, TYPE_ID_TUPLE,
     alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, call_callable0, dec_ref_bits,
     dynamic_attr_name_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    missing_bits, molt_getattr_builtin, molt_is_callable, monotonic_now_secs, obj_from_bits,
-    opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr, to_f64, to_i64,
+    molt_is_callable, monotonic_now_secs, obj_from_bits, opaque_handle_bits, ptr_from_bits,
+    raise_exception, release_ptr, to_f64, to_i64,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
@@ -124,16 +124,9 @@ fn get_attr_optional(
     let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits).into_result();
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
 fn select_construct_private_object(
@@ -154,20 +147,20 @@ fn select_construct_private_object(
         dec_ref_bits(_py, module_bits);
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let class_bits = molt_getattr_builtin(module_bits, class_name_bits, missing);
+    let result = crate::lookup_attribute(_py, module_bits, class_name_bits);
     dec_ref_bits(_py, class_name_bits);
     dec_ref_bits(_py, module_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if class_bits == missing {
-        return Err(raise_exception::<u64>(
-            _py,
-            BuiltinExc::RuntimeError,
-            "select backend class is unavailable",
-        ));
-    }
+    let class_bits = match result {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => {
+            return Err(raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "select backend class is unavailable",
+            ));
+        }
+        crate::AttributeLookup::Error => return Err(MoltObject::none().bits()),
+    };
     if !is_truthy(_py, obj_from_bits(molt_is_callable(class_bits))) {
         dec_ref_bits(_py, class_bits);
         return Err(raise_exception::<u64>(

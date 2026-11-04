@@ -1478,6 +1478,14 @@ unsafe extern "C" fn hook_object_get_attr(
 ) -> OwnedHandleResult {
     with_gil(|py| {
         if access == AttributeAccess::Normal {
+            if suppress {
+                return match crate::lookup_attribute(&py, obj_bits, name_bits) {
+                    crate::AttributeLookup::Found(bits) => OwnedHandleResult::ok(bits),
+                    crate::AttributeLookup::Missing => OwnedHandleResult::missing(),
+                    crate::AttributeLookup::Error => OwnedHandleResult::error(),
+                };
+            }
+
             return match crate::builtins::attributes::get_attr_name(&py, obj_bits, name_bits) {
                 Ok(bits) => OwnedHandleResult::ok(bits),
                 Err(()) => OwnedHandleResult::error(),
@@ -1488,6 +1496,7 @@ unsafe extern "C" fn hook_object_get_attr(
                 crate::builtins::attr::object_attr_lookup_with_dict(
                     &py, obj_bits, name_bits, dictionary, suppress,
                 )
+                .into_result()
             }
         } else {
             crate::object::ops_builtins::object_getattribute(obj_bits, name_bits, suppress)
@@ -8187,6 +8196,7 @@ mod tests {
                     MoltObject::from_bits(function).as_ptr().unwrap(),
                     qualname,
                 )
+                .into_result()
                 .expect("public native callable qualified name lookup")
                 .expect("public native callable qualified name");
                 assert_eq!(

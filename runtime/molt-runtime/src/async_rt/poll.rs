@@ -987,6 +987,7 @@ mod tests {
                             crate::obj_from_bits(owner).as_ptr().unwrap(),
                             code_attr,
                         )
+                        .into_result()
                     }
                     .expect("frame attribute lookup succeeds")
                     .expect("frame attribute exists");
@@ -1000,6 +1001,7 @@ mod tests {
                             crate::obj_from_bits(owner).as_ptr().unwrap(),
                             attr,
                         )
+                        .into_result()
                     }
                     .expect("frame attribute lookup succeeds")
                     .expect("frame attribute exists");
@@ -1024,6 +1026,7 @@ mod tests {
                                 crate::obj_from_bits(frame).as_ptr().unwrap(),
                                 name,
                             )
+                            .into_result()
                         }
                         .expect("frame attribute lookup succeeds")
                         .expect("frame attribute exists");

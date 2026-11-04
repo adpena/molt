@@ -1,6 +1,9 @@
 //! Core object representation for Molt.
 //! Uses NaN-boxing to represent primitives and heap pointers in 64 bits.
 
+mod attribute_lookup;
+pub use attribute_lookup::AttributeLookup;
+
 pub mod byte_compare;
 pub mod exception_layout;
 pub mod exception_render;

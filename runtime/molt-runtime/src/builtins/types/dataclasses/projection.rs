@@ -135,23 +135,20 @@ fn dataclasses_deepcopy(_py: &PyToken<'_>, value_bits: u64) -> u64 {
         dec_ref_bits(_py, memo_bits);
         return MoltObject::none().bits();
     };
-    let missing = missing_bits(_py);
-    let deepcopy_bits = molt_getattr_builtin(value_bits, deepcopy_name_bits, missing);
+    let result = crate::lookup_attribute(_py, value_bits, deepcopy_name_bits);
     dec_ref_bits(_py, deepcopy_name_bits);
-    if exception_pending(_py) {
-        if !crate::builtins::attr::clear_attribute_error_if_pending(_py) {
+    let deepcopy_bits = match result {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => {
+            dec_ref_bits(_py, memo_bits);
+            inc_ref_bits(_py, value_bits);
+            return value_bits;
+        }
+        crate::AttributeLookup::Error => {
             dec_ref_bits(_py, memo_bits);
             return MoltObject::none().bits();
         }
-        dec_ref_bits(_py, memo_bits);
-        inc_ref_bits(_py, value_bits);
-        return value_bits;
-    }
-    if deepcopy_bits == missing {
-        dec_ref_bits(_py, memo_bits);
-        inc_ref_bits(_py, value_bits);
-        return value_bits;
-    }
+    };
     let out_bits = unsafe { call_callable1(_py, deepcopy_bits, memo_bits) };
     dec_ref_bits(_py, deepcopy_bits);
     dec_ref_bits(_py, memo_bits);

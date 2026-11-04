@@ -21,3 +21,20 @@ print(wrapped.__name__)
 print(wrapped.__doc__)
 print(wrapped(1, 2))
 print(wrapped.__wrapped__ is base)
+
+
+# Missing optional metadata and __dict__ must not become required lookups.
+class Wrapped:
+    __slots__ = ()
+
+    def __call__(self):
+        return 17
+
+
+def wrapper():
+    return 23
+
+
+wrapped = Wrapped()
+functools.update_wrapper(wrapper, wrapped)
+print("wrapper-probe", wrapper.__wrapped__ is wrapped, wrapper())

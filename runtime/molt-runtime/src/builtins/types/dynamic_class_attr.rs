@@ -13,23 +13,17 @@ fn dynamic_class_attr_get(
     name: crate::NameId,
     default_bits: u64,
 ) -> Option<AttrValue> {
-    let missing = missing_bits(_py);
     let name_bits = name.owned_bits(_py)?;
-    let val_bits = crate::molt_get_attr_name_default(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        return None;
-    }
-    if val_bits == missing {
-        return Some(AttrValue {
+    match result {
+        crate::AttributeLookup::Found(bits) => Some(AttrValue { bits, owned: true }),
+        crate::AttributeLookup::Missing => Some(AttrValue {
             bits: default_bits,
             owned: false,
-        });
+        }),
+        crate::AttributeLookup::Error => None,
     }
-    Some(AttrValue {
-        bits: val_bits,
-        owned: true,
-    })
 }
 
 fn dynamic_class_attr_set(
