@@ -286,6 +286,12 @@ impl<'a> SsaContext<'a> {
                 }
             }
         }
+        if let Some(source) = op.exception_source {
+            attrs.insert("exception_source".into(), AttrValue::Int(source as i64));
+        }
+        if let Some(edge) = op.exception_edge {
+            attrs.insert("exception_edge".into(), AttrValue::Int(edge as i64));
+        }
         if op.async_work_poll {
             assert!(
                 op.kind.may_carry_async_work_poll_marker(),

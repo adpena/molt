@@ -433,33 +433,32 @@ class CallReductionMixin(GeneratorMixinBase):
         body_ops: list[MoltOp] = []
         self.current_ops = body_ops
         try:
-            with self._suppress_check_exception(emit_on_exit=False):
-                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-                idx = MoltValue(self.next_var(), type_hint="int")
-                if step_const is not None:
-                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-                    cond = MoltValue(self.next_var(), type_hint="bool")
-                    if step_const > 0:
-                        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-                    else:
-                        self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
-                    item = idx
+            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+            idx = MoltValue(self.next_var(), type_hint="int")
+            if step_const is not None:
+                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+                cond = MoltValue(self.next_var(), type_hint="bool")
+                if step_const > 0:
+                    self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
                 else:
-                    assert range_obj is not None
-                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[zero], result=idx))
-                    cond = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
-                self.emit(
-                    MoltOp(
-                        kind="LOOP_BREAK_IF_FALSE",
-                        args=[cond],
-                        result=MoltValue("none"),
-                    )
+                    self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+                item = idx
+            else:
+                assert range_obj is not None
+                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[zero], result=idx))
+                cond = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
+            self.emit(
+                MoltOp(
+                    kind="LOOP_BREAK_IF_FALSE",
+                    args=[cond],
+                    result=MoltValue("none"),
                 )
-                if step_const is None:
-                    assert range_obj is not None
-                    item = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="INDEX", args=[range_obj, idx], result=item))
+            )
+            if step_const is None:
+                assert range_obj is not None
+                item = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="INDEX", args=[range_obj, idx], result=item))
             # Bind the comprehension target to the int-typed counted value. `x`
             # is a raw i64 (loop_index_start result, or an int-hinted INDEX into
             # the range), so the element expression and accumulator raw-lane.
@@ -478,15 +477,12 @@ class CallReductionMixin(GeneratorMixinBase):
                     self.locals[name] = prior
                 else:
                     self.locals.pop(name, None)
-            with self._suppress_check_exception(emit_on_exit=False):
-                advance = step if step_const is not None else one
-                next_idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx, advance], result=next_idx))
-                self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            advance = step if step_const is not None else one
+            next_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="ADD", args=[idx, advance], result=next_idx))
+            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         finally:
             self.current_ops = saved_ops
 

@@ -256,17 +256,19 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
         // live in its task payload. The pushed entry is popped by this
         // invocation's exit even when the homes cannot be taken, and compiled
         // code borrows them only after this entry's exception check passed.
-        if activation_bits == 0 {
-            let plan = runtime_state(_py)
+        let plan = if activation_bits == 0 {
+            runtime_state(_py)
                 .code_slots
                 .get()
                 .and_then(|slots| slots.get(usize::try_from(code_id).ok()?))
                 .map(CompiledCodeSlot::frame_plan)
-                .unwrap_or_default();
-            if !crate::builtins::frames::frame_stack_enter_homes(plan) {
-                crate::record_memory_error_without_allocation(_py);
-                return MoltObject::none().bits();
-            }
+                .unwrap_or_default()
+        } else {
+            crate::builtins::frames::FramePlan::default()
+        };
+        if !crate::builtins::frames::frame_stack_enter_homes(_py, plan) {
+            crate::record_memory_error_without_allocation(_py);
+            return MoltObject::none().bits();
         }
         // The frame stack now owns the code edge; an owned-result sink must
         // never receive that borrowed edge as the result of this mutator.
@@ -1494,7 +1496,6 @@ pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
         {
             eprintln!("MOLT_TRACE_LINE_PENDING {} {} {}", line, kind, detail);
         }
-        frame_stack_set_line(line);
         MoltObject::none().bits()
     })
 }

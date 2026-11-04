@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Final, Literal
 
 FrontendOpKind = Literal[
@@ -253,6 +254,7 @@ FrontendOpKind = Literal[
     'FRAME_HOME_TAKE',
     'FRAME_LOCALS',
     'FRAME_LOCALS_SET',
+    'FRAME_SET_LOCATION',
     'FREE',
     'FROZENSET_ADD',
     'FROZENSET_NEW',
@@ -788,6 +790,7 @@ WireOpKind = Literal[
     'frame_home_take',
     'frame_locals',
     'frame_locals_set',
+    'frame_set_location',
     'free',
     'frozenset_add',
     'frozenset_new',
@@ -1315,6 +1318,7 @@ class FrontendKinds:
     FRAME_HOME_TAKE: Final = 'FRAME_HOME_TAKE'
     FRAME_LOCALS: Final = 'FRAME_LOCALS'
     FRAME_LOCALS_SET: Final = 'FRAME_LOCALS_SET'
+    FRAME_SET_LOCATION: Final = 'FRAME_SET_LOCATION'
     FREE: Final = 'FREE'
     FROZENSET_ADD: Final = 'FROZENSET_ADD'
     FROZENSET_NEW: Final = 'FROZENSET_NEW'
@@ -1850,6 +1854,7 @@ class WireKinds:
     FRAME_HOME_TAKE: Final = 'frame_home_take'
     FRAME_LOCALS: Final = 'frame_locals'
     FRAME_LOCALS_SET: Final = 'frame_locals_set'
+    FRAME_SET_LOCATION: Final = 'frame_set_location'
     FREE: Final = 'free'
     FROZENSET_ADD: Final = 'frozenset_add'
     FROZENSET_NEW: Final = 'frozenset_new'
@@ -2376,6 +2381,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'FRAME_HOME_TAKE': 'frame_home_take',
     'FRAME_LOCALS': 'frame_locals',
     'FRAME_LOCALS_SET': 'frame_locals_set',
+    'FRAME_SET_LOCATION': 'frame_set_location',
     'FREE': 'free',
     'FROZENSET_ADD': 'frozenset_add',
     'FROZENSET_NEW': 'frozenset_new',
@@ -2927,6 +2933,10 @@ def frontend_operator_facts(kind: FrontendOpKind, *operands: str | None) -> tupl
     key = tuple(ty for ty in operands if ty is not None)
     return _FRONTEND_OPERATOR_EFFECTS[opcode].get(key, ('writes_heap', False))
 
+class ExceptionEdgeKind(StrEnum):
+    ORIGIN = 'origin'
+    UNWIND = 'unwind'
+
 SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "_m_and",
@@ -3161,6 +3171,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "frame_home_take",
         "frame_locals",
         "frame_locals_set",
+        "frame_set_location",
         "free",
         "frozenset_add",
         "frozenset_new",
@@ -3721,6 +3732,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "FRAME_HOME_TAKE",
         "FRAME_LOCALS",
         "FRAME_LOCALS_SET",
+        "FRAME_SET_LOCATION",
         "FREE",
         "FROZENSET_ADD",
         "FROZENSET_NEW",
@@ -4234,6 +4246,7 @@ FRONTEND_INTRINSIC_SCALAR_ARITIES: dict[FrontendOpKind, int] = {
 
 CANONICAL_KIND: dict[str, str] = {
     "add": "add",
+    "frame_set_location": "frame_set_location",
     "sub": "sub",
     "mul": "mul",
     "inplace_add": "inplace_add",
@@ -4402,6 +4415,7 @@ CANONICAL_KIND: dict[str, str] = {
 MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
     {
         "add",
+        "frame_set_location",
         "sub",
         "mul",
         "inplace_add",
@@ -4877,6 +4891,7 @@ FRONTEND_EFFECT_CLASS: dict[FrontendOpKind, str] = {
     "FRAME_HOME_STORE": "writes_heap",
     "FRAME_HOME_TAKE": "writes_heap",
     "FRAME_LOCALS": "writes_heap",
+    "FRAME_SET_LOCATION": "writes_heap",
     "FREE": "writes_heap",
     "FUNCTION_DEFAULTS_VERSION": "writes_heap",
     "GE": "writes_heap",
@@ -5165,6 +5180,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "FRAME_HOME_STORE": True,
     "FRAME_HOME_TAKE": True,
     "FRAME_LOCALS": True,
+    "FRAME_SET_LOCATION": True,
     "FREE": True,
     "FUNCTION_DEFAULTS_VERSION": False,
     "GE": True,
@@ -5625,6 +5641,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "frame_home_take": 8192,
     "frame_locals": 8192,
     "frame_locals_set": 8192,
+    "frame_set_location": 8192,
     "free": 8,
     "frozenset_add": 64,
     "frozenset_new": 64,
@@ -6108,6 +6125,7 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[FrontendOpKind] = frozenset(
         "FRAME_HOME_STORE",
         "FRAME_HOME_TAKE",
         "FRAME_LOCALS",
+        "FRAME_SET_LOCATION",
         "FREE",
         "FUNCTION_DEFAULTS_VERSION",
         "GE",

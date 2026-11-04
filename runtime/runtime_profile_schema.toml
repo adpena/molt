@@ -38,7 +38,6 @@ metrics = [
   { name = "alloc_bytes_callargs", semantic = "counter" },
   { name = "tb_builds", semantic = "counter" },
   { name = "tb_frames", semantic = "counter" },
-  { name = "tb_suppressed", semantic = "counter" },
   { name = "async_polls", semantic = "counter" },
   { name = "async_pending", semantic = "counter" },
   { name = "async_wakeups", semantic = "counter" },

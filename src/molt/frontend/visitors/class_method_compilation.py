@@ -387,7 +387,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                         break
             finally:
                 self._pop_qualname()
-            self._emit_generator_falloff()
+            self._emit_generator_falloff(item.body[-1])
             self._spill_async_temporaries()
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
             closure_size = self._task_closure_size(
@@ -579,7 +579,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 if not self._ends_with_return_jump():
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res)
+                    self._emit_return_value(res, item.body[-1])
                 self._emit_return_label()
             elif not (
                 self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret
@@ -588,7 +588,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 # exit as an explicit one.
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_return_value(res)
+                self._emit_return_value(res, item.body[-1])
         method_attr = func_val
         # Elide only frames whose entire inline expression is proven unobservable.
         inline_return = None
@@ -748,7 +748,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                             break
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff()
+                self._emit_generator_falloff(item.body[-1])
                 self._spill_async_temporaries()
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
@@ -916,12 +916,12 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 if not self._ends_with_return_jump():
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res)
+                    self._emit_return_value(res, item.body[-1])
                 self._emit_return_label()
             else:
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_normal_return_terminator(res)
+                self._emit_return_value(res, item.body[-1])
             self._spill_async_temporaries()
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
             closure_size = self._task_closure_size(

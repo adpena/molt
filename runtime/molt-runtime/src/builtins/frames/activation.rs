@@ -925,6 +925,11 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
             inc_ref_bits(py, bits);
         }
         super::frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, task);
+        if !super::frame_stack_enter_homes(py, super::FramePlan::default()) {
+            super::frame_stack_pop(py);
+            crate::record_memory_error_without_allocation(py);
+            return Err(());
+        }
         let depth = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
         Ok(Self {
             py,

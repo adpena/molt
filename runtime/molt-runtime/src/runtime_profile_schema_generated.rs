@@ -44,7 +44,6 @@ pub(crate) struct RuntimeProfileSnapshot {
     pub(crate) alloc_bytes_callargs: u64,
     pub(crate) tb_builds: u64,
     pub(crate) tb_frames: u64,
-    pub(crate) tb_suppressed: u64,
     pub(crate) async_polls: u64,
     pub(crate) async_pending: u64,
     pub(crate) async_wakeups: u64,
@@ -194,10 +193,6 @@ impl RuntimeProfileSnapshot {
             values.insert(
                 "tb_frames".to_owned(),
                 serde_json::Value::from(self.tb_frames),
-            );
-            values.insert(
-                "tb_suppressed".to_owned(),
-                serde_json::Value::from(self.tb_suppressed),
             );
             values.insert(
                 "async_polls".to_owned(),
@@ -543,7 +538,6 @@ pub(crate) fn runtime_profile_metric_semantic(
         ("profile", "alloc_bytes_callargs") => Some(RuntimeProfileMetricSemantic::Counter),
         ("profile", "tb_builds") => Some(RuntimeProfileMetricSemantic::Counter),
         ("profile", "tb_frames") => Some(RuntimeProfileMetricSemantic::Counter),
-        ("profile", "tb_suppressed") => Some(RuntimeProfileMetricSemantic::Counter),
         ("profile", "async_polls") => Some(RuntimeProfileMetricSemantic::Counter),
         ("profile", "async_pending") => Some(RuntimeProfileMetricSemantic::Counter),
         ("profile", "async_wakeups") => Some(RuntimeProfileMetricSemantic::Counter),

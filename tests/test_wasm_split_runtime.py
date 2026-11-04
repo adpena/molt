@@ -234,7 +234,11 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
     init_idx = next(
         i for i, op in enumerate(ops) if op.get("s_value") == "molt_init_sys"
     )
-    assert ops[init_idx + 1] == {"kind": "check_exception", "value": 1}
+    assert ops[init_idx + 1] == {
+        "kind": "check_exception",
+        "exception_edge": "origin",
+        "value": 1,
+    }
     assert ops[-3]["kind"] == "label"
     assert ops[-3]["value"] == 1
     assert ops[-2]["kind"] == "const_none"

@@ -61,6 +61,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _exception_subclass_memo: dict[ClassId, bool]
     _expr_col: tuple[int, int] | None
+    _expr_line: tuple[int, int] | None
     _gpu_body_origin_candidates: dict[int, dict[str, Any]]
     _lexical_dependency_cache: PythonDependencyAuthority | None
     _lexical_dependency_index: PythonBindingIndex | None
@@ -76,6 +77,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _op_by_result: dict[str, MoltOp]
     _sema: SemaResult | None
     _source_is_stdlib_module: Any
+    _statement_site: tuple[int, int, int | None, int | None] | None
     active_exceptions: list[ActiveException]
     annotation_name_counter: Any
     app_callable_bindings: dict[str, dict[str, Any]]
@@ -147,4 +149,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
-    imported_module_attr_mutations: set[tuple[str, str]]

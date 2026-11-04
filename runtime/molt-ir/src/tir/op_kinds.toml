@@ -440,7 +440,7 @@ simpleir_runtime_neutral_semantics_kinds = [
 simpleir_execution_frame_semantics_kinds = [
     "frame_context_set", "frame_home_cell", "frame_home_clear", "frame_home_load",
     "frame_home_private_cell", "frame_home_store", "frame_home_take", "frame_locals",
-    "frame_locals_set", "line", "trace_enter_slot", "trace_exit",
+    "frame_locals_set", "frame_set_location", "line", "trace_enter_slot", "trace_exit",
 ]
 # Python-visible frame introspection. A target claiming this capability must
 # provide exact f_back/f_locals/f_globals/f_builtins and tracing semantics.
@@ -2004,6 +2004,12 @@ family = "execution_frame"
 operands = 3
 value_rule = "unconstrained"
 
+[[simpleir_op_shape]]
+kind = "frame_set_location"
+family = "execution_frame"
+operands = 0
+value_rule = "nonnegative"
+
 # The value is the code slot index into the frame's homes. A store's operand
 # is the binding (a boxed object or a raw integer carrier), the frame's cell,
 # or a compiler-private cell; the home takes its reference.
@@ -2870,6 +2876,17 @@ operand = "all"
 #                     may be absent. Effects still execute; this only admits
 #                     zero bindings through opcode_accepts_result_count.
 # ===========================================================================
+
+[[opcode]]
+name = "FrameSetLocation"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Add"
@@ -4248,6 +4265,11 @@ result_absorbs_operands = false
 canonical = "add"
 aliases = []
 mapper_opcode = "Add"
+
+[[kind]]
+canonical = "frame_set_location"
+aliases = []
+mapper_opcode = "FrameSetLocation"
 
 [[kind]]
 canonical = "sub"
@@ -6413,3 +6435,14 @@ wasm = "runtime"
 mlir = "unsupported"
 luau = "luau_dict_storage"
 rust = "unsupported"
+
+# CPython error versus exception_unwind event, carried by exceptional checks.
+[[exception_edge_kind]]
+name = "Origin"
+wire = "origin"
+tag = 0
+
+[[exception_edge_kind]]
+name = "Unwind"
+wire = "unwind"
+tag = 1

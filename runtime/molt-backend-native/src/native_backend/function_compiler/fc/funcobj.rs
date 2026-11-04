@@ -16,6 +16,7 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::TraceEnterSlot,
     OpKind::TraceExit,
     OpKind::FrameContextSet,
+    OpKind::FrameSetLocation,
     OpKind::FrameHomeStore,
     OpKind::FrameHomeCell,
     OpKind::FrameHomePrivateCell,
@@ -237,7 +238,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     owned_frame_entered: Option<Variable>,
     frame_homes: Option<(Variable, i64)>,
     leading_frame_entry_preemitted: Option<usize>,
-    frame_location_active: bool,
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
     in_loop: bool,
@@ -1188,6 +1188,19 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[dict_bits]);
         }
+        OpKind::FrameSetLocation => {
+            let (homes, _) = frame_homes.expect("location publication requires a lent frame");
+            let address = builder.use_var(homes);
+            let location = builder
+                .ins()
+                .iconst(types::I64, op.value.expect("admitted location index"));
+            builder.ins().store(
+                MemFlagsData::trusted(),
+                location,
+                address,
+                molt_codegen_abi::FRAME_LOCATION_OFFSET,
+            );
+        }
         OpKind::Line => {
             // Inside active loops, skip line tracking entirely.
             // These are debug-info calls (~3ns each) that dominate
@@ -1208,37 +1221,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[line_val]);
-            // Update frame stack line (+ column offsets) for tracebacks.
-            if frame_location_active {
-                let has_col = op.col_offset.is_some() && op.end_col_offset.is_some();
-                if has_col {
-                    let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
-                    let end_col_val = builder.ins().iconst(types::I64, op.end_col_offset.unwrap());
-                    let frame_line_col_fn = import_func_ref(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        "molt_frame_set_line_col",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    builder
-                        .ins()
-                        .call(frame_line_col_fn, &[line_val, col_val, end_col_val]);
-                } else {
-                    let frame_line_fn = import_func_ref(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        "molt_frame_set_line",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    builder.ins().call(frame_line_fn, &[line_val]);
-                }
-            }
             if !is_block_filled && let Some(block) = builder.current_block() {
                 for tracked in [
                     block_tracked_obj.get_mut(&block),

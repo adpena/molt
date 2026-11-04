@@ -64,6 +64,12 @@ impl RustBackend {
                     || op.kind.is_exception_check()
                     || op.kind == molt_ir::OpKind::LoopBreakIfException
                 {
+                    if op.kind.is_exception_check() {
+                        match op.exception_edge.expect("verified exceptional edge kind") {
+                            molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {}
+                            molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {}
+                        }
+                    }
                     self.emit_unsupported_op(
                         op,
                         "labelled-flow emission requires admitted synchronous, non-exception edges",

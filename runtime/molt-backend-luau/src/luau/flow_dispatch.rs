@@ -73,6 +73,16 @@ impl LuauBackend {
                 .iter()
                 .any(|edge| matches!(edge.role, EdgeRole::Exception | EdgeRole::Normal))
             {
+                match tail.exception_edge.expect("verified exceptional edge kind") {
+                    molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
+                        self.emit_line("if molt_exception_pending() then");
+                        self.push_indent();
+                        self.emit_line("molt_exception_frame_origin(molt_frame_context())");
+                        self.pop_indent();
+                        self.emit_line("end");
+                    }
+                    molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {}
+                }
                 self.emit_dispatch_branch(
                     "molt_exception_pending()",
                     target(EdgeRole::Exception),

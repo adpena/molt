@@ -424,6 +424,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                     ],
                                     result=op.result,
                                     metadata=op.metadata,
+                                    exception_edge=op.exception_edge,
+                                    exception_source=op.exception_source,
+                                    source_line=op.source_line,
+                                    source_end_line=op.source_end_line,
+                                    col_offset=op.col_offset,
+                                    end_col_offset=op.end_col_offset,
                                 )
                             )
                             check_exception_threads += 1
@@ -456,6 +462,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                     args=[back_label],
                                     result=MoltValue("none"),
                                     metadata=op.metadata,
+                                    exception_edge=op.exception_edge,
+                                    exception_source=op.exception_source,
+                                    source_line=op.source_line,
+                                    source_end_line=op.source_end_line,
+                                    col_offset=op.col_offset,
+                                    end_col_offset=op.end_col_offset,
                                 )
                             )
                             continue
@@ -465,6 +477,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[],
                                 result=MoltValue("none"),
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                         )
                         continue
@@ -482,6 +500,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                     args=[exit_label],
                                     result=MoltValue("none"),
                                     metadata=op.metadata,
+                                    exception_edge=op.exception_edge,
+                                    exception_source=op.exception_source,
+                                    source_line=op.source_line,
+                                    source_end_line=op.source_end_line,
+                                    col_offset=op.col_offset,
+                                    end_col_offset=op.end_col_offset,
                                 )
                             )
                             continue
@@ -491,6 +515,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[],
                                 result=MoltValue("none"),
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                         )
                         continue
@@ -519,6 +549,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[break_label],
                                 result=MoltValue("none"),
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                         )
                         continue
@@ -947,6 +983,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[new_first, *op.args[1:]],
                                 result=op.result,
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                             round_rewrites += 1
 

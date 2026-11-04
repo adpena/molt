@@ -11,6 +11,75 @@ from molt.frontend.lowering.function_lifecycle import FunctionLifecycleMixin
 from tools.check_ir_structure import verify_frontend_tir
 
 
+def test_exception_check_coalescing_preserves_origin_before_unwind():
+    from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
+    generator = SimpleTIRGenerator(target_python=(3, 12))
+    origin = MoltOp(
+        kind="CHECK_EXCEPTION",
+        args=[7],
+        result=MoltValue("none"),
+        exception_edge=ExceptionEdgeKind.ORIGIN,
+    )
+    unwind = MoltOp(
+        kind="CHECK_EXCEPTION",
+        args=[7],
+        result=MoltValue("none"),
+        exception_edge=ExceptionEdgeKind.UNWIND,
+    )
+    assert generator._coalesce_check_exception_ops([origin, unwind]) == [origin, unwind]
+    assert generator._coalesce_check_exception_ops([origin, origin]) == [origin]
+
+
+def test_location_encoding_is_decoded_by_cpython_without_source_inference():
+    from molt.frontend.lowering.frame_locations import SourcePosition, encode_locations
+
+    positions = [
+        SourcePosition(7, 7, -1, -1),
+        SourcePosition(13, 15, 4, 19),
+        SourcePosition(9, 9, 2, 8),
+        SourcePosition(1000, 1001, 200, 250),
+    ]
+    # CPython's own code-table reader is independent of Molt's encoder/decoder.
+    code = compile("pass", "<location-oracle>", "exec").replace(
+        co_firstlineno=7, co_linetable=encode_locations(7, positions)
+    )
+    assert list(code.co_positions()) == [
+        (7, 7, None, None),
+        (13, 15, 4, 19),
+        (9, 9, 2, 8),
+        (1000, 1001, 200, 250),
+    ]
+
+
+def test_multiline_frame_reads_publish_the_expression_position():
+    source = "def sample(frame):\n    return (\n        frame.f_lineno,\n        frame.f_lasti,\n    )\n"
+    _, ir = compile_source(source, (3, 12))
+    function = next(f for f in ir["functions"] if f["name"].endswith("__sample"))
+    module = next(f for f in ir["functions"] if f["name"] == "molt_main")
+    definitions = {op["out"]: op for op in module["ops"] if op.get("out")}
+    constructor = next(
+        op
+        for op in module["ops"]
+        if op["kind"] == "code_slot_set" and op["s_value"] == function["name"]
+    )
+    code = definitions[constructor["args"][0]]
+    table = bytes(definitions[code["args"][3]]["bytes"])
+    positions = list(
+        compile("pass", "<position-oracle>", "exec")
+        .replace(co_firstlineno=1, co_linetable=table)
+        .co_positions()
+    )
+    published = [
+        positions[op["value"]]
+        for op in function["ops"]
+        if op["kind"] == "frame_set_location"
+    ]
+    assert (3, 3, 8, 22) in published
+    assert (4, 4, 8, 21) in published
+    assert (2, 5, 4, 5) in published, "a pure return still publishes its terminal range"
+
+
 def compile_source(source, target=(3, 14)):
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(ast.parse(source))

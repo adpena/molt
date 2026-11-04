@@ -341,7 +341,9 @@ pub extern "C" fn molt_exception_clear() -> u64 {
                 dec_ref_bits(_py, file_bits);
                 eprintln!(
                     "molt exc clear frame name={} file={} line={}",
-                    name, file, frame.line
+                    name,
+                    file,
+                    frame.source_line()
                 );
             }
             if kind == "GeneratorExit" {

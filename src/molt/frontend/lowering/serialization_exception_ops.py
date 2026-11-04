@@ -200,6 +200,7 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append(
                 {
                     "kind": "check_exception",
+                    "exception_edge": op.exception_edge,
                     "value": self._serialization_control_value(op),
                 }
             )

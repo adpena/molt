@@ -74,6 +74,10 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
     let out_var = op.results.first().map(|v| value_var(*v));
 
     match op.opcode {
+        OpCode::FrameSetLocation => Some(OpIR {
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::new(molt_ir::OpKind::FrameSetLocation)
+        }),
         // Constants.
         OpCode::ModuleSlot => Some(OpIR {
             kind: molt_ir::OpKind::ModuleSlot,
@@ -579,6 +583,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::new(molt_ir::OpKind::Raise)
         }),
         OpCode::CheckException => Some(OpIR {
+            exception_edge: op.exception_edge_kind(),
             kind: if op.is_async_work_poll() {
                 molt_ir::OpKind::AsyncWorkPoll
             } else {

@@ -7,7 +7,6 @@ pub(crate) mod pending_work;
 pub(crate) mod recursion;
 pub(crate) mod runtime_state;
 pub(crate) mod tls;
-pub(crate) mod traceback;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use lifecycle::run_runtime_worker;
@@ -39,8 +38,5 @@ pub(crate) use runtime_state::{
 pub(crate) use tls::molt_thread_record;
 pub(crate) use tls::{
     CONTEXT_STACK, ExecutionTls, FRAME_STACK, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK,
-    TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS, execution_tls,
-};
-pub(crate) use traceback::{
-    traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
+    TRACE_FRAME_PUSH_STACK, execution_tls,
 };

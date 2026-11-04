@@ -9,6 +9,8 @@ call, import, annotation, comprehension, and async visitors.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
 import ast
 from contextlib import contextmanager
 from typing import Generator, Literal, Sequence, get_args
@@ -749,6 +751,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                 self.emit(
                     MoltOp(
                         kind="CHECK_EXCEPTION",
+                        exception_edge=ExceptionEdgeKind.UNWIND,
                         args=[self.try_end_labels[-1]],
                         result=MoltValue("none"),
                     )
@@ -767,6 +770,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                 self.emit(
                     MoltOp(
                         kind="CHECK_EXCEPTION",
+                        exception_edge=ExceptionEdgeKind.UNWIND,
                         args=[done_label],
                         result=MoltValue("none"),
                     )
@@ -784,6 +788,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="CHECK_EXCEPTION",
+                    exception_edge=ExceptionEdgeKind.UNWIND,
                     args=[self.function_exception_label],
                     result=MoltValue("none"),
                 )
@@ -818,6 +823,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="CHECK_EXCEPTION",
+                    exception_edge=ExceptionEdgeKind.UNWIND,
                     args=[handler_label],
                     result=MoltValue("none"),
                 )

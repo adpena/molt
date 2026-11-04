@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
 import __future__ as future_module
 import ast
 import os
@@ -978,6 +980,7 @@ def test_all_generated_future_feature_returns_own_local_frame_exit() -> None:
     entry_failure_label = gen.funcs_map[function["name"]]["frame_entry_failure_label"]
     assert function["ops"][1] == {
         "kind": "check_exception",
+        "exception_edge": "origin",
         "value": entry_failure_label,
     }
     assert len(return_indices) == 3  # normal, body failure and entry failure
@@ -1819,7 +1822,12 @@ def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
             MoltOp(kind="CONST", args=[0], result=MoltValue("argcount")),
             MoltOp(kind="CONST", args=[0], result=MoltValue("posonly")),
             MoltOp(kind="CONST", args=[0], result=MoltValue("kwonly")),
-            MoltOp(kind="CHECK_EXCEPTION", args=[1], result=MoltValue("none")),
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
+                args=[1],
+                result=MoltValue("none"),
+            ),
             MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
             MoltOp(
                 kind="CODE_NEW",
@@ -2288,7 +2296,12 @@ def test_cfg_dominance_respects_resume_bypass() -> None:
 def test_cfg_models_check_exception_target_edge() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[7], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[7],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[7], result=MoltValue("none")),
@@ -2400,7 +2413,12 @@ def test_cfg_precanonicalizer_aligns_phi_to_predecessor_shape() -> None:
 def test_cfg_precanonicalizer_threads_ladders_before_rounds() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2630,7 +2648,12 @@ def test_try_check_exception_threads_through_nested_label_trampoline() -> None:
             args=[MoltValue("container"), MoltValue("index")],
             result=MoltValue("value"),
         ),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[90], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2659,7 +2682,12 @@ def test_try_check_exception_threads_through_nested_label_trampoline() -> None:
 def test_try_except_join_normalization_threads_nested_label_trampolines() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2687,7 +2715,12 @@ def test_nested_try_except_join_normalization_runs_before_cse_rounds() -> None:
         [
             MoltOp(kind="CONST", args=[0], result=MoltValue("x")),
             MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-            MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
+                args=[10],
+                result=MoltValue("none"),
+            ),
             MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
             MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
             MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2713,11 +2746,21 @@ def test_nested_try_except_join_normalization_runs_before_cse_rounds() -> None:
 def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[90], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[20], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[20],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="JUMP", args=[20], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[20], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[30], result=MoltValue("none")),
@@ -2820,7 +2863,12 @@ def test_try_exception_edge_keeps_markers_when_check_exception_is_pretrap() -> N
         [
             MoltOp(kind="CONST_NONE", args=[], result=MoltValue("exc")),
             MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-            MoltOp(kind="CHECK_EXCEPTION", args=[99], result=MoltValue("none")),
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
+                args=[99],
+                result=MoltValue("none"),
+            ),
             MoltOp(kind="RAISE", args=[MoltValue("exc")], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[404], result=MoltValue("dead_after_raise")),
             MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),

@@ -21,6 +21,7 @@ define_llvm_op_kinds!(
     OpKind::FrameHomeLoad,
     OpKind::FrameHomeTake,
     OpKind::FrameHomeClear,
+    OpKind::FrameSetLocation,
     OpKind::FrameLocals,
     OpKind::FrameLocalsSet,
     OpKind::Line,
@@ -54,6 +55,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             })
             .max()
             .map(|slot| slot + 1)
+            .or_else(|| {
+                self.func
+                    .blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .any(|op| op.opcode == OpCode::FrameSetLocation)
+                    .then_some(0)
+            })
     }
 
     fn has_frame_entry(&self) -> bool {
@@ -873,6 +882,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     kind.as_str(),
                     "frame_locals_set",
                 );
+                true
+            }
+            OpKind::FrameSetLocation => {
+                let address = self
+                    .frame_home_word(0, molt_codegen_abi::FRAME_LOCATION_OFFSET)
+                    .expect("location publication requires a lent frame");
+                let Some(AttrValue::Int(location)) = op.attrs.get("value") else {
+                    panic!("admitted location index");
+                };
+                self.backend
+                    .builder
+                    .build_store(address, i64_ty.const_int(*location as u64, false))
+                    .unwrap();
                 true
             }
             OpKind::Line => {

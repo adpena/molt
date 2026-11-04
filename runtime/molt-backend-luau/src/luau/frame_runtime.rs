@@ -103,19 +103,18 @@ local function molt_frame_enter(slot: any, lexical_builtins: any?): (any, number
 	return context, index, code, owner
 end
 
-local function molt_frame_set_line(context: any, line: number, col: number?, final_col: number?): nil
-	local index = context.depth
-	if index < 1 then
-		molt_frame_invariant("line requires an active Python execution frame")
-	end
-	if type(line) ~= "number" then
-		molt_frame_invariant("line requires a numeric source line")
-	end
-	context.lines[index] = line
-	context.lastis[index] += 2
-	context.cols[index] = col or -1
-	context.end_cols[index] = final_col or -1
-	return nil
+local function molt_frame_set_location(context: any, location: number, line: number, col: number?, final_col: number?): nil
+    local index = context.depth
+    if index < 1 then molt_frame_invariant("location requires an active Python execution frame") end
+    if type(location) ~= "number" or location < 0 or location % 1 ~= 0 then
+        molt_frame_invariant("location requires a nonnegative static index")
+    end
+    if type(line) ~= "number" then molt_frame_invariant("location requires a numeric source line") end
+    context.lastis[index] = location * 2
+    context.lines[index] = line
+    context.cols[index] = col or -1
+    context.end_cols[index] = final_col or -1
+    return nil
 end
 
 -- Internal namespace projection used by compiler-generated global stores.
@@ -163,44 +162,39 @@ local function molt_frame_restore_depth(context: any, depth: number): nil
 	return nil
 end
 
-local function molt_exception_attach_traceback(context: any, error_value: any): any
-	local exception = error_value
-	if type(exception) ~= "table" then
-		exception = {__type="RuntimeError", __msg=tostring(error_value)}
-	end
-	if rawget(exception, "__molt_traceback_locations") ~= nil then
-		return exception
-	end
-	local locations = table.create(context.depth)
-	for index = 1, context.depth do
-		local code = context.codes[index]
-		locations[index] = {
-			filename = code.co_filename,
-			name = code.co_name,
-			line = context.lines[index],
-			lasti = context.lastis[index],
-			col_offset = context.cols[index],
-			end_col_offset = context.end_cols[index],
-		}
-	end
-	rawset(exception, "__molt_traceback_locations", locations)
-	return exception
+local function molt_exception_prepend_origin(context: any, error_value: any): any
+    local ok, selected = pcall(function()
+    local exception = error_value
+    if type(exception) ~= "table" then exception = {__type="RuntimeError", __msg=tostring(error_value)} end
+    local index = context.depth
+    if index < 1 then return exception end
+    local code = context.codes[index]
+    local locations = table.clone(rawget(exception, "__molt_traceback_locations") or {})
+    table.insert(locations, 1, {
+        filename=code.co_filename, name=code.co_name,
+        line=context.lines[index], lasti=context.lastis[index],
+        col_offset=context.cols[index], end_col_offset=context.end_cols[index],
+    })
+    rawset(exception, "__molt_traceback_locations", locations)
+    return exception
+    end)
+    if ok then return selected end
+    return error_value
 end
 
-local function molt_frame_finalize(context: any, owner: any, baseline_depth: number, error_value: any, attach_traceback: boolean): (any, boolean)
+local function molt_exception_trace_prepend(exception: any): nil
+    molt_exception_prepend_origin(molt_frame_context(), exception)
+    return nil
+end
+
+local function molt_exception_frame_origin(context: any): nil
+    local pending = context.exceptions.pending
+    if pending ~= nil then context.exceptions.pending = molt_exception_prepend_origin(context, pending) end
+    return nil
+end
+
+local function molt_frame_finalize(context: any, owner: any, baseline_depth: number, error_value: any): (any, boolean)
 	local exception = error_value
-	if attach_traceback then
-		local attachment = table.pack(pcall(molt_exception_attach_traceback, context, error_value))
-		exception = attachment[2]
-		if not attachment[1] then
-			exception = {
-				__type="RuntimeError",
-				__msg="traceback attachment failed",
-				__cause__=error_value,
-				__molt_traceback_attachment_error=tostring(attachment[2]),
-			}
-		end
-	end
 	local restoration = table.pack(pcall(molt_frame_restore_depth, context, baseline_depth))
 	if not restoration[1] then
 		molt_frame_forget_context(owner)
@@ -305,7 +299,6 @@ local function molt_exception_set_last(exception: any): nil
 	local context = molt_frame_context()
 	if exception == nil then context.exceptions.pending = nil; return nil end
 	local active = molt_exception_active()
-	exception = molt_exception_attach_traceback(context, exception)
 	if active ~= nil and active ~= exception and rawget(exception, "__context__") == nil then
 		rawset(exception, "__context__", active)
 	end
@@ -355,7 +348,7 @@ local function molt_exception_propagate(): nil
 end
 
 local function molt_exception_capture(context: any, owner: any, frame_depth: number, exception_depth: number, baseline: number, error_value: any): nil
-	local exception, restored = molt_frame_finalize(context, owner, frame_depth, error_value, true)
+	local exception, restored = molt_frame_finalize(context, owner, frame_depth, error_value)
 	-- A poisoned execution context was forgotten by finalization. Never publish
 	-- into a replacement context and continue as though its custody survived.
 	if not restored then error(exception, 0) end
@@ -388,7 +381,7 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 		baseline_depth = context.depth
 		local function on_error(error_value: any): any
 			context_restore_attempted = true
-			local exception, restored = molt_frame_finalize(context, owner, baseline_depth, error_value, true)
+			local exception, restored = molt_frame_finalize(context, owner, baseline_depth, error_value)
 			context_restored = restored
 			pending_error = exception
 			return exception
@@ -396,7 +389,7 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 		local results = table.pack(xpcall(func, on_error, ...))
 		if results[1] then
 			context_restore_attempted = true
-			local restoration_error, restored = molt_frame_finalize(context, owner, baseline_depth, nil, false)
+			local restoration_error, restored = molt_frame_finalize(context, owner, baseline_depth, nil)
 			context_restored = restored
 			if restoration_error ~= nil then
 				pending_error = restoration_error
@@ -415,7 +408,7 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 		end
 		if execution_context ~= nil and not context_restored and not context_restore_attempted then
 			context_restore_attempted = true
-			local restoration_error, restored = molt_frame_finalize(execution_context, execution_owner, baseline_depth, nil, false)
+			local restoration_error, restored = molt_frame_finalize(execution_context, execution_owner, baseline_depth, nil)
 			context_restored = restored
 			if restoration_error ~= nil and close_error == nil then close_error = restoration_error end
 		end

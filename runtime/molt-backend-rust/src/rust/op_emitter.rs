@@ -174,6 +174,7 @@ impl RustBackend {
             molt_ir::OpKind::ExceptionActive => self.emit_op_exception_active(op),
             molt_ir::OpKind::TraceEnterSlot => self.emit_op_trace_enter_slot(op),
             molt_ir::OpKind::TraceExit => self.emit_op_trace_exit(op),
+            molt_ir::OpKind::FrameSetLocation => self.emit_op_frame_set_location(op),
             molt_ir::OpKind::FrameLocalsSet => self.emit_op_frame_locals_set(op),
             molt_ir::OpKind::FrameHomeStore
             | molt_ir::OpKind::FrameHomeCell

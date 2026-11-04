@@ -474,6 +474,12 @@ its call site. A runtime helper suppressing a callback error takes no caller err
 Delete eager nearest-handler range capture; it cannot remain a fallback. Split any check that
 joins pending sources of different kinds, and reject unclassified/mixed checks in the verifier.
 All five backend consumers match both kinds. Origin capture is cold; the normal path adds no call.
+Compiler transport carries a typed producer-source Unwind fact through serialization and TIR,
+preserving pending source provenance across frame-context restoration and module-failure
+bookkeeping. Conservative runtime failure effects do not by themselves manufacture Python
+Origin events. Authored guarded bodies keep their own handler, source loops check their failing
+operations, and await captures its received Origin before forwarding cleanup. The verifier uses
+these producer facts at joins; runtime custody and effect analysis retain their conservative rules.
 
 Two independent, serial read-only design reviews required explicit terminal publication, stateful
 view reattachment, exception capture timing and membership, and optimizer memory effects. The

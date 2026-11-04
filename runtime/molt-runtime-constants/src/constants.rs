@@ -112,7 +112,6 @@ pub static ALLOC_CALLARGS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ALLOC_BYTES_CALLARGS: AtomicU64 = AtomicU64::new(0);
 pub static TRACEBACK_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static TRACEBACK_BUILD_FRAMES: AtomicU64 = AtomicU64::new(0);
-pub static TRACEBACK_SUPPRESS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ASYNC_POLL_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ASYNC_PENDING_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static ASYNC_WAKEUP_COUNT: AtomicU64 = AtomicU64::new(0);

@@ -188,6 +188,13 @@ impl WasmFunctionFramePlan {
             })
             .filter_map(|op| op.value)
             .max()
+            .or_else(|| {
+                func_ir
+                    .ops
+                    .iter()
+                    .any(|op| op.kind == molt_ir::OpKind::FrameSetLocation)
+                    .then_some(-1)
+            })
             .map(|slot| {
                 let local = local_count;
                 local_types.push(ValType::I32);

@@ -9,6 +9,7 @@ the SimpleTIRGenerator MRO via self.<method>.
 from __future__ import annotations
 
 from molt.frontend.lowering.op_kinds_generated import (
+    ExceptionEdgeKind,
     FrontendKinds,
     FrontendOpKind,
     FRONTEND_FIRST_TRAILING_RESULT_ARG,
@@ -292,7 +293,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                             break
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff()
+                self._emit_generator_falloff(node.body[-1])
                 self._spill_async_temporaries()
                 closure_size = self._task_closure_size(
                     frame_plan.payload_slots,
@@ -460,12 +461,13 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 if not self._ends_with_return_jump():
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res)
+                    self._emit_return_value(res, node.body[-1])
                 self._emit_return_label()
             else:
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_normal_return_terminator(res)
+                with self._source_location_scope(node.body[-1]):
+                    self._emit_normal_return_terminator(res)
             self._spill_async_temporaries()
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
             closure_size = self._task_closure_size(
@@ -1521,10 +1523,14 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="STATE_TRANSITION",
+                    exception_source=ExceptionEdgeKind.ORIGIN,
                     args=[coro, result_slot_val, pending_state_val, next_state_id],
                     result=res_placeholder,
                 )
             )
+            received = self.next_label()
+            self.emit(MoltOp(kind="CHECK_EXCEPTION", args=[received], result=MoltValue("none"), exception_edge=ExceptionEdgeKind.ORIGIN))
+            self.emit(MoltOp(kind="LABEL", args=[received], result=MoltValue("none")))
             cleared_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
             self.emit(

@@ -434,7 +434,7 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
             0,
         );
         let frame = ContextFrame(py);
-        let payload = crate::builtins::frames::frame_stack_trace_payload_bits(py, None, false);
+        let payload = crate::builtins::frames::frame_stack_trace_payload_bits(py);
         let payload = ExceptionValue::adopt(py, payload.expect("captured context frame"));
         drop(frame);
         let traceback = ExceptionValue::adopt(

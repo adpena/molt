@@ -83,9 +83,96 @@ pub(crate) fn frame_object_set_source(py: &PyToken<'_>, frame_ptr: *mut u8, sour
     true
 }
 
+unsafe fn location_owner_slot(ptr: *mut u8) -> Option<*mut u64> {
+    unsafe {
+        let size = crate::object::object_payload_size(ptr);
+        (object_shape_id(ptr) == ObjectShapeId::TypesFrame && size >= 3 * WORD)
+            .then(|| ptr.add(size - 3 * WORD).cast::<u64>())
+    }
+}
+
+pub(crate) fn frame_object_set_location_owner(py: &PyToken<'_>, ptr: *mut u8, owner: u64) -> bool {
+    if frame_bindings_ptr(py, owner).is_err() {
+        return false;
+    }
+    let Some(slot) = (unsafe { location_owner_slot(ptr) }) else {
+        raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "frame has no typed location owner",
+        );
+        return false;
+    };
+    inc_ref_bits(py, owner);
+    let previous = unsafe { slot.replace(owner) };
+    dec_ref_bits(py, previous);
+    true
+}
+
+fn frame_location_field(py: &PyToken<'_>, frame: u64, line: bool) -> u64 {
+    let Some(slot) = obj_from_bits(frame)
+        .as_ptr()
+        .and_then(|ptr| unsafe { location_owner_slot(ptr) })
+    else {
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::TypeError,
+            "frame location descriptor requires a frame",
+        );
+    };
+    let Ok(owner) = frame_bindings_ptr(py, unsafe { *slot }) else {
+        return MoltObject::none().bits();
+    };
+    let id = super::bindings::payload_location(owner);
+    let code = obj_from_bits(super::bindings::payload_code(owner))
+        .as_ptr()
+        .unwrap();
+    let position = unsafe { super::locations::code_location(code, id) };
+    if id != super::locations::LocationId::ABSENT && position.is_none() {
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "frame location lies outside its code table",
+        );
+    }
+    if !line {
+        return match id.lasti() {
+            Some(lasti) => MoltObject::from_int(lasti).bits(),
+            None => raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "frame location offset overflows",
+            ),
+        };
+    }
+    if id == super::locations::LocationId::ABSENT {
+        return MoltObject::from_int(unsafe { crate::code_firstlineno(code) }).bits();
+    }
+    match position {
+        Some(site) if site.line >= 0 => MoltObject::from_int(site.line).bits(),
+        Some(_) => MoltObject::none().bits(),
+        None => raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "frame location lies outside its code table",
+        ),
+    }
+}
+
+pub extern "C" fn molt_frame_f_lineno_get(_descriptor: u64, frame: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { frame_location_field(py, frame, true) })
+}
+
+pub extern "C" fn molt_frame_f_lasti_get(_descriptor: u64, frame: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { frame_location_field(py, frame, false) })
+}
+
 /// # Safety
 /// `ptr` must be a live `TYPES_FRAME` object.
 pub(crate) unsafe fn frame_object_visit(ptr: *mut u8, mut visit: impl FnMut(u64)) {
+    if let Some(slot) = unsafe { location_owner_slot(ptr) } {
+        visit(unsafe { *slot });
+    }
     if let Some(slot) = unsafe { source_slot(ptr, ObjectShapeId::TypesFrame) } {
         visit(unsafe { *slot });
     }
@@ -94,6 +181,12 @@ pub(crate) unsafe fn frame_object_visit(ptr: *mut u8, mut visit: impl FnMut(u64)
 /// # Safety
 /// `ptr` must be a live `TYPES_FRAME` object under the GIL.
 pub(crate) unsafe fn frame_object_detach(ptr: *mut u8, mut detach: impl FnMut(u64)) {
+    if let Some(slot) = unsafe { location_owner_slot(ptr) } {
+        let previous = unsafe { slot.replace(0) };
+        if previous != 0 {
+            detach(previous);
+        }
+    }
     if let Some(slot) = unsafe { source_slot(ptr, ObjectShapeId::TypesFrame) } {
         let previous = unsafe { slot.replace(0) };
         if previous != 0 {

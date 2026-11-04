@@ -109,6 +109,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -1205,7 +1206,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         delta_expr: ast.expr,
     ) -> None: ...
 
-    def _emit_generator_falloff(self) -> None: ...
+    def _emit_generator_falloff(self, source_node: ast.AST) -> None: ...
 
     def _emit_generic_attribute_load(
         self,
@@ -1584,7 +1585,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, kind: FrontendOpKind, args: list[MoltValue]
     ) -> None: ...
 
-    def _emit_return_value(self, value: MoltValue) -> None: ...
+    def _emit_return_value(
+        self, value: MoltValue, source_node: ast.AST | None = ...
+    ) -> None: ...
 
     def _emit_runtime_call(
         self,
@@ -2685,6 +2688,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> str: ...
 
     def _source_imports_use_transaction(self) -> bool: ...
+
+    @contextmanager
+    def _source_location_scope(self, node: ast.AST | None) -> Any: ...
 
     def _specializable_builtin_name(self, node: ast.AST) -> str | None: ...
 

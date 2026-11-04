@@ -39,6 +39,8 @@ pub(crate) struct MoltAuxSidecar {
     /// hands its bindings to it (when an observer shares it) or detaches it
     /// before the task storage it reads goes away.
     frame_bindings: MoltAuxWord,
+    /// The code-table LocationId while suspended, independent of scheduler state.
+    frame_location: MoltAuxWord,
     /// The exception-handler state the activation keeps while suspended
     /// (`builtins::exceptions::activation`): zero, inline scalars, or an
     /// owned boxed state whose references GC traversal and detachment reach.
@@ -60,6 +62,7 @@ impl MoltAuxSidecar {
             frame_awaited: MoltAuxWord::new(0),
             frame_locals_phase: MoltAuxWord::new(0),
             frame_bindings: MoltAuxWord::new(0),
+            frame_location: MoltAuxWord::new(0),
             frame_exceptions: MoltAuxWord::new(0),
             extended_size,
         }
@@ -104,6 +107,24 @@ pub(crate) fn object_frame_context_bits(ptr: *mut u8) -> [u64; 3] {
 #[inline]
 pub(crate) fn object_frame_code_bits(ptr: *mut u8) -> u64 {
     object_frame_context_bits(ptr)[2]
+}
+
+pub(crate) fn object_frame_location(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_location
+        .load(Ordering::Acquire)
+}
+
+pub(crate) fn object_set_frame_location(ptr: *mut u8, location: u64) {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_location
+        .store(location, Ordering::Release);
 }
 
 /// Set in the locals phase while a frame proxy's write, not the compiled

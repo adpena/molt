@@ -71,6 +71,7 @@ pub enum ExceptionRegionDiagnosticKind {
     UnresolvedResumeState,
     AmbiguousProducerDepth,
     MatchWithoutReachablePop,
+    AmbiguousEventSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +289,39 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         lexical_handlers_before,
         ..ExceptionRegionFacts::default()
     };
+    let event_sources = path_state::event_sources_before(
+        func,
+        &label_to_block,
+        &state_resume_stacks,
+        &anonymous_handler_destinations,
+    );
+    for (position, sources) in event_sources {
+        let Some(op) = func
+            .blocks
+            .get(&position.block)
+            .and_then(|b| b.ops.get(position.op_index))
+        else {
+            continue;
+        };
+        if op.opcode != super::ops::OpCode::CheckException {
+            continue;
+        }
+        use path_state::PendingSource;
+        let origin = sources.contains(&PendingSource::Origin);
+        let unwind = sources.contains(&PendingSource::Unwind);
+        let declared = op.exception_edge_kind();
+        use super::op_kinds_generated::ExceptionEdgeKind;
+        if sources.contains(&PendingSource::Mixed)
+            || (origin && unwind)
+            || (origin && declared == Some(ExceptionEdgeKind::Unwind))
+            || (unwind && declared == Some(ExceptionEdgeKind::Origin))
+        {
+            facts.diagnostics.push(ExceptionRegionDiagnostic {
+                kind: ExceptionRegionDiagnosticKind::AmbiguousEventSource, value: None, position,
+                message: format!("exceptional check {:?} consumes incompatible pending sources {:?}; split the producer; block operations: {:?}", declared, sources, func.blocks[&position.block].ops.iter().take(8).map(|producer| (producer.opcode, producer.origin, producer.exception_source_kind())).collect::<Vec<_>>()),
+            });
+        }
+    }
     for (producer, op) in iter_ops(func) {
         let Some(source_kind) = original_kind(op) else {
             continue;

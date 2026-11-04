@@ -1209,6 +1209,12 @@ class MidendDataflowMixin(GeneratorMixinBase):
                         out.append(
                             MoltOp(
                                 kind=op.kind,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_end_line=op.source_end_line,
+                                source_line=op.source_line,
                                 args=normalized_args,
                                 result=op.result,
                                 metadata=op.metadata,
@@ -1275,6 +1281,12 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     out.append(
                         MoltOp(
                             kind=op.kind,
+                            col_offset=op.col_offset,
+                            end_col_offset=op.end_col_offset,
+                            exception_edge=op.exception_edge,
+                            exception_source=op.exception_source,
+                            source_end_line=op.source_end_line,
+                            source_line=op.source_line,
                             args=normalized,
                             result=op.result,
                             metadata=op.metadata,

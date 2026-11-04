@@ -22,6 +22,8 @@ pub enum Dialect {
 /// Operation code within a dialect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub enum OpCode {
+    /// Publish the code-table location observed by callbacks and exceptions.
+    FrameSetLocation,
     // Arithmetic
     Add,
     Sub,
@@ -606,6 +608,25 @@ pub fn builtin_call_view<'a, T>(
 }
 
 impl TirOp {
+    pub fn exception_source_kind(&self) -> Option<super::op_kinds_generated::ExceptionEdgeKind> {
+        match self.attrs.get("exception_source") {
+            Some(AttrValue::Int(tag)) => super::op_kinds_generated::ExceptionEdgeKind::from_tag(*tag),
+            _ => None,
+        }
+    }
+    pub fn exception_edge_kind(&self) -> Option<super::op_kinds_generated::ExceptionEdgeKind> {
+        match self.attrs.get("exception_edge") {
+            Some(AttrValue::Int(tag)) => {
+                super::op_kinds_generated::ExceptionEdgeKind::from_tag(*tag)
+            }
+            _ => None,
+        }
+    }
+    pub fn set_exception_edge_kind(&mut self, kind: super::op_kinds_generated::ExceptionEdgeKind) {
+        self.attrs
+            .insert("exception_edge".into(), AttrValue::Int(kind as i64));
+    }
+
     pub fn with_origin(mut self, origin: crate::OpKind) -> Self {
         self.origin = Some(origin);
         self
@@ -789,6 +810,9 @@ impl TirOp {
         }
         self.attrs
             .insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
+        if self.opcode == OpCode::CheckException && self.exception_edge_kind().is_none() {
+            self.set_exception_edge_kind(super::op_kinds_generated::ExceptionEdgeKind::Origin);
+        }
         true
     }
 

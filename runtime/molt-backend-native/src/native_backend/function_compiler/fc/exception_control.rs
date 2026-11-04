@@ -50,6 +50,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     local_dec_ref_obj: FuncRef,
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
+    frame_homes: Option<Variable>,
     pending_work_slots: Option<(
         cranelift_codegen::ir::StackSlot,
         cranelift_codegen::ir::StackSlot,
@@ -258,14 +259,31 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 .get(&target_id)
                 .map(|plan| plan.edge_args(&mut *builder))
                 .unwrap_or_default();
-            brif_block(
-                &mut *builder,
-                cond,
-                target_block,
-                &target_args,
-                fallthrough,
-                &[],
-            );
+            match op.exception_edge.expect("verified exceptional edge kind") {
+                molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
+                    let origin = builder.create_block();
+                    reachable_blocks.insert(origin);
+                    brif_block(builder, cond, origin, &[], fallthrough, &[]);
+                    crate::switch_to_block_tracking(builder, origin, is_block_filled);
+                    seal_block_once(builder, sealed_blocks, origin);
+                    let homes = frame_homes
+                        .map(|homes| builder.use_var(homes))
+                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                    let service = SimpleBackend::import_func_id_split(
+                        module,
+                        import_ids,
+                        "molt_exception_frame_origin",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let service = module.declare_func_in_func(service, builder.func);
+                    builder.ins().call(service, &[homes]);
+                    jump_block(builder, target_block, &target_args);
+                }
+                molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {
+                    brif_block(builder, cond, target_block, &target_args, fallthrough, &[]);
+                }
+            }
             // The fallthrough block is always fresh and has its only
             // predecessor emitted here. Seal it immediately so later
             // `use_var` calls in the fallthrough block cannot

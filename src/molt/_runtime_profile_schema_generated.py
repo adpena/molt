@@ -40,7 +40,6 @@ PROCESS_COUNTER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "alloc_bytes_callargs",
                 "tb_builds",
                 "tb_frames",
-                "tb_suppressed",
                 "async_polls",
                 "async_pending",
                 "async_wakeups",

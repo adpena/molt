@@ -171,7 +171,7 @@ class ComprehensionMixin(GeneratorMixinBase):
                     self._visit_for(outer_loop, iterator=iterator)
             finally:
                 self._pop_qualname()
-            self._emit_generator_falloff()
+            self._emit_generator_falloff(node)
             self._spill_async_temporaries()
             locals_layout = self._stateful_locals_layout(frame_plan, [".0"], free_vars)
             closure_size = self._task_closure_size(

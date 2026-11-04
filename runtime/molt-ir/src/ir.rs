@@ -497,6 +497,10 @@ pub struct OpIR {
     #[serde(deserialize_with = "deserialize_wire_kind")]
     pub kind: crate::OpKind,
     pub value: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exception_edge: Option<crate::tir::op_kinds_generated::ExceptionEdgeKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exception_source: Option<crate::tir::op_kinds_generated::ExceptionEdgeKind>,
     /// Exact saved-state -> control-label projection of TIR StateDispatch.
     /// Only state_switch carries it. Empty Some is an explicit empty map;
     /// None belongs to source IR before the canonical CFG/SSA lift.
@@ -628,6 +632,10 @@ impl OpIR {
         Self {
             kind,
             value: Default::default(),
+            exception_source: None,
+            exception_edge: kind
+                .is_exception_check()
+                .then_some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin),
             state_targets: Default::default(),
             f_value: Default::default(),
             s_value: Default::default(),
@@ -2722,7 +2730,7 @@ mod json_parse_tests {
             "local",
             "void",
             &format!(
-                r#"{{"kind":"const_none","out":"setup"}},{{"kind":"check_exception","value":1}},{enter},{locals},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{{"kind":"ret_void"}}"#
+                r#"{{"kind":"const_none","out":"setup"}},{{"kind":"check_exception","exception_edge":"origin","value":1}},{enter},{locals},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{{"kind":"ret_void"}}"#
             ),
         )
         .expect(
@@ -2739,7 +2747,7 @@ mod json_parse_tests {
             "local",
             "void",
             &format!(
-                r#"{enter},{{"kind":"check_exception","value":1}},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{exit},{{"kind":"ret_void"}}"#
+                r#"{enter},{{"kind":"check_exception","exception_edge":"origin","value":1}},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{exit},{{"kind":"ret_void"}}"#
             ),
         )
         .expect("entry-owned frames must dominate and exit implicit exception handlers");
@@ -2753,7 +2761,7 @@ mod json_parse_tests {
             "local",
             "void",
             &format!(
-                r#"{enter},{{"kind":"check_exception","value":1}},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{{"kind":"ret_void"}}"#
+                r#"{enter},{{"kind":"check_exception","exception_edge":"origin","value":1}},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{{"kind":"ret_void"}}"#
             ),
         )
         .expect_err("an entered exception path cannot return without frame exit");
@@ -2849,7 +2857,7 @@ mod json_parse_tests {
             let error = parse(
                 "local",
                 &format!(
-                    r#"{{"kind":"check_exception","value":2}},{enter},{exit},{ret},{{"kind":"label","value":2}},{call},{ret}"#
+                    r#"{{"kind":"check_exception","exception_edge":"origin","value":2}},{enter},{exit},{ret},{{"kind":"label","value":2}},{call},{ret}"#
                 ),
             )
             .expect_err("implicit exception transfers must not bypass frame ownership");

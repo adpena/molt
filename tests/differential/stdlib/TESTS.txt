@@ -1073,6 +1073,8 @@ tests/differential/stdlib/fractions_arithmetic.py
 tests/differential/stdlib/fractions_basic.py
 tests/differential/stdlib/fractions_hash_modular.py
 tests/differential/stdlib/fractions_ops.py
+tests/differential/stdlib/frame_exception_events.py
+tests/differential/stdlib/frame_location_lifecycle.py
 tests/differential/stdlib/frame_object_fields.py
 tests/differential/stdlib/fromlist_protocol_pkg/__init__.py
 tests/differential/stdlib/fromlist_protocol_pkg/broken.py

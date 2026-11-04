@@ -481,6 +481,8 @@ pub enum OpKind {
     FrameLocals,
     #[serde(rename = "frame_locals_set")]
     FrameLocalsSet,
+    #[serde(rename = "frame_set_location")]
+    FrameSetLocation,
     #[serde(rename = "free")]
     Free,
     #[serde(rename = "frozenset_add")]
@@ -1315,6 +1317,7 @@ impl OpKind {
         Self::FrameHomeTake,
         Self::FrameLocals,
         Self::FrameLocalsSet,
+        Self::FrameSetLocation,
         Self::Free,
         Self::FrozensetAdd,
         Self::FrozensetNew,
@@ -1850,6 +1853,7 @@ impl OpKind {
             Self::FrameHomeTake => "frame_home_take",
             Self::FrameLocals => "frame_locals",
             Self::FrameLocalsSet => "frame_locals_set",
+            Self::FrameSetLocation => "frame_set_location",
             Self::Free => "free",
             Self::FrozensetAdd => "frozenset_add",
             Self::FrozensetNew => "frozenset_new",
@@ -2396,6 +2400,7 @@ impl std::str::FromStr for OpKind {
             "frame_home_take" => Ok(Self::FrameHomeTake),
             "frame_locals" => Ok(Self::FrameLocals),
             "frame_locals_set" => Ok(Self::FrameLocalsSet),
+            "frame_set_location" => Ok(Self::FrameSetLocation),
             "free" => Ok(Self::Free),
             "frozenset_add" => Ok(Self::FrozensetAdd),
             "frozenset_new" => Ok(Self::FrozensetNew),
@@ -2947,6 +2952,7 @@ pub const fn simpleir_backend_private_owner(kind: OpKind) -> Option<&'static str
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -3520,6 +3526,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -3823,6 +3830,102 @@ impl OpKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(i64)]
+pub enum ExceptionEdgeKind {
+    #[serde(rename = "origin")]
+    Origin = 0,
+    #[serde(rename = "unwind")]
+    Unwind = 1,
+}
+impl ExceptionEdgeKind {
+    pub fn from_tag(tag: i64) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Origin),
+            1 => Some(Self::Unwind),
+            _ => None,
+        }
+    }
+}
+/// Structural/forwarding producers, shared with the frontend's auto-check authority.
+pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {
+    match kind {
+        OpKind::BindingAlias => true,
+        OpKind::Borrow => true,
+        OpKind::BrIf => true,
+        OpKind::CheckException => true,
+        OpKind::ClassSetDefinition => true,
+        OpKind::ClassmethodNew => true,
+        OpKind::CodeNew => true,
+        OpKind::CodeSlotSet => true,
+        OpKind::Const => true,
+        OpKind::ConstBool => true,
+        OpKind::ConstEllipsis => true,
+        OpKind::ConstFloat => true,
+        OpKind::ConstNone => true,
+        OpKind::ConstNotImplemented => true,
+        OpKind::ContextExit => true,
+        OpKind::Copy => true,
+        OpKind::DecRef => true,
+        OpKind::DeleteVar => true,
+        OpKind::Else => true,
+        OpKind::EndIf => true,
+        OpKind::ExceptionClear => true,
+        OpKind::ExceptionContextSet => true,
+        OpKind::ExceptionFinallyPendingObserver => true,
+        OpKind::ExceptionLast => true,
+        OpKind::ExceptionLastPending => true,
+        OpKind::ExceptionMatchBuiltin => true,
+        OpKind::ExceptionNewBuiltin => true,
+        OpKind::ExceptionNewBuiltinEmpty => true,
+        OpKind::ExceptionNewBuiltinOne => true,
+        OpKind::ExceptionPop => true,
+        OpKind::ExceptionPush => true,
+        OpKind::ExceptionSetLast => true,
+        OpKind::ExceptionStackClear => true,
+        OpKind::ExceptionStackDepth => true,
+        OpKind::ExceptionStackEnter => true,
+        OpKind::ExceptionStackExit => true,
+        OpKind::ExceptionStackSetDepth => true,
+        OpKind::FrameHomeCell => true,
+        OpKind::FrameHomeClear => true,
+        OpKind::FrameHomePrivateCell => true,
+        OpKind::FuncNew => true,
+        OpKind::If => true,
+        OpKind::IncRef => true,
+        OpKind::Is => true,
+        OpKind::IsNot => true,
+        OpKind::Jump => true,
+        OpKind::Label => true,
+        OpKind::Line => true,
+        OpKind::LoopBreak => true,
+        OpKind::LoopBreakIfException => true,
+        OpKind::LoopBreakIfFalse => true,
+        OpKind::LoopBreakIfTrue => true,
+        OpKind::LoopContinue => true,
+        OpKind::LoopEnd => true,
+        OpKind::LoopIndexNext => true,
+        OpKind::LoopIndexStart => true,
+        OpKind::LoopStart => true,
+        OpKind::Missing => true,
+        OpKind::Phi => true,
+        OpKind::PropertyNew => true,
+        OpKind::Raise => true,
+        OpKind::Release => true,
+        OpKind::Reraise => true,
+        OpKind::Ret => true,
+        OpKind::StateLabel => true,
+        OpKind::StateSet => true,
+        OpKind::StateTransition => true,
+        OpKind::StateYield => true,
+        OpKind::StaticmethodNew => true,
+        OpKind::TraceEnterSlot => true,
+        OpKind::TraceExit => true,
+        OpKind::TryEnd => true,
+        OpKind::TryStart => true,
+        _ => false,
+    }
+}
 impl OpKind {
     /// Whether a SimpleIR kind is consumed as a structural CFG/SSA marker before kind_to_opcode.
     #[inline]
@@ -4055,6 +4158,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -4600,6 +4704,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -5140,6 +5245,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -5679,6 +5785,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -6217,6 +6324,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -6759,6 +6867,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -7298,6 +7407,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -7839,6 +7949,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -8378,6 +8489,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -8909,6 +9021,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -9458,6 +9571,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -9993,6 +10107,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -10538,6 +10653,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -11076,6 +11192,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -11615,6 +11732,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -12154,6 +12272,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -12690,6 +12809,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -13233,6 +13353,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -13773,6 +13894,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -14309,6 +14431,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -14851,6 +14974,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -15395,6 +15519,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -15938,6 +16063,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -16473,6 +16599,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -17015,6 +17142,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -17561,6 +17689,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -18096,6 +18225,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -18640,6 +18770,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -19006,6 +19137,12 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         family: "execution_frame",
         operands: 3,
         value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: OpKind::FrameSetLocation,
+        family: "execution_frame",
+        operands: 0,
+        value_rule: SimpleIrOpValueRule::NonNegative,
     },
     SimpleIrOpShape {
         kind: OpKind::FrameHomeStore,
@@ -19625,31 +19762,32 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => None,
-        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[22]),
-        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[23]),
-        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[21]),
+        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[23]),
+        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[24]),
+        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[22]),
         OpKind::CallargsPushMethodReceiver => Some(&SIMPLEIR_OP_SHAPES[0]),
-        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[18]),
-        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[15]),
-        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[16]),
-        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[19]),
+        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[19]),
+        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[16]),
+        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[17]),
+        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[20]),
         OpKind::FrameContextSet => Some(&SIMPLEIR_OP_SHAPES[7]),
-        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[9]),
-        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[13]),
-        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[11]),
-        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[10]),
-        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[8]),
-        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[12]),
-        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[17]),
+        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[10]),
+        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[14]),
+        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[12]),
+        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[11]),
+        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[9]),
+        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[13]),
+        OpKind::FrameSetLocation => Some(&SIMPLEIR_OP_SHAPES[8]),
+        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[18]),
         OpKind::GuardTag => Some(&SIMPLEIR_OP_SHAPES[4]),
         OpKind::GuardType => Some(&SIMPLEIR_OP_SHAPES[5]),
-        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[14]),
+        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[15]),
         OpKind::Pos => Some(&SIMPLEIR_OP_SHAPES[1]),
-        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[20]),
+        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[21]),
         OpKind::TypeGuard => Some(&SIMPLEIR_OP_SHAPES[3]),
         OpKind::UnaryPos => Some(&SIMPLEIR_OP_SHAPES[2]),
-        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[24]),
-        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[25]),
+        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[25]),
+        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[26]),
         OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[6]),
     }
 }
@@ -19902,6 +20040,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -20939,6 +21078,7 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Line
         | OpKind::TraceEnterSlot
         | OpKind::TraceExit => Some(SimpleIrRuntimeRequirements(8192)),
@@ -21270,6 +21410,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -21816,6 +21957,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -22358,6 +22500,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -22898,6 +23041,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -23444,6 +23588,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -24198,6 +24343,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::ExceptionPending => Some(OpCode::ExceptionPending),
         OpKind::ForIter => Some(OpCode::ForIter),
         OpKind::FrameContextSet => Some(OpCode::FrameContextSet),
+        OpKind::FrameSetLocation => Some(OpCode::FrameSetLocation),
         OpKind::Free => Some(OpCode::Free),
         OpKind::FunctionDefaultsVersion => Some(OpCode::FunctionDefaultsVersion),
         OpKind::Ge => Some(OpCode::Ge),
@@ -24288,6 +24434,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
 #[inline]
 pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
     match opcode {
+        OpCode::FrameSetLocation => Some(OpKind::FrameSetLocation),
         OpCode::Add => Some(OpKind::Add),
         OpCode::Sub => Some(OpKind::Sub),
         OpCode::Mul => Some(OpKind::Mul),
@@ -24412,6 +24559,7 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
 #[inline]
 pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -24756,6 +24904,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -25207,6 +25356,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeLoad
         | OpKind::FrameHomePrivateCell
         | OpKind::FrameHomeStore
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FunctionClosureBits
         | OpKind::FunctionDefaultsVersion
@@ -25840,6 +25990,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -26373,6 +26524,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -26915,6 +27067,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -27444,6 +27597,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -27987,6 +28141,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -28522,6 +28677,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -29061,6 +29217,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -29368,6 +29525,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
 /// diagnostics can iterate the closed enum domain without hand-maintained
 /// opcode lists in pass-local modules.
 pub const ALL_OPCODES: &[OpCode] = &[
+    OpCode::FrameSetLocation,
     OpCode::Add,
     OpCode::Sub,
     OpCode::Mul,
@@ -29491,6 +29649,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
 #[inline]
 pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -29614,6 +29773,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => true,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -29737,6 +29897,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -29901,6 +30062,7 @@ pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {
 #[inline]
 pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
     let mut effects = match opcode {
+        OpCode::FrameSetLocation => OPCODE_EFFECTS_IMPURE,
         OpCode::Add => OPCODE_EFFECTS_IMPURE,
         OpCode::Sub => OPCODE_EFFECTS_IMPURE,
         OpCode::Mul => OPCODE_EFFECTS_IMPURE,
@@ -30258,6 +30420,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -30788,6 +30951,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -31334,6 +31498,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -31874,6 +32039,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -32412,6 +32578,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -32951,6 +33118,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -33490,6 +33658,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -34028,6 +34197,7 @@ impl OpKind {
             | OpKind::FrameHomeTake
             | OpKind::FrameLocals
             | OpKind::FrameLocalsSet
+            | OpKind::FrameSetLocation
             | OpKind::Free
             | OpKind::FrozensetAdd
             | OpKind::FrozensetNew
@@ -34339,6 +34509,7 @@ impl OpKind {
 #[inline]
 pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -34464,6 +34635,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
     match opcode {
+        OpCode::FrameSetLocation => Some(0),
         OpCode::Add => Some(1),
         OpCode::Sub => Some(1),
         OpCode::Mul => Some(1),
@@ -34699,6 +34871,7 @@ pub const FUZZ_TIR_OPCODE_SHAPES: &[FuzzTirOpcodeShape] = &[
 #[inline]
 pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => Some(2),
         OpCode::Sub => Some(2),
         OpCode::Mul => Some(2),
@@ -34822,6 +34995,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
 #[inline]
 pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPayloadRule {
     match opcode {
+        OpCode::FrameSetLocation => FuzzTirAttrPayloadRule::None,
         OpCode::Add => FuzzTirAttrPayloadRule::None,
         OpCode::Sub => FuzzTirAttrPayloadRule::None,
         OpCode::Mul => FuzzTirAttrPayloadRule::None,
@@ -34952,6 +35126,7 @@ pub enum PredicateSemantics {
 #[inline]
 pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -35289,6 +35464,7 @@ pub fn opcode_primitive_effects_table(
 #[inline]
 pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => count == 0,
         OpCode::Add => count == 2,
         OpCode::Sub => count == 2,
         OpCode::Mul => count == 2,
@@ -35469,6 +35645,7 @@ pub fn opcode_operand_independent_result_type_table(
     result_index: usize,
 ) -> Option<OperandIndependentResultType> {
     let results: &[Option<OperandIndependentResultType>] = match opcode {
+        OpCode::FrameSetLocation => &[],
         OpCode::Add => &[],
         OpCode::Sub => &[],
         OpCode::Mul => &[],
@@ -35628,6 +35805,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
     opcode: OpCode,
 ) -> TypeRefineAttrResultTypeRule {
     match opcode {
+        OpCode::FrameSetLocation => TypeRefineAttrResultTypeRule::None,
         OpCode::Add => TypeRefineAttrResultTypeRule::None,
         OpCode::Sub => TypeRefineAttrResultTypeRule::None,
         OpCode::Mul => TypeRefineAttrResultTypeRule::None,
@@ -35776,6 +35954,7 @@ pub enum TypeRefineOperandTypeRule {
 #[inline]
 pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineOperandTypeRule {
     match opcode {
+        OpCode::FrameSetLocation => TypeRefineOperandTypeRule::None,
         OpCode::Add => TypeRefineOperandTypeRule::Add,
         OpCode::Sub => TypeRefineOperandTypeRule::NumericArithmetic,
         OpCode::Mul => TypeRefineOperandTypeRule::Mul,
@@ -35912,6 +36091,7 @@ pub enum SccpConstantSeedRule {
 #[inline]
 pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedRule {
     match opcode {
+        OpCode::FrameSetLocation => SccpConstantSeedRule::None,
         OpCode::Add => SccpConstantSeedRule::None,
         OpCode::Sub => SccpConstantSeedRule::None,
         OpCode::Mul => SccpConstantSeedRule::None,
@@ -36060,6 +36240,7 @@ pub enum SccpConstantEvalRule {
 #[inline]
 pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalRule {
     match opcode {
+        OpCode::FrameSetLocation => SccpConstantEvalRule::None,
         OpCode::Add => SccpConstantEvalRule::Add,
         OpCode::Sub => SccpConstantEvalRule::Sub,
         OpCode::Mul => SccpConstantEvalRule::Mul,
@@ -36203,6 +36384,7 @@ pub enum ValueRangeTransferRule {
 #[inline]
 pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTransferRule {
     match opcode {
+        OpCode::FrameSetLocation => ValueRangeTransferRule::None,
         OpCode::Add => ValueRangeTransferRule::Add,
         OpCode::Sub => ValueRangeTransferRule::Sub,
         OpCode::Mul => ValueRangeTransferRule::Mul,
@@ -36342,6 +36524,7 @@ pub enum ValueRangeConstFoldRule {
 #[inline]
 pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeConstFoldRule {
     match opcode {
+        OpCode::FrameSetLocation => ValueRangeConstFoldRule::None,
         OpCode::Add => ValueRangeConstFoldRule::Add,
         OpCode::Sub => ValueRangeConstFoldRule::Sub,
         OpCode::Mul => ValueRangeConstFoldRule::Mul,
@@ -36475,6 +36658,7 @@ pub enum ValueRangeCondNarrowRule {
 #[inline]
 pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCondNarrowRule {
     match opcode {
+        OpCode::FrameSetLocation => ValueRangeCondNarrowRule::None,
         OpCode::Add => ValueRangeCondNarrowRule::None,
         OpCode::Sub => ValueRangeCondNarrowRule::None,
         OpCode::Mul => ValueRangeCondNarrowRule::None,
@@ -36612,6 +36796,7 @@ pub fn opcode_value_range_container_length_rule_table(
     opcode: OpCode,
 ) -> ValueRangeContainerLengthRule {
     match opcode {
+        OpCode::FrameSetLocation => ValueRangeContainerLengthRule::None,
         OpCode::Add => ValueRangeContainerLengthRule::None,
         OpCode::Sub => ValueRangeContainerLengthRule::None,
         OpCode::Mul => ValueRangeContainerLengthRule::ListRepeat,
@@ -36746,6 +36931,7 @@ pub enum RangeDevirtRole {
 #[inline]
 pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
     match opcode {
+        OpCode::FrameSetLocation => RangeDevirtRole::None,
         OpCode::Add => RangeDevirtRole::None,
         OpCode::Sub => RangeDevirtRole::None,
         OpCode::Mul => RangeDevirtRole::None,
@@ -36904,6 +37090,11 @@ pub struct VectorizeOpcodeFacts {
 #[inline]
 pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
     match opcode {
+        OpCode::FrameSetLocation => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::Reject,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
         OpCode::Add => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::ScalarArithmetic,
             reduction_rule: VectorReductionRule::Sum,
@@ -37499,6 +37690,7 @@ pub enum LirVerifyRule {
 #[inline]
 pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
     match opcode {
+        OpCode::FrameSetLocation => LirVerifyRule::None,
         OpCode::Add => LirVerifyRule::CheckedI64Arithmetic,
         OpCode::Sub => LirVerifyRule::CheckedI64Arithmetic,
         OpCode::Mul => LirVerifyRule::CheckedI64Arithmetic,
@@ -37635,6 +37827,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
     opcode: OpCode,
 ) -> ReprRawI64FullDeoptSeedRule {
     match opcode {
+        OpCode::FrameSetLocation => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Add => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Sub => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Mul => ReprRawI64FullDeoptSeedRule::None,
@@ -37775,6 +37968,7 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
     opcode: OpCode,
 ) -> ReprProjectableBoolResultRule {
     match opcode {
+        OpCode::FrameSetLocation => ReprProjectableBoolResultRule::None,
         OpCode::Add => ReprProjectableBoolResultRule::None,
         OpCode::Sub => ReprProjectableBoolResultRule::None,
         OpCode::Mul => ReprProjectableBoolResultRule::None,
@@ -37913,6 +38107,7 @@ pub fn opcode_repr_projectable_float_result_rule_table(
     opcode: OpCode,
 ) -> ReprProjectableFloatResultRule {
     match opcode {
+        OpCode::FrameSetLocation => ReprProjectableFloatResultRule::None,
         OpCode::Add => ReprProjectableFloatResultRule::AllOperandsProjectable,
         OpCode::Sub => ReprProjectableFloatResultRule::AllOperandsProjectable,
         OpCode::Mul => ReprProjectableFloatResultRule::AllOperandsProjectable,
@@ -38074,6 +38269,7 @@ impl CountedLoopComparisonRole {
 #[inline]
 pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopComparisonRole {
     match opcode {
+        OpCode::FrameSetLocation => CountedLoopComparisonRole::None,
         OpCode::Add => CountedLoopComparisonRole::None,
         OpCode::Sub => CountedLoopComparisonRole::None,
         OpCode::Mul => CountedLoopComparisonRole::None,
@@ -38197,6 +38393,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
 #[inline]
 pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<OpCode> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -38340,6 +38537,7 @@ impl GvnNumberingRole {
 #[inline]
 pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
     match opcode {
+        OpCode::FrameSetLocation => GvnNumberingRole::Never,
         OpCode::Add => GvnNumberingRole::TypeGated,
         OpCode::Sub => GvnNumberingRole::TypeGated,
         OpCode::Mul => GvnNumberingRole::TypeGated,
@@ -38493,6 +38691,7 @@ const GVN_VALUE_KEY_ATTRS_TYPE_GUARD: &[&str] = &["expected_type", "ty"];
 #[inline]
 pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -38642,6 +38841,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
 #[inline]
 pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -38767,6 +38967,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -38890,6 +39091,7 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39014,6 +39216,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39138,6 +39341,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39262,6 +39466,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -39420,6 +39625,7 @@ impl RefcountBalanceRole {
 #[inline]
 pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole {
     match opcode {
+        OpCode::FrameSetLocation => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Add => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Sub => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Mul => RefcountBalanceRole::NotRefcountBalance,
@@ -39545,6 +39751,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
 #[inline]
 pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39669,6 +39876,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -39815,6 +40023,7 @@ impl GeneratorFusionPollRole {
 #[inline]
 pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusionPollRole {
     match opcode {
+        OpCode::FrameSetLocation => GeneratorFusionPollRole::Neutral,
         OpCode::Add => GeneratorFusionPollRole::Neutral,
         OpCode::Sub => GeneratorFusionPollRole::Neutral,
         OpCode::Mul => GeneratorFusionPollRole::Neutral,
@@ -39949,6 +40158,7 @@ pub enum GeneratorFusionIterUseRole {
 #[inline]
 pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorFusionIterUseRole {
     match opcode {
+        OpCode::FrameSetLocation => GeneratorFusionIterUseRole::None,
         OpCode::Add => GeneratorFusionIterUseRole::None,
         OpCode::Sub => GeneratorFusionIterUseRole::None,
         OpCode::Mul => GeneratorFusionIterUseRole::None,
@@ -40075,6 +40285,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
 #[inline]
 pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -40227,6 +40438,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
     opcode: OpCode,
 ) -> ModuleConcurrencyMarkerSourceFacts {
     match opcode {
+        OpCode::FrameSetLocation => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Add => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Sub => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Mul => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -40373,6 +40585,7 @@ pub enum ModuleSlotAccessRole {
 #[inline]
 pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessRole {
     match opcode {
+        OpCode::FrameSetLocation => ModuleSlotAccessRole::None,
         OpCode::Add => ModuleSlotAccessRole::None,
         OpCode::Sub => ModuleSlotAccessRole::None,
         OpCode::Mul => ModuleSlotAccessRole::None,
@@ -40507,6 +40720,7 @@ pub enum BoxedAllocationLayoutRule {
 #[inline]
 pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocationLayoutRule {
     match opcode {
+        OpCode::FrameSetLocation => BoxedAllocationLayoutRule::None,
         OpCode::Add => BoxedAllocationLayoutRule::None,
         OpCode::Sub => BoxedAllocationLayoutRule::None,
         OpCode::Mul => BoxedAllocationLayoutRule::None,
@@ -40643,6 +40857,7 @@ pub enum TirVerifyAttrRule {
 #[inline]
 pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
     match opcode {
+        OpCode::FrameSetLocation => TirVerifyAttrRule::None,
         OpCode::Add => TirVerifyAttrRule::None,
         OpCode::Sub => TirVerifyAttrRule::None,
         OpCode::Mul => TirVerifyAttrRule::None,
@@ -40779,6 +40994,7 @@ pub enum StrengthReductionRule {
 #[inline]
 pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReductionRule {
     match opcode {
+        OpCode::FrameSetLocation => StrengthReductionRule::None,
         OpCode::Add => StrengthReductionRule::None,
         OpCode::Sub => StrengthReductionRule::None,
         OpCode::Mul => StrengthReductionRule::MulByTwo,
@@ -40914,6 +41130,7 @@ pub enum ScevExprRule {
 #[inline]
 pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
     match opcode {
+        OpCode::FrameSetLocation => ScevExprRule::None,
         OpCode::Add => ScevExprRule::Add,
         OpCode::Sub => ScevExprRule::Sub,
         OpCode::Mul => ScevExprRule::Mul,
@@ -41041,6 +41258,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
 #[inline]
 pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -41167,6 +41385,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
 #[inline]
 pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -41294,6 +41513,7 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => true,
         OpCode::Sub => false,
         OpCode::Mul => true,
@@ -41419,6 +41639,7 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -41543,6 +41764,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -41667,6 +41889,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -41793,6 +42016,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -41917,6 +42141,7 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => true,
         OpCode::Sub => true,
         OpCode::Mul => true,
@@ -42044,6 +42269,7 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
 #[inline]
 pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -42170,6 +42396,7 @@ pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool 
 #[inline]
 pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -42294,6 +42521,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -42418,6 +42646,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -42542,6 +42771,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
 #[inline]
 pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -42673,6 +42903,7 @@ pub enum ExceptionRegionNestingRole {
 #[inline]
 pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRegionNestingRole {
     match opcode {
+        OpCode::FrameSetLocation => ExceptionRegionNestingRole::None,
         OpCode::Add => ExceptionRegionNestingRole::None,
         OpCode::Sub => ExceptionRegionNestingRole::None,
         OpCode::Mul => ExceptionRegionNestingRole::None,
@@ -42804,6 +43035,7 @@ pub enum AliasTransparentAliasRole {
 #[inline]
 pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTransparentAliasRole {
     match opcode {
+        OpCode::FrameSetLocation => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Add => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Sub => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Mul => AliasTransparentAliasRole::NotTransparentAlias,
@@ -42940,6 +43172,7 @@ pub enum AliasMemoryRegionClass {
 #[inline]
 pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClass {
     match opcode {
+        OpCode::FrameSetLocation => AliasMemoryRegionClass::GenericHeap,
         OpCode::Add => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Sub => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Mul => AliasMemoryRegionClass::ScalarRegister,
@@ -43075,6 +43308,7 @@ pub enum AliasSlotObservation {
 #[inline]
 pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservation {
     match opcode {
+        OpCode::FrameSetLocation => AliasSlotObservation::ConservativeObserver,
         OpCode::Add => AliasSlotObservation::ConservativeObserver,
         OpCode::Sub => AliasSlotObservation::ConservativeObserver,
         OpCode::Mul => AliasSlotObservation::ConservativeObserver,
@@ -43234,6 +43468,7 @@ const PASS_DELTA_OPCODE_FACTS_NONE: PassDeltaOpcodeFacts = PassDeltaOpcodeFacts 
 #[inline]
 pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
     match opcode {
+        OpCode::FrameSetLocation => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Add => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Sub => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Mul => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -43438,6 +43673,7 @@ pub enum LiteralPayloadKind {
 #[inline]
 pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloadKind> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -43588,6 +43824,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
     opcode: OpCode,
 ) -> Option<CanonicalizeCommutativeDomain> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => Some(CanonicalizeCommutativeDomain::Numeric),
         OpCode::Sub => None,
         OpCode::Mul => Some(CanonicalizeCommutativeDomain::Numeric),
@@ -43711,6 +43948,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
 #[inline]
 pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Option<OpCode> {
     match opcode {
+        OpCode::FrameSetLocation => None,
         OpCode::Add => None,
         OpCode::Sub => None,
         OpCode::Mul => None,
@@ -44126,6 +44364,7 @@ const CANONICALIZE_BINARY_RULES_OR: &[CanonicalizeBinaryRule] = &[
 #[inline]
 pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [CanonicalizeBinaryRule] {
     match opcode {
+        OpCode::FrameSetLocation => &[],
         OpCode::Add => CANONICALIZE_BINARY_RULES_ADD,
         OpCode::Sub => CANONICALIZE_BINARY_RULES_SUB,
         OpCode::Mul => CANONICALIZE_BINARY_RULES_MUL,
@@ -44336,6 +44575,7 @@ mod operand_ownership_schema_tests {
 #[inline]
 pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> OperandOwnership {
     match opcode {
+        OpCode::FrameSetLocation => OperandOwnership::Borrowed,
         OpCode::Add => OperandOwnership::Borrowed,
         OpCode::Sub => OperandOwnership::Borrowed,
         OpCode::Mul => OperandOwnership::Borrowed,
@@ -44708,6 +44948,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -45240,6 +45481,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -45779,6 +46021,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -46322,6 +46565,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -46631,6 +46875,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
 #[inline]
 pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
     match opcode {
+        OpCode::FrameSetLocation => false,
         OpCode::Add => false,
         OpCode::Sub => false,
         OpCode::Mul => false,
@@ -46994,6 +47239,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -47532,6 +47778,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FuncNew
@@ -48074,6 +48321,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
         | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
         | OpKind::Free
         | OpKind::FrozensetAdd
         | OpKind::FrozensetNew
@@ -48391,6 +48639,7 @@ pub enum ResultValidity {
 #[inline]
 pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> ResultValidity {
     match opcode {
+        OpCode::FrameSetLocation => ResultValidity::AlwaysValid,
         OpCode::Add => ResultValidity::AlwaysValid,
         OpCode::Sub => ResultValidity::AlwaysValid,
         OpCode::Mul => ResultValidity::AlwaysValid,
@@ -48542,6 +48791,7 @@ pub fn opcode_explicit_release_operands_table(
     _arity: usize,
 ) -> ExplicitReleaseOperands {
     match opcode {
+        OpCode::FrameSetLocation => ExplicitReleaseOperands::None,
         OpCode::Add => ExplicitReleaseOperands::None,
         OpCode::Sub => ExplicitReleaseOperands::None,
         OpCode::Mul => ExplicitReleaseOperands::None,

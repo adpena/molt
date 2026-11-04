@@ -6,7 +6,7 @@ from tools.generator_io import rustfmt_source
 
 from . import render_wire as _wire
 from .primitive_effects import render_primitive_effects_rs
-from .registration import registered_simpleir_kinds
+from .registration import registered_simpleir_kinds, frontend_kinds_for_wire_kind
 from .runtime_calls import render_runtime_calls
 from .runtime_requirements import (
     INTEGER_SEMANTIC_ROLES,
@@ -101,7 +101,34 @@ def _render_rs_unformatted(data: dict) -> str:
     out: list[str] = [_RS_HEADER]
 
     out.append(_wire.render_enum(data))
+    edges = data["exception_edge_kind"]
+    out.append(
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]\n"
+    )
+    out.append("#[repr(i64)]\npub enum ExceptionEdgeKind {\n")
+    for row in edges:
+        out.append(
+            f'    #[serde(rename = "{row["wire"]}")]\n    {row["name"]} = {row["tag"]},\n'
+        )
+    out.append(
+        "}\nimpl ExceptionEdgeKind {\n    pub fn from_tag(tag: i64) -> Option<Self> {\n        match tag {\n"
+    )
+    for row in edges:
+        out.append(f"            {row['tag']} => Some(Self::{row['name']}),\n")
+    out.append("            _ => None,\n        }\n    }\n}\n")
 
+    skip = {row["kind"] for row in data["frontend_check_exception_skip"]}
+    out.append(
+        "/// Structural/forwarding producers, shared with the frontend's auto-check authority.\n"
+    )
+    out.append(
+        "pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {\n    match kind {\n"
+    )
+    for kind in sorted(registered_simpleir_kinds(data)):
+        frontend = frontend_kinds_for_wire_kind(data, kind)
+        if frontend and all(name in skip for name in frontend):
+            out.append(f"        {_wire.kind_ref(kind)} => true,\n")
+    out.append("        _ => false,\n    }\n}\n")
     out.append(_render_simpleir_control_facts(data))
     out.append("\n\n")
     out.append(_render_simpleir_field_roles(data))

@@ -269,6 +269,57 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
             dec_ref_bits(_py, descriptor);
             return 0;
         }
+        let getters: [(crate::NameId, &AtomicU64, extern "C" fn(u64, u64) -> u64); 2] = [
+            (
+                crate::NameId::FLineno,
+                &state.frame_f_lineno_get_fn,
+                crate::builtins::frames::molt_frame_f_lineno_get,
+            ),
+            (
+                crate::NameId::FLasti,
+                &state.frame_f_lasti_get_fn,
+                crate::builtins::frames::molt_frame_f_lasti_get,
+            ),
+        ];
+        for (field, function_slot, entry) in getters {
+            let getter = builtin_func_bits(
+                _py,
+                NativeCallableSpec::function(function_slot),
+                entry as *const () as usize as u64,
+                2,
+            );
+            let Some(name) = field.owned_bits(_py) else {
+                dec_ref_bits(_py, descriptor);
+                return 0;
+            };
+            if getter == 0 || exception_pending(_py) {
+                dec_ref_bits(_py, name);
+                dec_ref_bits(_py, descriptor);
+                return 0;
+            }
+            let location_descriptor = alloc_native_descriptor(
+                _py,
+                NativeDescriptorSpec {
+                    flavor: NativeDescriptorFlavor::GetSet,
+                    operation: 0,
+                    owner: frame_class,
+                    name,
+                    doc: none,
+                    getter,
+                    setter: none,
+                    deleter: none,
+                },
+            );
+            dec_ref_bits(_py, name);
+            if location_descriptor == 0
+                || exception_pending(_py)
+                || !set_class_method(_py, dict_ptr, field, location_descriptor)
+            {
+                dec_ref_bits(_py, descriptor);
+                return 0;
+            }
+            dec_ref_bits(_py, location_descriptor);
+        }
         let clear = builtin_func_bits(
             _py,
             NativeCallableSpec::declared(

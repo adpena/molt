@@ -1360,8 +1360,8 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         else:
             should_exit = len(self.try_end_labels) > self.try_suppress_depth
 
-        def emit_raise_or_defer(exc: MoltValue) -> None:
-            if node.exc is not None:
+        def emit_raise_or_defer(exc: MoltValue, *, origin: bool = False) -> None:
+            if node.exc is not None or origin:
                 self.emit(
                     MoltOp(
                         kind="CALL",
@@ -1420,7 +1420,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             err_val = self._emit_exception_new(
                 "RuntimeError", "No active exception to reraise"
             )
-            emit_raise_or_defer(err_val)
+            emit_raise_or_defer(err_val, origin=True)
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             emit_raise_or_defer(exc_val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
