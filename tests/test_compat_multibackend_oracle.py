@@ -738,7 +738,6 @@ def test_cross_backend_build_command_binds_target_python(
     stdlib_profile: str | None,
 ) -> None:
     selected = str(tmp_path / "selected CLI python")
-    monkeypatch.setenv("MOLT_DIFF_MOLT_PYTHON", "conflicting-ambient-python")
     original_import = builtins.__import__
 
     def import_without_harness_alias(
@@ -789,6 +788,63 @@ def test_cross_backend_build_command_binds_target_python(
     else:
         assert command.count("--stdlib-profile") == 1
         assert command[command.index("--stdlib-profile") + 1] == stdlib_profile
+
+
+@pytest.mark.parametrize(
+    "adapter", ("WasmAdapter", "LlvmAdapter", "JitAdapter", "LuauAdapter")
+)
+def test_only_compiler_children_run_inside_the_frontend_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, adapter: str
+) -> None:
+    """HF-726: a build runs in the frontend's image; the guest never sees it.
+
+    The runtime reads PYTHONDONTWRITEBYTECODE into sys.flags, so a projected
+    guest environment would diverge from the unprojected CPython oracle.
+    """
+    from molt.python_environment_location import environment_bytecode_prefix
+
+    image = tmp_path / "image"
+    harness = {
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "harness"),
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "harness" / "bytecode"),
+        "MOLT_CAPABILITY_TIER": "none",
+    }
+    context = compat_backends.BackendExecutionContext(
+        molt_cli_python=str(image / "bin" / "python"),
+        target_python=_parse_target_python_version("3.13"),
+        build_profile="dev",
+        capabilities="",
+        environment=harness,
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
+        compiler_environment_root=image,
+    )
+    phases: dict[str, dict[str, str]] = {}
+
+    def guarded_run(cmd, *, prefix, env, budget, backend, phase, cwd=None):
+        phases[phase] = dict(env)
+        if phase == "build" and adapter == "LlvmAdapter":
+            output = Path(cmd[cmd.index("--output") + 1])
+            output.write_bytes(b"")
+            return compat_backends.BackendResult(stdout="", stderr="", returncode=0)
+        return compat_backends.BackendResult(
+            stdout="", stderr="fixture", returncode=0 if phase != "build" else 1
+        )
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded_run)
+    getattr(compat_backends, adapter)()._build_and_run_owned(
+        "case.py", context=context, out_dir=tmp_path
+    )
+    build = phases["build"]
+    assert build["UV_PROJECT_ENVIRONMENT"] == str(image)
+    assert build["PYTHONPYCACHEPREFIX"] == str(environment_bytecode_prefix(image))
+    assert build["PYTHONDONTWRITEBYTECODE"] == "1"
+    if adapter == "LlvmAdapter":
+        run = phases["first_run"]
+        assert run["UV_PROJECT_ENVIRONMENT"] == harness["UV_PROJECT_ENVIRONMENT"]
+        assert run["PYTHONPYCACHEPREFIX"] == harness["PYTHONPYCACHEPREFIX"]
+        assert "PYTHONDONTWRITEBYTECODE" not in run
 
 
 def test_backend_execution_context_rejects_invalid_stdlib_profile() -> None:
@@ -1199,11 +1255,21 @@ def cpython_oracle(monkeypatch) -> TargetPythonVersion:
     )
     command = molt_diff._resolve_python_command(sys.executable)
 
+    release = f"{oracle.major}.{oracle.minor}.{oracle.micro}"
+
     def metadata(probed: tuple[str, ...], *, budget=None):
         assert probed == command, f"probed {probed}, not the oracle {command}"
-        return molt_diff._PythonOracleMetadata(oracle.feature_version, "oracle-python")
+        return molt_diff._PythonOracleMetadata(
+            oracle.feature_version, "oracle-python", release
+        )
+
+    def frontend(version, selected):
+        # The declared oracle has no image; declare its frontend the same way.
+        assert version == release and selected.selector == release
+        return molt_diff.compat_backends.CompilerFrontend(sys.executable, version)
 
     monkeypatch.setattr(molt_diff, "_python_command_metadata", metadata)
+    monkeypatch.setattr(molt_diff, "_compiler_frontend", frontend)
     return oracle
 
 
@@ -1298,7 +1364,11 @@ def test_all_backends_receive_one_explicit_untrusted_test_context(
     )
     selected_cli_python = "/selected/context CLI python"
     monkeypatch.setattr(
-        molt_diff, "_resolve_molt_cli_python", lambda: selected_cli_python
+        molt_diff,
+        "_compiler_frontend",
+        lambda version, _release: compat_backends.CompilerFrontend(
+            selected_cli_python, version
+        ),
     )
     monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
     monkeypatch.setenv("MOLT_CAPABILITIES", "poison.inherited")

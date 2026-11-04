@@ -610,43 +610,125 @@ def test_diff_measure_rss_rejects_threshold_with_explicit_profiling_off(
         module._diff_measure_rss()
 
 
-@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
-def test_molt_cli_python_reuses_selected_interpreter_without_probes(
-    tmp_path, monkeypatch, platform
-):
-    module = _load_diff_module()
-    monkeypatch.delenv("MOLT_DIFF_MOLT_PYTHON", raising=False)
-    selected = str(tmp_path / "selected-python")
+def _frontend_host(monkeypatch, module, tmp_path, *, harness: str) -> str:
+    """Pin the harness interpreter's path and release for one test."""
+    selected = str(tmp_path / "harness-python")
+    install_module_view(monkeypatch, "sys", sys, module, executable=selected)
     install_module_view(
-        monkeypatch, "sys", sys, module, executable=selected, platform=platform
+        monkeypatch,
+        "platform",
+        module.platform,
+        module,
+        python_version=lambda: harness,
+        python_implementation=lambda: "CPython",
     )
-
-    def no_probe(*args, **kwargs):
-        raise AssertionError("CLI interpreter selection must not probe candidates")
-
-    monkeypatch.setattr(module, "_run_metadata_probe", no_probe)
-    assert module._resolve_molt_cli_python() == selected
-
-
-def test_molt_cli_python_explicit_override_preserves_path_and_rejects_commands(
-    tmp_path, monkeypatch
-):
-    module = _load_diff_module()
-    executable = tmp_path / "explicit python"
-    executable.write_bytes(b"selected interpreter")
-    monkeypatch.setenv("MOLT_DIFF_MOLT_PYTHON", str(executable))
     monkeypatch.setattr(
         module,
         "_run_metadata_probe",
-        lambda *a, **k: pytest.fail("explicit CLI interpreter must not be probed"),
+        lambda *a, **k: pytest.fail("frontend selection must not probe"),
     )
-    assert module._resolve_molt_cli_python() == str(executable)
-    monkeypatch.setenv("MOLT_DIFF_MOLT_PYTHON", '"' + str(executable) + '" -I')
-    with pytest.raises(
-        module.python_interpreter.PythonInterpreterError,
-        match="must name one executable path",
-    ):
-        module._resolve_molt_cli_python()
+    return selected
+
+
+def test_compiler_frontend_is_the_harness_when_it_is_the_oracle_release(
+    tmp_path, monkeypatch
+):
+    from molt import checkout_provisioning
+    from molt.python_interpreter import PythonInterpreterRequest
+
+    module = _load_diff_module()
+    selected = _frontend_host(monkeypatch, module, tmp_path, harness="3.12.15")
+    monkeypatch.setattr(
+        checkout_provisioning,
+        "ensure_python_release",
+        lambda *a, **k: pytest.fail("the harness release needs no image"),
+    )
+    frontend = module._compiler_frontend("3.12.15", PythonInterpreterRequest(3, 12, 15))
+    assert frontend == module.compat_backends.CompilerFrontend(selected, "3.12.15")
+
+
+def test_compiler_frontend_selects_the_image_of_a_newer_release(tmp_path, monkeypatch):
+    from molt import checkout_provisioning
+    from molt.python_environment_location import environment_python_path
+    from molt.python_interpreter import PythonInterpreterRequest
+
+    module = _load_diff_module()
+    _frontend_host(monkeypatch, module, tmp_path, harness="3.12.15")
+    image = tmp_path / "image"
+    calls = []
+
+    def ensure_python_release(checkout, environ, request):
+        calls.append((checkout, request))
+        return checkout_provisioning.Ensured("uv-environment", False, 0.0, image)
+
+    monkeypatch.setattr(
+        checkout_provisioning, "ensure_python_release", ensure_python_release
+    )
+    release = PythonInterpreterRequest(3, 13, 17)
+    frontend = module._compiler_frontend("3.13.17", release)
+    assert calls == [(module._repo_root(), release)]
+    assert frontend == module.compat_backends.CompilerFrontend(
+        str(environment_python_path(image)), "3.13.17", image
+    )
+
+
+@pytest.mark.parametrize("oracle", ["3.13.18", "3.13.16"])
+def test_compiler_frontend_refuses_an_oracle_off_the_selected_release(
+    tmp_path, monkeypatch, oracle
+):
+    from molt import checkout_provisioning
+    from molt.python_interpreter import PythonInterpreterError, PythonInterpreterRequest
+
+    module = _load_diff_module()
+    _frontend_host(monkeypatch, module, tmp_path, harness="3.12.15")
+    monkeypatch.setattr(
+        checkout_provisioning,
+        "ensure_python_release",
+        lambda *a, **k: pytest.fail("an off-release oracle must not publish an image"),
+    )
+    with pytest.raises(PythonInterpreterError) as refused:
+        module._compiler_frontend(oracle, PythonInterpreterRequest(3, 13, 17))
+    message = str(refused.value)
+    assert f"CPython {oracle}" in message and "CPython 3.13.17" in message
+    assert "--python-version" in message
+
+
+def test_compiler_environment_projects_the_image_only(tmp_path):
+    from molt.python_environment_location import environment_bytecode_prefix
+
+    module = _load_diff_module()
+    image = tmp_path / "image"
+    harness = {
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "harness"),
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "harness" / "bytecode"),
+        "MOLT_CAPABILITY_TIER": "none",
+    }
+
+    def context(root):
+        return module.compat_backends.BackendExecutionContext(
+            molt_cli_python=str(tmp_path / "python"),
+            target_python=_parse_target_python_version("3.13"),
+            build_profile="dev",
+            capabilities="",
+            environment=harness,
+            budget=module.compat_backends.ItemBudget(
+                module.compat_backends.TimeoutPolicy.from_environment({}), None
+            ),
+            compiler_environment_root=root,
+        )
+
+    assert module.compat_backends.compiler_environment(context(None), harness) == (
+        harness
+    )
+    projected = module.compat_backends.compiler_environment(context(image), harness)
+    assert projected["UV_PROJECT_ENVIRONMENT"] == str(image)
+    assert projected["VIRTUAL_ENV"] == str(image)
+    assert projected["PYTHONPYCACHEPREFIX"] == str(environment_bytecode_prefix(image))
+    assert projected["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert projected["UV_NO_SYNC"] == "1"
+    assert projected["MOLT_CAPABILITY_TIER"] == "none"
+    with pytest.raises(TypeError, match="absolute path"):
+        context(Path("relative-image"))
 
 
 @pytest.mark.parametrize(
@@ -670,7 +752,10 @@ def test_native_profiling_wraps_guarded_commands_only_when_requested(
         monkeypatch.setenv("MOLT_DIFF_MEASURE_RSS", "1")
     elif measure is None:
         monkeypatch.setenv("MOLT_DIFF_MAX_RSS_KB", "1024")
-    install_module_view(monkeypatch, "sys", sys, module, platform=platform)
+    # A build with no execution context names no target: the harness compiles.
+    install_module_view(
+        monkeypatch, "sys", sys, module, platform=platform, executable="fixture-python"
+    )
     source = tmp_path / "program.py"
     source.write_text("print('guest')\n", encoding="utf-8")
     layout = SimpleNamespace(
@@ -682,7 +767,6 @@ def test_native_profiling_wraps_guarded_commands_only_when_requested(
     monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
     monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda *a, **k: None)
     monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda **k: None)
     monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
@@ -1316,19 +1400,12 @@ def test_terminal_batch_result_survives_deadline_during_cleanup(
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: True)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
-    metadata_calls = []
-    resolve = module._resolve_molt_cli_python
-
-    def metadata():
-        metadata_calls.append("cli_python")
-        return resolve()
 
     def batch(**kwargs):
         assert kwargs["budget"] is budget
         clock.now = 10.0
         return terminal
 
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", metadata)
     monkeypatch.setattr(module, "_run_batch_compile_build", batch)
     actual = module._run_molt_owned(
         str(source),
@@ -1351,7 +1428,6 @@ def test_terminal_batch_result_survives_deadline_during_cleanup(
         if kind == "allocator"
         else None
     )
-    assert metadata_calls == []
 
 
 @pytest.mark.parametrize("phase", ["build", "run"])
@@ -1374,11 +1450,6 @@ def test_native_resource_evidence_survives_build_and_run(
         module, "_diff_batch_compile_server_enabled", lambda: source == "batch"
     )
     selected = str(tmp_path / "context CLI python")
-    monkeypatch.setattr(
-        module,
-        "_resolve_molt_cli_python",
-        lambda: pytest.fail("native execution must keep its context interpreter"),
-    )
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1466,7 +1537,6 @@ def test_native_timeout_preserves_guard_outcome_and_raw_streams(
     monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(
         module, "_memory_guard_trip_outcome", lambda *, environment=None: None
@@ -1573,3 +1643,75 @@ def test_operator_signal_closes_real_child_before_returning_typed_outcome(
     assert signal.getsignal(getattr(signal, signal_name)) is previous
     child_pid = int(result.stdout.strip())
     assert not process_model.pid_alive(child_pid)
+
+
+def test_native_build_runs_inside_the_frontend_image_and_the_guest_does_not(
+    tmp_path, monkeypatch
+):
+    """HF-726: the compiler child takes the image; the compiled program never."""
+    from molt.python_environment_location import environment_bytecode_prefix
+
+    module = _load_diff_module()
+    layout = SimpleNamespace(
+        repo_root=tmp_path,
+        cargo_target_root=tmp_path / "target",
+        diff_root=tmp_path / "diff",
+        cache_root=tmp_path / "cache",
+    )
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
+    monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
+    image = tmp_path / "image"
+    harness = {
+        "MOLT_EXT_ROOT": str(tmp_path),
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "harness"),
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "harness" / "bytecode"),
+    }
+    seen = {}
+
+    def run(command, *, env, timeout, time_path):
+        phase = "build" if "molt.cli" in command else "run"
+        seen[phase] = dict(env)
+        if phase == "build":
+            output = Path(command[command.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"")
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            list(command), 0, "", "", elapsed_s=0.1, child_stderr=""
+        )
+
+    monkeypatch.setattr(module, "_run_with_optional_time", run)
+    context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python=str(image / "bin" / "python"),
+        target_python=_parse_target_python_version("3.13"),
+        build_profile="dev",
+        capabilities="",
+        environment=harness,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
+        compiler_environment_root=image,
+    )
+    module._run_molt_owned(
+        "fixture.py",
+        build_only=False,
+        build_profile="dev",
+        daemon_enabled=False,
+        no_cache=False,
+        rebuild=False,
+        extra_env=None,
+        execution_context=context,
+        output_root=tmp_path,
+        environment=harness,
+        budget=context.budget,
+    )
+    assert seen["build"]["UV_PROJECT_ENVIRONMENT"] == str(image)
+    assert seen["build"]["PYTHONPYCACHEPREFIX"] == str(
+        environment_bytecode_prefix(image)
+    )
+    assert seen["run"]["UV_PROJECT_ENVIRONMENT"] == harness["UV_PROJECT_ENVIRONMENT"]
+    assert seen["run"]["PYTHONPYCACHEPREFIX"] == harness["PYTHONPYCACHEPREFIX"]

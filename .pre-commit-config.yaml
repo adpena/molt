@@ -2,10 +2,11 @@ repos:
   - repo: local
     hooks:
       - id: public-source-boundary
-        name: reject local operational artifacts
-        entry: "Keep logs, scratch outputs, and machine-local settings outside tracked source; see docs/ROOT_LAYOUT.md."
-        language: fail
-        files: '^(?:logs/|tmp/|\.claude/settings\.local\.json$|bench/(?:results|scoreboard)/.*\.log$|bench/results/.*/memory_guard/)'
+        name: reject tracked files outside public source (docs/ROOT_LAYOUT.md)
+        entry: uv run python tools/check_public_source_boundary.py
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: proof-plan-freshness
         name: generated proof-plan freshness
         entry: uv run python tools/gen_proof_plan.py --check --from-index

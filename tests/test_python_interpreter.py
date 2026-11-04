@@ -573,21 +573,34 @@ def test_target_python_resolution_fails_closed_with_attempts(verifier, monkeypat
     assert "python3.13" in message
 
 
-def test_molt_diff_python_version_uses_shared_multi_token_resolver(monkeypatch):
+@pytest.mark.parametrize("requested", ["3.13", "py313", "3.13.16"])
+def test_molt_diff_python_version_resolves_one_exact_release(monkeypatch, requested):
+    """A bare minor selects the pinned release, never uv's newest-patch link.
+
+    An explicit dotted patch stays exact. The pin's independent oracle is the
+    regrtest tag (test_target_python_oracle.py); here it is the target itself.
+    """
     calls: list[tuple[str, object]] = []
 
-    def fake_resolve(target_python, **kwargs):
-        calls.append((target_python.short, kwargs.get("cwd")))
-        return ["py", "-3.13"]
+    def fake_resolve(request, **kwargs):
+        calls.append((request.selector, kwargs.get("cwd")))
+        return python_interpreter.PythonInterpreter(
+            ("py", "-3.13"), r"C:\Python313\python.exe", request.selector, "CPython"
+        )
 
     monkeypatch.setattr(
-        molt_diff.python_interpreter,
-        "resolve_target_python_command",
-        fake_resolve,
+        molt_diff.python_interpreter, "resolve_python_interpreter", fake_resolve
     )
+    pinned = python_interpreter.parse_target_python_version("3.13")
+    expected = "3.13.16" if requested == "3.13.16" else f"3.13.{pinned.micro}"
+    assert molt_diff._resolve_diff_python_command(requested) == ("py", "-3.13")
+    assert calls == [(expected, molt_diff._repo_root())]
 
-    assert molt_diff._resolve_diff_python_command("3.13") == ("py", "-3.13")
-    assert calls == [("3.13", molt_diff._repo_root())]
+
+def test_target_release_request_refuses_a_patch_of_another_minor():
+    target = python_interpreter.parse_target_python_version("3.13")
+    with pytest.raises(python_interpreter.PythonInterpreterError, match="3.14.9"):
+        python_interpreter.target_release_request(target, "3.14.9")
 
 
 def test_molt_diff_metadata_probe_preserves_multi_token_python_command(monkeypatch):

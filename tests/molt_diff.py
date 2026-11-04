@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -61,6 +62,7 @@ from molt.cli.build_request import (  # noqa: E402
     build_request_to_payload,
 )
 from molt import file_locks  # noqa: E402
+from molt import checkout_provisioning  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
@@ -129,18 +131,19 @@ def _resolve_diff_python_command(
     if not python_version:
         return (sys.executable,)
     target_python = python_interpreter.parse_target_python_version(python_version)
+    # The exact release: a dotted patch, or the target's pinned one. A minor
+    # request would follow uv's minor link to the newest patch (HF-726).
+    request = python_interpreter.target_release_request(target_python, python_version)
     from molt.python_environment_identity import PythonIdentityVerifier
 
     with PythonIdentityVerifier() as verifier:
-        return tuple(
-            python_interpreter.resolve_target_python_command(
-                target_python,
-                verifier=verifier,
-                override=os.environ.get("MOLT_DIFF_PYTHON", "").strip() or None,
-                cwd=_repo_root(),
-                probe_timeout=None if budget is None else budget.probe_timeout,
-            )
-        )
+        return python_interpreter.resolve_python_interpreter(
+            request,
+            verifier=verifier,
+            override=os.environ.get("MOLT_DIFF_PYTHON", "").strip() or None,
+            cwd=_repo_root(),
+            probe_timeout=None if budget is None else budget.probe_timeout,
+        ).command
 
 
 def _metadata_probe_timeout_sec() -> float:
@@ -201,17 +204,82 @@ def _run_metadata_probe(
     return result
 
 
-def _resolve_molt_cli_python() -> str:
-    override = os.environ.get("MOLT_DIFF_MOLT_PYTHON", "").strip()
-    if override:
-        command = python_interpreter.explicit_python_command(override)
-        if len(command) != 1:
-            raise python_interpreter.PythonInterpreterError(
-                "MOLT_DIFF_MOLT_PYTHON must name one executable path"
-            )
-        return command[0]
+def _compiler_frontend(
+    oracle_version: str,
+    release: python_interpreter.PythonInterpreterRequest,
+) -> compat_backends.CompilerFrontend:
+    """Select the CPython that compiles for an oracle of ``oracle_version``.
 
-    return sys.executable
+    The frontend parses with the oracle's exact release (HF-726). The harness
+    serves when it is that release. Otherwise the managed image of
+    ``release`` serves, and only when the oracle is ``release``: an image
+    never follows whatever patch an API caller's minor selector found.
+    """
+    harness = platform.python_version()
+    if platform.python_implementation() == "CPython" and harness == oracle_version:
+        return compat_backends.CompilerFrontend(sys.executable, harness)
+    if not release.matches_version(oracle_version):
+        raise python_interpreter.PythonInterpreterError(
+            f"the oracle runs CPython {oracle_version} and the harness CPython "
+            f"{harness}; target Python {release.series} compiles under CPython "
+            f"{release.selector}; select the oracle with --python-version"
+        )
+    from molt.checkout_provisioning import ensure_python_release
+    from molt.python_environment_location import environment_python_path
+
+    root = ensure_python_release(_repo_root(), os.environ, release).environment_root
+    assert root is not None
+    return compat_backends.CompilerFrontend(
+        str(environment_python_path(root)), release.selector, root
+    )
+
+
+def _hold_compiler_frontend(
+    stack: contextlib.ExitStack, frontend: compat_backends.CompilerFrontend
+) -> None:
+    """Hold the frontend's image for the run, then prove it still exists.
+
+    Each compiler child leases the image too, but only while it runs; this
+    shared lease keeps drift retirement off the image between items.
+    """
+    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
+
+    assert frontend.environment_root is not None
+    stack.enter_context(
+        checkout_state_use(
+            checkout_state_environment_roots(
+                _repo_root(),
+                {"UV_PROJECT_ENVIRONMENT": str(frontend.environment_root)},
+                include_current_process=False,
+            )
+        )
+    )
+    if not Path(frontend.python).is_file():
+        raise python_interpreter.PythonInterpreterError(
+            f"compiler image {frontend.environment_root} lost its interpreter "
+            "after selection; rerun to select it again"
+        )
+
+
+def _select_compiler_frontend(
+    python_exe: PythonCommand,
+    target_python: TargetPythonVersion,
+    oracle_version: str | None,
+    *,
+    budget: compat_backends.ItemBudget | None = None,
+) -> compat_backends.CompilerFrontend:
+    """One frontend for ``python_exe``'s oracle and ``target_python``."""
+    metadata = _python_command_metadata(
+        _resolve_python_command(python_exe, budget=budget), budget=budget
+    )
+    if metadata is None:
+        raise python_interpreter.PythonInterpreterError(
+            f"cannot observe the CPython oracle {_python_command_display(python_exe)}"
+        )
+    return _compiler_frontend(
+        metadata.version,
+        python_interpreter.target_release_request(target_python, oracle_version),
+    )
 
 
 def _repo_root() -> Path:
@@ -334,6 +402,7 @@ def _apply_metadata_env_overrides(
 class _PythonOracleMetadata:
     feature_version: tuple[int, int]
     executable: str
+    version: str
 
 
 def _python_command_metadata(
@@ -350,7 +419,7 @@ def _python_command_metadata(
         major, minor = map(int, result.major_minor.split("."))
     except ValueError:
         return None
-    return _PythonOracleMetadata((major, minor), result.executable)
+    return _PythonOracleMetadata((major, minor), result.executable, result.version)
 
 
 def _python_exe_version(
@@ -1021,6 +1090,7 @@ def _backend_execution_context(
     *,
     metadata: test_policy.TestMetadata | None = None,
     budget: compat_backends.ItemBudget,
+    compiler_frontend: compat_backends.CompilerFrontend | None = None,
 ) -> compat_backends.BackendExecutionContext:
     resolved_target = _resolve_molt_target_python(
         python_exe, target_python, budget=budget
@@ -1045,15 +1115,25 @@ def _backend_execution_context(
     )
     if oracle is not None:
         env["MOLT_SYS_EXECUTABLE"] = oracle.executable
+    if compiler_frontend is None:
+        # A direct caller selects per item; run_diff selects once per run.
+        if oracle is None:
+            raise python_interpreter.PythonInterpreterError(
+                f"cannot observe the CPython oracle {_python_command_display(python_exe)}"
+            )
+        compiler_frontend = _compiler_frontend(
+            oracle.version, python_interpreter.target_release_request(resolved_target)
+        )
     diff_output_layout.enforce_child(env, repo_root=_repo_root())
     budget.check(build_failed=True)
     return compat_backends.BackendExecutionContext(
         target_python=resolved_target,
-        molt_cli_python=_resolve_molt_cli_python(),
+        molt_cli_python=compiler_frontend.python,
         build_profile=build_profile,
         capabilities=_diff_capabilities(env),
         environment=env,
         budget=budget,
+        compiler_environment_root=compiler_frontend.environment_root,
     )
 
 
@@ -1585,6 +1665,7 @@ def _diff_worker(
     targets: tuple[str, ...] = ("native",),
     target_python: str | TargetPythonVersion | None = None,
     item_budget: compat_backends.ItemBudget | None = None,
+    compiler_frontend: compat_backends.CompilerFrontend | None = None,
 ) -> dict[str, object]:
     _install_worker_orphan_guard()
     started = time.monotonic()
@@ -1598,6 +1679,7 @@ def _diff_worker(
             targets=targets,
             target_python=target_python,
             item_budget=item_budget,
+            compiler_frontend=compiler_frontend,
         )
     return {
         "path": file_path,
@@ -1689,6 +1771,8 @@ def _diff_run_single(
     targets: tuple[str, ...] = ("native",),
     target_python: str | TargetPythonVersion | None = None,
     item_budget: compat_backends.ItemBudget | None = None,
+    *,
+    compiler_frontend: compat_backends.CompilerFrontend | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     buffer_out = io.StringIO()
@@ -1703,6 +1787,7 @@ def _diff_run_single(
             targets=targets,
             target_python=target_python,
             item_budget=item_budget,
+            compiler_frontend=compiler_frontend,
         )
     return {
         "path": file_path,
@@ -2339,7 +2424,7 @@ def _batch_compile_server_client(
         molt_cli_python = (
             execution_context.molt_cli_python
             if execution_context is not None
-            else _resolve_molt_cli_python()
+            else sys.executable
         )
         if _BATCH_COMPILE_SERVER_CLIENT is not None:
             if _BATCH_COMPILE_SERVER_CLIENT.child_process.command[0] != molt_cli_python:
@@ -2348,7 +2433,11 @@ def _batch_compile_server_client(
                 )
             return _BATCH_COMPILE_SERVER_CLIENT, None
         client = _BatchCompileServerClient(
-            env, molt_cli_python=molt_cli_python, budget=budget
+            env
+            if execution_context is None
+            else compat_backends.compiler_environment(execution_context, env),
+            molt_cli_python=molt_cli_python,
+            budget=budget,
         )
         request_timeout = budget.limit(request_timeout)
         if request_timeout == 0:
@@ -3024,7 +3113,7 @@ def _run_molt_owned(
         build_cmd = [
             execution_context.molt_cli_python
             if execution_context is not None
-            else _resolve_molt_cli_python(),
+            else sys.executable,
             "-m",
             "molt.cli",
             "build",
@@ -3059,7 +3148,10 @@ def _run_molt_owned(
             return budget.exhausted_result(build_failed=True)
         build_res = _run_with_optional_time(
             build_cmd,
-            env=env,
+            # Only the compiler runs inside the frontend's image (HF-726).
+            env=env
+            if execution_context is None
+            else compat_backends.compiler_environment(execution_context, env),
             timeout=build_timeout,
             time_path=build_time_path,
         )
@@ -3742,6 +3834,7 @@ def diff_test(
     targets: tuple[str, ...] = ("native",),
     target_python: str | TargetPythonVersion | None = None,
     item_budget: compat_backends.ItemBudget | None = None,
+    compiler_frontend: compat_backends.CompilerFrontend | None = None,
 ) -> dict[str, object]:
     """Run one differential test across `targets` and return its outcome record.
 
@@ -3810,8 +3903,10 @@ def diff_test(
             target_python,
             metadata=meta,
             budget=item_budget,
+            compiler_frontend=compiler_frontend,
         )
         record["compiler_target_python"] = execution_context.target_python.short
+        record["compiler_python"] = execution_context.molt_cli_python
         host_tags = test_policy.current_platform_tags()
         architecture = test_policy.current_architecture()
         exclusion_by_backend = {
@@ -4137,6 +4232,7 @@ def _parallel_diff_results(
     trip_outcome: Callable[[], compat_backends.BackendResult | None] | None = None,
     new_budget: Callable[[], compat_backends.ItemBudget],
     admits: Callable[[], bool] = lambda: True,
+    compiler_frontend: compat_backends.CompilerFrontend | None = None,
 ) -> Iterator[dict[str, object]]:
     """Bound admission, stop replenishing on failure, and retain running results."""
     trip_outcome = _memory_guard_trip_outcome if trip_outcome is None else trip_outcome
@@ -4161,6 +4257,7 @@ def _parallel_diff_results(
                 targets,
                 target_python,
                 new_budget(),
+                compiler_frontend,
             )
             pending[future] = str(file_path)
         if not pending:
@@ -4237,10 +4334,19 @@ def run_diff(
             target_python,
             budget=preflight_budget,
         )
+        # One frontend per run, before any item: a missing release stops here.
+        compiler_frontend = _select_compiler_frontend(
+            python_exe,
+            compiler_target_python,
+            oracle_version,
+            budget=preflight_budget,
+        )
+        preflight_budget.check()
     except compat_backends.ItemBudgetExpired:
         # Preserve the ordinary all-selected/not-run summary even when startup
         # consumed the suite's remaining time before the first item dispatch.
         compiler_target_python = None
+        compiler_frontend = None
         preflight_timed_out = True
     if not preflight_timed_out:
         _ensure_diff_run_lock()
@@ -4325,7 +4431,13 @@ def run_diff(
             else:
                 os.environ[sentinel_env_key] = sentinel_env_previous
 
+    frontend_lease = contextlib.ExitStack()
     try:
+        if (
+            compiler_frontend is not None
+            and compiler_frontend.environment_root is not None
+        ):
+            _hold_compiler_frontend(frontend_lease, compiler_frontend)
         # A command guard temporarily owns these handlers while closing its
         # children. Between commands and while waiting for parallel cases, defer
         # the suite's stop until already-admitted cases have returned receipts.
@@ -4358,6 +4470,7 @@ def run_diff(
                         build_profile,
                         compiler_target_python,
                         budget=admission.new_budget(build_only=True),
+                        compiler_frontend=compiler_frontend,
                     )
                     build_result = run_molt_build_only(
                         str(file_path),
@@ -4394,6 +4507,7 @@ def run_diff(
                             targets,
                             compiler_target_python,
                             admission.new_budget(),
+                            compiler_frontend=compiler_frontend,
                         )
                         if payload["guard_signal"] is not None:
                             defer_suite_signal(payload["guard_signal"], None)
@@ -4470,6 +4584,7 @@ def run_diff(
                             trip_outcome=suite_trip_outcome,
                             admits=admission.admits,
                             new_budget=admission.new_budget,
+                            compiler_frontend=compiler_frontend,
                         ):
                             if result["guard_signal"] is not None:
                                 defer_suite_signal(result["guard_signal"], None)
@@ -4670,6 +4785,18 @@ def run_diff(
                     if compiler_target_python is None
                     else compiler_target_python.short
                 ),
+                "compiler_python": (
+                    None if compiler_frontend is None else compiler_frontend.python
+                ),
+                "compiler_python_version": (
+                    None if compiler_frontend is None else compiler_frontend.version
+                ),
+                "compiler_environment_root": (
+                    None
+                    if compiler_frontend is None
+                    or compiler_frontend.environment_root is None
+                    else str(compiler_frontend.environment_root)
+                ),
                 "preflight_timed_out": preflight_timed_out,
                 "stdlib_profile": compat_backends.stdlib_profile_from_environment(
                     os.environ
@@ -4735,6 +4862,7 @@ def run_diff(
             compat_backends.bind_suite_stop(None)
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
+            frontend_lease.close()
 
 
 def _emit_json(payload: dict, output_path: str | None, stdout: bool) -> None:
@@ -4936,6 +5064,12 @@ if __name__ == "__main__":
                 deadline_s=args.deadline_s,
                 oracle_version=args.python_version,
             )
+        except (
+            python_interpreter.PythonInterpreterError,
+            checkout_provisioning.ProvisioningError,
+        ) as exc:
+            print(f"[PYTHON] {exc}", file=sys.stderr)
+            sys.exit(2)
         except RuntimeError as exc:
             print(f"[LOCK] {exc}", file=sys.stderr)
             sys.exit(2)
@@ -4968,6 +5102,13 @@ if __name__ == "__main__":
             deadline_s=args.deadline_s,
             oracle_version=args.python_version,
         )
+    except (
+        python_interpreter.PythonInterpreterError,
+        checkout_provisioning.ProvisioningError,
+    ) as exc:
+        print(f"[PYTHON] {exc}", file=sys.stderr)
+        os.remove("temp_test.py")
+        sys.exit(2)
     except RuntimeError as exc:
         print(f"[LOCK] {exc}", file=sys.stderr)
         os.remove("temp_test.py")

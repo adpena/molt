@@ -60,7 +60,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/python_external_custody.py` | 1 | scattered-assumption | `3.10` |
 | `src/molt/python_interpreter.py` | 5 | authority-routed | `3.12` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |
-| `src/molt/python_runtime_identity.py` | 4 | operational-tooling | `sys.version_info` |
+| `src/molt/python_runtime_identity.py` | 13 | operational-tooling | `sys.version_info` |
 | `src/molt/release_matrix.py` | 3 | operational-tooling | `3.12` |
 | `src/molt/stdlib/__future__.py` | 3 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/_collections_abc.py` | 1 | scattered-assumption | `3.17` |
@@ -494,7 +494,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
 | `tools/proof_command_argv.py` | 2 | operational-tooling | `3.12` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
-| `tools/proof_plan.toml` | 88 | authority-routed | `3.12` |
+| `tools/proof_plan.toml` | 91 | authority-routed | `3.12` |
 | `tools/public_contract_gate.py` | 2 | authority-routed | `3.12` |
 | `tools/pyperformance_adapter.py` | 1 | scattered-assumption | `3.12` |
 | `tools/quint_trace_to_tests.py` | 8 | operational-tooling | `3.12` |

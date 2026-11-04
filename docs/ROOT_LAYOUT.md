@@ -73,11 +73,15 @@ regressions instead of adding session reports and duplicate status files.
 Curated benchmark data and test fixtures may be tracked when a maintained
 consumer requires them; raw per-run logs and machine-specific state may not.
 
-The `public-source-boundary` pre-commit hook rejects tracked files in the local
-log/scratch roots, raw benchmark logs and guard traces, and machine-local Claude
-settings. Run the configured hooks before landing; ignored files must not be
-force-added to bypass this boundary. This path check supplements review of a
-document's purpose; it does not classify maintained specifications as scratch.
+`tools/check_public_source_boundary.py` enforces this boundary in the always-run
+static gates of every landing, and the `public-source-boundary` pre-commit hook
+runs the same tool (HF-768). It refuses tracked files under the local artifact
+roots, raw benchmark logs and guard traces, and machine-local settings. Its
+`ROOT_ENTRIES` set is the one list of entries the root may hold; a new root
+entry is an edit of that set, reviewed with the change that needs it. Ignored
+files must not be force-added to bypass this boundary. This path check
+supplements review of a document's purpose; it does not classify maintained
+specifications as scratch.
 
 Automatic artifact roots for a checkout nested inside another Git checkout must
 sit outside every enclosing source checkout. `molt.custody_layout` owns that

@@ -8,6 +8,7 @@ import concurrent.futures
 import gc
 import json
 import os
+import platform
 import sys
 import signal
 import threading
@@ -1079,7 +1080,9 @@ def test_signal_during_warmup_stops_case_and_further_warmup_admission(
 ):
     warmups = []
     monkeypatch.setattr(
-        molt_diff, "_backend_execution_context", lambda *a, budget: object()
+        molt_diff,
+        "_backend_execution_context",
+        lambda *a, budget, compiler_frontend: object(),
     )
 
     def warmup(path, *args, **kwargs):
@@ -1274,7 +1277,8 @@ def test_delayed_worker_spends_dispatch_budget_before_any_case_side_effect(monke
 
     class DelayedExecutor:
         def submit(self, worker, *args):
-            assert args[-1].deadline == 150.0
+            # file, oracle, profile, targets, target, budget, frontend
+            assert args[5].deadline == 150.0
             clock.now = 151.0
             future = concurrent.futures.Future()
             future.set_result(worker(*args))
@@ -1308,7 +1312,7 @@ def test_warm_cache_uses_dispatch_pinned_build_only_budget(
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "30")
     budgets = []
 
-    def context(file, python, profile, target, *, budget):
+    def context(file, python, profile, target, *, budget, compiler_frontend):
         budgets.append(budget)
         return SimpleNamespace(budget=budget)
 
@@ -1706,4 +1710,65 @@ def test_warm_cache_other_value_error_keeps_its_original_failure(
             failures_output=tmp_path / "failures.txt",
         )
     assert captured.value is original
+    assert suite.calls == []
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_run_selects_one_compiler_frontend_before_any_case(suite, monkeypatch, jobs):
+    """HF-726: one selection per run, carried to every case on each path."""
+    frontend = molt_diff.compat_backends.CompilerFrontend(
+        sys.executable, platform.python_version()
+    )
+    selections = []
+
+    def select(python_exe, target, oracle_version, *, budget=None):
+        assert suite.calls == [], "the frontend is selected before any case"
+        selections.append((target.short, oracle_version))
+        return frontend
+
+    received = []
+
+    def serial(path, *args, **kwargs):
+        received.append(kwargs["compiler_frontend"])
+        suite.calls.append(path)
+        return {
+            "path": path,
+            "status": "pass",
+            "guard_signal": None,
+            "stdout": "",
+            "stderr": "",
+            "duration_s": 0.1,
+        }
+
+    original_submit = molt_diff.concurrent.futures.ProcessPoolExecutor.submit
+
+    def submit(self, worker, path, *args):
+        received.append(args[-1])
+        return original_submit(self, worker, path, *args)
+
+    monkeypatch.setattr(molt_diff, "_select_compiler_frontend", select)
+    monkeypatch.setattr(molt_diff, "_diff_run_single", serial)
+    monkeypatch.setattr(
+        molt_diff.concurrent.futures.ProcessPoolExecutor, "submit", submit
+    )
+    summary = molt_diff.run_diff(suite.files, sys.executable, jobs=jobs)
+    assert len(selections) == 1
+    assert received and all(value is frontend for value in received)
+    assert summary["config"]["compiler_python"] == sys.executable
+    assert summary["config"]["compiler_python_version"] == platform.python_version()
+    assert summary["config"]["compiler_environment_root"] is None
+
+
+def test_run_stops_before_any_case_when_the_frontend_release_is_missing(
+    suite, monkeypatch
+):
+    def missing(*_args, **_kwargs):
+        raise molt_diff.checkout_provisioning.ProvisioningError(
+            "uv-environment: cannot bind requested CPython 3.13.17: no verified "
+            "CPython 3.13.17 command available (x); run `uv python install 3.13.17`"
+        )
+
+    monkeypatch.setattr(molt_diff, "_select_compiler_frontend", missing)
+    with pytest.raises(molt_diff.checkout_provisioning.ProvisioningError):
+        molt_diff.run_diff(suite.files, sys.executable, jobs=1)
     assert suite.calls == []

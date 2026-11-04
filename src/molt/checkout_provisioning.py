@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Literal, assert_never, get_args
+from typing import TYPE_CHECKING, Literal, assert_never, get_args
 
 from molt import python_environment_contract as _contract
 from molt import process_guard
@@ -42,6 +42,9 @@ from molt.exact_json import (
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.process_environment import ProcessEnvironment
 from molt.toolchain_identity import StableRegularFileError
+
+if TYPE_CHECKING:
+    from molt.python_interpreter import PythonInterpreterRequest
 
 SCHEMA = "molt.checkout-provisioning.v1"
 STAMP_NAME = ".molt-provisioned.json"
@@ -1027,6 +1030,36 @@ def ensure(
             groups=groups,
         ),
         refresh_runtime=refresh_runtime,
+    )
+
+
+def ensure_python_release(
+    checkout: Path,
+    environ: Mapping[str, str],
+    request: PythonInterpreterRequest,
+    *,
+    guard_source_root: Path | None = None,
+) -> Ensured:
+    """Select the image whose interpreter is exactly ``request``'s release.
+
+    The caller's own image selectors name the caller's image, not this
+    release, so they do not take part. The image holds the project's locked
+    runtime dependencies only: a compiler frontend needs no dependency group.
+    """
+    if request.micro is None:
+        raise ProvisioningError(
+            f"uv-environment: CPython {request.selector} names no patch release"
+        )
+    environment = ProcessEnvironment(environ).without(
+        ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PURPOSE")
+    )
+    return ensure(
+        "uv-environment",
+        checkout,
+        environment,
+        guard_source_root=guard_source_root,
+        python=request.selector,
+        groups=(),
     )
 
 
