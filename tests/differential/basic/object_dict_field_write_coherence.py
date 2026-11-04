@@ -160,3 +160,68 @@ try:
     vars(SlotBase(1))
 except TypeError as error:
     print("no-dict", type(error).__name__)
+
+
+# Reconstruction exercises explicit __new__ and namespace restoration without
+# calling __init__; it must use the same physical owner as ordinary construction.
+import pickle
+
+for protocol in (2, 4, 5):
+    source = Demo()
+    source.value = 70 + protocol
+    restored = pickle.loads(pickle.dumps(source, protocol=protocol))
+    print("pickle-namespace", protocol, type(restored) is Demo,
+          sorted(vars(restored).items()), vars(restored) is restored.__dict__)
+
+
+argument_events = []
+
+
+class ReentrantCall:
+    def __init__(self, value):
+        self.value = value
+
+
+class ArgumentOwner:
+    def __init__(self, label):
+        self.label = label
+
+    def __del__(self):
+        argument_events.append(("release", self.label, ReentrantCall(1).value))
+
+
+def argument_failure():
+    raise ValueError("preparation failed")
+
+
+def receive_arguments(*args, **kwargs):
+    print("received-owners", [item.label for item in args],
+          [(key, kwargs[key].label) for key in sorted(kwargs)])
+
+
+try:
+    receive_arguments(ArgumentOwner("failed"), argument_failure())
+except ValueError as error:
+    print("argument-abort", str(error), argument_events)
+
+argument_events.clear()
+
+
+class ExpandedOwners:
+    def __iter__(self):
+        argument_events.append(("iterate", ReentrantCall(2).value))
+        return iter([ArgumentOwner("star")])
+
+
+class KeywordOwners:
+    def keys(self):
+        argument_events.append(("keys", ReentrantCall(3).value))
+        return ["token"]
+
+    def __getitem__(self, key):
+        argument_events.append(("getitem", key, ReentrantCall(4).value))
+        return ArgumentOwner("keyword")
+
+
+receive_arguments(*ExpandedOwners(), **KeywordOwners())
+print("expanded-reentrant-release", argument_events)

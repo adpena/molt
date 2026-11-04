@@ -1703,9 +1703,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             }
             HeapLifecycleHandler::Callargs => {
                 let args = crate::call::bind::callargs_ptr(ptr);
-                crate::call::bind::callargs_detach_owned(py, ptr, args, |bits| {
-                    sink.detach_if_heap(bits)
-                });
+                crate::call::bind::callargs_detach_owned(args, |bits| sink.detach_if_heap(bits));
             }
             HeapLifecycleHandler::Buffer2d => {
                 super::buffer2d::detach_owned_values(super::buffer2d_ptr(ptr), |bits| {
