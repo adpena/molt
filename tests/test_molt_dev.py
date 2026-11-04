@@ -6807,6 +6807,31 @@ def test_land_precheck_runs_precheck_rules_in_the_lane_and_leaves_builds(
     assert sorted(counter.read_text(encoding="utf-8").split()) == ["static", "try"]
 
 
+def test_land_static_only_runs_static_gates_and_skips_the_try_run(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    """The fast path's never-waived tier: static gates only, nothing queued."""
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    lane = work.parent / "lane-static"
+    _lane(work, "static", {"a.py": "a = 1\n"})
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--static-only") == EXIT_OK
+
+    assert counter.read_text(encoding="utf-8").split() == ["static"]
+    assert queue.pending(queue.queue_paths(lane)) == []
+    with pytest.raises(SystemExit):
+        drv.build_parser().parse_args(
+            ["land", "--repo", str(lane), "--static-only", "--precheck-only"]
+        )
+
+
 def test_land_try_run_failure_queues_nothing(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
@@ -8818,10 +8843,12 @@ def test_remote_landing_executes_selected_gates_without_publishing(
     output = tmp_path / "remote-output"
     output.mkdir()
     rc = trunk_landing.execute({"landing": request, "checkout": str(work)}, output)
-    receipt = json.loads((output / "receipt.json").read_text())
+    receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
     assert rc == (0 if exitcode == 0 else 1)
     assert receipt["status"] == ("success" if exitcode == 0 else "failure")
-    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text()
+    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text(
+        encoding="utf-8"
+    )
     if exitcode:
         with pytest.raises(CandidateFailure, match="remote landing gate failed"):
             trunk_landing.admit_result(receipt, request)

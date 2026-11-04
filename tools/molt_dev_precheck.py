@@ -292,8 +292,12 @@ def precheck_landing(
     upstream: str,
     session_id: str,
     budget: PrecheckBudget | None = None,
+    static_only: bool = False,
 ) -> PrecheckResult:
     """Run ``head``'s static gates, then its try run within ``budget``.
+
+    ``static_only`` stops after the static gates: the never-waived tier a
+    fast-path push runs, whose try run the push names as waived.
 
     The gates, their toolchains and their environment come from the same
     authorities ``integrate`` uses (``select_landing_gates``, ``prepare``,
@@ -317,10 +321,15 @@ def precheck_landing(
         extra=[],
         recent_failures=recent_postsubmit_failures(queue_paths(repo)),
     )
-    selected = [gate for gate in gates if gate.precheck]
+    selected = [
+        gate for gate in gates if gate.precheck and (gate.static or not static_only)
+    ]
     tried = sum(1 for gate in selected if not gate.static)
     _step(
-        f"precheck in the lane ({len(selected)} of {len(gates)} selected gate(s), "
+        f"static gates in the lane ({len(selected)} of {len(gates)} selected gate(s); "
+        "no try run)"
+        if static_only
+        else f"precheck in the lane ({len(selected)} of {len(gates)} selected gate(s), "
         f"{tried} of them the try run within {budget.seconds:.0f} s; "
         "the queue's batch runs every gate)"
     )

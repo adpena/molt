@@ -6254,7 +6254,10 @@ def test_a_bare_python_argv0_runs_the_admitted_environment_interpreter(
     decoy_ran = tmp_path / "decoy-ran"
     for name in ("python", "python3"):
         script = decoy / name
-        script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(decoy_ran))}\nexit 3\n")
+        script.write_text(
+            f"#!/bin/sh\ntouch {shlex.quote(str(decoy_ran))}\nexit 3\n",
+            encoding="utf-8",
+        )
         script.chmod(0o755)
     monkeypatch.setenv("PATH", os.pathsep.join((str(decoy), os.environ["PATH"])))
     output = tmp_path / "interpreter.txt"

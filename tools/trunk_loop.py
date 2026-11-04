@@ -63,6 +63,12 @@ def uv_python(*argv: str) -> list[str]:
     return ["uv", "run", "--locked", "python", "-B", *argv]
 
 
+# The apt packages the documented Linux workflow needs (docs/getting-started.md).
+LINUX_SYSTEM_PACKAGES = ("git", "curl", "clang", "lld", "cmake", "build-essential")
+# A WSL gate guest also runs systemd and udev for root UUID admission (HF-761).
+WSL_GUEST_PACKAGES = (*LINUX_SYSTEM_PACKAGES, "systemd", "systemd-sysv", "udev")
+
+
 def provision_script(host, *, repository: str, uv_version: str) -> str:
     """The documented local workflow, with report-only system prerequisites.
 
@@ -114,7 +120,8 @@ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
     system_command = (
         "xcode-select --install; brew install cmake"
         if host.os == authorities().HostOS.MACOS
-        else "sudo apt-get update && sudo apt-get install git curl clang lld cmake build-essential"
+        else "sudo apt-get update && sudo apt-get install "
+        + " ".join(LINUX_SYSTEM_PACKAGES)
     )
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
@@ -261,6 +268,23 @@ def admit_wsl_profile(host, transport, *, provision_disk: bool = False) -> dict:
     return profile
 
 
+def wsl_packages_script() -> str:
+    """Install only the missing declared guest packages; report what it installed."""
+    packages = " ".join(shlex.quote(package) for package in WSL_GUEST_PACKAGES)
+    return f"""set -eu
+missing=""
+for package in {packages}; do
+ dpkg-query -W -f='${{Status}}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $package"
+done
+if test -n "$missing"; then
+ export DEBIAN_FRONTEND=noninteractive
+ apt-get update >&2
+ apt-get install -y --no-install-recommends $missing >&2
+fi
+printf '{{"installed":"%s"}}\\n' "$(echo $missing)"
+"""
+
+
 def wsl_systemd_script() -> str:
     """Preserve other guest settings; publish only a changed boot declaration."""
     return r"""set -eu
@@ -329,6 +353,15 @@ def provision_wsl_guest(host, transport) -> dict:
         f"set -eu\nlock={shlex.quote(host.remote_dir + '/trunk-worker.lock')}\n"
         'if test -f "$lock"; then flock -n "$lock" true; fi'
     )
+    # The owner approves package installation per host (its inventory record);
+    # elsewhere system packages stay an operator step.
+    installed = (
+        json.loads(transport.wsl_root_command(wsl_packages_script(), timeout=1800))[
+            "installed"
+        ].split()
+        if host.install_system_packages
+        else []
+    )
     state = json.loads(transport.wsl_root_command(wsl_systemd_script()))
     if state["restart"]:
         transport.windows_command(
@@ -337,6 +370,7 @@ def provision_wsl_guest(host, transport) -> dict:
         )
     return {
         **admit_wsl_guest(host, transport),
+        "packages_installed": installed,
         "config_changed": state["changed"],
         "restarted": state["restart"],
     }

@@ -333,6 +333,8 @@ class Host:
     wsl_swap_gb: int | None = None
     # The WSL release whose disk resize and compaction the design reviewed.
     wsl_engine_version: str | None = None
+    # Owner approval for provision to apt-install the declared guest packages.
+    install_system_packages: bool = False
     proof_build_gb: int = 20
     launcher: DetachedLauncher | None = None
     proof_cells: tuple[str, ...] = ()
@@ -404,6 +406,7 @@ def parse_inventory(path: Path) -> list[Host]:
             wsl_memory_gb=entry.get("wsl_memory_gb"),
             wsl_swap_gb=entry.get("wsl_swap_gb"),
             wsl_engine_version=entry.get("wsl_engine_version"),
+            install_system_packages=entry.get("install_system_packages", False),
             proof_build_gb=entry.get("proof_build_gb", 20),
             launcher=DetachedLauncher(entry["launcher"])
             if "launcher" in entry
@@ -429,6 +432,13 @@ def parse_inventory(path: Path) -> list[Host]:
         if type(host.proof_build_gb) is not int or host.proof_build_gb < 20:
             raise ValueError(
                 "proof_build_gb must admit at least one 20 GiB proof build"
+            )
+        if type(host.install_system_packages) is not bool or (
+            host.install_system_packages and host.wsl_distribution is None
+        ):
+            raise ValueError(
+                f"host {name!r}: install_system_packages is a boolean approval "
+                "for a WSL gate guest only"
             )
         if host.wsl_distribution is not None:
             if (

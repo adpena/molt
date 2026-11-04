@@ -408,7 +408,11 @@ One runner owns main. Agents enqueue and continue.
   and declared generator outputs, and is refused for a branch that a pending
   request pins. `--no-precheck` skips repairs and precheck.
   `--precheck-only` runs it and stops: nothing is queued and no runner
-  starts, so a worker proves its handoff on the landing path itself. It
+  starts, so a worker proves its handoff on the landing path itself.
+  `--static-only` repairs and runs only the static gates, the cheap
+  deterministic tier (rustc's `x.py test tidy`, Chromium's upload
+  presubmit): a fast-path push runs it and never waives it, and names the
+  try run it waives in its commit. It
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
