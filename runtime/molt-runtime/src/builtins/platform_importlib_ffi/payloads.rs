@@ -597,20 +597,15 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         owned.push(extension_file_loader_bits);
         values.push((b"ExtensionFileLoader", extension_file_loader_bits));
 
-        let file_finder_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            crate::NameId::FileFinder,
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
+        // The runtime owns this finder identity; the facade only re-exports it.
+        let file_finder_bits = crate::builtins::types::file_finder_class(_py);
+        if file_finder_bits == 0 {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
             }
-        };
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(_py, file_finder_bits);
         owned.push(file_finder_bits);
         values.push((b"FileFinder", file_finder_bits));
 
@@ -648,20 +643,15 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         owned.push(namespace_loader_bits);
         values.push((b"NamespaceLoader", namespace_loader_bits));
 
-        let path_finder_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            crate::NameId::PathFinder,
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
+        // The runtime owns this finder identity; the facade only re-exports it.
+        let path_finder_bits = crate::builtins::types::path_finder_class(_py);
+        if path_finder_bits == 0 {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
             }
-        };
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(_py, path_finder_bits);
         owned.push(path_finder_bits);
         values.push((b"PathFinder", path_finder_bits));
 

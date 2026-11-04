@@ -69,11 +69,12 @@ native, so seeding them runs no script.
 
 ### 3.1 Classes
 
-The runtime owns two more heap classes. Their construction and method bodies
-live in `runtime/molt-runtime/src/builtins/platform_importlib_ffi/path_finder.rs`,
-next to the helpers they call (`importlib_resolve_spec_in_paths`,
+The runtime owns two more heap classes. Their method bodies live in
+`runtime/molt-runtime/src/builtins/platform_importlib_ffi/path_finder.rs`, next
+to the helpers they call (`importlib_resolve_spec_in_paths`,
 `importlib_find_spec_object_bits`, `importlib_enforce_extension_spec_object_boundary`).
-Their cached identities are two new slots in the `types` runtime state
+The classes are built in `builtins/types/compiled_loader.rs`, beside
+`BuiltinImporter`, and cached in two new slots of the `types` runtime state
 (`path_finder_class`, `file_finder_class`), built once by
 `init_cached_runtime_class_configured` with `ClassSemanticPolicy::heap(false, true)`
 (mutable, subclassable, instances carry a `__dict__`), as `BuiltinImporter` is.
@@ -289,8 +290,13 @@ import finders failed to initialize", "admitted machinery initializer is
 unavailable", "admitted machinery body did not complete initial finders",
 "default finder producer has no admitted source body", "default finder producer
 does not own its defining globals", "default path hooks must be a list",
-"default path hooks snapshot allocation failed"). It adds none. One existing
-site stays: `RuntimeError("runtime support module unavailable:
+"default path hooks snapshot allocation failed"). It adds no user-facing error.
+Three internal refusals guard runtime invariants that no Python program can
+violate through the public API: the declare intrinsic refuses a caller that is
+not the admitted machinery body (it replaces the deleted "does not own its
+defining globals" refusal) or a declared name that is not a class, and the
+Windows root rule refuses a malformed split. One existing user-reachable site
+stays: `RuntimeError("runtime support module unavailable:
 importlib.machinery")` when a consumer in section 3.4 needs the loaders and the
 catalog has no machinery body. The compiler admits machinery whenever reached
 Python code imports or calls an import entry point
@@ -354,10 +360,12 @@ Deleted with the replaced lane, in the same change:
 
 Changed:
 - `R/builtins/modules.rs`: bootstrap seeding.
-- `R/builtins/types/compiled_loader.rs`: `FrozenImporter.find_spec`.
+- `R/builtins/types/compiled_loader.rs`: `FrozenImporter.find_spec`; the
+  `PathFinder` and `FileFinder` classes; `__module__` values by `NameId`.
 - `R/builtins/types.rs`: two state slots.
-- `R/builtins/platform_importlib_ffi/path_finder.rs` (new): both classes, both
-  hooks, the epoch and declare intrinsics, the loader-tuple acquisition.
+- `R/builtins/platform_importlib_ffi/path_finder.rs` (new): the method bodies,
+  both hooks, the epoch, types and declare intrinsics, the loader-tuple
+  acquisition and the import-root rule.
 - `R/builtins/platform.rs`: `importlib_find_spec_object_bits` takes the typed
   loader tuple and builds `ModuleSpec` from the runtime class;
   `compiled_namespace_spec` uses the tuple and the runtime `PathFinder`;
@@ -369,12 +377,13 @@ Changed:
   two import-lock retirement tests read `import_retired`; new unit tests for the
   root rule (both flavors, the cases of today's pytest) and seeding.
 - `R/builtins/types/runtime_class_policy_tests.rs`: lists the two classes.
+- `R/builtins/modules/tests.rs`: the bootstrap test asserts the seeded lists.
 - `src/molt/stdlib/importlib/machinery.py`: section 4.
 - `src/molt/cli/module_import_scanner.py`: `zipimport` support root.
 - `runtime/molt-ir/src/tir/runtime_names.toml`: new names
-  (`path_importer_cache`, `invalidate_caches`, `_loader_details`, `path_hook`,
-  `zipimport`, `zipimporter`, `_frozen_importlib_external`, `startswith` if
-  absent, `path_hook_for_FileFinder`, `_zip_path_hook`).
+  (`importlib.machinery`, `_frozen_importlib_external`, `path_importer_cache`,
+  `invalidate_caches`, `_loader_details`, `path_hook`, `path_hook_for_FileFinder`,
+  `_zip_path_hook`, `zipimport`, `zipimporter`).
 - `tests/test_stdlib_importlib_machinery.py`: the stand-in intrinsics change;
   the Python `PathFinder.invalidate_caches` test moves to the Rust unit test.
 - `tests/differential/stdlib/importlib_cached_module_identity.py`: its

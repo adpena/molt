@@ -605,11 +605,16 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
             crate::molt_sys_builtin_module_names(),
         )?;
 
+        // CPython's default finders exist before user code
+        // (`_bootstrap._install`, `_bootstrap_external._install`), so nothing
+        // completes or repairs these lists later.
         let builtin_finder = crate::builtins::types::compiled_loader_builtin_class(_py);
-        if builtin_finder == 0 || exception_pending(_py) {
+        let frozen_finder = crate::builtins::types::compiled_loader_frozen_class(_py);
+        let path_finder = crate::builtins::types::path_finder_class(_py);
+        if [builtin_finder, frozen_finder, path_finder].contains(&0) || exception_pending(_py) {
             return Err(());
         }
-        let meta_path_ptr = alloc_list(_py, &[builtin_finder]);
+        let meta_path_ptr = alloc_list(_py, &[builtin_finder, frozen_finder, path_finder]);
         if meta_path_ptr.is_null() {
             return Err(());
         }
@@ -620,7 +625,11 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
             MoltObject::from_ptr(meta_path_ptr).bits(),
         )?;
 
-        let path_hooks_ptr = alloc_list(_py, &[]);
+        let hooks = crate::builtins::platform::default_path_hooks(_py).map_err(|_| ())?;
+        let path_hooks_ptr = alloc_list(_py, &hooks);
+        for hook in hooks {
+            dec_ref_bits(_py, hook);
+        }
         if path_hooks_ptr.is_null() {
             return Err(());
         }
@@ -641,12 +650,6 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
             "path_importer_cache",
             MoltObject::from_ptr(path_importer_cache_ptr).bits(),
         )?;
-
-        crate::builtins::platform::importlib_seed_default_generation(
-            _py,
-            MoltObject::from_ptr(meta_path_ptr).bits(),
-            MoltObject::from_ptr(path_hooks_ptr).bits(),
-        );
 
         Ok(())
     }

@@ -51,27 +51,13 @@ pub(crate) struct PlatformRuntimeState {
     os_name_cache: AtomicU64,
     sys_platform_cache: AtomicU64,
     import_lock: crate::concurrency::MoltRLock,
-    import_defaults: Mutex<DefaultFinderGeneration>,
-}
-
-/// Only these exact initial list generations belong to interpreter bootstrap.
-/// Strong owners prevent address reuse; user mutation invalidates their epochs.
-#[derive(Clone, Copy)]
-struct PendingDefaultFinders {
-    meta: u64,
-    meta_epoch: u64,
-    hooks: u64,
-    hooks_epoch: u64,
-}
-
-enum DefaultFinderGeneration {
-    Uninitialized,
-    Pending(PendingDefaultFinders),
-    Loading(PendingDefaultFinders),
-    Complete,
-    Cancelled,
-    Failed,
-    Retired,
+    /// Set once by shutdown before any finalizer runs; the import lock refuses
+    /// afterwards.
+    import_retired: std::sync::atomic::AtomicBool,
+    /// CPython's private `_NamespacePath._epoch`; the GIL orders its users.
+    namespace_path_epoch: AtomicU64,
+    /// Owned tuple of the classes the `importlib.machinery` body declares, or 0.
+    file_loader_types: AtomicU64,
 }
 
 /// Scoped participation in the same physical reentrant lock exposed by _imp.
@@ -106,26 +92,6 @@ impl Drop for ImportLockGuard<'_> {
     }
 }
 
-#[cfg(test)]
-pub(crate) struct ImportDefaultsTestSnapshot(DefaultFinderGeneration);
-#[cfg(test)]
-impl ImportDefaultsTestSnapshot {
-    pub(crate) fn detach(py: &PyToken<'_>) -> Self {
-        let mut defaults = platform_state(py).import_defaults.lock().unwrap();
-        Self(std::mem::replace(
-            &mut *defaults,
-            DefaultFinderGeneration::Uninitialized,
-        ))
-    }
-    pub(crate) fn restore(self, py: &PyToken<'_>) {
-        let fresh = {
-            let mut defaults = platform_state(py).import_defaults.lock().unwrap();
-            std::mem::replace(&mut *defaults, self.0)
-        };
-        release_default_owners(py, pending_default_owners(fresh));
-    }
-}
-
 impl PlatformRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
@@ -137,7 +103,9 @@ impl PlatformRuntimeState {
             os_name_cache: AtomicU64::new(0),
             sys_platform_cache: AtomicU64::new(0),
             import_lock: crate::concurrency::MoltRLock::new(),
-            import_defaults: Mutex::new(DefaultFinderGeneration::Uninitialized),
+            import_retired: std::sync::atomic::AtomicBool::new(false),
+            namespace_path_epoch: AtomicU64::new(0),
+            file_loader_types: AtomicU64::new(0),
         }
     }
 
@@ -322,15 +290,20 @@ pub(crate) fn platform_clear_runtime_state(
     let rooted = previous != 0
         && previous != MoltObject::none().bits()
         && previous != MoltObject::from_bool(true).bits();
-    let defaults = importlib_take_default_generation(state);
-    let default_roots = defaults.is_some();
-    // Both terminal dispositions are visible before either cohort can run a
-    // Python finalizer. No bootstrap/mapping state can be recreated from it.
-    release_default_owners(_py, defaults);
+    // Both terminal dispositions are visible before any Python finalizer can
+    // run. No import or mapping state can be recreated from it.
+    state
+        .platform
+        .import_retired
+        .store(true, std::sync::atomic::Ordering::Release);
+    let loaders = state.platform.file_loader_types.swap(0, Ordering::AcqRel);
+    if loaders != 0 {
+        dec_ref_bits(_py, loaders);
+    }
     if rooted {
         dec_ref_bits(_py, previous);
     }
-    crate::state::cache::clear_atomic_slots(_py, &slots) || rooted || default_roots
+    crate::state::cache::clear_atomic_slots(_py, &slots) || rooted || loaders != 0
 }
 
 static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
@@ -1333,385 +1306,114 @@ fn importlib_set_attr(
     Ok(())
 }
 
-/// Metadata factories consume either a retained facade module or a function's
-/// actual defining globals. A public sys.modules spelling is never rediscovered.
-fn importlib_machinery_member(
-    py: &PyToken<'_>,
-    namespace: u64,
-    name: crate::NameId,
-) -> Result<u64, u64> {
-    if let Some(dictionary) = obj_from_bits(namespace).as_ptr()
-        && unsafe { object_type_id(dictionary) == TYPE_ID_DICT }
-    {
-        let key = name.bits(py);
-        if key == 0 {
-            return Err(MoltObject::none().bits());
-        }
-        let value = unsafe { dict_get_in_place(py, dictionary, key) }
-            .map_err(|()| MoltObject::none().bits())?;
-        if let Some(value) = value {
-            inc_ref_bits(py, value);
-            return Ok(value);
-        }
-        return Err(raise_exception::<_>(
-            py,
-            BuiltinExc::RuntimeError,
-            &format!("importlib.machinery.{} is unavailable", name.as_str()),
-        ));
-    }
-    importlib_required_attribute(py, namespace, name, "importlib.machinery")
-}
-
-fn importlib_machinery_loader_instance(
-    _py: &PyToken<'_>,
-    machinery_bits: u64,
-    class_name: crate::NameId,
-    args: &[u64],
-) -> Result<u64, u64> {
-    let loader_cls_bits = importlib_machinery_member(_py, machinery_bits, class_name)?;
-    let loader_bits = call_callable_positional(_py, loader_cls_bits, args)?;
-    dec_ref_bits(_py, loader_cls_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    Ok(loader_bits)
-}
-
+/// One physical-hit spec. Loader classes come from the declared
+/// `importlib.machinery` tuple, acquired only when the hit needs a loader; the
+/// spec class is the runtime's canonical `ModuleSpec`.
 fn importlib_find_spec_object_bits(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     fullname: &str,
     payload: &ImportlibPathResolution,
-    machinery_bits: u64,
 ) -> Result<u64, u64> {
-    let fullname_bits = alloc_str_bits(_py, fullname)?;
-    let origin_bits = match payload.origin.as_deref() {
-        Some(origin) => match alloc_str_bits(_py, origin) {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                return Err(err);
-            }
+    use crate::builtins::exceptions::ExceptionValue;
+    let none = MoltObject::none().bits();
+    let name = ExceptionValue::adopt(py, alloc_str_bits(py, fullname)?);
+    let origin = ExceptionValue::adopt(
+        py,
+        match payload.origin.as_deref() {
+            Some(origin) => alloc_str_bits(py, origin)?,
+            None => none,
         },
-        None => MoltObject::none().bits(),
-    };
-    let loader_bits = match payload.loader_kind.as_str() {
-        "source" => match importlib_machinery_loader_instance(
-            _py,
-            machinery_bits,
-            crate::NameId::SourceFileLoader,
-            &[fullname_bits, origin_bits],
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                if !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(_py, origin_bits);
-                }
-                return Err(err);
-            }
-        },
-        "extension" => match importlib_machinery_loader_instance(
-            _py,
-            machinery_bits,
-            crate::NameId::ExtensionFileLoader,
-            &[fullname_bits, origin_bits],
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                if !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(_py, origin_bits);
-                }
-                return Err(err);
-            }
-        },
-        "bytecode" => match importlib_machinery_loader_instance(
-            _py,
-            machinery_bits,
-            crate::NameId::SourcelessFileLoader,
-            &[fullname_bits, origin_bits],
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                if !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(_py, origin_bits);
-                }
-                return Err(err);
-            }
-        },
-        "zip_source" => {
-            let Some(zip_archive) = payload.zip_archive.as_deref() else {
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                if !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(_py, origin_bits);
-                }
-                return Err(raise_exception::<_>(
-                    _py,
-                    BuiltinExc::RuntimeError,
-                    "invalid importlib find-spec payload: zip source archive missing",
-                ));
-            };
-            let Some(zip_inner_path) = payload.zip_inner_path.as_deref() else {
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                if !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(_py, origin_bits);
-                }
-                return Err(raise_exception::<_>(
-                    _py,
-                    BuiltinExc::RuntimeError,
-                    "invalid importlib find-spec payload: zip source inner path missing",
-                ));
-            };
-            let zip_archive_bits = match alloc_str_bits(_py, zip_archive) {
-                Ok(bits) => bits,
-                Err(err) => {
-                    if !obj_from_bits(fullname_bits).is_none() {
-                        dec_ref_bits(_py, fullname_bits);
-                    }
-                    if !obj_from_bits(origin_bits).is_none() {
-                        dec_ref_bits(_py, origin_bits);
-                    }
-                    return Err(err);
-                }
-            };
-            let zip_inner_path_bits = match alloc_str_bits(_py, zip_inner_path) {
-                Ok(bits) => bits,
-                Err(err) => {
-                    if !obj_from_bits(zip_archive_bits).is_none() {
-                        dec_ref_bits(_py, zip_archive_bits);
-                    }
-                    if !obj_from_bits(fullname_bits).is_none() {
-                        dec_ref_bits(_py, fullname_bits);
-                    }
-                    if !obj_from_bits(origin_bits).is_none() {
-                        dec_ref_bits(_py, origin_bits);
-                    }
-                    return Err(err);
-                }
-            };
-            let out = importlib_machinery_loader_instance(
-                _py,
-                machinery_bits,
-                crate::NameId::ZipSourceLoader,
-                &[fullname_bits, zip_archive_bits, zip_inner_path_bits],
-            );
-            if !obj_from_bits(zip_archive_bits).is_none() {
-                dec_ref_bits(_py, zip_archive_bits);
-            }
-            if !obj_from_bits(zip_inner_path_bits).is_none() {
-                dec_ref_bits(_py, zip_inner_path_bits);
-            }
-            match out {
-                Ok(bits) => bits,
-                Err(err) => {
-                    if !obj_from_bits(fullname_bits).is_none() {
-                        dec_ref_bits(_py, fullname_bits);
-                    }
-                    if !obj_from_bits(origin_bits).is_none() {
-                        dec_ref_bits(_py, origin_bits);
-                    }
-                    return Err(err);
-                }
-            }
-        }
-        "namespace" => MoltObject::none().bits(),
+    );
+    let kind = match payload.loader_kind.as_str() {
+        "source" => Some(FileLoaderKind::Source),
+        "extension" => Some(FileLoaderKind::Extension),
+        "bytecode" => Some(FileLoaderKind::Sourceless),
+        "zip_source" => Some(FileLoaderKind::ZipSource),
+        "namespace" => None,
         kind => {
-            if !obj_from_bits(fullname_bits).is_none() {
-                dec_ref_bits(_py, fullname_bits);
-            }
-            if !obj_from_bits(origin_bits).is_none() {
-                dec_ref_bits(_py, origin_bits);
-            }
             return Err(raise_exception::<_>(
-                _py,
+                py,
                 BuiltinExc::RuntimeError,
                 &format!("unsupported importlib loader kind: {kind}"),
             ));
         }
     };
-
-    let is_package_bits = MoltObject::from_bool(payload.is_package).bits();
-    let module_spec_cls_bits =
-        match importlib_machinery_member(_py, machinery_bits, crate::NameId::ModuleSpec) {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                if !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(_py, origin_bits);
-                }
-                if !obj_from_bits(loader_bits).is_none() {
-                    dec_ref_bits(_py, loader_bits);
-                }
-                return Err(err);
+    let loader = match kind {
+        None => ExceptionValue::adopt(py, none),
+        Some(kind) => {
+            let mut arguments = vec![ExceptionValue::pin(py, name.bits())];
+            if kind == FileLoaderKind::ZipSource {
+                let (Some(archive), Some(inner)) = (
+                    payload.zip_archive.as_deref(),
+                    payload.zip_inner_path.as_deref(),
+                ) else {
+                    return Err(raise_exception::<_>(
+                        py,
+                        BuiltinExc::RuntimeError,
+                        "invalid importlib find-spec payload: zip source location missing",
+                    ));
+                };
+                arguments.push(ExceptionValue::adopt(py, alloc_str_bits(py, archive)?));
+                arguments.push(ExceptionValue::adopt(py, alloc_str_bits(py, inner)?));
+            } else {
+                arguments.push(ExceptionValue::pin(py, origin.bits()));
             }
-        };
-    let spec_bits = match call_callable_positional(
-        _py,
-        module_spec_cls_bits,
-        &[fullname_bits, loader_bits, origin_bits, is_package_bits],
-    ) {
-        Ok(bits) => bits,
-        Err(err) => {
-            dec_ref_bits(_py, module_spec_cls_bits);
-            if !obj_from_bits(fullname_bits).is_none() {
-                dec_ref_bits(_py, fullname_bits);
+            let loaders = importlib_file_loader_types(py)?;
+            let argument_bits: Vec<u64> = arguments.iter().map(ExceptionValue::bits).collect();
+            let loader = ExceptionValue::adopt(
+                py,
+                call_callable_positional(
+                    py,
+                    file_loader_class(loaders.bits(), kind),
+                    &argument_bits,
+                )?,
+            );
+            if exception_pending(py) {
+                return Err(none);
             }
-            if !obj_from_bits(origin_bits).is_none() {
-                dec_ref_bits(_py, origin_bits);
-            }
-            if !obj_from_bits(loader_bits).is_none() {
-                dec_ref_bits(_py, loader_bits);
-            }
-            return Err(err);
+            loader
         }
     };
-    dec_ref_bits(_py, module_spec_cls_bits);
-    if exception_pending(_py) {
-        if !obj_from_bits(fullname_bits).is_none() {
-            dec_ref_bits(_py, fullname_bits);
-        }
-        if !obj_from_bits(origin_bits).is_none() {
-            dec_ref_bits(_py, origin_bits);
-        }
-        if !obj_from_bits(loader_bits).is_none() {
-            dec_ref_bits(_py, loader_bits);
-        }
-        return Err(MoltObject::none().bits());
-    }
-
+    let spec = ExceptionValue::adopt(
+        py,
+        crate::builtins::types::module_spec::alloc_module_spec(
+            py,
+            name.bits(),
+            loader.bits(),
+            origin.bits(),
+            MoltObject::from_bool(payload.is_package).bits(),
+        )
+        .ok_or(none)?,
+    );
     if let Some(locations) = payload.submodule_search_locations.as_ref() {
-        let Some(locations_bits) = alloc_string_list_bits(_py, locations) else {
-            if !obj_from_bits(spec_bits).is_none() {
-                dec_ref_bits(_py, spec_bits);
-            }
-            if !obj_from_bits(fullname_bits).is_none() {
-                dec_ref_bits(_py, fullname_bits);
-            }
-            if !obj_from_bits(origin_bits).is_none() {
-                dec_ref_bits(_py, origin_bits);
-            }
-            if !obj_from_bits(loader_bits).is_none() {
-                dec_ref_bits(_py, loader_bits);
-            }
-            return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-        };
-        let out = importlib_set_attr(
-            _py,
-            spec_bits,
-            crate::NameId::SubmoduleSearchLocations,
-            locations_bits,
+        let locations = ExceptionValue::adopt(
+            py,
+            alloc_string_list_bits(py, locations).ok_or_else(
+                <u64 as crate::builtins::exceptions::ExceptionSentinel>::exception_sentinel,
+            )?,
         );
-        if !obj_from_bits(locations_bits).is_none() {
-            dec_ref_bits(_py, locations_bits);
-        }
-        if let Err(err) = out {
-            if !obj_from_bits(spec_bits).is_none() {
-                dec_ref_bits(_py, spec_bits);
-            }
-            if !obj_from_bits(fullname_bits).is_none() {
-                dec_ref_bits(_py, fullname_bits);
-            }
-            if !obj_from_bits(origin_bits).is_none() {
-                dec_ref_bits(_py, origin_bits);
-            }
-            if !obj_from_bits(loader_bits).is_none() {
-                dec_ref_bits(_py, loader_bits);
-            }
-            return Err(err);
-        }
+        importlib_set_attr(
+            py,
+            spec.bits(),
+            crate::NameId::SubmoduleSearchLocations,
+            locations.bits(),
+        )?;
     }
-
-    let cached_bits = match payload.cached.as_deref() {
-        Some(cached) => match alloc_str_bits(_py, cached) {
-            Ok(bits) => bits,
-            Err(err) => {
-                if !obj_from_bits(spec_bits).is_none() {
-                    dec_ref_bits(_py, spec_bits);
-                }
-                if !obj_from_bits(fullname_bits).is_none() {
-                    dec_ref_bits(_py, fullname_bits);
-                }
-                if !obj_from_bits(origin_bits).is_none() {
-                    dec_ref_bits(_py, origin_bits);
-                }
-                if !obj_from_bits(loader_bits).is_none() {
-                    dec_ref_bits(_py, loader_bits);
-                }
-                return Err(err);
-            }
+    let cached = ExceptionValue::adopt(
+        py,
+        match payload.cached.as_deref() {
+            Some(cached) => alloc_str_bits(py, cached)?,
+            None => none,
         },
-        None => MoltObject::none().bits(),
-    };
-    if let Err(err) = importlib_set_attr(_py, spec_bits, crate::NameId::Cached, cached_bits) {
-        if !obj_from_bits(cached_bits).is_none() {
-            dec_ref_bits(_py, cached_bits);
-        }
-        if !obj_from_bits(spec_bits).is_none() {
-            dec_ref_bits(_py, spec_bits);
-        }
-        if !obj_from_bits(fullname_bits).is_none() {
-            dec_ref_bits(_py, fullname_bits);
-        }
-        if !obj_from_bits(origin_bits).is_none() {
-            dec_ref_bits(_py, origin_bits);
-        }
-        if !obj_from_bits(loader_bits).is_none() {
-            dec_ref_bits(_py, loader_bits);
-        }
-        return Err(err);
-    }
-    if !obj_from_bits(cached_bits).is_none() {
-        dec_ref_bits(_py, cached_bits);
-    }
-
-    let has_location_bits = MoltObject::from_bool(payload.has_location).bits();
-    if let Err(err) = importlib_set_attr(
-        _py,
-        spec_bits,
+    );
+    importlib_set_attr(py, spec.bits(), crate::NameId::Cached, cached.bits())?;
+    importlib_set_attr(
+        py,
+        spec.bits(),
         crate::NameId::HasLocation,
-        has_location_bits,
-    ) {
-        if !obj_from_bits(spec_bits).is_none() {
-            dec_ref_bits(_py, spec_bits);
-        }
-        if !obj_from_bits(fullname_bits).is_none() {
-            dec_ref_bits(_py, fullname_bits);
-        }
-        if !obj_from_bits(origin_bits).is_none() {
-            dec_ref_bits(_py, origin_bits);
-        }
-        if !obj_from_bits(loader_bits).is_none() {
-            dec_ref_bits(_py, loader_bits);
-        }
-        return Err(err);
-    }
-
-    if !obj_from_bits(fullname_bits).is_none() {
-        dec_ref_bits(_py, fullname_bits);
-    }
-    if !obj_from_bits(origin_bits).is_none() {
-        dec_ref_bits(_py, origin_bits);
-    }
-    if !obj_from_bits(loader_bits).is_none() {
-        dec_ref_bits(_py, loader_bits);
-    }
-
-    Ok(spec_bits)
+        MoltObject::from_bool(payload.has_location).bits(),
+    )?;
+    Ok(spec.into_bits())
 }
 
 /// The compiled finder supplies the same loader-less namespace spec as
@@ -1724,20 +1426,23 @@ pub(crate) fn compiled_namespace_spec(
 ) -> Result<u64, u64> {
     use crate::builtins::exceptions::ExceptionValue;
     let none = MoltObject::none().bits();
-    let dictionary = crate::builtins::module_table::module_dictionary(py).ok_or(none)?;
-    let machinery = ExceptionValue::adopt(
-        py,
-        importlib_module_support_bits(py, crate::ptr_from_bits(dictionary), "importlib.machinery")?,
-    );
-    let read = |object, name: crate::NameId| -> Result<ExceptionValue<'_, '_>, u64> {
-        let key = ExceptionValue::adopt(py, name.owned_bits(py).ok_or(none)?);
-        crate::builtins::attributes::get_attr_name(py, object, key.bits())
-            .map(|bits| ExceptionValue::adopt(py, bits))
-            .map_err(|()| none)
+    let loaders = importlib_file_loader_types(py)?;
+    let path_class = file_loader_class(loaders.bits(), FileLoaderKind::NamespacePath);
+    let finder = crate::builtins::types::path_finder_class(py);
+    if finder == 0 {
+        return Err(none);
+    }
+    let get_spec = {
+        let key = ExceptionValue::adopt(
+            py,
+            crate::NameId::PrivateGetSpec.owned_bits(py).ok_or(none)?,
+        );
+        ExceptionValue::adopt(
+            py,
+            crate::builtins::attributes::get_attr_name(py, finder, key.bits())
+                .map_err(|()| none)?,
+        )
     };
-    let path_class = read(machinery.bits(), crate::NameId::PrivateNamespacePath)?;
-    let finder = read(machinery.bits(), crate::NameId::PathFinder)?;
-    let get_spec = read(finder.bits(), crate::NameId::PrivateGetSpec)?;
     let mut directories = Vec::new();
     for portion in portions.iter() {
         directories.push(ExceptionValue::adopt(py, alloc_str_bits(py, portion)?));
@@ -1750,8 +1455,11 @@ pub(crate) fn compiled_namespace_spec(
     let list = ExceptionValue::adopt(py, MoltObject::from_ptr(list).bits());
     let path = ExceptionValue::adopt(
         py,
-        call_callable_positional(py, path_class.bits(), &[name, list.bits(), get_spec.bits()])?,
+        call_callable_positional(py, path_class, &[name, list.bits(), get_spec.bits()])?,
     );
+    if exception_pending(py) {
+        return Err(none);
+    }
     let spec = ExceptionValue::adopt(
         py,
         crate::builtins::types::module_spec::alloc_module_spec(
