@@ -1256,8 +1256,15 @@ def _runtime_c_environment_name(name: str) -> bool:
 TOOL_IDENTITY_REUSE_SCHEMA = "molt.proof-tool-identity-reuse.v1"
 
 # Environment names whose values define compiled output or compiler/linker
-# behaviour. One authority serves the supervisor build digest and toolchain
-# probe reuse; operational output placement is transport, never an input.
+# behaviour. One authority serves the supervisor build digest, the Cargo
+# workspace partition and toolchain probe reuse; operational output placement
+# is transport, never an input. A toolchain selector is not here: rustup's
+# RUSTUP_TOOLCHAIN only chooses which tool bytes run, and every compiled
+# identity binds those resolved bytes. Cargo's own fingerprint binds the
+# resolved compiler (`rustc -vV`), never the selector spelling, so a row that
+# names the pinned channel shares the compiled output of a row that inherits
+# it (HF-766: the spelling alone rebuilt the shared supervisor under its
+# provisioning lock). The selector stays a probe-resolution input below.
 COMPILE_ENVIRONMENT_NAMES = frozenset(
     {
         "CARGO",
@@ -1270,7 +1277,6 @@ COMPILE_ENVIRONMENT_NAMES = frozenset(
         "RUSTDOCFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_ENCODED_RUSTDOCFLAGS",
-        "RUSTUP_TOOLCHAIN",
         "SOURCE_DATE_EPOCH",
         "PYTHON",
         "CC",
@@ -1317,6 +1323,7 @@ _PROBE_RESOLUTION_NAMES = frozenset(
         "PATH",
         "HOME",
         "USERPROFILE",
+        "RUSTUP_TOOLCHAIN",
         "RUSTUP_HOME",
         "CARGO_HOME",
         "LD_LIBRARY_PATH",

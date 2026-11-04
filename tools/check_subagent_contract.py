@@ -55,6 +55,7 @@ REQUIRED_CONSTANTS: tuple[str, ...] = (
     "MODEL_TIER",
     "TRIALITY_WIRING",
     "PREMISE_VERIFICATION",
+    "DESIGN_REVIEW",
     "HANDOFF_PRECHECK",
 )
 
@@ -73,6 +74,7 @@ REQUIRED_KEY_PHRASES: dict[str, str] = {
     "MODEL_TIER": "Respect operator concurrency limits",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
+    "DESIGN_REVIEW": "Elephant Goldfish",
     "HANDOFF_PRECHECK": "--precheck-only",
 }
 

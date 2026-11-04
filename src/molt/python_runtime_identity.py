@@ -314,12 +314,33 @@ def _base_runtime_paths() -> dict[str, Path]:
     else:
         # CPython owns the configured ABI/platform layout, including lib64 and
         # free-threaded pythonX.Yt directories. Do not reconstruct it from version.
+        # The configured value is absolute, though: Makefile.pre.in builds
+        # DESTSHARED from $(exec_prefix), and a relocated installation keeps
+        # the sysconfig data of the place it was configured (uv patches it at
+        # install time; a copy keeps the original). getpath.py derives the
+        # lib-dynload entry the interpreter imports from from the live
+        # exec_prefix, so keep the configured layout and rebase its anchor.
         dynload = sysconfig.get_config_var("DESTSHARED")
-        if not isinstance(dynload, str) or not dynload:
+        configured_exec_prefix = sysconfig.get_config_var("exec_prefix")
+        if (
+            not isinstance(dynload, str)
+            or not dynload
+            or not isinstance(configured_exec_prefix, str)
+            or not configured_exec_prefix
+        ):
             raise PythonEnvironmentIdentityError(
                 "CPython does not expose its configured dynamic-extension root"
             )
-        result["base-lib-dynload"] = Path(dynload)
+        try:
+            layout = Path(dynload).relative_to(Path(configured_exec_prefix))
+        except ValueError as exc:
+            raise PythonEnvironmentIdentityError(
+                "CPython's configured dynamic-extension root is outside its "
+                f"configured exec_prefix: {dynload} not under {configured_exec_prefix}"
+            ) from exc
+        result["base-lib-dynload"] = (
+            Path(sys.base_exec_prefix).resolve(strict=True) / layout
+        )
     return result
 
 
