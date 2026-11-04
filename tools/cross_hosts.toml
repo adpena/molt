@@ -140,7 +140,8 @@ shell = "bash"
 custody_root = "/home/adpena/Molt"
 checkout = "/home/adpena/Molt/molt-src"
 remote_dir = "/home/adpena/Molt/scratch/trunk-loop"
-launcher = "posix-session"
+# The worker's own wsl.exe client holds the distro instance for its lifetime.
+launcher = "wsl-session"
 proof_cells = ["portability.cargo-custody.linux", "portability.queue.linux"]
 wsl_distribution = "molt-gate"
 wsl_vhdx = 'C:\Molt\wsl\molt-gate\ext4.vhdx'
@@ -148,4 +149,6 @@ wsl_disk_gb = 80
 wsl_memory_gb = 24
 wsl_swap_gb = 4
 wsl_engine_version = "3.0.3"
+# Owner approval 2026-11-04: provision may apt-install the declared guest packages.
+install_system_packages = true
 proof_build_gb = 20

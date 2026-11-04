@@ -1338,7 +1338,6 @@ fn store_var_source_name(op: &OpIR) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::lir::LirRepr;
 
     #[test]
     fn binding_index_distinguishes_storage_snapshots_and_delete_metadata() {
@@ -1407,21 +1406,25 @@ mod tests {
     fn int_fact() -> ScalarRepresentationFact {
         ScalarRepresentationFact {
             ty: TirType::I64,
-            repr: LirRepr::I64,
+            producer: Some(crate::representation_plan::test_fixtures::scalar_witness(
+                crate::repr::ScalarKind::Int,
+            )),
         }
     }
 
     fn bool_fact() -> ScalarRepresentationFact {
         ScalarRepresentationFact {
             ty: TirType::Bool,
-            repr: LirRepr::Bool1,
+            producer: Some(crate::representation_plan::test_fixtures::scalar_witness(
+                crate::repr::ScalarKind::Bool,
+            )),
         }
     }
 
     fn dynbox_top_fact() -> ScalarRepresentationFact {
         ScalarRepresentationFact {
             ty: TirType::DynBox,
-            repr: LirRepr::DynBox,
+            producer: None,
         }
     }
 

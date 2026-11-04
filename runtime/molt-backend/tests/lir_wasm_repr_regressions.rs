@@ -3,7 +3,7 @@
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::lir::{LirFunction, LirRepr, LirTerminator};
-use molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
+use molt_backend::tir::lower_to_lir::lower_function_to_lir;
 use molt_backend::tir::ops::{AttrDict, AttrValue, OpCode};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
@@ -131,7 +131,7 @@ fn wasm_lir_ref64_parameter_uses_i64_reference_word() {
 
     func.param_names = vec!["object".into()];
     func.param_types = vec![TirType::UserClass("Point".into())];
-    let mut lir = lower_function_to_lir_for_repr_fact_extraction(&func);
+    let mut lir = lower_function_to_lir(&func);
     lir.blocks.get_mut(&entry_id).unwrap().args[0].repr = LirRepr::Ref64;
 
     let output = lower_lir_to_wasm(&lir);
@@ -187,7 +187,7 @@ fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
 
     func.param_names = vec!["object".into()];
     func.param_types = vec![TirType::UserClass("Point".into())];
-    let mut lir = lower_function_to_lir_for_repr_fact_extraction(&func);
+    let mut lir = lower_function_to_lir(&func);
     lir.blocks.get_mut(&entry_id).unwrap().args[0].repr = LirRepr::Ref64;
 
     let output = lower_lir_to_wasm(&lir);
@@ -265,7 +265,7 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_structured_selection(
         loop_cond_blocks: std::collections::HashMap::new(),
     };
 
-    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
+    let lir = lower_function_to_lir(&func);
     let output = lower_lir_to_wasm(&lir);
 
     assert!(output.locals.contains(&ValType::I32));
@@ -350,7 +350,7 @@ fn wasm_lir_loop_carried_i64_params_stay_i64() {
         loop_cond_blocks: std::collections::HashMap::new(),
     };
 
-    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
+    let lir = lower_function_to_lir(&func);
     let output = lower_lir_to_wasm(&lir);
 
     assert_eq!(output.param_types, vec![ValType::I64]);

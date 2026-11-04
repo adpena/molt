@@ -5423,11 +5423,15 @@ def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes(
 ):
     gen = _gen()
     data = gen.load_table()
-    assert data["classifier_scalar_value_forward"] == ["frame_home_store"]
+    assert data["classifier_scalar_value_forward"] == [
+        "frame_home_store",
+        "binding_alias",
+    ]
     gen._validate_scalar_value_forwarding(data)
     rendered = gen.render_rs(data)
     decisions = _enum_match_decisions(rendered, "copy_kind_forwards_scalar_value_table")
     assert decisions["FrameHomeStore"] == "true"
+    assert decisions["BindingAlias"] == "true"
     assert decisions["FrameHomeLoad"] == "false"
     without = json.loads(json.dumps(data))
     without["classifier_scalar_value_forward"] = []
@@ -5436,6 +5440,7 @@ def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes(
     for function in (
         "copy_kind_is_explicit_no_heap_move_table",
         "copy_kind_is_binding_view_table",
+        "copy_kind_mints_owned_alias_ref_table",
         "kind_consumed_operand_table",
         "opcode_effects_table",
     ):
@@ -5473,18 +5478,25 @@ def test_scalar_value_forwarding_requires_a_unary_shape(arity) -> None:
         gen._validate_scalar_value_forwarding(data)
 
 
-@pytest.mark.parametrize("missing", ["shape", "binding_view"])
-def test_scalar_value_forwarding_requires_its_existing_contract(missing) -> None:
+@pytest.mark.parametrize(
+    ("kind", "contract", "missing"),
+    [
+        ("frame_home_store", "classifier_binding_view", "shape"),
+        ("frame_home_store", "classifier_binding_view", "role"),
+        ("binding_alias", "classifier_owned_alias", "role"),
+    ],
+)
+def test_scalar_value_forwarding_requires_its_existing_contract(
+    missing, kind, contract
+) -> None:
     gen = _gen()
     data = json.loads(json.dumps(gen.load_table()))
     if missing == "shape":
         data["simpleir_op_shape"] = [
-            row
-            for row in data["simpleir_op_shape"]
-            if row["kind"] != "frame_home_store"
+            row for row in data["simpleir_op_shape"] if row["kind"] != kind
         ]
     else:
-        data["classifier_binding_view"].remove("frame_home_store")
+        data[contract].remove(kind)
     with pytest.raises(gen.OpKindTableError, match="declared unary binding view"):
         gen._validate_scalar_value_forwarding(data)
 

@@ -618,12 +618,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::TraceEnterSlot => {
+                let entered = self
+                    .owned_frame_entered
+                    .expect("trace_enter_slot requires local execution-context ownership");
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
                 let enter_fn = self.ensure_runtime_i64_fn("molt_trace_enter_slot", 1);
                 let _ = self
                     .backend
                     .builder
                     .build_call(enter_fn, &[code_id.into()], "trace_enter_slot")
+                    .unwrap();
+                // Even a failed entry attempt records a runtime credit that
+                // must be balanced; this is not proof that a frame was pushed.
+                self.backend
+                    .builder
+                    .build_store(
+                        entered,
+                        self.backend.context.bool_type().const_int(1, false),
+                    )
                     .unwrap();
                 // The entry took the frame's binding homes: lend them before
                 // the entry's adjacent exception check, which leaves for the
@@ -634,12 +646,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::TraceExit => {
-                let exit_fn = self.ensure_runtime_i64_fn("molt_trace_exit", 0);
-                let _ = self
-                    .backend
-                    .builder
-                    .build_call(exit_fn, &[], "trace_exit")
-                    .unwrap();
+                // The invocation's guarded return owns the pop, including
+                // generated suspension and early-error returns.
                 true
             }
             OpKind::FrameHomeStore | OpKind::FrameHomeCell | OpKind::FrameHomePrivateCell => {

@@ -7576,7 +7576,7 @@ impl WasmRuntimeImport {
             Self::DataclassesFields => 3,
             Self::DataclassesAsdict => 4,
             Self::DataclassesAstuple => 4,
-            Self::DataclassesReplace => 6,
+            Self::DataclassesReplace => 10,
             Self::DataclassesSetFieldMetadata => 3,
             Self::StaticmethodTypeNew => 3,
             Self::StaticmethodInit => 3,

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import cast
 
@@ -151,6 +152,7 @@ def _selected_python_recipe(
     repo_root: Path, selector: str | None, environ: Mapping[str, str]
 ) -> tuple[Path, dict[str, object], dict[str, str], dict[str, object]]:
     from molt.python_interpreter import (
+        PythonInterpreterError,
         is_python_version_selector,
         parse_python_interpreter_request,
         probe_python_command,
@@ -176,18 +178,28 @@ if v.releaselevel != 'final': iv += v.releaselevel[0] + str(v.serial)
 print(json.dumps(dict(implementation_name=sys.implementation.name,implementation_version=iv,os_name=os.name,platform_machine=platform.machine(),platform_python_implementation=platform.python_implementation(),platform_release=platform.release(),platform_system=platform.system(),platform_version=platform.version(),python_full_version=platform.python_version(),python_version='.'.join(platform.python_version_tuple()[:2]),sys_platform=sys.platform)))
 """
     with PythonIdentityVerifier() as verifier:
-        command = resolve_python_selector(
-            selector,
-            env=bootstrap_env,
-            cwd=repo_root,
-            verifier=verifier,
-        )
-        selected = probe_python_command(
-            command,
-            env=bootstrap_env,
-            cwd=repo_root,
-            verifier=verifier,
-        )
+        try:
+            command = resolve_python_selector(
+                selector,
+                env=bootstrap_env,
+                cwd=repo_root,
+                verifier=verifier,
+            )
+            selected = probe_python_command(
+                command,
+                env=bootstrap_env,
+                cwd=repo_root,
+                verifier=verifier,
+            )
+        except PythonInterpreterError as exc:
+            fix = (
+                f"; run `uv python install {request.selector}`"
+                if request is not None
+                else ""
+            )
+            raise _contract.SourceBuildEnvironmentError(
+                f"cannot bind requested CPython {selector}: {exc}{fix}"
+            ) from exc
         python = Path(selected.executable).absolute()
         capture = _probe_source_build_python(
             python, verifier=verifier, capture_wheel_target=True
@@ -226,7 +238,8 @@ print(json.dumps(dict(implementation_name=sys.implementation.name,implementation
         runtime_version = str(runtime["version"])
         if request is not None and not request.matches_version(runtime_version):
             raise _contract.SourceBuildEnvironmentError(
-                f"requested CPython {request.selector} differs from captured runtime {runtime_version}"
+                f"requested CPython {request.selector} differs from captured runtime "
+                f"{runtime_version} at {python}; run `uv python install {request.selector}`"
             )
         if selected.version != runtime_version:
             raise _contract.SourceBuildEnvironmentError(
@@ -1178,6 +1191,17 @@ def _provision_source_build_environment(
             or getattr(sys, "_base_executable", None)
             or sys.executable
         )
+        from molt.python_interpreter import observe_python_interpreter
+
+        selected_interpreter = observe_python_interpreter(
+            Path(raw_base).resolve(strict=True), child_environment, cwd=repo_root
+        )
+        version = str(custody["python_runtime"]["version"])
+        if selected_interpreter.version != version:
+            raise _contract.SourceBuildEnvironmentError(
+                f"cannot bind CPython {version}: found {selected_interpreter.executable} "
+                f"(CPython {selected_interpreter.version}); run `uv python install {version}`"
+            )
         # uv is the provisioner for the environment that will subsequently
         # launch guarded build work. The canonical file lock and provisional
         # record make this direct-final mutation recoverable but inadmissible;
@@ -1188,7 +1212,10 @@ def _provision_source_build_environment(
             "--project",
             str(repo_root.resolve()),
             "--python",
-            str(Path(raw_base).resolve()),
+            # uv derives UpgradePolicy::Fixed from a patch request. A file
+            # request permits the managed minor alias even after realpath().
+            version,
+            "--no-python-downloads",
             "--frozen",
             "--no-default-groups",
             # Defaults are disabled above; --no-dev would also exclude an
@@ -1208,13 +1235,25 @@ def _provision_source_build_environment(
         if result.returncode != 0:
             raise _contract.SourceBuildEnvironmentError(
                 "locked source-build environment provisioning failed: "
-                f"uv sync returned {result.returncode}"
+                f"uv sync returned {result.returncode}; selected "
+                f"{selected_interpreter.executable} (CPython {selected_interpreter.version}); "
+                f"run `uv python install {version}`"
             )
         if not python_executable.is_file():
             raise _contract.SourceBuildEnvironmentError(
                 f"uv sync did not create source-build Python: {python_executable}"
             )
         verify_inputs()
+        realized_interpreter = observe_python_interpreter(
+            python_executable, child_environment, cwd=repo_root
+        )
+        if realized_interpreter != selected_interpreter:
+            raise _contract.SourceBuildEnvironmentError(
+                f"uv did not bind CPython {version} at {selected_interpreter.executable}: "
+                f"found {realized_interpreter.executable} (CPython {realized_interpreter.version}); "
+                f"run `uv python install {version}`"
+            )
+        realized_interpreter.publish(root)
         # The published read namespace is empty. CPython compiles only modules
         # actually imported by a command; -B keeps this image immutable.
         environment_bytecode_prefix(root).mkdir(exist_ok=True)
@@ -1422,6 +1461,75 @@ def load_development_environment(
         manifest,
         active=Path(sys.prefix).resolve() == root,
     )
+
+
+def retire_drifted_development_environment(
+    root: Path, repo_root: Path, environ: Mapping[str, str]
+) -> None:
+    """Delete only interpreter-stale regenerable images, preserving live readers."""
+    from molt.checkout_state import checkout_state_retirement
+    from molt.python_interpreter import development_interpreter_problem
+    from molt.python_interpreter import INTERPRETER_RECORD
+    from molt.source_build_environment_selection import (
+        read_development_environment_selection,
+    )
+
+    handle = _acquire_file_lock(
+        root.parent / ".locks" / f"{root.name}.lock",
+        timeout_s=900.0,
+        timeout_message=f"timed out waiting to retire drifted Python image {root}",
+    )
+    try:
+        # Observe before taking exclusive retirement custody: a guarded probe
+        # is itself a managed reader. Fence its executable and configuration
+        # through lock acquisition, then close those file handles before deletion.
+        with ExitStack() as observation:
+            observation.enter_context(
+                stable_executable_probe(
+                    environment_python_path(root), label="retiring interpreter"
+                )
+            )
+            files = PythonFileCaptureContext()
+            observation.callback(files.close)
+            record = root / INTERPRETER_RECORD
+            absent_record = not os.path.lexists(record)
+            for path in (root / "pyvenv.cfg", *(() if absent_record else (record,))):
+                files.bind(
+                    path, path.lstat(), label="retiring interpreter configuration"
+                )
+            image = read_development_environment_selection(root, repo_root=repo_root)
+            problem = development_interpreter_problem(
+                root, image.python_version.text, environ, cwd=repo_root
+            )
+            if problem is None:
+                return
+            with checkout_state_retirement(root, purged_root=root) as exclusive:
+                if not exclusive:
+                    raise _contract.SourceBuildEnvironmentError(
+                        f"cannot replace stale Python image with live readers: {root}"
+                    )
+                image = read_development_environment_selection(
+                    root, repo_root=repo_root
+                )
+                # Interpreter drift authorizes replacement, never laundering an
+                # unrelated malformed or foreign published attestation.
+                custody, _manifest = _published_recipe(root)
+                _validate_development_selection(
+                    root, repo_root=repo_root, python=None, groups=None, custody=custody
+                )
+                files.verify()
+                if absent_record and os.path.lexists(root / INTERPRETER_RECORD):
+                    raise _contract.SourceBuildEnvironmentError(
+                        "interpreter record appeared during retirement"
+                    )
+                observation.close()
+                deleted, error = delete_path(
+                    root, owning_root=artifact_root(repo_root, environ)
+                )
+                if not deleted:
+                    raise _contract.SourceBuildEnvironmentError(error)
+    finally:
+        _release_file_lock(handle)
 
 
 def development_environment(

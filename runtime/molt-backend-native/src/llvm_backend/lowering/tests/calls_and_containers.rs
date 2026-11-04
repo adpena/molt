@@ -325,7 +325,7 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                 let none = func.fresh_value();
                 let result = func.fresh_value();
                 if inline_proven {
-                    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+                    let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
                     facts.repr_by_value.insert(arg, crate::Repr::RawI64Safe);
                     backend.function_repr_facts.insert(func.name.clone(), facts);
                 }

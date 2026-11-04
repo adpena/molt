@@ -8,9 +8,8 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tempfile
 from typing import Iterable, Sequence, Mapping
-
-import venv
 
 from molt import python_environment_contract as _contract
 from molt import python_environment_identity
@@ -256,19 +255,13 @@ def copy_python_capture_authority(source_root: Path) -> None:
 
 
 def create_test_venv(environment: Path) -> Path:
-    """Create a runnable venv the way the platform's own tooling does.
-
-    ``venv.EnvBuilder`` defaults to copied launchers. A copied launcher of a
-    relocatable CPython (python-build-standalone, which uv manages on macOS)
-    resolves ``libpython`` relative to its own location and cannot start, so
-    POSIX uses symlinks like ``python -m venv`` and ``uv venv``; Windows keeps
-    copies because symlinks need a privilege there. Returns the launcher.
-    """
-    venv.EnvBuilder(symlinks=os.name != "nt", with_pip=False).create(environment)
-    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    """Create a runnable venv without links into a shared Python installation."""
+    environment.parent.mkdir(parents=True, exist_ok=True)
+    owned = Path(tempfile.mkdtemp(prefix="fixture-python-", dir=environment.parent))
+    return create_owned_python_venv(owned, environment=environment)
 
 
-def create_owned_python_venv(root: Path) -> Path:
+def create_owned_python_venv(root: Path, *, environment: Path | None = None) -> Path:
     """Create a venv whose base interpreter the caller owns; return its launcher.
 
     A test that hardlinks or otherwise touches interpreter files must not touch
@@ -282,9 +275,18 @@ def create_owned_python_venv(root: Path) -> Path:
     install = root / "python"
     shutil.copytree(base, install, symlinks=True)
     base_executable = install / Path(sys._base_executable).resolve().relative_to(base)
-    environment = root / "venv"
+    if environment is None:
+        environment = root / "venv"
+    link_mode = "--copies" if os.name == "nt" else "--symlinks"
     completed = run_guarded_test_process(
-        [str(base_executable), "-m", "venv", "--without-pip", str(environment)],
+        [
+            str(base_executable),
+            "-m",
+            "venv",
+            "--without-pip",
+            link_mode,
+            str(environment),
+        ],
         timeout=120,
     )
     if completed.returncode != 0:
@@ -603,7 +605,9 @@ def materialize_development_environment(
 
     The real cheap loader remains active. The runtime/file nodes are the existing
     synthetic custody oracle; tests claiming actual admission must use a real
-    captured image instead. Optional runnable Python is a local no-pip venv.
+    captured image instead. Same-patch fixtures use a local no-pip venv so
+    freshness observes a real launcher. ``runnable`` additionally requires
+    host-compatible wheel tags; foreign-patch selector fixtures remain synthetic.
     """
     import json
     import tomllib
@@ -706,8 +710,21 @@ def materialize_development_environment(
     )
     manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     if not manifest_path.exists():
-        if runnable:
+        base_executable = Path(
+            getattr(sys, "_base_executable", sys.executable)
+        ).resolve()
+        if runnable or str(runtime["version"]) == ".".join(
+            map(str, sys.version_info[:3])
+        ):
             create_test_venv(root)
+            home = next(
+                line.partition(" = ")[2]
+                for line in (root / "pyvenv.cfg")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line.startswith("home = ")
+            )
+            base_executable = (Path(home) / base_executable.name).resolve(strict=True)
         else:
             executable = environment_python_path(root)
             executable.parent.mkdir(parents=True, exist_ok=True)
@@ -716,6 +733,12 @@ def materialize_development_environment(
                 "home = synthetic-selector-fixture\n", encoding="utf-8"
             )
         environment_bytecode_prefix(root).mkdir()
+        from molt.python_interpreter import RealizedPythonInterpreter
+
+        RealizedPythonInterpreter(
+            base_executable,
+            str(runtime["version"]),
+        ).publish(root)
         realized = realized_environment_manifest(
             runtime,
             [(row["name"], row["version"]) for row in closure["packages"]]

@@ -6,9 +6,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 68
-- `operational-tooling` files: 74
-- `scattered-assumption` files: 353
+- `authority-routed` files: 69
+- `operational-tooling` files: 76
+- `scattered-assumption` files: 356
 
 ## Files
 
@@ -37,6 +37,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/debug/contracts.py` | 2 | operational-tooling | `sys.version_info` |
 | `src/molt/environment_registry.toml` | 1 | scattered-assumption | `3.12` |
 | `src/molt/file_locks.py` | 3 | scattered-assumption | `3.12` |
+| `src/molt/filesystem_mounts.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/frontend/_types.py` | 2 | authority-routed | `3.13` |
 | `src/molt/frontend/lowering/analysis_patterns.py` | 1 | scattered-assumption | `3.13` |
 | `src/molt/frontend/lowering/builtin_guards.py` | 1 | scattered-assumption | `3.12` |
@@ -87,12 +88,13 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/builtins.py` | 2 | operational-tooling | `3.13` |
 | `src/molt/stdlib/calendar.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/codeop.py` | 2 | scattered-assumption | `3.12` |
-| `src/molt/stdlib/collections/__init__.py` | 9 | operational-tooling | `3.12` |
+| `src/molt/stdlib/collections/__init__.py` | 12 | operational-tooling | `_sys.version_info` |
 | `src/molt/stdlib/colorsys.py` | 5 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/compression/__init__.py` | 1 | scattered-assumption | `3.14` |
-| `src/molt/stdlib/copy.py` | 3 | operational-tooling | `3.12` |
+| `src/molt/stdlib/copy.py` | 5 | operational-tooling | `3.12` |
 | `src/molt/stdlib/csv.py` | 2 | operational-tooling | `_sys.version_info` |
-| `src/molt/stdlib/dataclasses.py` | 2 | operational-tooling | `3.12` |
+| `src/molt/stdlib/dataclasses.py` | 4 | operational-tooling | `3.12` |
+| `src/molt/stdlib/datetime.py` | 9 | operational-tooling | `3.13` |
 | `src/molt/stdlib/decimal.py` | 1 | scattered-assumption | `3.11` |
 | `src/molt/stdlib/difflib.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/email/feedparser.py` | 8 | operational-tooling | `3.12` |
@@ -109,6 +111,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/html/__init__.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/importlib/readers.py` | 1 | scattered-assumption | `3.10` |
 | `src/molt/stdlib/importlib/simple.py` | 1 | scattered-assumption | `3.10` |
+| `src/molt/stdlib/inspect.py` | 8 | operational-tooling | `3.13` |
 | `src/molt/stdlib/json/__main__.py` | 1 | scattered-assumption | `3.14` |
 | `src/molt/stdlib/json/tool.py` | 3 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/keyword.py` | 1 | scattered-assumption | `3.12` |
@@ -312,8 +315,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/sys_ext.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/class_construction.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/class_model/hierarchy.rs` | 3 | scattered-assumption | `3.12` |
-| `runtime/molt-runtime/src/builtins/types/concrete_types.rs` | 1 | scattered-assumption | `3.13` |
+| `runtime/molt-runtime/src/builtins/types/concrete_types.rs` | 3 | authority-routed | `3.13` |
 | `runtime/molt-runtime/src/builtins/types/dataclasses/field_runtime.rs` | 2 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/types/dataclasses/projection.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/native_descriptors.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/wrappers.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/warnings_ext.rs` | 5 | scattered-assumption | `3.12` |
@@ -344,6 +348,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/object/gc.rs` | 7 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/object/heap_lifecycle.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/iterable.rs` | 1 | scattered-assumption | `3.14` |
+| `runtime/molt-runtime/src/object/layout.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/object/list_mutation.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/mapping_merge.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/memoryview.rs` | 3 | scattered-assumption | `3.12` |
@@ -403,13 +408,14 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime-serial/src/base64_mod.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-serial/src/binascii.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-serial/src/csv.rs` | 8 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime-serial/src/datetime.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime-serial/src/structs.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime-stringprep/src/stringprep.rs` | 1 | scattered-assumption | `3.2` |
 | `runtime/molt-runtime-tk/src/tk/tcl.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-tk/src/tk/tests.rs` | 2 | scattered-assumption | `3.5` |
 | `runtime/molt-stdlib-text/src/codec_aliases_generated.rs` | 4 | scattered-assumption | `3.4` |
 | `runtime/molt-stdlib-text/src/token_metadata_generated.rs` | 3 | scattered-assumption | `3.12` |
-| `runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs` | 1 | scattered-assumption | `3.0` |
+| `runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs` | 2 | scattered-assumption | `3.0` |
 | `config/ci_resource_policy.toml` | 1 | scattered-assumption | `3.0` |
 | `config/codec_aliases.toml` | 3 | scattered-assumption | `3.4` |
 | `config/cpython_coverage.toml` | 21 | authority-routed | `3.12` |
@@ -437,7 +443,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/ci_triage.py` | 1 | operational-tooling | `3.12` |
 | `tools/cold_start_decompose.py` | 1 | scattered-assumption | `3.45` |
 | `tools/command_execution.py` | 1 | scattered-assumption | `3.12` |
-| `tools/compatibility_error_protocol.py` | 14 | authority-routed | `3.12` |
+| `tools/compatibility_error_protocol.py` | 20 | authority-routed | `3.12` |
 | `tools/compile_progress.py` | 2 | scattered-assumption | `3.12` |
 | `tools/correctness_dashboard.py` | 3 | operational-tooling | `3.12` |
 | `tools/cpython_census/public_objects.py` | 1 | operational-tooling | `sys.version_info` |

@@ -59,7 +59,6 @@ import sysconfig
 import subprocess
 import textwrap
 import time
-import venv
 from collections.abc import Sequence
 from pathlib import Path
 from tests.process_guard_common import (
@@ -944,10 +943,10 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
 
 
 def _make_gate_venv(path: Path, token: str | None) -> Path:
-    # POSIX venvs share the immutable interpreter image; prefixes, packages and
-    # marker modules remain private. Windows keeps CPython's copy/redirector path.
-    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(path)
-    # EnvBuilder uses this interpreter's venv scheme. Actual selected-Python
+    from tests.python_environment_test_support import create_test_venv
+
+    create_test_venv(path)
+    # The private copy uses this interpreter's venv scheme. Actual selected-Python
     # execution below proves prefix, imports, encoding and shell activation;
     # fixture setup needs no guarded interpreter just to repeat this path query.
     site = Path(
@@ -1780,6 +1779,43 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
                 requires_python=True,
             ),
         )
+
+
+@pytest.mark.parametrize("consumer", ["gate", "generated-merge"])
+def test_landing_consumers_refuse_a_drifted_explicit_managed_image(
+    drv, tmp_path, monkeypatch, consumer
+):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+    from molt.python_interpreter import INTERPRETER_RECORD
+    from tools import generated_merge
+
+    root, artifacts = tmp_path / "landing-sandbox", tmp_path / "artifacts"
+    _init_repo(root)
+    image = materialize_development_environment(root, artifacts, select=True)
+    record_path = image.root / INTERPRETER_RECORD
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    parts = list(map(int, record["version"].split(".")))
+    parts[-1] += 1
+    record["version"] = ".".join(map(str, parts))
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    before = image.manifest_path.read_bytes()
+    with pytest.raises(
+        (DriverError, generated_merge.GeneratedMergeError),
+        match="stale interpreter.*explicit UV_PROJECT_ENVIRONMENT",
+    ):
+        if consumer == "gate":
+            drv.prepare_gate_environment(
+                root, ProcessEnvironment(os.environ), requires_python=True
+            )
+        else:
+            generated_merge.regenerate(root, ())
+    assert image.manifest_path.read_bytes() == before
+    assert not list((artifacts / "retired").glob("*/*.retirement.json"))
 
 
 def _write_gates(tmp_path: Path) -> Path:
@@ -4174,7 +4210,7 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
 def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
     from tools import disk_guard
     from tests.test_dx_run_context import _git
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
 
     main = tmp_path / "molt-src"
     main.mkdir()
@@ -4183,8 +4219,8 @@ def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
     receipts.mkdir(parents=True)
     now = time.time()
     for name, age in {
-        "old": RETIREMENT_WINDOW_S + 60,
-        "recent": RETIREMENT_WINDOW_S - 60,
+        "old": INTEGRATION_EVIDENCE_IDLE_S + 60,
+        "recent": INTEGRATION_EVIDENCE_IDLE_S - 60,
     }.items():
         receipt = receipts / f"{name}.gates.json"
         receipt.write_text("{}", encoding="utf-8")
@@ -4212,7 +4248,7 @@ def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
 def test_gate_receipts_stay_while_the_integration_lock_is_held(tmp_path):
     from tools import disk_guard
     from tests.test_dx_run_context import _git
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     main = tmp_path / "molt-src"
@@ -4223,7 +4259,7 @@ def test_gate_receipts_stay_while_the_integration_lock_is_held(tmp_path):
     receipt = receipts / "old.gates.json"
     receipt.write_text("{}", encoding="utf-8")
     now = time.time()
-    os.utime(receipt, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    os.utime(receipt, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
     lock = _try_acquire_file_lock(main / ".git/molt-integrate.lock")
     assert lock is not None
     try:
@@ -6807,6 +6843,31 @@ def test_land_precheck_runs_precheck_rules_in_the_lane_and_leaves_builds(
     assert sorted(counter.read_text(encoding="utf-8").split()) == ["static", "try"]
 
 
+def test_land_static_only_runs_static_gates_and_skips_the_try_run(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    """The fast path's never-waived tier: static gates only, nothing queued."""
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    lane = work.parent / "lane-static"
+    _lane(work, "static", {"a.py": "a = 1\n"})
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--static-only") == EXIT_OK
+
+    assert counter.read_text(encoding="utf-8").split() == ["static"]
+    assert queue.pending(queue.queue_paths(lane)) == []
+    with pytest.raises(SystemExit):
+        drv.build_parser().parse_args(
+            ["land", "--repo", str(lane), "--static-only", "--precheck-only"]
+        )
+
+
 def test_land_try_run_failure_queues_nothing(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
@@ -8382,6 +8443,12 @@ def test_detached_python_child_preserves_startup_policy_without_writes(
     tmp_path, prefix_selected, utf8
 ):
     from tools.command_execution import CommandExecutor
+    from tests.python_environment_test_support import create_test_venv
+
+    # Isolated startup must not import a borrowed image's editable donor via
+    # sitecustomize before the child selects this checkout. Keep the private
+    # installation outside the probe tree whose bytecode writes we observe.
+    python = create_test_venv(tmp_path.with_name(tmp_path.name + "-python"))
 
     fixture = tmp_path / "fixture"
     fixture.mkdir()
@@ -8409,7 +8476,7 @@ def test_detached_python_child_preserves_startup_policy_without_writes(
     )
     completed = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").run(
         [
-            sys.executable,
+            str(python),
             "-I",
             "-B",
             "-X",
@@ -8818,10 +8885,12 @@ def test_remote_landing_executes_selected_gates_without_publishing(
     output = tmp_path / "remote-output"
     output.mkdir()
     rc = trunk_landing.execute({"landing": request, "checkout": str(work)}, output)
-    receipt = json.loads((output / "receipt.json").read_text())
+    receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
     assert rc == (0 if exitcode == 0 else 1)
     assert receipt["status"] == ("success" if exitcode == 0 else "failure")
-    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text()
+    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text(
+        encoding="utf-8"
+    )
     if exitcode:
         with pytest.raises(CandidateFailure, match="remote landing gate failed"):
             trunk_landing.admit_result(receipt, request)

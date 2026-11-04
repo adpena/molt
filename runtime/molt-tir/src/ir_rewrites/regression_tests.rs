@@ -290,7 +290,7 @@ fn try_except_elision_keeps_transport_hinted_unknown_add() {
 }
 
 #[test]
-fn try_except_elision_uses_typed_int_body_without_transport_hints() {
+fn try_except_elision_preserves_annotation_only_arithmetic() {
     let mut func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "typed_int_try_body".to_string(),
@@ -376,7 +376,9 @@ fn try_except_elision_uses_typed_int_body_without_transport_hints() {
     );
 
     let kinds: Vec<molt_ir::OpKind> = func.ops.iter().map(|op| op.kind).collect();
-    assert_eq!(kinds, vec![molt_ir::OpKind::Add, molt_ir::OpKind::StoreVar]);
+    assert!(kinds.contains(&molt_ir::OpKind::TryStart));
+    assert!(kinds.contains(&molt_ir::OpKind::Add));
+    assert!(kinds.contains(&molt_ir::OpKind::ExceptionMatchBuiltin));
 }
 
 #[test]

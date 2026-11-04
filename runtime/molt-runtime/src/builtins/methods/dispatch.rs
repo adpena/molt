@@ -8,6 +8,11 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
     let builtins = builtin_classes(py);
     let none = MoltObject::none().bits();
 }, {
+    crate::NameId::Replace [if class_bits == builtins.code] => code_replace_method_bits(py, class_bits, crate::NameId::Replace),
+    crate::NameId::DunderReplace [if class_bits == builtins.code && {
+        let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
+        (target.major, target.minor) >= (3, 13)
+    }] => code_replace_method_bits(py, class_bits, crate::NameId::DunderReplace),
     crate::NameId::DunderReduce [if [builtins.builtin_function_or_method, builtins.builtin_method].contains(&class_bits) ] => Some(builtin_func_bits(
         py, NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class_bits, crate::NameId::DunderReduce),
         fn_addr!(crate::builtins::functions::native_callable::molt_native_callable_reduce), 1,
@@ -37,6 +42,15 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
     },
     crate::NameId::DunderInit => io_constructor_bits(py, class_bits, false),
 });
+
+fn code_replace_method_bits(py: &PyToken<'_>, owner: u64, name: crate::NameId) -> Option<u64> {
+    Some(crate::builtins::methods::builtin_variadic_func_bits(
+        py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, name)
+            .with_text_signature("($self, /, **changes)"),
+        fn_addr!(crate::builtins::functions::molt_code_replace),
+    ))
+}
 
 // These runtime builtin namespaces have process-owned physical buffer slots.
 // Array and extension classes already publish their declarations through their

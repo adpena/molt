@@ -548,6 +548,12 @@ def selected_development_environment(
     return Path(record["generation"])
 
 
+class _StaleDevelopmentInterpreter(ProvisioningError):
+    def __init__(self, root: Path, reason: str) -> None:
+        super().__init__(f"uv-environment: stale interpreter at {root}: {reason}")
+        self.root = root
+
+
 def _current_development_environment(spec: DevelopmentEnvironment) -> Path | None:
     """Validate a selection's published recipe at an operation boundary."""
     from molt.source_build_environment_selection import (
@@ -586,12 +592,23 @@ def _current_development_environment(spec: DevelopmentEnvironment) -> Path | Non
                         "its physical checkout generation namespace"
                     )
                 return None
-        return read_development_environment_selection(
+        from molt.python_interpreter import is_python_version_selector
+        from molt.python_interpreter import development_interpreter_problem
+
+        image = read_development_environment_selection(
             selected,
             repo_root=spec.checkout,
-            python=intent["python"],
+            python=intent["python"]
+            if is_python_version_selector(intent["python"])
+            else None,
             groups=tuple(intent["groups"]),
-        ).root
+        )
+        problem = development_interpreter_problem(
+            image.root, image.python_version.text, spec.environment, cwd=spec.checkout
+        )
+        if problem is not None:
+            raise _StaleDevelopmentInterpreter(image.root, problem)
+        return image.root
     except (OSError, ValueError, _contract.SourceBuildEnvironmentError) as exc:
         raise ProvisioningError(f"uv-environment: {exc}") from exc
 
@@ -893,11 +910,14 @@ def _provision_owned(spec: OwnedInstallation) -> bool:
 def input_state(spec: CheckoutInput) -> InputState:
     """Whether ``spec`` is current, without provisioning it."""
     if isinstance(spec, DevelopmentEnvironment):
-        return (
-            "current"
-            if _current_development_environment(spec) is not None
-            else "absent"
-        )
+        try:
+            return (
+                "current"
+                if _current_development_environment(spec) is not None
+                else "absent"
+            )
+        except _StaleDevelopmentInterpreter:
+            return "stale"
     if isinstance(spec, LockedTree):
         return _locked_state(spec)
     return _owned_state(spec)
@@ -921,21 +941,37 @@ def ensure_input(spec: CheckoutInput, *, refresh_runtime: bool = False) -> Ensur
         from molt.source_build_environment import development_environment
 
         try:
-            # Current selection is a cheap recipe projection, not a claim that
-            # published executable bytes have passed operation admission.
             intent = _development_intent(spec)
             # A command/path selector or explicit refresh needs the publisher's
             # exact runtime probe; bounded metadata cannot certify current bytes.
-            selected = (
-                _current_development_environment(spec)
-                if not refresh_runtime and is_python_version_selector(intent["python"])
-                else None
-            )
-            if selected is not None:
+            try:
+                selected = _current_development_environment(spec)
+            except _StaleDevelopmentInterpreter:
+                selected = None
+            if (
+                selected is not None
+                and not refresh_runtime
+                and is_python_version_selector(intent["python"])
+            ):
                 return Ensured(spec.name, False, time.monotonic() - started, selected)
             with _ProvisioningLock(spec):
                 intent = _development_intent(spec)
                 locks = _lock_digests(spec)
+                try:
+                    _current_development_environment(spec)
+                except _StaleDevelopmentInterpreter as drift:
+                    if spec.environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
+                        raise ProvisioningError(
+                            f"{drift}; cannot replace explicit UV_PROJECT_ENVIRONMENT; "
+                            "unset it and run canonical ensure"
+                        ) from drift
+                    from molt.source_build_environment import (
+                        retire_drifted_development_environment,
+                    )
+
+                    retire_drifted_development_environment(
+                        drift.root, spec.checkout, spec.environment
+                    )
                 image = development_environment(
                     spec.checkout,
                     python=intent["python"],

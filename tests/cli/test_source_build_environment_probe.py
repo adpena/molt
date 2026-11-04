@@ -37,8 +37,15 @@ def real_published_image(tmp_path):
     from molt.file_deletion import delete_path
     from molt.python_environment_location import _site_roots
     from tests.python_environment_test_support import lock_closure_manifest
+    from tests.process_guard_common import run_guarded_test_process
 
-    captured = authority._python_identity()
+    # Address the image with the private interpreter it will actually use.
+    # A copied base can have a different runtime closure from the host install.
+    bootstrap = create_test_venv(tmp_path / "bootstrap")
+    with PythonIdentityVerifier() as verifier:
+        captured = authority._probe_source_build_python(
+            bootstrap, verifier=verifier, capture_wheel_target=True
+        )
     runtime = captured["runtime"]
     closure = lock_closure_manifest(["hf529-probe==1.0"], [("hf529-probe", "1.0")])
     closure["wheel_target"] = captured["wheel_target"]
@@ -63,7 +70,20 @@ def real_published_image(tmp_path):
     }
     identity = canonical_json_sha256(recipe)
     root = tmp_path / "images" / identity
-    executable = create_test_venv(root)
+    created = run_guarded_test_process(
+        [
+            str(bootstrap),
+            "-B",
+            "-m",
+            "venv",
+            "--without-pip",
+            "--copies" if os.name == "nt" else "--symlinks",
+            str(root),
+        ],
+        timeout=120,
+    )
+    assert created.returncode == 0, created.stderr
+    executable = location.environment_python_path(root)
     (site,) = _site_roots(root)
     module = site / "hf529_probe.py"
     module.write_text("VALUE = 529\n", encoding="utf-8")

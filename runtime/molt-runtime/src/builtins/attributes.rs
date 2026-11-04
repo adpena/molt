@@ -1085,133 +1085,44 @@ unsafe fn attr_lookup_ptr_default_inner(
             let Some(name) = crate::NameId::from_bits(_py, attr_bits) else {
                 return Ok(None);
             };
-            match name {
-                crate::NameId::CoFilename => {
-                    let bits = code_filename_bits(obj_ptr);
-                    inc_ref_bits(_py, bits);
-                    return Ok(Some(bits));
+            if let Some(spec) = crate::object::layout::CODE_REPLACE_FIELDS
+                .iter()
+                .find(|spec| spec.name == name)
+            {
+                return spec.field.read(_py, obj_ptr).map(Some);
+            }
+            if name == crate::NameId::CoPositions {
+                let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                    _py,
+                    crate::molt_code_positions as *const () as usize as u64,
+                    1,
+                );
+                if func_ptr.is_null() {
+                    return Err(());
                 }
-                crate::NameId::CoName => {
-                    let bits = code_name_bits(obj_ptr);
-                    inc_ref_bits(_py, bits);
-                    return Ok(Some(bits));
+                let func_bits = MoltObject::from_ptr(func_ptr).bits();
+                let _ = crate::molt_function_set_builtin(func_bits);
+                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                let bound_ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
+                dec_ref_bits(_py, func_bits);
+                if bound_ptr.is_null() {
+                    return Err(());
                 }
-                crate::NameId::CoQualname => {
-                    let bits = crate::object::layout::code_qualname_bits(obj_ptr);
-                    inc_ref_bits(_py, bits);
-                    return Ok(Some(bits));
-                }
-                crate::NameId::CoFirstlineno => {
-                    return Ok(Some(MoltObject::from_int(code_firstlineno(obj_ptr)).bits()));
-                }
-                crate::NameId::CoLinetable => {
-                    let bits = code_linetable_bits(obj_ptr);
-                    if bits != 0 {
-                        inc_ref_bits(_py, bits);
-                        return Ok(Some(bits));
-                    }
-                    return Ok(Some(MoltObject::none().bits()));
-                }
-                crate::NameId::CoVarnames => {
-                    let bits = code_varnames_bits(obj_ptr);
-                    if bits != 0 {
-                        inc_ref_bits(_py, bits);
-                        return Ok(Some(bits));
-                    }
-                    let tuple_ptr = alloc_tuple(_py, &[]);
-                    if tuple_ptr.is_null() {
-                        return Err(());
-                    }
-                    return Ok(Some(MoltObject::from_ptr(tuple_ptr).bits()));
-                }
-                crate::NameId::CoNames => {
-                    let bits = code_names_bits(obj_ptr);
-                    if bits != 0 {
-                        inc_ref_bits(_py, bits);
-                        return Ok(Some(bits));
-                    }
-                    let tuple_ptr = alloc_tuple(_py, &[]);
-                    if tuple_ptr.is_null() {
-                        return Err(());
-                    }
-                    return Ok(Some(MoltObject::from_ptr(tuple_ptr).bits()));
-                }
-                crate::NameId::CoFreevars => {
-                    let bits = code_freevars_bits(obj_ptr);
-                    inc_ref_bits(_py, bits);
-                    return Ok(Some(bits));
-                }
-                crate::NameId::CoCellvars => {
-                    let bits = code_cellvars_bits(obj_ptr);
-                    inc_ref_bits(_py, bits);
-                    return Ok(Some(bits));
-                }
-                crate::NameId::CoArgcount => {
-                    return Ok(Some(
-                        MoltObject::from_int(code_argcount(obj_ptr) as i64).bits(),
-                    ));
-                }
-                crate::NameId::CoPosonlyargcount => {
-                    return Ok(Some(
-                        MoltObject::from_int(code_posonlyargcount(obj_ptr) as i64).bits(),
-                    ));
-                }
-                crate::NameId::CoKwonlyargcount => {
-                    return Ok(Some(
-                        MoltObject::from_int(code_kwonlyargcount(obj_ptr) as i64).bits(),
-                    ));
-                }
-                crate::NameId::CoNlocals => {
-                    let bits = code_varnames_bits(obj_ptr);
-                    if let Some(ptr) = obj_from_bits(bits).as_ptr()
-                        && object_type_id(ptr) == TYPE_ID_TUPLE
-                    {
-                        return Ok(Some(MoltObject::from_int(tuple_len(ptr) as i64).bits()));
-                    }
-                    return Ok(Some(MoltObject::from_int(0).bits()));
-                }
-                crate::NameId::CoFlags => {
-                    return Ok(Some(
-                        MoltObject::from_int(crate::object::layout::code_flags(obj_ptr) as i64)
-                            .bits(),
-                    ));
-                }
-                crate::NameId::CoConsts => {
-                    let name_bits = code_name_bits(obj_ptr);
-                    let is_module = string_obj_to_owned(obj_from_bits(name_bits))
-                        .is_some_and(|value| value == "<module>");
-                    let elems: [u64; 2] =
-                        [MoltObject::none().bits(), MoltObject::from_int(0).bits()];
-                    let ptr = if is_module {
-                        alloc_tuple(_py, &elems)
-                    } else {
-                        alloc_tuple(_py, &[])
-                    };
-                    if ptr.is_null() {
-                        return Err(());
-                    }
-                    return Ok(Some(MoltObject::from_ptr(ptr).bits()));
-                }
-                crate::NameId::CoPositions => {
-                    let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
-                        _py,
-                        crate::molt_code_positions as *const () as usize as u64,
-                        1,
-                    );
-                    if func_ptr.is_null() {
-                        return Err(());
-                    }
-                    let func_bits = MoltObject::from_ptr(func_ptr).bits();
-                    let _ = crate::molt_function_set_builtin(func_bits);
-                    let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                    let bound_ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
-                    dec_ref_bits(_py, func_bits);
-                    if bound_ptr.is_null() {
-                        return Err(());
-                    }
-                    return Ok(Some(MoltObject::from_ptr(bound_ptr).bits()));
-                }
-                _ => {}
+                return Ok(Some(MoltObject::from_ptr(bound_ptr).bits()));
+            }
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            if let Some(method) = crate::builtins::methods::builtin_class_method_bits(
+                _py,
+                builtin_classes(_py).code,
+                name,
+            )? {
+                return mode.bind(
+                    _py,
+                    method,
+                    Some(builtin_classes(_py).code),
+                    Some(self_bits),
+                    DescriptorCallPolicy::Required,
+                );
             }
             return Ok(None);
         }

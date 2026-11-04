@@ -613,9 +613,9 @@ with its path handling, and a pinned session's whole target use 14-15 us
 against 9.5-10 us for a checkout target.
 
 One policy decides retirement (`checkout_state_decision`); `tools/disk_guard.py`
-applies it through `assert_safe_to_delete` and `soft_retire` (section 2.9).
-The daily pass alone finally deletes validated retirements through
-`molt.file_deletion`:
+applies it through `assert_safe_to_delete`, then deletes an admitted root in
+place through `molt.file_deletion` under the root's exclusive retirement lock
+(section 2.9; the policy is in `docs/design/storage_authority.md`):
 
 - A root idle past `MOLT_CHECKOUT_STATE_MAX_AGE_DAYS` (default 30, Cargo's
   limit for locally recreatable data) is reclaimed whether its owner exists or
@@ -1336,7 +1336,7 @@ worktrees, which no root retirement reaches. Nothing on current code reads,
 renews or evicts them, so the daily GC (section 2.6) retires them inside the
 roots that stay: `molt.checkout_state.superseded_layout_paths` lists the frozen
 names (two directory levels of a target, never a profile's `deps`; two names
-in a build control), and `tools/disk_guard.py` soft-retires an entry once it is idle
+in a build control), and `tools/disk_guard.py` deletes an entry once it is idle
 past the protection window, no build lock is held below its root, and it holds
 the root's exclusive retirement lock, which every managed build holds shared
 for its whole run. That custody matters because a worktree that has not taken
@@ -1469,7 +1469,7 @@ The design extends `molt.checkout_state`; it adds no second authority.
    2026-10-21 inventory found 1,582 of 1,590 entries already idle for three
    days, while the 2026-10-28 inventory held 245 GiB. Three idle days bound
    regenerable scratch more tightly than Cargo's month for lasting build
-   products, while soft retirement adds seven recoverable days. This is a
+   products; an admitted root is deleted with no further grace. This is a
    retention choice from observed accumulation, not a measured reuse optimum.
 
    A constructor root, whose owner record binds and whose last-use stamp is
@@ -1481,9 +1481,9 @@ The design extends `molt.checkout_state`; it adds no second authority.
    The decision never lists the root, so it does not estimate the root's
    bytes; Cargo also computes disk usage only for size-based cleaning. A
    lock or guard marker below the root that no managed use declares is
-   outside this protocol, as raw Cargo is outside 2.6's managed custody;
-   soft retirement keeps such a root recoverable, and its final deletion
-   walks it completely.
+   outside this protocol, as raw Cargo is outside 2.6's managed custody.
+   A stamped root's deletion does not walk it: the managed use lock and the
+   guard markers whose coordinates cover the root are its live-reader checks.
 
    A pre-constructor root has no cooperating writer. A complete metadata
    walk observes every descendant's activity, bytes and held lock,
@@ -1511,8 +1511,8 @@ The design extends `molt.checkout_state`; it adds no second authority.
    collector does not execute that release. Unreadable markers preserve their
    attributable owner scope. Malformed-owner and incompletely inventoried
    roots stay. Apply reobserves activity and protection under the existing
-   exclusive state lock, then calls `soft_retire`; final deletion also
-   checks recursive activity and custody. Dry-run reports estimated bytes
+   exclusive state lock, then deletes the root through `molt.file_deletion`.
+   Dry-run reports estimated bytes
    for each selected walked root, and none for a stamped one, without
    changing either.
 
@@ -1647,24 +1647,28 @@ The design extends `molt.checkout_state`; it adds no second authority.
    final reference observation and publication also hold the family registries'
    external locks, nonblockingly for harvest.
    Raw writers are checked again for recursive activity before the rename.
-3. **Soft retirement.** `molt.checkout_state.soft_retire` renames a root into
-   `<owning root>/retired/<UTC date>/<encoded coordinate and generation>` with
-   one same-filesystem rename. The owning root is the artifact root for
-   artifact state and the checkout-family custody root for checkout evidence.
-   A small adjacent JSON sidecar records the original path, reason, retirement
-   timestamp and owner once, before the rename. A cross-device move is refused;
-   copying is never a fallback. The existing daily pass deletes a root only
-   seven days after its validated retirement timestamp, retaining locked or
-   protected roots. Payload mtimes cannot shorten this window. Recovery is a
-   rename back after preserving any replacement at the original path; a
-   leftover sidecar cannot delete the restored root. Persistent external lock
-   inodes stay in place. Nothing goes through the user's Trash.
+3. **Physical deletion** (HF-702). Admitted regenerable state is deleted in
+   place through `molt.file_deletion` under its exclusive retirement custody.
+   It is never renamed into a retention queue, copied or moved to the user's
+   Trash. The deletion primitive refuses a link or junction in the owning path
+   and checks fresh native mount facts before it unseals or recursively
+   deletes a directory. Persistent external lock inodes stay in place.
+
+   The replaced producer, `soft_retire`, renamed a root into
+   `<owning root>/retired/<UTC date>/` beside a JSON sidecar and deleted it
+   seven days later. On 2026-11-03 that backlog held 8,642 roots. Its records
+   keep a strict reader and no writer: the daily pass, the pressure pass and
+   the explicit `disk_guard.py --reclaim-retired` backlog pass delete a
+   validated regenerable retirement under the same ownership, guard, lock and
+   identity checks, with no second grace. Durable evidence and unproven
+   records stay and are reported. `docs/design/storage_authority.md` owns
+   this policy.
 
    Checkout state, superseded layouts and explicitly reviewed incremental
-   caches use this same primitive. Pressure retirement therefore moves bytes
-   without freeing volume space; admission must still measure actual headroom.
-   Guard incidents and whole integration receipts (including their gate-output
-   directories) enter retirement after seven idle days. A recent companion
+   caches use this same primitive, so pressure collection frees volume space
+   and checks actual free space after each deletion. Guard incidents and whole
+   integration receipts (including their gate-output directories) are
+   compacted into indexed evidence archives after seven idle days. A recent companion
    receipt or log directory keeps both, and the integration lock keeps receipts.
    Guard incidents stay while their canonical state has active custody. Explicit
    operator outputs outside known artifact/custody roots are not swept.
@@ -1702,14 +1706,14 @@ The design extends `molt.checkout_state`; it adds no second authority.
    their paths and each stream's bounded end; if the files cannot be
    prepared, its streams print whole. Keeping output never changes a
    verdict. Named records and gate runs survive at least 7 idle days in place,
-   then item 3's retirement window. Publishing a new incident or preparing a
+   then item 3's evidence compaction. Publishing a new incident or preparing a
    landing performs no pruning. The interim producer-side deletion rules and
    their retention constants are removed; the existing daily disk guard owns
    both retirement and final deletion.
 
 Cost: a scratch or evidence root writes one owner record once and refreshes
-one stamp at most once an hour (2.6 measured 1-15 us per stamp). Retirement
-is one `rename`; the daily pass already runs. A task harvest reads each
+one stamp at most once an hour (2.6 measured 1-15 us per stamp). Deletion of
+an admitted root needs no extra size census; the daily pass already runs. A task harvest reads each
 candidate text file once and checks it against the object store in one lazy
 `git cat-file --batch-check` stream per checkout, after resolving its object
 format once. It retains one at-most-1-MiB text buffer, the family's coordination snapshot and
@@ -1725,11 +1729,12 @@ separate observations. A failure writes one file instead of
 printing 34 KB into every caller.
 
 Proof: per kind, a fake-clock test that a used root survives and an idle or
-orphaned root retires; a test that soft retirement restores by rename; a
+orphaned root is deleted; a test that a historical retirement is deleted
+without a new grace while busy or unproven records stay; a test that a mounted
+root or descendant refuses deletion before unsealing; a
 harvest test with an independent oracle (a repository blob is skipped, a
 unique record is kept, payload retires, active/referenced/recent tasks stay);
-cross-device refusal, a used retirement's lock/protection and the seven-day
-retirement clock; a test that a failed gate's receipt names a file that
+a used retirement's lock/protection; a test that a failed gate's receipt names a file that
 holds its stderr; mutation checks for each rule; and the daily pass's wall
 time measured on the real artifact root.
 
@@ -2303,6 +2308,56 @@ enabled. Dependency images remain independent of editable compiler-source
 contents; a compiler edit must not require republishing that whole image.
 
 ## Managed Python images
+
+Development-image freshness observes a fresh isolated interpreter at `ensure`,
+including `lane start`. Publication writes `molt-python-interpreter.json` with
+the realized base interpreter's physical path and CPython version before full
+image capture. That file is installed image content, not an admission cache.
+The existing recipe still owns the requested runtime closure; full attestation
+owns the record's bytes. Freshness compares the live pair with both the record
+and recipe version. Missing records require replacement, never a current claim.
+Ordinary launch path selection retains its subprocess-free contract below.
+
+The publisher passes the realized full patch version to `uv sync --python`
+with downloads disabled, then verifies that uv created the selected physical
+interpreter binding. A path's `realpath()` alone is insufficient: in uv 0.13.6,
+[file and directory requests do not include a patch](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-types/src/request.rs#L469-L485).
+[UpgradePolicy::from_request](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-managed/src/managed.rs#L755-L779)
+therefore permits patch upgrades for those requests, while an exact patch
+request selects `Fixed`. The
+[managed-link selector](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-managed/src/managed.rs#L872-L883)
+returns no minor alias for `Fixed`; the
+[virtualenv producer](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-virtualenv/src/virtualenv.rs#L204-L241)
+uses that choice for both `home` and the launcher. Molt never edits uv's links
+or `pyvenv.cfg`. A missing or mismatched install names the found interpreter
+and `uv python install <patch>`; no download or patch fallback is permitted.
+
+An existing matching interpreter returns directly from
+[find_or_download](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-discovery/src/installation.rs#L174-L204);
+a minor request alone does not unconditionally move its link. On the fetch
+path, even `AlreadyAvailable` flows into
+[highest-patch link publication](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-discovery/src/installation.rs#L315-L364).
+`uv python install` also
+[reasserts highest-patch links](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-commands/src/install.rs#L720-L729),
+whose producer uses `replace_symlink`. These paths can retarget an existing
+alias; the historical invoking command is not established by this source audit.
+Image permanence therefore assumes that any subsequent provider operation may
+move the alias. Regression coverage moves it after publication, then checks
+both actual patch execution and canonical ensure freshness.
+
+Only canonical ensure replaces an interpreter-stale development generation.
+Under the existing checkout provisioner and address locks, it observes the
+interpreter before acquiring exclusive checkout-state retirement custody:
+guarded probes are themselves managed readers. Executable/configuration
+generation fences and selection validation remain active through acquisition;
+their file handles close before deletion. Live readers refuse replacement.
+Under that custody, `molt.file_deletion.delete_path` deletes the regenerable
+generation in place before rebuilding, following the
+[physical deletion policy](../storage_authority.md). No retirement record is
+written. Deletion failures refuse replacement with the primitive's error. Explicit
+`UV_PROJECT_ENVIRONMENT` selections remain caller-owned and refuse replacement.
+Malformed metadata and unrelated image corruption remain admission failures.
+Linux and Windows image behavior requires its own execution qualification.
 
 Managed images compile source on import rather than publishing caches for every
 installed and standard-library module at optimization levels 0, 1 and 2. The

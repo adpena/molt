@@ -64,8 +64,8 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
     (``molt.checkout_state.superseded_layout_paths``, design 56 section 2.8)
     under the same custody.
     Lane-owned and pre-constructor scratch under ``<root>/tmp`` uses
-    ``MOLT_SCRATCH_IDLE_DAYS`` (default three days) and the same soft
-    retirement. A lane root's last-use stamp decides it without a walk; a
+    ``MOLT_SCRATCH_IDLE_DAYS`` (default three days) and physical deletion.
+    A lane root's last-use stamp decides it without a walk; a
     pre-constructor root needs a complete walk, and complete walks resume
     across passes from a persisted cursor (HF-528). Existing control
     namespaces keep their rules; an open guard marker keeps only its own
@@ -119,7 +119,6 @@ from molt.custody_layout import (  # noqa: E402
     custody_root,
     disk_scratch_roots_of,
     git_directories,
-    StorageClass,
     storage_rule,
     Regenerable,
 )
@@ -136,7 +135,7 @@ from molt.checkout_state import (  # noqa: E402
     PROTECTED_TARGET_NAMES,
     RETIRED_DIR,
     RETIREMENT_RECORD_SUFFIX,
-    RETIREMENT_WINDOW_S,
+    INTEGRATION_EVIDENCE_IDLE_S,
     agent_evidence_idle_s,
     bound_checkout_owner,
     checkout_target_of,
@@ -155,7 +154,6 @@ from molt.checkout_state import (  # noqa: E402
     read_checkout_owner,
     read_soft_retirement,
     retention_limits,
-    soft_retire,
     session_target_dirs,
     target_build_control_dirs,
     WalkIncomplete,
@@ -188,7 +186,7 @@ ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
 CandidateKind = Literal[
     "checkout-state", "session-target", "lane", "quarantine", "cargo-target", "scratch"
 ]
-ReclaimOperation = Literal["gc", "pressure", "checkout-retirement"]
+ReclaimOperation = Literal["gc", "pressure", "checkout-retirement", "retired-backlog"]
 ReclaimPhase = Literal[
     "setup",
     "discovery",
@@ -632,7 +630,7 @@ def _retire_candidate(
     eligible: Callable[[Candidate, float], str | None],
     result: ReclaimResult,
 ) -> tuple[bool, str | None, str | None]:
-    """Reobserve under exclusive mutation, then soft-retire the root.
+    """Reobserve under exclusive mutation, then physically delete regenerable state.
 
     Ordinary cached candidates remain selection hints. Cooperating managed
     readers hold the same external lock; raw Cargo's profile locks are an
@@ -640,7 +638,9 @@ def _retire_candidate(
     """
     from molt.checkout_state import checkout_state_retirement
 
-    with checkout_state_retirement(candidate.path) as exclusive:
+    with checkout_state_retirement(
+        candidate.path, purged_root=candidate.path
+    ) as exclusive:
         if not exclusive:
             return False, None, "state-in-use"
         try:
@@ -667,16 +667,7 @@ def _retire_candidate(
         reason = eligible(current, now_fn())
         if reason is not None:
             return False, None, reason
-        owner = read_checkout_owner(current.path)
-        ok, error = _timed_retire(
-            current.path,
-            custody_root(owner_root),
-            reason=result.operation,
-            owner=str(owner.path if owner is not None else owner_root),
-            kind=owner.kind if owner is not None else "cargo-target",
-            now=now_fn(),
-            result=result,
-        )
+        ok, error = _timed_delete(current.path, owning_root=owner_root, result=result)
         return ok, None if ok else error, None
 
 
@@ -1048,10 +1039,14 @@ def discover_candidates(
     return candidates
 
 
-def _iter_dir(path: Path) -> list[Path]:
+def _iter_dir(path: Path, *, errors: list[str] | None = None) -> list[Path]:
     try:
         return sorted(path.iterdir())
-    except OSError:
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        if errors is not None:
+            errors.append(f"{path}: {error}")
         return []
 
 
@@ -1113,7 +1108,7 @@ class ReclaimResult:
     phase_elapsed_s: dict[ReclaimPhase, float] = field(default_factory=dict)
     # Sum repeated attempts at the same exact path without another inventory.
     deletion_elapsed_s: dict[str, float] = field(default_factory=dict)
-    retirement_elapsed_s: dict[str, float] = field(default_factory=dict)
+    # Preserved evidence archive addresses; regenerable state is deleted in place.
     retirements: dict[str, str] = field(default_factory=dict)
     # Per walk family: where its complete walks started and resume.
     walk_rotation: dict[str, dict] = field(default_factory=dict)
@@ -1124,13 +1119,12 @@ class ReclaimResult:
 
     def to_dict(self) -> dict:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "tool": "disk_guard",
             "operation": self.operation,
             "elapsed_s": self.elapsed_s,
             "phase_elapsed_s": self.phase_elapsed_s,
             "deletion_elapsed_s": self.deletion_elapsed_s,
-            "retirement_elapsed_s": self.retirement_elapsed_s,
             "retirements": self.retirements,
             "walk_rotation": self.walk_rotation,
             "root": self.root,
@@ -1165,32 +1159,6 @@ def _timed_delete(
     finally:
         key = str(path)
         result.deletion_elapsed_s[key] = result.deletion_elapsed_s.get(
-            key, 0.0
-        ) + _elapsed_since(started)
-
-
-def _timed_retire(
-    path: Path,
-    owning_root: Path,
-    *,
-    reason: str,
-    owner: str,
-    kind: StorageClass,
-    now: float,
-    result: ReclaimResult,
-) -> tuple[bool, str | None]:
-    started = time.monotonic()
-    try:
-        retired = soft_retire(
-            path, owning_root, reason=reason, owner=owner, kind=kind, now=now
-        )
-        result.retirements[str(path)] = str(retired.path)
-        return True, None
-    except (OSError, ValueError) as exc:
-        return False, str(exc)
-    finally:
-        key = str(path)
-        result.retirement_elapsed_s[key] = result.retirement_elapsed_s.get(
             key, 0.0
         ) + _elapsed_since(started)
 
@@ -1251,17 +1219,46 @@ def ensure_free(
             _write_log(resolved_root, result)
         return result
 
+    deadline = started + budget_s
     phase_started = time.monotonic()
     guards = _guard_protection(scope_roots)
+    walks = WalkRotation.load(resolved_root)
+    _collect_retired_roots(
+        scope_roots,
+        result,
+        env=env,
+        now=now,
+        apply=apply,
+        walks=walks,
+        guards=guards,
+        deadline=deadline,
+        free_bytes_fn=free_fn,
+        target_bytes=target,
+    )
+    result.walk_rotation = walks.report()
+    if apply:
+        try:
+            walks.publish()
+        except (OSError, ValueError) as error:
+            result.errors.append(f"{walks.record}: {error}")
+    result.phase_elapsed_s["retired-roots"] = _elapsed_since(phase_started)
+    free_now = free_fn() if apply else free_before
+    if free_now >= target or time.monotonic() >= deadline:
+        result.free_after = free_now
+        result.elapsed_s = _elapsed_since(started)
+        if log:
+            _write_log(resolved_root, result)
+        return result
+    phase_started = time.monotonic()
     candidates = discover_candidates(
-        resolved_root, cfg, roots=scope_roots, guards=guards
+        resolved_root, cfg, roots=scope_roots, guards=guards, measure_sizes=False
     )
     result.phase_elapsed_s["discovery"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
     plan = plan_reclaim(
         candidates,
-        free_bytes=free_before,
-        high_water_bytes=high_water,
+        free_bytes=free_now,
+        high_water_bytes=target,
         target_bytes=target,
         now=now,
         min_idle_s=cfg.min_idle_s,
@@ -1275,8 +1272,6 @@ def ensure_free(
 
     result.phase_elapsed_s["planning"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
-    deadline = time.monotonic() + budget_s
-    free_now = free_before
     for cand in plan.selected:
         if free_now >= target:
             break
@@ -1318,7 +1313,8 @@ def ensure_free(
             if not ok:
                 continue
         result.reclaimed.append(
-            {"path": str(cand.path), "kind": cand.kind, "est_bytes": max(0, cand.size)}
+            {"path": str(cand.path), "kind": cand.kind}
+            | ({"est_bytes": cand.size} if cand.size >= 0 else {})
         )
         free_now = free_fn() if apply else free_before
     result.phase_elapsed_s["retirement"] = _elapsed_since(phase_started)
@@ -1367,9 +1363,6 @@ def gc(
     result.phase_elapsed_s["setup"] = _elapsed_since(started)
     guards = _guard_protection(scope_roots)
     result.custody = guards.report()
-    # Byte estimates share one 30-second deadline; a partial size decides
-    # nothing.
-    size_deadline = time.monotonic() + 30.0
     # Each family of complete walks (scratch, retired scratch, agent
     # evidence, integration receipts) has its own walk budget and resumes
     # where the last applied pass stopped (HF-528).
@@ -1442,7 +1435,6 @@ def gc(
 
     def reclaim(planned: list[Candidate]) -> None:
         for cand in planned:
-            size = _dir_size(cand.path, size_deadline)
             if apply:
                 if not cand.path.exists():
                     continue  # A session target went with its checkout target.
@@ -1489,9 +1481,7 @@ def gc(
                 if not ok:
                     continue
             collected_norms.add(_norm(cand.path))
-            result.reclaimed.append(
-                {"path": str(cand.path), "kind": cand.kind, "est_bytes": size}
-            )
+            result.reclaimed.append({"path": str(cand.path), "kind": cand.kind})
 
     phase_started = time.monotonic()
     reclaim(collectable)
@@ -1543,7 +1533,6 @@ def gc(
             apply=apply,
             retired=collected_norms,
             protected=protected,
-            deadline=size_deadline,
             guards=guards,
         )
     result.phase_elapsed_s["superseded-layouts"] = _elapsed_since(phase_started)
@@ -1727,15 +1716,8 @@ def _collect_scratch(
                         assert_safe_to_delete(path, root, ())
                         size, kept = observe(recheck=True)
                         if kept is None:
-                            owner = bound_checkout_owner(path, root)
-                            ok, error = _timed_retire(
-                                path,
-                                custody_root(root),
-                                reason="scratch",
-                                kind="scratch",
-                                owner=str(owner.path if owner else root),
-                                now=now_fn(),
-                                result=result,
+                            ok, error = _timed_delete(
+                                path, owning_root=root, result=result
                             )
                             if not ok:
                                 result.errors.append(f"{path}: {error}")
@@ -1767,43 +1749,94 @@ def _collect_retired_roots(
     apply: bool,
     walks: WalkRotation,
     guards: _GuardProtection,
+    deadline: float | None = None,
+    max_roots: int | None = None,
+    free_bytes_fn: Callable[[], int] | None = None,
+    target_bytes: int | None = None,
 ) -> None:
-    """Only a validated retirement's clock can authorize final deletion."""
-    from molt.checkout_state import checkout_state_retirement
+    """Resolve historical retirements through current custody, without new grace.
+
+    Payload sizes do not authorize deletion and are not walked. A pass visits
+    at most ``max_roots`` records when supplied and stops between deletions at its deadline;
+    an individual deletion or required legacy activity walk may finish later.
+    The existing cursor advances over unknown/busy entries, so none starves
+    later roots. Unknown records and durable evidence remain explicit skips.
+    """
+    from molt.checkout_state import OWNER_RECORD, checkout_state_retirement
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
+    if deadline is None:
+        deadline = time.monotonic() + DEFAULT_ENSURE_BUDGET_S
     records: dict[str, tuple[Path, Path]] = {}
-    for owning_root in {custody_root(root) for root in scope_roots}:
+    for owning_root in sorted({custody_root(root) for root in scope_roots}):
         retired_dir = owning_root / RETIRED_DIR
         if retired_dir.is_symlink():
+            result.skipped.append(
+                {"path": str(retired_dir), "reason": "unproven-retirement"}
+            )
             continue
-        records.update(
-            (str(record), (owning_root, record))
-            for date in _iter_dir(retired_dir)
-            if not date.is_symlink() and date.is_dir()
-            for record in date.glob("*" + RETIREMENT_RECORD_SUFFIX)
-        )
-    for key in walks.order("retired-scratch", records):
+        for date in _iter_dir(retired_dir, errors=result.errors):
+            if date.is_symlink() or not date.is_dir():
+                result.skipped.append(
+                    {"path": str(date), "reason": "unproven-retirement"}
+                )
+                continue
+            for entry in _iter_dir(date, errors=result.errors):
+                # Include payloads without a sidecar and sidecars without a
+                # payload; absence never adopts an unknown directory as cache.
+                record = (
+                    entry
+                    if entry.name.endswith(RETIREMENT_RECORD_SUFFIX)
+                    else entry.with_name(entry.name + RETIREMENT_RECORD_SUFFIX)
+                )
+                records[str(record)] = owning_root, record
+    for index, key in enumerate(walks.order("retired-scratch", records)):
+        if (
+            max_roots is not None and index >= max_roots
+        ) or time.monotonic() >= deadline:
+            walks.defer("retired-scratch", key)
+            break
         owning_root, record = records[key]
         retirement = read_soft_retirement(record, owning_root)
-        if retirement is None or now - retirement.retired_at < RETIREMENT_WINDOW_S:
+        if retirement is None:
+            result.skipped.append(
+                {"path": str(record), "reason": "unproven-retirement"}
+            )
             continue
-        # Historical soft retirement mixed evidence with scratch. Evidence has
-        # no expiry: retain it until the explicit storage migration compacts it
-        # with an index. Only proven regenerable scratch reaches deletion.
         if not isinstance(storage_rule(retirement.kind).retention, Regenerable):
             result.skipped.append(
                 {"path": str(retirement.path), "reason": "durable-evidence"}
             )
             continue
+        if retirement.retired_at > now:
+            result.skipped.append(
+                {"path": str(retirement.path), "reason": "future-retirement"}
+            )
+            continue
+        try:
+            record_identity = record.lstat()
+            try:
+                identity = retirement.path.lstat()
+            except FileNotFoundError:
+                identity = None
+        except OSError as error:
+            result.errors.append(f"{record}: {error}")
+            continue
 
         def kept(
-            *,
-            integration_lock_owned: bool = False,
-            state_lock_owned: bool = False,
+            *, state_lock_owned: bool = False, integration_lock_owned: bool = False
         ) -> str | None:
             protected = _protected_paths(scope_roots, env)
-            if retirement.reason == "scratch":
+            owner = (
+                read_checkout_owner(retirement.path) if identity is not None else None
+            )
+            if (
+                identity is not None
+                and os.path.lexists(retirement.path / OWNER_RECORD)
+                and (owner is None or owner.kind != retirement.kind)
+            ):
+                return "invalid-owner"
+            if identity is not None and retirement.reason == "scratch":
                 try:
                     inventory = walks.spend(
                         "retired-scratch",
@@ -1819,15 +1852,12 @@ def _collect_retired_roots(
                     inventory.lock_held
                     or inventory.guards
                     or now - inventory.mtime < CHECKOUT_STATE_WINDOW_S
-                    or (
-                        not state_lock_owned
-                        and any(
-                            _region_locked(lock)
-                            for lock in checkout_state_lock_paths(retirement.original)
-                        )
-                    )
                 ):
                     return "lock-or-protection"
+            elif identity is not None and (
+                now - checkout_state_last_use(retirement.path) < CHECKOUT_STATE_WINDOW_S
+            ):
+                return "recent-use"
             held = (
                 (
                     guards if not state_lock_owned else _guard_protection(scope_roots)
@@ -1841,6 +1871,13 @@ def _collect_retired_roots(
                 or _root_lock_held(retirement.path, scope_roots)
                 or _root_lock_held(retirement.original, scope_roots)
                 or (
+                    not state_lock_owned
+                    and any(
+                        _region_locked(lock)
+                        for lock in checkout_state_lock_paths(retirement.original)
+                    )
+                )
+                or (
                     retirement.reason == "integration-receipt"
                     and not integration_lock_owned
                     and _region_locked(Path(retirement.owner) / "molt-integrate.lock")
@@ -1852,6 +1889,13 @@ def _collect_retired_roots(
         if reason is not None:
             result.skipped.append({"path": str(retirement.path), "reason": reason})
             continue
+        if (
+            free_bytes_fn is not None
+            and target_bytes is not None
+            and free_bytes_fn() >= target_bytes
+        ):
+            walks.defer("retired-scratch", key)
+            break
         if apply:
             with (
                 checkout_state_retirement(
@@ -1872,39 +1916,117 @@ def _collect_retired_roots(
                         )
                         continue
                     locks.callback(_release_file_lock, handle)
+                try:
+                    same_record = os.path.samestat(record_identity, record.lstat())
+                    try:
+                        current_identity = retirement.path.lstat()
+                    except FileNotFoundError:
+                        current_identity = None
+                    same_entry = (
+                        current_identity is None
+                        if identity is None
+                        else current_identity is not None
+                        and os.path.samestat(identity, current_identity)
+                    )
+                except OSError:
+                    same_record = same_entry = False
                 reason = (
                     "retirement-custody-changed"
                     if not exclusive
+                    or not same_record
+                    or not same_entry
                     or read_soft_retirement(record, owning_root) != retirement
                     else kept(
+                        state_lock_owned=True,
                         integration_lock_owned=retirement.reason
                         == "integration-receipt",
-                        state_lock_owned=True,
                     )
                 )
                 if reason is not None:
                     result.skipped.append(
-                        {
-                            "path": str(retirement.path),
-                            "reason": "retirement-custody-changed"
-                            if reason == "lock-or-protection"
-                            else reason,
-                        }
+                        {"path": str(retirement.path), "reason": reason}
                     )
                     continue
-                ok, error = _timed_delete(
-                    retirement.path, owning_root=owning_root, result=result
-                )
-                if not ok:
-                    result.errors.append(f"{retirement.path}: {error}")
-                    continue
+                if identity is not None:
+                    ok, error = _timed_delete(
+                        retirement.path, owning_root=owning_root, result=result
+                    )
+                    if not ok:
+                        result.errors.append(f"{retirement.path}: {error}")
+                        continue
                 try:
-                    record.unlink()
-                except OSError as exc:
-                    result.errors.append(f"{record}: {exc}")
+                    record.unlink(missing_ok=True)
+                except OSError as error:
+                    result.errors.append(f"{record}: {error}")
+                    if identity is None:
+                        continue
         result.reclaimed.append(
-            {"path": str(retirement.path), "kind": "expired-retirement"}
+            {
+                "path": str(record if identity is None else retirement.path),
+                "kind": retirement.kind,
+                "provenance": (
+                    "historical-retirement-metadata"
+                    if identity is None
+                    else "historical-retirement"
+                ),
+            }
         )
+
+
+def reclaim_retired(
+    *,
+    root: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    apply: bool = False,
+    max_roots: int = 128,
+    budget_s: float = DEFAULT_ENSURE_BUDGET_S,
+    now_fn: Callable[[], float] = time.time,
+    log: bool = True,
+) -> ReclaimResult:
+    """Preview/apply one resumable historical-backlog pass; no live inventory."""
+    import math
+
+    if type(max_roots) is not int or max_roots <= 0:
+        raise ValueError("retired backlog max_roots must be a positive integer")
+    if not math.isfinite(budget_s) or budget_s <= 0:
+        raise ValueError("retired backlog budget_s must be finite and positive")
+    started = time.monotonic()
+    environment = os.environ if env is None else env
+    resolved_root = resolve_root(root, env=environment)
+    scope_roots = reclaim_roots(resolved_root)
+    free_fn = _default_free_fn(resolved_root)
+    before = free_fn()
+    result = ReclaimResult(
+        operation="retired-backlog",
+        root=str(resolved_root),
+        triggered=True,
+        free_before=before,
+        free_after=before,
+        scope_roots=[str(path) for path in scope_roots],
+        mode="apply" if apply else "dry-run",
+    )
+    guards = _guard_protection(scope_roots)
+    result.custody = guards.report()
+    walks = WalkRotation.load(resolved_root)
+    _collect_retired_roots(
+        scope_roots,
+        result,
+        env=environment,
+        now=now_fn(),
+        apply=apply,
+        walks=walks,
+        guards=guards,
+        max_roots=max_roots,
+        deadline=started + budget_s,
+    )
+    result.walk_rotation = walks.report()
+    if apply:
+        walks.publish()
+    result.free_after = free_fn()
+    result.elapsed_s = _elapsed_since(started)
+    if log:
+        _write_log(resolved_root, result)
+    return result
 
 
 def _receipt_inventory(receipt: Path, deadline: float) -> tuple[int, float]:
@@ -2048,7 +2170,9 @@ def _collect_evidence(
         except (OSError, ValueError) as exc:
             result.errors.append(f"{receipt}: {exc}")
             continue
-        if now - newest < RETIREMENT_WINDOW_S or _is_protected(receipt, protected):
+        if now - newest < INTEGRATION_EVIDENCE_IDLE_S or _is_protected(
+            receipt, protected
+        ):
             continue
         if apply:
             from molt.file_locks import _try_acquire_file_lock, _release_file_lock
@@ -2063,7 +2187,7 @@ def _collect_evidence(
                 _, current_use = walks.spend(
                     "integration-receipts", key, partial(_receipt_inventory, receipt)
                 )
-                if now - current_use < RETIREMENT_WINDOW_S or _is_protected(
+                if now - current_use < INTEGRATION_EVIDENCE_IDLE_S or _is_protected(
                     receipt, _protected_paths(scope_roots, env)
                 ):
                     result.skipped.append(
@@ -2122,8 +2246,9 @@ def _collect_evidence(
                     ):
                         continue
                     found = record.stat()
-                    if now - found.st_mtime < RETIREMENT_WINDOW_S or _is_protected(
-                        record, protected
+                    if (
+                        now - found.st_mtime < INTEGRATION_EVIDENCE_IDLE_S
+                        or _is_protected(record, protected)
                     ):
                         continue
                     if not record.is_relative_to(custody_root(root)):
@@ -2215,7 +2340,6 @@ def _retire_superseded_layouts(
     apply: bool,
     retired: set[str],
     protected: Sequence[Path],
-    deadline: float,
     guards: _GuardProtection,
 ) -> None:
     """Retire layouts a later design replaced inside live roots (design 56, 2.8).
@@ -2253,9 +2377,6 @@ def _retire_superseded_layouts(
                 {
                     "path": str(path),
                     "kind": "superseded-layout",
-                    "est_bytes": _dir_size(path, deadline)
-                    if path.is_dir()
-                    else path.stat().st_size,
                 }
                 for path in candidates
             )
@@ -2270,9 +2391,6 @@ def _retire_superseded_layouts(
                 result.skipped.append({"path": str(root), "reason": "active-guard"})
                 continue
             for path in candidates:
-                size = (
-                    _dir_size(path, deadline) if path.is_dir() else path.stat().st_size
-                )
                 if not idle(path):
                     result.skipped.append(
                         {
@@ -2288,20 +2406,12 @@ def _retire_superseded_layouts(
                 except ValueError as error:
                     result.errors.append(str(error))
                     continue
-                ok, error = _timed_retire(
-                    path,
-                    custody_root(owner_root),
-                    reason="superseded-layout",
-                    kind="cargo-target",
-                    owner=str(root),
-                    now=now,
-                    result=result,
-                )
+                ok, error = _timed_delete(path, owning_root=owner_root, result=result)
                 if not ok:
                     result.errors.append(f"{path}: {error}")
                     continue
                 result.reclaimed.append(
-                    {"path": str(path), "kind": "superseded-layout", "est_bytes": size}
+                    {"path": str(path), "kind": "superseded-layout"}
                 )
 
 
@@ -2756,7 +2866,7 @@ def _print_result(result: ReclaimResult, *, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result.to_dict(), indent=2))
         return
-    verb = "retired" if result.mode == "apply" else "would retire"
+    verb = "reclaimed" if result.mode == "apply" else "would reclaim"
     print(
         f"disk_guard [{result.mode}] root={result.root} "
         f"free={_human(result.free_before)} triggered={result.triggered}"
@@ -3068,7 +3178,6 @@ def retire_cargo_incremental(
         ):
             raise ValueError("incremental inventory or custody changed since review")
         free_before = shutil.disk_usage(path).free
-        retirement = None
         if apply:
             # Recheck the exact open lock objects and namespace under the same
             # lease immediately before handing off to canonical durable removal.
@@ -3097,17 +3206,13 @@ def retire_cargo_incremental(
                 path, expected=metadata
             ) != DurableFileIdentity.from_stat_prefix(*root_entry[2:4]):
                 raise ValueError("incremental root identity changed before retirement")
-            retirement = soft_retire(
-                path,
-                root,
-                reason="cargo-incremental:" + digest,
-                owner=str(owner),
-                kind="cargo-target",
-            )
+            ok, error = delete_path(path, owning_root=root)
+            if not ok:
+                raise OSError(error)
         return {
             "operation": "retire-cargo-incremental",
             "applied": apply,
-            "retired_path": str(retirement.path) if retirement is not None else None,
+            "deleted": apply,
             "inventory_sha256": digest,
             **reviewed,
             "free_before": free_before,
@@ -3140,6 +3245,23 @@ def main(argv: list[str] | None = None) -> int:
         "MOLT_SCRATCH_IDLE_DAYS, a lane root's stamp and a legacy root's "
         "complete walk",
     )
+    ap.add_argument(
+        "--reclaim-retired",
+        action="store_true",
+        help="preview a bounded historical-retirement backlog pass; --apply deletes proven regenerable roots",
+    )
+    ap.add_argument(
+        "--max-roots",
+        type=int,
+        default=128,
+        help="maximum retired backlog entries per pass",
+    )
+    ap.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=DEFAULT_ENSURE_BUDGET_S,
+        help="retired backlog pass deadline, checked between atomic deletions",
+    )
     ap.add_argument("--dry-run", action="store_true", help="report only; never delete")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument(
@@ -3153,7 +3275,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--guard-receipt", type=Path)
     ap.add_argument("--inventory-sha256")
     ap.add_argument(
-        "--apply", action="store_true", help="apply reviewed incremental retirement"
+        "--apply",
+        action="store_true",
+        help="apply reviewed incremental or retired-backlog cleanup",
     )
     args = ap.parse_args(argv)
     if args.retire_cargo_incremental is not None:
@@ -3161,6 +3285,7 @@ def main(argv: list[str] | None = None) -> int:
             not args.root
             or not args.guard_receipt
             or args.gc
+            or args.reclaim_retired
             or args.check
             or args.ensure_free is not None
             or (args.apply and args.dry_run)
@@ -3185,8 +3310,31 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps(report, indent=2))
         return 0
+    if args.reclaim_retired:
+        if (
+            args.gc
+            or args.check
+            or args.ensure_free is not None
+            or args.guard_receipt
+            or args.inventory_sha256
+            or (args.apply and args.dry_run)
+        ):
+            ap.error(
+                "retired backlog cleanup cannot be combined with another operation"
+            )
+        try:
+            result = reclaim_retired(
+                root=args.root,
+                apply=args.apply,
+                max_roots=args.max_roots,
+                budget_s=args.budget_seconds,
+            )
+        except (OSError, ValueError) as error:
+            ap.error(str(error))
+        _print_result(result, as_json=args.json)
+        return int(bool(result.errors))
     if args.apply or args.guard_receipt or args.inventory_sha256:
-        ap.error("incremental options require --retire-cargo-incremental")
+        ap.error("apply requires --retire-cargo-incremental or --reclaim-retired")
 
     if args.check:
         results = selftest()

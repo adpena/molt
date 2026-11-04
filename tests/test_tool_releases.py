@@ -47,11 +47,11 @@ def test_repository_manifest_pins_every_host_asset_of_wasm_tools() -> None:
 
 def test_repository_manifest_pins_uv_for_every_managed_host() -> None:
     release = tool_releases.tool_release("uv", ROOT)
-    assert release.version == "0.13.5"
+    assert release.version == "0.13.6"
     assert release.executable == "uv"
-    assert release.provenance.release_id == 420219944
+    assert release.provenance.release_id == 424920657
     assert release.provenance.url == (
-        "https://api.github.com/repos/astral-sh/uv/releases/tags/0.13.5"
+        "https://api.github.com/repos/astral-sh/uv/releases/tags/0.13.6"
     )
     assert set(release.assets) == {
         f"{arch}-{system}"
@@ -68,7 +68,7 @@ def test_repository_manifest_pins_uv_for_every_managed_host() -> None:
         stem = f"uv-{arch}-{triples[system]}"
         suffix = "zip" if system == "windows" else "tar.gz"
         assert asset.url == (
-            f"https://github.com/astral-sh/uv/releases/download/0.13.5/{stem}.{suffix}"
+            f"https://github.com/astral-sh/uv/releases/download/0.13.6/{stem}.{suffix}"
         )
         assert asset.archive_member == (
             "uv.exe" if system == "windows" else f"{stem}/uv"

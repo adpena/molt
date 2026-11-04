@@ -247,9 +247,14 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
     let input = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "generic_loop_ownership".into(),
-        params: vec!["idx".into(), "value".into()],
-        param_types: Some(vec!["int".into(), "object".into()]),
+        params: vec!["value".into()],
+        param_types: None,
         ops: vec![
+            OpIR {
+                value: Some(0),
+                out: Some("idx".into()),
+                ..OpIR::new(OpKind::Const)
+            },
             OpIR {
                 args: Some(vec!["value".into()]),
                 out: Some("lst".into()),
@@ -275,10 +280,10 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
     };
     let plan = native_representation_plan_for_test(&input);
     let analysis = preanalyze_for_test(&input);
-    let mut pre = collect_pre_loop_defined_names(&input.ops, 1);
+    let mut pre = collect_pre_loop_defined_names(&input.ops, 2);
     pre.extend(input.params.iter().cloned());
     assert!(
-        scan_loop_hoistable_lists(&input.ops, 1, &pre, &plan)
+        scan_loop_hoistable_lists(&input.ops, 2, &pre, &plan)
             .1
             .contains("lst"),
         "the scanner-only fixture explicitly uses TIR-owned releases"
@@ -300,7 +305,7 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
         let mut state = ListIndexFastPathState::new(&roots);
         let preheader = builder.create_block();
         let (_, generic) = super::scan_loop_hoistable_lists(
-            &input.ops, 1, &pre, &plan, &mut state, preheader, &roots,
+            &input.ops, 2, &pre, &plan, &mut state, preheader, &roots,
         );
         assert_eq!(
             generic.contains("lst"),

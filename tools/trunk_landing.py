@@ -13,11 +13,20 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
-from tools.driver_errors import CandidateFailure, DriverError
-from tools.molt_dev_policy import GateConfig, SelectedGate
-from tools.proof_plan import CargoTargetAccess
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.driver_errors import CandidateFailure, DriverError  # noqa: E402
+from tools.molt_dev_policy import GateConfig, SelectedGate  # noqa: E402
+from tools.proof_plan import CargoTargetAccess  # noqa: E402
 
 SCHEMA = "molt.remote-landing.v1"
 HOST_SETTING = "MOLT_LANDING_GATE_HOST"

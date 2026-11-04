@@ -1784,6 +1784,170 @@ pub extern "C" fn molt_function_get_globals(func_bits: u64) -> u64 {
     })
 }
 
+/// CPython code_replace's complete keyword/type/error boundary. Metadata
+/// cloning keeps the original compiled entry, trampoline, lexical layout and
+/// frame identity; execution changes fail before allocating or publishing code.
+pub extern "C" fn molt_code_replace(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::native_arguments::{NativeArguments, bind_named_slots};
+        use crate::object::layout::{
+            CODE_REPLACE_FIELDS, CodeReplaceEffect, CodeReplaceField, CodeReplaceValue,
+            CodeReplacementMetadata,
+        };
+        use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
+        use num_traits::ToPrimitive;
+        let Some(call) = NativeArguments::read(py, "replace", args, kwargs) else {
+            return MoltObject::none().bits();
+        };
+        let Some(receiver) = call.receiver(py) else {
+            return MoltObject::none().bits();
+        };
+        let Some(source) = obj_from_bits(receiver)
+            .as_ptr()
+            .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_CODE })
+        else {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "replace requires a code object",
+            );
+        };
+        if !call.values().is_empty() {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "replace() takes no positional arguments",
+            );
+        }
+        let names = CODE_REPLACE_FIELDS
+            .each_ref()
+            .map(|spec| spec.name.bits(py));
+        if names.contains(&0) {
+            return MoltObject::none().bits();
+        }
+        let Some(bound) = bind_named_slots(
+            py,
+            "replace",
+            &[],
+            call.vector_keyword_view(),
+            &names,
+            0,
+            [None; 18],
+        ) else {
+            return MoltObject::none().bits();
+        };
+        let mut metadata = unsafe { CodeReplacementMetadata::from_code(source) };
+        // Clinic converts in declaration order, then code_replace_impl checks
+        // nonnegative integers in that same order, before constructing a clone.
+        let mut integers = [None; 18];
+        for (index, (spec, value)) in CODE_REPLACE_FIELDS.iter().zip(bound.iter()).enumerate() {
+            let Some(value) = *value else { continue };
+            match spec.value {
+                CodeReplaceValue::Int => {
+                    let error = format!(
+                        "'{}' object cannot be interpreted as an integer",
+                        type_name(py, obj_from_bits(value))
+                    );
+                    let Some(number) =
+                        crate::builtins::numbers::index_bigint_from_obj(py, value, &error)
+                    else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(number) = number.to_i32() else {
+                        return raise_exception::<_>(
+                            py,
+                            BuiltinExc::OverflowError,
+                            "Python int too large to convert to C int",
+                        );
+                    };
+                    integers[index] = Some(number);
+                }
+                kind => {
+                    let (expected, class) = match kind {
+                        CodeReplaceValue::Bytes => ("bytes", builtin_classes(py).bytes),
+                        CodeReplaceValue::Tuple => ("tuple", builtin_classes(py).tuple),
+                        CodeReplaceValue::String => ("str", builtin_classes(py).str),
+                        CodeReplaceValue::Int => unreachable!(),
+                    };
+                    if !crate::isinstance_runtime(py, value, class).unwrap_or(false) {
+                        if exception_pending(py) {
+                            return MoltObject::none().bits();
+                        }
+                        let got = if obj_from_bits(value).is_none() {
+                            std::borrow::Cow::Borrowed("None")
+                        } else {
+                            type_name(py, obj_from_bits(value))
+                        };
+                        return raise_exception::<_>(
+                            py,
+                            BuiltinExc::TypeError,
+                            &format!(
+                                "replace() argument '{}' must be {}, not {}",
+                                spec.name.as_str(),
+                                expected,
+                                got
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        for (spec, number) in CODE_REPLACE_FIELDS.iter().zip(integers) {
+            if number.is_some_and(|number| number < 0) {
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::ValueError,
+                    &format!("{} must be a positive integer", spec.name.as_str()),
+                );
+            }
+        }
+        for (index, (spec, value)) in CODE_REPLACE_FIELDS.iter().zip(bound.iter()).enumerate() {
+            let Some(value) = *value else { continue };
+            if spec.effect == CodeReplaceEffect::Execution {
+                let Ok(current) = (unsafe { spec.field.read(py, source) }) else {
+                    return MoltObject::none().bits();
+                };
+                let normalized = integers[index].map_or(value, |number| {
+                    MoltObject::from_int(i64::from(number)).bits()
+                });
+                let same =
+                    compare_object_eq_bool(py, obj_from_bits(current), obj_from_bits(normalized));
+                dec_ref_bits(py, current);
+                match same {
+                    CompareBoolOutcome::True => continue,
+                    CompareBoolOutcome::Error => return MoltObject::none().bits(),
+                    CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
+                }
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::TypeError,
+                    &format!(
+                        "code.replace() cannot change {}: compiled code has no CPython bytecode or interpreter frame; dynamic execution is unsupported (spec 0216)",
+                        spec.name.as_str()
+                    ),
+                );
+            }
+            match spec.field {
+                CodeReplaceField::Filename => metadata.filename = value,
+                CodeReplaceField::Name => metadata.name = value,
+                CodeReplaceField::Qualname => metadata.qualname = value,
+                CodeReplaceField::Firstlineno => {
+                    metadata.firstlineno =
+                        i64::from(integers[index].expect("validated integer metadata"))
+                }
+                _ => unreachable!("execution fields were refused above"),
+            }
+        }
+        let clone =
+            unsafe { crate::object::builders::clone_code_obj_with_metadata(py, source, metadata) };
+        if clone.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(clone).bits()
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_new(
     filename_bits: u64,
@@ -1819,8 +1983,8 @@ pub extern "C" fn molt_code_new(
                 return raise_exception::<_>(_py, BuiltinExc::TypeError, "code name must be str");
             }
         }
-        if !crate::object::builders::acyclic_slot_edge(
-            crate::object::heap_kinds_generated::HeapAcyclicSlot::CodeLinetable,
+        if !crate::object::builders::code_metadata_slot_edge(
+            crate::object::layout::CodeMetadataSlot::Linetable,
             linetable_bits,
         ) {
             return raise_exception::<_>(
@@ -1863,8 +2027,8 @@ pub extern "C" fn molt_code_new(
             varnames_bits = MoltObject::from_ptr(tuple_ptr).bits();
             varnames_owned = true;
         } else {
-            if !crate::object::builders::acyclic_slot_edge(
-                crate::object::heap_kinds_generated::HeapAcyclicSlot::CodeVarnames,
+            if !crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Varnames,
                 varnames_bits,
             ) {
                 return raise_exception::<_>(
@@ -1887,8 +2051,8 @@ pub extern "C" fn molt_code_new(
             names_bits = MoltObject::from_ptr(tuple_ptr).bits();
             names_owned = true;
         } else {
-            if !crate::object::builders::acyclic_slot_edge(
-                crate::object::heap_kinds_generated::HeapAcyclicSlot::CodeNames,
+            if !crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Names,
                 names_bits,
             ) {
                 if varnames_owned {

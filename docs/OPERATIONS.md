@@ -38,7 +38,9 @@ output-layout authority and records their physical identities in provisioning
 evidence; operator shell exports are unnecessary.
 
 Windows launch uses CIM `Win32_Process.Create`; POSIX launch creates a new
-session. A host-wide OS file lock excludes competing trunk workers. The worker
+session; a WSL gate guest uses the `wsl-session` launcher, whose `wsl.exe` client
+lives exactly as long as the worker because WSL stops an instance once its last
+client exits (see [the trunk loop design](design/trunk_loop.md)). A host-wide OS file lock excludes competing trunk workers. The worker
 uses the existing detached-execution waiter for proof-driver lifetime and
 managed-state leases; an unresolved child retains custody without a terminal
 completion record. The worker
@@ -610,6 +612,12 @@ Reclaim through the existing owners:
   plans eligible build-state reclamation. Review its scope before applying.
   A successful plan or collector run does not admit the next build: remeasure
   the actual output filesystem through the capacity authority.
+- `tools/disk_guard.py --root <artifact-root> --reclaim-retired --dry-run --json`
+  previews one bounded pass over the historical `retired/` backlog. Repeat
+  with `--apply` to delete proven regenerable roots; `--max-roots` and
+  `--budget-seconds` bound each pass, and the next pass resumes after the last
+  examined entry. Unproven records and durable evidence stay
+  ([storage authority](design/storage_authority.md)).
 - `tools/molt_cache_prune.py --cache-dir <cache-root> --max-gb <budget> --dry-run`
   plans cache retention. Protected legacy publishers, held readers and
   installation state remain protected; an empty plan is not permission for

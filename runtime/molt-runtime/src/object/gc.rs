@@ -1083,16 +1083,25 @@ pub(crate) unsafe fn gc_track_dict(py: &PyToken<'_>, ptr: *mut u8) {
 
 /// Track only the newly published references, before releasing displaced edges.
 /// This is independent of dictionary size and shares the collector's child law.
-pub(crate) unsafe fn gc_track_dict_references(py: &PyToken<'_>, ptr: *mut u8, bits: &[u64]) {
-    if !unsafe { gc_is_tracked(ptr) }
-        && bits
+pub(crate) unsafe fn gc_track_owned_references(py: &PyToken<'_>, ptr: *mut u8, bits: &[u64]) {
+    let code = super::heap_track_projection(unsafe { object_type_id(ptr) })
+        == Some(super::HeapTrackProjection::CodeDynamic);
+    if code
+        && !bits
             .iter()
             .copied()
-            .any(super::heap_lifecycle::value_requires_tracking)
+            .any(super::heap_lifecycle::code_metadata_requires_tracking)
     {
-        unsafe {
-            gc_track_dict(py, ptr);
-        }
+        return;
+    }
+    if !unsafe { gc_is_tracked(ptr) }
+        && (code
+            || bits
+                .iter()
+                .copied()
+                .any(super::heap_lifecycle::value_requires_tracking))
+    {
+        gc_admit_membership(py, ptr);
     }
 }
 
@@ -1170,7 +1179,13 @@ unsafe fn reproject_reachable_containers(
 #[inline]
 pub(crate) unsafe fn gc_track_if_cyclic(py: &PyToken<'_>, ptr: *mut u8, type_id: u32) {
     let projection = super::heap_track_projection(type_id);
-    if matches!(projection, None | Some(super::HeapTrackProjection::Never)) {
+    if matches!(
+        projection,
+        None | Some(super::HeapTrackProjection::Never | super::HeapTrackProjection::CodeDynamic)
+    ) {
+        // Exact code metadata stays outside GC accounting, like the former
+        // atomic code path. Publication of a mutable child admits and accounts
+        // the code object exactly once through gc_track_owned_references.
         return;
     }
     if projection == Some(super::HeapTrackProjection::NativeSubtype)
@@ -1187,8 +1202,8 @@ pub(crate) unsafe fn gc_track_if_cyclic(py: &PyToken<'_>, ptr: *mut u8, type_id:
     if projection == Some(super::HeapTrackProjection::DictDynamic)
         && crate::object::ops_sys::runtime_target_minor(py) < 14
     {
-        // Count the allocation once even while the empty dictionary is
-        // untracked. Insertions promote it without recounting; deallocation
+        // Count allocation while an empty dictionary is untracked.
+        // Insertions promote it without recounting; deallocation
         // retires this allocation independently of current membership.
         unsafe { gc_account_allocation(crate::runtime_state(py), ptr) };
         return;

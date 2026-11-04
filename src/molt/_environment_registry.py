@@ -872,7 +872,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_AGENT_EVIDENCE_IDLE_DAYS",
       "output_neutral": false,
       "owner": "src/molt/checkout_state.py",
-      "summary": "Days a terminal coordination task must remain unused before the daily disk guard harvests its payload through soft retirement. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window.",
+      "summary": "Days a terminal coordination task must remain unused before the daily disk guard compacts its payload into an indexed evidence archive. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window.",
       "values": []
     },
     {
@@ -4387,6 +4387,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "developer",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_LANDING_GATE_HOST",
+      "output_neutral": false,
+      "owner": "tools/trunk_landing.py",
+      "summary": "Opt-in remote landing gates: the inventory host name (tools/cross_hosts.toml) on which the Mac landing runner executes the selected gate cohorts; queue state, the merge and the push stay on the Mac. Unset runs every gate locally.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "",
       "kind": "int",
@@ -5826,7 +5836,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_SCRATCH_IDLE_DAYS",
       "output_neutral": false,
       "owner": "src/molt/checkout_state.py",
-      "summary": "Days lane-owned or untracked artifact-root scratch may remain unused before daily soft retirement. A removed lane owner permits retirement after two hours. Recursive activity, locks, open guard markers and protected paths keep scratch; incomplete inventories defer collection. Must cover the two-hour protection window.",
+      "summary": "Days lane-owned or untracked artifact-root scratch may remain unused before the daily disk guard deletes it. A removed lane owner permits deletion after two hours. Recursive activity, locks, open guard markers and protected paths keep scratch; incomplete inventories defer collection. Must cover the two-hour protection window.",
       "values": []
     },
     {

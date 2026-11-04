@@ -1,7 +1,7 @@
 use crate::tir::types::TirType;
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ScalarKind {
     Int,
     Bool,
@@ -72,6 +72,36 @@ pub enum Repr {
 }
 
 impl Repr {
+    /// Project a proven representation into a machine-carrier type. Semantic
+    /// annotations may retain boxed reference information, but only a raw
+    /// representation fact can select a machine scalar. All ABI and SSA
+    /// projections use this exhaustive decision.
+    pub fn carrier_type(self, semantic: &TirType) -> TirType {
+        match self {
+            Self::RawI64Safe | Self::RawI64FullDeopt => TirType::I64,
+            Self::Bool => TirType::Bool,
+            Self::FloatUnboxed => TirType::F64,
+            Self::Never | Self::MaybeBigInt | Self::DynBox => match semantic {
+                TirType::I64 | TirType::F64 | TirType::Bool | TirType::Never => TirType::DynBox,
+                TirType::None
+                | TirType::Str
+                | TirType::Bytes
+                | TirType::List(_)
+                | TirType::Dict(_, _)
+                | TirType::Set(_)
+                | TirType::Tuple(_)
+                | TirType::Iterator(_)
+                | TirType::Box(_)
+                | TirType::DynBox
+                | TirType::UserClass(_)
+                | TirType::Func(_)
+                | TirType::BigInt
+                | TirType::Ptr(_)
+                | TirType::Union(_) => semantic.clone(),
+            },
+        }
+    }
+
     /// Conservative representation floor for a semantic type, including Python
     /// annotations that admit subclasses. No semantic type alone authorizes a
     /// raw scalar carrier; value-keyed producer/range proofs raise this floor.
@@ -127,6 +157,10 @@ impl Repr {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "repr/carrier_tests.rs"]
+mod carrier_tests;
 
 #[cfg(test)]
 mod tests {

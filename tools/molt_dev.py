@@ -593,21 +593,19 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
     if env.get("MOLT_VENV"):
         return venv_exec.resolve_venv(repo_root=repo, env=env)
     from molt import checkout_provisioning
-    from molt.dx import DxConfigError, DxProject
-    from molt.source_build_environment_selection import (
-        read_development_environment_selection,
-    )
+    from molt.dx import DxConfigError
 
     try:
-        if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
-            selected = venv_exec.resolve_venv(repo_root=repo, env=env)
-            return read_development_environment_selection(
-                selected, repo_root=repo, groups=DxProject(repo).dependency_groups()
-            ).root
         spec = checkout_provisioning.checkout_input(
             "uv-environment", repo, env, guard_source_root=_COMMANDS.repo_root
         )
         if not checkout_provisioning.declares(spec):
+            if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
+                raise DriverError(
+                    "managed development image refused: explicit "
+                    f"UV_PROJECT_ENVIRONMENT={env['UV_PROJECT_ENVIRONMENT']} "
+                    f"has no declared Python project at {repo}"
+                )
             return None
         return checkout_provisioning.ensure_input(spec).environment_root
     except (

@@ -247,7 +247,7 @@ def test_uv_project_env_real_command_exit_status_propagates(
     image = materialize_development_environment(
         project,
         tmp_path / "artifacts",
-        python=f"{sys.version_info.major}.{sys.version_info.minor}",
+        python=".".join(map(str, sys.version_info[:3])),
         groups=dx.DxProject(project).dependency_groups(),
         runnable=True,
     )

@@ -542,7 +542,7 @@ fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
 }
 
 #[test]
-fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() {
+fn dead_op_elim_preserves_annotation_only_parameter_arithmetic() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -563,14 +563,12 @@ fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() 
     };
 
     eliminate_dead_ops(&mut ir);
-
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter().all(|op| op.kind != molt_ir::OpKind::Add),
-        "typed scalar facts, not transport hints, should prove unused int arithmetic removable: {ops:?}"
+        ops.iter().any(|op| op.kind == molt_ir::OpKind::Add),
+        "an annotated operand may call Python code or raise: {ops:?}"
     );
-    assert_eq!(ops.len(), 1);
-    assert_eq!(ops[0].kind, molt_ir::OpKind::RetVoid);
+    assert_eq!(ops.last().unwrap().kind, molt_ir::OpKind::RetVoid);
 }
 
 #[test]

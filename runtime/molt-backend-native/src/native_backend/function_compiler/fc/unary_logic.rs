@@ -50,12 +50,18 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     };
     let op_prefers_bool_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Bool)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Bool)
     };
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -199,21 +205,18 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_float_lane(op) {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let src_f = float_value_for(&mut *builder, vars, representation_plan, &args[0])
-                    .unwrap_or_else(|| {
-                        let val = var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            &mut *sealed_blocks,
-                            vars,
-                            &args[0],
-                            representation_plan,
-                        )
-                        .expect("Value not found");
-                        builder.ins().bitcast(types::F64, MemFlagsData::new(), *val)
-                    });
+                let src_f = float_value_for_mixed(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    vars,
+                    representation_plan,
+                    representation_plan
+                        .numeric_operand(&args[0])
+                        .expect("proven unary float operand"),
+                );
                 let neg_f = builder.ins().fneg(src_f);
                 if op
                     .out
@@ -339,21 +342,18 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
         OpKind::Pos | OpKind::UnaryPos => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_float_lane(op) {
-                let src_f = float_value_for(&mut *builder, vars, representation_plan, &args[0])
-                    .unwrap_or_else(|| {
-                        let val = var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            &mut *sealed_blocks,
-                            vars,
-                            &args[0],
-                            representation_plan,
-                        )
-                        .expect("Value not found");
-                        builder.ins().bitcast(types::F64, MemFlagsData::new(), *val)
-                    });
+                let src_f = float_value_for_mixed(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    vars,
+                    representation_plan,
+                    representation_plan
+                        .numeric_operand(&args[0])
+                        .expect("proven unary float operand"),
+                );
                 if op
                     .out
                     .as_ref()

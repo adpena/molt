@@ -124,12 +124,7 @@ pub(super) fn emit_tir_op<'c, 'a>(
         (_, OpCode::Pos) => {
             // Unary plus is identity. Copy the MLIR Value directly.
             if !op.operands.is_empty() && !op.results.is_empty() {
-                let val = *value_map.get(&op.operands[0]).ok_or_else(|| {
-                    format!(
-                        "TIR ValueId %{} not found in MLIR value map",
-                        op.operands[0].0
-                    )
-                })?;
+                let val = resolve_value(value_map, op.operands[0])?;
                 value_map.insert(op.results[0], val);
             }
         }
