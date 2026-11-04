@@ -631,8 +631,40 @@ def resolve_python_interpreter(
         )
     attempted = "; ".join(failures) if failures else "no candidates"
     raise PythonInterpreterError(
-        f"no verified CPython {request.selector} command available ({attempted})"
+        f"no verified CPython {request.selector} command available ({attempted}); "
+        f"run `uv python install {request.selector}`"
     )
+
+
+_EXACT_RELEASE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+
+
+def target_release_request(
+    target_python: TargetPythonVersion, value: str | None = None
+) -> PythonInterpreterRequest:
+    """The exact CPython release that serves an admitted target.
+
+    A dotted patch in ``value`` is exact. Otherwise the target's pinned source
+    release (``CPYTHON_RELEASES``) is the release, never whatever patch a uv
+    minor link names today (HF-760, HF-726).
+    """
+    require_supported_target_python(target_python)
+    if target_python.release != "final":
+        raise PythonInterpreterError(
+            f"target Python {target_python.short} pins a {target_python.release} "
+            "release; an exact interpreter needs a final release"
+        )
+    micro = target_python.micro
+    raw = "" if value is None else value.strip()
+    if _EXACT_RELEASE.fullmatch(raw):
+        request = parse_python_interpreter_request(raw)
+        if (request.major, request.minor) != target_python.feature_version:
+            raise PythonInterpreterError(
+                f"CPython {raw} does not serve target Python {target_python.short}"
+            )
+        assert request.micro is not None
+        micro = request.micro
+    return PythonInterpreterRequest(target_python.major, target_python.minor, micro)
 
 
 def resolve_target_python(
