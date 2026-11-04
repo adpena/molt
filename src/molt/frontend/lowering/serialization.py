@@ -756,7 +756,8 @@ class SerializationMixin(
                 publication := function_metadata.get(function["name"], {}).get(
                     "source_module_publication"
                 )
-            ) is not None
+            )
+            is not None
         }
         publish_frame_locations(
             funcs_json, module_code_symbol=module_init_symbol or "molt_main"

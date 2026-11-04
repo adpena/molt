@@ -2273,6 +2273,10 @@ mod tests {
                 crate::FunctionReturnAbi::Void,
             );
             let mut attrs = AttrDict::new();
+            attrs.insert(
+                "exception_edge".into(),
+                AttrValue::Int(super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
+            );
             if let Some(value) = value {
                 attrs.insert("value".into(), value);
             }
@@ -2311,6 +2315,14 @@ mod tests {
                     func.label_id_map.extend(labels);
                     let mut attrs = AttrDict::new();
                     attrs.insert("value".into(), AttrValue::Int(77));
+                    if opcode == OpCode::CheckException {
+                        attrs.insert(
+                            "exception_edge".into(),
+                            AttrValue::Int(
+                                super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                            ),
+                        );
+                    }
                     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
                     entry.ops.push(TirOp {
                         origin: None,
@@ -2369,6 +2381,14 @@ mod tests {
             );
             let mut attrs = AttrDict::new();
             attrs.insert("value".into(), AttrValue::Int(77));
+            if opcode == OpCode::CheckException {
+                attrs.insert(
+                    "exception_edge".into(),
+                    AttrValue::Int(
+                        super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                    ),
+                );
+            }
             func.blocks
                 .get_mut(&func.entry_block)
                 .unwrap()
@@ -2593,6 +2613,9 @@ mod tests {
     fn capture_transfer(opcode: OpCode, label: i64, operands: Vec<ValueId>) -> TirOp {
         let mut op = capture_op(opcode, operands, vec![]);
         op.attrs.insert("value".into(), AttrValue::Int(label));
+        if opcode == OpCode::CheckException {
+            op.set_exception_edge_kind(super::super::op_kinds_generated::ExceptionEdgeKind::Origin);
+        }
         op
     }
 

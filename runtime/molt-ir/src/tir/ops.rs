@@ -1020,7 +1020,15 @@ mod tests {
             opcode: OpCode::CheckException,
             operands: vec![ValueId(7), ValueId(8)],
             results: vec![],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(90))]),
+            attrs: AttrDict::from([
+                ("value".into(), AttrValue::Int(90)),
+                (
+                    "exception_edge".into(),
+                    AttrValue::Int(
+                        super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                    ),
+                ),
+            ]),
             source_span: Some((10, 20)),
         };
         let mut observation = original.clone();
