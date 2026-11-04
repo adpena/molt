@@ -164,6 +164,8 @@ def test_guest_packages_install_only_with_the_owner_approval(approved):
 
 def test_guest_packages_script_installs_only_missing_packages(tmp_path):
     """Run the script with fake dpkg-query and apt-get: present packages stay untouched."""
+    from tests.process_guard_common import run_custody_subject_process
+
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "apt.log"
@@ -176,14 +178,15 @@ def test_guest_packages_script_installs_only_missing_packages(tmp_path):
     )
     for tool in bin_dir.iterdir():
         tool.chmod(0o755)
-    completed = subprocess.run(
-        ["sh", "-c", trunk_loop.wsl_packages_script()],
+    completed = run_custody_subject_process(
+        ["sh", "-s"],
+        input=trunk_loop.wsl_packages_script(),
         env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
         capture_output=True,
         text=True,
-        check=True,
         encoding="utf-8",
     )
+    assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"installed": "cmake udev"}
     assert log.read_text(encoding="utf-8").splitlines() == [
         "update",
