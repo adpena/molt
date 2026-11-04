@@ -966,8 +966,19 @@ function (HF-573) or skip the stdlib (HF-572).
   fire. MemorySSA builds on the function's dominator tree. Sources:
   https://llvm.org/docs/NewPassManager.html, https://llvm.org/docs/Remarks.html,
   https://llvm.org/docs/MemorySSA.html.
+- *TScert.* [F] An untrusted producer proposes the type of every expression,
+  and an untrusted search proposes a certificate. A checker whose soundness is
+  proved in Lean validates the certificate, and the checker that decides
+  acceptance is the code the theorem is about. Its lead example, `xs[n - 1]`
+  after `xs.pop()`, is HF-204's position-blind length fact. Its license reserves
+  the code against machine-learning use: cite the design, do not copy code.
+  Source: https://github.com/cristianoc/TScert.
 
-**Adopt.** [I] Declare purity per op in `op_kinds.toml`, and make
+**Adopt.** [I] Treat a fact that removes a safety check (`bce_safe`, an
+immediate or immortal word that skips refcounting, a guard-free rewrite) as an
+untrusted claim. A small checker in the IR verifier validates it before
+lowering consumes it, with its model in `formal/lean/MoltTIR` (TScert's
+producer/checker split). Declare purity per op in `op_kinds.toml`, and make
 `gen_op_kinds` reject a rewrite on an impure op that has no type guard
 (HF-204's `And(x, true)`). Hold proofs such as `bce_safe` as invalidated
 analyses, not op attributes. Fold Python integers with arbitrary-precision or

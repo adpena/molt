@@ -452,32 +452,38 @@ def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> N
         lanes.cmd_lane_start(_args(family, slug="feature"))
 
 
-@pytest.mark.parametrize("selection", ["green", "absent", "override"])
-def test_lane_start_defaults_to_last_green_with_explicit_override(
+@pytest.mark.parametrize("selection", ["behind", "current", "absent", "override"])
+def test_lane_start_bases_on_fetched_main_and_reports_last_green(
     family: Path, capsys, selection: str
 ) -> None:
+    """HF-767: a stale last green never becomes the branch point."""
     from tools.molt_dev_queue import LAST_GREEN_REF
 
     main = family / "molt-src"
-    base = _ref(main, "refs/remotes/origin/main")
+    old = _ref(main, "refs/remotes/origin/main")
     head = _commit_file(main, "new-main.txt", "unqualified\n", "new main")
     _git(main, "push", "-q", "origin", "main")
-    if selection != "absent":
-        _git(main, "update-ref", LAST_GREEN_REF, base)
+    if selection in ("behind", "override"):
+        _git(main, "update-ref", LAST_GREEN_REF, old)
+    elif selection == "current":
+        _git(main, "update-ref", LAST_GREEN_REF, head)
     args = _args(
-        family, slug="green-base", base=head if selection == "override" else None
+        family, slug="main-base", base=old if selection == "override" else None
     )
     assert lanes.cmd_lane_start(args) == EXIT_OK
-    record = _record(family, "green-base")
-    expected = base if selection == "green" else head
+    record = _record(family, "main-base")
+    expected = old if selection == "override" else head
     assert record["lane"]["base_commit"] == expected
-    assert _ref(main, "refs/heads/lane/green-base") == expected
+    assert _ref(main, "refs/heads/lane/main-base") == expected
     output = capsys.readouterr()
     if selection == "absent":
-        assert LAST_GREEN_REF + " is absent" in output.err
-        assert "starting from origin/main" in output.err
-    elif selection == "green":
-        assert LAST_GREEN_REF in output.err
+        assert f"{LAST_GREEN_REF} is absent" in output.err
+    elif selection == "current":
+        assert f"{LAST_GREEN_REF} is origin/main" in output.err
+    else:
+        assert f"origin/main is 1 commit(s) past {LAST_GREEN_REF} ({old})" in (
+            output.err
+        )
 
 
 def test_a_lane_start_that_cannot_record_leaves_no_worktree_or_branch(
