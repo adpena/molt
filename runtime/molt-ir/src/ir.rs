@@ -2099,6 +2099,8 @@ mod json_parse_tests {
     fn op_ir_serde_json_roundtrip_uses_canonical_field_parser() {
         let op = OpIR {
             kind: crate::OpKind::Nop,
+            exception_edge: None,
+            exception_source: None,
             value: Some(7),
             f_value: Some(1.25),
             s_value: Some("symbol".to_string()),

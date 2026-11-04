@@ -87,15 +87,31 @@ def publish_frame_locations(
     declarations: dict[str, tuple[dict[str, Any], int]] = {}
     for function in functions:
         definitions = {op["out"]: op for op in function["ops"] if op.get("out")}
+        reserved = set(definitions) | set(function.get("params", ()))
+        tables: dict[int, dict[str, Any]] = {}
         for op in function["ops"]:
             if op["kind"] != WireKinds.CODE_SLOT_SET:
                 continue
             code = definitions[op["args"][0]]
             if code["kind"] != WireKinds.CODE_NEW:
                 raise ValueError("compiled code slot must publish its code constructor")
-            table = definitions[code["args"][3]]
+            # Constants are shared by frontend CSE. In particular this None
+            # also supplies varargs/defaults and must never become table bytes.
+            table_name = f"__molt_locations_{len(tables)}"
+            while table_name in reserved:
+                table_name += "_"
+            reserved.add(table_name)
+            table: dict[str, Any] = {"kind": WireKinds.CONST_BYTES, "out": table_name}
+            code["args"] = list(code["args"])
+            code["args"][3] = table_name
+            tables[id(code)] = table
             first_line = definitions[code["args"][2]].get("value", 0)
             declarations[op["s_value"]] = (table, first_line)
+        function["ops"] = [
+            inserted
+            for op in function["ops"]
+            for inserted in ([tables[id(op)], op] if id(op) in tables else [op])
+        ]
 
     owners: dict[str, str] = {}
     sites: dict[str, set[SourcePosition]] = {owner: set() for owner in declarations}

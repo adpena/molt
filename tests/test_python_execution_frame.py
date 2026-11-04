@@ -80,6 +80,21 @@ def test_multiline_frame_reads_publish_the_expression_position():
     assert (2, 5, 4, 5) in published, "a pure return still publishes its terminal range"
 
 
+def test_location_tables_do_not_replace_shared_none_metadata():
+    _, ir = compile_source("def sample(value: int) -> tuple:\n    return (value,)\n", (3, 12))
+    for function in ir["functions"]:
+        definitions = {op["out"]: op for op in function["ops"] if op.get("out")}
+        for op in function["ops"]:
+            if op["kind"] != "call" or op.get("s_value") != "molt_function_init_metadata_packed":
+                continue
+            metadata = definitions[op["args"][1]]
+            # These fields accept None, never the immutable location byte table.
+            for index in (6, 7, 8, 9, 10):
+                assert definitions[metadata["args"][index]]["kind"] == "const_none"
+            code = definitions[op["args"][2]]
+            assert definitions[code["args"][3]]["kind"] == "const_bytes"
+
+
 def compile_source(source, target=(3, 14)):
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(ast.parse(source))

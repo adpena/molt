@@ -77,7 +77,9 @@ fn exceptional_check_rejects_mixed_origin_and_unwind_predecessors() {
     };
     let mut fresh_error = op(OpCode::Call);
     fresh_error.results.push(func.fresh_value());
-    fresh_error.attrs.insert("callee".into(), AttrValue::Str("source_operation".into()));
+    fresh_error
+        .attrs
+        .insert("callee".into(), AttrValue::Str("source_operation".into()));
     let mut forwarded = op(OpCode::Raise);
     forwarded.operands.push(error);
     for (block, producer) in [(origin, fresh_error), (unwind, forwarded)] {

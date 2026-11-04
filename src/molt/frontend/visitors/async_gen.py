@@ -1334,7 +1334,12 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             for name in loads_after.get(idx, ()):
                 offset, value = slot_value(name)
                 new_ops.append(
-                    MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=value)
+                    MoltOp(
+                        kind="LOAD_CLOSURE",
+                        args=["self", offset],
+                        result=value,
+                        exception_source=ExceptionEdgeKind.UNWIND,
+                    )
                 )
             for name in stores_after.get(idx, ()):
                 offset, value = slot_value(name)
@@ -1343,6 +1348,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                         kind="STORE_CLOSURE",
                         args=["self", offset, value],
                         result=MoltValue("none"),
+                        exception_source=ExceptionEdgeKind.UNWIND,
                     )
                 )
         self.current_ops[:] = new_ops
@@ -1529,7 +1535,14 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 )
             )
             received = self.next_label()
-            self.emit(MoltOp(kind="CHECK_EXCEPTION", args=[received], result=MoltValue("none"), exception_edge=ExceptionEdgeKind.ORIGIN))
+            self.emit(
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    args=[received],
+                    result=MoltValue("none"),
+                    exception_edge=ExceptionEdgeKind.ORIGIN,
+                )
+            )
             self.emit(MoltOp(kind="LABEL", args=[received], result=MoltValue("none")))
             cleared_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))

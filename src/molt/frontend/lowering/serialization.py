@@ -601,7 +601,10 @@ class SerializationMixin(
             if end_idx > start_idx:
                 if mop.exception_source is not None:
                     for entry in json_ops[start_idx:end_idx]:
-                        if entry["kind"] not in {WireKinds.CHECK_EXCEPTION, WireKinds.ASYNC_WORK_POLL}:
+                        if entry["kind"] not in {
+                            WireKinds.CHECK_EXCEPTION,
+                            WireKinds.ASYNC_WORK_POLL,
+                        }:
                             entry.setdefault("exception_source", mop.exception_source)
                 last_entry = json_ops[end_idx - 1]
                 if mop.source_line is not None:
@@ -746,9 +749,27 @@ class SerializationMixin(
         self._maybe_report_midend_stats()
         from molt.frontend.lowering.frame_locations import publish_frame_locations
 
+        publication_anchors = {
+            function["name"]: function["ops"][publication["boundary_index"]]
+            for function in funcs_json
+            if (
+                publication := function_metadata.get(function["name"], {}).get(
+                    "source_module_publication"
+                )
+            ) is not None
+        }
         publish_frame_locations(
             funcs_json, module_code_symbol=module_init_symbol or "molt_main"
         )
+        for function in funcs_json:
+            if function["name"] in publication_anchors:
+                function_metadata[function["name"]]["source_module_publication"][
+                    "boundary_index"
+                ] = next(
+                    index
+                    for index, op in enumerate(function["ops"])
+                    if op is publication_anchors[function["name"]]
+                )
         return {
             "functions": funcs_json,
             "function_metadata": function_metadata,

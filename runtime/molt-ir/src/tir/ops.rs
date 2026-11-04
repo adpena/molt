@@ -610,7 +610,9 @@ pub fn builtin_call_view<'a, T>(
 impl TirOp {
     pub fn exception_source_kind(&self) -> Option<super::op_kinds_generated::ExceptionEdgeKind> {
         match self.attrs.get("exception_source") {
-            Some(AttrValue::Int(tag)) => super::op_kinds_generated::ExceptionEdgeKind::from_tag(*tag),
+            Some(AttrValue::Int(tag)) => {
+                super::op_kinds_generated::ExceptionEdgeKind::from_tag(*tag)
+            }
             _ => None,
         }
     }

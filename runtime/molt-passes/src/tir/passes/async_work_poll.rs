@@ -32,6 +32,12 @@ use super::exception_observation::{
 };
 
 fn is_call_return_poll(op: &TirOp) -> bool {
+    if op.exception_source_kind() == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
+    {
+        // Compiler cleanup forwards an existing transfer. Service asynchronous
+        // work at the next authored operation, where an Origin can be captured.
+        return false;
+    }
     opcode_requires_async_work_poll_after_table(op.opcode)
         || (op.opcode == OpCode::Copy
             && matches!(

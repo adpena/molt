@@ -253,8 +253,14 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     "exceptional check requires a typed Origin or Unwind source",
                 ));
             }
-            if op.attrs.contains_key("exception_source") && (op.exception_source_kind().is_none() || op.opcode == OpCode::CheckException) {
-                errors.push(VerifyError::op(*bid, op_idx, "exception producer requires a typed source kind separate from check edge kind"));
+            if op.attrs.contains_key("exception_source")
+                && (op.exception_source_kind().is_none() || op.opcode == OpCode::CheckException)
+            {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    "exception producer requires a typed source kind separate from check edge kind",
+                ));
             }
             // Check required attributes per opcode.
             // String, bytes and bigint payloads are admitted by the shared

@@ -165,10 +165,12 @@ class EmissionCoreMixin(GeneratorMixinBase):
                         )
 
     def emit(self, op: MoltOp) -> None:
-        if (self.try_suppress_depth is not None
+        if (
+            self.try_suppress_depth is not None
             and len(self.try_end_labels) <= self.try_suppress_depth
             and op.kind != FrontendKinds.CHECK_EXCEPTION
-            and op.exception_source is None):
+            and op.exception_source is None
+        ):
             # Compiler transport/cleanup forwards the existing error. Authored
             # guarded bodies use a deeper handler; source loops do not suppress.
             op.exception_source = ExceptionEdgeKind.UNWIND

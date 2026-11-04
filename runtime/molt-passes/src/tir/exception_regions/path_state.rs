@@ -282,7 +282,9 @@ impl ExceptionPathState {
         if op_clears_pending_exception(op) {
             next.pending_must_transfer = false;
             next.pending_source = PendingSource::Clear;
-        } else if op.exception_source_kind() == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind) {
+        } else if op.exception_source_kind()
+            == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
+        {
             // Static compiler transport preserves source-event provenance.
         } else if (op.origin == Some(molt_ir::OpKind::TraceEnterSlot)
             || !op
