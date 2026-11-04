@@ -1,5 +1,5 @@
 {
-  "baseline_total": 61,
+  "baseline_total": 62,
   "entries": [
     {
       "id": "runtime/build_support/variadic_exports.rs::allow_dead_code::fn:render_rust_anchors",
@@ -200,6 +200,11 @@
       "id": "runtime/molt-runtime/src/intrinsics/mod.rs::allow_dead_code::mod:generated",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/intrinsics/mod.rs::allow_dead_code::mod:public_objects_generated",
+      "owner": "HF-647 public-object authority",
+      "waiver": "generated PublicObjectId lists every declared public object, and Rust names only a few; remove when the generator emits only referenced variants or routes identity lookup through the enum"
     },
     {
       "id": "runtime/molt-runtime/src/lib.rs::allow_dead_code::inner",
