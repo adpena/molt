@@ -215,12 +215,18 @@ adds no second publisher, registry or cache.
    frontend, `uv-environment: cannot bind requested CPython 3.13.17: no
    verified … ; run `uv python install 3.13.17``, each once.
 9. **Repair the 3.14 runtime identity.** `_base_runtime_paths` reads the
-   configured pair (`DESTSHARED`, `exec_prefix`) from CPython's build-time data
-   (`importlib.import_module(sysconfig._get_sysconfigdata_name())
-   .build_time_vars`; the name function exists in 3.12 to 3.15), not from the
-   runtime view. Correction to the evidence above: in 3.14.9
-   `_init_config_vars` runs `_init_posix` first and then assigns the live
-   `exec_prefix`; on 3.12 and 3.13 the later `_init_posix` overwrote it with
+   configured pair (`DESTSHARED`, `exec_prefix`) from CPython's build-time data,
+   not from the runtime view. From 3.14 on it calls
+   `sysconfig._get_sysconfigdata()` (present in 3.14.9 and 3.15.1); on 3.12
+   and 3.13 the runtime view `sysconfig.get_config_vars()` already holds the
+   build-time values. A computed `importlib.import_module` of the data
+   module's name would read the same values, but the WASM linker's static
+   tooling import closure refuses a non-literal import, so every WASM build
+   failed with it (first HF-726 WASM cell run). A test checks both sources
+   against the data module in a venv of each supported target's pinned
+   release. Correction to the evidence above: in 3.14.9 `_init_config_vars`
+   runs `_init_posix` first and then assigns the live `exec_prefix`; on 3.12
+   and 3.13 the later `_init_posix` overwrote it with
    the build-time value. The rebase onto the live `sys.base_exec_prefix` and
    the fail-closed check stay. On 3.12 and 3.13 the build-time pair equals what
    `get_config_var` returned, so no recorded identity changes and no existing

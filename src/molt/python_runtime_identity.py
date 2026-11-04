@@ -298,17 +298,19 @@ def _runtime_capabilities(
 def _configured_build_vars() -> Mapping[str, object]:
     """CPython's configure-time variables, as the installer patched them.
 
-    3.12 and 3.13 overwrite sysconfig's live prefixes with these values; 3.14
-    keeps the live ones (``_init_config_vars``), so only this module gives the
-    configured pair on every supported release.
+    3.12 and 3.13 overwrite sysconfig's live prefixes with these values, so
+    their runtime view already holds them. 3.14 keeps the live prefixes in
+    that view (``_init_config_vars``) and reads the build-time data through
+    ``_get_sysconfigdata``, private but present from 3.14 on. A literal call
+    keeps this module inside the WASM linker's static tooling import closure,
+    which refuses a computed import. PEP 739 ``build-details.json`` replaces
+    both once 3.14 is the floor. ty checks this file at the 3.12 floor and
+    skips the 3.14 branch; typeshed omits the private accessor, so ty reports
+    it on the day the floor moves, which is when to make that replacement.
     """
-    import importlib
-
-    # Private, but present and unchanged in CPython 3.12 to 3.15; typeshed
-    # omits it. PEP 739 build-details.json replaces it once 3.14 is the floor.
-    name = sysconfig._get_sysconfigdata_name()  # ty: ignore[unresolved-attribute]
-    module = importlib.import_module(name)
-    return module.build_time_vars
+    if sys.version_info >= (3, 14):
+        return sysconfig._get_sysconfigdata()
+    return sysconfig.get_config_vars()
 
 
 def _base_runtime_paths() -> dict[str, Path]:

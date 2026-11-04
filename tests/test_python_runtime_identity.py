@@ -304,6 +304,11 @@ def test_base_lib_dynload_matches_cpython_in_a_venv_of_each_pinned_release(
     configured one, so reading the configured anchor from there refused every
     3.14 image ("outside its configured exec_prefix"). The pinned release of
     each supported target runs the real probe inside a real venv.
+
+    The configured pair has a second oracle: CPython's build-time data module,
+    which the probe imports by its computed name. In a venv the live prefixes
+    name the venv, so a release branch that returned them instead of the
+    configured values fails here, whatever ``_base_runtime_paths`` derives.
     """
     from molt.target_python import _parse_target_python_version
 
@@ -325,12 +330,18 @@ def test_base_lib_dynload_matches_cpython_in_a_venv_of_each_pinned_release(
     )
     assert made.returncode == 0, made.stderr
     probe = (
-        "import json, sys\n"
+        "import importlib, json, sys, sysconfig\n"
         f"sys.path.insert(0, {str(Path(runtime.__file__).parents[1])!r})\n"
         "from molt import python_runtime_identity as runtime\n"
+        "keys = ('prefix', 'exec_prefix', 'DESTSHARED')\n"
+        "configured = runtime._configured_build_vars()\n"
+        "data = importlib.import_module(sysconfig._get_sysconfigdata_name())\n"
         "print(json.dumps({'version': sys.version.split()[0],"
         " 'computed': str(runtime._base_runtime_paths()['base-lib-dynload']),"
-        " 'live': [p for p in sys.path if p.endswith('lib-dynload')]}))\n"
+        " 'live': [p for p in sys.path if p.endswith('lib-dynload')],"
+        " 'live_prefixes': [sys.prefix, sys.exec_prefix],"
+        " 'configured': {k: configured.get(k) for k in keys},"
+        " 'build_time': {k: data.build_time_vars.get(k) for k in keys}}))\n"
     )
     result = run_guarded_test_process(
         [str(venv / "bin" / "python"), "-I", "-B", "-c", probe], timeout=120
@@ -340,6 +351,13 @@ def test_base_lib_dynload_matches_cpython_in_a_venv_of_each_pinned_release(
     assert observed["version"] == release
     (live,) = observed["live"]
     assert Path(observed["computed"]) == Path(live).resolve()
+    assert observed["configured"] == observed["build_time"]
+    # The venv makes the live and configured prefixes differ; without that
+    # the equality above could not tell the two sources apart.
+    configured = observed["configured"]
+    assert all(isinstance(value, str) and value for value in configured.values())
+    assert configured["prefix"] not in observed["live_prefixes"]
+    assert configured["exec_prefix"] not in observed["live_prefixes"]
 
 
 def _runtime_payload(
