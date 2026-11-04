@@ -6312,7 +6312,9 @@ def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
         "error",
         "-c",
         str(state.ROOT / "pyproject.toml"),
-        str(test_file),
+        # Start at the fixture module, without walking its out-of-repo ancestors.
+        "--pyargs",
+        test_file.stem,
     ]
     rewritten = command_admission._python_bootstrap_command(
         envelope, declared, environment_root=Path(sys.prefix)
