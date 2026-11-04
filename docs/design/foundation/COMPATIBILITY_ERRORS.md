@@ -18,6 +18,13 @@ outcome request raises `SystemError`; it cannot manufacture a compatible
 before consuming either argument. WASM event-loop restrictions and unrelated
 raw `NotImplementedError` sites remain implementation obligations.
 
+Dataclass replacement uses this same authority for its two field-validation
+errors: `init=False` fields supplied in changes and required `InitVar` fields
+omitted from changes. Both raise `ValueError` on 3.12 and `TypeError` from 3.13.
+The runtime owns that one exception-class transition, together with the exact
+field messages. The public function and 3.13+ `__replace__` method share
+`molt_dataclasses_replace`; there is no Python replacement algorithm.
+
 The structural audit validates both complete runtime projections, pinned source
 coordinates, and the presence of the existing differential witnesses. It
 inventories declarations and consumer calls as `compatibility_error_outcome`
@@ -43,6 +50,7 @@ covers the complete Windows loop inheritance chain and these operation owners:
 
 | Operation | CPython authority | Relevant behavior |
 | --- | --- | --- |
+| Dataclass replacement field admission | pinned `Lib/dataclasses.py`, `replace` (3.12) and `_replace` (3.13+) | `init=False` and required InitVar errors change from ValueError to TypeError in 3.13 |
 | importlib cache path with unavailable tag | `Lib/importlib/_bootstrap_external.py`, `cache_from_source`, `_get_cached` | The public cache API raises when the live implementation tag is `None`; lazy ModuleSpec cache derivation catches that precise outcome |
 | Counter.fromkeys | `Lib/collections/__init__.py`, `Counter.fromkeys` | Exact exception/message, no argument consumption |
 | Windows add/remove signal handler | `Lib/asyncio/events.py`, `AbstractEventLoop`; `windows_events.py`, `selector_events.py`, `proactor_events.py`, `base_events.py` | Windows loop classes inherit the unconditional bare refusal |

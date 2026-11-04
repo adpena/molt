@@ -533,7 +533,20 @@ pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
             molt_types_simplenamespace_eq as *const () as usize as u64,
             2,
         ),
+        RuntimeClassMethodSpec::with_signature(
+            crate::NameId::DunderReplace,
+            NativeCallableKind::MethodDescriptor,
+            molt_types_simplenamespace_replace as *const () as usize as u64,
+            2,
+            RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
+        ),
     ];
+    let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(_py));
+    let method_count = if (target.major, target.minor) >= (3, 13) {
+        4
+    } else {
+        3
+    };
     init_cached_runtime_class(
         _py,
         &state.simplenamespace_class,
@@ -549,7 +562,7 @@ pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
                 variable_sized: false,
             }),
         },
-        &methods,
+        &methods[..method_count],
     )
 }
 
@@ -1262,6 +1275,70 @@ pub extern "C" fn molt_types_simplenamespace_init(
         }
         dec_ref_bits(_py, dict_bits);
         MoltObject::none().bits()
+    })
+}
+
+// CPython v3.13.9/v3.14.0 Objects/namespaceobject.c: namespace_replace.
+// Call the actual subtype without arguments, then update the actual dictionaries;
+// subclass __setattr__ and data descriptors do not participate.
+pub extern "C" fn molt_types_simplenamespace_replace(args_bits: u64, kwargs_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(call) = crate::builtins::native_arguments::NativeArguments::read(
+            py,
+            "__replace__",
+            args_bits,
+            kwargs_bits,
+        ) else {
+            return MoltObject::none().bits();
+        };
+        let Some(self_bits) = call.receiver(py) else {
+            return MoltObject::none().bits();
+        };
+        if !call.values().is_empty() {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "__replace__() takes no positional arguments",
+            );
+        }
+        let class = type_of_bits(py, self_bits);
+        let result = unsafe { call_callable0(py, class) };
+        if exception_pending(py) {
+            return result;
+        }
+        let Some(result_ptr) = obj_from_bits(result).as_ptr() else {
+            return result;
+        };
+        let result_owner = crate::PtrDropGuard::new(result_ptr);
+        let source_ptr = obj_from_bits(self_bits)
+            .as_ptr()
+            .expect("namespace descriptor receiver");
+        for dictionary in [unsafe { instance_dict_bits(source_ptr) }, kwargs_bits] {
+            let Some(ptr) = obj_from_bits(dictionary).as_ptr() else {
+                continue;
+            };
+            let Some(entries) = (unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }) else {
+                return MoltObject::none().bits();
+            };
+            for pair in entries.as_chunks::<2>().0 {
+                if unsafe {
+                    crate::object::field_storage::set_item(py, result_ptr, pair[0], pair[1])
+                }
+                .is_err()
+                {
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        inc_ref_bits(py, result);
+        drop(result_owner);
+        result
     })
 }
 

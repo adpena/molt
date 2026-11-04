@@ -1,7 +1,7 @@
 """Closed CPython compatibility outcomes; runtime projection and audit authority.
 
 This is an executable semantic protocol, not an exception-site exemption list.
-Every outcome checks its applicability before it can emit NotImplementedError.
+Each outcome owns its target applicability, exception class and exact message.
 The audit verifies both complete projections and inventories all consumer calls.
 Unrecognized contexts, modified projections and raw raises remain obligations.
 
@@ -102,6 +102,24 @@ OUTCOMES = {
         "Lib/logging/__init__.py:Handler.emit",
         "tests/differential/stdlib/logging_percent_style_intrinsic.py",
         pinned_source_paths=("Lib/logging/__init__.py",),
+    ),
+    "DataclassReplaceInitFalse": Outcome(
+        ("dataclasses.replace", "dataclass.__replace__"),
+        (*TARGETS, "3.15"),
+        ("all",),
+        "an init=False non-ClassVar field is explicitly present in changes",
+        "Lib/dataclasses.py:replace (3.12),_replace (3.13+)",
+        "tests/differential/stdlib/copy_version_surface.py",
+        pinned_source_paths=("Lib/dataclasses.py",),
+    ),
+    "DataclassReplaceMissingInitVar": Outcome(
+        ("dataclasses.replace", "dataclass.__replace__"),
+        (*TARGETS, "3.15"),
+        ("all",),
+        "an init=True InitVar with default is MISSING is absent from changes",
+        "Lib/dataclasses.py:replace (3.12),_replace (3.13+)",
+        "tests/differential/stdlib/copy_version_surface.py",
+        pinned_source_paths=("Lib/dataclasses.py",),
     ),
     "PathGlobNonRelative": Outcome(
         ("pathlib.Path.glob", "pathlib.Path.rglob"),
@@ -236,6 +254,8 @@ use crate::{
 };
 
 pub(crate) enum CompatibilityError<'a> {
+    DataclassReplaceInitFalse { field: &'a str },
+    DataclassReplaceMissingInitVar { field_repr: &'a str },
     ImportlibCacheTagUnavailable {
         is_none: bool,
     },
@@ -275,6 +295,7 @@ impl CompatibilityError<'_> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
         let target_version = (target.major, target.minor);
         let supported = match &self {
+            Self::DataclassReplaceInitFalse { .. } | Self::DataclassReplaceMissingInitVar { .. } => matches!(target_version, __DATACLASS_REPLACE_VERSIONS__),
             Self::RawIoBaseReadinto => matches!(target_version, __RAW_IO_VERSIONS__),
             Self::LoggingHandlerEmit => matches!(target_version, __LOGGING_HANDLER_VERSIONS__),
             Self::ImportlibCacheTagUnavailable { .. } => matches!(target_version, __CACHE_TAG_VERSIONS__),
@@ -284,6 +305,12 @@ impl CompatibilityError<'_> {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
+            Self::DataclassReplaceInitFalse { field } => {
+                format!("field {field} is declared with init=False, it cannot be specified with replace()")
+            }
+            Self::DataclassReplaceMissingInitVar { field_repr } => {
+                format!("InitVar {field_repr} must be specified with replace()")
+            }
             Self::ImportlibCacheTagUnavailable { is_none } if is_none => {
                 "sys.implementation.cache_tag is None".to_owned()
             }
@@ -343,19 +370,35 @@ impl CompatibilityError<'_> {
         Ok(message)
     }
 
+    fn exception_kind(&self, py: &PyToken<'_>) -> BuiltinExc {
+        match self {
+            Self::DataclassReplaceInitFalse { .. } | Self::DataclassReplaceMissingInitVar { .. } => {
+                let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
+                if (target.major, target.minor) == (3, 12) {
+                    BuiltinExc::ValueError
+                } else {
+                    BuiltinExc::TypeError
+                }
+            }
+            _ => BuiltinExc::NotImplementedError,
+        }
+    }
+
     pub(crate) fn raise<T: ExceptionSentinel>(self, py: &PyToken<'_>) -> T {
+        let kind = self.exception_kind(py);
         match self.message(py) {
-            Ok(message) => raise_exception(py, BuiltinExc::NotImplementedError, &message),
+            Ok(message) => raise_exception(py, kind, &message),
             Err(message) => raise_exception(py, BuiltinExc::SystemError, message),
         }
     }
 
     fn exception(self, py: &PyToken<'_>) -> u64 {
+        let kind = self.exception_kind(py);
         let message = match self.message(py) {
             Ok(message) => message,
             Err(message) => return raise_exception(py, BuiltinExc::SystemError, message),
         };
-        let ptr = crate::builtins::exceptions::alloc_exception(py, BuiltinExc::NotImplementedError, &message);
+        let ptr = crate::builtins::exceptions::alloc_exception(py, kind, &message);
         if ptr.is_null() {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
@@ -507,6 +550,10 @@ mod tests {
         _version_pattern(OUTCOMES["MemoryviewLookup"].versions),
     )
     .replace("__SYNTHETIC_FOUR_ONLY__", _version_pattern(("4.0",)))
+    .replace(
+        "__DATACLASS_REPLACE_VERSIONS__",
+        _version_pattern(OUTCOMES["DataclassReplaceInitFalse"].versions),
+    )
     .replace(
         "__ARMS__",
         "\n".join(

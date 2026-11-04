@@ -63,6 +63,13 @@
     },
     {
       "version": "3.12.15",
+      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/dataclasses.py",
+      "path": "Lib/dataclasses.py",
+      "sha256": "d242aea5fcf6408b1c1f622442f88f68b9526ce1f8bd2890d74a144677c427d9",
+      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+    },
+    {
+      "version": "3.12.15",
       "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/importlib/_bootstrap_external.py",
       "path": "Lib/importlib/_bootstrap_external.py",
       "sha256": "e6ad72f3f0f9b65c99ab52598cd02ab748511dcdce1dd51f18dace9be9a680c6",
@@ -160,6 +167,13 @@
       "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Python/fileutils.c",
       "path": "Python/fileutils.c",
       "sha256": "34a371c5d2b84bd74c2499997594ab8b4044427705fa971b7e0b2d9ef646089f"
+    },
+    {
+      "version": "3.13.17",
+      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Lib/dataclasses.py",
+      "path": "Lib/dataclasses.py",
+      "sha256": "71aef7961f18bacf223566a83730def028c7fd3d6854b2d27ee23732f3d10f83",
+      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
     },
     {
       "version": "3.13.17",
@@ -263,6 +277,13 @@
     },
     {
       "version": "3.14.9",
+      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/dataclasses.py",
+      "path": "Lib/dataclasses.py",
+      "sha256": "e8439c8b111856645a8b31e0dbbba532b494426399bad456079c0e5730ad322e",
+      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+    },
+    {
+      "version": "3.14.9",
       "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/importlib/_bootstrap_external.py",
       "path": "Lib/importlib/_bootstrap_external.py",
       "sha256": "2740a0b98f64ebee8347fb723b3863a7851161e1f136a6e968f010a9321ed90e",
@@ -288,6 +309,13 @@
       "path": "Objects/memoryobject.c",
       "sha256": "d72422b672d25b5decb9ab027e0a9b7d9d56500a372adcd9d401bb582f820301",
       "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+    },
+    {
+      "version": "3.15.1",
+      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Lib/dataclasses.py",
+      "path": "Lib/dataclasses.py",
+      "sha256": "85284c01e378472f3f431bb699c73cf1ccaaff10d122d72c3bd1b75b548dd813",
+      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
     },
     {
       "version": "3.15.1",

@@ -433,10 +433,16 @@ unsafe fn visit_native_descriptor_values(ptr: *mut u8, visit: &mut dyn FnMut(u64
 #[inline]
 fn child_requires_tracking(ptr: *mut u8) -> bool {
     match heap_track_projection(unsafe { object_type_id(ptr) }) {
-        // Mutable GC-capable children may acquire a back-edge after insertion.
-        // Only an untracked exact tuple is permanently atomic (CPython's
-        // _PyObject_GC_MAY_BE_TRACKED), not an untracked dictionary.
+        // Mutable GC-capable children and code with pending metadata publication
+        // may acquire a back-edge after insertion.
+        // Untracked exact tuples and sealed atomic code cannot acquire new
+        // mutable children; an untracked dictionary can.
         Some(HeapTrackProjection::Always | HeapTrackProjection::DictDynamic) => true,
+        Some(HeapTrackProjection::CodeDynamic) => unsafe {
+            super::gc::gc_is_tracked(ptr)
+                || !super::layout::code_declaration_is_published(ptr)
+                || super::layout::code_published_execution_kind(ptr).is_none()
+        },
         Some(HeapTrackProjection::TupleDynamic) => unsafe {
             super::native_instance::has_fields(ptr) || super::gc::gc_is_tracked(ptr)
         },
@@ -457,6 +463,26 @@ pub(crate) fn value_requires_tracking(bits: u64) -> bool {
         .is_some_and(child_requires_tracking)
 }
 
+/// Code's tuple-valued metadata is immutable and validated as string tuples.
+/// A fresh tuple's conservative GC membership does not make an atomic name
+/// cyclic. Inspect its fixed children, preserving mutable native-subclass tails.
+pub(crate) fn code_metadata_requires_tracking(bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    if unsafe { object_type_id(ptr) == super::TYPE_ID_TUPLE }
+        && !unsafe { super::native_instance::has_fields(ptr) }
+    {
+        return unsafe {
+            super::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                items.iter().copied().any(value_requires_tracking)
+            })
+        }
+        .expect("validated immutable code metadata tuple");
+    }
+    child_requires_tracking(ptr)
+}
+
 /// Compute the current CPython-style dynamic tracking projection.
 ///
 /// Dynamic containers are scanned at construction or collection, never once per
@@ -473,6 +499,15 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
             let address = unsafe { super::foreign::foreign_ptr_from_obj(ptr) };
             (unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(address) })
                 && super::gc::native_gc_is_enrolled(address)
+        }
+        HeapTrackProjection::CodeDynamic => {
+            let mut tracked = false;
+            unsafe {
+                visit_owned_values(py, ptr, &mut |child| {
+                    tracked |= code_metadata_requires_tracking(child);
+                });
+            }
+            tracked
         }
         HeapTrackProjection::DictDynamic | HeapTrackProjection::TupleDynamic => {
             if unsafe { super::native_instance::has_fields(ptr) } {

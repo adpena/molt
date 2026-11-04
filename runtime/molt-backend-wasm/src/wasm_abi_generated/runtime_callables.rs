@@ -7150,7 +7150,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_dataclasses_replace",
         import: WasmRuntimeImport::DataclassesReplace,
-        arity: 4,
+        arity: 5,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_dataclasses_set_field_metadata",

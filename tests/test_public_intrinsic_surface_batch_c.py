@@ -140,6 +140,9 @@ class _Box:
     def copy(self):
         return _Box(self.value)
 
+    def __replace__(self, **changes):
+        return _Box(changes.get("value", self.value))
+
 
 box = _Box(1)
 replaced = copy_mod.replace(box, value=9) if sys.version_info >= (3, 13) else None

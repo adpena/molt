@@ -3249,6 +3249,8 @@ def test_compatibility_source_refresh_preserves_independent_evidence_and_is_atom
         ("RawIoBaseReadinto", "Modules/_io/iobase.c"),
         ("LoggingHandlerEmit", "Lib/logging/__init__.py"),
         ("ImportlibCacheTagUnavailable", "Lib/importlib/_bootstrap_external.py"),
+        ("DataclassReplaceInitFalse", "Lib/dataclasses.py"),
+        ("DataclassReplaceMissingInitVar", "Lib/dataclasses.py"),
     ],
 )
 def test_compatibility_outcomes_have_their_own_pinned_target_support(
@@ -3268,6 +3270,8 @@ def test_compatibility_outcomes_have_their_own_pinned_target_support(
             "RawIoBaseReadinto",
             "LoggingHandlerEmit",
             "ImportlibCacheTagUnavailable",
+            "DataclassReplaceInitFalse",
+            "DataclassReplaceMissingInitVar",
         }:
             assert "3.15" not in facts.versions
         path = tmp_path / facts.witness

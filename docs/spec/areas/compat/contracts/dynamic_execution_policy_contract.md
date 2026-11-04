@@ -41,6 +41,55 @@ contracts; support on one backend does not grant it to another. Consult the
 [language surface index](../surfaces/language/language_surface_matrix.md) and
 [call binding contract](call_argument_binding_contract.md) for those boundaries.
 
+The Python 3.13+ copy protocol follows these PSF-2.0 upstream authorities,
+with the same producer bindings in 3.14:
+
+- [`Lib/copy.py: replace`](https://github.com/python/cpython/blob/v3.13.9/Lib/copy.py)
+  reads `obj.__class__.__replace__`; absence raises `TypeError`.
+- [`collections.namedtuple`](https://github.com/python/cpython/blob/v3.13.9/Lib/collections/__init__.py)
+  binds `_replace`; [`dataclasses._process_class` and `_replace`](https://github.com/python/cpython/blob/v3.13.9/Lib/dataclasses.py)
+  preserve user overrides and reconstruct through the initializer, including
+  frozen records, InitVars and the `init=False` prohibition. Molt's public
+  `dataclasses.replace` and generated method share `molt_dataclasses_replace`;
+  the compiled caller supplies the canonical `MISSING` sentinel explicitly,
+  retaining its binding when `sys.modules["dataclasses"]` is removed or replaced.
+  The [compatibility-error authority](../../../../design/foundation/COMPATIBILITY_ERRORS.md)
+  owns the 3.12 ValueError / 3.13+ TypeError transition.
+- [`namespace_replace`](https://github.com/python/cpython/blob/v3.13.9/Objects/namespaceobject.c)
+  constructs the subtype without arguments and updates dictionaries directly.
+- [`date_replace`, `time_replace`, `datetime_replace`](https://github.com/python/cpython/blob/v3.13.9/Modules/_datetimemodule.c)
+  and [`_pydatetime`'s three `replace` aliases](https://github.com/python/cpython/blob/v3.13.9/Lib/_pydatetime.py)
+  preserve the dynamic type.
+- [`Parameter.replace` and `Signature.replace`](https://github.com/python/cpython/blob/v3.13.9/Lib/inspect.py)
+  distinguish omitted fields from explicit empty sentinels and revalidate through
+  the subtype constructor.
+
+Code objects support `replace(**changes)` on every target and `__replace__`
+from Python 3.13. The canonical typed field table is
+[`CODE_REPLACE_FIELDS`](../../../../../runtime/molt-runtime/src/object/layout.rs).
+It follows CPython [3.13.9 `code_replace_impl` and `code_methods`](https://github.com/python/cpython/blob/v3.13.9/Objects/codeobject.c)
+and [3.14.0](https://github.com/python/cpython/blob/v3.14.0/Objects/codeobject.c):
+
+| Field class | Keywords | Replacement contract |
+| --- | --- | --- |
+| Metadata | `co_filename`, `co_name`, `co_qualname`, `co_firstlineno` | Clone metadata while retaining the compiled entry, trampoline, frame slot, signature, lexical layout and execution policy. |
+| Execution | `co_argcount`, `co_posonlyargcount`, `co_kwonlyargcount`, `co_nlocals`, `co_stacksize`, `co_flags`, `co_code`, `co_consts`, `co_names`, `co_varnames`, `co_freevars`, `co_cellvars`, `co_linetable`, `co_exceptiontable` | An explicitly unchanged value succeeds. A changed value raises `TypeError` before cloning: compiled code has no CPython bytecode or interpreter frame (spec 0216). |
+
+The line and exception tables describe CPython bytecode offsets, so changed
+tables belong to the execution class. The complete keyword/type validation
+precedes the policy refusal. Molt code
+exposes empty bytecode and bytecode exception tables and zero interpreter stack
+size; these do not encode an interpreter or translate CPython bytecode. Metadata
+replacement cannot change callable execution identity or module execution flags.
+Metadata retains string subclasses by identity, including subclasses with
+mutable attributes. Code publication checks field shapes through
+`CodeMetadataSlot`, then promotes GC tracking before publishing a mutable child.
+The generated `code_dynamic` heap projection keeps exact immutable metadata
+untracked. Existing code edge traversal and immutable-owner cycle handling own
+collection; metadata replacement adds no separate release implementation.
+The changed-execution differential carries the policy metadata below; ordinary
+metadata, unchanged values and invalid keywords remain parity obligations.
+
 ## 3. Tooling Guardrails
 - Each differential test that relies on intentionally unsupported dynamism
   declares the complete policy at its source:

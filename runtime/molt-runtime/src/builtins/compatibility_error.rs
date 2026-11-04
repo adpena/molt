@@ -5,6 +5,12 @@ use crate::{
 };
 
 pub(crate) enum CompatibilityError<'a> {
+    DataclassReplaceInitFalse {
+        field: &'a str,
+    },
+    DataclassReplaceMissingInitVar {
+        field_repr: &'a str,
+    },
     ImportlibCacheTagUnavailable {
         is_none: bool,
     },
@@ -44,6 +50,8 @@ impl CompatibilityError<'_> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
         let target_version = (target.major, target.minor);
         let supported = match &self {
+            Self::DataclassReplaceInitFalse { .. }
+            | Self::DataclassReplaceMissingInitVar { .. } => matches!(target_version, (3, 12..=15)),
             Self::RawIoBaseReadinto => matches!(target_version, (3, 12..=15)),
             Self::LoggingHandlerEmit => matches!(target_version, (3, 12..=15)),
             Self::ImportlibCacheTagUnavailable { .. } => matches!(target_version, (3, 12..=15)),
@@ -53,6 +61,14 @@ impl CompatibilityError<'_> {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
+            Self::DataclassReplaceInitFalse { field } => {
+                format!(
+                    "field {field} is declared with init=False, it cannot be specified with replace()"
+                )
+            }
+            Self::DataclassReplaceMissingInitVar { field_repr } => {
+                format!("InitVar {field_repr} must be specified with replace()")
+            }
             Self::ImportlibCacheTagUnavailable { is_none } if is_none => {
                 "sys.implementation.cache_tag is None".to_owned()
             }
@@ -110,23 +126,36 @@ impl CompatibilityError<'_> {
         Ok(message)
     }
 
+    fn exception_kind(&self, py: &PyToken<'_>) -> BuiltinExc {
+        match self {
+            Self::DataclassReplaceInitFalse { .. }
+            | Self::DataclassReplaceMissingInitVar { .. } => {
+                let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
+                if (target.major, target.minor) == (3, 12) {
+                    BuiltinExc::ValueError
+                } else {
+                    BuiltinExc::TypeError
+                }
+            }
+            _ => BuiltinExc::NotImplementedError,
+        }
+    }
+
     pub(crate) fn raise<T: ExceptionSentinel>(self, py: &PyToken<'_>) -> T {
+        let kind = self.exception_kind(py);
         match self.message(py) {
-            Ok(message) => raise_exception(py, BuiltinExc::NotImplementedError, &message),
+            Ok(message) => raise_exception(py, kind, &message),
             Err(message) => raise_exception(py, BuiltinExc::SystemError, message),
         }
     }
 
     fn exception(self, py: &PyToken<'_>) -> u64 {
+        let kind = self.exception_kind(py);
         let message = match self.message(py) {
             Ok(message) => message,
             Err(message) => return raise_exception(py, BuiltinExc::SystemError, message),
         };
-        let ptr = crate::builtins::exceptions::alloc_exception(
-            py,
-            BuiltinExc::NotImplementedError,
-            &message,
-        );
+        let ptr = crate::builtins::exceptions::alloc_exception(py, kind, &message);
         if ptr.is_null() {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
