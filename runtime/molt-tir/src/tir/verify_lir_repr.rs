@@ -1,17 +1,15 @@
 //! LIR representation verifier.
 //!
-//! Enforces that values with proven scalar types (I64, F64, Bool) are
-//! always represented as their scalar LirRepr, never DynBox.  This is
-//! the Mojo "register-passable" invariant: scalar values live in SSA
-//! registers end-to-end, boxing only at module boundaries.
+//! Raw representations must agree with the scalar type they carry. Semantic
+//! annotations never require raw storage; boxed carriers preserve arbitrary
+//! Python objects, including values crossing annotated signatures.
 
 use super::blocks::BlockId;
 use super::lir::{LirFunction, LirRepr};
 use super::types::TirType;
 use super::values::ValueId;
 
-/// A single register-passable violation: a value whose proven type
-/// maps to a scalar repr but was lowered as DynBox.
+/// A raw scalar interpretation incompatible with its semantic type.
 #[derive(Debug)]
 pub struct ReprViolation {
     pub block: BlockId,
@@ -21,7 +19,7 @@ pub struct ReprViolation {
     pub actual_repr: LirRepr,
 }
 
-/// Verify that no value with a proven scalar type uses DynBox representation.
+/// Verify that every raw scalar representation agrees with its semantic type.
 ///
 /// Returns a list of violations.  An empty vec means the function is clean.
 pub fn verify_register_passable(func: &LirFunction) -> Vec<ReprViolation> {
@@ -47,7 +45,7 @@ fn check_values<'a>(
 ) {
     for v in values {
         let expected = LirRepr::for_type(&v.ty);
-        if expected != LirRepr::DynBox && v.repr == LirRepr::DynBox {
+        if !v.repr.is_runtime_reference_word() && v.repr != expected {
             violations.push(ReprViolation {
                 block,
                 value_id: v.id,
@@ -131,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn violation_when_i64_uses_dynbox() {
+    fn violation_when_i64_is_interpreted_as_float() {
         let entry = BlockId(0);
         let mut blocks = HashMap::new();
         blocks.insert(
@@ -150,7 +148,7 @@ mod tests {
                     result_values: vec![LirValue {
                         id: ValueId(0),
                         ty: TirType::I64,
-                        repr: LirRepr::DynBox, // Wrong!
+                        repr: LirRepr::F64, // A raw float cannot carry an integer.
                     }],
                 }],
                 terminator: LirTerminator::Return {
@@ -163,7 +161,7 @@ mod tests {
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].value_id, ValueId(0));
         assert_eq!(violations[0].expected_repr, LirRepr::I64);
-        assert_eq!(violations[0].actual_repr, LirRepr::DynBox);
+        assert_eq!(violations[0].actual_repr, LirRepr::F64);
     }
 
     #[test]

@@ -39,9 +39,10 @@ pub(in crate::native_backend::simple_backend) struct LinkageCarrierRows {
 impl LinkageCarriers {
     fn compute(function: &FunctionIR) -> Self {
         let tir = crate::tir::lower_from_simple::lower_to_tir(function);
+        let (param_types, return_type) = crate::representation_plan::native_linkage_types(&tir);
         Self {
-            param_types: crate::representation_plan::native_linkage_param_types(&tir),
-            return_type: tir.return_type,
+            param_types,
+            return_type,
         }
     }
 

@@ -271,3 +271,35 @@ pub(crate) fn peeled_compute_func_ir() -> FunctionIR {
         ],
     )
 }
+
+/// Exercise the real exact-producer boundary in graph-join fixtures.
+pub(crate) fn scalar_witness(
+    kind: crate::repr::ScalarKind,
+) -> crate::tir::type_refine::ExactScalarWitness {
+    use crate::repr::ScalarKind;
+    let op = match kind {
+        ScalarKind::Int => OpIR {
+            value: Some(7),
+            ..OpIR::new(molt_ir::OpKind::Const)
+        },
+        ScalarKind::Bool => OpIR {
+            value: Some(1),
+            ..OpIR::new(molt_ir::OpKind::ConstBool)
+        },
+        _ => panic!("fixture needs an integer or Boolean producer"),
+    };
+    let source = function(
+        "exact_fixture",
+        &[],
+        None,
+        vec![OpIR {
+            out: Some("value".into()),
+            ..op
+        }],
+    );
+    let tir = crate::tir::lower_from_simple::lower_to_tir(&source);
+    crate::tir::type_refine::exact_scalar_witnesses(&tir)
+        .into_values()
+        .next()
+        .expect("exact constant")
+}

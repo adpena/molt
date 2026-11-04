@@ -15,7 +15,7 @@ use crate::tir::ops::OpCode;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::cfg_edges::collect_branch_edges;
+use super::cfg_edges::{collect_branch_edges, handler_entry_blocks};
 use super::result_inference::infer_result_facts_with_attrs;
 
 fn scalar_or_bottom(ty: TirType) -> TirType {
@@ -26,8 +26,52 @@ fn scalar_or_bottom(ty: TirType) -> TirType {
     }
 }
 
+/// Permission to interpret a producer's scalar payload. Only the exact SSA
+/// solver can construct this witness; declarations and guards cannot mint it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExactScalarWitness {
+    kind: crate::repr::ScalarKind,
+}
+
+impl ExactScalarWitness {
+    pub fn kind(self) -> crate::repr::ScalarKind {
+        self.kind
+    }
+
+    pub fn ty(self) -> TirType {
+        use crate::repr::ScalarKind;
+        match self.kind {
+            ScalarKind::Int => TirType::I64,
+            ScalarKind::Bool => TirType::Bool,
+            ScalarKind::Float => TirType::F64,
+            ScalarKind::Str => TirType::Str,
+            ScalarKind::NoneValue => TirType::None,
+        }
+    }
+}
+
+/// Project the exact solver's facts into non-forgeable lowering permissions.
+pub fn exact_scalar_witnesses(func: &TirFunction) -> HashMap<ValueId, ExactScalarWitness> {
+    use crate::repr::ScalarKind;
+    extract_exact_scalar_map(func)
+        .into_iter()
+        .filter_map(|(id, ty)| {
+            let kind = match ty.semantic_type() {
+                TirType::I64 | TirType::BigInt => ScalarKind::Int,
+                TirType::Bool => ScalarKind::Bool,
+                TirType::F64 => ScalarKind::Float,
+                TirType::Str => ScalarKind::Str,
+                TirType::None => ScalarKind::NoneValue,
+                _ => return None,
+            };
+            Some((id, ExactScalarWitness { kind }))
+        })
+        .collect()
+}
+
 pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     let reachable = crate::tir::dominators::executable_reachable_blocks(func);
+    let handlers = handler_entry_blocks(func);
     let mut facts = HashMap::new();
     let mut incoming: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::new();
     let mut order: Vec<_> = reachable.iter().copied().collect();
@@ -56,15 +100,8 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
         let mut changed = false;
         for id in &order {
             let block = &func.blocks[id];
-            // Match the type-refinement EH admission fact. label_id_map also
-            // contains ordinary control-flow labels, not just handler entries.
-            let handler = func.has_exception_handling
-                && (func.label_id_map.contains_key(&id.0)
-                    || block.ops.first().is_some_and(|op| {
-                        matches!(op.opcode, OpCode::StateBlockStart | OpCode::CheckException)
-                    }));
             for (index, arg) in block.args.iter().enumerate() {
-                let ty = if handler || *id == func.entry_block {
+                let ty = if handlers.contains(id) || *id == func.entry_block {
                     TirType::DynBox
                 } else if let Some(edges) = incoming.get(id) {
                     edges.iter().fold(TirType::Never, |ty, edge| {

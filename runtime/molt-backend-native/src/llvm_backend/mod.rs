@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "llvm")]
 use crate::NativeFunctionLinkageAbi;
 #[cfg(feature = "llvm")]
-use crate::representation_plan::LlvmReprFacts;
+use crate::representation_plan::ProducerCarrierPlan;
 #[cfg(feature = "llvm")]
 pub struct LlvmBackend<'ctx> {
     pub context: &'ctx Context,
@@ -42,7 +42,7 @@ pub struct LlvmBackend<'ctx> {
     /// `ScalarRepresentationPlan`, keyed by function name. These drive the
     /// LLVM backend's integer-carrier and container dispatch decisions from the
     /// same typed facts the native/WASM/Luau backends consume.
-    pub(crate) function_repr_facts: BTreeMap<String, LlvmReprFacts>,
+    pub(crate) function_repr_facts: BTreeMap<String, ProducerCarrierPlan>,
     /// The set of `molt_*` symbols the linked runtime staticlib defines (the
     /// active stdlib profile's callable surface, from
     /// `MOLT_RUNTIME_CALLABLE_SYMBOLS`). Used by the generic preserved-op

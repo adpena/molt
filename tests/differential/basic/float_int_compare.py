@@ -1,4 +1,6 @@
-"""Mixed float/int comparisons must stay on the float lane."""
+"""Mixed float/int comparisons preserve exact Python ordering."""
+
+import sys
 
 
 def compare(x):
@@ -15,3 +17,20 @@ def compare(x):
 
 for value in (0.01, 0.0, -0.01, 1, True):
     print(value, compare(value))
+
+
+def compare_wide(text):
+    floating = float(text)
+    integer = 9007199254740993
+    return (
+        integer == floating, integer != floating,
+        integer < floating, integer <= floating,
+        integer > floating, integer >= floating,
+        floating == integer, floating != integer,
+        floating < integer, floating <= integer,
+        floating > integer, floating >= integer,
+    )
+
+
+text = sys.argv[1] if len(sys.argv) > 1 else '9007199254740992'
+print('wide', compare_wide(text))

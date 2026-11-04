@@ -95,7 +95,8 @@ pub(crate) fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
 }
 
 /// The operand supplying a result's mathematical scalar value, provided that
-/// operand already has a scalar proof. A home publication returns its saved
+/// operand already has a scalar proof. An owned alias retains its independent
+/// ownership root. A home publication returns its saved
 /// operand view even if releasing the displaced owner reentrantly writes the
 /// home. It does not prove the home's later contents or a subsequent load.
 ///

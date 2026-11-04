@@ -252,8 +252,8 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
             .clone();
         assert_eq!(
             typed_abi.param_types,
-            vec![TirType::F64, TirType::Bool, TirType::DynBox],
-            "unproven Python int parameters must freeze as boxed while exact float/bool carriers survive"
+            vec![TirType::DynBox; 3],
+            "annotations cannot select a raw float, bool or int parameter carrier"
         );
         assert_eq!(
             typed_abi.return_type,

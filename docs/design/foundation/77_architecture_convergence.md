@@ -492,15 +492,15 @@ before building. Reuse unchanged qualified evidence and stop adding unrelated
 improvements to the candidate. No additional optimizer, representation cache or
 proof coordinator is needed to enforce this delivery unit.
 
-Native still constructs AnalysisFloor LIR for fact extraction, cloning and
-refining final TIR. Its initial cache pipeline also requests LIR verification
-on hits and misses, constructing that representation before final extraction.
-These are user compilation costs, not emitted-program work. Attribute them on
-the actual compiler image before claiming an improvement or removing checks;
-replace verification with the actual typed/carrier/codegen invariant when the
-unused representation retires. A material unexplained regression blocks the
-deletion cut. A neutral measurement does not justify restoring duplicate
-semantic authorities or indefinitely optimizing the bridge being retired.
+Native fact extraction now projects exact producer witnesses directly from
+final TIR; the former analysis-floor LIR path is removed. Its initial cache
+pipeline retains verification through actual producer/range LIR, whose
+signatures and values share the physical carrier projection. These are user
+compilation costs, not emitted-program work. Attribute costs on the actual
+compiler image before claiming an improvement or removing checks. A material
+unexplained regression blocks a deletion cut. A neutral measurement does not
+justify restoring duplicate semantic authorities or indefinitely optimizing
+the remaining name transport.
 
 The live finding rows in `docs/agent/V1_HANDOFF_FINDINGS.md` own the status of
 each step. This document owns the design and changes only when the design does.

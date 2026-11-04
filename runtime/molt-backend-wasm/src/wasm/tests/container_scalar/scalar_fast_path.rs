@@ -86,11 +86,11 @@ fn scalar_fast_path_ignores_transport_hints() {
 }
 
 #[test]
-fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
+fn scalar_fast_path_requires_producers_instead_of_parameter_annotations() {
     let add = wasm_test_op(molt_ir::OpKind::Add, Some("sum"), vec!["lhs", "rhs"]);
     let mul = wasm_test_op(molt_ir::OpKind::Mul, Some("product"), vec!["lhs", "rhs"]);
     let div = wasm_test_op(molt_ir::OpKind::Div, Some("quot"), vec!["lhs", "rhs"]);
-    let func = wasm_test_function(
+    let mut func = wasm_test_function(
         "typed",
         vec!["lhs", "rhs"],
         Some(vec!["int", "int"]),
@@ -98,6 +98,17 @@ fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
     );
     let plan = wasm_representation_plan(&func);
 
+    assert!(!wasm_scalar_integer_fast_path_for_op(&plan, &add));
+    assert!(!wasm_scalar_integer_fast_path_for_op(&plan, &mul));
+    assert!(!wasm_scalar_integer_fast_path_for_op(&plan, &div));
+    assert!(!wasm_scalar_truthiness_fast_path_for_name(&plan, "lhs"));
+    func.params.clear();
+    func.param_types = None;
+    func.ops.splice(
+        0..0,
+        [wasm_const_int_op("lhs", 7), wasm_const_int_op("rhs", 3)],
+    );
+    let plan = wasm_representation_plan(&func);
     assert!(wasm_scalar_integer_fast_path_for_op(&plan, &add));
     assert!(wasm_scalar_integer_fast_path_for_op(&plan, &mul));
     assert!(wasm_scalar_integer_fast_path_for_op(&plan, &div));
@@ -224,7 +235,7 @@ fn annotated_float_add_preserves_boxed_runtime_dispatch() {
 }
 
 #[test]
-fn typed_int_floor_div_records_division_guarded_site() {
+fn annotation_only_floor_div_stays_in_runtime_authority() {
     let floor_div = wasm_test_op(molt_ir::OpKind::Floordiv, Some("quot"), vec!["lhs", "rhs"]);
     let output = compile_final_numeric_function_with_diagnostics(
         vec!["param_lhs", "param_rhs"],
@@ -240,20 +251,24 @@ fn typed_int_floor_div_records_division_guarded_site() {
     wasmparser::Validator::new()
         .validate_all(&output.wasm)
         .expect("valid wasm");
-    assert_molt_main_has_operator(&output.wasm, "I64DivS");
+    assert!(
+        !wasm_operator_debug_for_export(&output.wasm, "molt_main")
+            .iter()
+            .any(|op| op == "I64DivS")
+    );
     assert_eq!(
         output
             .diagnostics
             .numeric_lanes
             .op_loop_division_guarded_int_sites,
-        1
+        0
     );
     assert_eq!(
         output
             .diagnostics
             .numeric_lanes
             .op_loop_division_boxed_runtime_sites,
-        0
+        1
     );
 }
 

@@ -1108,7 +1108,7 @@ fn verify_lir_if_requested(tir_func: &TirFunction, verify_lir: bool) {
         return;
     }
     let func_name = &tir_func.name;
-    let lir_func = super::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction(tir_func);
+    let lir_func = super::lower_to_lir::lower_function_to_lir(tir_func);
     if trace_tir_function_enabled(func_name) {
         eprintln!(
             "[TIR-TRACE] {func_name} after_lower_to_lir: blocks={} ops={}",

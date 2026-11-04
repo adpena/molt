@@ -18,7 +18,7 @@ mod result_inference;
 mod tests;
 
 use self::cfg_edges::collect_branch_edges;
-pub use self::exact::extract_exact_scalar_map;
+pub use self::exact::{ExactScalarWitness, exact_scalar_witnesses, extract_exact_scalar_map};
 pub(crate) use self::facts::infer_return_type;
 use self::facts::{
     fact_or_bottom, is_bottom_type, is_refined_public_type, join_assign_type_fact,
@@ -283,32 +283,16 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             })
             .collect();
 
-    // When exception handling is present, identify blocks that start with
-    // StateBlockStart (exception handler entry points). Block arguments of
-    // these blocks should stay DynBox — the exception may come from any
-    // type context, so propagating a refined type would be unsound.
+    // Match exact provenance's exceptional-entry admission. Normal loop labels
+    // and blocks beginning with an exception poll still have ordinary inputs.
     let has_eh = func.has_exception_handling;
+    let handlers = cfg_edges::handler_entry_blocks(func);
     let mut eh_handler_args: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
-    if has_eh {
-        for block in func.blocks.values() {
-            let is_exception_label_entry = func.label_id_map.contains_key(&block.id.0);
-            // A block whose first op is StateBlockStart or CheckException
-            // is an exception handler. A block named by `label_id_map` is also
-            // an exception-label entry even when it is an empty forwarding
-            // block; implicit exception edges can land there with values from
-            // arbitrary protected contexts. In both cases, args must stay
-            // DynBox and downstream merge args must see that top fact.
-            let starts_with_handler_marker = block.ops.first().is_some_and(|first_op| {
-                matches!(
-                    first_op.opcode,
-                    OpCode::StateBlockStart | OpCode::CheckException
-                )
-            });
-            if is_exception_label_entry || starts_with_handler_marker {
-                for arg in &block.args {
-                    eh_handler_args.insert(arg.id);
-                    facts.insert(arg.id, TirType::DynBox);
-                }
+    for block in func.blocks.values() {
+        if handlers.contains(&block.id) {
+            for arg in &block.args {
+                eh_handler_args.insert(arg.id);
+                facts.insert(arg.id, TirType::DynBox);
             }
         }
     }

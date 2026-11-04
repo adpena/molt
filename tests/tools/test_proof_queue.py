@@ -6160,7 +6160,7 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
 
 @pytest.mark.slow
 def test_cached_python_authorities_recapture_once_under_the_execution_patch(
-    guarded_execution_authorities: GuardedExecutionAuthorities,
+    python_location_authorities: GuardedExecutionAuthorities,
 ) -> None:
     """Drift in a cached row recaptures through the unpatched authority.
 
@@ -6168,7 +6168,11 @@ def test_cached_python_authorities_recapture_once_under_the_execution_patch(
     fixture; a recapture that looked that name up again would re-enter
     current() without bound and hash the inventory until the recursion limit.
     """
-    authorities = guarded_execution_authorities
+    # This test requires stable bytes between successive current() calls. The
+    # full editable development image admits mutable source bytecode and is
+    # shared with other workers; use the existing private interpreter/source
+    # authority. The stale-row and reentrant-capture oracles remain real.
+    authorities = python_location_authorities
     before = authorities.recaptures
     stale = copy.deepcopy(authorities.python_identity)
     rows = stale["file_custody"]
@@ -12504,6 +12508,7 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         "from tools.import_file import bind_repository_imports\n"
         "bind_repository_imports(pathlib.Path(root)/'tools/proof_queue.py')\n"
         "from tools.command_execution import detached_command_use\n"
+        "from molt.exact_json import write_exact\n"
         "ready=pathlib.Path(ready); release=pathlib.Path(release)\n"
         "if mode=='early_exit': raise SystemExit(2)\n"
         "with ExitStack() as use:\n"
@@ -12513,7 +12518,7 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         " else:\n"
         "  ack={'schema_version':1,'pid':(0 if mode=='invalid_pid' else True if mode=='bool_pid' else os.getpid()),'use_token':('0'*32 if mode=='wrong_nonce' else token)}\n"
         "  if mode=='extra_key': ack['extra']=1\n"
-        "  ready.write_text(json.dumps(None if mode=='null_ack' else ack),encoding='utf-8')\n"
+        "  write_exact(ready,None if mode=='null_ack' else ack,exclusive=True)\n"
         " deadline=time.monotonic()+15\n"
         " while not release.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
         " assert release.exists(), 'worker release deadline'\n",
