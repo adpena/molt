@@ -1384,7 +1384,10 @@ def _integrate_exclusive(
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
-    if not dry:
+    from tools.trunk_landing import HOST_SETTING
+
+    farm_host = os.environ.get(HOST_SETTING, "").strip()
+    if not dry and not farm_host:
         _assert_integration_source(git, selected_commit)
         prepared = config.prepare(
             gate_cmds,
@@ -1418,6 +1421,12 @@ def _integrate_exclusive(
         for gate in gate_cmds:
             _assert_integration_source(git, selected_commit)
             _say(f"    would-run gate: {_gate_display(gate.command)}")
+    elif farm_host:
+        from tools.trunk_landing import run_remote
+
+        gate_seconds.extend(
+            run_remote(repo, selected_commit, gate_cmds, host=farm_host)
+        )
     else:
         run_selected_gates(
             gate_cmds,

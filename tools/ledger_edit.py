@@ -298,13 +298,15 @@ def move_to_family(text: str, args: argparse.Namespace) -> str:
 
 
 def describe_family(text: str, args: argparse.Namespace) -> str:
-    """Restate one family's name and shared cause; its rows stay as they are."""
+    """Restate one family's name, shared cause and, if given, its HF-459 axes."""
     status = finding_status.project(text)
     lines = text.split("\n")
     index = _family_index(lines, status, args.letter)
     cells = finding_status.cells(lines[index])
     cells[0] = f"{args.letter}. {args.name}"
     cells[-2] = args.cause
+    if args.axes is not None:
+        cells[2] = args.axes
     lines[index] = _row(cells, empty_last=True)
     return "\n".join(lines)
 
@@ -380,11 +382,15 @@ def recut_families(text: str, args: argparse.Namespace) -> str:
     if not isinstance(spec, dict) or set(spec) - {"describe", "move"}:
         raise LedgerEditError("a re-cut spec holds only 'describe' and 'move' lists")
     for item in spec.get("describe", []):
-        if not isinstance(item, dict) or set(item) != {"letter", "name", "cause"}:
+        if not isinstance(item, dict) or not (
+            {"letter", "name", "cause"}
+            <= set(item)
+            <= {"letter", "name", "cause", "axes"}
+        ):
             raise LedgerEditError(
-                f"describe entry needs letter, name and cause: {item!r}"
+                f"describe entry needs letter, name and cause (axes optional): {item!r}"
             )
-        text = describe_family(text, argparse.Namespace(**item))
+        text = describe_family(text, argparse.Namespace(**{"axes": None, **item}))
     for item in spec.get("move", []):
         if not isinstance(item, dict) or set(item) != {"keys", "to"}:
             raise LedgerEditError(f"move entry needs keys and to: {item!r}")
@@ -402,9 +408,7 @@ def next_key(text: str) -> str:
 
 
 def _checked(root: Path, text: str) -> list[str]:
-    status = finding_status.project(text)
-    prior_art = (root / finding_coverage.PRIOR_ART_PATH).read_text(encoding="utf-8")
-    return finding_coverage.dependency_order_problems(status, prior_art)
+    return finding_coverage.ledger_problems(root, finding_status.project(text))
 
 
 def _references(text: str, key: str) -> list[str]:
@@ -462,6 +466,9 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     described.add_argument("letter")
     described.add_argument("--name", required=True)
     described.add_argument("--cause", required=True)
+    described.add_argument(
+        "--axes", help="comma-separated HF-459 ratchet axis keys (default: unchanged)"
+    )
     recut = family_sub.add_parser("recut")
     recut.add_argument("--spec", required=True, help="JSON: describe and move lists")
     created = family_sub.add_parser("create", help="add an empty family")

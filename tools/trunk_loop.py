@@ -108,18 +108,18 @@ Set-Location -LiteralPath {ps(checkout)}
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 & uv sync --locked --group dev
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
-& uv run --locked molt doctor --json
+& uv run --locked molt doctor --json --strict
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 """
     system_command = (
-        "xcode-select --install"
+        "xcode-select --install; brew install cmake"
         if host.os == authorities().HostOS.MACOS
-        else "sudo apt-get update && sudo apt-get install git curl clang lld build-essential"
+        else "sudo apt-get update && sudo apt-get install git curl clang lld cmake build-essential"
     )
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-for tool in git curl cc; do
+for tool in git curl cc cmake; do
  command -v "$tool" >/dev/null || {{ echo {shlex.quote("Missing system prerequisites; run: " + system_command)} >&2; exit 2; }}
 done
 if ! command -v uv >/dev/null; then
@@ -145,7 +145,7 @@ fi
 cd {shlex.quote(checkout)}
 rustup show active-toolchain
 uv sync --locked --group dev
-uv run --locked molt doctor --json
+uv run --locked molt doctor --json --strict
 """
 
 
@@ -158,11 +158,13 @@ $base=(Get-ItemProperty $key.PSPath).BasePath
 $actual=[IO.Path]::Combine($base,'ext4.vhdx')
 if ($actual -cne {ps(host.wsl_vhdx)}) {{ throw "WSL backing disk changed: $actual" }}
 $config=[IO.File]::ReadAllText((Join-Path $env:USERPROFILE '.wslconfig'))
-[pscustomobject]@{{config=$config;vhdx=$actual}} | ConvertTo-Json -Compress
+$pending=Join-Path $base '.molt-disk-maintenance'
+if ((Test-Path -LiteralPath $pending) -and ([IO.File]::ReadAllText($pending) -cne 'molt.wsl-disk-maintenance.v1')) {{ throw 'Unknown WSL disk maintenance state' }}
+[pscustomobject]@{{config=$config;vhdx=$actual;pending=(Test-Path -LiteralPath $pending)}} | ConvertTo-Json -Compress
 """
 
 
-def admit_wsl_profile(host, transport) -> dict:
+def admit_wsl_profile(host, transport, *, provision_disk: bool = False) -> dict:
     profile = json.loads(transport.windows_command(wsl_profile_script(host)))
     # A shrunk filesystem can still inhabit an oversized VHD. Query the root
     # block device, independently of both filesystem size and physical free space.
@@ -185,17 +187,159 @@ def admit_wsl_profile(host, transport) -> dict:
         for k, v in expected.items()
         if config.get("wsl2", k, fallback=None) != v
     ]
-    if profile["disk_bytes"] > host.wsl_disk_gb * 1024**3:
-        changes.append(
-            f"wsl --manage {host.wsl_distribution} --resize {host.wsl_disk_gb}GB"
-        )
     if changes:
         raise ValueError(
             "Windows settings change required; return to integrator before applying host profile: "
             + "; ".join(changes)
             + f" (observed disk bytes={profile['disk_bytes']}, budget GiB={host.wsl_disk_gb})"
         )
+    # df's used blocks include the host-owned Cargo/uv caches on this root
+    # filesystem. Reserve a whole proof build before shrinking or installing.
+    used = int(transport.shell_command("df -Pk / | tail -1 | awk '{print $3}'")) * 1024
+    budget = host.wsl_disk_gb * 1024**3
+    profile["used_bytes"] = used
+    if used + host.proof_build_gb * 1024**3 > budget:
+        raise ValueError(
+            f"{host.name}: {used} used bytes plus {host.proof_build_gb} GiB proof headroom "
+            f"exceeds {host.wsl_disk_gb} GiB disk budget"
+        )
+    if profile["disk_bytes"] != budget or profile["pending"]:
+        if not provision_disk:
+            raise ValueError(
+                f"{host.name}: disk cap differs; run trunk_loop.py provision --host {host.name}"
+            )
+        # The reviewed WSL engine shrinks ext4 before its VHDX (see the owning
+        # design). Refuse unknown implementations rather than probing by mutation.
+        reviewed = str(host.wsl_engine_version)
+        version = transport.windows_command("wsl.exe --version").replace("\0", "")
+        if not re.fullmatch(
+            rf".*:\s*{re.escape(reviewed)}(?:\.0)?\s*",
+            version.splitlines()[0] if version else "",
+        ):
+            raise ValueError(
+                f"disk provisioning requires the reviewed WSL {reviewed} implementation "
+                f"(tools/cross_hosts.toml wsl_engine_version for {host.name})"
+            )
+        name = ps(host.wsl_distribution)
+        pending = ps(
+            str(PureWindowsPath(host.wsl_vhdx).parent / ".molt-disk-maintenance")
+        )
+        stopped = (
+            f"& wsl.exe --terminate {name}\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\n"
+            "$running=@(& wsl.exe --list --running --quiet)\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+            "$running=@($running | ForEach-Object { ($_.Replace([string][char]0,'')).Trim() } | Where-Object { $_ })\n"
+            "if ($running.Count) { throw ('Other WSL distributions are running; cannot release the VM for disk maintenance: '+($running -join ', ')) }\n"
+            # vmIdleTimeout=-1 retains the VM's internal disk attachment even
+            # after termination. Release only an idle VM with no running distro.
+            "& wsl.exe --shutdown\nif ($LASTEXITCODE) { exit $LASTEXITCODE }"
+        )
+        # Do not interrupt an existing farm proof. Only this distro is stopped;
+        # An idle VM release is refused if another distribution is running.
+        transport.shell_command(
+            f"set -eu\nlock={shlex.quote(host.remote_dir + '/trunk-worker.lock')}\n"
+            'if test -f "$lock"; then flock -n "$lock" true; fi'
+        )
+        if profile["disk_bytes"] != budget:
+            transport.windows_command(
+                f"$ErrorActionPreference='Stop'\n"
+                f"[IO.File]::WriteAllText({pending},'molt.wsl-disk-maintenance.v1')\n"
+                f"{stopped}\n"
+                f"& wsl.exe --manage {name} --resize {host.wsl_disk_gb}GB\n"
+                "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
+                timeout=900,
+            )
+        transport.windows_command(
+            f"$ErrorActionPreference='Stop'\n& wsl.exe -d {name} --user root -- fstrim -av\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+            f"{stopped}\n"
+            f"& wsl.exe --manage {name} --compact\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\n"
+            f"Remove-Item -LiteralPath {pending} -ErrorAction Stop",
+            timeout=900,
+        )
+        return admit_wsl_profile(host, transport)
     return profile
+
+
+def wsl_systemd_script() -> str:
+    """Preserve other guest settings; publish only a changed boot declaration."""
+    return r"""set -eu
+test -x /usr/lib/systemd/systemd && test /sbin/init -ef /usr/lib/systemd/systemd && command -v udevadm >/dev/null || {
+ echo 'molt-gate requires the systemd, systemd-sysv and udev system prerequisites' >&2; exit 2;
+}
+config=/etc/wsl.conf
+test ! -L "$config" || { echo 'Refusing symlink /etc/wsl.conf' >&2; exit 2; }
+test ! -e "$config" || test -f "$config" || { echo 'Refusing non-file /etc/wsl.conf' >&2; exit 2; }
+input=/dev/null
+test ! -e "$config" || input="$config"
+temp=$(mktemp /etc/.molt-wsl.conf.XXXXXX)
+trap 'rm -f "$temp"' EXIT
+if test -f "$config"; then cp -p -- "$config" "$temp"; else chmod 644 "$temp"; fi
+awk '
+ /^[[:space:]]*\[/ {
+   if (boot && !setting) { print "systemd=true"; setting=1 }
+   boot=(tolower($0) ~ /^[[:space:]]*\[boot\][[:space:]]*([#;].*)?$/)
+   if (boot && ++sections > 1) exit 2
+ }
+ boot && tolower($0) ~ /^[[:space:]]*systemd[[:space:]]*=/ {
+   if (++keys > 1) exit 2
+   print "systemd=true"; setting=1; next
+ }
+ { print }
+ END {
+   if (sections > 1 || keys > 1) exit 2
+   if (!sections) print "[boot]"
+   if (!setting) print "systemd=true"
+ }' "$input" > "$temp" || {
+ echo 'Ambiguous [boot] systemd declaration in /etc/wsl.conf; preserved original' >&2; exit 2;
+}
+changed=false
+if ! cmp -s "$temp" "$config"; then
+ mv -- "$temp" "$config"
+ changed=true
+fi
+restart=false
+if test "$changed" = true || test "$(cat /proc/1/comm)" != systemd; then restart=true; fi
+printf '{"changed":%s,"restart":%s}\n' "$changed" "$restart"
+"""
+
+
+def admit_wsl_guest(host, transport) -> dict:
+    """Admit the real root UUID namespace, never fabricate a device alias."""
+    return json.loads(
+        transport.shell_command(
+            r"""set -eu
+test "$(cat /proc/1/comm)" = systemd || { echo 'molt-gate requires systemd as PID 1; run trunk_loop.py provision --host molt-gate' >&2; exit 2; }
+udevadm settle --timeout=30
+root_device=$(findmnt -nro SOURCE /)
+uuid=$(findmnt -nro UUID /)
+mapping=/dev/disk/by-uuid/$uuid
+if test -z "$uuid" || ! test -b "$mapping" || ! test "$mapping" -ef "$root_device"; then
+ echo "Missing root filesystem UUID mapping: /dev/disk/by-uuid/$uuid for $root_device" >&2; exit 2
+fi
+printf '{"systemd":true,"root_uuid":"%s"}\n' "$uuid"
+"""
+        )
+    )
+
+
+def provision_wsl_guest(host, transport) -> dict:
+    # As for disk maintenance, never restart an active farm proof.
+    transport.shell_command(
+        f"set -eu\nlock={shlex.quote(host.remote_dir + '/trunk-worker.lock')}\n"
+        'if test -f "$lock"; then flock -n "$lock" true; fi'
+    )
+    state = json.loads(transport.wsl_root_command(wsl_systemd_script()))
+    if state["restart"]:
+        transport.windows_command(
+            f"& wsl.exe --terminate {ps(host.wsl_distribution)}\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }"
+        )
+    return {
+        **admit_wsl_guest(host, transport),
+        "config_changed": state["changed"],
+        "restarted": state["restart"],
+    }
 
 
 def provision_host(args, *, transport=None) -> dict:
@@ -207,7 +351,6 @@ def provision_host(args, *, transport=None) -> dict:
         raise ValueError("provision requires an inventoried SSH proof host")
     host_paths(host, "provision")
     transport = transport or cross.SSHTransport(host)
-    profile = admit_wsl_profile(host, transport) if host.wsl_distribution else None
     # Report capacity BEFORE downloading a toolchain or cloning the repository.
     if host.is_windows:
         disk = "$d=Get-PSDrive C; [pscustomobject]@{free=$d.Free} | ConvertTo-Json -Compress"
@@ -229,6 +372,12 @@ def provision_host(args, *, transport=None) -> dict:
         raise ValueError(
             f"{host.name}: {free} bytes free; needs {host.proof_build_gb} GiB proof headroom"
         )
+    profile = (
+        admit_wsl_profile(host, transport, provision_disk=True)
+        if host.wsl_distribution
+        else None
+    )
+    guest = provision_wsl_guest(host, transport) if host.wsl_distribution else None
     import tomllib
 
     releases = tomllib.loads(
@@ -257,6 +406,7 @@ def provision_host(args, *, transport=None) -> dict:
         "free_bytes": free,
         "proof_build_gb": host.proof_build_gb,
         "wsl": profile,
+        "guest": guest,
         "install_log": result,
         "retention": retention,
     }
@@ -350,10 +500,10 @@ def checked(argv: list[str], *, cwd: Path = _REPO_ROOT, timeout: int = 180) -> s
     return result.stdout.strip()
 
 
-def exact_commit(revision: str) -> str:
+def exact_commit(revision: str, repo: Path = _REPO_ROOT) -> str:
     # Resolve before crossing a shell or using the value as an evidence path.
     commit = checked(
-        ["git", "-C", str(_REPO_ROOT), "rev-parse", "--verify", revision + "^{commit}"]
+        ["git", "-C", str(repo), "rev-parse", "--verify", revision + "^{commit}"]
     )
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("expected one full Git commit")
@@ -383,14 +533,23 @@ def host_paths(host, nonce: str) -> tuple[str, str]:
     )
 
 
-def selected_host(inventory: Path, name: str, cells: list[str]):
+def selected_host(
+    inventory: Path, name: str, cells: list[str], *, landing: bool = False
+):
     cross = authorities()
     host = next((h for h in cross.parse_inventory(inventory) if h.name == name), None)
     if host is None:
         raise ValueError(f"unknown host {name!r}")
     if host.transport != "ssh" or not host.launcher or not host.proof_cells:
         raise ValueError(f"{name}: no admitted SSH proof host configuration")
-    if not cells or len(set(cells)) != len(cells) or set(cells) - set(host.proof_cells):
+    if landing:
+        if host.os is not cross.HostOS.LINUX or cells != ["landing"]:
+            raise ValueError(
+                "remote landing gates require an admitted Linux proof host"
+            )
+    elif (
+        not cells or len(set(cells)) != len(cells) or set(cells) - set(host.proof_cells)
+    ):
         raise ValueError(f"{name}: select unique commands from {host.proof_cells}")
     host_paths(host, "preflight")
     if host.is_windows:
@@ -422,9 +581,10 @@ from tools.proof_plan import ProofPlan,_topological_commands
 from tools.toolchain_env import selected_toolchains
 from molt.tool_releases import tool_release,host_asset
 plan=ProofPlan.load()
-cells=sys.argv[1:]
+explicit=sys.argv[1:2]==['--toolchains']
+cells=[] if explicit else sys.argv[1:]
 commands={c.id:c for cell in cells for c in _topological_commands(plan,command_id=cell)}
-names=selected_toolchains(plan,commands=cells,family=None,matrix_cell=None,toolchains=[])
+names=sys.argv[2:] if explicit else selected_toolchains(plan,commands=cells,family=None,matrix_cell=None,toolchains=[])
 policies={p.name:p for p in plan.toolchain_policies}
 tools={}
 def release(name):
@@ -439,13 +599,23 @@ print(json.dumps({'toolchains':names,'releases':tools,'commands':{k:dict(v.data)
 """
 
 
-def describe(host, transport, checkout: str, cells: list[str]) -> dict:
+def describe(
+    host, transport, checkout: str, cells: list[str], *, toolchains=None
+) -> dict:
     raw = transport.shell_command(
-        remote_argv(host, uv_python("-c", DESCRIBE, *cells), cwd=checkout),
+        remote_argv(
+            host,
+            uv_python(
+                "-c",
+                DESCRIBE,
+                *(cells if toolchains is None else ["--toolchains", *toolchains]),
+            ),
+            cwd=checkout,
+        ),
         timeout=180,
     )
     result = json.loads(raw)
-    if set(cells) - set(result["commands"]):
+    if toolchains is None and set(cells) - set(result["commands"]):
         raise ValueError("subject policy omitted a selected command")
     return result
 
@@ -535,22 +705,24 @@ def prepare_checkouts(
         transport.shell_command(remote_argv(host, argv), timeout=180)
 
 
-def start(args) -> Path:
+def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path:
     cross = authorities()
-    host = selected_host(args.inventory, args.host, args.cell)
-    subject = exact_commit(args.commit)
-    controller = exact_commit("HEAD")
+    host = selected_host(
+        args.inventory, args.host, args.cell, landing=landing is not None
+    )
+    subject = exact_commit(args.commit, repo)
+    controller = exact_commit("HEAD", repo)
     # The controller must be committed: copying dirty source would make the
     # worker identity fictional. Test the clean named controller, not a tar overlay.
     if checked(
-        ["git", "-C", str(_REPO_ROOT), "status", "--porcelain", "--untracked-files=no"]
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"]
     ):
         raise ValueError("commit controller changes before a farm run")
     checked(
         [
             "git",
             "-C",
-            str(_REPO_ROOT),
+            str(repo),
             "merge-base",
             "--is-ancestor",
             subject,
@@ -560,12 +732,13 @@ def start(args) -> Path:
     transport = cross.SSHTransport(host)
     if host.wsl_distribution:
         admit_wsl_profile(host, transport)
+        admit_wsl_guest(host, transport)
     checkout, control = host_paths(host, transport._nonce)
     from molt.dx import artifact_root
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + transport._nonce
     run_root = (
-        artifact_root(_REPO_ROOT)
+        artifact_root(repo)
         / "evidence"
         / "trunk-loop"
         / subject
@@ -592,6 +765,8 @@ def start(args) -> Path:
         "state": "preparing",
     }
     record_path = run_root / "run.json"
+    if landing is not None:
+        record["landing"] = landing
     write_json(record_path, record)
     print(f"trunk-loop: recovery record {record_path}", flush=True)
     transport.prepare()
@@ -600,13 +775,13 @@ def start(args) -> Path:
     )
     if not re.fullmatch(r"[0-9a-f]{40}", remote_head):
         raise ValueError("cannot bind canonical checkout donor")
-    checked(["git", "-C", str(_REPO_ROOT), "cat-file", "-e", remote_head + "^{commit}"])
+    checked(["git", "-C", str(repo), "cat-file", "-e", remote_head + "^{commit}"])
     bundle = run_root / "source.bundle"
     checked(
         [
             "git",
             "-C",
-            str(_REPO_ROOT),
+            str(repo),
             "bundle",
             "create",
             str(bundle),
@@ -616,7 +791,11 @@ def start(args) -> Path:
         timeout=600,
     )
     prepare_checkouts(host, transport, bundle, subject, controller, checkout, control)
-    descriptor = describe(host, transport, checkout, args.cell)
+    descriptor = (
+        describe(host, transport, checkout, args.cell, toolchains=landing["toolchains"])
+        if landing is not None
+        else describe(host, transport, checkout, args.cell)
+    )
     record["selection"] = descriptor
     record["seeds"] = seed_inputs(descriptor, transport, run_root)
     write_json(record_path, record)
@@ -732,12 +911,12 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
             if (
                 path.is_absolute()
                 or ".." in path.parts
-                or len(path.parts) != 2
+                or not (2 <= len(path.parts) <= (16 if "landing" in record else 2))
                 or path.parts[0] not in record["cells"]
                 or item.file_size > 512 * 1024 * 1024
             ):
                 raise ValueError(f"unexpected result archive member {item.filename}")
-            target = root / path.parts[0] / record["run_id"] / path.name
+            target = root / path.parts[0] / record["run_id"] / Path(*path.parts[1:])
             target.parent.mkdir(parents=True, exist_ok=True)
             content = archive.read(item)
             if target.exists():
@@ -883,12 +1062,18 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     code = (
         "import json,os,pathlib,sys; from tools.proof_plan import ProofPlan,admit_toolchains; "
         "from tools.toolchain_env import selected_toolchains; p=ProofPlan.load(); "
-        "n=selected_toolchains(p,commands=sys.argv[1:],family=None,matrix_cell=None,toolchains=[]); "
+        "n=json.loads(sys.argv[1]) if sys.argv[2]=='landing' else selected_toolchains(p,commands=sys.argv[3:],family=None,matrix_cell=None,toolchains=[]); "
         "a=admit_toolchains(p.toolchain_policies,n,python_executable=pathlib.Path(sys.executable),environ=os.environ,root=pathlib.Path.cwd()); "
         "print(json.dumps({'toolchains':n,'fingerprints':a.fingerprints}))"
     )
     result = authorities()._guarded_run(
-        uv_python("-c", code, *record["cells"]),
+        uv_python(
+            "-c",
+            code,
+            json.dumps(record["selection"]["toolchains"]),
+            "landing" if "landing" in record else "proof",
+            *record["cells"],
+        ),
         cwd=checkout,
         env=env,
         timeout=900,
@@ -978,6 +1163,15 @@ def worker(record_path: Path) -> int:
                 "--receipt",
                 str(directory / "receipt.json"),
             )
+            if "landing" in record:
+                argv = uv_python(
+                    "-m",
+                    "tools.trunk_landing",
+                    "--record",
+                    str(record_path),
+                    "--output",
+                    str(directory),
+                )
             write_json(
                 directory / "cmd.json",
                 {"argv": argv, "commit": record["commit"], "cwd": record["checkout"]},
@@ -1003,12 +1197,18 @@ def worker(record_path: Path) -> int:
             if (
                 receipt.get("source_commit") != record["commit"]
                 or receipt.get("source_tree_state") != "clean"
-                or cell not in {c.get("id") for c in receipt.get("commands", [])}
+                or (
+                    "landing" not in record
+                    and cell not in {c.get("id") for c in receipt.get("commands", [])}
+                )
             ):
                 raise ValueError(
                     "proof receipt does not bind the selected clean source and cell"
                 )
             cells.append({"id": cell, "returncode": returncode, "receipt": True})
+            if "landing" in record and receipt.get("status") == "infrastructure":
+                status = "infrastructure"
+                break
             if receipt.get("execution", {}).get("global_stop_triggered"):
                 status = "infrastructure"
                 break
@@ -1050,9 +1250,11 @@ def publish_worker_result(record: dict, stage: Path, cells: list, status: str) -
     archive = stage / "results.zip"
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as output:
         for cell in record["cells"]:
-            for item in sorted((stage / cell).iterdir()):
+            for item in sorted((stage / cell).rglob("*")):
                 if item.is_file():
-                    output.write(item, cell + "/" + item.name)
+                    output.write(
+                        item, cell + "/" + item.relative_to(stage / cell).as_posix()
+                    )
     write_json(
         stage / "terminal.json",
         {

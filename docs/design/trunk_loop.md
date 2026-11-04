@@ -6,8 +6,7 @@ farm proofs; landing, ledger edits and lane retirement remain with the integrato
 The 2026-11-03 owner correction prioritizes Linux provisioning, then opt-in
 remote execution of the existing landing gates. The queue, runner lock,
 `last-green`, results and push remain on the Mac; no GitHub self-hosted runner
-is registered. This provisioning slice does not implement remote landing gates
-or claim a K1 cohort measurement. Their qualification follows host admission.
+is registered. Linux execution does not establish Mac or Windows qualification.
 
 ## Decision and boundary
 
@@ -42,6 +41,9 @@ uv owns bootstrap Python and dependencies; the inventory cannot select a
 hand-made interpreter. Host-side Python entry points use
 `uv run --locked python -B` in the selected checkout. The existing immutable
 development-image publisher still owns proof environments and their admission.
+Provisioning requires CMake among its system prerequisites and runs
+`molt doctor --json --strict`: a JSON error report cannot count as a successful
+install merely because the report-only doctor mode exits zero.
 
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of
@@ -52,12 +54,53 @@ session; the declared `vmIdleTimeout=-1` must already match before provisioning.
 The inventory declares the WSL VHDX's C: identity, 80 GiB disk budget, 24 GiB
 memory, 4 GiB swap and a minimum 20 GiB proof-build headroom. Admission verifies
 the distribution's registered VHDX path and reads free space through `/mnt/c`,
-never the virtual ext4 free-space report. A mismatched Windows profile or a disk
-above budget stops before installation for the integrator's Windows settings
-decision (2026-11-03 dispatch). This slice verifies the profile; it does not yet
-write `.wslconfig`, resize, trim or compact the disk. Those host mutations and
-the live install/measurement remain pending that decision. Sparse VHDs are not
-enabled, and `MoltCodonUbuntu` remains untouched.
+never the virtual ext4 free-space report. A mismatched Windows profile stops
+before installation. Under the owner's 2026-11-02 approval, `provision` caps
+`molt-gate` at 80 GiB, trims its filesystem and compacts its VHDX. Root used bytes
+(including Cargo/uv caches) plus 20 GiB build headroom must fit the cap. Only
+`molt-gate` is stopped. With the correct block-device size a subsequent run
+performs no disk mutation; `run` admits but never changes the cap. The declared
+`vmIdleTimeout=-1` retains WSL's internal attachment after distro termination.
+Disk maintenance releases the idle utility VM only after `--list --running
+--quiet` proves no distribution is running; it refuses if another distro is
+active. Neither
+`.wslconfig` nor sparse mode is changed.
+A pending marker beside the registered VHDX survives an interrupted shrink or
+compaction. It is removed only after successful compaction, so a resumed
+provision cannot mistake a resized disk for completed disk maintenance.
+
+The reviewed [WSL 3.0.3 resize implementation, lines 1813-1870](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/service/exe/LxssUserSession.cpp#L1813-L1870)
+checks that the VHD is detached, resizes ext4 first when shrinking, ejects it,
+then shrinks the VHDX. Windows' unsafe-size flag follows the successful ext4
+resize: Windows cannot itself validate ext4's safe minimum. The
+[client, lines 902-976](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/common/WslClient.cpp#L902-L976)
+routes `--resize` and `--compact` separately.
+[Compaction, lines 1873-1922](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/service/exe/LxssUserSession.cpp#L1873-L1922)
+uses the registered disk and offline discard before VHD compaction. Provisioning
+also runs `fstrim -av` as root before stopping and compacting the distro.
+Unknown WSL versions are refused before disk mutation. This implementation
+supports shrinking, so no used-bytes-only substitute is needed.
+
+## Opt-in remote landing gates
+
+Start the Mac landing runner with `MOLT_LANDING_GATE_HOST=molt-gate` to execute
+its selected gate cohorts on the admitted Linux host. The default remains Mac
+execution until the owner has qualified ten green farm landings; no automatic
+promotion or second landing counter is introduced. Queue records, locking,
+candidate construction, merge, push and lane retirement stay with the Mac.
+
+The Mac serializes the selected `SelectedGate` values and their toolchain union.
+The trunk runner transfers the exact commit, then the Linux worker prepares
+those gates through the normal `GateConfig` and `run_selected_gates` authorities.
+A missing remote prerequisite refuses the run; it cannot silently drop a gate
+or retry it locally. The worker has no publication operation. The collected
+receipt binds the commit, tree, clean state, exact request digest, admitted
+toolchains and all selected outcomes. The Mac verifies that binding and checks
+its own source again before its existing push boundary. Candidate failures stay
+candidate failures; unavailable hosts, unknown completion and incomplete receipts
+stay infrastructure failures. Transport logs, per-gate streams and executor
+receipts remain in the trunk run's evidence custody. This opt-in changes the
+execution platform to Linux; it does not prove platform-specific Mac obligations.
 
 Proof workers select one host-owned `cache/cargo-workspace` Cargo target across
 run worktrees. Existing guarded-controller cache retention remains enabled;
@@ -71,6 +114,21 @@ The selected command/dependency closure supplies required toolchains. Existing
 (which owns locked `uv sync`) and `proof_plan.admit_toolchains` retain admission.
 Pinned releases use `molt.tool_releases`, not a second downloader or installer.
 Unsupported or absent providers fail provisioning before any test starts.
+Persistent Linux volumes also need the unique filesystem UUID mapping required
+by [durable file identity](durable_file_identity.md). WSL images without
+`/dev/disk/by-uuid` cannot run guarded doctor/proof commands. Under the
+2026-11-04 correction, provisioning declares `[boot] systemd=true` in
+`molt-gate`'s `/etc/wsl.conf`, preserving other sections and publishing only
+changed bytes. This follows Microsoft's
+[documented WSL systemd mechanism](https://learn.microsoft.com/windows/wsl/systemd#how-to-enable-systemd).
+It restarts only `molt-gate` when the declaration changes or PID 1 has not yet
+become systemd; it never restarts another distribution. An active farm-worker
+lock refuses the restart. Provisioning and proof-run admission wait for udev
+and require the root filesystem's real `/dev/disk/by-uuid/<UUID>` block-device
+mapping. A missing or mismatched mapping refuses with its path before install
+or proof staging. The systemd/udev packages are host prerequisites; no UUID link
+is fabricated and no durable-identity contract is changed (HF-761 owns the
+udev-free Linux provider).
 The inventory also selects the two short, disjoint fixture-output roles that
 `ci.yml`'s portability setup supplies. Each run exclusively claims a child and
 admits it through `proof_queue_pkg.cargo_output_layout.declare_root` before tests.

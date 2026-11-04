@@ -8796,6 +8796,146 @@ def _integration_python(source: str) -> str:
     return shlex.join([sys.executable, "-c", source])
 
 
+@pytest.mark.parametrize("exitcode", [0, 7])
+def test_remote_landing_executes_selected_gates_without_publishing(
+    drv, origin_and_clone, tmp_path, borrowed_gate_python, exitcode
+):
+    from tools import trunk_landing
+
+    _, work = origin_and_clone
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    command = _integration_python(
+        f"print('remote gate ran'); raise SystemExit({exitcode})"
+    )
+    commit = _commit_integration_policy(work, [command])
+    gate = SelectedGate(command, ())
+    request = {
+        "commit": commit,
+        "tree": _git(work, "rev-parse", "HEAD^{tree}").stdout.strip(),
+        "gates": trunk_landing.gate_records([gate]),
+        "toolchains": [],
+    }
+    output = tmp_path / "remote-output"
+    output.mkdir()
+    rc = trunk_landing.execute({"landing": request, "checkout": str(work)}, output)
+    receipt = json.loads((output / "receipt.json").read_text())
+    assert rc == (0 if exitcode == 0 else 1)
+    assert receipt["status"] == ("success" if exitcode == 0 else "failure")
+    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text()
+    if exitcode:
+        with pytest.raises(CandidateFailure, match="remote landing gate failed"):
+            trunk_landing.admit_result(receipt, request)
+    else:
+        trunk_landing.admit_result(receipt, request)
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == upstream
+    )
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == commit
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("source_commit", "f" * 40),
+        ("source_tree", "f" * 40),
+        ("source_tree_state", "dirty"),
+        ("request_sha256", "f" * 64),
+        ("passed", []),
+        ("seconds", []),
+        ("toolchains", {}),
+    ],
+)
+def test_remote_landing_admission_rejects_substituted_or_partial_success(field, value):
+    from tools import trunk_landing
+
+    gates = [
+        SelectedGate(
+            ("python", "-c", "print('with spaces')"),
+            ("python",),
+            collection_command=("python", "-V"),
+        )
+    ]
+    request = {
+        "commit": "1" * 40,
+        "tree": "2" * 40,
+        "gates": trunk_landing.gate_records(gates),
+        "toolchains": ["python"],
+    }
+    assert trunk_landing.decode_gates(request["gates"]) == tuple(gates)
+    receipt = {
+        "schema": trunk_landing.SCHEMA,
+        "source_commit": request["commit"],
+        "source_tree": request["tree"],
+        "source_tree_state": "clean",
+        "request_sha256": trunk_landing.request_digest(request),
+        "status": "success",
+        "passed": [0],
+        "seconds": [[1.0, "gate"]],
+        "toolchains": {"python": {"identity": "remote"}},
+    }
+    trunk_landing.admit_result(receipt, request)
+    receipt[field] = value
+    with pytest.raises(DriverError):
+        trunk_landing.admit_result(receipt, request)
+
+
+def test_remote_landing_transport_failure_is_infrastructure(drv, tmp_path, monkeypatch):
+    from tools import trunk_landing, trunk_loop
+
+    monkeypatch.setattr(trunk_loop, "checked", lambda *_a, **_k: "2" * 40)
+
+    def failed(*_a, **_k):
+        raise RuntimeError("SSH unavailable")
+
+    monkeypatch.setattr(trunk_loop, "start", failed)
+    with pytest.raises(
+        DriverError, match="infrastructure failed.*SSH unavailable"
+    ) as error:
+        trunk_landing.run_remote(tmp_path, "1" * 40, [], host="molt-gate")
+    assert not isinstance(error.value, CandidateFailure)
+
+
+@pytest.mark.parametrize("farm_failure", [False, True])
+def test_integrate_remote_gate_opt_in_keeps_mac_publication_boundary(
+    drv, origin_and_clone, monkeypatch, farm_failure
+):
+    from tools import trunk_landing
+
+    _, work = origin_and_clone
+    commit = _commit_integration_policy(work, ["echo selected-on-mac"])
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    monkeypatch.setenv(trunk_landing.HOST_SETTING, "molt-gate")
+    seen = []
+
+    def remote(repo, selected, gates, *, host):
+        assert repo == work and selected == commit and host == "molt-gate"
+        assert [gate.command for gate in gates] == ["echo selected-on-mac"]
+        seen.append(host)
+        if farm_failure:
+            raise DriverError("farm unavailable")
+        return [(1.0, "echo selected-on-mac")]
+
+    monkeypatch.setattr(trunk_landing, "run_remote", remote)
+    monkeypatch.setattr(
+        drv,
+        "run_selected_gates",
+        lambda *_a, **_k: pytest.fail("local gate ran despite remote opt-in"),
+    )
+    if farm_failure:
+        with pytest.raises(DriverError, match="farm unavailable"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+        expected = upstream
+    else:
+        assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
+        expected = commit
+    assert seen == ["molt-gate"]
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == expected
+    )
+
+
 @pytest.mark.parametrize("remote", ["origin", "publication"])
 @pytest.mark.parametrize("attributed", [False, True], ids=["clean", "rejected"])
 def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
