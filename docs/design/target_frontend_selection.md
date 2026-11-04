@@ -298,6 +298,15 @@ Look-alike sites left unchanged:
 - `[[toolchain_policy]] target-pythons` admits any patch of each minor for the
   Unicode generator. It is not a frontend.
 
+A sibling with the same defect, not migrated in slice 1:
+`tests/compliance/py313` and `py314` `test_spec.py` compile with
+`python_interpreter.python_command_for_min_version`. From a 3.12 harness that
+returns a bare uv minor link (measured 2026-11-04: 3.13.18 and 3.14.10, neither
+with `msgspec`), so 11 of their cases fail to import the compiler. No proof
+cell runs that tree (HF-99), and the test dependency graph excludes it from
+landing selection. Moving it onto `ensure_python_release` is a later HF-726
+slice.
+
 Other `--python-version` callers: the three R6 lanes,
 `tools/verified_subset.py` (already exact), and two developer commands that
 forward the flag to `tests/molt_diff.py`: `molt diff`
