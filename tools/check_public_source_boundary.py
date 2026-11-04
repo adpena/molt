@@ -7,7 +7,10 @@ reads the tracked paths (`git ls-files`) and refuses two kinds:
 - a path under a local artifact root (logs, scratch, build output, machine-local
   settings, raw benchmark logs and guard traces);
 - a repository-root entry outside `ROOT_ENTRIES`. A new root entry is a
-  deliberate edit of that set, reviewed with the change that needs it.
+  deliberate edit of that set, reviewed with the change that needs it;
+- a HEAD whose history touches a `PURGED_PATHS` entry. Those files were purged
+  from all history on 2026-11-04 (HF-770); old SHAs still resolve in reflogs,
+  bundles and stale clones, and landing one would republish the files.
 
 It runs in the always-run static gates (`tools/proof_plan.toml`) and the
 `public-source-boundary` pre-commit hook. Standard library only, so it runs
@@ -104,6 +107,15 @@ ROOT_ENTRIES: frozenset[str] = frozenset(
 )
 
 
+# Files purged from all Git history on 2026-11-04 (HF-770): Wrangler and
+# Miniflare caches, one of them holding request geolocation metadata.
+PURGED_PATHS: tuple[str, ...] = (
+    "node_modules/.mf/cf.json",
+    "node_modules/.cache/wrangler/wrangler-account.json",
+    "examples/cloudflare-demo/.wrangler/cache/wrangler-account.json",
+)
+
+
 @dataclass(frozen=True)
 class Violation:
     path: str
@@ -121,9 +133,9 @@ def boundary_violations(paths: Iterable[str]) -> list[Violation]:
     return violations
 
 
-def tracked_paths(repo: Path) -> list[str]:
+def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", *args],
         cwd=repo,
         capture_output=True,
         check=False,
@@ -131,10 +143,22 @@ def tracked_paths(repo: Path) -> list[str]:
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"git ls-files failed in {repo} (exit {result.returncode}): "
+            f"git {args[0]} failed in {repo} (exit {result.returncode}): "
             + result.stderr.decode("utf-8", "replace").strip()
         )
-    return [path for path in result.stdout.decode("utf-8").split("\0") if path]
+    return result.stdout.decode("utf-8")
+
+
+def tracked_paths(repo: Path) -> list[str]:
+    return [path for path in _git(repo, "ls-files", "-z").split("\0") if path]
+
+
+def purged_history(repo: Path, rev: str = "HEAD") -> list[Violation]:
+    """The newest commit in `rev`'s history that touches a purged path, if any."""
+    commit = _git(repo, "log", "-1", "--format=%H", rev, "--", *PURGED_PATHS).strip()
+    if not commit:
+        return []
+    return [Violation(commit, "history touches a purged path (HF-770)")]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         violations = boundary_violations(tracked_paths(args.repo))
+        violations += purged_history(args.repo)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"check_public_source_boundary: {exc}", file=sys.stderr)
         return 2
@@ -163,7 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "fix: keep logs, scratch and lane evidence outside tracked source and run "
         "`git rm --cached -- <path>`; a new root entry is an edit of ROOT_ENTRIES "
-        "in tools/check_public_source_boundary.py",
+        "in tools/check_public_source_boundary.py; a purged-history commit means "
+        "the branch holds pre-2026-11-04 history: rebuild it on the fetched "
+        "origin/main (map old SHAs through the history-rewrite commit map)",
         file=sys.stderr,
     )
     return 1
