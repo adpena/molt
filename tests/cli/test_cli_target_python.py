@@ -502,10 +502,8 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
 def test_compiler_host_capability_matches_package_admission(version, supported):
     import tomllib
     from packaging.specifiers import SpecifierSet
-    from molt.target_python import (
-        frontend_python_supported,
-        _parse_target_python_version,
-    )
+    from molt.host_python import frontend_python_supported
+    from molt.target_python import _parse_target_python_version
 
     root = Path(__file__).resolve().parents[2]
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
@@ -519,15 +517,17 @@ def test_compiler_host_capability_matches_package_admission(version, supported):
 
 def test_defective_compiler_host_refuses_before_user_source_parse(monkeypatch):
     from types import SimpleNamespace
+    import molt.host_python as host_python
     import molt.target_python as target_python
     from molt.frontend import compile_to_tir, SimpleTIRGenerator
 
     monkeypatch.setattr(
-        target_python,
+        host_python,
         "sys",
         SimpleNamespace(
             version_info=(3, 14, 0),
             implementation=SimpleNamespace(name="cpython"),
+            executable="/opt/python3.14",
         ),
     )
     # Invalid source would raise SyntaxError if parsing were reached.
@@ -545,14 +545,16 @@ def test_defective_compiler_host_refuses_before_user_source_parse(monkeypatch):
 
 def test_defective_compiler_host_cli_refuses_before_dispatch(monkeypatch, capsys):
     from types import SimpleNamespace
-    import molt.target_python as target_python
+    import molt.host_python as host_python
     from molt.cli import entrypoint
 
     monkeypatch.setattr(
-        target_python,
+        host_python,
         "sys",
         SimpleNamespace(
-            version_info=(3, 14, 0), implementation=SimpleNamespace(name="cpython")
+            version_info=(3, 14, 0),
+            implementation=SimpleNamespace(name="cpython"),
+            executable="/opt/python3.14",
         ),
     )
 
@@ -562,6 +564,62 @@ def test_defective_compiler_host_cli_refuses_before_dispatch(monkeypatch, capsys
     monkeypatch.setattr(entrypoint, "_build_entrypoint_parser", unexpected_dispatch)
     assert entrypoint.main(build_fn=lambda _request: 0) == 2
     assert "3.14.1+" in capsys.readouterr().err
+
+
+# Everything Python loads for `molt` / `python -m molt.cli` before the host check.
+_HOST_CHECK_PRELUDE = (
+    "src/molt/__init__.py",
+    "src/molt/__main__.py",
+    "src/molt/cli/__init__.py",
+    "src/molt/cli/__main__.py",
+    "src/molt/host_python.py",
+    "src/sitecustomize.py",
+)
+
+
+@pytest.mark.parametrize("relative", _HOST_CHECK_PRELUDE)
+def test_host_check_prelude_parses_on_old_pythons(relative: str) -> None:
+    """HF-759: an old interpreter must reach the check, not a SyntaxError."""
+    root = Path(__file__).resolve().parents[2]
+    ast.parse((root / relative).read_text(encoding="utf-8"), feature_version=(3, 7))
+
+
+def test_unsupported_interpreter_names_itself_and_the_uv_fix() -> None:
+    """HF-759: Xcode's 3.9 once failed on ``typing.Never`` with no hint of the cause."""
+    import os
+    import sys
+
+    from tests.process_guard_common import run_guarded_test_process
+
+    root = Path(__file__).resolve().parents[2]
+    # The child claims to be 3.9.6 and, like an old interpreter, cannot import
+    # any Molt module outside the prelude. -S keeps sitecustomize from
+    # preloading them. Only a check that runs first can name the cause.
+    probe = (
+        "import importlib.abc, runpy, sys\n"
+        "prelude = {'molt', 'molt.cli', 'molt.cli.__main__', 'molt.host_python'}\n"
+        "class OldPython(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name.startswith('molt.') and name not in prelude:\n"
+        "            raise ImportError(name + ' needs a newer Python')\n"
+        "sys.meta_path.insert(0, OldPython())\n"
+        "sys.version_info = (3, 9, 6, 'final', 0)\n"
+        "runpy.run_module('molt.cli', run_name='__main__', alter_sys=True)\n"
+    )
+    completed = run_guarded_test_process(
+        [sys.executable, "-S", "-c", probe, "--help"],
+        cwd=root,
+        env={**os.environ, "PYTHONPATH": str(root / "src")},
+        timeout=60,
+    )
+    assert completed.returncode == 2, completed.stderr
+    assert completed.stdout == ""
+    assert "Traceback" not in completed.stderr
+    assert completed.stderr.startswith(
+        "molt: error: Molt requires CPython 3.12+ (Python 3.14 requires 3.14.1+), "
+        f"but this process runs cpython 3.9.6 ({sys.executable})."
+    )
+    assert "`uv run --python 3.12 molt ...`" in completed.stderr
 
 
 @pytest.mark.parametrize(

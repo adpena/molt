@@ -154,27 +154,47 @@ def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
         name="local",
         target="aarch64-apple-darwin",
         transport="ssh",
-        python=sys.executable,
         os=cross_run.HostOS.MACOS,
         launcher=cross_run.DetachedLauncher.POSIX_SESSION,
     )
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="detached-probe"\nversion="0.0.0"\nrequires-python=">=3.12"\n',
+        encoding="utf-8",
+    )
+    # Exercise the real uv wrapper without borrowing or resynchronizing the
+    # pytest process's immutable development image.
+    env = dict(os.environ)
+    env.update(
+        UV_PROJECT_ENVIRONMENT=str(tmp_path / "environment"),
+        UV_PYTHON=sys.executable,
+        UV_PYTHON_DOWNLOADS="never",
+        UV_OFFLINE="1",
+    )
+    locked = cross_run._guarded_run(
+        ["uv", "lock", "--project", str(tmp_path)], env=env, timeout=60
+    )
+    assert locked.returncode == 0, locked.stderr
     ready, release, complete = [
         tmp_path / name for name in ("ready", "release", "complete")
     ]
     child = """import json,os,pathlib,sys,time
 r,g,c=map(pathlib.Path,sys.argv[1:])
-r.write_text(json.dumps({'pid':os.getpid(),'session':os.getsid(0)}))
+def publish(path,value):
+    stage=path.with_suffix('.tmp')
+    stage.write_text(value)
+    stage.replace(path)
+publish(r,json.dumps({'pid':os.getpid(),'session':os.getsid(0)}))
 deadline=time.monotonic()+15
 while not g.exists() and time.monotonic()<deadline:time.sleep(.01)
-if g.exists():c.write_text('completed after launcher exit')
+if g.exists():publish(c,'completed after launcher exit')
 """
     script = trunk_loop.detached_script(
         host,
-        [sys.executable, "-B", "-c", child, str(ready), str(release), str(complete)],
+        trunk_loop.uv_python("-c", child, str(ready), str(release), str(complete)),
         str(tmp_path),
     )
     launcher = subprocess.run(
-        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8"
+        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8", env=env
     )
     assert launcher.returncode == 0, launcher.stderr
     pid = trunk_loop.acknowledge(launcher.stdout)
@@ -185,10 +205,9 @@ if g.exists():c.write_text('completed after launcher exit')
     while not ready.exists() and pid_alive(pid):
         time.sleep(0.01)
     try:
-        assert json.loads(ready.read_text(encoding="utf-8")) == {
-            "pid": pid,
-            "session": pid,
-        }
+        observed = json.loads(ready.read_text(encoding="utf-8"))
+        assert observed["pid"] > 0
+        assert observed["session"] == pid
         assert pid != os.getsid(0)
     finally:
         release.write_text("parent already exited", encoding="utf-8")
@@ -231,7 +250,15 @@ def test_trunk_seed_inputs_reuses_content_addressed_archives(tmp_path, monkeypat
     local = tmp_path / "stage"
     local.mkdir()
     seeds = trunk_loop.seed_inputs(
-        {"releases": {"first": {"asset": asset}, "second": {"asset": asset}}},
+        {
+            "releases": {
+                "first": {"asset": asset},
+                "second": {"asset": asset},
+                # uv must never reach the archive provisioner, even when the
+                # selected proof policy includes it in the toolchain closure.
+                "uv": {},
+            }
+        },
         Transfer(),
         local,
     )

@@ -306,7 +306,6 @@ fn raw_integer_carriers_do_not_authorize_boxed_calls() {
         ("molt_object_field_get_ptr", 2),
         ("molt_tuple_from_values", 2),
         ("molt_list_from_values", 2),
-        ("molt_dataclass_new_from_values", 5),
     ] {
         assert!(
             runtime_import_return_abi(symbol, arity).is_some(),

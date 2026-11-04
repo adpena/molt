@@ -18,7 +18,7 @@ import _codecs as _core_codecs
 import importlib.util
 import os
 import sys
-from tests.stdlib_intrinsic_registry import install_registry
+from tests.stdlib_intrinsic_registry import install_registry, record_builtin_promotion
 
 
 def _load_module(name, path_text):
@@ -91,6 +91,7 @@ _signal_values = {{
 _stat_constants = (0,) * 74
 
 install_registry({{
+    "molt_function_set_builtin": record_builtin_promotion,
     "molt_codecs_decode": _codecs_decode,
     "molt_codecs_encode": _codecs_encode,
     "molt_codecs_normalize_encoding": lambda encoding: str(encoding).lower().replace("-", "_"),
@@ -217,6 +218,10 @@ writer_protocol.run_protocol(codecs_mod)
 pickle_mod = _load_module("molt_test_pickle", {str(STDLIB_ROOT / "pickle.py")!r})
 errno_mod = _load_module("molt_test_errno", {str(STDLIB_ROOT / "errno.py")!r})
 stat_mod = _load_module("molt_test_stat", {str(STDLIB_ROOT / "stat.py")!r})
+# The public facade must consume the real private producer, whose primitive
+# operations are supplied by this fixture's registry, not the host's signals.
+_private_signal = _load_module("_molt_private_signal_boundary", {str(STDLIB_ROOT / "_signal.py")!r})
+sys.modules["_signal"] = _private_signal
 signal_mod = _load_module("molt_test_signal", {str(STDLIB_ROOT / "signal.py")!r})
 
 checks = {{

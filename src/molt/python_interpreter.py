@@ -15,10 +15,10 @@ from pathlib import Path
 
 from typing import TYPE_CHECKING
 
+from molt.host_python import frontend_python_supported
 from molt.target_python import (
     TargetPythonVersion,
     _parse_target_python_version,
-    frontend_python_supported,
     require_supported_target_python,
 )
 

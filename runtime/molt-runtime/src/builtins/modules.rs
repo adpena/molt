@@ -655,7 +655,7 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
 /// Read one namespace item without overloading an object value as a miss/error
 /// sentinel. Exact dictionaries keep their borrowed fast path; subclasses and
 /// custom mappings retain Python's observable `__getitem__` dispatch.
-fn lookup_namespace_item(
+pub(crate) fn lookup_namespace_item(
     _py: &PyToken<'_>,
     namespace_bits: u64,
     name_bits: u64,

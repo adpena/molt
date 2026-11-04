@@ -710,6 +710,105 @@ x = ["a" for _ in range(n)]
     assert "list_append" not in kinds
 
 
+def test_dataclass_initializer_is_an_ordinary_compiled_function():
+    source = """
+from dataclasses import dataclass as record
+@record
+class Point:
+    x: int
+    y: int
+def make(x):
+    return Point(x, 2)
+"""
+    ir = compile_to_tir(source)
+    stores = [
+        function
+        for function in ir["functions"]
+        if {
+            op.get("s_value")
+            for op in function["ops"]
+            if op["kind"].startswith("set_attr")
+        }
+        == {"x", "y"}
+    ]
+    assert len(stores) == 1
+    assert len(stores[0]["params"]) == 3
+    assert not {"dataclass_new_values", "dataclass_set_class"} & {
+        op["kind"] for op in _all_ops(ir)
+    }
+    assert any(
+        op.get("s_value") == "molt_dataclasses_set_init_template" for op in _all_ops(ir)
+    )
+
+
+def test_user_dataclass_spelling_does_not_create_an_initializer_template():
+    ir = compile_to_tir("""
+def dataclass(cls):
+    return cls
+@dataclass
+class Point:
+    x: int
+""")
+    assert not any(
+        op.get("s_value") == "molt_dataclasses_set_init_template" for op in _all_ops(ir)
+    )
+
+
+def test_dataclass_template_survives_the_cli_open_namespace_premise():
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        ALL_INVALID_MEMBERS,
+    )
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    tree = ast.parse("""
+from dataclasses import dataclass as record, field
+@record
+class Point:
+    x: int
+    y: list = field(default_factory=list)
+def build(value):
+    return Point(value)
+""")
+    premise = PythonNamespacePremise(
+        None,
+        ALL_INVALID_MEMBERS,
+        ALL_INVALID_MEMBERS,
+        (),
+        tuple(
+            python_node_source_key(n)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.ClassDef)
+        ),
+    )
+    generator = SimpleTIRGenerator(
+        module_name="open_dataclass", namespace_premise=premise
+    )
+    generator.visit(tree)
+    ir = generator.to_json()
+    assert any(
+        op.get("s_value") == "molt_dataclasses_set_init_template" for op in _all_ops(ir)
+    )
+    bodies = [
+        f
+        for f in ir["functions"]
+        if {op.get("s_value") for op in f["ops"] if op["kind"].startswith("set_attr")}
+        == {"x", "y"}
+    ]
+    assert len(bodies) == 1
+    assert bodies[0]["params"] == ["__molt_closure__", "self", "x", "y"]
+    build = next(f for f in ir["functions"] if f["name"].endswith("__build"))
+    # The open premise keeps the live class: one positional call of the loaded
+    # global value, never a folded constructor.
+    loaded = [op["out"] for op in build["ops"] if op["kind"] == "module_get_global"]
+    calls = [
+        op["args"][0]
+        for op in build["ops"]
+        if op["kind"] in {"call_func", "call_guarded"}
+    ]
+    assert len(loaded) == 1 and calls == loaded
+
+
 def test_dataclass_constructor_after_callback_preserves_live_class_dispatch():
     src = """
 from dataclasses import dataclass
@@ -730,11 +829,12 @@ print(order.qty)
     assert "dataclass_new_values" not in kinds
     assert "dataclass_get" not in kinds
     # The decorator callback invalidates the binding proof. The constructor
-    # must call the published class, preserving its current construction policy.
+    # must call the published class, preserving its current construction policy:
+    # one positional call of the live global with the five arguments.
     calls = [
         op
         for op in _all_ops(ir)
-        if op["kind"] == "call_func" and op.get("source_line") == 12
+        if op["kind"] in {"call_func", "call_guarded"} and op.get("source_line") == 12
     ]
     assert len(calls) == 1
     constructor = calls[0]

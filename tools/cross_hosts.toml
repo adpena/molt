@@ -84,9 +84,9 @@
 # adpena LAN inventory (verified 2026-04-27)
 # molt   = Raspberry Pi (Debian 13 trixie, aarch64) at 192.168.1.213
 # macmini = Intel Mac mini (macOS 15.7.5, x86_64, 6 cores, 8 GB), Tailscale name alejandros-mac-mini
-# Proof hosts additionally declare os, custody_root, checkout, bootstrap python,
+# Proof hosts additionally declare os, custody_root, checkout,
 # launcher and proof_cells (proof-plan command ids). An empty proof_cells list
-# admits no trunk workload. OS/launcher facts are validated together.
+# admits no trunk workload. Python belongs to uv. OS/launcher facts are validated together.
 
 # Verified over Tailscale on 2026-11-02 (Command Line Tools, git, uv, rustup). No system changes.
 [[host]]
@@ -99,7 +99,6 @@ os = "macos"
 shell = "bash"
 custody_root = "/Users/adpena/Molt"
 checkout = "/Users/adpena/Molt/molt-src"
-python = "/Users/adpena/Molt/envs/molt-dx-py312/bin/python"
 launcher = "posix-session"
 proof_cells = ["portability.cargo-custody.macos", "portability.queue.macos"]
 
@@ -123,10 +122,30 @@ shell = "powershell"
 custody_root = 'C:\Molt'
 checkout = 'C:\Molt\molt-src'
 remote_dir = 'C:\Molt\scratch\trunk-loop'
-python = 'C:\Molt\envs\molt-dx-py312\Scripts\python.exe'
 launcher = "windows-cim"
 proof_cells = ["portability.cargo-custody.windows", "portability.queue.windows"]
 # Same explicit fixture roles as ci.yml's Configure proof-queue test roots.
 # Each run claims a fresh child and admits its physical identity before testing.
 proof_cargo_output_root = 'C:\Molt\trunk-cargo'
 proof_metadata_root = 'C:\Molt\trunk-metadata'
+
+# Linux gate on bat00's C: NVMe. Admission reads /mnt/c, never ext4's virtual free size.
+[[host]]
+name = "molt-gate"
+hostname = "bat00"
+user = "adpena"
+target = "x86_64-unknown-linux-gnu"
+os = "linux"
+shell = "bash"
+custody_root = "/home/adpena/Molt"
+checkout = "/home/adpena/Molt/molt-src"
+remote_dir = "/home/adpena/Molt/scratch/trunk-loop"
+launcher = "posix-session"
+proof_cells = ["portability.cargo-custody.linux", "portability.queue.linux"]
+wsl_distribution = "molt-gate"
+wsl_vhdx = 'C:\Molt\wsl\molt-gate\ext4.vhdx'
+wsl_disk_gb = 80
+wsl_memory_gb = 24
+wsl_swap_gb = 4
+wsl_engine_version = "3.0.3"
+proof_build_gb = 20

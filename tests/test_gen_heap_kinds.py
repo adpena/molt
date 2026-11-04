@@ -55,7 +55,9 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 262) if value not in (205, 220, 231)]
+    assert dense == [
+        value for value in range(200, 262) if value not in (205, 215, 220, 231)
+    ]
     assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
@@ -124,7 +126,7 @@ def test_code_declaration_edges_cannot_disappear_from_acyclic_authority(
         gen.load_table(table)
 
 
-@pytest.mark.parametrize("retired_id", [205, 220, 231])
+@pytest.mark.parametrize("retired_id", [205, 215, 220, 231])
 def test_retired_heap_ids_cannot_be_reused_or_silently_removed(
     tmp_path: Path, retired_id: int
 ) -> None:
@@ -137,13 +139,13 @@ def test_retired_heap_ids_cannot_be_reused_or_silently_removed(
     with pytest.raises(ValueError, match="never be reused"):
         gen.load_table(table)
     table.write_text(
-        source.replace("retired_ids = [205, 220, 231]", "retired_ids = []"),
+        source.replace("retired_ids = [205, 215, 220, 231]", "retired_ids = []"),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="allocated ABI domain"):
         gen.load_table(table)
     rendered = gen.render_all(gen.load_table())
-    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 3
+    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 4
     for output in rendered.values():
         assert "DICT_BUILDER" not in output and "SET_BUILDER" not in output
         assert "DictBuilder" not in output and "SetBuilder" not in output

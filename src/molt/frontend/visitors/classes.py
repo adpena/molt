@@ -50,6 +50,11 @@ from molt.frontend.sema import (
 from molt.frontend.visitors.class_method_compilation import (
     ClassMethodCompilationMixin,
 )
+from molt.frontend.dataclass_init import (
+    initializer_template,
+    literal_dataclass_options,
+    project_initializer_fields,
+)
 
 
 class ClassDefVisitorMixin(ClassMethodCompilationMixin):
@@ -469,34 +474,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             ):
                 other_decorators.append(deco)
                 continue
-            dataclass_opts = {
-                "init": True,
-                "repr": True,
-                "eq": True,
-                "order": False,
-                "unsafe_hash": False,
-                "frozen": False,
-                "match_args": True,
-                "kw_only": False,
-                "slots": False,
-                "weakref_slot": False,
-            }
-            if not isinstance(deco, ast.Call):
-                continue
-            for keyword in deco.keywords:
-                if keyword.arg is None:
-                    # A name-keyed constant table cannot prove the mapping's
-                    # contents at this decorator's source point. Evaluate its
-                    # real argument protocol through the ordinary runtime call.
-                    dataclass_opts = None
-                    break
-                if keyword.arg not in dataclass_opts or not (
-                    isinstance(keyword.value, ast.Constant)
-                    and type(keyword.value.value) is bool
-                ):
-                    dataclass_opts = None
-                    break
-                dataclass_opts[keyword.arg] = keyword.value.value
+            dataclass_opts = literal_dataclass_options(deco)
             if dataclass_opts is None:
                 other_decorators.append(deco)
         return dataclass_opts, other_decorators
@@ -711,100 +689,68 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         ):
             dynamic = True
 
-        if dataclass_opts is not None:
-            field_order: list[str] = []
-            field_hints: dict[str, TypeHint] = {}
-            for mro_entry in mro[1:]:
+        init_options = dataclass_opts
+        discard_init_proposal = False
+        if (
+            init_options is None
+            and node.decorator_list
+            and not (has_metaclass_kw or inherits_custom_meta or dynamic_build)
+        ):
+            inner = node.decorator_list[-1]
+            target = inner.func if isinstance(inner, ast.Call) else inner
+            fact = (
+                self.python_binding_index.expression_fact(target)
+                if self.python_binding_index is not None
+                else None
+            )
+            if fact is not None and fact.identities & int(
+                PythonIdentity.DATACLASSES_DATACLASS
+            ):
+                init_options = literal_dataclass_options(inner)
+                discard_init_proposal = init_options is not None
+        init_candidate_fields = None
+        if init_options is not None:
+            inherited = []
+            inheritance_known = True
+            for mro_entry in reversed(mro[1:]):
                 base_info = (
                     self.classes.get(mro_entry)
                     if isinstance(mro_entry, ClassId)
                     else None
                 )
                 if base_info and base_info.get("dataclass"):
-                    for name in base_info.get("field_order", []):
-                        if name not in field_order:
-                            field_order.append(name)
-
-            init_requires_binding = any(
-                isinstance(base, ClassId)
-                and self.classes.get(base, {}).get(
-                    "dataclass_init_requires_binding", False
-                )
-                for base in mro[1:]
-            )
-            fields_known = not self.future_annotations
-
-            def _annotation_kind(annotation: ast.expr) -> str:
-                index = self.python_binding_index
-                if index is None or self.future_annotations:
-                    return "unknown"
-                target = (
-                    annotation.value
-                    if isinstance(annotation, ast.Subscript)
-                    else annotation
-                )
-                for identity, kind in (
-                    (PythonIdentity.DATACLASSES_KW_ONLY, "kw_only"),
-                    (PythonIdentity.DATACLASSES_INITVAR, "initvar"),
-                    (PythonIdentity.TYPING_CLASSVAR, "classvar"),
-                ):
-                    if index.expression_is(target, identity):
-                        return kind
-                fact = index.expression_fact(annotation)
-                if (
-                    fact is None
-                    or isinstance(annotation, ast.Constant)
-                    and isinstance(annotation.value, str)
-                ):
-                    return "unknown"
-                # An unknown subscription or callback can return a dataclass
-                # marker. Only a closed result identity proves a regular field.
-                if fact.identities & int(PythonIdentity.OTHER | PythonIdentity.UNBOUND):
-                    return "unknown"
-                return "field"
-
-            for item in node.body:
-                if isinstance(item, ast.AnnAssign) and isinstance(
-                    item.target, ast.Name
-                ):
-                    name = item.target.id
-                    kind = _annotation_kind(item.annotation)
-                    if kind in {"kw_only", "initvar"}:
-                        init_requires_binding = True
-                    if kind == "unknown":
-                        fields_known = False
-                    if kind == "kw_only":
-                        continue
-                    if kind not in {"classvar", "initvar"}:
-                        if name not in field_order:
-                            field_order.append(name)
-                        if self._hints_enabled():
-                            hint = self._annotation_to_hint(item.annotation)
-                            if hint is not None:
-                                field_hints[name] = hint
+                    group = base_info.get("dataclass_init_projection")
+                    if group is None:
+                        inheritance_known = False
                     else:
-                        if name in field_order:
-                            field_order.remove(name)
-                            field_hints.pop(name, None)
-                    if item.value is not None:
-                        class_attrs[name] = item.value
-                if isinstance(item, ast.Assign):
+                        inherited.append(group)
+                elif mro_entry != OBJECT_CLASS and base_info is None:
+                    inheritance_known = False
+            if inheritance_known:
+                init_candidate_fields = project_initializer_fields(
+                    node,
+                    tuple(inherited),
+                    init_options["kw_only"],
+                    self.python_binding_index,
+                )
+        if dataclass_opts is not None:
+            for item in node.body:
+                if (
+                    isinstance(item, ast.AnnAssign)
+                    and isinstance(item.target, ast.Name)
+                    and item.value is not None
+                ):
+                    class_attrs[item.target.id] = item.value
+                elif isinstance(item, ast.Assign):
                     for target in item.targets:
                         if isinstance(target, ast.Name):
                             class_attrs[target.id] = item.value
-            if not fields_known:
-                dynamic = True
-                field_order = []
-                field_hints = {}
-            field_indices = {name: idx for idx, name in enumerate(field_order)}
-            min_layout = self._builtin_min_layout(mro)
-            size = max(len(field_order) * 8, min_layout)
-            repr_generated = dataclass_opts["repr"] and "__repr__" not in methods
+            size = self._builtin_min_layout(mro)
             self.classes[class_id] = {
                 "binding_name": node.name,
-                "fields": field_indices,
-                "field_order": field_order,
-                "field_hints": field_hints,
+                "fields": {},
+                "field_order": [],
+                "field_hints": {},
                 "class_attrs": class_attrs,
                 "possible_data_descriptor_attrs": self._possible_data_descriptor_attrs(
                     node, class_attrs
@@ -815,11 +761,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 "static": is_static,
                 "size": size,
                 "dataclass": True,
-                "frozen": dataclass_opts["frozen"],
-                "repr": repr_generated,
-                "slots": dataclass_opts["slots"],
                 "dataclass_params": dataclass_opts,
-                "dataclass_init_requires_binding": init_requires_binding,
+                "dataclass_init_projection": init_candidate_fields,
                 "constructor_binding_proven": constructor_binding_proven,
                 "methods": methods,
                 "pending_methods": pending_methods,
@@ -1578,6 +1521,71 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 )
             )
 
+        init_proposal_owner = None
+        if init_options is not None and init_options["init"]:
+            if (
+                init_candidate_fields is not None
+                and any(f.name == "self" for f in init_candidate_fields)
+                and any(
+                    f.name == "__dataclass_self__" and f.init
+                    for f in init_candidate_fields
+                )
+            ):
+                # The transform owns the duplicate-parameter SyntaxError.
+                init_candidate_fields = None
+            if init_candidate_fields is not None:
+                has_post_init = any(
+                    isinstance(owner, ClassId)
+                    and "__post_init__"
+                    in self.classes.get(owner, {}).get("methods", {})
+                    for owner in mro
+                )
+                template_node = initializer_template(
+                    init_candidate_fields,
+                    frozen=init_options["frozen"],
+                    slots=init_options["slots"],
+                    post_init=has_post_init,
+                    location=node,
+                )
+                defaults = self._emit_function_default_values([], [], [])
+                template = self._compile_class_method(
+                    node,
+                    template_node,
+                    defaults,
+                    bind_receiver=False,
+                )["func"]
+                schema = (
+                    init_options["frozen"],
+                    init_options["slots"],
+                    has_post_init,
+                    tuple(field.schema() for field in init_candidate_fields),
+                    "__dataclass_self__"
+                    if any(field.name == "self" for field in init_candidate_fields)
+                    else "self",
+                )
+
+                def schema_ast(value: object) -> ast.expr:
+                    if isinstance(value, tuple):
+                        return ast.Tuple(
+                            elts=[schema_ast(item) for item in value], ctx=ast.Load()
+                        )
+                    assert isinstance(value, (str, int))
+                    return ast.Constant(value=value)
+
+                schema_value = self.visit(
+                    ast.fix_missing_locations(
+                        ast.copy_location(schema_ast(schema), node)
+                    )
+                )
+                assert schema_value is not None
+                if discard_init_proposal:
+                    init_proposal_owner = class_val
+                self._emit_intrinsic_call(
+                    "molt_dataclasses_set_init_template",
+                    [class_val, schema_value, template],
+                    type_hint="None",
+                )
+
         if decorator_vals:
             decorated = class_val
             for decorator_val in reversed(decorator_vals):
@@ -1600,6 +1608,15 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 self.emit(
                     MoltOp(kind="CALL_BIND", args=[decorator_val, callargs], result=res)
                 )
+                if init_proposal_owner is not None:
+                    absent = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=absent))
+                    self._emit_intrinsic_call(
+                        "molt_dataclasses_init",
+                        [init_proposal_owner, absent, absent],
+                        type_hint="None",
+                    )
+                    init_proposal_owner = None
                 decorated = res
             class_val = decorated
 

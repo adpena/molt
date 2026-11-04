@@ -140,6 +140,7 @@ mod ipaddress_bridge;
 #[cfg(feature = "stdlib_itertools")]
 mod itertools_bridge;
 mod itertools_class;
+pub use itertools_class::{molt_itertools_reduce, molt_itertools_setstate};
 #[cfg(feature = "stdlib_logging_ext")]
 mod logging_bridge;
 #[cfg(feature = "stdlib_math")]
@@ -743,11 +744,11 @@ pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops::{
-    DecodeTextError, HashContext, class_break_cycles, decode_bytes_text, decode_string_list,
-    decode_value_list, dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place,
-    dict_find_entry, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_items_method,
-    dict_keys_method, dict_popitem_method, dict_set_in_place, dict_setdefault_method,
-    dict_update_method, dict_update_set_via_store, dict_values_method, format_obj, format_obj_str,
+    DecodeTextError, HashContext, class_break_cycles, decode_bytes_text, decode_value_list,
+    dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry,
+    dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_items_method, dict_keys_method,
+    dict_popitem_method, dict_set_in_place, dict_setdefault_method, dict_update_method,
+    dict_update_set_via_store, dict_values_method, format_obj, format_obj_str,
     frozenset_from_iter_bits, hash_slice_bits, is_truthy, list_from_iter_bits, set_add_in_place,
     set_clear_in_place, set_del_in_place, set_find_entry, tuple_from_isize_slice,
     tuple_from_iter_bits, type_name,
@@ -783,17 +784,16 @@ pub use crate::object::weakref::{
     molt_weakref_peek, molt_weakref_refs, molt_weakref_register,
 };
 pub(crate) use crate::object::{
-    Buffer2D, ClassEdgeOwnership, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
+    Buffer2D, ClassEdgeOwnership, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
     HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_FUNC_REQUIRES_BINDER,
     HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE,
     HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
     HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat, MemoryViewFormatKind,
     MoltFileHandle, MoltFileState, ObjectAuxPreselection, PtrSlot, alloc_object,
     alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr, bytes_data,
-    bytes_len, dataclass_desc_ptr, dataclass_fields_ptr, dec_ref_bits, file_handle_ptr,
-    header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
-    instance_set_dict_bits, maybe_ptr_from_bits, memoryview_base_bits, memoryview_data,
-    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
+    bytes_len, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits, init_atomic_bits,
+    instance_dict_bits, instance_set_dict_bits, maybe_ptr_from_bits, memoryview_base_bits,
+    memoryview_data, memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
     memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
     memoryview_released, memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits,
     object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size,

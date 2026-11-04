@@ -195,6 +195,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/function_references.py": _P,
         # Generated tables and semantic helpers that lowering reads.
         "_intrinsic_symbols.py": _P,
+        "_public_objects_generated.py": _P,
         "_wasm_abi_generated.py": _P,
         "builtin_callables.py": _P,
         "compat.py": _P,

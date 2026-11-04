@@ -1897,9 +1897,6 @@ def _rust_str_slice(values: list[str]) -> str:
 def render_runtime_callables_rs(data: dict) -> str:
     from molt.builtin_callables import BuiltinBindingPolicy
 
-    from tools.gen_runtime_names import load_names
-
-    name_ids = {spelling: identity for identity, spelling in load_names().items()}
     lines: list[str] = [_runtime_callables_header("//")]
     lines.extend(["#![allow(dead_code)]\n\n", "use super::*;\n\n"])
 
@@ -1990,9 +1987,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy)]\n",
             "pub(crate) struct PythonBuiltinFunctionInfo {\n",
-            "    pub(crate) python_name: &'static str,\n",
-            "    pub(crate) name_id: crate::NameId,\n",
-            "    pub(crate) python_module: &'static str,\n",
+            "    pub(crate) public: crate::intrinsics::public_objects_generated::PublicObjectId,\n",
             "    pub(crate) text_signature: Option<&'static str>,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) arity: u64,\n",
@@ -2144,12 +2139,14 @@ def render_runtime_callables_rs(data: dict) -> str:
     for entry in sorted(
         python_builtin_callables, key=lambda entry: entry["python_name"]
     ):
+        from tools.public_objects import public_object_id
+
         lines.extend(
             [
                 "        PythonBuiltinFunctionInfo {\n",
-                f'            python_name: "{entry["python_name"]}",\n',
-                f"            name_id: crate::NameId::{name_ids[entry['python_name']]},\n",
-                f"            python_module: {_rust_str_lit(entry['python_module'])},\n",
+                "            public: crate::intrinsics::public_objects_generated::PublicObjectId::"
+                + public_object_id(entry["runtime_name"])
+                + ",\n",
                 f"            text_signature: {_rust_optional_str(entry['text_signature'])},\n",
                 f'            runtime_name: "{entry["runtime_name"]}",\n',
                 f"            arity: {entry['arity']},\n",
@@ -2180,7 +2177,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    python_name: &str,\n",
             ") -> Option<PythonBuiltinFunctionInfo> {\n",
             "    PYTHON_BUILTIN_FUNCTIONS\n",
-            "        .binary_search_by_key(&python_name, |info| info.python_name)\n",
+            "        .binary_search_by_key(&python_name, |info| info.public.identity().name.as_str())\n",
             "        .ok().map(|index| PYTHON_BUILTIN_FUNCTIONS[index])\n",
             "}\n\n",
             "#[cfg(test)]\n",

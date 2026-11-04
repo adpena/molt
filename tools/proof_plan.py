@@ -60,6 +60,7 @@ from tools.command_execution import (  # noqa: E402
     GUARD_CANCELLATION_OBSERVATION_SECONDS,
 )
 from tools import proof_receipts, toolchain_probe  # noqa: E402
+from tools.proof_command_argv import is_python_command  # noqa: E402
 from molt import python_environment_contract as _contract  # noqa: E402
 from molt import host_capacity  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
@@ -3650,14 +3651,23 @@ def _source_identity() -> dict[str, str]:
 
 
 def resolved_command_argv(command: ProofCommand) -> tuple[str, ...]:
-    """The argv the executor launches, with the source-commit placeholder bound."""
-    if not command.binds_source_commit:
-        return command.argv
-    commit = _source_commit()
-    return tuple(
-        commit if part == PROOF_SOURCE_COMMIT_PLACEHOLDER else part
-        for part in command.argv
-    )
+    """The argv the executor launches, with its source commit and Python bound.
+
+    A bare Python argv0 runs the interpreter the ``python`` toolchain identity
+    admits and fingerprints (``sys.executable``), never the first one on PATH,
+    which on macOS is the Xcode system interpreter (HF-755).
+    """
+    argv = command.argv
+    if command.binds_source_commit:
+        commit = _source_commit()
+        argv = tuple(
+            commit if part == PROOF_SOURCE_COMMIT_PLACEHOLDER else part for part in argv
+        )
+    if Path(argv[0]).name == argv[0] and is_python_command(argv[0]):
+        if not sys.executable:
+            raise ValueError(f"{command.id}: the environment Python is unknown")
+        argv = (sys.executable, *argv[1:])
+    return argv
 
 
 def _source_tree_changes() -> tuple[str, ...]:

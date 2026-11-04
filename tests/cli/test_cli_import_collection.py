@@ -20273,12 +20273,17 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n", encoding="utf-8")
     graph = _discover_with_core_modules(entry)
-    assert "builtins" in graph
-    assert "sys" in graph
-    # importlib is only included when MOLT_STDLIB_PROFILE != "micro" (the default)
-    assert "warnings" not in graph
-    assert "re" not in graph
-    assert "dataclasses" not in graph
+    # The micro core must not admit providers of copyreg's union recipe.
+    # Their intrinsic handles preserve identity without Python import edges.
+    assert set(graph) == {
+        "main",
+        "__future__",
+        "_io",
+        "_sitebuiltins",
+        "builtins",
+        "copyreg",
+        "sys",
+    }
 
 
 def test_typing_module_init_imports_collections_abc_without_warnings_regex() -> None:

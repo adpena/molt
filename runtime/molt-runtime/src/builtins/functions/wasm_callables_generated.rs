@@ -78,7 +78,7 @@ pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 29;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 30;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 79;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 80;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
@@ -110,9 +110,7 @@ pub(crate) enum GeneratedBuiltinDefaultValue {
 
 #[derive(Clone, Copy)]
 pub(crate) struct PythonBuiltinFunctionInfo {
-    pub(crate) python_name: &'static str,
-    pub(crate) name_id: crate::NameId,
-    pub(crate) python_module: &'static str,
+    pub(crate) public: crate::intrinsics::public_objects_generated::PublicObjectId,
     pub(crate) text_signature: Option<&'static str>,
     pub(crate) runtime_name: &'static str,
     pub(crate) arity: u64,
@@ -375,307 +373,314 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
     },
     ReservedRuntimeCallableInfo {
         index: 35,
+        runtime_name: "molt_dataclasses_init_trampoline",
+        import_name: "dataclasses_init_trampoline",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Trampoline,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 36,
         runtime_name: "molt_coroutine_send_method",
         import_name: "coroutine_send_method",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 36,
+        index: 37,
         runtime_name: "molt_coroutine_throw_method",
         import_name: "coroutine_throw_method",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 37,
+        index: 38,
         runtime_name: "molt_coroutine_close_method",
         import_name: "coroutine_close_method",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 38,
+        index: 39,
         runtime_name: "molt_awaitable_await",
         import_name: "awaitable_await",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 39,
+        index: 40,
         runtime_name: "molt_coroutine_wrapper_iter",
         import_name: "coroutine_wrapper_iter",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 40,
+        index: 41,
         runtime_name: "molt_coroutine_wrapper_next",
         import_name: "coroutine_wrapper_next",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 41,
+        index: 42,
         runtime_name: "molt_asyncgen_awaitable_self",
         import_name: "asyncgen_awaitable_self",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 42,
+        index: 43,
         runtime_name: "molt_asyncgen_awaitable_next",
         import_name: "asyncgen_awaitable_next",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 43,
+        index: 44,
         runtime_name: "molt_asyncgen_awaitable_send",
         import_name: "asyncgen_awaitable_send",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 44,
+        index: 45,
         runtime_name: "molt_asyncgen_awaitable_throw",
         import_name: "asyncgen_awaitable_throw",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 45,
+        index: 46,
         runtime_name: "molt_asyncgen_awaitable_close",
         import_name: "asyncgen_awaitable_close",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 46,
+        index: 47,
         runtime_name: "molt_generator_throw_method",
         import_name: "generator_throw_method",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 47,
+        index: 48,
         runtime_name: "molt_contextvars_types",
         import_name: "contextvars_types",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 48,
+        index: 49,
         runtime_name: "molt_contextvars_copy_current",
         import_name: "contextvars_copy_current",
         arity: 0,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 49,
+        index: 50,
         runtime_name: "molt_contextvars_new",
         import_name: "contextvars_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 50,
+        index: 51,
         runtime_name: "molt_contextvars_token_new",
         import_name: "contextvars_token_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 51,
+        index: 52,
         runtime_name: "molt_contextvars_missing_new",
         import_name: "contextvars_missing_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 52,
+        index: 53,
         runtime_name: "molt_contextvars_keys_new",
         import_name: "contextvars_keys_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 53,
+        index: 54,
         runtime_name: "molt_contextvars_values_new",
         import_name: "contextvars_values_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 54,
+        index: 55,
         runtime_name: "molt_contextvars_items_new",
         import_name: "contextvars_items_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 55,
+        index: 56,
         runtime_name: "molt_contextvars_var_new",
         import_name: "contextvars_var_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 56,
+        index: 57,
         runtime_name: "molt_contextvars_var_get",
         import_name: "contextvars_var_get",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 57,
+        index: 58,
         runtime_name: "molt_contextvars_var_set",
         import_name: "contextvars_var_set",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 58,
+        index: 59,
         runtime_name: "molt_contextvars_var_reset",
         import_name: "contextvars_var_reset",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 59,
+        index: 60,
         runtime_name: "molt_contextvars_var_hash",
         import_name: "contextvars_var_hash",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 60,
+        index: 61,
         runtime_name: "molt_contextvars_copy",
         import_name: "contextvars_copy",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 61,
+        index: 62,
         runtime_name: "molt_contextvars_len",
         import_name: "contextvars_len",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 62,
+        index: 63,
         runtime_name: "molt_contextvars_getitem",
         import_name: "contextvars_getitem",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 63,
+        index: 64,
         runtime_name: "molt_contextvars_contains",
         import_name: "contextvars_contains",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 64,
+        index: 65,
         runtime_name: "molt_contextvars_get",
         import_name: "contextvars_get",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 65,
+        index: 66,
         runtime_name: "molt_contextvars_run",
         import_name: "contextvars_run",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 66,
+        index: 67,
         runtime_name: "molt_contextvars_keys",
         import_name: "contextvars_keys",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 67,
+        index: 68,
         runtime_name: "molt_contextvars_values",
         import_name: "contextvars_values",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 68,
+        index: 69,
         runtime_name: "molt_contextvars_items",
         import_name: "contextvars_items",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 69,
+        index: 70,
         runtime_name: "molt_contextvars_iter_self",
         import_name: "contextvars_iter_self",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 70,
+        index: 71,
         runtime_name: "molt_contextvars_iter_next",
         import_name: "contextvars_iter_next",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 71,
+        index: 72,
         runtime_name: "molt_contextvars_eq",
         import_name: "contextvars_eq",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 72,
+        index: 73,
         runtime_name: "molt_contextvars_ne",
         import_name: "contextvars_ne",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 73,
+        index: 74,
         runtime_name: "molt_contextvars_property",
         import_name: "contextvars_property",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 74,
+        index: 75,
         runtime_name: "molt_contextvars_token_enter",
         import_name: "contextvars_token_enter",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 75,
+        index: 76,
         runtime_name: "molt_contextvars_token_exit",
         import_name: "contextvars_token_exit",
         arity: 4,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 76,
+        index: 77,
         runtime_name: "molt_contextvars_var_repr",
         import_name: "contextvars_var_repr",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 77,
+        index: 78,
         runtime_name: "molt_contextvars_token_repr",
         import_name: "contextvars_token_repr",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 78,
+        index: 79,
         runtime_name: "molt_contextvars_missing_repr",
         import_name: "contextvars_missing_repr",
         arity: 1,
@@ -805,50 +810,51 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         32 => Some(molt_importlib_module_spec_cached_set as *const ()),
         33 => Some(molt_importlib_module_spec_has_location_get as *const ()),
         34 => Some(molt_importlib_module_spec_has_location_set as *const ()),
-        35 => Some(crate::molt_coroutine_send_method as *const ()),
-        36 => Some(crate::molt_coroutine_throw_method as *const ()),
-        37 => Some(crate::molt_coroutine_close_method as *const ()),
-        38 => Some(crate::molt_awaitable_await as *const ()),
-        39 => Some(crate::molt_coroutine_wrapper_iter as *const ()),
-        40 => Some(crate::molt_coroutine_wrapper_next as *const ()),
-        41 => Some(crate::molt_asyncgen_awaitable_self as *const ()),
-        42 => Some(crate::molt_asyncgen_awaitable_next as *const ()),
-        43 => Some(crate::molt_asyncgen_awaitable_send as *const ()),
-        44 => Some(crate::molt_asyncgen_awaitable_throw as *const ()),
-        45 => Some(crate::molt_asyncgen_awaitable_close as *const ()),
-        46 => Some(crate::molt_generator_throw_method as *const ()),
-        47 => Some(crate::molt_contextvars_types as *const ()),
-        48 => Some(crate::molt_contextvars_copy_current as *const ()),
-        49 => Some(crate::molt_contextvars_new as *const ()),
-        50 => Some(crate::molt_contextvars_token_new as *const ()),
-        51 => Some(crate::molt_contextvars_missing_new as *const ()),
-        52 => Some(crate::molt_contextvars_keys_new as *const ()),
-        53 => Some(crate::molt_contextvars_values_new as *const ()),
-        54 => Some(crate::molt_contextvars_items_new as *const ()),
-        55 => Some(crate::molt_contextvars_var_new as *const ()),
-        56 => Some(crate::molt_contextvars_var_get as *const ()),
-        57 => Some(crate::molt_contextvars_var_set as *const ()),
-        58 => Some(crate::molt_contextvars_var_reset as *const ()),
-        59 => Some(crate::molt_contextvars_var_hash as *const ()),
-        60 => Some(crate::molt_contextvars_copy as *const ()),
-        61 => Some(crate::molt_contextvars_len as *const ()),
-        62 => Some(crate::molt_contextvars_getitem as *const ()),
-        63 => Some(crate::molt_contextvars_contains as *const ()),
-        64 => Some(crate::molt_contextvars_get as *const ()),
-        65 => Some(crate::molt_contextvars_run as *const ()),
-        66 => Some(crate::molt_contextvars_keys as *const ()),
-        67 => Some(crate::molt_contextvars_values as *const ()),
-        68 => Some(crate::molt_contextvars_items as *const ()),
-        69 => Some(crate::molt_contextvars_iter_self as *const ()),
-        70 => Some(crate::molt_contextvars_iter_next as *const ()),
-        71 => Some(crate::molt_contextvars_eq as *const ()),
-        72 => Some(crate::molt_contextvars_ne as *const ()),
-        73 => Some(crate::molt_contextvars_property as *const ()),
-        74 => Some(crate::molt_contextvars_token_enter as *const ()),
-        75 => Some(crate::molt_contextvars_token_exit as *const ()),
-        76 => Some(crate::molt_contextvars_var_repr as *const ()),
-        77 => Some(crate::molt_contextvars_token_repr as *const ()),
-        78 => Some(crate::molt_contextvars_missing_repr as *const ()),
+        35 => Some(molt_dataclasses_init_trampoline as *const ()),
+        36 => Some(crate::molt_coroutine_send_method as *const ()),
+        37 => Some(crate::molt_coroutine_throw_method as *const ()),
+        38 => Some(crate::molt_coroutine_close_method as *const ()),
+        39 => Some(crate::molt_awaitable_await as *const ()),
+        40 => Some(crate::molt_coroutine_wrapper_iter as *const ()),
+        41 => Some(crate::molt_coroutine_wrapper_next as *const ()),
+        42 => Some(crate::molt_asyncgen_awaitable_self as *const ()),
+        43 => Some(crate::molt_asyncgen_awaitable_next as *const ()),
+        44 => Some(crate::molt_asyncgen_awaitable_send as *const ()),
+        45 => Some(crate::molt_asyncgen_awaitable_throw as *const ()),
+        46 => Some(crate::molt_asyncgen_awaitable_close as *const ()),
+        47 => Some(crate::molt_generator_throw_method as *const ()),
+        48 => Some(crate::molt_contextvars_types as *const ()),
+        49 => Some(crate::molt_contextvars_copy_current as *const ()),
+        50 => Some(crate::molt_contextvars_new as *const ()),
+        51 => Some(crate::molt_contextvars_token_new as *const ()),
+        52 => Some(crate::molt_contextvars_missing_new as *const ()),
+        53 => Some(crate::molt_contextvars_keys_new as *const ()),
+        54 => Some(crate::molt_contextvars_values_new as *const ()),
+        55 => Some(crate::molt_contextvars_items_new as *const ()),
+        56 => Some(crate::molt_contextvars_var_new as *const ()),
+        57 => Some(crate::molt_contextvars_var_get as *const ()),
+        58 => Some(crate::molt_contextvars_var_set as *const ()),
+        59 => Some(crate::molt_contextvars_var_reset as *const ()),
+        60 => Some(crate::molt_contextvars_var_hash as *const ()),
+        61 => Some(crate::molt_contextvars_copy as *const ()),
+        62 => Some(crate::molt_contextvars_len as *const ()),
+        63 => Some(crate::molt_contextvars_getitem as *const ()),
+        64 => Some(crate::molt_contextvars_contains as *const ()),
+        65 => Some(crate::molt_contextvars_get as *const ()),
+        66 => Some(crate::molt_contextvars_run as *const ()),
+        67 => Some(crate::molt_contextvars_keys as *const ()),
+        68 => Some(crate::molt_contextvars_values as *const ()),
+        69 => Some(crate::molt_contextvars_items as *const ()),
+        70 => Some(crate::molt_contextvars_iter_self as *const ()),
+        71 => Some(crate::molt_contextvars_iter_next as *const ()),
+        72 => Some(crate::molt_contextvars_eq as *const ()),
+        73 => Some(crate::molt_contextvars_ne as *const ()),
+        74 => Some(crate::molt_contextvars_property as *const ()),
+        75 => Some(crate::molt_contextvars_token_enter as *const ()),
+        76 => Some(crate::molt_contextvars_token_exit as *const ()),
+        77 => Some(crate::molt_contextvars_var_repr as *const ()),
+        78 => Some(crate::molt_contextvars_token_repr as *const ()),
+        79 => Some(crate::molt_contextvars_missing_repr as *const ()),
         _ => None,
     }
 }
@@ -937,9 +943,7 @@ pub(crate) fn reserved_wasm_runtime_callable_dispatch_for_index(
 #[rustfmt::skip]
 pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
-            python_name: "__import__",
-            name_id: crate::NameId::DunderImport,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::ImportlibImportTransaction,
             text_signature: Some("($module, /, name, globals=None, locals=None, fromlist=(),\n           level=0)"),
             runtime_name: "molt_importlib_import_transaction",
             arity: 5,
@@ -953,9 +957,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "abs",
-            name_id: crate::NameId::Abs,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::AbsBuiltin,
             text_signature: Some("($module, x, /)"),
             runtime_name: "molt_abs_builtin",
             arity: 1,
@@ -969,9 +971,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "aiter",
-            name_id: crate::NameId::Aiter,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::Aiter,
             text_signature: Some("($module, async_iterable, /)"),
             runtime_name: "molt_aiter",
             arity: 1,
@@ -985,9 +985,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "all",
-            name_id: crate::NameId::All,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::AllBuiltin,
             text_signature: Some("($module, iterable, /)"),
             runtime_name: "molt_all_builtin",
             arity: 1,
@@ -1001,9 +999,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "anext",
-            name_id: crate::NameId::Anext,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::AnextBuiltin,
             text_signature: Some("($module, aiterator, default=<unrepresentable>, /)"),
             runtime_name: "molt_anext_builtin",
             arity: 2,
@@ -1017,9 +1013,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "any",
-            name_id: crate::NameId::LowerAny,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::AnyBuiltin,
             text_signature: Some("($module, iterable, /)"),
             runtime_name: "molt_any_builtin",
             arity: 1,
@@ -1033,9 +1027,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "ascii",
-            name_id: crate::NameId::Ascii,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::AsciiFromObj,
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_ascii_from_obj",
             arity: 1,
@@ -1049,9 +1041,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "bin",
-            name_id: crate::NameId::Bin,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::BinBuiltin,
             text_signature: Some("($module, number, /)"),
             runtime_name: "molt_bin_builtin",
             arity: 1,
@@ -1065,9 +1055,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "callable",
-            name_id: crate::NameId::Callable,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::CallableBuiltin,
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_callable_builtin",
             arity: 1,
@@ -1081,9 +1069,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "chr",
-            name_id: crate::NameId::Chr,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::Chr,
             text_signature: Some("($module, i, /)"),
             runtime_name: "molt_chr",
             arity: 1,
@@ -1097,9 +1083,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "compile",
-            name_id: crate::NameId::Compile,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::CompileBuiltin,
             text_signature: Some("($module, /, source, filename, mode, flags=0,\n        dont_inherit=False, optimize=-1, *, _feature_version=-1)"),
             runtime_name: "molt_compile_builtin",
             arity: 6,
@@ -1113,9 +1097,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "delattr",
-            name_id: crate::NameId::Delattr,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::DelAttrName,
             text_signature: Some("($module, obj, name, /)"),
             runtime_name: "molt_del_attr_name",
             arity: 2,
@@ -1129,9 +1111,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "dir",
-            name_id: crate::NameId::Dir,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::DirBuiltin,
             text_signature: None,
             runtime_name: "molt_dir_builtin",
             arity: 1,
@@ -1145,9 +1125,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "divmod",
-            name_id: crate::NameId::Divmod,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::DivmodBuiltin,
             text_signature: Some("($module, x, y, /)"),
             runtime_name: "molt_divmod_builtin",
             arity: 2,
@@ -1161,9 +1139,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "enumerate",
-            name_id: crate::NameId::Enumerate,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::EnumerateBuiltin,
             text_signature: Some("(iterable, start=0)"),
             runtime_name: "molt_enumerate_builtin",
             arity: 2,
@@ -1177,9 +1153,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "filter",
-            name_id: crate::NameId::Filter,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::FilterBuiltin,
             text_signature: None,
             runtime_name: "molt_filter_builtin",
             arity: 2,
@@ -1193,9 +1167,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "format",
-            name_id: crate::NameId::Format,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::FormatBuiltin,
             text_signature: Some("($module, value, format_spec='', /)"),
             runtime_name: "molt_format_builtin",
             arity: 2,
@@ -1209,9 +1181,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "getattr",
-            name_id: crate::NameId::Getattr,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::GetattrBuiltin,
             text_signature: None,
             runtime_name: "molt_getattr_builtin",
             arity: 3,
@@ -1225,9 +1195,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "globals",
-            name_id: crate::NameId::Globals,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::GlobalsBuiltin,
             text_signature: Some("($module, /)"),
             runtime_name: "molt_globals_builtin",
             arity: 0,
@@ -1241,9 +1209,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "hasattr",
-            name_id: crate::NameId::Hasattr,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::HasAttrName,
             text_signature: Some("($module, obj, name, /)"),
             runtime_name: "molt_has_attr_name",
             arity: 2,
@@ -1257,9 +1223,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "hash",
-            name_id: crate::NameId::Hash,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::HashBuiltin,
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_hash_builtin",
             arity: 1,
@@ -1273,9 +1237,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "hex",
-            name_id: crate::NameId::Hex,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::HexBuiltin,
             text_signature: Some("($module, number, /)"),
             runtime_name: "molt_hex_builtin",
             arity: 1,
@@ -1289,9 +1251,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "id",
-            name_id: crate::NameId::Id,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::Id,
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_id",
             arity: 1,
@@ -1305,9 +1265,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "isinstance",
-            name_id: crate::NameId::Isinstance,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::Isinstance,
             text_signature: Some("($module, obj, class_or_tuple, /)"),
             runtime_name: "molt_isinstance",
             arity: 2,
@@ -1321,9 +1279,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "issubclass",
-            name_id: crate::NameId::Issubclass,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::Issubclass,
             text_signature: Some("($module, cls, class_or_tuple, /)"),
             runtime_name: "molt_issubclass",
             arity: 2,
@@ -1337,9 +1293,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "iter",
-            name_id: crate::NameId::Iter,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::IterBuiltin,
             text_signature: None,
             runtime_name: "molt_iter_builtin",
             arity: 2,
@@ -1353,9 +1307,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "len",
-            name_id: crate::NameId::Len,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::Len,
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_len",
             arity: 1,
@@ -1369,9 +1321,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "locals",
-            name_id: crate::NameId::Locals,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::LocalsBuiltin,
             text_signature: Some("($module, /)"),
             runtime_name: "molt_locals_builtin",
             arity: 0,
@@ -1385,9 +1335,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "map",
-            name_id: crate::NameId::Map,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::MapBuiltin,
             text_signature: None,
             runtime_name: "molt_map_builtin",
             arity: 2,
@@ -1401,9 +1349,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "max",
-            name_id: crate::NameId::Max,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::MaxBuiltin,
             text_signature: None,
             runtime_name: "molt_max_builtin",
             arity: 3,
@@ -1417,9 +1363,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "min",
-            name_id: crate::NameId::Min,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::MinBuiltin,
             text_signature: None,
             runtime_name: "molt_min_builtin",
             arity: 3,
@@ -1433,9 +1377,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "next",
-            name_id: crate::NameId::Next,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::NextBuiltin,
             text_signature: None,
             runtime_name: "molt_next_builtin",
             arity: 2,
@@ -1449,9 +1391,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "oct",
-            name_id: crate::NameId::Oct,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::OctBuiltin,
             text_signature: Some("($module, number, /)"),
             runtime_name: "molt_oct_builtin",
             arity: 1,
@@ -1465,9 +1405,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "open",
-            name_id: crate::NameId::Open,
-            python_module: "_io",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::OpenBuiltin,
             text_signature: Some("($module, /, file, mode='r', buffering=-1, encoding=None,\n     errors=None, newline=None, closefd=True, opener=None)"),
             runtime_name: "molt_open_builtin",
             arity: 8,
@@ -1481,9 +1419,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "ord",
-            name_id: crate::NameId::Ord,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::Ord,
             text_signature: Some("($module, c, /)"),
             runtime_name: "molt_ord",
             arity: 1,
@@ -1497,9 +1433,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "pow",
-            name_id: crate::NameId::Pow,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::PowMod,
             text_signature: Some("($module, /, base, exp, mod=None)"),
             runtime_name: "molt_pow_mod",
             arity: 3,
@@ -1513,9 +1447,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "print",
-            name_id: crate::NameId::Print,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::PrintBuiltin,
             text_signature: Some("($module, /, *args, sep=' ', end='\\n', file=None, flush=False)"),
             runtime_name: "molt_print_builtin",
             arity: 5,
@@ -1529,9 +1461,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "repr",
-            name_id: crate::NameId::Repr,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::ReprBuiltin,
             text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_repr_builtin",
             arity: 1,
@@ -1545,9 +1475,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "reversed",
-            name_id: crate::NameId::Reversed,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::ReversedBuiltin,
             text_signature: Some("(sequence, /)"),
             runtime_name: "molt_reversed_builtin",
             arity: 1,
@@ -1561,9 +1489,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "round",
-            name_id: crate::NameId::Round,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::RoundBuiltin,
             text_signature: Some("($module, /, number, ndigits=None)"),
             runtime_name: "molt_round_builtin",
             arity: 2,
@@ -1577,9 +1503,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "setattr",
-            name_id: crate::NameId::Setattr,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::SetAttrName,
             text_signature: Some("($module, obj, name, value, /)"),
             runtime_name: "molt_set_attr_name",
             arity: 3,
@@ -1593,9 +1517,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "sorted",
-            name_id: crate::NameId::Sorted,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::SortedBuiltin,
             text_signature: Some("($module, iterable, /, *, key=None, reverse=False)"),
             runtime_name: "molt_sorted_builtin",
             arity: 3,
@@ -1609,9 +1531,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "sum",
-            name_id: crate::NameId::Sum,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::SumBuiltin,
             text_signature: Some("($module, iterable, /, start=0)"),
             runtime_name: "molt_sum_builtin",
             arity: 2,
@@ -1625,9 +1545,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            python_name: "vars",
-            name_id: crate::NameId::Vars,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::VarsBuiltin,
             text_signature: None,
             runtime_name: "molt_vars_builtin",
             arity: 1,
@@ -1641,9 +1559,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
-            python_name: "zip",
-            name_id: crate::NameId::Zip,
-            python_module: "builtins",
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::ZipBuiltin,
             text_signature: None,
             runtime_name: "molt_zip_builtin",
             arity: 2,
@@ -1661,7 +1577,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
 #[inline]
 pub(crate) fn python_builtin_function_info(python_name: &str) -> Option<PythonBuiltinFunctionInfo> {
     PYTHON_BUILTIN_FUNCTIONS
-        .binary_search_by_key(&python_name, |info| info.python_name)
+        .binary_search_by_key(&python_name, |info| info.public.identity().name.as_str())
         .ok()
         .map(|index| PYTHON_BUILTIN_FUNCTIONS[index])
 }
@@ -1760,50 +1676,51 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_cached_set), RUNTIME_CALLABLE_KEY_BASE, 32, molt_importlib_module_spec_cached_set as *const ());
     assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_has_location_get), RUNTIME_CALLABLE_KEY_BASE, 33, molt_importlib_module_spec_has_location_get as *const ());
     assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_has_location_set), RUNTIME_CALLABLE_KEY_BASE, 34, molt_importlib_module_spec_has_location_set as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_send_method), RUNTIME_CALLABLE_KEY_BASE, 35, crate::molt_coroutine_send_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_throw_method), RUNTIME_CALLABLE_KEY_BASE, 36, crate::molt_coroutine_throw_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_close_method), RUNTIME_CALLABLE_KEY_BASE, 37, crate::molt_coroutine_close_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_awaitable_await), RUNTIME_CALLABLE_KEY_BASE, 38, crate::molt_awaitable_await as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_iter), RUNTIME_CALLABLE_KEY_BASE, 39, crate::molt_coroutine_wrapper_iter as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_next), RUNTIME_CALLABLE_KEY_BASE, 40, crate::molt_coroutine_wrapper_next as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_self), RUNTIME_CALLABLE_KEY_BASE, 41, crate::molt_asyncgen_awaitable_self as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_next), RUNTIME_CALLABLE_KEY_BASE, 42, crate::molt_asyncgen_awaitable_next as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_send), RUNTIME_CALLABLE_KEY_BASE, 43, crate::molt_asyncgen_awaitable_send as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_throw), RUNTIME_CALLABLE_KEY_BASE, 44, crate::molt_asyncgen_awaitable_throw as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_close), RUNTIME_CALLABLE_KEY_BASE, 45, crate::molt_asyncgen_awaitable_close as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_generator_throw_method), RUNTIME_CALLABLE_KEY_BASE, 46, crate::molt_generator_throw_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_types), RUNTIME_CALLABLE_KEY_BASE, 47, crate::molt_contextvars_types as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy_current), RUNTIME_CALLABLE_KEY_BASE, 48, crate::molt_contextvars_copy_current as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_new), RUNTIME_CALLABLE_KEY_BASE, 49, crate::molt_contextvars_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_new), RUNTIME_CALLABLE_KEY_BASE, 50, crate::molt_contextvars_token_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_new), RUNTIME_CALLABLE_KEY_BASE, 51, crate::molt_contextvars_missing_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys_new), RUNTIME_CALLABLE_KEY_BASE, 52, crate::molt_contextvars_keys_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values_new), RUNTIME_CALLABLE_KEY_BASE, 53, crate::molt_contextvars_values_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items_new), RUNTIME_CALLABLE_KEY_BASE, 54, crate::molt_contextvars_items_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_new), RUNTIME_CALLABLE_KEY_BASE, 55, crate::molt_contextvars_var_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_get), RUNTIME_CALLABLE_KEY_BASE, 56, crate::molt_contextvars_var_get as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_set), RUNTIME_CALLABLE_KEY_BASE, 57, crate::molt_contextvars_var_set as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_reset), RUNTIME_CALLABLE_KEY_BASE, 58, crate::molt_contextvars_var_reset as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_hash), RUNTIME_CALLABLE_KEY_BASE, 59, crate::molt_contextvars_var_hash as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy), RUNTIME_CALLABLE_KEY_BASE, 60, crate::molt_contextvars_copy as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_len), RUNTIME_CALLABLE_KEY_BASE, 61, crate::molt_contextvars_len as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_getitem), RUNTIME_CALLABLE_KEY_BASE, 62, crate::molt_contextvars_getitem as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_contains), RUNTIME_CALLABLE_KEY_BASE, 63, crate::molt_contextvars_contains as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_get), RUNTIME_CALLABLE_KEY_BASE, 64, crate::molt_contextvars_get as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_run), RUNTIME_CALLABLE_KEY_BASE, 65, crate::molt_contextvars_run as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys), RUNTIME_CALLABLE_KEY_BASE, 66, crate::molt_contextvars_keys as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values), RUNTIME_CALLABLE_KEY_BASE, 67, crate::molt_contextvars_values as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items), RUNTIME_CALLABLE_KEY_BASE, 68, crate::molt_contextvars_items as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_self), RUNTIME_CALLABLE_KEY_BASE, 69, crate::molt_contextvars_iter_self as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_next), RUNTIME_CALLABLE_KEY_BASE, 70, crate::molt_contextvars_iter_next as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_eq), RUNTIME_CALLABLE_KEY_BASE, 71, crate::molt_contextvars_eq as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_ne), RUNTIME_CALLABLE_KEY_BASE, 72, crate::molt_contextvars_ne as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_property), RUNTIME_CALLABLE_KEY_BASE, 73, crate::molt_contextvars_property as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_enter), RUNTIME_CALLABLE_KEY_BASE, 74, crate::molt_contextvars_token_enter as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_exit), RUNTIME_CALLABLE_KEY_BASE, 75, crate::molt_contextvars_token_exit as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_repr), RUNTIME_CALLABLE_KEY_BASE, 76, crate::molt_contextvars_var_repr as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_repr), RUNTIME_CALLABLE_KEY_BASE, 77, crate::molt_contextvars_token_repr as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_repr), RUNTIME_CALLABLE_KEY_BASE, 78, crate::molt_contextvars_missing_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_dataclasses_init_trampoline), RUNTIME_CALLABLE_KEY_BASE, 35, molt_dataclasses_init_trampoline as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_send_method), RUNTIME_CALLABLE_KEY_BASE, 36, crate::molt_coroutine_send_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_throw_method), RUNTIME_CALLABLE_KEY_BASE, 37, crate::molt_coroutine_throw_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_close_method), RUNTIME_CALLABLE_KEY_BASE, 38, crate::molt_coroutine_close_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_awaitable_await), RUNTIME_CALLABLE_KEY_BASE, 39, crate::molt_awaitable_await as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_iter), RUNTIME_CALLABLE_KEY_BASE, 40, crate::molt_coroutine_wrapper_iter as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_next), RUNTIME_CALLABLE_KEY_BASE, 41, crate::molt_coroutine_wrapper_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_self), RUNTIME_CALLABLE_KEY_BASE, 42, crate::molt_asyncgen_awaitable_self as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_next), RUNTIME_CALLABLE_KEY_BASE, 43, crate::molt_asyncgen_awaitable_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_send), RUNTIME_CALLABLE_KEY_BASE, 44, crate::molt_asyncgen_awaitable_send as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_throw), RUNTIME_CALLABLE_KEY_BASE, 45, crate::molt_asyncgen_awaitable_throw as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_close), RUNTIME_CALLABLE_KEY_BASE, 46, crate::molt_asyncgen_awaitable_close as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_generator_throw_method), RUNTIME_CALLABLE_KEY_BASE, 47, crate::molt_generator_throw_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_types), RUNTIME_CALLABLE_KEY_BASE, 48, crate::molt_contextvars_types as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy_current), RUNTIME_CALLABLE_KEY_BASE, 49, crate::molt_contextvars_copy_current as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_new), RUNTIME_CALLABLE_KEY_BASE, 50, crate::molt_contextvars_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_new), RUNTIME_CALLABLE_KEY_BASE, 51, crate::molt_contextvars_token_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_new), RUNTIME_CALLABLE_KEY_BASE, 52, crate::molt_contextvars_missing_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys_new), RUNTIME_CALLABLE_KEY_BASE, 53, crate::molt_contextvars_keys_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values_new), RUNTIME_CALLABLE_KEY_BASE, 54, crate::molt_contextvars_values_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items_new), RUNTIME_CALLABLE_KEY_BASE, 55, crate::molt_contextvars_items_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_new), RUNTIME_CALLABLE_KEY_BASE, 56, crate::molt_contextvars_var_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_get), RUNTIME_CALLABLE_KEY_BASE, 57, crate::molt_contextvars_var_get as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_set), RUNTIME_CALLABLE_KEY_BASE, 58, crate::molt_contextvars_var_set as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_reset), RUNTIME_CALLABLE_KEY_BASE, 59, crate::molt_contextvars_var_reset as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_hash), RUNTIME_CALLABLE_KEY_BASE, 60, crate::molt_contextvars_var_hash as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy), RUNTIME_CALLABLE_KEY_BASE, 61, crate::molt_contextvars_copy as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_len), RUNTIME_CALLABLE_KEY_BASE, 62, crate::molt_contextvars_len as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_getitem), RUNTIME_CALLABLE_KEY_BASE, 63, crate::molt_contextvars_getitem as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_contains), RUNTIME_CALLABLE_KEY_BASE, 64, crate::molt_contextvars_contains as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_get), RUNTIME_CALLABLE_KEY_BASE, 65, crate::molt_contextvars_get as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_run), RUNTIME_CALLABLE_KEY_BASE, 66, crate::molt_contextvars_run as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys), RUNTIME_CALLABLE_KEY_BASE, 67, crate::molt_contextvars_keys as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values), RUNTIME_CALLABLE_KEY_BASE, 68, crate::molt_contextvars_values as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items), RUNTIME_CALLABLE_KEY_BASE, 69, crate::molt_contextvars_items as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_self), RUNTIME_CALLABLE_KEY_BASE, 70, crate::molt_contextvars_iter_self as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_next), RUNTIME_CALLABLE_KEY_BASE, 71, crate::molt_contextvars_iter_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_eq), RUNTIME_CALLABLE_KEY_BASE, 72, crate::molt_contextvars_eq as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_ne), RUNTIME_CALLABLE_KEY_BASE, 73, crate::molt_contextvars_ne as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_property), RUNTIME_CALLABLE_KEY_BASE, 74, crate::molt_contextvars_property as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_enter), RUNTIME_CALLABLE_KEY_BASE, 75, crate::molt_contextvars_token_enter as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_exit), RUNTIME_CALLABLE_KEY_BASE, 76, crate::molt_contextvars_token_exit as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_repr), RUNTIME_CALLABLE_KEY_BASE, 77, crate::molt_contextvars_var_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_repr), RUNTIME_CALLABLE_KEY_BASE, 78, crate::molt_contextvars_token_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_repr), RUNTIME_CALLABLE_KEY_BASE, 79, crate::molt_contextvars_missing_repr as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_async_sleep_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 1, crate::molt_async_sleep_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_anext_default_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 2, crate::molt_anext_default_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 3, crate::molt_asyncgen_poll as *const ());

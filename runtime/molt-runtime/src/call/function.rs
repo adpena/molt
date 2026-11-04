@@ -2598,15 +2598,23 @@ pub(crate) enum ArgumentTransfer {
 /// Moved argument references that no entry has taken over yet. A failure
 /// before entry, or a borrowing C callback's return, releases each exactly
 /// once in frame order with ordinary native deallocator error visibility.
-struct PendingMove<'a, 'py> {
+pub(crate) struct PendingMove<'a, 'py> {
     py: &'a PyToken<'py>,
     args: &'a [u64],
 }
 
 impl PendingMove<'_, '_> {
     /// The entry now owns every reference.
-    fn into_entry(self) {
+    pub(crate) fn into_entry(self) {
         std::mem::forget(self);
+    }
+}
+
+impl<'a, 'py> PendingMove<'a, 'py> {
+    /// The caller has surrendered one owned reference per argument. A runtime
+    /// body uses the same guard until its ordinary frame has adopted them.
+    pub(crate) fn new(py: &'a PyToken<'py>, args: &'a [u64]) -> Self {
+        Self { py, args }
     }
 }
 

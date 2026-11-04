@@ -2626,7 +2626,8 @@ pub(crate) const CLASS_DEFINITION_WORD: usize = ClassReferenceSlot::NativeModule
 /// A plain scalar code address like the definition word: no reference, no
 /// inheritance, and teardown leaves it alone.
 pub(crate) const CLASS_NATIVE_NEXT_WORD: usize = CLASS_DEFINITION_WORD + 1;
-pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_NATIVE_NEXT_WORD + 1;
+pub(crate) const CLASS_PAYLOAD_WORDS: usize =
+    ClassReferenceSlot::DataclassInitTemplate as usize + 1;
 
 /// The identity of one compiled class statement (HF-220): its program slot
 /// plus one, so zero stays the word of every class no compiled statement
@@ -3494,7 +3495,7 @@ mod tests {
                 let original = super::ensure_function_code_bits(py, function);
                 let candidate = alloc_test_code(py, name, name, 1);
                 let candidate_bits = MoltObject::from_ptr(candidate).bits();
-                let snapshot = || std::slice::from_raw_parts(candidate.cast::<u64>(), 25).to_vec();
+                let snapshot = || std::slice::from_raw_parts(candidate.cast::<u64>(), 26).to_vec();
                 let refs = |bits| ref_count(obj_from_bits(bits).as_ptr().unwrap());
                 let candidate_refs = ref_count(candidate);
                 let original_refs = ref_count(obj_from_bits(original).as_ptr().unwrap());

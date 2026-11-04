@@ -36,7 +36,7 @@ Run from the cloned repository root. The commands below work in PowerShell and
 POSIX shells without activating a virtual environment:
 
 ```bash
-uv sync --group dev --python 3.12.15
+uv sync --locked --group dev
 ```
 
 This creates the source bootstrap environment. Run it without a
@@ -48,11 +48,30 @@ for selection, explicit external environments and updates.
 ## Verify The Toolchain
 
 ```bash
-uv run --python 3.12 molt doctor --json
+uv run --locked molt doctor --json --strict
 ```
 
 Resolve any reported toolchain errors before building. Exit code `0` means the
 doctor checks passed; it does not prove program semantics or target parity.
+The checked-in `.python-version` selects the development interpreter through uv;
+no separately created Python environment is required for this bootstrap.
+
+For an inventoried farm host, the same workflow is automated by
+`python -B tools/trunk_loop.py provision --host NAME` from a provisioned controller.
+The implementation in `tools/trunk_loop.py::provision_script` owns the automated
+sequence: check system prerequisites (including CMake), install missing uv and rustup through their
+official user installers, clone or fetch, admit `rust-toolchain.toml`, synchronize
+the locked development dependencies, then run the strict doctor command above.
+It does not upgrade existing system tools or reset an existing checkout.
+Missing C tools are reported with installation guidance; system installation
+remains an operator step. See [farm provisioning](design/trunk_loop.md#provision-before-testing)
+for physical disk admission, Linux filesystem UUID prerequisites and the WSL
+settings boundary.
+The Mac landing runner can opt into Linux gate execution with
+`MOLT_LANDING_GATE_HOST=molt-gate`; see the
+[remote landing contract](design/trunk_loop.md#opt-in-remote-landing-gates).
+The Mac continues to own the queue, merge and push.
+
 For the LLVM backend, follow the [pinned SDK contract](spec/areas/tooling/0001-toolchains.md#canonical-llvm-sdk-readiness);
 default admission requires its managed installation and reports the bootstrap
 command when that installation is absent.

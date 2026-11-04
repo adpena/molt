@@ -594,7 +594,6 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 return class_bits;
             }
             return match tid {
-                TYPE_ID_DATACLASS => builtins.object,
                 TYPE_ID_FLOAT => builtins.float,
                 TYPE_ID_STRING => builtins.str,
                 TYPE_ID_BYTES => builtins.bytes,

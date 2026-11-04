@@ -22,6 +22,8 @@ build-inputs = [
   "../../LICENSE",
   "../molt-runtime-http/src/functions_logging.rs",
   "../molt-runtime-itertools/src/itertools.rs",
+  "../molt-runtime-itertools/src/itertools",
+  "../molt-runtime-itertools/src/public_types_generated.rs",
   "../molt-runtime-path/src/os_ext.rs",
   "../molt-runtime-path/src/pathlib.rs",
   "../molt-cpython-abi/shims/pyarg_variadic.exports",

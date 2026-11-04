@@ -559,9 +559,7 @@ pub(crate) fn alloc_python_builtin_function_bits(
         return None;
     }
     let spec = super::native_callable::NativeCallableSpec {
-        name: Some(super::native_callable::NativeCallableName::Known(
-            info.name_id,
-        )),
+        identity: Some(info.public.identity()),
         text_signature: info.text_signature,
         self_bits: Some(module_bits),
         ..super::native_callable::NativeCallableSpec::uncached_function()
@@ -627,9 +625,13 @@ fn alloc_python_builtin_metadata_tuple_bits(
 ) -> Option<u64> {
     let mut owned = OwnedMetadataBits::new(_py);
 
-    let name_bits = alloc_owned_static_str_bits(_py, info.python_name, &mut owned)?;
-    let qualname_bits = alloc_owned_static_str_bits(_py, info.python_name, &mut owned)?;
-    let module_bits = alloc_owned_static_str_bits(_py, info.python_module, &mut owned)?;
+    let identity = info.public.identity();
+    let name_bits = identity.name.owned_bits(_py)?;
+    owned.push(name_bits);
+    let qualname_bits = identity.qualname.owned_bits(_py)?;
+    owned.push(qualname_bits);
+    let module_bits = identity.module.owned_bits(_py)?;
+    owned.push(module_bits);
     let arg_names_bits = alloc_static_str_tuple_bits(
         _py,
         info.posonly_params
@@ -2188,6 +2190,7 @@ mod function_type_execution_kind_tests {
                             cache: None,
                             text_signature: Some("($self, /)"),
                             fixed_convention: None,
+                            identity: None,
                         }
                     ));
                     drop(reset);

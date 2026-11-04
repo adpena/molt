@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,90 @@ import pytest
 from tools import gen_intrinsics
 from tools.check_rust_toolchain import RUST_EDITION
 from tools.import_file import molt_module_name
-from tools.intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
+from tools.intrinsic_manifest import parse_intrinsic_manifest
+from tools.public_objects import load_public_objects
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("version", ["3.12", "3.14"])
+def test_public_object_declaration_matches_cpython_census(version: str) -> None:
+    fixture = json.loads(
+        (
+            ROOT
+            / "tests/fixtures/public_object_identity"
+            / f"cpython-{version}-darwin.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["implementation"] == "cpython"
+    assert fixture["version"][:2] == [int(part) for part in version.split(".")]
+    for symbol, identity in load_public_objects().items():
+        expected = {
+            "kind": identity.kind.value,
+            "__name__": identity.name,
+            "__qualname__": identity.qualname,
+            "__module__": identity.module,
+        }
+        for binding in identity.bindings:
+            module, _, name = binding.rpartition(".")
+            assert fixture["modules"][module]["objects"][name] == expected, (
+                symbol,
+                binding,
+            )
+
+
+def test_public_census_oracle_uses_the_compiled_consumers_bootstrap(
+    tmp_path: Path,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    from tests.process_guard_common import run_guarded_test_process
+    from tools.cpython_census import public_objects as census
+
+    # This control is independent of the census emitter. inspect, imported by
+    # the driver/pytest, attaches collections.abc; a minimal consumer does not.
+    control = tmp_path / "namespace_control.py"
+    control.write_text(
+        "import json, collections\n"
+        "print(json.dumps(sorted(name for name in vars(collections) "
+        "if not name.startswith('_'))))\n",
+        encoding="utf-8",
+    )
+    actual = run_guarded_test_process(
+        [sys.executable, "-I", "-S", str(control)], check=True
+    )
+    expected = set(json.loads(actual.stdout))
+    module, observation = census.observe(
+        "collections", SimpleNamespace(run=run_guarded_test_process)
+    )
+    assert module == "collections"
+    assert set(observation["objects"]) == expected
+    assert "abc" not in expected
+
+
+def test_public_census_preserves_normal_site_builtins(tmp_path: Path) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    from tests.process_guard_common import run_guarded_test_process
+    from tools.cpython_census import public_objects as census
+
+    control = tmp_path / "normal_builtins.py"
+    names = ("copyright", "credits", "exit", "help", "license", "quit")
+    control.write_text(
+        "import builtins, json\n"
+        f"names = {names!r}\n"
+        "print(json.dumps({name: type(getattr(builtins, name)).__name__ for name in names}))\n",
+        encoding="utf-8",
+    )
+    normal = run_guarded_test_process([sys.executable, "-I", str(control)], check=True)
+    expected = json.loads(normal.stdout)
+    _, observation = census.observe(
+        "builtins", SimpleNamespace(run=run_guarded_test_process)
+    )
+    assert {name: observation["objects"][name]["kind"] for name in names} == expected
 
 
 def test_backend_symbol_overrides_file_is_removed() -> None:
@@ -20,6 +101,77 @@ def test_backend_symbol_overrides_file_is_removed() -> None:
     assert overrides in module.RETIRED_OUTPUTS
     for retired in module.RETIRED_OUTPUTS:
         assert not retired.exists()
+
+
+def test_public_math_signatures_match_the_independent_host_binder() -> None:
+    import inspect
+
+    for identity in load_public_objects().values():
+        if identity.module != "math" or identity.call is None:
+            continue
+        declaration = identity.call
+        function = getattr(importlib.import_module("math"), identity.name)
+        if identity.name == "hypot":
+            # CPython exposes this binder in its docstring, without a text signature.
+            assert function.__text_signature__ is None
+            assert function.__doc__.splitlines()[0] == "hypot(*coordinates) -> value"
+            assert declaration.vararg == "coordinates"
+            assert not (
+                declaration.posonly
+                or declaration.positional
+                or declaration.kwonly
+                or declaration.varkw
+            )
+            continue
+        signature = inspect.signature(function)
+        parameters = list(signature.parameters.values())
+        assert declaration.posonly == tuple(
+            p.name for p in parameters if p.kind == p.POSITIONAL_ONLY
+        )
+        assert declaration.positional == tuple(
+            p.name for p in parameters if p.kind == p.POSITIONAL_OR_KEYWORD
+        )
+        assert declaration.kwonly == tuple(
+            p.name for p in parameters if p.kind == p.KEYWORD_ONLY
+        )
+        assert declaration.vararg == next(
+            (p.name for p in parameters if p.kind == p.VAR_POSITIONAL), None
+        )
+        assert declaration.varkw == next(
+            (p.name for p in parameters if p.kind == p.VAR_KEYWORD), None
+        )
+        assert tuple(float(value) for value in declaration.kwdefaults) == tuple(
+            p.default for p in parameters if p.kind == p.KEYWORD_ONLY
+        )
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        'posonly = ["x", "x"]',
+        'kwonly = ["start"]',
+        'kwonly = ["tolerance"]\nkwdefaults = ["1e999"]',
+    ],
+)
+def test_public_signature_rejects_ambiguous_or_unrepresentable_binding(
+    tmp_path: Path, shape: str
+) -> None:
+    path = tmp_path / "public.toml"
+    path.write_text(
+        """[object.molt_probe]
+kind = "builtin_function_or_method"
+name = "probe"
+qualname = "probe"
+module = "math"
+bindings = ["math.probe"]
+[object.molt_probe.call]
+"""
+        + shape
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_public_objects(path)
 
 
 def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:
@@ -96,17 +248,12 @@ def test_public_intrinsic_names_are_explicit_declarations() -> None:
         ("molt_time_monotonic", "monotonic"),  # socketserver.time is an alias.
         ("molt_process_spawn", "fork_exec"),
     ):
-        assert by_name[intrinsic].python_name == expected
-    assert by_name["molt_capabilities_has"].python_name is None
-    declarations = parse_intrinsic_manifest(
-        "# python-name: public_name\n"
-        "def molt_private(\n    value: Any,\n) -> Any: ...\n"
-        "def molt_internal() -> None: ...\n"
-    )
-    assert [(entry.name, entry.arity, entry.python_name) for entry in declarations] == [
-        ("molt_private", 1, "public_name"),
-        ("molt_internal", 0, None),
-    ]
+        assert by_name[intrinsic].public.name == expected
+    assert by_name["molt_capabilities_has"].public is None
+    with pytest.raises(ValueError, match="public_objects.toml"):
+        parse_intrinsic_manifest(
+            "# python-name: public_name\ndef molt_private(value: Any) -> Any: ...\n"
+        )
 
 
 @pytest.mark.parametrize(
@@ -128,11 +275,20 @@ def test_invalid_public_intrinsic_name_declarations_fail_closed(
 
 
 @pytest.mark.parametrize("name", [True, 12, {}, "", "has space", "é"])
-def test_public_intrinsic_name_facts_validate_type_and_grammar(name: object) -> None:
+def test_public_intrinsic_name_facts_validate_type_and_grammar(
+    name: object, tmp_path: Path
+) -> None:
+    import json
+
+    declaration = tmp_path / "public.toml"
+    declaration.write_text(
+        '[object.molt_test]\nkind = "builtin_function_or_method"\n'
+        f"name = {json.dumps(name, ensure_ascii=False)}\n"
+        'qualname = "test"\nmodule = "test"\nbindings = ["test.test"]\n',
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError):
-        IntrinsicEntry(
-            "molt_test", "molt_test", 0, python_name=name, parameter_names=()
-        )
+        load_public_objects(declaration)
 
 
 @pytest.mark.parametrize(
@@ -165,8 +321,8 @@ def test_distinct_public_aliases_share_only_the_executable_symbol() -> None:
         ("molt_binascii_unhexlify", "molt_binascii_a2b_hex", "unhexlify"),
     ):
         assert by_name[alias].symbol == target
-        assert by_name[alias].python_name == public_name
-        assert by_name[alias].python_name != by_name[target].python_name
+        assert by_name[alias].public.name == public_name
+        assert by_name[alias].public.name != by_name[target].public.name
         assert by_name[alias].arity == by_name[target].arity
         assert by_name[alias].defaults == by_name[target].defaults
 

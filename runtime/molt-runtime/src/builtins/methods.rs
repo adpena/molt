@@ -97,10 +97,11 @@ pub(crate) fn method_dispatch(
 }
 
 pub(crate) use common::{
-    alloc_builtin_function, alloc_builtin_function_with_defaults, builtin_func_bits,
-    builtin_func_bits_with_bind_kind, builtin_func_bits_with_defaults_tuple,
-    builtin_func_bits_with_signature, builtin_variadic_func_bits, configure_builtin_signature,
-    init_native_callable, set_function_defaults,
+    alloc_builtin_function, alloc_builtin_function_with_defaults,
+    alloc_builtin_function_with_signature, builtin_func_bits, builtin_func_bits_with_bind_kind,
+    builtin_func_bits_with_defaults_tuple, builtin_func_bits_with_signature,
+    builtin_variadic_func_bits, configure_builtin_signature, init_native_callable,
+    set_function_defaults,
 };
 pub(crate) use core_types::{
     memoryview_method_bits, object_method_bits, range_method_bits, type_delattr, type_method_bits,

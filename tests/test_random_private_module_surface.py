@@ -14,7 +14,7 @@ import importlib.util
 import bisect as _host_bisect
 import random as _host_random
 import sys
-from tests.stdlib_intrinsic_registry import install_registry
+from tests.stdlib_intrinsic_registry import install_registry, record_builtin_promotion
 
 class _HandleBox:
     next_id = 0
@@ -32,6 +32,7 @@ def _new_handle(seed=None):
 
 
 install_registry({{
+    "molt_function_set_builtin": record_builtin_promotion,
     "molt_random_new": lambda: _new_handle(),
     "molt_random_seed": lambda handle, seed, version=2: _HandleBox.states[handle].seed(seed, version),
     "molt_random_random": lambda handle: _HandleBox.states[handle].random(),

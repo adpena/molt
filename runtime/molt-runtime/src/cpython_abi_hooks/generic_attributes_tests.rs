@@ -1342,16 +1342,15 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
             let name = crate::dynamic_attr_name_bits(py, b"__class__").unwrap();
             let index = crate::dynamic_attr_name_bits(py, b"__index__").unwrap();
             let default = MoltObject::from_int(703).bits();
-            for (base, dictless, dataclass) in [
-                (classes.object, false, false),
-                (classes.object, true, false),
-                (classes.object, false, true),
-                (classes.list, false, false),
-                (classes.tuple, true, false),
-                (classes.int, false, false),
-                (classes.int, true, false),
-                (classes.float, false, false),
-                (classes.float, true, false),
+            for (base, dictless) in [
+                (classes.object, false),
+                (classes.object, true),
+                (classes.list, false),
+                (classes.tuple, true),
+                (classes.int, false),
+                (classes.int, true),
+                (classes.float, false),
+                (classes.float, true),
             ] {
                 CALLS.with(|calls| calls.set([0; 6]));
                 FAILURE.with(|failure| failure.set(0));
@@ -1364,7 +1363,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                     2,
                 );
                 method(py, class, b"__index__", optional_index as *const (), 1);
-                let receiver = snapshot_receiver(py, class, dataclass);
+                let receiver = snapshot_receiver(py, class);
                 assert!(!crate::exception_pending(py));
                 let pointer = MoltObject::from_bits(receiver).as_ptr().unwrap();
 
@@ -1558,18 +1557,8 @@ fn snapshot_class(py: &crate::PyToken<'_>, name: &[u8]) -> u64 {
     class
 }
 
-fn snapshot_receiver(py: &crate::PyToken<'_>, class: u64, dataclass: bool) -> u64 {
-    if !dataclass {
-        return unsafe { crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]) };
-    }
-    let name = crate::dynamic_attr_name_bits(py, b"SnapshotRecord").unwrap();
-    let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-    let receiver = crate::molt_dataclass_new(name, empty, empty, MoltObject::from_int(0).bits());
-    crate::molt_dataclass_set_class(receiver, class);
-    dec_ref_bits(py, empty);
-    dec_ref_bits(py, name);
-    assert!(!crate::exception_pending(py));
-    receiver
+fn snapshot_receiver(py: &crate::PyToken<'_>, class: u64) -> u64 {
+    unsafe { crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]) }
 }
 
 extern "C" fn mutating_equality(_receiver: u64, _other: u64) -> u64 {
@@ -1614,61 +1603,59 @@ fn mutating_dictionary(py: &crate::PyToken<'_>) -> u64 {
 fn managed_generic_dictionary_mutation_retains_initial_class_value_and_miss() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        for dataclass in [false, true] {
-            for present in [false, true] {
-                for variant in 0..3 {
-                    CALLS.with(|calls| calls.set([0; 6]));
-                    let class = snapshot_class(&py, b"SnapshotOwner");
-                    let old = crate::dynamic_attr_name_bits(&py, b"old").unwrap();
-                    let new = crate::dynamic_attr_name_bits(&py, b"new").unwrap();
-                    let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
-                    if present {
-                        member(&py, class, b"shadow", old);
-                    }
-                    let receiver = snapshot_receiver(&py, class, dataclass);
-                    let dictionary = mutating_dictionary(&py);
-                    if variant != 2 {
-                        crate::object::field_storage::replace_dictionary(
-                            &py,
-                            MoltObject::from_bits(receiver).as_ptr().unwrap(),
-                            Some(dictionary),
-                        )
-                        .unwrap();
-                    }
-                    SNAPSHOT_MUTATION.with(|context| context.set([class, receiver, 0, new]));
-                    let result = generic_read_variant(&py, receiver, name, dictionary, variant);
-                    if present {
-                        assert_eq!(result, Some(old));
-                        dec_ref_bits(&py, result.unwrap());
-                    } else {
-                        assert!(
-                            result.is_none(),
-                            "the initial MRO miss must survive dictionary mutation"
-                        );
-                        if variant == 0 {
-                            assert!(crate::builtins::attr::clear_attribute_error_if_pending(&py));
-                        } else {
-                            assert_eq!(
-                                errors::PyErr_ExceptionMatches(
-                                    (&raw mut molt_cpython_abi::abi_types::PyExc_AttributeError)
-                                        .cast::<PyObject>(),
-                                ),
-                                1,
-                            );
-                            errors::PyErr_Clear();
-                        }
-                    }
-                    assert_eq!(
-                        CALLS.with(Cell::get)[5],
-                        1,
-                        "one dictionary equality probe per lookup"
+        for present in [false, true] {
+            for variant in 0..3 {
+                CALLS.with(|calls| calls.set([0; 6]));
+                let class = snapshot_class(&py, b"SnapshotOwner");
+                let old = crate::dynamic_attr_name_bits(&py, b"old").unwrap();
+                let new = crate::dynamic_attr_name_bits(&py, b"new").unwrap();
+                let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
+                if present {
+                    member(&py, class, b"shadow", old);
+                }
+                let receiver = snapshot_receiver(&py, class);
+                let dictionary = mutating_dictionary(&py);
+                if variant != 2 {
+                    crate::object::field_storage::replace_dictionary(
+                        &py,
+                        MoltObject::from_bits(receiver).as_ptr().unwrap(),
+                        Some(dictionary),
+                    )
+                    .unwrap();
+                }
+                SNAPSHOT_MUTATION.with(|context| context.set([class, receiver, 0, new]));
+                let result = generic_read_variant(&py, receiver, name, dictionary, variant);
+                if present {
+                    assert_eq!(result, Some(old));
+                    dec_ref_bits(&py, result.unwrap());
+                } else {
+                    assert!(
+                        result.is_none(),
+                        "the initial MRO miss must survive dictionary mutation"
                     );
-                    assert!(!crate::exception_pending(&py));
-                    assert!(errors::PyErr_Occurred().is_null());
-                    SNAPSHOT_MUTATION.with(|context| context.set([0; 4]));
-                    for value in [dictionary, receiver, name, new, old, class] {
-                        dec_ref_bits(&py, value);
+                    if variant == 0 {
+                        assert!(crate::builtins::attr::clear_attribute_error_if_pending(&py));
+                    } else {
+                        assert_eq!(
+                            errors::PyErr_ExceptionMatches(
+                                (&raw mut molt_cpython_abi::abi_types::PyExc_AttributeError)
+                                    .cast::<PyObject>(),
+                            ),
+                            1,
+                        );
+                        errors::PyErr_Clear();
                     }
+                }
+                assert_eq!(
+                    CALLS.with(Cell::get)[5],
+                    1,
+                    "one dictionary equality probe per lookup"
+                );
+                assert!(!crate::exception_pending(&py));
+                assert!(errors::PyErr_Occurred().is_null());
+                SNAPSHOT_MUTATION.with(|context| context.set([0; 4]));
+                for value in [dictionary, receiver, name, new, old, class] {
+                    dec_ref_bits(&py, value);
                 }
             }
         }
@@ -1704,7 +1691,7 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
                 crate::call::bind::call_bind_borrowed(&py, descriptor_class, None, &[], &[], &[]);
             member(&py, class, b"shadow", descriptor);
             dec_ref_bits(&py, descriptor);
-            let receiver = snapshot_receiver(&py, class, false);
+            let receiver = snapshot_receiver(&py, class);
             let dictionary = mutating_dictionary(&py);
             if variant != 2 {
                 crate::object::field_storage::replace_dictionary(
@@ -1752,45 +1739,42 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
 fn managed_generic_descriptor_cache_keeps_lossless_name_identity() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        for dataclass in [false, true] {
-            let class = snapshot_class(&py, b"LosslessAttributeOwner");
-            let spellings: [&[u8]; 5] = [
-                b"n\xed\xa0\x80\0m",
-                b"n\xed\xa0\x81\0m",
-                b"n\0m",
-                b"n\0s",
-                b"",
-            ];
-            let mut names = Vec::new();
-            for (index, spelling) in spellings.into_iter().enumerate() {
-                member(
-                    &py,
-                    class,
-                    spelling,
-                    MoltObject::from_int(index as i64).bits(),
-                );
-                names.push(crate::dynamic_attr_name_bits(&py, spelling).unwrap());
-            }
-            let receiver = snapshot_receiver(&py, class, dataclass);
-            let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(&py, &[])).bits();
-            for variant in 0..3 {
-                for index in [0, 0, 1, 1, 0, 2, 3, 4, 1] {
-                    let result =
-                        generic_read_variant(&py, receiver, names[index], dictionary, variant)
-                            .unwrap();
-                    assert_eq!(result, MoltObject::from_int(index as i64).bits());
-                    dec_ref_bits(&py, result);
-                }
-            }
-            for name in names {
-                dec_ref_bits(&py, name);
-            }
-            for value in [dictionary, receiver, class] {
-                dec_ref_bits(&py, value);
-            }
-            assert!(!crate::exception_pending(&py));
-            assert!(errors::PyErr_Occurred().is_null());
+        let class = snapshot_class(&py, b"LosslessAttributeOwner");
+        let spellings: [&[u8]; 5] = [
+            b"n\xed\xa0\x80\0m",
+            b"n\xed\xa0\x81\0m",
+            b"n\0m",
+            b"n\0s",
+            b"",
+        ];
+        let mut names = Vec::new();
+        for (index, spelling) in spellings.into_iter().enumerate() {
+            member(
+                &py,
+                class,
+                spelling,
+                MoltObject::from_int(index as i64).bits(),
+            );
+            names.push(crate::dynamic_attr_name_bits(&py, spelling).unwrap());
         }
+        let receiver = snapshot_receiver(&py, class);
+        let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(&py, &[])).bits();
+        for variant in 0..3 {
+            for index in [0, 0, 1, 1, 0, 2, 3, 4, 1] {
+                let result =
+                    generic_read_variant(&py, receiver, names[index], dictionary, variant).unwrap();
+                assert_eq!(result, MoltObject::from_int(index as i64).bits());
+                dec_ref_bits(&py, result);
+            }
+        }
+        for name in names {
+            dec_ref_bits(&py, name);
+        }
+        for value in [dictionary, receiver, class] {
+            dec_ref_bits(&py, value);
+        }
+        assert!(!crate::exception_pending(&py));
+        assert!(errors::PyErr_Occurred().is_null());
     });
 }
 
@@ -1932,7 +1916,7 @@ fn getattribute_callable_retires_under_its_exact_error_before_fallback() {
             member(py, class.bits(), b"__getattribute__", value.bits());
             drop(value);
             drop(callable); // Only the actual namespace and operation may retain it.
-            let receiver = ExceptionValue::adopt(py, snapshot_receiver(py, class.bits(), false));
+            let receiver = ExceptionValue::adopt(py, snapshot_receiver(py, class.bits()));
             let name =
                 ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, b"missing").unwrap());
             let result =
@@ -2009,7 +1993,7 @@ fn fallible_type_publication_preserves_prior_on_success_and_selects_new_failure(
                 publication_key_equal as *const (),
                 2,
             );
-            let key = ExceptionValue::adopt(py, snapshot_receiver(py, key_class.bits(), false));
+            let key = ExceptionValue::adopt(py, snapshot_receiver(py, key_class.bits()));
             let child_name = ExceptionValue::adopt(
                 py,
                 crate::dynamic_attr_name_bits(py, b"PublicationDescendant").unwrap(),

@@ -6,20 +6,20 @@ use crate::object::seq_access::PinnedSequenceSnapshot;
 
 /// An attribute or comparison result transfers one owned reference. Keep that
 /// ownership explicit across every later descriptor, truth or equality callback.
-struct DcValue {
-    bits: u64,
+pub(super) struct DcValue {
+    pub(super) bits: u64,
     guard: PtrDropGuard,
 }
 
 impl DcValue {
-    fn owned(bits: u64) -> Self {
+    pub(super) fn owned(bits: u64) -> Self {
         Self {
             bits,
             guard: PtrDropGuard::new(obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut())),
         }
     }
 
-    fn into_bits(mut self) -> u64 {
+    pub(super) fn into_bits(mut self) -> u64 {
         self.guard.release();
         self.bits
     }
@@ -34,7 +34,7 @@ macro_rules! dc_try {
     };
 }
 
-fn dc_result(py: &PyToken<'_>, bits: u64) -> Result<DcValue, ()> {
+pub(super) fn dc_result(py: &PyToken<'_>, bits: u64) -> Result<DcValue, ()> {
     let value = DcValue::owned(bits);
     if exception_pending(py) {
         Err(())
@@ -43,7 +43,7 @@ fn dc_result(py: &PyToken<'_>, bits: u64) -> Result<DcValue, ()> {
     }
 }
 
-fn dc_attr(py: &PyToken<'_>, object: u64, name: crate::NameId) -> Result<DcValue, ()> {
+pub(super) fn dc_attr(py: &PyToken<'_>, object: u64, name: crate::NameId) -> Result<DcValue, ()> {
     let name = DcValue::owned(name.owned_bits(py).ok_or(())?);
     dc_result(
         py,
@@ -328,74 +328,5 @@ pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
         }
         let tuple = DcValue::owned(MoltObject::from_ptr(ptr).bits());
         molt_hash_builtin(tuple.bits)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_check_default_order(fields_dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let fields = dc_try!(dc_dict_fields(py, fields_dict_bits));
-        let mut previous: Option<String> = None;
-        for pair in fields.as_chunks::<2>().0 {
-            let field = pair[1];
-            if !dc_try!(dc_field_has_tag(py, field, b"_FIELD"))
-                && !dc_try!(dc_field_has_tag(py, field, b"_FIELD_INITVAR"))
-            {
-                continue;
-            }
-            if !dc_try!(dc_field_bool_attr(py, field, crate::NameId::Init, true))
-                || dc_try!(dc_field_bool_attr(py, field, crate::NameId::KwOnly, false))
-            {
-                continue;
-            }
-            let mut has_default = false;
-            for attr in [crate::NameId::Default, crate::NameId::DefaultFactory] {
-                let value = dc_try!(dc_attr(py, field, attr));
-                if dc_try!(dc_repr_str(py, value.bits)).as_bytes() != b"MISSING" {
-                    has_default = true;
-                    break;
-                }
-            }
-            let name = dc_try!(dc_field_name_str(py, field));
-            if has_default {
-                previous = Some(name);
-            } else if let Some(previous) = &previous {
-                return raise_exception::<_>(
-                    py,
-                    BuiltinExc::TypeError,
-                    &format!("non-default argument {name:?} follows default argument {previous:?}"),
-                );
-            }
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_field_flags(fields_dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let fields = dc_try!(dc_dict_fields(py, fields_dict_bits));
-        let mut flags = Vec::new();
-        for pair in fields.as_chunks::<2>().0 {
-            let field = pair[1];
-            if !dc_try!(dc_is_field(py, field)) {
-                continue;
-            }
-            let repr = dc_try!(dc_field_bool_attr(py, field, crate::NameId::Repr, true));
-            let compare = dc_try!(dc_field_bool_attr(py, field, crate::NameId::Compare, true));
-            let hash = dc_try!(dc_field_hash_flag(py, field, compare));
-            flags.push(
-                MoltObject::from_int(
-                    i64::from(repr) | (i64::from(compare) << 1) | (i64::from(hash) << 2),
-                )
-                .bits(),
-            );
-        }
-        let ptr = alloc_tuple(py, &flags);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
     })
 }

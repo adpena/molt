@@ -40,79 +40,6 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     })
 }
 
-pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    class_bits: u64,
-) -> Option<u64> {
-    unsafe {
-        let field_names_name = crate::NameId::DunderMoltDataclassFieldNames.owned_bits(_py)?;
-        let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
-        dec_ref_bits(_py, field_names_name);
-        let field_names_bits = match field_names_bits {
-            Ok(bits) => bits?,
-            Err(()) => return Some(MoltObject::none().bits()),
-        };
-        let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
-            return Some(raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "dataclass field names must be a list/tuple of str",
-            ));
-        };
-        let field_count = match object_type_id(field_names_ptr) {
-            TYPE_ID_TUPLE => tuple_len(field_names_ptr),
-            TYPE_ID_LIST => list_len(field_names_ptr),
-            _ => {
-                return Some(raise_exception::<_>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "dataclass field names must be a list/tuple of str",
-                ));
-            }
-        };
-        let missing = missing_bits(_py);
-        let mut values = Vec::with_capacity(field_count);
-        values.resize(field_count, missing);
-        let values_ptr = alloc_tuple(_py, &values);
-        if values_ptr.is_null() {
-            return Some(MoltObject::none().bits());
-        }
-        let values_bits = MoltObject::from_ptr(values_ptr).bits();
-        let flags_bits =
-            if let Some(flags_name) = crate::NameId::DunderMoltDataclassFlags.owned_bits(_py) {
-                let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name);
-                dec_ref_bits(_py, flags_name);
-                match bits {
-                    Ok(bits) => bits.unwrap_or_else(|| MoltObject::from_int(0).bits()),
-                    Err(()) => {
-                        dec_ref_bits(_py, values_bits);
-                        return Some(MoltObject::none().bits());
-                    }
-                }
-            } else {
-                MoltObject::from_int(0).bits()
-            };
-        let name_bits = class_name_bits(class_ptr);
-        let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
-        dec_ref_bits(_py, values_bits);
-        if exception_pending(_py) {
-            return Some(MoltObject::none().bits());
-        }
-        let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
-            return Some(inst_bits);
-        };
-        let _ = crate::object::ops_slice::dataclass_finish_construction_unpublished(
-            _py, inst_ptr, class_bits,
-        );
-        if exception_pending(_py) {
-            dec_ref_bits(_py, inst_bits);
-            return Some(MoltObject::none().bits());
-        }
-        Some(inst_bits)
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -761,7 +688,7 @@ pub(crate) fn alloc_list_with_capacity(
 ) -> *mut u8 {
     let cap = capacity.max(elems.len());
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut DataclassDesc>()
+        + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
@@ -797,7 +724,7 @@ pub(crate) fn alloc_list_from_snapshot(
     snapshot: super::seq_access::PinnedSequenceSnapshot<'_, '_>,
 ) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut DataclassDesc>()
+        + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
     let object = alloc_object_with_aux(py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
@@ -822,7 +749,7 @@ pub(crate) fn alloc_list_from_snapshot(
 /// that the physical slots are not yet safe to read until populated.
 pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut DataclassDesc>()
+        + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
@@ -859,7 +786,7 @@ pub(crate) fn alloc_list_with_capacity_owned(
 ) -> *mut u8 {
     let cap = capacity.max(elems.len());
     let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut DataclassDesc>()
+        + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
@@ -1681,13 +1608,16 @@ pub(crate) fn alloc_code_obj(
     // immutable freevar/cellvar positional-name contracts, and 21 is the
     // immutable callable-context provenance paired with slots 9..11. Slot 22
     // owns optional immutable GPU body metadata; 23..24 own declaration
-    // qualname/doc once packed metadata publishes them. No function grows.
+    // qualname/doc once packed metadata publishes them. Slot 25 owns an optional
+    // immutable dataclass initializer body plan. No function grows.
     let empty_lexical_ptr = alloc_tuple(_py, &[]);
     if empty_lexical_ptr.is_null() {
         return std::ptr::null_mut();
     }
     let empty_lexical_bits = MoltObject::from_ptr(empty_lexical_ptr).bits();
-    let total = std::mem::size_of::<MoltHeader>() + 25 * std::mem::size_of::<u64>();
+    // Word 25 owns an optional immutable dataclass initialization plan. It
+    // contains indices only; Python defaults/factories remain function owners.
+    let total = std::mem::size_of::<MoltHeader>() + 26 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         dec_ref_bits(_py, empty_lexical_bits);
@@ -1721,6 +1651,7 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(22 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(23 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(24 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(25 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
         }
@@ -1814,6 +1745,7 @@ pub(crate) unsafe fn clone_code_obj_with_protocol_flags(
             return std::ptr::null_mut();
         }
         let descriptor = crate::object::layout::code_gpu_descriptor_bits(source);
+        crate::builtins::types::dataclasses::clone_code_init_plan(source, clone);
         if descriptor != 0
             && !crate::object::layout::code_publish_gpu_descriptor(_py, clone, descriptor)
         {
@@ -1956,6 +1888,7 @@ pub(crate) fn alloc_class_obj_with_spec(
                 | ClassReferenceSlot::FieldLayout
                 | ClassReferenceSlot::InstanceDictionary
                 | ClassReferenceSlot::CreationDoc
+                | ClassReferenceSlot::DataclassInitTemplate
                 | ClassReferenceSlot::NativeModule => 0,
             };
             slot.initialize_owned(ptr, bits);

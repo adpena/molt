@@ -27,24 +27,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_dataclasses_replace",
             crate::molt_dataclasses_replace as *const (),
         )),
-        "molt_dataclasses_post_init" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_dataclasses_post_init",
-            crate::molt_dataclasses_post_init as *const (),
-        )),
         "molt_dataclasses_set_field_metadata" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_dataclasses_set_field_metadata",
             crate::molt_dataclasses_set_field_metadata as *const (),
         )),
-        "molt_dataclasses_is_initvar" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_dataclasses_is_initvar",
-            crate::molt_dataclasses_is_initvar as *const (),
-        )),
-        "molt_dataclasses_is_kw_only_sentinel" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_dataclasses_is_kw_only_sentinel",
-                crate::molt_dataclasses_is_kw_only_sentinel as *const (),
-            ))
-        }
         "molt_dataclasses_eq" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_dataclasses_eq",
             crate::molt_dataclasses_eq as *const (),
@@ -57,15 +43,21 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_dataclasses_repr",
             crate::molt_dataclasses_repr as *const (),
         )),
-        "molt_dataclasses_check_default_order" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_dataclasses_check_default_order",
-                crate::molt_dataclasses_check_default_order as *const (),
-            ))
-        }
-        "molt_dataclasses_field_flags" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_dataclasses_field_flags",
-            crate::molt_dataclasses_field_flags as *const (),
+        "molt_dataclasses_set_init_template" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_dataclasses_set_init_template",
+            crate::molt_dataclasses_set_init_template as *const (),
+        )),
+        "molt_dataclasses_init" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_dataclasses_init",
+            crate::molt_dataclasses_init as *const (),
+        )),
+        "molt_dataclasses_init_globals" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_dataclasses_init_globals",
+            crate::molt_dataclasses_init_globals as *const (),
+        )),
+        "molt_dataclasses_init_trampoline" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_dataclasses_init_trampoline",
+            crate::molt_dataclasses_init_trampoline as *const (),
         )),
         _ => None,
     }

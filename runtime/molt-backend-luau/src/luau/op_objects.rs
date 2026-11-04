@@ -252,34 +252,6 @@ impl LuauBackend {
             // ================================================================
             // Dataclass
             // ================================================================
-            molt_ir::OpKind::DataclassNewValues => {
-                let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = {{}}"));
-            }
-            molt_ir::OpKind::DataclassGet => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(obj) = args.first() {
-                    let obj = sanitize_ident(obj);
-                    if let Some(attr) = op.s_value.as_deref() {
-                        self.emit_line(&format!("local {out} = {obj}.{}", sanitize_ident(attr)));
-                    } else if args.len() >= 2 {
-                        let idx = sanitize_ident(&args[1]);
-                        self.emit_line(&format!("local {out} = {obj}[{idx}]"));
-                    }
-                }
-            }
-            molt_ir::OpKind::DataclassSet | molt_ir::OpKind::DataclassSetClass => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let obj = sanitize_ident(&args[0]);
-                    if let Some(attr) = op.s_value.as_deref() {
-                        let val = sanitize_ident(&args[1]);
-                        self.emit_line(&format!("{obj}.{} = {val}", sanitize_ident(attr)));
-                    }
-                }
-            }
-
             _ => return false,
         }
         true

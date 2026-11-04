@@ -3,99 +3,181 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_itertools_kwd_mark" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_kwd_mark",
-            crate::molt_itertools_kwd_mark as *const (),
+        "molt_itertools_reduce" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_reduce",
+            crate::molt_itertools_reduce as *const (),
         )),
-        "molt_itertools_chain" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_chain",
-            crate::molt_itertools_chain as *const (),
+        "molt_itertools_setstate" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_setstate",
+            crate::molt_itertools_setstate as *const (),
+        )),
+        "molt_itertools_chain_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_chain_new",
+            crate::molt_itertools_chain_new as *const (),
         )),
         "molt_itertools_chain_from_iterable" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_itertools_chain_from_iterable",
             crate::molt_itertools_chain_from_iterable as *const (),
         )),
-        "molt_itertools_islice" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_islice",
-            crate::molt_itertools_islice as *const (),
+        "molt_itertools_islice_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_islice_new",
+            crate::molt_itertools_islice_new as *const (),
         )),
-        "molt_itertools_repeat" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_repeat",
-            crate::molt_itertools_repeat as *const (),
+        "molt_itertools_repeat_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_repeat_new",
+            crate::molt_itertools_repeat_new as *const (),
         )),
         "molt_itertools_repeat_type" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_itertools_repeat_type",
             crate::molt_itertools_repeat_type as *const (),
         )),
-        "molt_itertools_count" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_count",
-            crate::molt_itertools_count as *const (),
+        "molt_itertools_count_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_count_new",
+            crate::molt_itertools_count_new as *const (),
         )),
-        "molt_itertools_cycle" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_cycle",
-            crate::molt_itertools_cycle as *const (),
+        "molt_itertools_cycle_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_cycle_new",
+            crate::molt_itertools_cycle_new as *const (),
         )),
-        "molt_itertools_accumulate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_accumulate",
-            crate::molt_itertools_accumulate as *const (),
+        "molt_itertools_accumulate_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_accumulate_new",
+            crate::molt_itertools_accumulate_new as *const (),
         )),
-        "molt_itertools_batched" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_batched",
-            crate::molt_itertools_batched as *const (),
+        "molt_itertools_batched_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_batched_new",
+            crate::molt_itertools_batched_new as *const (),
         )),
-        "molt_itertools_compress" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_compress",
-            crate::molt_itertools_compress as *const (),
+        "molt_itertools_compress_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_compress_new",
+            crate::molt_itertools_compress_new as *const (),
         )),
-        "molt_itertools_combinations_with_replacement" => {
+        "molt_itertools_combinations_with_replacement_new" => {
             Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_itertools_combinations_with_replacement",
-                crate::molt_itertools_combinations_with_replacement as *const (),
+                "crate::molt_itertools_combinations_with_replacement_new",
+                crate::molt_itertools_combinations_with_replacement_new as *const (),
             ))
         }
-        "molt_itertools_dropwhile" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_dropwhile",
-            crate::molt_itertools_dropwhile as *const (),
+        "molt_itertools_dropwhile_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_dropwhile_new",
+            crate::molt_itertools_dropwhile_new as *const (),
         )),
-        "molt_itertools_filterfalse" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_filterfalse",
-            crate::molt_itertools_filterfalse as *const (),
+        "molt_itertools_filterfalse_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_filterfalse_new",
+            crate::molt_itertools_filterfalse_new as *const (),
         )),
-        "molt_itertools_pairwise" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_pairwise",
-            crate::molt_itertools_pairwise as *const (),
+        "molt_itertools_pairwise_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_pairwise_new",
+            crate::molt_itertools_pairwise_new as *const (),
         )),
-        "molt_itertools_product" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_product",
-            crate::molt_itertools_product as *const (),
+        "molt_itertools_product_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_product_new",
+            crate::molt_itertools_product_new as *const (),
         )),
-        "molt_itertools_permutations" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_permutations",
-            crate::molt_itertools_permutations as *const (),
+        "molt_itertools_permutations_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_permutations_new",
+            crate::molt_itertools_permutations_new as *const (),
         )),
-        "molt_itertools_combinations" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_combinations",
-            crate::molt_itertools_combinations as *const (),
+        "molt_itertools_combinations_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_combinations_new",
+            crate::molt_itertools_combinations_new as *const (),
         )),
-        "molt_itertools_groupby" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_groupby",
-            crate::molt_itertools_groupby as *const (),
+        "molt_itertools_groupby_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_groupby_new",
+            crate::molt_itertools_groupby_new as *const (),
         )),
-        "molt_itertools_starmap" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_starmap",
-            crate::molt_itertools_starmap as *const (),
+        "molt_itertools_starmap_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_starmap_new",
+            crate::molt_itertools_starmap_new as *const (),
         )),
-        "molt_itertools_takewhile" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_takewhile",
-            crate::molt_itertools_takewhile as *const (),
+        "molt_itertools_takewhile_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_takewhile_new",
+            crate::molt_itertools_takewhile_new as *const (),
         )),
         "molt_itertools_tee" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_itertools_tee",
             crate::molt_itertools_tee as *const (),
         )),
-        "molt_itertools_zip_longest" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_itertools_zip_longest",
-            crate::molt_itertools_zip_longest as *const (),
+        "molt_itertools_zip_longest_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_zip_longest_new",
+            crate::molt_itertools_zip_longest_new as *const (),
+        )),
+        "molt_itertools_accumulate_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_accumulate_type",
+            crate::molt_itertools_accumulate_type as *const (),
+        )),
+        "molt_itertools_batched_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_batched_type",
+            crate::molt_itertools_batched_type as *const (),
+        )),
+        "molt_itertools_chain_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_chain_type",
+            crate::molt_itertools_chain_type as *const (),
+        )),
+        "molt_itertools_combinations_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_combinations_type",
+            crate::molt_itertools_combinations_type as *const (),
+        )),
+        "molt_itertools_combinations_with_replacement_type" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_itertools_combinations_with_replacement_type",
+                crate::molt_itertools_combinations_with_replacement_type as *const (),
+            ))
+        }
+        "molt_itertools_compress_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_compress_type",
+            crate::molt_itertools_compress_type as *const (),
+        )),
+        "molt_itertools_count_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_count_type",
+            crate::molt_itertools_count_type as *const (),
+        )),
+        "molt_itertools_cycle_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_cycle_type",
+            crate::molt_itertools_cycle_type as *const (),
+        )),
+        "molt_itertools_dropwhile_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_dropwhile_type",
+            crate::molt_itertools_dropwhile_type as *const (),
+        )),
+        "molt_itertools_filterfalse_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_filterfalse_type",
+            crate::molt_itertools_filterfalse_type as *const (),
+        )),
+        "molt_itertools_groupby_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_groupby_type",
+            crate::molt_itertools_groupby_type as *const (),
+        )),
+        "molt_itertools_islice_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_islice_type",
+            crate::molt_itertools_islice_type as *const (),
+        )),
+        "molt_itertools_pairwise_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_pairwise_type",
+            crate::molt_itertools_pairwise_type as *const (),
+        )),
+        "molt_itertools_permutations_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_permutations_type",
+            crate::molt_itertools_permutations_type as *const (),
+        )),
+        "molt_itertools_product_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_product_type",
+            crate::molt_itertools_product_type as *const (),
+        )),
+        "molt_itertools_starmap_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_starmap_type",
+            crate::molt_itertools_starmap_type as *const (),
+        )),
+        "molt_itertools_takewhile_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_takewhile_type",
+            crate::molt_itertools_takewhile_type as *const (),
+        )),
+        "molt_itertools_zip_longest_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_zip_longest_type",
+            crate::molt_itertools_zip_longest_type as *const (),
+        )),
+        "molt_itertools_batched_new_312" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_batched_new_312",
+            crate::molt_itertools_batched_new_312 as *const (),
         )),
         _ => None,
     }
