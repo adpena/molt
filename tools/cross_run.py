@@ -306,6 +306,10 @@ class HostOS(StrEnum):
 class DetachedLauncher(StrEnum):
     WINDOWS_CIM = "windows-cim"
     POSIX_SESSION = "posix-session"
+    # A WSL guest's instance lives only while a Windows wsl.exe client is
+    # registered with it (docs/design/trunk_loop.md). CIM creates that client
+    # outside the SSH job; it runs the worker and exits with it.
+    WSL_SESSION = "wsl-session"
 
 
 @dataclasses.dataclass
@@ -478,8 +482,13 @@ def parse_inventory(path: Path) -> list[Host]:
             (host.os == HostOS.WINDOWS)
             != (host.launcher == DetachedLauncher.WINDOWS_CIM)
             or (host.os == HostOS.WINDOWS) != (host.shell == "powershell")
+            # A guest-side POSIX session cannot hold its WSL instance.
+            or (host.wsl_distribution is not None)
+            != (host.launcher == DetachedLauncher.WSL_SESSION)
         ):
-            raise ValueError(f"host {name!r}: launcher, OS and shell disagree")
+            raise ValueError(
+                f"host {name!r}: launcher, OS, shell and WSL distribution disagree"
+            )
         if transport == "ssh":
             if not host.hostname or not host.user:
                 raise ValueError(

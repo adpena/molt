@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import atexit
 from contextlib import chdir
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import traceback
+from typing import NoReturn
 import zipfile
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +34,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-SCHEMA = "molt.trunk-run.v2"
+SCHEMA = "molt.trunk-run.v3"
 
 
 def authorities():
@@ -482,13 +483,125 @@ def remote_argv(host, argv: list[str], *, cwd: str | None = None) -> str:
     return prefix + shlex.join(argv)
 
 
-def detached_script(host, argv: list[str], directory: str) -> str:
-    """The launcher acknowledges creation only; worker terminal data proves exit.
+@dataclass(frozen=True)
+class ProcessProbe:
+    """One observation of the process at a pid, as the remote OS stores it.
 
-    Windows API contract: Create returns 0 and an out ProcessId. See Microsoft's
+    ``started`` is the start stamp the kernel recorded at process creation; it
+    is never recomputed from the wall clock, so it cannot drift. On Linux,
+    ``instance`` names the PID namespace's instance: the kernel boot id and
+    PID 1's start ticks. A restarted WSL distro is a new init under the same VM
+    kernel, so its instance differs. ``instance_started_at`` is diagnostic only.
+    """
+
+    pid: int
+    state: str
+    started: str
+    instance: str
+    instance_started_at: str
+
+    @classmethod
+    def parse(cls, raw: str) -> ProcessProbe:
+        data = json.loads(raw)
+        names = {field.name for field in fields(cls)}
+        if (
+            not isinstance(data, dict)
+            or set(data) != names
+            or type(data["pid"]) is not int
+            or data["pid"] <= 0
+            or any(not isinstance(data[name], str) for name in names - {"pid"})
+        ):
+            raise ValueError(f"malformed worker identity probe: {raw!r}")
+        return cls(
+            **{k: v.strip() if isinstance(v, str) else v for k, v in data.items()}
+        )
+
+    @property
+    def identity(self) -> tuple[int, str, str] | None:
+        """A live process's identity; an absent, zombie or dead pid has none."""
+        if not self.state or self.state[0] in "ZX":
+            return None
+        return (self.pid, self.started, self.instance)
+
+
+def posix_probe(host) -> str:
+    """Define ``molt_probe PID``, which prints one ProcessProbe JSON line.
+
+    Every printed value is digits, hex, a state letter or a timestamp, so
+    printf needs no JSON escaping. A missing pid prints empty state and start.
+    """
+    if host.os == authorities().HostOS.MACOS:
+        # kern.boottime moves with sleep and clock steps: diagnostic only.
+        return r"""molt_probe() {
+ state=$(ps -o stat= -p "$1" 2>/dev/null || true)
+ started=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null || true)
+ boot=$(sysctl -n kern.boottime | sed 's/^{ sec = \([0-9]*\),.*/\1/')
+ printf '{"pid":%s,"state":"%s","started":"%s","instance":"","instance_started_at":"%s"}\n' "$1" "$(echo $state)" "$(echo $started)" "$(date -u -r "$boot" +%Y-%m-%dT%H:%M:%SZ)"
+}
+"""
+    # proc(5): the fields after the last ") " start with state; starttime is
+    # the 20th of them, in clock ticks since the kernel booted.
+    return r"""molt_probe() {
+ fields=$(sed -n 's/.*) //p' "/proc/$1/stat" 2>/dev/null || true)
+ init=$(sed -n 's/.*) //p' /proc/1/stat | cut -d' ' -f20)
+ btime=$(awk '$1 == "btime" {print $2}' /proc/stat)
+ printf '{"pid":%s,"state":"%s","started":"%s","instance":"%s/%s","instance_started_at":"%s"}\n' "$1" "${fields%% *}" "$(printf '%s\n' "$fields" | cut -d' ' -f20)" "$(cat /proc/sys/kernel/random/boot_id)" "$init" "$(date -u -d "@$((btime + init / $(getconf CLK_TCK)))" +%Y-%m-%dT%H:%M:%SZ)"
+}
+"""
+
+
+def windows_probe(pid: str) -> str:
+    """Print one ProcessProbe JSON line for a PowerShell pid expression."""
+    return (
+        f"$probePid=[int]({pid}); "
+        '$probe=Get-CimInstance Win32_Process -Filter "ProcessId=$probePid"; '
+        # LastBootUpTime is derived from the clock: diagnostic only.
+        "$boot=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime(); "
+        "[pscustomobject]@{pid=$probePid;"
+        "state=$(if ($probe) {'R'} else {''});"
+        "started=$(if ($probe) {$probe.CreationDate.ToUniversalTime().ToString('o')} else {''});"
+        "instance='';"
+        "instance_started_at=$boot.ToString(\"yyyy-MM-dd'T'HH:mm:ss'Z'\")} "
+        "| ConvertTo-Json -Compress"
+    )
+
+
+# CIM passes this command line to wsl.exe, whose --exec mode splits it with
+# CommandLineToArgvW and runs no shell. Admit only words that need no quoting.
+_WSL_WORD = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def wsl_launch_script(host, argv: list[str], directory: str, stage: str) -> str:
+    """The script wsl.exe runs: publish identity, then become the worker.
+
+    ``exec`` keeps the pid and start stamp, so the published identity is the
+    worker's own. Its exit ends the wsl.exe client that holds the instance.
+    """
+    stage_path = PurePosixPath(stage)
+    identity = shlex.quote(str(stage_path / "worker.identity"))
+    return f"""set -eu
+exec </dev/null >>{shlex.quote(str(stage_path / "worker.log"))} 2>&1
+{posix_probe(host)}molt_probe $$ > {identity}.partial
+mv -- {identity}.partial {identity}
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+cd {shlex.quote(directory)}
+exec {shlex.join(argv)}
+"""
+
+
+def detached_script(host, argv: list[str], directory: str, stage: str) -> str:
+    """Print the launcher acknowledgement, then the worker's ProcessProbe.
+
+    The worker's terminal data, never the launcher, proves completion. Windows
+    API contract: Create returns 0 and an out ProcessId. See Microsoft's
     Win32_Process.Create documentation; CIM avoids the OpenSSH session job.
     """
     cross = authorities()
+    created = (
+        "if ($result.ReturnValue -ne 0 -or $result.ProcessId -le 0) "
+        '{ throw "CIM creation refused: $($result.ReturnValue)" }; '
+        "$result | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress; "
+    )
     if host.launcher == cross.DetachedLauncher.WINDOWS_CIM:
         return (
             "$ErrorActionPreference='Stop'; "
@@ -498,23 +611,57 @@ def detached_script(host, argv: list[str], directory: str) -> str:
             + ";CurrentDirectory="
             + ps(directory)
             + "}; "
-            "if ($result.ReturnValue -ne 0 -or $result.ProcessId -le 0) "
-            '{ throw "CIM creation refused: $($result.ReturnValue)" }; '
-            "$result | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress"
+            + created
+            + windows_probe("$result.ProcessId")
+        )
+    if host.launcher == cross.DetachedLauncher.WSL_SESSION:
+        launch = str(PurePosixPath(stage) / "launch.sh")
+        identity = str(PurePosixPath(stage) / "worker.identity")
+        if not all(
+            _WSL_WORD.fullmatch(word)
+            for word in (host.wsl_distribution or "", launch, identity)
+        ):
+            raise ValueError(f"{host.name}: WSL launch words must need no quoting")
+        wsl = f"& wsl.exe -d {host.wsl_distribution} --exec"
+        # Observe the client before the identity file: once the client is gone,
+        # an identity still absent can never appear.
+        return (
+            "$ErrorActionPreference='Stop'; "
+            "$result=Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+            "-Arguments @{CommandLine="
+            + ps(f"wsl.exe -d {host.wsl_distribution} --exec /bin/sh {launch}")
+            + "}; "
+            + created
+            + "do { $alive=[bool](Get-Process -Id $result.ProcessId -ErrorAction SilentlyContinue); "
+            f"{wsl} test -s {identity}; "
+            f"if ($LASTEXITCODE -eq 0) {{ {wsl} cat {identity}; exit $LASTEXITCODE }}; "
+            "Start-Sleep -Milliseconds 250 } while ($alive)"
         )
     if host.launcher == cross.DetachedLauncher.POSIX_SESSION:
         code = (
-            "import json,subprocess,sys; "
+            "import subprocess,sys; "
             "p=subprocess.Popen(sys.argv[2:],cwd=sys.argv[1],start_new_session=True,"
             "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
-            "print(json.dumps({'ReturnValue':0,'ProcessId':p.pid}))"
+            "print(p.pid)"
         )
-        return remote_argv(host, uv_python("-c", code, directory, *argv), cwd=directory)
+        launch = remote_argv(
+            host, uv_python("-c", code, directory, *argv), cwd=directory
+        )
+        return (
+            f"set -eu\n{posix_probe(host)}pid=$({launch})\n"
+            'printf \'{"ReturnValue":0,"ProcessId":%s}\\n\' "$pid"\n'
+            'molt_probe "$pid"\n'
+        )
     raise ValueError(f"{host.name}: no admitted detached launcher")
 
 
-def acknowledge(raw: str) -> int:
-    result = json.loads(raw)
+def acknowledge(raw: str) -> tuple[int, ProcessProbe | None]:
+    """The launcher's process id and the worker's launch-time identity.
+
+    No identity means the worker exited before publishing one.
+    """
+    first, _, rest = raw.strip().partition("\n")
+    result = json.loads(first)
     if (
         not isinstance(result, dict)
         or result.get("ReturnValue") != 0
@@ -522,7 +669,7 @@ def acknowledge(raw: str) -> int:
         or result["ProcessId"] <= 0
     ):
         raise ValueError("detached launcher did not acknowledge a process")
-    return result["ProcessId"]
+    return result["ProcessId"], ProcessProbe.parse(rest) if rest.strip() else None
 
 
 def checked(argv: list[str], *, cwd: Path = _REPO_ROOT, timeout: int = 180) -> str:
@@ -841,13 +988,31 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
         "--record",
         transport.remote_path("run.json"),
     )
-    pid = acknowledge(transport.shell_command(detached_script(host, argv, control)))
+    script = detached_script(host, argv, control, transport.execution_dir)
+    if host.launcher == cross.DetachedLauncher.WSL_SESSION:
+        launch = run_root / "launch.sh"
+        launch.write_text(
+            wsl_launch_script(host, argv, control, transport.execution_dir),
+            encoding="utf-8",
+            newline="\n",
+        )
+        transport.push([launch])
+        # A distro that must boot first delays the identity by seconds.
+        raw = transport.windows_command(script, timeout=180)
+    else:
+        raw = transport.shell_command(script)
+    pid, worker = acknowledge(raw)
     record.update(
-        state="launched", launcher_pid=pid, launched_at=datetime.now(UTC).isoformat()
+        state="launched",
+        launcher_pid=pid,
+        worker=asdict(worker) if worker is not None else None,
+        launched_at=datetime.now(UTC).isoformat(),
     )
     write_json(record_path, record)
     print(
-        f"trunk-loop: launched {host.name} pid={pid}; collect --record {record_path}",
+        f"trunk-loop: launched {host.name} pid={pid} "
+        f"worker={worker.pid if worker is not None else 'exited'}; "
+        f"collect --record {record_path}",
         flush=True,
     )
     return record_path
@@ -880,25 +1045,114 @@ def transfer_for_record(record: dict):
     return host, transport
 
 
+class WorkerVanished(RuntimeError):
+    """The worker is gone and published no terminal receipt."""
+
+
+def observe(host, transport, worker: ProcessProbe | None):
+    """One round trip: the worker's process first, then its terminal receipt.
+
+    A receipt still absent after the worker was seen gone can never appear;
+    the reverse order would race the worker's last publication.
+    """
+    marker = transport.remote_path("terminal.json")
+    if host.is_windows:
+        probe = windows_probe(str(int(worker.pid))) if worker else "'null'"
+        script = (
+            f"{probe}\nif (Test-Path -LiteralPath {ps(marker)}) "
+            f"{{ Get-Content -Raw -LiteralPath {ps(marker)} }}"
+        )
+    else:
+        probe = (
+            f"{posix_probe(host)}molt_probe {int(worker.pid)}"
+            if worker
+            else "echo null"
+        )
+        script = (
+            f"set -eu\n{probe}\n"
+            f"if test -f {shlex.quote(marker)}; then cat {shlex.quote(marker)}; fi"
+        )
+    first, _, rest = transport.shell_command(script).partition("\n")
+    current = None if first.strip() == "null" else ProcessProbe.parse(first)
+    return current, json.loads(rest) if rest.strip() else None
+
+
+def worker_vanished(
+    record_path: Path,
+    record: dict,
+    host,
+    transport,
+    launched: ProcessProbe | None,
+    current: ProcessProbe | None,
+) -> NoReturn:
+    """Record the evidence and fail at once; never wait on a vanished worker."""
+    if launched is None or launched.identity is None:
+        reason = "it exited before publishing its identity"
+    elif current is not None and current.instance != launched.instance:
+        scope = "distro" if host.wsl_distribution else "host"
+        reason = (
+            f"{scope} restarted at {current.instance_started_at} (worker launched "
+            f"under the instance started at {launched.instance_started_at})"
+        )
+    elif current is None or not current.state:
+        reason = "the process no longer exists"
+    elif current.identity is None:
+        reason = f"the process exited (state {current.state})"
+    else:
+        reason = f"the pid now names another process started {current.started}"
+    log = record_path.parent / "worker.log"
+    try:
+        transport.pull("worker.log", log)
+        retained = str(log)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        retained = f"unavailable ({exc})"
+    pid = launched.pid if launched is not None else record.get("launcher_pid")
+    record.update(
+        state="vanished",
+        vanished={
+            "observed_at": datetime.now(UTC).isoformat(),
+            "reason": reason,
+            "current": asdict(current) if current is not None else None,
+            "worker_log": retained,
+        },
+    )
+    write_json(record_path, record)
+    raise WorkerVanished(
+        f"worker {pid} on {host.name} is gone with no terminal receipt: {reason}; "
+        f"remote stage {record['stage']} retained; worker log {retained}"
+    )
+
+
 def collect(record_path: Path, *, wait: bool = True) -> int:
     record = json.loads(record_path.read_text(encoding="utf-8"))
     host, transport = transfer_for_record(record)
-    marker = transport.remote_path("terminal.json")
+    launched = (
+        ProcessProbe(**record["worker"]) if record.get("worker") is not None else None
+    )
     while True:
-        script = (
-            f"if (Test-Path -LiteralPath {ps(marker)}) {{ Get-Content -Raw -LiteralPath {ps(marker)} }}"
-            if host.is_windows
-            else f"if test -f {shlex.quote(marker)}; then cat {shlex.quote(marker)}; fi"
-        )
-        raw = transport.shell_command(script)
-        if raw:
-            terminal = json.loads(raw)
+        current, terminal = observe(host, transport, launched)
+        if terminal is not None:
             break
+        if "launcher_pid" not in record:
+            raise RuntimeError(
+                f"{record['run_id']}: launch was never acknowledged, so no worker "
+                f"identity exists and no terminal receipt was published; remote "
+                f"stage {record['stage']} retained"
+            )
+        if (
+            launched is None
+            or launched.identity is None
+            or current is None
+            or current.identity != launched.identity
+        ):
+            worker_vanished(record_path, record, host, transport, launched, current)
         if not wait:
             print("trunk-loop: completion unknown; retain stage and collect later")
             return 3
         print(
-            f"trunk-loop: {record['run_id']} waiting for terminal receipt", flush=True
+            f"trunk-loop: {record['run_id']} worker {launched.pid} alive; "
+            "waiting for terminal receipt",
+            flush=True,
         )
         time.sleep(20)
     if (

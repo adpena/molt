@@ -140,7 +140,8 @@ shell = "bash"
 custody_root = "/home/adpena/Molt"
 checkout = "/home/adpena/Molt/molt-src"
 remote_dir = "/home/adpena/Molt/scratch/trunk-loop"
-launcher = "posix-session"
+# The worker's own wsl.exe client holds the distro instance for its lifetime.
+launcher = "wsl-session"
 proof_cells = ["portability.cargo-custody.linux", "portability.queue.linux"]
 wsl_distribution = "molt-gate"
 wsl_vhdx = 'C:\Molt\wsl\molt-gate\ext4.vhdx'

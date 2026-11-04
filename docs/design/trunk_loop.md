@@ -54,8 +54,9 @@ installs nothing.
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of
 POSIX scripts. Binary files travel through tar on stdin and literal `cat`
-collection, under the same guarded SSH owner. POSIX workers create a new
-session; the declared `vmIdleTimeout=-1` must already match before provisioning.
+collection, under the same guarded SSH owner. Its worker runs under its own
+`wsl.exe` client ([WSL instance lifetime](#wsl-instance-lifetime)); the declared
+`vmIdleTimeout=-1` must already match before provisioning.
 
 The inventory declares the WSL VHDX's C: identity, 80 GiB disk budget, 24 GiB
 memory, 4 GiB swap and a minimum 20 GiB proof-build headroom. Admission verifies
@@ -160,6 +161,71 @@ admitted dependency before bootstrap and does not provide offline input custody.
 One launcher interface uses a new session on POSIX and
 `Invoke-CimMethod Win32_Process.Create` on Windows. CIM starts outside the SSH
 session's job, so closing or killing the SSH client cannot terminate the worker.
+A WSL guest uses a third launcher, `wsl-session`; the inventory admits it exactly
+for hosts with `wsl_distribution`.
+
+### WSL instance lifetime
+
+In WSL 3.0.3 a distribution instance lives only while a Windows client process
+is registered with it. Linux processes, sessions and systemd units do not hold it.
+
+- Each `wsl.exe` call creates or opens the instance and registers the calling
+  Windows process with the instance's lifetime manager, unless the idle timeout
+  is negative
+  ([LxssUserSession.cpp, lines 2774-2792](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/service/exe/LxssUserSession.cpp#L2774-L2792)).
+- When the last registered client exits, the manager arms a timer for that
+  timeout; a new client cancels it. When the timer fires with no client, the
+  termination callback runs
+  ([Lifetime.cpp, lines 106-116, 212-228 and 242-298](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/service/exe/Lifetime.cpp#L106-L298)).
+- The callback stops the instance when no client is registered, with a
+  non-forced request
+  ([LxssUserSession.cpp, lines 3714-3735](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/service/exe/LxssUserSession.cpp#L3714-L3735)).
+  Guest init refuses that request only for an in-use Plan 9 file. With systemd
+  as boot init it runs `systemctl poweroff`, then `reboot(RB_POWER_OFF)`
+  ([init.cpp, lines 2822-2906](https://github.com/microsoft/WSL/blob/3.0.3/src/linux/init/init.cpp#L2822-L2906)).
+- The timeout is `.wslconfig` `[general] instanceIdleTimeout`, default 15,000 ms
+  ([WslCoreConfig.h, lines 275 and 340](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/common/WslCoreConfig.h#L275-L340));
+  each WSL2 instance receives it at creation
+  ([WslCoreVm.cpp, line 1337](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/service/exe/WslCoreVm.cpp#L1337)).
+  `[wsl2] vmIdleTimeout` (lines 255 and 339) governs only the utility VM.
+
+This explains the 2026-11-04 loss. A guest-side new session held nothing, so the
+instance stopped about 15 s after a collector probe's `wsl.exe` exited (it
+polled every 20 s), and the next probe booted a new instance. The worker is the
+held object, so the worker owns the hold. CIM creates
+`wsl.exe -d <distro> --exec /bin/sh <stage>/launch.sh` outside the SSH job.
+`--exec` splits the rest of the command line with `CommandLineToArgvW` and runs
+no shell
+([WslClient.cpp, lines 1658-1663 and 1822-1842](https://github.com/microsoft/WSL/blob/3.0.3/src/windows/common/WslClient.cpp#L1658-L1842)).
+The launcher admits only words that need no quoting, and the POSIX script
+crosses as a stage file through the binary tar transfer. The script redirects
+stdin to `/dev/null` and its output to `worker.log`, publishes the worker's
+identity, then `exec`s the worker. The registered client therefore lives exactly
+as long as the worker; after the worker exits, the normal idle timeout applies.
+No `.wslconfig` key changes: `instanceIdleTimeout=-1` would keep every
+distribution alive with no worker, and the source shows that a held client is
+enough.
+
+### Worker liveness
+
+Every launcher acknowledges the worker's identity: pid, the start stamp that
+the OS stored at process creation, and on Linux the PID-namespace instance
+(kernel boot id and PID 1's start ticks). A restarted WSL distro has a new init
+under the same VM kernel, so its instance differs. macOS uses `ps` `lstart`;
+Windows uses the CIM `CreationDate`. These stamps are stored, never recomputed
+from the clock. The boot times that `kern.boottime` and `LastBootUpTime` report
+move with clock steps, so the collector uses them only as diagnostics. Each
+collector round trip probes that identity first and reads `terminal.json`
+second. A receipt that is still absent after the worker was seen gone can never
+appear. In that case the collector pulls `worker.log` beside the run record,
+records `state = "vanished"` with the observation, and fails at once. Its
+message names the pid, the instance restart time or the process change, and
+the retained stage. A launch that was never acknowledged has no identity; it
+fails as unknown and never waits. A live worker without a receipt stays
+unknown (exit 3 with `--no-wait`).
+
+### Process and evidence custody
+
 The farm worker reuses `tools.detached_execution._exec_wait_rc` for proof-driver
 waits and managed-state leases. Its unresolved-child outcome retains the host
 lease and publishes no terminal completion, matching that authority.
@@ -172,9 +238,10 @@ retains original bytes and hashes in
 older results. Recoverable records name exact remote allocations. Nothing
 deletes resources while process closure is unknown.
 
-Run-record schema v2 removes the inventory interpreter field. Retained v1
-records remain with the exact v1 controller named in their record; v2 does not
-silently reinterpret their host contract.
+Run-record schema v2 removes the inventory interpreter field. Schema v3 adds
+the acknowledged worker identity. A retained record stays with the exact
+controller of its own version, named in that record; no later schema silently
+reinterprets its host contract.
 
 JUnit and pytest duration reporting are diagnostic additions through the pytest
 environment; they do not change selectors, workers or timeouts. Canonical proof
@@ -223,5 +290,13 @@ Unit controls must reject corrupt, truncated or substituted archives without
 network access or publication; execute a real POSIX detached child across parent
 exit; and verify Windows CIM command quoting and failure acknowledgement against
 its public API. The real bat00 disconnect experiment is the Windows lifetime
-oracle. Both named proof cells must return source-bound receipts, even when the
+oracle. Liveness tests run the real launch script and probe on the local POSIX
+OS: the published identity equals a later probe while the worker lives, and it
+is gone after exit. Fake transports check that a restarted distro, an absent
+process, a zombie, a reused pid, or a missing identity fails the collector on
+its first round trip, with retained evidence and no sleep. They also check that
+a published receipt wins over an exited worker. The live oracle on molt-gate
+launches `portability.queue.linux`, ends the launching SSH session, waits past
+the instance idle timeout with no other client, and collects the terminal
+receipt. Both named proof cells must return source-bound receipts, even when the
 tests are red. No broader suite or repeated matching PASS is required here.
