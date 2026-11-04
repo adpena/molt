@@ -259,7 +259,6 @@ pub(crate) enum HeapExternalGcPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapAcyclicCapability {
-    CodeMetadata,
     IntCells,
     IntTriplet,
     None,
@@ -267,11 +266,7 @@ pub(crate) enum HeapAcyclicCapability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapAcyclicEdgeDomain {
-    BytesOrNone,
     Int,
-    Str,
-    StrOrNone,
-    StrTuple,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -280,26 +275,12 @@ pub(crate) enum HeapAcyclicSlot {
     RangeStart,
     RangeStop,
     RangeStep,
-    CodeFilename,
-    CodeName,
-    CodeLinetable,
-    CodeVarnames,
-    CodeNames,
-    CodeArgNames,
-    CodePosonly,
-    CodeKwonly,
-    CodeVararg,
-    CodeVarkw,
-    CodeFreevars,
-    CodeCellvars,
-    CodeGpuDescriptor,
-    CodeQualname,
-    CodeDoc,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapTrackProjection {
     Always,
+    CodeDynamic,
     DictDynamic,
     ForeignDynamic,
     NativeSubtype,
@@ -1038,16 +1019,16 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 63] = [
         name: "CODE",
         layout: HeapLayoutPolicy::Code,
         edges: HeapEdgePolicy::Fixed,
-        cycle: HeapCyclePolicy::Never,
+        cycle: HeapCyclePolicy::Dynamic,
         weakref: HeapWeakrefPolicy::Allow,
         shape: HeapShapePolicy::Fixed,
         drop: HeapDropPolicy::Code,
         metrics: HeapMetricsPolicy::None,
-        track: HeapTrackProjection::Never,
+        track: HeapTrackProjection::CodeDynamic,
         handler: HeapLifecycleHandler::Code,
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
-        acyclic: HeapAcyclicCapability::CodeMetadata,
+        acyclic: HeapAcyclicCapability::None,
     }),
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_ELLIPSIS,
@@ -1398,7 +1379,7 @@ pub(crate) const fn heap_track_projection(type_id: u32) -> Option<HeapTrackProje
         TYPE_ID_ZIP => Some(HeapTrackProjection::Always),
         TYPE_ID_MAP => Some(HeapTrackProjection::Always),
         TYPE_ID_FILTER => Some(HeapTrackProjection::Always),
-        TYPE_ID_CODE => Some(HeapTrackProjection::Never),
+        TYPE_ID_CODE => Some(HeapTrackProjection::CodeDynamic),
         TYPE_ID_ELLIPSIS => Some(HeapTrackProjection::Never),
         TYPE_ID_GENERIC_ALIAS => Some(HeapTrackProjection::Always),
         TYPE_ID_ASYNC_GENERATOR => Some(HeapTrackProjection::Always),
@@ -1662,7 +1643,7 @@ pub(crate) const fn heap_cycle_policy(type_id: u32) -> Option<HeapCyclePolicy> {
         TYPE_ID_ZIP => Some(HeapCyclePolicy::Always),
         TYPE_ID_MAP => Some(HeapCyclePolicy::Always),
         TYPE_ID_FILTER => Some(HeapCyclePolicy::Always),
-        TYPE_ID_CODE => Some(HeapCyclePolicy::Never),
+        TYPE_ID_CODE => Some(HeapCyclePolicy::Dynamic),
         TYPE_ID_ELLIPSIS => Some(HeapCyclePolicy::Never),
         TYPE_ID_GENERIC_ALIAS => Some(HeapCyclePolicy::Always),
         TYPE_ID_ASYNC_GENERATOR => Some(HeapCyclePolicy::Always),
@@ -1992,7 +1973,7 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_ZIP => Some(HeapAcyclicCapability::None),
         TYPE_ID_MAP => Some(HeapAcyclicCapability::None),
         TYPE_ID_FILTER => Some(HeapAcyclicCapability::None),
-        TYPE_ID_CODE => Some(HeapAcyclicCapability::CodeMetadata),
+        TYPE_ID_CODE => Some(HeapAcyclicCapability::None),
         TYPE_ID_ELLIPSIS => Some(HeapAcyclicCapability::None),
         TYPE_ID_GENERIC_ALIAS => Some(HeapAcyclicCapability::None),
         TYPE_ID_ASYNC_GENERATOR => Some(HeapAcyclicCapability::None),
@@ -2022,21 +2003,6 @@ pub(crate) const fn heap_acyclic_slot_domain(slot: HeapAcyclicSlot) -> HeapAcycl
         HeapAcyclicSlot::RangeStart => HeapAcyclicEdgeDomain::Int,
         HeapAcyclicSlot::RangeStop => HeapAcyclicEdgeDomain::Int,
         HeapAcyclicSlot::RangeStep => HeapAcyclicEdgeDomain::Int,
-        HeapAcyclicSlot::CodeFilename => HeapAcyclicEdgeDomain::Str,
-        HeapAcyclicSlot::CodeName => HeapAcyclicEdgeDomain::Str,
-        HeapAcyclicSlot::CodeLinetable => HeapAcyclicEdgeDomain::BytesOrNone,
-        HeapAcyclicSlot::CodeVarnames => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeNames => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeArgNames => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodePosonly => HeapAcyclicEdgeDomain::Int,
-        HeapAcyclicSlot::CodeKwonly => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeVararg => HeapAcyclicEdgeDomain::StrOrNone,
-        HeapAcyclicSlot::CodeVarkw => HeapAcyclicEdgeDomain::StrOrNone,
-        HeapAcyclicSlot::CodeFreevars => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeCellvars => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeGpuDescriptor => HeapAcyclicEdgeDomain::StrOrNone,
-        HeapAcyclicSlot::CodeQualname => HeapAcyclicEdgeDomain::Str,
-        HeapAcyclicSlot::CodeDoc => HeapAcyclicEdgeDomain::StrOrNone,
     }
 }
 

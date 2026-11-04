@@ -8526,7 +8526,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_dataclasses_replace",
         symbol: "molt_dataclasses_replace",
-        arity: 4,
+        arity: 5,
         defaults: &[],
         public: None,
     },
