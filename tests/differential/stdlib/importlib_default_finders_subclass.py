@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,env.read
 """Purpose: the runtime-owned PathFinder and FileFinder behave as CPython's
 classes for subclasses and monkeypatching (HF-737)."""
 

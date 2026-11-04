@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=fs.read,env.read
 """Purpose: CPython's default finders and hooks exist before the first import.
 
 The runtime seeds them at bootstrap (HF-737); no import completes them later.
