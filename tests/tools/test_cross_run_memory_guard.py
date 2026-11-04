@@ -181,6 +181,22 @@ def test_windows_sftp_source_and_destination_use_forward_slashes(tmp_path, monke
     assert transport.remote_path("results.zip") == r"C:\Molt\scratch\owned\results.zip"
 
 
+def _local_probe(host, pid):
+    """Run the real POSIX identity probe for a local pid; its output is the subject."""
+    from tests.process_guard_common import check_output_custody_subject_process
+
+    return trunk_loop.ProcessProbe.parse(
+        check_output_custody_subject_process(
+            [
+                "/bin/sh",
+                "-c",
+                f"set -eu\n{trunk_loop.posix_probe(host)}molt_probe {pid}",
+            ],
+            text=True,
+        )
+    )
+
+
 @pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX launcher contract")
 def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
     import json
@@ -241,17 +257,7 @@ if g.exists():publish(c,'completed after launcher exit')
     from molt.process_model import pid_alive
 
     def probe():
-        result = subprocess.run(
-            [
-                "/bin/sh",
-                "-c",
-                f"set -eu\n{trunk_loop.posix_probe(host)}molt_probe {pid}",
-            ],
-            capture_output=True,
-            encoding="utf-8",
-            check=True,
-        )
-        return trunk_loop.ProcessProbe.parse(result.stdout)
+        return _local_probe(host, pid)
 
     # The detached child's liveness is the progress signal; the harness's
     # per-test timeout owns hang detection, so load cannot fail a slow start.
@@ -503,20 +509,15 @@ def test_wsl_launch_script_publishes_the_worker_identity_then_becomes_it(tmp_pat
     )
 
     def probe(pid):
-        result = subprocess.run(
-            [
-                "/bin/sh",
-                "-c",
-                f"set -eu\n{trunk_loop.posix_probe(host)}molt_probe {pid}",
-            ],
-            capture_output=True,
-            encoding="utf-8",
-            check=True,
-        )
-        return trunk_loop.ProcessProbe.parse(result.stdout)
+        return _local_probe(host, pid)
+
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
 
     # wsl.exe holds the instance exactly while this root process lives.
-    root = subprocess.Popen(["/bin/sh", str(launch)], stdin=subprocess.PIPE)
+    root = start_owned_test_process(["/bin/sh", str(launch)], stdin=subprocess.PIPE)
     try:
         identity_path = stage / "worker.identity"
         log = stage / "worker.log"
@@ -534,7 +535,10 @@ def test_wsl_launch_script_publishes_the_worker_identity_then_becomes_it(tmp_pat
         assert probe(root.pid).identity == published.identity is not None
     finally:
         release.write_text("done", encoding="utf-8")
-        root.wait()
+        try:
+            root.wait(timeout=60)
+        finally:
+            close_owned_test_process(root)
     assert root.returncode == 0
     assert probe(root.pid).identity is None
 
@@ -612,8 +616,14 @@ def test_collect_fails_at_once_with_evidence_when_the_worker_vanishes(
     monkeypatch.setattr(
         trunk_loop, "transfer_for_record", lambda _record: (_wsl_gate(), transport)
     )
-    monkeypatch.setattr(
-        trunk_loop.time, "sleep", lambda _s: pytest.fail("waited on a gone worker")
+    import time
+
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        trunk_loop,
+        sleep=lambda _s: pytest.fail("waited on a gone worker"),
     )
     with pytest.raises(trunk_loop.WorkerVanished) as failure:
         trunk_loop.collect(record_path)
@@ -674,8 +684,10 @@ def test_collect_waits_only_while_the_worker_identity_holds(tmp_path, monkeypatc
     )
     # A live worker with no receipt is unknown, never success or failure.
     assert trunk_loop.collect(record_path, wait=False) == 3
+    import time
+
     slept = []
-    monkeypatch.setattr(trunk_loop.time, "sleep", slept.append)
+    install_module_view(monkeypatch, "time", time, trunk_loop, sleep=slept.append)
     # The worker exits after publishing; the receipt then wins over its absence.
     transport.observations.append(
         ({**alive, "state": "", "started": ""}, {"commit": "different"})
