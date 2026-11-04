@@ -448,21 +448,31 @@ Stateful activations preserve their location in the existing task auxiliary fram
 - **Completed:** freeze retained views before task storage retires; new `gi_frame`/`cr_frame`
   observations return `None`. Close, throw, failed resume, GC and destruction follow the same owner.
 
-Traceback membership stays with the existing exception-handler/propagation protocol, independently
-of location capture. The nearest handler's frame-index boundary selects the raising prefix;
-callers below a handler that catches the exception do not enter the traceback. Each selected entry
-retains its particular activation's shared frame owner and freezes its location when the exception
-becomes pending, before `finally` or cleanup changes the live site. Code identity cannot identify
-an activation under recursion. Bare reraising reuses existing entries; explicit raising prepends
-the newly traversed prefix. `tb_lineno`/`tb_lasti` decode the frozen site while `tb_frame` can
-continue moving. Do not reconstruct offsets by matching only a line or selecting its widest span.
+Traceback membership is an independent obligation of exception propagation. Each selected entry
+must retain its particular activation's shared frame owner and freeze its location before
+`finally` or cleanup changes the live site. Code identity cannot identify an activation under
+recursion. `tb_lineno`/`tb_lasti` decode the frozen site while `tb_frame` can continue moving.
+Do not reconstruct offsets by matching only a line or selecting its widest span.
+
+The native location prototype exposed an unqualified membership boundary: after propagation
+through `finally`, the existing nearest-handler snapshot retains the raising frame but omits
+the module's receiving call site. A second design round rejected the proposed error-edge repair.
+Deduplicating against activation owners anywhere in a traceback loses legitimate repeated entries
+when one exception traverses the same caller again. Automatic capture can also recreate a frame
+deliberately removed before a bare raise. Propagation episodes and bare-reraise preservation need
+an explicit state contract before replacing the existing protocol. Capturing every active caller
+is insufficient: a runtime helper can suppress a callback error. The location prototype is not
+ready to land while that semantic decision remains unsettled.
 
 Two independent, serial read-only design reviews required explicit terminal publication, stateful
 view reattachment, exception capture timing and membership, and optimizer memory effects. The
-contracts above incorporate those findings. Required independent adversaries cover retained views
+location contracts above incorporate those findings; the second-round propagation findings
+remain unresolved. Required independent adversaries cover retained views
 ending with a pure return, multiline and same-line expressions, callbacks inside optimized loops,
 recursive activations, internally caught and propagating exceptions, bare/explicit reraising,
 cleanup that raises a new exception, and retained views during resumed callbacks after arena reuse.
+Include repeated traversal of one caller by the same exception, and bare reraising after clearing
+or editing its traceback; compare chain multiplicity as well as order and coordinates.
 Compare exact positions and traceback membership/identity with CPython, on native, LLVM and WASM.
 
 Qualification also requires the owning loop/per-op and recursion/per-op instruction A/B, with
