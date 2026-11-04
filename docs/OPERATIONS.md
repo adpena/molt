@@ -38,7 +38,9 @@ output-layout authority and records their physical identities in provisioning
 evidence; operator shell exports are unnecessary.
 
 Windows launch uses CIM `Win32_Process.Create`; POSIX launch creates a new
-session. A host-wide OS file lock excludes competing trunk workers. The worker
+session; a WSL gate guest uses the `wsl-session` launcher, whose `wsl.exe` client
+lives exactly as long as the worker because WSL stops an instance once its last
+client exits (see [the trunk loop design](design/trunk_loop.md)). A host-wide OS file lock excludes competing trunk workers. The worker
 uses the existing detached-execution waiter for proof-driver lifetime and
 managed-state leases; an unresolved child retains custody without a terminal
 completion record. The worker
