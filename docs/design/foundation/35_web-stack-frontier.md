@@ -7,8 +7,8 @@ supervisor in the doc-29 remapping note (29 §header: "its 'Doc 30 Web Stack' ->
 ... 35 web after docs 26/28 land"). Do not renumber.
 
 All file:line anchors verified against the live worktree at HEAD commit
-657c165afdeda71b666bc13bb44b0472a6882930 (branch main, 2026-06-06). The doc-29
-SUBSYSTEM 4 audit was written at fef48ecb0; this doc RE-AUDITS the web stack at HEAD and
+9f5cc6e00aac78a42228afa8ce3610c1e7f41e42 (branch main, 2026-06-06). The doc-29
+SUBSYSTEM 4 audit was written at ac8930aec; this doc RE-AUDITS the web stack at HEAD and
 flags SIX corrections inline (§0.1) — doc-29 is materially stale on the HTTP-client size,
 the WebSocket wiring, the ASGI adapter, the event-loop/io-poller split, the SSL getter
 surface, and the socketserver path. (Doc 37's agent found doc 29 stale on regex; the same
@@ -86,7 +86,7 @@ interning / aggressive connection reuse are **UNLEASHED** opt-ins (§3).
 ## 0.1 Corrections to the doc-29 SUBSYSTEM 4 audit (re-audited at HEAD)
 
 Doc 29 SUBSYSTEM 4 (`docs/design/foundation/29_domain-critical-portfolio.md:127-157`) was
-written at `fef48ecb0`. Re-auditing at HEAD `657c165af` surfaces six material corrections.
+written at `ac8930aec`. Re-auditing at HEAD `9f5cc6e00` surfaces six material corrections.
 None invalidate doc-29's *verdict* (NEEDS-FRONTIER-DOC), but they change the *scope* and
 the *starting line*.
 

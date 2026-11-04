@@ -312,7 +312,7 @@ The shared checkout accumulates multiple hands' uncommitted WIP, which blocks
   cherry-pick <sha>; git -C <path> push origin HEAD:main`. Verify the base
   delta doesn't touch the commit's crate (`git log <oldbase>..origin/main --
   <crate>`) so the author's compile-check transfers — no rebuild. This is how
-  0f955df37 landed cleanly while the shared tree stayed dirty.
+  6bc58e2d9 landed cleanly while the shared tree stayed dirty.
 - **Prefer per-lane worktrees for NEW build-heavy lanes** so the shared
   checkout stays clean: `tools/molt_dev.py lane start <slug> --rows HF-n`
   admits rows whose predecessor rows are all closed, then creates,
@@ -379,7 +379,7 @@ fallback, no fake symbols, upstream source only through package custody.
   callable resolver, `_nd_image.molt.wasm` manifest callable_exports.
   Acceptance: alias_probe's EDT/gaussian/label chain returns correct
   values. Depends: R0.1.
-  RESOLVED 2026-07-03 on origin/main by 93f2eb5d9: the from-import form
+  RESOLVED 2026-07-03 on origin/main by 0c770fab1: the from-import form
   `from nativepkg.ndimage import distance_transform_edt;
   distance_transform_edt(x)` now lowers to `invoke_ffi` when the import binding
   is live. Conditional/evicted imports still route through `module_get_global`
@@ -423,7 +423,7 @@ PR1 (generated ModuleRegistry + runtime ModuleTable) is LIVE.
 
 The single highest-leverage perf arc: molt currently BOXES loop arithmetic
 (every int/float op = NaN-box runtime call + refcount). CheckedMul peel is
-LANDED (346e3563b) and is the pattern to generalize.
+LANDED (4b7f5bbde) and is the pattern to generalize.
 - R3a `molt-check` TIR translation validator: Repr may only move UP the
   lattice; built on `runtime/molt-passes/src/representation_facts.rs` +
   `typed_repr_report.rs`. This is the drift gate that catches silent-OOB

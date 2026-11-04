@@ -2,7 +2,7 @@
 
 This is the loss-proof ledger for retiring the Pact collaboration branch,
 worktree, and stash estate. The audit was performed against integration commit
-`732bc6e844` and refreshed `origin/main` at `5a71ac79f9`.
+`06a1159474` and refreshed `origin/main` at `f0a0b6a51d`.
 
 ## Inventory
 
@@ -10,7 +10,7 @@ worktree, and stash estate. The audit was performed against integration commit
 - 44 local branches
 - 198 non-main remote branches
 - 4 shared stashes
-- 276 reviewed integration paths committed in `732bc6e844`
+- 276 reviewed integration paths committed in `06a1159474`
 - 188 initially patch-ID-positive remote commits across 130 refs
 
 Patch ID was used only as an initial filter. Every positive family was checked
@@ -22,7 +22,7 @@ old commits were not replayed merely because their patch ID differed.
 One genuinely surviving production authority family remained:
 
 - `2c50868470` exposed duplicate `fnmatch` runtime/stdlib ABI authorities.
-  `046666ff81` manually moved the stdlib consumer to the bytes-aware
+  `54fd7dfc1b` manually moved the stdlib consumer to the bytes-aware
   `molt_fnmatch` / `molt_fnmatchcase` authority, deleted the legacy Rust module
   and symbols, and regenerated every intrinsic and WASM ABI consumer. The stale
   local-dependency scanner portion of the old commit was not replayed because
@@ -30,7 +30,7 @@ One genuinely surviving production authority family remained:
 
 Unique uncommitted evidence was also preserved:
 
-- `c7a545fb15` copied the DTypeMeta witness memory-guard artifact byte-for-byte
+- `ae7aae1c26` copied the DTypeMeta witness memory-guard artifact byte-for-byte
   and recorded its frontier hash. It contained no production source.
 
 ## Represented or superseded families

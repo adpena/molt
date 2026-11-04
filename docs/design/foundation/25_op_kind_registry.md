@@ -20,7 +20,7 @@ separate from retired compiler operation spellings.
 
 **Defect class.** A registered kind can lose its last producer while every
 consumer still compiles. Consumers match kinds as strings, and registration
-comes from membership in fact tables, so nothing notices. 6cf681a1c removed the
+comes from membership in fact tables, so nothing notices. 60ba99b54 removed the
 name-matched producers of `JSON_PARSE`, `MSGPACK_PARSE`, `CBOR_PARSE` and
 `BUFFER2D_*` (correctly: they ignored rebinding) and left the serializer arms,
 four backends' lowering arms, WASM manifest rows and tests behind. Fifty-four
@@ -76,7 +76,7 @@ Once the kind is a closed type, rustc names every consumer of a variant, so the
 wire census and the dead-kind deletions of steps 2 and 3 become variant
 deletions that the compiler checks. Step 1 already landed; the census tool stays.
 
-Baseline on 5dd3e873da: `OpIR.kind` is a `String` (`runtime/molt-ir/src/ir.rs`,
+Baseline on 12b1a8e3a1: `OpIR.kind` is a `String` (`runtime/molt-ir/src/ir.rs`,
 `#[derive(Deserialize, Default)]`, `deny_unknown_fields`); 536 wire kinds are
 registered; the generator emits 36 `simpleir_kind_is_*(kind: &str) -> bool`
 predicates, which name the strings in one place but do not type them; about

@@ -268,7 +268,7 @@ receiver behavior.
 
 Lowering scope on the real tree (isolated `MOLT_CACHE`, Apple M-series):
 
-| | main 42e2cf65f | this design |
+| | main aedec0934 | this design |
 |---|---|---|
 | files in scope | 1,409 (whole-tree coverage) | 242 (import graph only) |
 | fixpoint rounds | n/a | 1 |

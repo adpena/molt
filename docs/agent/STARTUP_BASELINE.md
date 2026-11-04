@@ -49,7 +49,7 @@ Both release probes fail before link or execution in
 `runtime/molt-cpython-abi/src/api/typeobj.rs`. The crate denies
 `unsafe_op_in_unsafe_fn`, while three calls to `PyErr_BadInternalCall` are not
 inside explicit unsafe blocks (lines 59, 1939, and 1972 at commit
-`a3c3344a14924e3efa69f4cbaf8529e319aebc06`). The same failure occurs with
+`ab2e606db248677e849c9458c349ec99a7f11c76`). The same failure occurs with
 `stdlib-profile=full` and `stdlib-profile=micro`.
 
 The startup lane did not weaken the lint, patch the reserved CPython-ABI lane,

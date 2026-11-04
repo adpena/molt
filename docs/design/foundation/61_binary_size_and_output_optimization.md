@@ -393,7 +393,7 @@ in `tests/test_wasm_optimization_imported_memory.py` and the unchanged
 `tests/test_wasm_size_tracking.py` oracle cover behavior and linked size.
 
 The unchanged hello-world oracle measured the following linked outputs on
-`62d1732de3` and the HF-639 correction with the same slot-06 fixture path:
+`fd80f0423d` and the HF-639 correction with the same slot-06 fixture path:
 
 | Deployment | Before bytes | After bytes | Before functions | After functions |
 | --- | ---: | ---: | ---: | ---: |

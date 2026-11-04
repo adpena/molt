@@ -2,7 +2,7 @@
 
 Date: 2026-07-11  
 Lane: `E1-FRONTIER-MAP`  
-Authority: current `origin/main` at `712e7263bb` plus native Linux probes from this worktree.
+Authority: current `origin/main` at `add86a392c` plus native Linux probes from this worktree.
 
 This is historical reconnaissance. "Current" below refers to the dated source
 and original probes, not today's release state. The current E1 frontier belongs
