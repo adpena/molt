@@ -12,7 +12,12 @@ __pycache__/
 formal/lean/.lake/
 formal/lean/lake-packages/
 .playwright-mcp/
+# Cloudflare Wrangler and Miniflare local state: account records, request
+# geolocation (cf.json) and local secrets. Never tracked (HF-768).
 .wrangler/
+.mf/
+.dev.vars
+.dev.vars.*
 .tmp/
 tmp/
 .molt_cache/

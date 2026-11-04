@@ -264,7 +264,7 @@ a placement special-case.
 > (un-suppressed) differential gate — it flips green when this lands; do NOT
 > suppress it.
 >
-> **Re-verified GREEN post-decomposition (2026-06-24, `2dfabd439`).** After the
+> **Re-verified GREEN post-decomposition (2026-06-24, `383cac107`).** After the
 > molt-tir crate extraction moved `drop_insertion.rs` + `ownership_lattice_min.rs`
 > into `runtime/molt-passes/src/tir/passes/`, the corruption suite was re-run
 > dual-path — canonical `molt diff` (dev / debug-with-asserts profile) plus direct

@@ -323,7 +323,7 @@ retained duplicate object edges and replayed the full map during sys bootstrap.
 The replacement retains one dictionary root and uses the existing dictionary
 hash/probe on warm imports, plus the existing typed initialization admission.
 Normal cached compiled imports already performed this ordinary dict lookup in
-baseline `b14f5a8ab`; they did not bypass it through a READY-slot load. The change
+baseline `4ab6d39db`; they did not bypass it through a READY-slot load. The change
 removes sys-attribute lookup and dictionary-root retain/release there, plus
 completed-slot projection work. Pre-sys bootstrap now uses the same dictionary
 instead of the private-map/slot path; that changed cold cost must be measured.

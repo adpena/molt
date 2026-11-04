@@ -3363,17 +3363,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DIFF_METADATA_PROBE_TIMEOUT_SEC",
       "output_neutral": false,
       "owner": "tests/molt_diff.py",
-      "summary": "Seconds tests/molt_diff.py allows each interpreter metadata probe; non-numeric or non-positive values fall back to 5. CLI interpreter selection reuses the selected interpreter without a dependency probe.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_DIFF_MOLT_PYTHON",
-      "output_neutral": false,
-      "owner": "tests/molt_diff.py",
-      "summary": "Executable path of the Python interpreter tests/molt_diff.py uses to run the molt CLI and batch compile server; it must name exactly one executable or the harness raises PythonInterpreterError. When unset or empty, the already-selected sys.executable is reused directly without repository-venv discovery or dependency subprocess probes.",
+      "summary": "Seconds tests/molt_diff.py allows each interpreter metadata probe; non-numeric or non-positive values fall back to 5. The compiler interpreter runs the oracle's CPython release: the harness interpreter when it is that release, otherwise the managed image of the release, selected once per run.",
       "values": []
     },
     {
@@ -3408,7 +3398,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DIFF_PYTHON",
       "output_neutral": false,
       "owner": "tests/molt_diff.py",
-      "summary": "Explicit CPython interpreter the differential harness uses as the reference side when a --python-version target is given, and the first candidate baseline interpreter for the Rust correctness tests; tools/verified_subset.py sets it to its own interpreter, and when unset the harness resolves the target version itself.",
+      "summary": "Explicit CPython interpreter the differential harness uses as the reference side when a --python-version target is given, and the first candidate baseline interpreter for the Rust correctness tests; it must report the exact release the version names (a dotted patch, or the target's pinned release). tools/verified_subset.py sets it to its own interpreter, and when unset the harness resolves that exact release itself.",
       "values": []
     },
     {

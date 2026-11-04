@@ -68,8 +68,8 @@ ABI tests prove the private exports are removed. Numerical performance and
 release-cell qualification require actual executed artifacts; source cost
 removal alone establishes no wall-clock speedup.
 
-An advisory Linux/AArch64 development-profile probe at `f91d0cf42` and
-`fb7a4c9b3` constructs 20,000 records, retrieves their unchanged messages and
+An advisory Linux/AArch64 development-profile probe at `69cf19f27` and
+`e236636e7` constructs 20,000 records, retrieves their unchanged messages and
 formats them. Three alternating executions of each retained binary, with an
 empty guest PATH and Python environment selectors removed, produce these median
 costs. The CPython column uses 3.12.15 on the same host.

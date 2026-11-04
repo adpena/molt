@@ -156,7 +156,7 @@ substrate exist.
 ## 2. The current state (what the ladder builds on — verified against `main`)
 
 The substrate is unusually mature; this ladder is *completion + ordering*, not a
-greenfield build. Verified read-only at HEAD `2f7c40cf7`:
+greenfield build. Verified read-only at HEAD `fe1f5d226`:
 
 | Substrate | Where | State |
 |---|---|---|
@@ -170,7 +170,7 @@ greenfield build. Verified read-only at HEAD `2f7c40cf7`:
 | DropInsertion (RC, rung-1 of MM ladder) | `tir/passes/drop_insertion.rs` (342 KB) | **landed + active** native/LLVM/WASM/Luau (doc 27 §0; native RC flip DONE per memory) |
 | `ownership_lattice_min.rs` | `tir/passes/ownership_lattice_min.rs` (64 KB) | **landed** (council #58 keystone slice: alias-root→ownership→boundary→ordered release) |
 | refcount_elim / escape_analysis | `tir/passes/{refcount_elim,escape_analysis}.rs` | **landed**; the insert-then-remove model Rung 1 replaces |
-| Loop passes (licm/loop_unroll/block_versioning/type_guard_hoist/counted_loop) | `tir/passes/*.rs` | **landed but gated**; doc 04 re-enable arc partially done (counted-loop contract `d5e51900c`) |
+| Loop passes (licm/loop_unroll/block_versioning/type_guard_hoist/counted_loop) | `tir/passes/*.rs` | **landed but gated**; doc 04 re-enable arc partially done (counted-loop contract `19599b2f9`) |
 | `vectorize.rs` (SIMD annotator) | `tir/passes/vectorize.rs` | **landed but DEAD** — backends read zero attrs (doc 05 §1) |
 | PGO (`pgo.rs`, `PgoProfileIR`, `pgo_collect.py`) | `molt-backend/src/llvm_backend/pgo.rs`, `ir.rs`, `src/molt/pgo_collect.py` | **dead code / not wired** (doc 06 §1) |
 | `perf_scoreboard.py` (warm/cold, provenance) + `bench.py` + suites | `tools/perf_scoreboard.py`, `tools/bench.py`, `tools/bench_suites.py` | **built + CI-gateable**; PyPy/Codon columns present-but-nullable (not installed on host) |
@@ -793,7 +793,7 @@ time: name the missing fact, add it to the ladder, validate it, watch the row go
 The 2026 optimization plans and research queues were retired on 2026-10-29. These
 mechanisms from them have no rung yet and no measurement. Each needs a measured
 case before it joins a rung. Read the retired source with
-`git show a0303366c0:<path>`.
+`git show 659060e197:<path>`.
 
 | Candidate | Reference | Retired source |
 | --- | --- | --- |

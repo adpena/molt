@@ -7,7 +7,7 @@ Composes with 08_DX-buildspeed.md (LANDED Phase 1a thin-LTO), dx_baseline.md
 (the MEASURED baseline + the "module≠crate / function-is-the-codegen-unit" laws),
 21/21a/21b/21d (decomposition program), 51 (10-year roadmap), 52 (autonomous
 charter). Every factual claim verified against the tree at branch `main`
-(HEAD 2f7c40cf7); verification pointers inlined. No code refactored in this
+(HEAD fe1f5d226); verification pointers inlined. No code refactored in this
 session; this is the executable plan the lead integrates. -->
 
 # 56 — Developer Experience: Build Speed, Daemon, Concurrent Dev, Debugging
@@ -84,7 +84,7 @@ control plane (46) and the autonomous charter's "the verifier is the product"
 
 ---
 
-## 2. Current state (VERIFIED against `main` @ 2f7c40cf7) — what already landed
+## 2. Current state (VERIFIED against `main` @ fe1f5d226) — what already landed
 
 The stale docs (08, dx_baseline) predate large wins. The authoritative current
 state, grep/read-verified this session:
@@ -222,7 +222,7 @@ projections, process pools, scan records and regression oracles add no work to
 compiled guests.
 
 **Measured cost.** `tools/molt_dev.py integrate` runs the 24 `always` commands of
-`tools/proof_plan.toml` serially, one process each. At `bac4c7416` on a Mac arm64
+`tools/proof_plan.toml` serially, one process each. At `882344abc` on a Mac arm64
 host, warm, the median of three rounds was 62.4 s wall and 99.6 s CPU. Five
 per-file scanners took 37.7 s of that wall time: `structural_audit` 13.6 s,
 `check_subprocess_guard_coverage` 7.0 s, `check_ratio_direction` 6.8 s,
@@ -417,7 +417,7 @@ records open is recorded by checkout path and content digest, and a replaying
 run checks the same content in its own checkout first.
 
 Measured on this Mac, alternating three rounds of the round-one tip (serial,
-`02b9f5d7e`) against the second-round tip (the integrate block), at a competing
+`b25bc96ca`) against the second-round tip (the integrate block), at a competing
 load average of 13 to 20:
 
 | | Wall (s) | CPU (s) | Peak RSS |
@@ -1962,7 +1962,7 @@ the audit-board-named gap); register `MOLT_DX_DUMP` in `main.rs`
 
 ## 4. Concrete phases (dependency order; each independently landable, green gates)
 
-**Universal gate methodology (the fd58a0a93 / dx_baseline §9 / 21 §3 contract),
+**Universal gate methodology (the 81f3016e5 / dx_baseline §9 / 21 §3 contract),
 applied to every phase below.** Each phase is its own complete structural piece
 (CLAUDE.md "structural change as the unit of work"); intermediate commits are
 acceptable only when each is itself complete + carries a baton note.

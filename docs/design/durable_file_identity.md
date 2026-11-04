@@ -22,7 +22,7 @@ attributes, or a leaf mounted on a different volume raises typed
 and relative `.`. An ancestor replacement can no longer combine two volumes.
 
 This leaf-type distinction corrects the metadata fence introduced with the
-held-parent protocol (`806af4dbd0`); that protocol's replacement protection is
+held-parent protocol (`951128ad15`); that protocol's replacement protection is
 the held-parent and native leaf identity comparison. Apple's
 [stat manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/stat.2.html)
 defines size and mutation times separately from device, inode and type.

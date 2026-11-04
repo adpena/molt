@@ -96,7 +96,7 @@ frontend and backend compilation. HF-126 measured eager admission of
 - `tests/differential/basic/function_import_absent_module.py`,
   `function_import_sibling_module.py` and `function_import_package_init.py`
   (with `function_import_sibling_pkg/` and `function_import_lazy_pkg/`) fail
-  to build at base 0d4b89cb5a with MOLT-FE007 and match CPython 3.12 after the
+  to build at base a7fc874597 with MOLT-FE007 and match CPython 3.12 after the
   change.
 - `tests/test_frontend_class_imports.py` pins the dynamic call for generator,
   coroutine, function and guarded-global bindings and the relative-import

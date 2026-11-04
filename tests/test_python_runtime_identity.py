@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from types import FunctionType, SimpleNamespace
 from typing import Any
@@ -12,11 +13,15 @@ from pathlib import Path
 import pytest
 
 from molt import python_environment_contract as _contract
+from molt import target_python_policy
 from molt import python_file_node_custody as files
 from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
-from tests.process_guard_common import run_custody_subject_process
+from tests.process_guard_common import (
+    run_custody_subject_process,
+    run_guarded_test_process,
+)
 
 
 @pytest.mark.parametrize(
@@ -275,15 +280,84 @@ def test_base_lib_dynload_follows_the_live_exec_prefix_of_a_relocated_install(
                 "stdlib": f"{vars['base']}/lib/python3.14t",
                 "platstdlib": f"{vars['platbase']}/lib/python3.14t",
             },
-            get_config_var=config.get,
         ),
     )
+    monkeypatch.setattr(runtime, "_configured_build_vars", lambda: config)
     assert runtime._base_runtime_paths()["base-lib-dynload"] == live.resolve() / layout
     config["DESTSHARED"] = str(tmp_path / "elsewhere" / "lib-dynload")
     with pytest.raises(
         PythonEnvironmentIdentityError, match="outside its configured exec_prefix"
     ):
         runtime._base_runtime_paths()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX lib-dynload layout")
+@pytest.mark.parametrize(
+    "short", target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+)
+def test_base_lib_dynload_matches_cpython_in_a_venv_of_each_pinned_release(
+    tmp_path: Path, short: str
+) -> None:
+    """The live interpreter's own sys.path is the oracle, on every release.
+
+    From 3.14 on, sysconfig reports a virtual environment's exec_prefix as the
+    configured one, so reading the configured anchor from there refused every
+    3.14 image ("outside its configured exec_prefix"). The pinned release of
+    each supported target runs the real probe inside a real venv.
+
+    The configured pair has a second oracle: CPython's build-time data module,
+    which the probe imports by its computed name. In a venv the live prefixes
+    name the venv, so a release branch that returned them instead of the
+    configured values fails here, whatever ``_base_runtime_paths`` derives.
+    """
+    from molt.target_python import _parse_target_python_version
+
+    target = _parse_target_python_version(short)
+    release = f"{target.major}.{target.minor}.{target.micro}"
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    found = run_guarded_test_process(
+        [uv, "python", "find", "--no-project", "--no-python-downloads", release],
+        timeout=60,
+    )
+    if found.returncode != 0:
+        pytest.skip(f"CPython {release} is not installed")
+    base = found.stdout.strip().splitlines()[0]
+    venv = tmp_path / "venv"
+    made = run_guarded_test_process(
+        [base, "-I", "-m", "venv", "--without-pip", str(venv)], timeout=120
+    )
+    assert made.returncode == 0, made.stderr
+    probe = (
+        "import importlib, json, sys, sysconfig\n"
+        f"sys.path.insert(0, {str(Path(runtime.__file__).parents[1])!r})\n"
+        "from molt import python_runtime_identity as runtime\n"
+        "keys = ('prefix', 'exec_prefix', 'DESTSHARED')\n"
+        "configured = runtime._configured_build_vars()\n"
+        "data = importlib.import_module(sysconfig._get_sysconfigdata_name())\n"
+        "print(json.dumps({'version': sys.version.split()[0],"
+        " 'computed': str(runtime._base_runtime_paths()['base-lib-dynload']),"
+        " 'live': [p for p in sys.path if p.endswith('lib-dynload')],"
+        " 'live_prefixes': [sys.prefix, sys.exec_prefix],"
+        " 'configured': {k: configured.get(k) for k in keys},"
+        " 'build_time': {k: data.build_time_vars.get(k) for k in keys}}))\n"
+    )
+    result = run_guarded_test_process(
+        [str(venv / "bin" / "python"), "-I", "-B", "-c", probe], timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed["version"] == release
+    (live,) = observed["live"]
+    assert Path(observed["computed"]) == Path(live).resolve()
+    assert observed["configured"] == observed["build_time"]
+    # The venv makes the live and configured prefixes differ; without that
+    # the equality above could not tell the two sources apart.
+    configured = observed["configured"]
+    assert all(isinstance(value, str) and value for value in configured.values())
+    assert configured["prefix"] not in observed["live_prefixes"]
+    assert configured["exec_prefix"] not in observed["live_prefixes"]
 
 
 def _runtime_payload(

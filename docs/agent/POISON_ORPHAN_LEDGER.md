@@ -12,7 +12,7 @@
 > hiding behind `#[allow(dead_code)]` (DEAD_DELETE). LEGIT entries are surfaces
 > that were audited and cleared — recorded so the negative result is not re-run.
 >
-> **Anchor.** Line numbers are as of `origin/main` **`4dcf8ef022`** (2026-07-10).
+> **Anchor.** Line numbers are as of `origin/main` **`49bbc8ad0a`** (2026-07-10).
 > They are anchors, not identities — re-anchor by grepping the symbol name when a
 > line drifts. Every finding below was verified against the Rust/C/Python source
 > in `C:/Molt/molt-src`; a representative high-severity sample was independently
@@ -23,10 +23,10 @@
 > degrade LOUDLY + gate), and M32 (the fail-closed ratchet). A poison-orphan is
 > the M34 failure one level up: *landed-but-not-effective*.
 
-> **Task #60 refresh (2026-07-11, `4f4e24ed59`).** Re-verified every row against
-> current `origin/main`. Lane A was already closed by `45260449d7`, `9eb71fb94f`,
-> `875316cbe5`, `84b6626b70`, and `abcfff3bbd`/`491e9035ca`; Lane E was already
-> closed by `ed7266542c`. This refresh closes rows #7, #8, #10, #11, and #12 by
+> **Task #60 refresh (2026-07-11, `beab87533f`).** Re-verified every row against
+> current `origin/main`. Lane A was already closed by `f001643b3e`, `2441d58854`,
+> `edf06e71b0`, `ad2fbaed78`, and `ba3be16e6b`/`723208f17c`; Lane E was already
+> closed by `a9bf56d7cf`. This refresh closes rows #7, #8, #10, #11, and #12 by
 > making the live paths fail closed, and closes #15 by moving the valuable
 > experiment outside the shipping runtime. It also lands the CLASS3-DISPATCH
 > completeness gate. Rows #5, #6, #13, and #14 remain live as separately owned
@@ -40,16 +40,16 @@
 | 1-4, 9 | already fixed | implement / fail closed | Lane A SHAs above | dedicated parity and C-API tests in Lane A |
 | 5 | still live | wire, not shim | import-bedrock PR2 owner | existing transition tests are test-only until cutover |
 | 6 | still live | generate one authority | task#10 owner | header drift gates remain green |
-| 7 | **closed `4f4e24ed59`** | rip stale state | clear diagnostic at both module-exec entries | stale record is absent after exec-boundary clear |
-| 8 | **closed `4f4e24ed59`** | implement honest errors | audited dict/module/type sentinel paths set exceptions | NULL dict arguments now assert pending error |
-| 10 | **closed `4f4e24ed59`** | fail loud | missing `wasm-tools` disables artifact reuse | validator-absent pytest requires error text |
-| 11 | **closed `4f4e24ed59`** | implement honest error | host send failures raise `OSError` | `ECONNRESET` classifies as error, never close |
-| 12 | **closed `4f4e24ed59`** | rip duplicate | source header only includes owning `Python.h` | table-drift and header compile gates pass |
+| 7 | **closed `beab87533f`** | rip stale state | clear diagnostic at both module-exec entries | stale record is absent after exec-boundary clear |
+| 8 | **closed `beab87533f`** | implement honest errors | audited dict/module/type sentinel paths set exceptions | NULL dict arguments now assert pending error |
+| 10 | **closed `beab87533f`** | fail loud | missing `wasm-tools` disables artifact reuse | validator-absent pytest requires error text |
+| 11 | **closed `beab87533f`** | implement honest error | host send failures raise `OSError` | `ECONNRESET` classifies as error, never close |
+| 12 | **closed `beab87533f`** | rip duplicate | source header only includes owning `Python.h` | table-drift and header compile gates pass |
 | 13 | still live | delete after generic custody | task#73.2 owner | fail-closed registry remains pinned |
 | 14 | still live | implement real snapshot reinit | import-bedrock PR4 owner | current behavior remains fail closed |
-| 15 | **closed-moved `4f4e24ed59`** | move | `demos/experiments/runtime_string_repr.rs` | live crate no longer compiles the scaffold |
+| 15 | **closed-moved `beab87533f`** | move | `demos/experiments/runtime_string_repr.rs` | live crate no longer compiles the scaffold |
 | 16, 23-31 | LEGIT | none | audit verdict unchanged | existing gates/tests |
-| 17-22, 24 | already fixed | delete / cfg(test) | `ed7266542c` | Lane E crate tests and dead-code ratchet |
+| 17-22, 24 | already fixed | delete / cfg(test) | `a9bf56d7cf` | Lane E crate tests and dead-code ratchet |
 
 ---
 
@@ -282,7 +282,7 @@ lane — they are the true yield of this audit and Lane A should be spun off fir
 ## 5. Verification
 
 Findings were supplied as a verified JSON audit and independently re-checked
-against the live tree at `origin/main` `4dcf8ef022` for this ledger:
+against the live tree at `origin/main` `49bbc8ad0a` for this ledger:
 
 - **#1** `random_mod.rs` — confirmed `default = []` (Cargo.toml:26), `crypto` gated
   fallback at `random_mod.rs:508/516/518` (`// Without crypto support, fall back to
@@ -304,4 +304,4 @@ each an independently-verifiable change with a stated fail-closed test.
 
 ---
 
-*Ledger anchor `4dcf8ef022` · 2026-07-10 · re-anchor symbols by grep when lines drift.*
+*Ledger anchor `49bbc8ad0a` · 2026-07-10 · re-anchor symbols by grep when lines drift.*

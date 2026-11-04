@@ -238,7 +238,7 @@ The ownership weighers destructure the closed key/context/target types without
 The semantic identity has fixed inline storage and no transitive allocations.
 Retention accounting never participates in structural identity.
 
-A 2026-10-17 Darwin arm64 mechanism comparison compiles the frozen 79b4892ec
+A 2026-10-17 Darwin arm64 mechanism comparison compiles the frozen d77bad5ec
 heap owner and this owner into one optimized executable with identical surrogate
 string keys: 128 resident entries, 200,000 warm hits, nine alternating rounds.
 Median loop time falls from 15.42 ms to 7.19 ms. This isolates order maintenance
@@ -370,7 +370,7 @@ pays an added clone of each body it admits. The resident decoded IR is the named
 trade: memory for skipped decode and validation.
 
 Historical donor measurements on 2026-10-23 (macOS arm64, the same host,
-alternating builds of base 0457e7400 and the addressed-transport protocol-3
+alternating builds of base 60166bada and the addressed-transport protocol-3
 donor, one-line edits of the program above):
 
 | Metric | Protocol 2 | Protocol 3 donor |
