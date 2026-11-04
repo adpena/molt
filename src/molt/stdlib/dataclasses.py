@@ -710,6 +710,10 @@ def _molt_apply_dataclass(
         )
         cls.__match_args__ = match_fields
 
+    # CPython v3.13.9 Lib/dataclasses.py: _process_class preserves user hooks.
+    if _sys.version_info >= (3, 13) and "__replace__" not in cls.__dict__:
+        cls.__replace__ = replace
+
     if slots:
         cls = _add_slots(cls, fields, frozen=frozen, weakref_slot=weakref_slot)
 
@@ -784,8 +788,8 @@ def astuple(obj, *, tuple_factory=tuple):
     return _MOLT_DATACLASSES_ASTUPLE(obj, tuple_factory, _FIELD)
 
 
-def replace(obj, **changes):
-    return _MOLT_DATACLASSES_REPLACE(obj, changes, _FIELD, _FIELD_INITVAR)
+def replace(obj, /, **changes):
+    return _MOLT_DATACLASSES_REPLACE(obj, changes, _FIELD, _FIELD_INITVAR, MISSING)
 
 
 def _infer_caller_module_name() -> str:

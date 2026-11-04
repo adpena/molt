@@ -32,9 +32,12 @@ fn code_reconstruction_retains_its_body_plan_and_terminal_release_retires_it() {
         unsafe {
             code_plan_word(source).write(Arc::into_raw(plan.clone()));
         }
+        // A retained body plan must not change execution-kind metadata.
+        assert!(!unsafe { crate::object::layout::code_is_module(source) });
         let clone =
             unsafe { crate::object::builders::clone_code_obj_with_protocol_flags(py, source, 0) };
         assert!(!clone.is_null());
+        assert!(!unsafe { crate::object::layout::code_is_module(clone) });
         assert_eq!(Arc::strong_count(&plan), 3);
         assert_eq!(unsafe { *code_plan_word(clone) }, Arc::as_ptr(&plan));
         dec_ref_bits(py, MoltObject::from_ptr(source).bits());

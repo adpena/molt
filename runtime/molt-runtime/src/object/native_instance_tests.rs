@@ -544,3 +544,224 @@ fn native_class_edge_publication_refuses_an_unallocated_tail_atomically() {
         dec_ref_bits(py, class);
     });
 }
+
+#[test]
+fn code_replacement_metadata_subclasses_form_collectible_cycles() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        let text_class = class(py, b"CodeMetadataText", builtin_classes(py).str, false);
+        let input = MoltObject::from_ptr(alloc_string(py, b"metadata")).bits();
+        let names = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+        for field in [
+            crate::NameId::CoName,
+            crate::NameId::CoFilename,
+            crate::NameId::CoQualname,
+        ] {
+            let source = crate::alloc_code_obj(
+                py,
+                input,
+                input,
+                1,
+                MoltObject::none().bits(),
+                names,
+                names,
+                0,
+                0,
+                0,
+            );
+            assert!(!source.is_null());
+            assert!(
+                !unsafe { crate::object::gc::gc_is_tracked(source) },
+                "exact immutable metadata must retain the untracked path"
+            );
+            let source_bits = MoltObject::from_ptr(source).bits();
+            let text = construct(py, text_class, input);
+            let text_ptr = obj_from_bits(text).as_ptr().unwrap();
+            let key = field.owned_bits(py).unwrap();
+            let args = MoltObject::from_ptr(alloc_tuple(py, &[source_bits])).bits();
+            let kwargs =
+                MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[key, text])).bits();
+            let replaced = crate::builtins::functions::molt_code_replace(args, kwargs);
+            assert!(!exception_pending(py));
+            let replaced_ptr = obj_from_bits(replaced).as_ptr().unwrap();
+            assert!(
+                unsafe { crate::object::gc::gc_is_tracked(replaced_ptr) },
+                "a metadata subclass with mutable fields must promote code tracking"
+            );
+            let actual = crate::molt_get_attr_name(replaced, key);
+            assert_eq!(actual, text, "replacement must retain subclass identity");
+            dec_ref_bits(py, actual);
+            let backref = dynamic_attr_name_bits(py, b"code_backref").unwrap();
+            crate::molt_set_attr_name(text, backref, replaced);
+            assert!(!exception_pending(py));
+            for bits in [backref, args, kwargs, key, source_bits, replaced, text] {
+                dec_ref_bits(py, bits);
+            }
+            let _ = unsafe { crate::object::gc::collect_cycles(py) };
+            // Registry lookups treat retired pointers only as opaque keys.
+            assert!(!unsafe { crate::object::gc::gc_is_tracked(replaced_ptr) });
+            assert!(!unsafe { crate::object::gc::gc_is_tracked(text_ptr) });
+            assert!(!exception_pending(py));
+        }
+        for bits in [names, input, text_class] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn code_metadata_publication_keeps_earlier_container_owners_collectible() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        let text_class = class(py, b"LateCodeMetadataText", builtin_classes(py).str, false);
+        let input = MoltObject::from_ptr(alloc_string(py, b"metadata")).bits();
+        let names = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+        let code = crate::alloc_code_obj(
+            py,
+            input,
+            input,
+            1,
+            MoltObject::none().bits(),
+            names,
+            names,
+            0,
+            0,
+            0,
+        );
+        let code_bits = MoltObject::from_ptr(code).bits();
+        assert!(!unsafe { crate::object::gc::gc_is_tracked(code) });
+        let owner = alloc_tuple(py, &[code_bits]);
+        let owner_bits = MoltObject::from_ptr(owner).bits();
+        assert!(
+            unsafe { crate::object::gc::gc_is_tracked(owner) },
+            "an earlier owner must account for pending metadata publication"
+        );
+        let text = construct(py, text_class, input);
+        let text_ptr = obj_from_bits(text).as_ptr().unwrap();
+        unsafe {
+            crate::object::layout::code_publish_declaration_metadata(
+                py,
+                code,
+                text,
+                MoltObject::none().bits(),
+            )
+        }
+        .unwrap();
+        assert!(unsafe { crate::object::gc::gc_is_tracked(code) });
+        let key = dynamic_attr_name_bits(py, b"owner_backref").unwrap();
+        crate::molt_set_attr_name(text, key, owner_bits);
+        assert!(!exception_pending(py));
+        for bits in [key, code_bits, owner_bits, text] {
+            dec_ref_bits(py, bits);
+        }
+        let _ = unsafe { crate::object::gc::collect_cycles(py) };
+        for retired in [code, owner, text_ptr] {
+            assert!(!unsafe { crate::object::gc::gc_is_tracked(retired) });
+        }
+        for bits in [input, names, text_class] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
+fn code_sealing_preserves_atomic_container_fast_paths() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        let input = MoltObject::from_ptr(alloc_string(py, b"sealed_metadata")).bits();
+        let names = MoltObject::from_ptr(alloc_tuple(py, &[input])).bits();
+        assert!(unsafe {
+            crate::object::gc::gc_is_tracked(obj_from_bits(names).as_ptr().unwrap())
+        });
+        let code = crate::alloc_code_obj(
+            py,
+            input,
+            input,
+            1,
+            MoltObject::none().bits(),
+            names,
+            names,
+            0,
+            0,
+            0,
+        );
+        let code_bits = MoltObject::from_ptr(code).bits();
+        assert!(
+            !unsafe { crate::object::gc::gc_is_tracked(code) },
+            "a conservatively tracked tuple of atomic names must not enroll code"
+        );
+        unsafe {
+            crate::object::layout::code_publish_declaration_metadata(
+                py,
+                code,
+                input,
+                MoltObject::none().bits(),
+            )
+            .unwrap();
+            crate::object::layout::code_publish_policy(
+                code,
+                crate::object::layout::CodeExecutionKind::Direct,
+                0,
+            )
+            .unwrap();
+        }
+        let tuple = alloc_tuple(py, &[code_bits]);
+        let _ = unsafe { crate::object::gc::collect_cycles(py) };
+        assert!(
+            !unsafe { crate::object::gc::gc_is_tracked(tuple) },
+            "sealed atomic code must permit immutable container demotion"
+        );
+        let dictionary = crate::alloc_dict_with_pairs(py, &[input, code_bits]);
+        if crate::object::ops_sys::runtime_target_minor(py) < 14 {
+            assert!(!unsafe { crate::object::gc::gc_is_tracked(dictionary) });
+        }
+        // A late compiler descriptor can add immutable bytes, never a mutable
+        // subclass that invalidates the earlier owner's atomicity proof.
+        let text_class = class(py, b"LateGpuText", builtin_classes(py).str, false);
+        let text = construct(py, text_class, input);
+        assert!(!unsafe { crate::object::layout::code_publish_gpu_descriptor(py, code, text) });
+        assert!(exception_pending(py));
+        crate::clear_exception(py);
+        assert!(unsafe { crate::object::layout::code_publish_gpu_descriptor(py, code, input) });
+        let mutable_names = MoltObject::from_ptr(alloc_tuple(py, &[text])).bits();
+        let mutable_code = crate::alloc_code_obj(
+            py,
+            input,
+            input,
+            1,
+            MoltObject::none().bits(),
+            mutable_names,
+            names,
+            0,
+            0,
+            0,
+        );
+        assert!(
+            unsafe { crate::object::gc::gc_is_tracked(mutable_code) },
+            "string-subclass children in name tuples must still enroll code"
+        );
+        let mutable_code_bits = MoltObject::from_ptr(mutable_code).bits();
+        let text_ptr = obj_from_bits(text).as_ptr().unwrap();
+        let backref = dynamic_attr_name_bits(py, b"name_tuple_backref").unwrap();
+        crate::molt_set_attr_name(text, backref, mutable_code_bits);
+        for bits in [
+            MoltObject::from_ptr(tuple).bits(),
+            MoltObject::from_ptr(dictionary).bits(),
+            code_bits,
+            text,
+            text_class,
+            input,
+            names,
+            mutable_names,
+            mutable_code_bits,
+            backref,
+        ] {
+            dec_ref_bits(py, bits);
+        }
+        let _ = unsafe { crate::object::gc::collect_cycles(py) };
+        assert!(!unsafe { crate::object::gc::gc_is_tracked(mutable_code) });
+        assert!(!unsafe { crate::object::gc::gc_is_tracked(text_ptr) });
+        assert!(!exception_pending(py));
+    });
+}

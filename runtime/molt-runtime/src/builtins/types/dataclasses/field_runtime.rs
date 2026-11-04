@@ -63,7 +63,7 @@ pub(in crate::builtins::types::dataclasses) fn dc_getattr_default_bits(
     ))
 }
 
-fn dc_truth(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
+pub(super) fn dc_truth(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
     let truth = is_truthy(py, obj_from_bits(bits));
     if exception_pending(py) {
         Err(())
@@ -72,14 +72,14 @@ fn dc_truth(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
     }
 }
 
-fn dc_repr_str(py: &PyToken<'_>, bits: u64) -> Result<String, ()> {
+pub(super) fn dc_repr_str(py: &PyToken<'_>, bits: u64) -> Result<String, ()> {
     let repr = dc_result(py, molt_repr_from_obj(bits))?;
     string_obj_to_owned(obj_from_bits(repr.bits)).ok_or(())
 }
 
 /// Snapshot fields with one retained reference per entry. A field descriptor
 /// may clear or replace the source dictionary while another field is inspected.
-fn dc_dict_fields<'a, 'py>(
+pub(super) fn dc_dict_fields<'a, 'py>(
     py: &'a PyToken<'py>,
     bits: u64,
 ) -> Result<PinnedSequenceSnapshot<'a, 'py>, ()> {
