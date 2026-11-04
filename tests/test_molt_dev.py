@@ -8818,10 +8818,12 @@ def test_remote_landing_executes_selected_gates_without_publishing(
     output = tmp_path / "remote-output"
     output.mkdir()
     rc = trunk_landing.execute({"landing": request, "checkout": str(work)}, output)
-    receipt = json.loads((output / "receipt.json").read_text())
+    receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
     assert rc == (0 if exitcode == 0 else 1)
     assert receipt["status"] == ("success" if exitcode == 0 else "failure")
-    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text()
+    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text(
+        encoding="utf-8"
+    )
     if exitcode:
         with pytest.raises(CandidateFailure, match="remote landing gate failed"):
             trunk_landing.admit_result(receipt, request)

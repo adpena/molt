@@ -168,9 +168,12 @@ def test_guest_packages_script_installs_only_missing_packages(tmp_path):
     bin_dir.mkdir()
     log = tmp_path / "apt.log"
     (bin_dir / "dpkg-query").write_text(
-        '#!/bin/sh\ncase "$3" in cmake|udev) exit 1;; esac\nprintf "install ok installed"\n'
+        '#!/bin/sh\ncase "$3" in cmake|udev) exit 1;; esac\nprintf "install ok installed"\n',
+        encoding="utf-8",
     )
-    (bin_dir / "apt-get").write_text(f'#!/bin/sh\necho "$*" >> {log}\n')
+    (bin_dir / "apt-get").write_text(
+        f'#!/bin/sh\necho "$*" >> {log}\n', encoding="utf-8"
+    )
     for tool in bin_dir.iterdir():
         tool.chmod(0o755)
     completed = subprocess.run(
@@ -179,9 +182,10 @@ def test_guest_packages_script_installs_only_missing_packages(tmp_path):
         capture_output=True,
         text=True,
         check=True,
+        encoding="utf-8",
     )
     assert json.loads(completed.stdout) == {"installed": "cmake udev"}
-    assert log.read_text().splitlines() == [
+    assert log.read_text(encoding="utf-8").splitlines() == [
         "update",
         "install -y --no-install-recommends cmake udev",
     ]
@@ -262,14 +266,14 @@ def test_guest_configuration_publication_preserves_settings_and_second_run_bytes
     )
     script = script.replace("$(cat /proc/1/comm)", "systemd")
     if original:
-        config.write_text(original)
+        config.write_text(original, encoding="utf-8")
     first = run_custody_subject_process(
         ["bash", "-s"], input=script, text=True, capture_output=True
     )
     if original.count("[boot]") > 1 or original.count("systemd=") > 1:
         assert first.returncode == 2
         assert "Ambiguous [boot] systemd declaration" in first.stderr
-        assert config.read_text() == original
+        assert config.read_text(encoding="utf-8") == original
         return
     assert first.returncode == 0, first.stderr
     published = config.read_bytes()
