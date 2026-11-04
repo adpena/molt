@@ -2,7 +2,8 @@
 """Purpose: CPython's default finders and hooks exist before the first import.
 
 The runtime seeds them at bootstrap (HF-737); no import completes them later.
-Site-installed finders, if any, are filtered out of the printed shapes.
+Site-installed finders, if any, are filtered out of the printed shapes. The
+directory-backed hook checks live in importlib_default_finders_subclass.
 """
 
 import sys
@@ -28,8 +29,6 @@ print("meta_path kept", default_shape(sys.meta_path) == before)
 
 import importlib  # noqa: E402
 import importlib.machinery as machinery  # noqa: E402
-import os  # noqa: E402
-
 import _frozen_importlib_external  # noqa: E402
 
 print("PathFinder in meta_path", machinery.PathFinder in sys.meta_path)
@@ -53,25 +52,13 @@ print(
     machinery.FrozenImporter.find_spec("importlib_default_finders_absent") is None,
 )
 
-directory = os.path.dirname(os.path.abspath(__file__))
-file_hook = sys.path_hooks[-1]
-finder = file_hook(directory)
-print(
-    "file hook",
-    isinstance(finder, machinery.FileFinder),
-    type(finder) is machinery.FileFinder,
-    finder.path == directory,
-)
+print("hook count", len(sys.path_hooks) >= 2)
 try:
-    file_hook(os.path.join(directory, "importlib_default_finders_identity.py"))
-except ImportError as exc:
-    print("file hook rejects a file", type(exc).__name__, exc.path is not None)
-try:
-    sys.path_hooks[0](directory)
+    sys.path_hooks[0]("importlib_default_finders_not_an_archive")
 except ImportError as exc:
     # CPython's hook is zipimporter (ZipImportError); Molt's lazy archive hook
     # raises ImportError. Both reject with an ImportError.
-    print("archive hook rejects a directory", isinstance(exc, ImportError))
+    print("archive hook rejects a non-archive path", isinstance(exc, ImportError))
 
 print("invalidate", importlib.invalidate_caches() is None)
 print("meta_path kept after invalidate", default_shape(sys.meta_path) == before)

@@ -1,12 +1,29 @@
 # MOLT_ENV: MOLT_CAPABILITIES=fs.read,env.read
+# MOLT_META: backends=llvm,native
 """Purpose: the runtime-owned PathFinder and FileFinder behave as CPython's
-classes for subclasses and monkeypatching (HF-737)."""
+classes for the default hook, subclasses and monkeypatching (HF-737).
+
+These cells search the script's host directory by absolute path, which a WASI
+guest cannot reach (the runner preopens only its working directory)."""
 
 import importlib.machinery as machinery
 import os
 import sys
 
 directory = os.path.dirname(os.path.abspath(__file__))
+
+file_hook = sys.path_hooks[-1]
+finder = file_hook(directory)
+print(
+    "file hook",
+    isinstance(finder, machinery.FileFinder),
+    type(finder) is machinery.FileFinder,
+    finder.path == directory,
+)
+try:
+    file_hook(os.path.join(directory, "importlib_default_finders_subclass.py"))
+except ImportError as exc:
+    print("file hook rejects a file", type(exc).__name__, exc.path is not None)
 
 
 class SubPathFinder(machinery.PathFinder):
