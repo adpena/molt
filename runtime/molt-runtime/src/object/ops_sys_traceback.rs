@@ -41,7 +41,8 @@ fn traceback_attribute<'a, 'py>(
     let Some(ptr) = obj_from_bits(value).as_ptr() else {
         return Ok(None);
     };
-    unsafe { crate::builtins::attr::attr_lookup_ptr_allow_missing(py, ptr, name) }
+    crate::builtins::attr::lookup_attribute(py, MoltObject::from_ptr(ptr).bits(), name)
+        .into_result()
         .map(|value| value.map(|bits| ExceptionValue::adopt(py, bits)))
 }
 

@@ -123,28 +123,9 @@ pub(crate) fn pickle_attr_optional(
     let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits).into_result();
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        let error = crate::builtins::exceptions::ExceptionValue::adopt(
-            _py,
-            crate::molt_exception_last_pending(),
-        );
-        if crate::builtins::exceptions::exception_matches_kind(
-            _py,
-            error.bits(),
-            crate::BuiltinExc::AttributeError,
-        ) {
-            clear_exception(_py);
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
 pub(crate) fn pickle_attr_required(

@@ -332,7 +332,9 @@ pub(crate) unsafe fn construct_exception_from_args(
         };
         let init_name_bits = crate::NameId::DunderInit.bits(_py);
         let init_bits =
-            match class_attr_lookup(_py, class_ptr, class_ptr, Some(inst_ptr), init_name_bits) {
+            match class_attr_lookup(_py, class_ptr, class_ptr, Some(inst_ptr), init_name_bits)
+                .into_result()
+            {
                 Ok(Some(value)) => value,
                 Ok(None) => return inst_bits,
                 Err(()) => {
@@ -640,7 +642,9 @@ pub(crate) unsafe fn construct_regular_class(
         let Some(instance_ptr) = obj_from_bits(instance).as_ptr() else {
             return instance;
         };
-        let init = match class_attr_lookup(py, actual, actual, Some(instance_ptr), init_name) {
+        let init = match class_attr_lookup(py, actual, actual, Some(instance_ptr), init_name)
+            .into_result()
+        {
             Ok(Some(value)) => value,
             Ok(None) => return instance,
             Err(()) => {
@@ -952,7 +956,11 @@ mod tests {
                 assert_eq!(function_dict_bits(function), corrupt);
                 let _ = molt_exception_clear();
                 let key = dynamic_attr_name_bits(py, b"corrupt_read").unwrap();
-                assert!(crate::builtins::attributes::attr_lookup_ptr(py, function, key).is_err());
+                assert!(
+                    crate::builtins::attributes::attr_lookup_ptr(py, function, key)
+                        .into_result()
+                        .is_err()
+                );
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), corrupt);
                 let _ = molt_exception_clear();

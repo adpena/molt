@@ -344,12 +344,14 @@ def _linux_volume(device: int, by_uuid: Path = Path("/dev/disk/by-uuid")) -> str
     except OSError as exc:
         raise IdentityUnavailable(
             "filesystem UUID directory is unavailable; provide a unique filesystem "
-            "UUID mapping in /dev/disk/by-uuid on a supported volume"
+            "UUID mapping in /dev/disk/by-uuid on a supported volume; "
+            "udev is a Linux host prerequisite for persistent filesystem custody"
         ) from exc
     if len(matches) != 1:
         raise IdentityUnavailable(
             "filesystem UUID is absent or ambiguous; provide a unique filesystem "
-            "UUID mapping in /dev/disk/by-uuid on a supported volume"
+            "UUID mapping in /dev/disk/by-uuid on a supported volume; "
+            "udev is a Linux host prerequisite for persistent filesystem custody"
         )
     return matches.pop()
 

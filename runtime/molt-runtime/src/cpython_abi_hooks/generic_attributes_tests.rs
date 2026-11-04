@@ -1392,9 +1392,14 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                         b"__class__".len() as u64,
                     ),
                     take_bits(object::PyObject_GetAttr(c_receiver, c_name)),
-                    crate::builtins::attr::attr_lookup_ptr_allow_missing(py, pointer, name)
-                        .unwrap()
-                        .unwrap(),
+                    crate::builtins::attr::lookup_attribute(
+                        py,
+                        MoltObject::from_ptr(pointer).bits(),
+                        name,
+                    )
+                    .into_result()
+                    .unwrap()
+                    .unwrap(),
                 ] {
                     assert_eq!(result, MoltObject::from_int(701).bits());
                     dec_ref_bits(py, result);
@@ -1413,6 +1418,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                     receiver,
                     crate::NameId::DunderIndex,
                 )
+                .into_result()
                 .expect("special lookup succeeds")
                 .expect("present __index__ protocol");
                 let result =
@@ -1451,7 +1457,8 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                         py,
                         receiver,
                         crate::NameId::DunderIndex
-                    ),
+                    )
+                    .into_result(),
                     Ok(Some(0)),
                     "a present zero-bit protocol value is not a miss"
                 );

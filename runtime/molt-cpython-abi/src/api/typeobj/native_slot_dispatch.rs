@@ -252,28 +252,24 @@ unsafe fn reflected_overrides<const SLOT: c_int>(
         }
         let left_type = crate::bridge::semantic_type(left);
         let right_type = crate::bridge::semantic_type(right);
-        let right =
-            OwnedPyObject::from_owned(object::PyObject_GetAttr(right_type.cast(), key.as_ptr()));
-        if right.as_ptr().is_null() {
-            if errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()) == 0 {
+        let mut right = ptr::null_mut();
+        match object::PyObject_GetOptionalAttr(right_type.cast(), key.as_ptr(), &raw mut right) {
+            -1 => return Err(crate::ErrorIndicatorSet),
+            0 => return Ok(false),
+            _ => {}
+        }
+        let mut left = ptr::null_mut();
+        match object::PyObject_GetOptionalAttr(left_type.cast(), key.as_ptr(), &raw mut left) {
+            -1 => {
+                errors::release_preserving_error(&[right]);
                 return Err(crate::ErrorIndicatorSet);
             }
-            errors::PyErr_Clear();
-            return Ok(false);
-        }
-        let right = right.into_ptr();
-        let left =
-            OwnedPyObject::from_owned(object::PyObject_GetAttr(left_type.cast(), key.as_ptr()));
-        if left.as_ptr().is_null() {
-            if errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()) == 0 {
+            0 => {
                 crate::api::refcount::Py_DECREF(right);
-                return Err(crate::ErrorIndicatorSet);
+                return Ok(true);
             }
-            errors::PyErr_Clear();
-            crate::api::refcount::Py_DECREF(right);
-            return Ok(true);
+            _ => {}
         }
-        let left = left.into_ptr();
         let comparison = PyObject_RichCompareBool(left, right, 3);
         crate::api::refcount::Py_DECREF(left);
         crate::api::refcount::Py_DECREF(right);

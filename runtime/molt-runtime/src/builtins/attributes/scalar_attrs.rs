@@ -353,11 +353,7 @@ fn resolve_scalar_method(
 /// numeric-scalar attribute path:
 /// `molt_get_attr_name`, `molt_get_attr_name_default`, `molt_has_attr_name`,
 /// `molt_get_attr_object`, `attr_lookup_ptr`, and `molt_object_getattribute`.
-pub(crate) fn resolve_scalar_attr(
-    py: &PyToken<'_>,
-    object: u64,
-    name: u64,
-) -> Result<Option<u64>, ()> {
+pub(crate) fn resolve_scalar_attr(py: &PyToken<'_>, object: u64, name: u64) -> AttributeLookup {
     resolve_scalar_attr_with_mode(py, object, name, AttributeLookupMode::Value)
 }
 
@@ -366,38 +362,40 @@ pub(crate) fn resolve_scalar_attr_with_mode(
     object: u64,
     name: u64,
     mode: AttributeLookupMode<'_>,
-) -> Result<Option<u64>, ()> {
-    let class = type_of_bits(py, object);
-    let key = name;
-    inc_ref_bits(py, key);
-    let value = unsafe {
-        (|| {
-            let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
-                return Ok(None);
-            };
-            match class_attr_lookup_raw_mro(py, class_ptr, key)? {
-                Some(descriptor) => mode.bind(
-                    py,
-                    descriptor,
-                    Some(class),
-                    Some(object),
-                    DescriptorCallPolicy::Required,
-                ),
-                None => Ok(None),
-            }
-        })()
-    };
-    dec_ref_bits(py, key);
-    if let Some(value) = value? {
-        return Ok(Some(value));
-    }
-    let Some(name) = crate::NameId::from_bits(py, name) else {
-        return Ok(None);
-    };
-    match numeric_scalar_kind_from_bits(py, object) {
-        Some(kind) => resolve_scalar_method(py, object, kind, name, mode),
-        None => Ok(None),
-    }
+) -> AttributeLookup {
+    AttributeLookup::from_result((|| {
+        let class = type_of_bits(py, object);
+        let key = name;
+        inc_ref_bits(py, key);
+        let value = unsafe {
+            (|| {
+                let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
+                    return Ok(None);
+                };
+                match class_attr_lookup_raw_mro(py, class_ptr, key)? {
+                    Some(descriptor) => mode.bind(
+                        py,
+                        descriptor,
+                        Some(class),
+                        Some(object),
+                        DescriptorCallPolicy::Required,
+                    ),
+                    None => Ok(None),
+                }
+            })()
+        };
+        dec_ref_bits(py, key);
+        if let Some(value) = value? {
+            return Ok(Some(value));
+        }
+        let Some(name) = crate::NameId::from_bits(py, name) else {
+            return Ok(None);
+        };
+        match numeric_scalar_kind_from_bits(py, object) {
+            Some(kind) => resolve_scalar_method(py, object, kind, name, mode),
+            None => Ok(None),
+        }
+    })())
 }
 
 #[cfg(test)]
@@ -470,6 +468,7 @@ mod numeric_member_tests {
                 crate::object::ops::alloc_heap_float(py, f64::from_bits(0x7ff8_0000_0000_0042));
             for receiver in [MoltObject::from_int(3).bits(), wide, nan] {
                 let result = resolve_scalar_attr(py, receiver, crate::NameId::Real.bits(py))
+                    .into_result()
                     .expect("numeric member lookup succeeds")
                     .expect("numeric real member exists");
                 assert_eq!(result, receiver, "exact numeric real retains identity");
@@ -486,6 +485,7 @@ mod numeric_member_tests {
                         receiver,
                         crate::NameId::from_bytes(attr.as_bytes()).unwrap().bits(py),
                     )
+                    .into_result()
                     .expect("numeric member lookup succeeds")
                     .expect("numeric member exists");
                     assert_eq!(obj_from_bits(result).as_int(), Some(expected));
@@ -498,6 +498,7 @@ mod numeric_member_tests {
                 MoltObject::from_bool(true).bits(),
                 crate::NameId::Real.bits(py),
             )
+            .into_result()
             .expect("boolean member lookup succeeds")
             .expect("boolean real member exists");
             assert_eq!(obj_from_bits(bool_real).as_int(), Some(1));

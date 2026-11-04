@@ -1,7 +1,6 @@
 //! Default object reduction: CPython 3.12 Objects/typeobject.c,
 //! object___reduce_ex___impl, _common_reduce, reduce_newobj and
 //! _PyObject_GetNewArguments. Copy and serialization consume this authority.
-use crate::builtins::attr::clear_attribute_error_if_pending;
 use crate::*;
 use molt_runtime_core::ProtectedRuntimeValue as Value;
 
@@ -27,15 +26,10 @@ fn attr<'a>(py: &'a PyToken<'_>, obj: u64, name: crate::NameId) -> Result<Option
         .owned_bits(py)
         .ok_or_else(|| MoltObject::none().bits())?;
     let name = owned(py, name)?;
-    let bits = molt_getattr_builtin(obj, name.bits(), missing_bits(py));
-    if exception_pending(py) && clear_attribute_error_if_pending(py) {
-        return Ok(None);
-    }
-    let value = owned(py, bits)?;
-    if is_missing_bits(py, value.bits()) {
-        Ok(None)
-    } else {
-        Ok(Some(value))
+    match lookup_attribute(py, obj, name.bits()) {
+        AttributeLookup::Found(bits) => owned(py, bits).map(Some),
+        AttributeLookup::Missing => Ok(None),
+        AttributeLookup::Error => Err(MoltObject::none().bits()),
     }
 }
 
@@ -52,7 +46,7 @@ fn special<'a>(
     obj: u64,
     name: crate::NameId,
 ) -> Result<Option<Value<'a>>, u64> {
-    unsafe { crate::builtins::attr::lookup_special_method(py, obj, name) }
+    unsafe { crate::builtins::attr::lookup_special_method(py, obj, name).into_result() }
         .map_err(|()| MoltObject::none().bits())?
         .map(|bits| owned(py, bits))
         .transpose()

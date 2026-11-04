@@ -659,14 +659,13 @@ fn update_wrapper_members(
         while let Some(name) = iterator.next()? {
             let outcome = (|| {
                 if !update {
-                    let value = crate::molt_get_attr_name(wrapped, name);
-                    if exception_pending(py) {
-                        dec_ref_bits(py, value);
-                        if crate::builtins::attr::clear_attribute_error_if_pending(py) {
-                            return Ok(());
+                    let value = match crate::lookup_attribute(py, wrapped, name) {
+                        crate::AttributeLookup::Found(value) => value,
+                        crate::AttributeLookup::Missing => return Ok(()),
+                        crate::AttributeLookup::Error => {
+                            return Err(molt_runtime_core::ErrorIndicatorSet);
                         }
-                        return Err(molt_runtime_core::ErrorIndicatorSet);
-                    }
+                    };
                     let result = molt_set_attr_name(wrapper, name, value);
                     dec_ref_bits(py, result);
                     dec_ref_bits(py, value);
@@ -687,11 +686,14 @@ fn update_wrapper_members(
                         dec_ref_bits(py, method);
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
-                    let missing = crate::missing_bits(py);
-                    let mut source = crate::molt_getattr_builtin(wrapped, name, missing);
-                    if source == missing && !exception_pending(py) {
-                        source = crate::molt_dict_new(0);
-                    }
+                    let source = match crate::lookup_attribute(py, wrapped, name) {
+                        crate::AttributeLookup::Found(bits) => bits,
+                        crate::AttributeLookup::Missing => crate::molt_dict_new(0),
+                        crate::AttributeLookup::Error => {
+                            dec_ref_bits(py, method);
+                            return Err(molt_runtime_core::ErrorIndicatorSet);
+                        }
+                    };
                     if !exception_pending(py) {
                         let result = unsafe { crate::call_callable1(py, method, source) };
                         dec_ref_bits(py, result);

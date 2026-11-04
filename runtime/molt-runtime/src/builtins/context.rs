@@ -176,6 +176,7 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
         let exit_name_bits = crate::NameId::DunderExit;
         let Ok(Some(exit_bits)) =
             lookup_special_method(_py, MoltObject::from_ptr(ptr).bits(), exit_name_bits)
+                .into_result()
         else {
             return;
         };
@@ -285,7 +286,8 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                         _py,
                         MoltObject::from_ptr(ptr).bits(),
                         enter_name_bits,
-                    );
+                    )
+                    .into_result();
                     let enter_method = match enter_method {
                         Ok(method) => method,
                         Err(()) => return MoltObject::none().bits(),
@@ -352,7 +354,8 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                         _py,
                         MoltObject::from_ptr(ptr).bits(),
                         exit_name_bits,
-                    );
+                    )
+                    .into_result();
                     context_stack_pop(_py, ctx_bits);
                     let exit_method = match exit_method {
                         Ok(method) => method,

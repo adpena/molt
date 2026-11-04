@@ -19,7 +19,7 @@ use crate::{
 
 fn referent_name(_py: &crate::PyToken<'_>, target_ptr: *mut u8) -> Result<Option<String>, ()> {
     let name_attr = crate::NameId::DunderName.owned_bits(_py).ok_or(())?;
-    let name_bits = unsafe { attr_lookup_ptr(_py, target_ptr, name_attr) };
+    let name_bits = unsafe { attr_lookup_ptr(_py, target_ptr, name_attr).into_result() };
     dec_ref_bits(_py, name_attr);
     let Some(name_bits) = name_bits? else {
         return Ok(None);

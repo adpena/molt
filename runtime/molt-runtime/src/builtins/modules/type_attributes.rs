@@ -28,7 +28,7 @@ pub extern "C" fn molt_module_getattribute(module: u64, name: u64) -> u64 {
         if string_obj_to_owned(obj_from_bits(name)).is_none() {
             return crate::builtins::attr::raise_attr_name_type_error(py, name);
         }
-        match unsafe { crate::builtins::attr::module_attr_lookup(py, ptr, name) } {
+        match unsafe { crate::builtins::attr::module_attr_lookup(py, ptr, name).into_result() } {
             Ok(Some(value)) => return value,
             Ok(None) => {}
             Err(()) => return MoltObject::none().bits(),

@@ -9,8 +9,7 @@ use crate::builtins::annotations::pep649_enabled;
 #[cfg(test)]
 use crate::builtins::attr::exception_is_attribute_error;
 use crate::builtins::attr::{
-    AttributeLookupMode, DescriptorCallPolicy, attr_lookup_ptr_allow_missing, class_slots_info,
-    clear_attribute_error_if_pending,
+    AttributeLookupMode, DescriptorCallPolicy, class_slots_info, clear_attribute_error_if_pending,
 };
 use crate::builtins::containers::tuple_method_bits;
 #[cfg(test)]
@@ -231,8 +230,8 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
 /// Attribute lookup for a `TYPE_ID_FOREIGN` wrapper: route through the wrapped
 /// C object's normal or explicit generic protocol via the ABI bridge. Type names
 /// use the same type observers as every C API caller, including distinct qualnames.
-/// Returns `Some(bits)` on success, or `None` (caller raises `AttributeError`,
-/// or propagates a pending exception the C slot left set).
+/// Returns an owned `Found`, a clean `Missing`, or `Error` with the native
+/// failure pending. Only the required Python boundary raises for a plain miss.
 ///
 /// # Safety
 /// `obj_ptr` must be a live `TYPE_ID_FOREIGN` object.
@@ -241,15 +240,15 @@ pub(crate) unsafe fn foreign_attr_lookup(
     obj_ptr: *mut u8,
     attr_bits: u64,
     access: molt_cpython_abi::hooks::AttributeAccess,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     let c_ptr = unsafe { crate::object::foreign::foreign_ptr_from_obj(obj_ptr) };
     let val = unsafe { molt_cpython_abi::bridge::molt_foreign_getattr(c_ptr, attr_bits, access) };
     match val.decode() {
-        molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => Ok(Some(bits)),
-        molt_cpython_abi::hooks::DecodedHandleResult::Missing => Ok(None),
+        molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => AttributeLookup::Found(bits),
+        molt_cpython_abi::hooks::DecodedHandleResult::Missing => AttributeLookup::Missing,
         molt_cpython_abi::hooks::DecodedHandleResult::Error => {
             crate::cpython_abi_hooks::propagate_native_failure(_py, "native attribute lookup");
-            Err(())
+            AttributeLookup::Error
         }
     }
 }
@@ -258,7 +257,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe { attr_lookup_ptr_with_mode(_py, obj_ptr, attr_bits, AttributeLookupMode::Value) }
 }
 
@@ -267,7 +266,7 @@ pub(crate) unsafe fn attr_lookup_ptr_with_mode(
     obj_ptr: *mut u8,
     attr_bits: u64,
     mode: AttributeLookupMode<'_>,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe {
         let type_id = object_type_id(obj_ptr);
         if type_id == TYPE_ID_TYPE {
@@ -312,7 +311,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
     obj_ptr: *mut u8,
     attr_bits: u64,
     suppress: bool,
-) -> Result<Option<u64>, ()> {
+) -> AttributeLookup {
     unsafe {
         attr_lookup_ptr_default_with_mode(
             _py,
@@ -325,6 +324,20 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
 }
 
 pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    name: u64,
+    suppress: bool,
+    mode: AttributeLookupMode<'_>,
+) -> AttributeLookup {
+    unsafe {
+        AttributeLookup::from_result(attr_lookup_ptr_default_inner(
+            py, object, name, suppress, mode,
+        ))
+    }
+}
+
+unsafe fn attr_lookup_ptr_default_inner(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
@@ -361,7 +374,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
                 obj_ptr,
                 attr_bits,
                 molt_cpython_abi::hooks::AttributeAccess::Normal,
-            );
+            )
+            .into_result();
         }
         if type_id == crate::TYPE_ID_NATIVE_DESCRIPTOR
             && let Some(field) =
@@ -377,12 +391,14 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
         {
             return crate::builtins::attr::object_attr_lookup_with_mode(
                 _py, obj_ptr, attr_bits, suppress, mode,
-            );
+            )
+            .into_result();
         }
         if matches!(type_id, TYPE_ID_BIGINT | TYPE_ID_FLOAT) {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
             if let Some(bits) =
-                scalar_attrs::resolve_scalar_attr_with_mode(_py, self_bits, attr_bits, mode)?
+                scalar_attrs::resolve_scalar_attr_with_mode(_py, self_bits, attr_bits, mode)
+                    .into_result()?
             {
                 return Ok(Some(bits));
             }
@@ -405,7 +421,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
             }
         }
         if type_id == TYPE_ID_MODULE {
-            return crate::builtins::attr::module_attr_lookup_default(_py, obj_ptr, attr_bits);
+            return crate::builtins::attr::module_attr_lookup_default(_py, obj_ptr, attr_bits)
+                .into_result();
         }
         if type_id == TYPE_ID_BOUND_METHOD {
             let func_bits = bound_method_func_bits(obj_ptr);
@@ -445,15 +462,16 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
             }
             // C PyMethod_New accepts a noncallable inline function value too.
             return if let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() {
-                attr_lookup_ptr(_py, func_ptr, attr_bits)
+                attr_lookup_ptr(_py, func_ptr, attr_bits).into_result()
             } else {
-                resolve_scalar_attr(_py, func_bits, attr_bits)
+                resolve_scalar_attr(_py, func_bits, attr_bits).into_result()
             };
         }
         if type_id == TYPE_ID_EXCEPTION {
             return crate::builtins::attr::object_attr_lookup_with_mode(
                 _py, obj_ptr, attr_bits, suppress, mode,
-            );
+            )
+            .into_result();
         }
         if type_id == TYPE_ID_GENERATOR
             && let Some(name) = crate::NameId::from_bits(_py, attr_bits)
@@ -519,7 +537,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
         {
             let result = crate::builtins::attr::object_attr_lookup_with_mode(
                 _py, obj_ptr, attr_bits, suppress, mode,
-            );
+            )
+            .into_result();
             if let Some(value) = result? {
                 return Ok(Some(value));
             }
@@ -938,7 +957,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
             );
         }
         if type_id == TYPE_ID_TYPE {
-            return type_attr_lookup_ptr_default(_py, obj_ptr, attr_bits);
+            return type_attr_lookup_ptr_default(_py, obj_ptr, attr_bits).into_result();
         }
         if type_id == TYPE_ID_FUNCTION {
             if let Some(kind) = NativeCallableKind::from_class(_py, object_class_bits(obj_ptr)) {
@@ -1058,7 +1077,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
             // over the user dictionary, then binds ordinary class attributes.
             return crate::builtins::attr::object_attr_lookup_with_mode(
                 _py, obj_ptr, attr_bits, suppress, mode,
-            );
+            )
+            .into_result();
         }
         if type_id == TYPE_ID_CODE {
             // Keep basic CPython-compatible code metadata available for inspect/types consumers.
@@ -1110,23 +1130,11 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
         if crate::object::heap_kind_has_class_shape(type_id) {
             return crate::builtins::attr::object_attr_lookup_with_mode(
                 _py, obj_ptr, attr_bits, suppress, mode,
-            );
+            )
+            .into_result();
         }
         Ok(None)
     }
-}
-
-/// Consume the owned result of a successful attribute lookup when the caller
-/// needs only existence.  Both pointer and scalar attribute resolvers return a
-/// new owned reference on success (including freshly bound methods and values
-/// produced by descriptors); `hasattr` must discard that value immediately.
-#[inline]
-fn discard_owned_attr_result(_py: &PyToken<'_>, result: Option<u64>) -> bool {
-    let Some(attr_bits) = result else {
-        return false;
-    };
-    dec_ref_bits(_py, attr_bits);
-    true
 }
 
 /// # Safety
@@ -1159,13 +1167,13 @@ pub unsafe extern "C" fn molt_get_attr_generic(
                 return MoltObject::none().bits();
             };
             let found = attr_lookup_ptr(_py, obj_ptr, attr_bits);
-            if let Ok(None) = found {
+            if let AttributeLookup::Missing = found {
                 raise_attribute_miss(_py, obj_ptr, attr_bits, attr_name);
             }
             dec_ref_bits(_py, attr_bits);
             match found {
-                Ok(Some(value)) => value,
-                Ok(None) | Err(()) => MoltObject::none().bits(),
+                AttributeLookup::Found(value) => value,
+                AttributeLookup::Missing | AttributeLookup::Error => MoltObject::none().bits(),
             }
         })
     }
@@ -1246,7 +1254,7 @@ pub unsafe extern "C" fn molt_get_attr_object(
             let Some(name_bits) = dynamic_attr_name_bits(_py, slice) else {
                 return MoltObject::none().bits();
             };
-            let resolved = resolve_scalar_attr(_py, obj_bits, name_bits);
+            let resolved = resolve_scalar_attr(_py, obj_bits, name_bits).into_result();
             dec_ref_bits(_py, name_bits);
             match resolved {
                 Ok(Some(value)) => return value,
@@ -1372,6 +1380,7 @@ pub unsafe extern "C" fn molt_get_attr_special(
             let res = if let Some(class_ptr) = class_ptr {
                 if object_type_id(class_ptr) == TYPE_ID_TYPE {
                     class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), name_bits)
+                        .into_result()
                 } else {
                     Ok(None)
                 }
@@ -1483,38 +1492,50 @@ pub(crate) fn get_attr_name_with_mode(
     name_bits: u64,
     mode: AttributeLookupMode<'_>,
 ) -> Result<u64, ()> {
+    match lookup_attribute_with_mode(_py, obj_bits, name_bits, mode) {
+        AttributeLookup::Found(value) => Ok(value),
+        AttributeLookup::Error => Err(()),
+        AttributeLookup::Missing => unsafe {
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
+            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                raise_attribute_miss(_py, obj_ptr, name_bits, &attr_name);
+            } else {
+                attr_error_with_obj(
+                    _py,
+                    type_name(_py, obj_from_bits(obj_bits)),
+                    &attr_name,
+                    obj_bits,
+                );
+            }
+            Err(())
+        },
+    }
+}
+
+pub(crate) fn lookup_attribute_with_mode(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    name_bits: u64,
+    mode: AttributeLookupMode<'_>,
+) -> AttributeLookup {
     let name_obj = obj_from_bits(name_bits);
     let Some(name_ptr) = name_obj.as_ptr() else {
         let _ = raise_attr_name_type_error(_py, name_bits);
-        return Err(());
+        return AttributeLookup::Error;
     };
     unsafe {
         if object_type_id(name_ptr) != TYPE_ID_STRING {
             let _ = raise_attr_name_type_error(_py, name_bits);
-            return Err(());
+            return AttributeLookup::Error;
         }
         if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
             // Foreign (C-extension) objects are handled inside the shared
             // `attr_lookup_ptr` (below) so every getattr entry point routes
             // them uniformly — do NOT special-case here.
-            if let Some(val) = attr_lookup_ptr_with_mode(_py, obj_ptr, name_bits, mode)? {
-                return Ok(val);
-            }
-            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
-                .unwrap_or_else(|| "<attr>".to_string());
-            raise_attribute_miss(_py, obj_ptr, name_bits, &attr_name);
-            return Err(());
+            return attr_lookup_ptr_with_mode(_py, obj_ptr, name_bits, mode);
         }
-        let attr_name =
-            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<attr>".to_string());
-        if let Some(val) =
-            scalar_attrs::resolve_scalar_attr_with_mode(_py, obj_bits, name_bits, mode)?
-        {
-            return Ok(val);
-        }
-        let obj = obj_from_bits(obj_bits);
-        let _ = attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits);
-        Err(())
+        scalar_attrs::resolve_scalar_attr_with_mode(_py, obj_bits, name_bits, mode)
     }
 }
 
@@ -1524,26 +1545,13 @@ pub extern "C" fn molt_get_attr_name_default(object: u64, name: u64, default: u6
         if is_missing_bits(py, default) {
             return molt_get_attr_name(object, name);
         }
-        let Some(pointer) = obj_from_bits(name).as_ptr() else {
-            return raise_attr_name_type_error(py, name);
-        };
-        unsafe {
-            if object_type_id(pointer) != TYPE_ID_STRING {
-                return raise_attr_name_type_error(py, name);
+        match lookup_attribute(py, object, name) {
+            AttributeLookup::Found(value) => value,
+            AttributeLookup::Missing => {
+                inc_ref_bits(py, default);
+                default
             }
-            let result = if let Some(object) = maybe_ptr_from_bits(object) {
-                attr_lookup_ptr_allow_missing(py, object, name)
-            } else {
-                resolve_scalar_attr(py, object, name)
-            };
-            match result {
-                Ok(Some(value)) => value,
-                Ok(None) => {
-                    inc_ref_bits(py, default);
-                    default
-                }
-                Err(()) => MoltObject::none().bits(),
-            }
+            AttributeLookup::Error => MoltObject::none().bits(),
         }
     })
 }
@@ -1551,21 +1559,13 @@ pub extern "C" fn molt_get_attr_name_default(object: u64, name: u64, default: u6
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_has_attr_name(object: u64, name: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let Some(pointer) = obj_from_bits(name).as_ptr() else {
-            return raise_attr_name_type_error(py, name);
-        };
-        unsafe {
-            if object_type_id(pointer) != TYPE_ID_STRING {
-                return raise_attr_name_type_error(py, name);
+        match lookup_attribute(py, object, name) {
+            AttributeLookup::Found(value) => {
+                dec_ref_bits(py, value);
+                MoltObject::from_bool(true).bits()
             }
-            let result = if let Some(object) = maybe_ptr_from_bits(object) {
-                attr_lookup_ptr_allow_missing(py, object, name)
-            } else {
-                resolve_scalar_attr(py, object, name)
-            };
-            match result {
-                Ok(result) => MoltObject::from_bool(discard_owned_attr_result(py, result)).bits(),
-                Err(()) => MoltObject::from_bool(false).bits(),
+            AttributeLookup::Missing | AttributeLookup::Error => {
+                MoltObject::from_bool(false).bits()
             }
         }
     })
@@ -2200,6 +2200,7 @@ mod tests {
         let default_bits = string_bits(_py, b"default-sentinel");
 
         let resolved = super::resolve_scalar_attr(_py, receiver_bits, name_bits)
+            .into_result()
             .expect("numeric scalar lookup succeeds")
             .expect("numeric scalar resolver should find attribute");
         assert_callable_attr(_py, resolved);

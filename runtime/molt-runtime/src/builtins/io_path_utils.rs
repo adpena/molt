@@ -186,6 +186,7 @@ pub(crate) fn fspath_bits_with_flavor(
             file_bits,
             crate::NameId::DunderFspath,
         )
+        .into_result()
         .unwrap_or_default();
         if let Some(call_bits) = method {
             if obj_from_bits(call_bits).is_none()

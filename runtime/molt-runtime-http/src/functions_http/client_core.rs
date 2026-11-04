@@ -1514,17 +1514,17 @@ pub(super) fn urllib_proxy_find_basic_credentials(
             dec_ref_bits(_py, passwd_bits);
             return Err(MoltObject::none().bits());
         };
-        let missing = missing_bits(_py);
-        let find_bits = molt_getattr_builtin(passwd_bits, find_name_bits, missing);
+        let lookup = lookup_attribute(passwd_bits, find_name_bits);
         dec_ref_bits(_py, find_name_bits);
         dec_ref_bits(_py, passwd_bits);
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
-        if find_bits == missing || !molt_is_callable(find_bits) {
-            if find_bits != missing {
-                dec_ref_bits(_py, find_bits);
-            }
+        let Some(find_bits) = lookup
+            .into_result()
+            .map_err(|()| MoltObject::none().bits())?
+        else {
+            continue;
+        };
+        if !molt_is_callable(find_bits) {
+            dec_ref_bits(_py, find_bits);
             continue;
         }
         let realm_bits = if let Some(realm_value) = realm {
@@ -1763,17 +1763,19 @@ fn urllib_http_try_inmemory_dispatch(
         dec_ref_bits(_py, module_bits);
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let lookup_bits = molt_getattr_builtin(module_bits, lookup_name_bits, missing);
+    let lookup = lookup_attribute(module_bits, lookup_name_bits);
     dec_ref_bits(_py, lookup_name_bits);
-    if exception_pending(_py) {
-        dec_ref_bits(_py, module_bits);
-        return Err(MoltObject::none().bits());
-    }
-    if lookup_bits == missing {
-        dec_ref_bits(_py, module_bits);
-        return Ok(None);
-    }
+    let lookup_bits = match lookup {
+        molt_obj_model::AttributeLookup::Found(bits) => bits,
+        molt_obj_model::AttributeLookup::Missing => {
+            dec_ref_bits(_py, module_bits);
+            return Ok(None);
+        }
+        molt_obj_model::AttributeLookup::Error => {
+            dec_ref_bits(_py, module_bits);
+            return Err(MoltObject::none().bits());
+        }
+    };
 
     let host_ptr = alloc_string(_py, host.as_bytes());
     if host_ptr.is_null() {

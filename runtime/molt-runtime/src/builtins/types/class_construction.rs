@@ -145,7 +145,6 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
         dec_ref_bits(_py, bases_tuple_bits);
         return MoltObject::none().bits();
     };
-    let missing = missing_bits(_py);
     let mut out: Vec<u64> = Vec::new();
     let mut updated = false;
     // Keep any temporary tuples (including bases_tuple_bits and __mro_entries__ results) alive
@@ -175,21 +174,24 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
             }
             continue;
         }
-        let mro_entries_bits = molt_getattr_builtin(base_bits, mro_entries_name_bits, missing);
-        if exception_pending(_py) {
-            for bits in keepalive_tuples.drain(..) {
-                dec_ref_bits(_py, bits);
+        let mro_entries_bits = match crate::lookup_attribute(_py, base_bits, mro_entries_name_bits)
+        {
+            crate::AttributeLookup::Found(bits) => bits,
+            crate::AttributeLookup::Missing => {
+                if updated {
+                    out.push(base_bits);
+                }
+                continue;
             }
-            dec_ref_bits(_py, mro_entries_name_bits);
-            dec_ref_bits(_py, bases_tuple_bits);
-            return MoltObject::none().bits();
-        }
-        if mro_entries_bits == missing {
-            if updated {
-                out.push(base_bits);
+            crate::AttributeLookup::Error => {
+                for bits in keepalive_tuples.drain(..) {
+                    dec_ref_bits(_py, bits);
+                }
+                dec_ref_bits(_py, mro_entries_name_bits);
+                dec_ref_bits(_py, bases_tuple_bits);
+                return MoltObject::none().bits();
             }
-            continue;
-        }
+        };
         if !updated {
             out.extend_from_slice(&bases[..idx]);
             updated = true;
@@ -451,22 +453,17 @@ fn prepare_class_impl(
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         };
-        let mut lookup_bits = crate::builtins::attributes::molt_get_attr_name_default(
-            winner_bits,
-            prepare_name_bits,
-            missing,
-        );
+        let result = crate::lookup_attribute(_py, winner_bits, prepare_name_bits);
         dec_ref_bits(_py, prepare_name_bits);
-        if exception_pending(_py) {
-            if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-                lookup_bits = missing;
-            } else {
+        match result {
+            crate::AttributeLookup::Found(bits) => bits,
+            crate::AttributeLookup::Missing => missing,
+            crate::AttributeLookup::Error => {
                 dec_ref_bits(_py, winner_bits);
                 dec_ref_bits(_py, kwds_copy_bits);
                 return None;
             }
         }
-        lookup_bits
     };
     let namespace_bits = if crate::is_missing_bits(_py, prepare_bits) {
         let ptr = alloc_dict_with_pairs(_py, &[]);

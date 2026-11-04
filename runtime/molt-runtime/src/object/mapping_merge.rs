@@ -186,7 +186,7 @@ pub(crate) unsafe fn apply(
         let Some(name) = crate::NameId::Keys.owned_bits(py) else {
             return MergeOutcome::Error;
         };
-        let method = crate::builtins::attributes::attr_lookup_ptr(py, ptr, name);
+        let method = crate::builtins::attributes::attr_lookup_ptr(py, ptr, name).into_result();
         dec_ref_bits(py, name);
         let method = match method {
             Ok(method) => method,

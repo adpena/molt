@@ -138,6 +138,7 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
                     receiver,
                     crate::NameId::DunderGetitem,
                 )
+                .into_result()
             } {
                 Ok(method) => method,
                 Err(()) => return MoltObject::none().bits(),

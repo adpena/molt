@@ -529,7 +529,9 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                     _py,
                     seq_bits,
                     crate::NameId::DunderReversed,
-                ) {
+                )
+                .into_result()
+                {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 }
@@ -626,7 +628,7 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 return MoltObject::from_ptr(rev_ptr).bits();
             }
             if let Some(name_bits) = crate::NameId::DunderReversed.owned_bits(_py) {
-                let lookup = attr_lookup_ptr(_py, ptr, name_bits);
+                let lookup = attr_lookup_ptr(_py, ptr, name_bits).into_result();
                 dec_ref_bits(_py, name_bits);
                 let lookup = match lookup {
                     Ok(value) => value,
@@ -909,7 +911,9 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         _py,
                         iter_bits,
                         crate::NameId::DunderIter,
-                    ) {
+                    )
+                    .into_result()
+                    {
                         Ok(value) => value,
                         Err(()) => return MoltObject::none().bits(),
                     }
@@ -1042,7 +1046,9 @@ pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
                 _py,
                 obj_bits,
                 crate::NameId::DunderAiter,
-            ) {
+            )
+            .into_result()
+            {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }) else {
@@ -2807,7 +2813,9 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
                 _py,
                 obj_bits,
                 crate::NameId::DunderAnext,
-            ) {
+            )
+            .into_result()
+            {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }) else {

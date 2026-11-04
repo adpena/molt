@@ -234,7 +234,9 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                     _py,
                     obj_bits,
                     crate::NameId::DunderDir,
-                ) {
+                )
+                .into_result()
+                {
                     Ok(method) => method,
                     Err(()) => return MoltObject::none().bits(),
                 };

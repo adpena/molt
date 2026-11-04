@@ -8,9 +8,8 @@ use crate::object::layout::CodeExecutionKind;
 use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_list,
     alloc_string, alloc_tuple, call_callable1, dec_ref_bits, decode_value_list, exception_pending,
-    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, missing_bits, molt_dir_builtin,
-    molt_getattr_builtin, obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
-    to_i64, type_of_bits,
+    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, molt_dir_builtin, obj_from_bits,
+    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 fn get_attr_optional(
@@ -38,19 +37,9 @@ fn get_attr_optional(
     let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits).into_result();
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
 fn has_attr(_py: &crate::PyToken<'_>, obj_bits: u64, name: crate::NameId) -> Result<bool, u64> {
@@ -1187,26 +1176,20 @@ pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) ->
                 "dir() did not return a sequence",
             );
         };
-        let missing = missing_bits(_py);
         let mut pairs: Vec<u64> = Vec::new();
         let mut owned_pairs: Vec<u64> = Vec::new();
         for &name_bits in names.iter() {
-            let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
-            if exception_pending(_py) {
-                if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-                    continue;
-                }
-                for bits in owned_pairs {
-                    dec_ref_bits(_py, bits);
-                }
-                if !obj_from_bits(names_bits).is_none() {
+            let value_bits = match crate::lookup_attribute(_py, obj_bits, name_bits) {
+                crate::AttributeLookup::Found(bits) => bits,
+                crate::AttributeLookup::Missing => continue,
+                crate::AttributeLookup::Error => {
+                    for bits in owned_pairs {
+                        dec_ref_bits(_py, bits);
+                    }
                     dec_ref_bits(_py, names_bits);
+                    return MoltObject::none().bits();
                 }
-                return MoltObject::none().bits();
-            }
-            if value_bits == missing {
-                continue;
-            }
+            };
             let mut keep = true;
             if !obj_from_bits(predicate_bits).is_none() {
                 let pred_bits = unsafe { call_callable1(_py, predicate_bits, value_bits) };
