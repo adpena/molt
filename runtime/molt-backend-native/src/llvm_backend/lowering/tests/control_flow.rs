@@ -371,7 +371,11 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             );
             assert!(!init_ir.contains("ret "), "{ir}");
             assert!(ready_ir.contains("@molt_exception_pending("), "{ir}");
-            assert_eq!(ready_ir.matches("@__molt_inline_release(").count(), 2, "{ir}");
+            assert_eq!(
+                ready_ir.matches("@__molt_inline_release(").count(),
+                2,
+                "{ir}"
+            );
             assert!(
                 allocation_ir.contains("store i1 true"),
                 "frame credit must precede allocation: {ir}"
