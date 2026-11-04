@@ -245,6 +245,47 @@ def test_runtime_rejects_pre_loader_executable_custody(
         runtime.validate_python_runtime_identity(payload)
 
 
+@pytest.mark.parametrize("platlibdir", ["lib", "lib64"])
+def test_base_lib_dynload_follows_the_live_exec_prefix_of_a_relocated_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platlibdir: str
+) -> None:
+    """A copied installation keeps the sysconfig data of its configured place.
+
+    The interpreter imports extension modules from the lib-dynload entry that
+    CPython's getpath.py derives from the live exec_prefix. The runtime
+    identity must name that root, not the installation the copy came from:
+    otherwise it hashes another install's modules, which live custody never
+    armed (HF-766, after test venvs began to copy their base installation).
+    """
+    configured = tmp_path / "configured-install"
+    live = tmp_path / "copied-install"
+    live.mkdir()
+    layout = Path(platlibdir) / "python3.14t" / "lib-dynload"
+    config = {"DESTSHARED": str(configured / layout), "exec_prefix": str(configured)}
+    observed_sys = SimpleNamespace(**vars(runtime.sys))
+    observed_sys.platform = "linux"
+    observed_sys.base_prefix = str(live)
+    observed_sys.base_exec_prefix = str(live)
+    monkeypatch.setattr(runtime, "sys", observed_sys)
+    monkeypatch.setattr(
+        runtime,
+        "sysconfig",
+        SimpleNamespace(
+            get_paths=lambda vars: {
+                "stdlib": f"{vars['base']}/lib/python3.14t",
+                "platstdlib": f"{vars['platbase']}/lib/python3.14t",
+            },
+            get_config_var=config.get,
+        ),
+    )
+    assert runtime._base_runtime_paths()["base-lib-dynload"] == live.resolve() / layout
+    config["DESTSHARED"] = str(tmp_path / "elsewhere" / "lib-dynload")
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="outside its configured exec_prefix"
+    ):
+        runtime._base_runtime_paths()
+
+
 def _runtime_payload(
     *,
     operating_system: str = "linux",

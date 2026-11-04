@@ -1588,6 +1588,16 @@ Provision and toolchain-location telemetry record each `tool_identity_reuse`
 decision (`hit`, or `miss` with `absent`, `key-collision` or
 `revalidation-drift`) so a receipt shows which probes were skipped.
 
+A toolchain selector is a resolution input, not compiled identity.
+`RUSTUP_TOOLCHAIN` keys probe reuse, because rustup resolves it to the bytes a
+probe hashes. The supervisor's `MOLT_CARGO_INPUT_*` digest and the Cargo
+workspace partition bind those resolved tool bytes instead, as Cargo's own
+fingerprint binds `rustc -vV`. A row that names the pinned channel therefore
+shares the supervisor build of a row that inherits it. A selector that resolves
+to other tool bytes still rebuilds. Before this rule, each flip between the two
+spellings recompiled the thin-LTO supervisor under the shared provisioning
+lock, and concurrent queued rows spent their deadlines waiting (HF-766).
+
 Memory-guard process sampling reads native process tables and costs one kernel
 row per host process plus argv only for the processes a decision visits. Linux
 parses one `/proc/<pid>/stat` row for ancestry, start marker and resident set.

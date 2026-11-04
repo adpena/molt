@@ -665,7 +665,7 @@ def _content_fixture(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text('[env]\nCOMPILED_VALUE="default"\n', encoding="utf-8")
 
-    def capture(environment):
+    def capture(environment, *, toolchains=None):
         paths = sorted(p for p in tmp_path.rglob("*") if p.is_file())
         identities = [
             stable_regular_file_identity(p, label="fixture compile input")
@@ -675,7 +675,7 @@ def _content_fixture(tmp_path):
             "source_root": str(tmp_path),
             "profile": "release",
             "target": None,
-            "toolchains": {},
+            "toolchains": toolchains or {},
             "environment_executables": {},
             "configuration_paths": [str(config)],
             "files": [
@@ -744,6 +744,41 @@ def test_cargo_content_inputs_exclude_transport_but_bind_compile_environment(tmp
         ),
     ):
         assert all(value != capture(changed)[key] for key, value in first.items())
+
+
+def test_cargo_content_inputs_bind_the_resolved_toolchain_not_its_selector(tmp_path):
+    """HF-766: naming the pinned channel must not rebuild the shared supervisor.
+
+    A row that sets RUSTUP_TOOLCHAIN to the channel rust-toolchain.toml already
+    selects runs the same rustc bytes. Cargo keeps that build fresh; the
+    supervisor's tracked input digest must agree, or every flip between such
+    rows recompiles the thin-LTO supervisor under the shared provisioning lock.
+    A selector that resolves to other tool bytes must still rebuild.
+    """
+    _source, _dependency, _config, capture = _content_fixture(tmp_path)
+
+    def rustc(toolchain: str, payload: bytes) -> dict[str, object]:
+        path = tmp_path / "rustup" / "toolchains" / toolchain / "bin" / "rustc"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(payload)
+        return {
+            "path": str(path),
+            "content_path": str(path),
+            "executable_sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+    pinned = {"rustc": rustc("1.99.1-pinned", b"pinned rustc image")}
+    other = {"rustc": rustc("nightly-other", b"another rustc image")}
+    inherited = capture({}, toolchains=pinned)
+    assert capture({"RUSTUP_TOOLCHAIN": "1.99.1"}, toolchains=pinned) == inherited
+    assert (
+        capture(
+            {"RUSTUP_TOOLCHAIN": "1.99.1-x86_64-unknown-linux-gnu"}, toolchains=pinned
+        )
+        == inherited
+    )
+    switched = capture({"RUSTUP_TOOLCHAIN": "nightly"}, toolchains=other)
+    assert all(switched[key] != value for key, value in inherited.items())
 
 
 def test_source_authority_includes_observed_cargo_input_implementation():
