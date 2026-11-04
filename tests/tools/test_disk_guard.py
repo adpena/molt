@@ -4250,6 +4250,77 @@ def test_backlog_cleanup_keeps_busy_or_unproven_state(tmp_path, protection):
     assert not disposable.path.exists() and not disposable.record_path.exists()
 
 
+@pytest.mark.parametrize("indirection", ["payload", "date", "retired"])
+def test_backlog_never_follows_an_indirect_retirement(tmp_path, indirection):
+    """A link at any retirement component keeps the bytes it reaches."""
+    now = 1_800_000_000.0
+    artifact, outside = tmp_path / "artifact", tmp_path / "outside"
+    root = artifact / "target/sessions/linked"
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        artifact,
+        reason="pressure",
+        owner=str(artifact),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    component = {
+        "payload": historical.path,
+        "date": historical.path.parent,
+        "retired": artifact / "retired",
+    }[indirection]
+    moved = outside / component.name
+    outside.mkdir()
+    component.rename(moved)
+    component.symlink_to(moved, target_is_directory=True)
+    before = {
+        str(path): path.read_bytes() for path in outside.rglob("*") if path.is_file()
+    }
+    assert any(name.endswith("artifact.bin") for name in before)
+    result = dg.reclaim_retired(
+        root=artifact, env={}, apply=True, now_fn=lambda: now, log=False
+    )
+    assert before == {
+        str(path): path.read_bytes() for path in outside.rglob("*") if path.is_file()
+    }
+    assert component.is_symlink() and not result.reclaimed
+    assert any(row["reason"] == "unproven-retirement" for row in result.skipped)
+
+
+def test_backlog_refuses_a_mounted_retired_payload_before_deleting(
+    tmp_path, monkeypatch
+):
+    from molt import filesystem_mounts
+
+    now = 1_800_000_000.0
+    root = tmp_path / "target/sessions/mounted"
+    guest = root / "guest"
+    guest.mkdir(parents=True)
+    (guest / "external-data").write_bytes(b"another filesystem")
+    os.utime(guest, (now - 100_000,) * 2)
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    mounted = historical.path / "guest"
+    monkeypatch.setattr(
+        filesystem_mounts, "_mount_points", lambda: (str(mounted.resolve()),)
+    )
+    result = dg.reclaim_retired(
+        root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+    )
+    assert (mounted / "external-data").read_bytes() == b"another filesystem"
+    assert (historical.path / "artifact.bin").read_bytes() == bytes(4096)
+    assert historical.record_path.is_file() and not result.reclaimed
+    assert any("mounted filesystem" in error for error in result.errors)
+
+
 def test_backlog_dry_run_and_bounded_passes_resume_past_unknown_state(tmp_path):
     now = 1_800_000_000.0
     historical = []
