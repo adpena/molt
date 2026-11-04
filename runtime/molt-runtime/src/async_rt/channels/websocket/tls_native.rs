@@ -25,8 +25,7 @@ use webpki_roots::TLS_SERVER_ROOTS;
 use super::super::stream::molt_stream_new_with_io_hooks;
 use crate::{
     GilReleaseGuard, MoltObject, PyToken, alloc_bytes, dec_ref_bits, exception_pending,
-    is_missing_bits, missing_bits, molt_getattr_builtin, obj_from_bits, pending_bits_i64,
-    raise_exception, string_obj_to_owned, to_i64,
+    obj_from_bits, pending_bits_i64, raise_exception, string_obj_to_owned, to_i64,
 };
 
 struct NativeTlsStream {
@@ -596,12 +595,12 @@ pub(super) fn tls_server_ssl_attr_string(
     name: crate::NameId,
 ) -> Result<Option<String>, u64> {
     let attr_name_bits = name.bits(_py);
-    let missing = missing_bits(_py);
-    let attr_bits = molt_getattr_builtin(ssl_bits, attr_name_bits, missing);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if is_missing_bits(_py, attr_bits) || obj_from_bits(attr_bits).is_none() {
+    let attr_bits = match crate::lookup_attribute(_py, ssl_bits, attr_name_bits) {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => return Ok(None),
+        crate::AttributeLookup::Error => return Err(MoltObject::none().bits()),
+    };
+    if obj_from_bits(attr_bits).is_none() {
         return Ok(None);
     }
     let Some(value) = string_obj_to_owned(obj_from_bits(attr_bits)) else {

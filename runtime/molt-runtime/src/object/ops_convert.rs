@@ -981,7 +981,9 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
                 py,
                 val_bits,
                 crate::NameId::DunderComplex,
-            ) {
+            )
+            .into_result()
+            {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }

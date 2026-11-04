@@ -367,13 +367,9 @@ pub extern "C" fn __molt_gpu_call_callable1(call_bits: u64, arg_bits: u64) -> u6
     })
 }
 
-/// Optional attribute lookup must inspect the raised slot, not the active
-/// handled exception exposed by Python's exception-last API.
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_clear_attribute_error_if_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        i32::from(crate::builtins::attr::clear_attribute_error_if_pending(_py))
-    })
+pub extern "C" fn __molt_gpu_lookup_attribute(object: u64, name: u64) -> crate::AttributeLookup {
+    crate::with_gil_entry_nopanic!(py, { crate::lookup_attribute(py, object, name) })
 }
 
 /// Compiler-only publication into the immutable code owner. This direct ABI

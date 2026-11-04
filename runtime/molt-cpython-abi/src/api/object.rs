@@ -12,9 +12,10 @@ use crate::abi_types::{
 };
 use crate::api::callback::CallbackOperands;
 use crate::api::errors::raised_error_pending as exception_already_pending;
+use crate::api::refcount::OwnedPyObject;
 use crate::bridge::{GLOBAL_BRIDGE, resolved_molt_handle};
 use crate::hooks::{AttributeAccess, AttributeMutation, hooks_or_stubs};
-use molt_lang_obj_model::MoltObject;
+use molt_lang_obj_model::{AttributeLookup, MoltObject};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -102,28 +103,96 @@ pub unsafe extern "C" fn PyObject_GetAttr(
 /// PyType_Ready owns base readiness and paired slot inheritance. Attribute reads
 /// consume that published protocol directly; they never reconstruct inheritance.
 pub(crate) unsafe fn native_get_attr(o: *mut PyObject, attr_name: *mut PyObject) -> *mut PyObject {
+    let result = unsafe { native_lookup_attr(o, attr_name) };
+    unsafe { required_attribute_result(o, attr_name, result) }
+}
+
+/// Consume one validated slot/projection result. Ordinary absence is constructed
+/// at its namespace boundary, never inferred from the error indicator.
+pub(crate) unsafe fn owned_attribute_result(
+    result: *mut PyObject,
+) -> AttributeLookup<OwnedPyObject> {
+    if result.is_null() {
+        AttributeLookup::Error
+    } else {
+        AttributeLookup::Found(unsafe { OwnedPyObject::from_owned(result) })
+    }
+}
+
+pub(crate) unsafe fn required_attribute_result(
+    o: *mut PyObject,
+    name: *mut PyObject,
+    result: AttributeLookup<OwnedPyObject>,
+) -> *mut PyObject {
+    match result {
+        AttributeLookup::Found(value) => value.into_ptr(),
+        AttributeLookup::Missing => {
+            unsafe { attribute_error_missing_obj(o, name) };
+            ptr::null_mut()
+        }
+        AttributeLookup::Error => unsafe {
+            crate::api::errors::check_native_result(ptr::null_mut(), "attribute lookup")
+        },
+    }
+}
+
+unsafe fn attribute_result_from_handle(
+    result: crate::hooks::OwnedHandleResult,
+) -> AttributeLookup<OwnedPyObject> {
+    match result.decode() {
+        crate::hooks::DecodedHandleResult::Ok(_) => unsafe {
+            owned_attribute_result(GLOBAL_BRIDGE.owned_result_to_pyobj(result))
+        },
+        crate::hooks::DecodedHandleResult::Missing => AttributeLookup::Missing,
+        crate::hooks::DecodedHandleResult::Error => {
+            unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
+            AttributeLookup::Error
+        }
+    }
+}
+
+/// Native default generic and type slots report an explicit miss; custom slots
+/// retain their required-result contract, including malformed-slot diagnostics.
+pub(crate) unsafe fn native_lookup_attr(
+    o: *mut PyObject,
+    attr_name: *mut PyObject,
+) -> AttributeLookup<OwnedPyObject> {
     let _object = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(o) };
     let _name = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(attr_name) };
     let tp = unsafe { (*o).ob_type };
     let _type = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(tp.cast()) };
     if !tp.is_null() {
         if let Some(getattro) = unsafe { (*tp).tp_getattro } {
+            type GetAttr = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+            if std::ptr::fn_addr_eq(getattro, PyObject_GenericGetAttr as GetAttr) {
+                return unsafe {
+                    generic_lookup_with_optional_dict(o, attr_name, ptr::null_mut(), 0)
+                };
+            }
+            if std::ptr::fn_addr_eq(getattro, crate::api::typeobj::type_getattro as GetAttr) {
+                return unsafe { crate::api::typeobj::type_lookup_attr(o, attr_name) };
+            }
             return unsafe {
-                crate::api::errors::check_native_result(getattro(o, attr_name), "tp_getattro")
+                owned_attribute_result(crate::api::errors::check_native_result(
+                    getattro(o, attr_name),
+                    "tp_getattro",
+                ))
             };
         }
         if let Some(getattr) = unsafe { (*tp).tp_getattr } {
             let name = unsafe { crate::api::strings::PyUnicode_AsUTF8(attr_name) };
             if name.is_null() {
-                return ptr::null_mut();
+                return AttributeLookup::Error;
             }
             return unsafe {
-                crate::api::errors::check_native_result(getattr(o, name), "tp_getattr")
+                owned_attribute_result(crate::api::errors::check_native_result(
+                    getattr(o, name),
+                    "tp_getattr",
+                ))
             };
         }
     }
-    unsafe { attribute_error_missing_obj(o, attr_name) };
-    ptr::null_mut()
+    AttributeLookup::Missing
 }
 
 /// Set `AttributeError` for a missing attribute named by a `str` object,
@@ -312,13 +381,16 @@ pub unsafe extern "C" fn PyObject_SetAttrString(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_HasAttr(o: *mut PyObject, attr_name: *mut PyObject) -> c_int {
-    let result = unsafe { PyObject_GetAttr(o, attr_name) };
-    if result.is_null() {
-        unsafe { crate::api::errors::PyErr_Clear() };
-        0
-    } else {
+    let mut result = ptr::null_mut();
+    let status = unsafe { PyObject_GetOptionalAttr(o, attr_name, &raw mut result) };
+    if status > 0 {
         unsafe { crate::api::refcount::Py_DECREF(result) };
         1
+    } else {
+        // Legacy C hasattr clears the error indicator, including an admitted
+        // incoming error. A plain miss itself never manufactured an exception.
+        unsafe { crate::api::errors::PyErr_Clear() };
+        0
     }
 }
 
@@ -331,46 +403,64 @@ pub unsafe extern "C" fn PyObject_GetOptionalAttr(
     if result.is_null() {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
                 c"PyObject_GetOptionalAttr result pointer is NULL".as_ptr(),
-            );
-        }
+            )
+        };
         return -1;
     }
     unsafe {
         *result = ptr::null_mut();
     }
-    let attr = unsafe { PyObject_GetAttr(o, attr_name) };
-    if attr.is_null() {
-        // CPython `_PyObject_LookupAttr` (Objects/object.c): ONLY an
-        // `AttributeError` means "attribute absent" (clear + return 0). Any
-        // other pending exception — MemoryError / RecursionError / ValueError
-        // raised by an optional-dunder getter (numpy `__array__`,
-        // `__array_ufunc__`, `__array_interface__`) — MUST propagate as -1 with
-        // the exception left set. The prior unconditional `PyErr_Clear` swallowed
-        // every one of them as "absent", a silent-wrong-answer on coercion.
-        if unsafe {
-            crate::api::errors::PyErr_ExceptionMatches(
-                (&raw mut crate::abi_types::PyExc_AttributeError)
-                    .cast::<crate::abi_types::PyObject>(),
-            )
-        } != 0
-        {
-            unsafe { crate::api::errors::PyErr_Clear() };
-            return 0;
-        }
-        // Pathological guard: CPython guarantees a NULL `GetAttr` carries an
-        // exception. If a slot broke that contract (NULL with nothing pending),
-        // report "absent" rather than emit a -1 sentinel with no exception.
-        if !exception_already_pending() {
-            return 0;
-        }
+    if o.is_null() || attr_name.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    unsafe {
-        *result = attr;
+    if !unsafe { require_attribute_name(attr_name) } {
+        return -1;
     }
-    1
+    let lookup = if let (Some(object), Some(name)) =
+        (resolved_molt_handle(o), resolved_molt_handle(attr_name))
+    {
+        let value = unsafe {
+            (hooks_or_stubs().object_get_attr)(
+                object.bits(),
+                name.bits(),
+                AttributeAccess::Normal,
+                ptr::null(),
+                true,
+            )
+        };
+        unsafe { attribute_result_from_handle(value) }
+    } else {
+        unsafe { native_lookup_attr(o, attr_name) }
+    };
+    match lookup {
+        AttributeLookup::Found(value) => {
+            unsafe { *result = value.into_ptr() };
+            1
+        }
+        AttributeLookup::Missing => 0,
+        AttributeLookup::Error => {
+            unsafe {
+                crate::api::errors::check_native_result(
+                    ptr::null_mut(),
+                    "optional attribute lookup",
+                )
+            };
+            if unsafe {
+                crate::api::errors::PyErr_ExceptionMatches(
+                    (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
+                )
+            } != 0
+            {
+                unsafe { crate::api::errors::PyErr_Clear() };
+                0
+            } else {
+                -1
+            }
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -530,13 +620,16 @@ pub unsafe extern "C" fn PyObject_HasAttrString(
     o: *mut PyObject,
     attr_name: *const c_char,
 ) -> c_int {
-    let result = unsafe { PyObject_GetAttrString(o, attr_name) };
-    if result.is_null() {
-        unsafe { crate::api::errors::PyErr_Clear() };
-        0
-    } else {
+    let mut result = ptr::null_mut();
+    let status = unsafe { PyObject_GetOptionalAttrString(o, attr_name, &raw mut result) };
+    if status > 0 {
         unsafe { crate::api::refcount::Py_DECREF(result) };
         1
+    } else {
+        // Legacy C hasattr clears the error indicator, including an admitted
+        // incoming error. A plain miss itself never manufactured an exception.
+        unsafe { crate::api::errors::PyErr_Clear() };
+        0
     }
 }
 
@@ -594,35 +687,47 @@ unsafe fn generic_getattr_with_optional_dict(
     dict: *mut PyObject,
     suppress: c_int,
 ) -> *mut PyObject {
+    match unsafe { generic_lookup_with_optional_dict(o, name, dict, suppress) } {
+        AttributeLookup::Missing if suppress != 0 => ptr::null_mut(),
+        result => unsafe { required_attribute_result(o, name, result) },
+    }
+}
+
+pub(crate) unsafe fn generic_lookup_with_optional_dict(
+    o: *mut PyObject,
+    name: *mut PyObject,
+    dict: *mut PyObject,
+    suppress: c_int,
+) -> AttributeLookup<OwnedPyObject> {
     if o.is_null() || name.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return ptr::null_mut();
+        return AttributeLookup::Error;
     }
     if !unsafe { require_attribute_name(name) } {
-        return ptr::null_mut();
+        return AttributeLookup::Error;
     }
     let _object_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(o) };
     let _name_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(name) };
     if GLOBAL_BRIDGE.molt_handle_for_pyobj(o).is_some() {
         let Some(object) = (unsafe { crate::bridge::RuntimeValue::acquire(o) }) else {
-            return ptr::null_mut();
+            return AttributeLookup::Error;
         };
         let logical_type = unsafe { crate::bridge::semantic_type(o) };
         if logical_type.is_null() {
-            return ptr::null_mut();
+            return AttributeLookup::Error;
         }
         // Dictionary equality may reassign __class__; retain the captured
         // logical owner while the runtime completes its lookup transaction.
         let _type_owner =
             unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(logical_type.cast()) };
         let Some(name) = (unsafe { crate::bridge::RuntimeValue::acquire(name) }) else {
-            return ptr::null_mut();
+            return AttributeLookup::Error;
         };
         let dictionary = if dict.is_null() {
             None
         } else {
             let Some(dictionary) = (unsafe { crate::bridge::RuntimeValue::acquire(dict) }) else {
-                return ptr::null_mut();
+                return AttributeLookup::Error;
             };
             Some(dictionary)
         };
@@ -638,26 +743,30 @@ unsafe fn generic_getattr_with_optional_dict(
                 suppress != 0,
             )
         };
-        return unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
+        return unsafe { attribute_result_from_handle(result) };
     }
     let tp = unsafe { (*o).ob_type };
     if tp.is_null() {
-        return ptr::null_mut();
+        return AttributeLookup::Error;
     }
     let _type_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(tp.cast()) };
     let descr = match unsafe { crate::api::typeobj::type_lookup_borrowed(tp, name) } {
         Ok(descr) => descr,
-        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return AttributeLookup::Error,
     };
     let descr_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(descr) };
     let descr = descr_owner.as_ptr();
     let is_data = match unsafe { crate::api::descriptor::is_data(descr) } {
         Ok(value) => value,
-        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return AttributeLookup::Error,
     };
     if is_data && let Some(result) = unsafe { crate::api::descriptor::get(descr, o, tp.cast()) } {
         unsafe { crate::api::descriptor::suppress_attribute_error(suppress, result) };
-        return result;
+        return if result.is_null() && suppress != 0 && !exception_already_pending() {
+            AttributeLookup::Missing
+        } else {
+            unsafe { owned_attribute_result(result) }
+        };
     }
     // Instance dict: when the caller passed none, load the object's OWN dict from
     // `tp_dictoffset` (CPython `_PyObject_GenericGetAttrWithDict` reads the
@@ -679,11 +788,11 @@ unsafe fn generic_getattr_with_optional_dict(
             unsafe { crate::api::mapping::PyDict_GetItemRef(inst_dict, name, &raw mut result) };
         drop(_dict_owner);
         match status {
-            1 => return result,
+            1 => return unsafe { owned_attribute_result(result) },
             -1 => {
                 unsafe { crate::api::descriptor::suppress_attribute_error(suppress, result) };
                 if exception_already_pending() {
-                    return ptr::null_mut();
+                    return AttributeLookup::Error;
                 }
             }
             _ => {}
@@ -692,19 +801,16 @@ unsafe fn generic_getattr_with_optional_dict(
     if !descr.is_null() {
         if let Some(result) = unsafe { crate::api::descriptor::get(descr, o, tp.cast()) } {
             unsafe { crate::api::descriptor::suppress_attribute_error(suppress, result) };
-            return result;
+            return if result.is_null() && suppress != 0 && !exception_already_pending() {
+                AttributeLookup::Missing
+            } else {
+                unsafe { owned_attribute_result(result) }
+            };
         }
         unsafe { crate::api::refcount::Py_INCREF(descr) };
-        return descr;
+        return AttributeLookup::Found(unsafe { OwnedPyObject::from_owned(descr) });
     }
-    // Nothing resolved. CPython raises `AttributeError: '%.100s' object has no
-    // attribute '%U'` unless the caller suppressed it (the `_PyObject_LookupAttr`
-    // fast path). The prior bare NULL stranded an `ExceptionMatches(AttributeError)`
-    // probe with nothing pending.
-    if suppress == 0 {
-        unsafe { attribute_error_missing_obj(o, name) };
-    }
-    ptr::null_mut()
+    AttributeLookup::Missing
 }
 
 #[unsafe(no_mangle)]

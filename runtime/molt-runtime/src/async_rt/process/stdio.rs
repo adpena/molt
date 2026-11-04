@@ -392,24 +392,26 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
             let Some(fileno_name_bits) = crate::NameId::Fileno.owned_bits(_py) else {
                 return MoltObject::none().bits();
             };
-            let missing = missing_bits(_py);
-            let fileno_bits = molt_getattr_builtin(value_bits, fileno_name_bits, missing);
+            let result = crate::lookup_attribute(_py, value_bits, fileno_name_bits);
             dec_ref_bits(_py, fileno_name_bits);
-            if exception_pending(_py) {
-                unsafe { asyncio_clear_pending_exception(_py) };
-                return raise_exception::<u64>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "unsupported subprocess stdio option",
-                );
-            }
-            if fileno_bits == missing {
-                return raise_exception::<u64>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "unsupported subprocess stdio option",
-                );
-            }
+            let fileno_bits = match result {
+                crate::AttributeLookup::Found(bits) => bits,
+                crate::AttributeLookup::Missing => {
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "unsupported subprocess stdio option",
+                    );
+                }
+                crate::AttributeLookup::Error => {
+                    unsafe { asyncio_clear_pending_exception(_py) };
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "unsupported subprocess stdio option",
+                    );
+                }
+            };
             if !is_truthy(_py, obj_from_bits(molt_is_callable(fileno_bits))) {
                 if !obj_from_bits(fileno_bits).is_none() {
                     dec_ref_bits(_py, fileno_bits);

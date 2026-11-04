@@ -40,7 +40,12 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
         if all_name == 0 {
             return none;
         }
-        let explicit = match crate::builtins::attr::attr_lookup_ptr_allow_missing(py, src, all_name)
+        let explicit = match crate::builtins::attr::lookup_attribute(
+            py,
+            MoltObject::from_ptr(src).bits(),
+            all_name,
+        )
+        .into_result()
         {
             Ok(value) => value,
             Err(()) => return none,

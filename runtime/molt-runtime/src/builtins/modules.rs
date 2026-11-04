@@ -27,12 +27,12 @@ use crate::{
     alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple, call_callable0,
     call_callable1, call_callable2, class_mro_vec, clear_exception, dec_ref_bits,
     dict_del_in_place, dict_get_in_place, dict_set_in_place, exception_pending, format_obj_str,
-    frame_stack_active_globals_bits, has_capability, inc_ref_bits, init_atomic_bits,
-    is_missing_bits, is_truthy, missing_bits, module_dict_bits, module_name_bits, molt_call_bind,
-    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_callargs_push_pos, molt_exception_kind, molt_getattr_builtin, molt_int_from_obj,
-    molt_is_callable, obj_from_bits, object_type_id, ptr_from_bits, raise_exception, runtime_state,
-    set_add_in_place, string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
+    frame_stack_active_globals_bits, has_capability, inc_ref_bits, init_atomic_bits, is_truthy,
+    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
+    molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits, object_type_id,
+    ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
+    string_obj_to_owned, type_name, type_of_bits,
 };
 
 mod execution;
@@ -1112,19 +1112,9 @@ fn copyreg_attr_optional(
     let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits).into_result();
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if clear_attribute_error_if_pending(_py) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if is_missing_bits(_py, value_bits) {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
 fn copyreg_attr_required(
@@ -2204,14 +2194,16 @@ pub(crate) fn module_cache_publish(
                     }
                     let argv_name =
                         ExceptionValue::adopt(_py, MoltObject::from_ptr(argv_ptr).bits());
-                    let exe_val = match module_attr_lookup(_py, sys_ptr, exe_name.bits()) {
-                        Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
-                        Err(()) => return MoltObject::none().bits(),
-                    };
-                    let argv_val = match module_attr_lookup(_py, sys_ptr, argv_name.bits()) {
-                        Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
-                        Err(()) => return MoltObject::none().bits(),
-                    };
+                    let exe_val =
+                        match module_attr_lookup(_py, sys_ptr, exe_name.bits()).into_result() {
+                            Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
+                            Err(()) => return MoltObject::none().bits(),
+                        };
+                    let argv_val =
+                        match module_attr_lookup(_py, sys_ptr, argv_name.bits()).into_result() {
+                            Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
+                            Err(()) => return MoltObject::none().bits(),
+                        };
                     drop(exe_name);
                     drop(argv_name);
                     let exe_desc = exe_val
@@ -2382,7 +2374,9 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 }
             };
             let found =
-                match crate::builtins::attributes::attr_lookup_ptr(_py, module_ptr, attr_bits) {
+                match crate::builtins::attributes::attr_lookup_ptr(_py, module_ptr, attr_bits)
+                    .into_result()
+                {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 };
@@ -2721,9 +2715,13 @@ pub(crate) fn prepare_from_import_child(
                 "from-import expects module",
             ));
         }
-        let found =
-            crate::builtins::attr::attr_lookup_ptr_allow_missing(_py, module_ptr, attr_bits)
-                .map_err(|()| MoltObject::none().bits())?;
+        let found = crate::builtins::attr::lookup_attribute(
+            _py,
+            MoltObject::from_ptr(module_ptr).bits(),
+            attr_bits,
+        )
+        .into_result()
+        .map_err(|()| MoltObject::none().bits())?;
         if let Some(existing_bits) = found {
             dec_ref_bits(_py, existing_bits);
             return Ok(());
@@ -2769,9 +2767,13 @@ pub extern "C" fn molt_module_import_from(module_bits: u64, attr_bits: u64) -> u
         if let Some(ptr) = obj_from_bits(module_bits).as_ptr() {
             // Retain the existing pointer lookup fast path: a clean missing
             // attribute does not allocate a throwaway AttributeError.
-            match unsafe {
-                crate::builtins::attr::attr_lookup_ptr_allow_missing(py, ptr, attr_bits)
-            } {
+            match crate::builtins::attr::lookup_attribute(
+                py,
+                MoltObject::from_ptr(ptr).bits(),
+                attr_bits,
+            )
+            .into_result()
+            {
                 Ok(Some(value)) => return value,
                 Ok(None) => {}
                 Err(()) => return MoltObject::none().bits(),
@@ -2855,6 +2857,7 @@ pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64
                     namespace_bits,
                     crate::NameId::DunderDelitem,
                 )
+                .into_result()
             } {
                 Ok(Some(method)) => {
                     let result = unsafe { call_callable1(_py, method, name_bits) };

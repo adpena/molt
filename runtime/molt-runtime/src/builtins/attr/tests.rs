@@ -10,6 +10,85 @@ fn heap_refcount(bits: u64) -> u32 {
 }
 
 #[test]
+fn ordinary_missing_observation_needs_no_allocation() {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let name = crate::NameId::DunderDeepcopy.bits(py);
+        let class_name = crate::dynamic_attr_name_bits(py, b"AllocationFreeLookup").unwrap();
+        let class = crate::molt_class_new(class_name);
+        let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+        unsafe { crate::object::class_finish_definition(py, class_ptr).unwrap() };
+        let instance = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+        let module = MoltObject::from_ptr(crate::alloc_module_obj(py, class_name)).bits();
+        for receiver in [instance, class, module] {
+            // Warm lazy namespace publication, independently of the allocation
+            // obligation. An exception on *each* miss still cannot pass below.
+            assert_eq!(
+                super::lookup_attribute(py, receiver, name),
+                super::AttributeLookup::Missing
+            );
+            assert!(!crate::exception_pending(py));
+        }
+        #[cfg(feature = "stdlib_http")]
+        assert_eq!(
+            molt_runtime_http::bridge::attr_optional(
+                py.core_token(),
+                instance,
+                b"absent_http_lookup"
+            ),
+            Ok(None)
+        );
+        struct ResetTracker;
+        impl Drop for ResetTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let reset = ResetTracker;
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_allocations: Some(0),
+            ..ResourceLimits::default()
+        })));
+        for receiver in [instance, class, module] {
+            assert_eq!(
+                super::lookup_attribute(py, receiver, name),
+                super::AttributeLookup::Missing
+            );
+            assert!(!crate::exception_pending(py));
+            #[cfg(feature = "stdlib_http")]
+            {
+                assert_eq!(
+                    crate::http_bridge::__molt_http_lookup_attribute(receiver, name),
+                    super::AttributeLookup::Missing
+                );
+                assert_eq!(
+                    molt_runtime_http::bridge::attr_optional(
+                        py.core_token(),
+                        instance,
+                        b"absent_http_lookup"
+                    ),
+                    Ok(None)
+                );
+                assert!(!crate::exception_pending(py));
+            }
+            #[cfg(feature = "molt_gpu_primitives")]
+            {
+                assert_eq!(
+                    crate::gpu_bridge::__molt_gpu_lookup_attribute(receiver, name),
+                    super::AttributeLookup::Missing
+                );
+                assert!(!crate::exception_pending(py));
+            }
+        }
+        drop(reset);
+        for bits in [instance, class, module, class_name] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
 fn physical_slot_declaration_survives_public_rebind_mutation_and_iterator_exhaustion() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
@@ -766,6 +845,139 @@ fn completed_native_absence_is_reusable_without_preparing_other_declarations() {
                     .value,
                 None
             );
+        }
+    });
+}
+
+#[test]
+fn native_default_missing_observation_needs_no_allocation_or_error_replacement() {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use molt_cpython_abi::abi_types::{Py_TPFLAGS_READY, PyObject, PyType_Type, PyTypeObject};
+    use molt_cpython_abi::api::{errors, mapping, object, refcount};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    // These physical declarations outlive the runtime transaction and every
+    // native namespace/reference it retires. Their initial references are ours.
+    let mut native_type: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    let mut native_object: Box<PyObject> = Box::new(unsafe { std::mem::zeroed() });
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            native_type.ob_base.ob_base.ob_refcnt = 1;
+            native_type.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+            native_type.tp_name = c"ForeignLookup".as_ptr();
+            native_type.tp_flags = Py_TPFLAGS_READY;
+            native_type.tp_basicsize = std::mem::size_of::<PyObject>() as isize;
+            native_type.tp_getattro = Some(object::PyObject_GenericGetAttr);
+            native_type.tp_dict = mapping::PyDict_New();
+            assert!(!native_type.tp_dict.is_null());
+            native_object.ob_refcnt = 1;
+            native_object.ob_type = &raw mut *native_type;
+            let receiver = GLOBAL_BRIDGE
+                .molt_value_for_pyobj(&raw mut *native_object)
+                .unwrap();
+            let name = crate::NameId::DunderDeepcopy.bits(py);
+            let native_name = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(name);
+            assert!(!native_name.is_null());
+            let mut output = std::ptr::null_mut();
+            // Publish all lazy namespace/projection prerequisites before bounding
+            // allocations. Both the foreign runtime and native C observers then
+            // have to report a miss without manufacturing AttributeError.
+            assert_eq!(
+                super::lookup_attribute(py, receiver, name),
+                super::AttributeLookup::Missing
+            );
+            assert_eq!(
+                object::PyObject_GetOptionalAttr(
+                    &raw mut *native_object,
+                    native_name,
+                    &raw mut output
+                ),
+                0
+            );
+            assert!(output.is_null());
+            assert_eq!(
+                object::PyObject_GetOptionalAttr(
+                    (&raw mut *native_type).cast(),
+                    native_name,
+                    &raw mut output
+                ),
+                0
+            );
+            assert!(output.is_null());
+            assert!(errors::PyErr_Occurred().is_null());
+            struct ResetTracker;
+            impl Drop for ResetTracker {
+                fn drop(&mut self) {
+                    set_tracker(Box::new(UnlimitedTracker));
+                }
+            }
+            let reset = ResetTracker;
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(0),
+                ..ResourceLimits::default()
+            })));
+            assert_eq!(
+                super::lookup_attribute(py, receiver, name),
+                super::AttributeLookup::Missing
+            );
+            assert_eq!(
+                object::PyObject_GetOptionalAttr(
+                    &raw mut *native_object,
+                    native_name,
+                    &raw mut output
+                ),
+                0
+            );
+            assert!(output.is_null());
+            assert_eq!(
+                object::PyObject_GetOptionalAttr(
+                    (&raw mut *native_type).cast(),
+                    native_name,
+                    &raw mut output
+                ),
+                0
+            );
+            assert!(output.is_null());
+            assert!(!crate::exception_pending(py));
+            drop(reset);
+
+            crate::raise_exception::<()>(
+                py,
+                crate::BuiltinExc::ValueError,
+                "incoming lookup error",
+            );
+            let incoming = crate::exception_last_bits_noinc(py).unwrap();
+            assert_eq!(
+                super::lookup_attribute(py, receiver, name),
+                super::AttributeLookup::Missing
+            );
+            assert_eq!(crate::exception_last_bits_noinc(py), Some(incoming));
+            assert_eq!(
+                object::PyObject_HasAttr(&raw mut *native_object, native_name),
+                0
+            );
+            assert!(
+                !crate::exception_pending(py),
+                "legacy C hasattr clears incoming errors"
+            );
+            crate::clear_exception(py);
+            assert!(errors::PyErr_Occurred().is_null());
+
+            // The required boundary still raises, while neither optional probe did.
+            let value = object::PyObject_GetAttr(&raw mut *native_object, native_name);
+            assert!(value.is_null());
+            assert_ne!(
+                errors::PyErr_ExceptionMatches(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_AttributeError).cast()
+                ),
+                0
+            );
+            errors::PyErr_Clear();
+            crate::clear_exception(py);
+            dec_ref_bits(py, receiver);
+            refcount::Py_DECREF(native_type.tp_dict);
+            native_type.tp_dict = std::ptr::null_mut();
+            assert_eq!(native_object.ob_refcnt, 1);
         }
     });
 }

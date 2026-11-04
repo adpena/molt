@@ -914,18 +914,9 @@ pub extern "C" fn molt_wrapper_member_delete(descriptor: u64, instance: u64) -> 
 /// target through callbacks; returned values are owned.
 unsafe fn optional_attribute(py: &PyToken<'_>, target: u64, name: u64) -> Result<Option<u64>, ()> {
     inc_ref_bits(py, target);
-    let value = super::get_attr_name(py, target, name);
+    let value = lookup_attribute(py, target, name);
     dec_ref_bits(py, target);
-    match value {
-        Ok(value) => Ok(Some(value)),
-        Err(()) => {
-            if clear_attribute_error_if_pending(py) {
-                Ok(None)
-            } else {
-                Err(())
-            }
-        }
-    }
+    value.into_result()
 }
 
 /// Native property name query for both __name__ and descriptor diagnostics.

@@ -1041,7 +1041,9 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
         }
         let class_ptr = obj_from_bits(class_bits).as_ptr()?;
         let call_bits =
-            match class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), hash_name_bits) {
+            match class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), hash_name_bits)
+                .into_result()
+            {
                 Ok(Some(bits)) => bits,
                 Ok(None) => return None,
                 Err(()) => return Some(-1),

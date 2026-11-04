@@ -134,8 +134,9 @@ lock refuses the restart. Provisioning and proof-run admission wait for udev
 and require the root filesystem's real `/dev/disk/by-uuid/<UUID>` block-device
 mapping. A missing or mismatched mapping refuses with its path before install
 or proof staging. The systemd/udev packages are host prerequisites; no UUID link
-is fabricated and no durable-identity contract is changed (HF-761 owns the
-udev-free Linux provider).
+is fabricated. The [durable-identity contract](durable_file_identity.md) retains
+udev as the persistent Linux custody prerequisite; HF-761's review rejected
+`O_PATH` ioctls and a truncated statfs ID as replacements for that authority.
 The inventory also selects the two short, disjoint fixture-output roles that
 `ci.yml`'s portability setup supplies. Each run exclusively claims a child and
 admits it through `proof_queue_pkg.cargo_output_layout.declare_root` before tests.

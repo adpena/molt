@@ -150,11 +150,13 @@ fn native_function_public_dictionary_policy_preserves_private_metadata() {
 
             assert!(
                 attr_lookup_ptr(py, native, dictionary)
+                    .into_result()
                     .expect("operation succeeds")
                     .is_none()
             );
             assert!(
                 attr_lookup_ptr(py, native, name)
+                    .into_result()
                     .expect("operation succeeds")
                     .is_none()
             );
@@ -360,11 +362,13 @@ fn sequence_getitem_declarations_own_lookup_namespace_and_descriptor_metadata() 
             let pointer = obj_from_bits(descriptor).as_ptr().unwrap();
             unsafe {
                 let declaring = attr_lookup_ptr(py, pointer, owner_key)
+                    .into_result()
                     .expect("owner lookup succeeds")
                     .unwrap();
                 assert_eq!(declaring, owner);
                 dec_ref_bits(py, declaring);
                 let text = attr_lookup_ptr(py, pointer, signature_key)
+                    .into_result()
                     .expect("signature lookup succeeds")
                     .unwrap();
                 assert_eq!(
@@ -465,6 +469,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                     let name = dynamic_attr_name_bits(py, name).unwrap();
                     assert!(
                         attr_lookup_ptr(py, pointer, name)
+                            .into_result()
                             .expect("operation succeeds")
                             .is_none()
                     );
@@ -473,6 +478,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                 }
                 let name = dynamic_attr_name_bits(py, b"__qualname__").unwrap();
                 let qualified = attr_lookup_ptr(py, pointer, name)
+                    .into_result()
                     .expect("operation succeeds")
                     .unwrap();
                 assert!(
@@ -486,10 +492,12 @@ fn native_callable_declarations_own_public_identity_and_binding() {
             let get = dynamic_attr_name_bits(py, b"__get__").unwrap();
             assert!(
                 attr_lookup_ptr(py, obj_from_bits(bound_append).as_ptr().unwrap(), get)
+                    .into_result()
                     .expect("operation succeeds")
                     .is_none()
             );
             let descriptor_get = attr_lookup_ptr(py, obj_from_bits(append).as_ptr().unwrap(), get)
+                .into_result()
                 .expect("operation succeeds")
                 .unwrap();
             assert_eq!(type_of_bits(py, descriptor_get), classes.method_wrapper);

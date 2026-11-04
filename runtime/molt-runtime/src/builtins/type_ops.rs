@@ -233,7 +233,7 @@ fn classinfo_attribute<'a, 'py>(
     name: crate::NameId,
 ) -> Option<Option<crate::builtins::exceptions::ExceptionValue<'a, 'py>>> {
     use crate::builtins::exceptions::ExceptionValue;
-    let Some(pointer) = obj_from_bits(value).as_ptr() else {
+    if obj_from_bits(value).as_ptr().is_none() {
         // Immediate builtin values cannot override attributes. Their __class__
         // still participates in abstract isinstance; they have no __bases__.
         return if name == crate::NameId::DunderClass {
@@ -247,11 +247,17 @@ fn classinfo_attribute<'a, 'py>(
         } else {
             Some(None)
         };
-    };
-    let name = ExceptionValue::adopt(py, name.owned_bits(py)?);
-    match unsafe { attr_lookup_ptr_allow_missing(py, pointer, name.bits()) } {
-        Ok(result) => Some(result.map(|bits| ExceptionValue::adopt(py, bits))),
-        Err(()) => None,
+    }
+    // Registered names belong to the runtime for the whole lookup; only the
+    // selected result needs a new owner across subsequent Python callbacks.
+    let name = name.bits(py);
+    if name == 0 {
+        return None;
+    }
+    match lookup_attribute(py, value, name) {
+        AttributeLookup::Found(bits) => Some(Some(ExceptionValue::adopt(py, bits))),
+        AttributeLookup::Missing => Some(None),
+        AttributeLookup::Error => None,
     }
 }
 
@@ -435,7 +441,7 @@ fn classinfo_match(
         return structural_classinfo_match(py, value, classinfo, protocol);
     }
     let name = classinfo_protocol_name(protocol);
-    let method = match unsafe { lookup_special_method(py, owner.bits(), name) } {
+    let method = match unsafe { lookup_special_method(py, owner.bits(), name).into_result() } {
         Ok(method) => method.map(|method| ExceptionValue::adopt(py, method)),
         Err(()) => return None,
     };
