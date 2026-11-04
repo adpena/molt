@@ -379,7 +379,15 @@ Changed:
 - `R/builtins/types/runtime_class_policy_tests.rs`: lists the two classes.
 - `R/builtins/modules/tests.rs`: the bootstrap test asserts the seeded lists.
 - `src/molt/stdlib/importlib/machinery.py`: section 4.
-- `src/molt/cli/module_import_scanner.py`: `zipimport` support root.
+- `src/molt/cli/module_import_scanner.py`: `zipimport` support root; its
+  fixture in `tests/cli/test_source_scan_authority_closure.py`.
+- `src/molt/stdlib/importlib/_bootstrap_external.py`: forwards attribute reads
+  to `_frozen_importlib_external` (PEP 562) instead of star-importing it. The
+  eager completion used to import `importlib` before user code, which hid an
+  import cycle: `_frozen_importlib_external` imports `importlib.machinery`,
+  whose package imports `importlib._bootstrap_external`. Found by the existing
+  `importlib_module_spec` differential; `importlib_frozen_external_first` pins
+  it.
 - `runtime/molt-ir/src/tir/runtime_names.toml`: new names
   (`importlib.machinery`, `_frozen_importlib_external`, `path_importer_cache`,
   `invalidate_caches`, `_loader_details`, `path_hook`, `path_hook_for_FileFinder`,
