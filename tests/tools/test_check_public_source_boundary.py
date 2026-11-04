@@ -18,6 +18,11 @@ REPO = Path(__file__).resolve().parents[2]
         "logs/agents/lane-hf761-linux-identity/artifacts/design.md",
         "node_modules/.mf/cf.json",
         "node_modules/.cache/wrangler/wrangler-account.json",
+        "examples/cloudflare-demo/.wrangler/cache/wrangler-account.json",
+        "deploy/worker/node_modules/pkg/index.js",
+        "deploy/worker/.mf/cf.json",
+        "deploy/worker/.dev.vars",
+        "deploy/worker/.dev.vars.staging",
         # The other local artifact roots and machine-local files.
         "tmp/scratch.txt",
         "target/debug/molt",

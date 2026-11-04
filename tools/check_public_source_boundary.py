@@ -30,7 +30,11 @@ import sys
 LOCAL_ARTIFACT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(pattern)
     for pattern in (
-        r"^(?:logs|tmp|target|build|dist|node_modules)/",
+        r"^(?:logs|tmp|target|build|dist)/",
+        # Package and Cloudflare local state at any depth: Wrangler account
+        # records, Miniflare request geolocation (cf.json), local secrets.
+        r"(?:^|/)(?:node_modules|\.wrangler|\.mf)/",
+        r"(?:^|/)\.dev\.vars(?:\.[^/]*)?$",
         r"^\.claude/settings\.local\.json$",
         r"^bench/(?:results|scoreboard)/.*\.log$",
         r"^bench/results/.*/memory_guard/",
