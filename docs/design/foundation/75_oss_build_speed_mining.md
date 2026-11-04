@@ -248,7 +248,7 @@ neither the July figures nor this ranking establish a current default speed gain
 
 ## 7. Landed-state verification (read this session; do not duplicate)
 
-Verified against the worktree tree at `origin/main` HEAD `d4888f7103`:
+Verified against the worktree tree at `origin/main` HEAD `f0cde7b8ec`:
 
 - **Fast-iteration Cargo profiles — LANDED.** `Cargo.toml` `[profile.dev-fast]`
   `inherits="dev"`, `codegen-units=256`, `lto="off"`; `[profile.release-fast]`
@@ -262,11 +262,11 @@ Verified against the worktree tree at `origin/main` HEAD `d4888f7103`:
   [Cargo workspace truth custody](../../spec/areas/tooling/0001-toolchains.md#cargo-workspace-truth-custody)
   for the current authority and the separate shipped-runtime policies.
 - **Single runtime-wasm compile + stable dep-cache — LANDED.** V1
-  (c1ff76bd7d/f21164c7e6 single combined compile, now the sole split-runtime
-  `both` producer with no dual-compile kill switch/retry) and V2 (c13e2e216f
+  (503dc7324b/b5ac01130a single combined compile, now the sole split-runtime
+  `both` producer with no dual-compile kill switch/retry) and V2 (b27a28dba3
   stable dep-cache default-on for iteration profiles), per CLAIMS
-  BUILD-DEDUP-B rows. V3 config-lattice reuse (0ac15702df) was removed by
-  9d0e03a5f7: runtime WASM generations pin exact identity.
+  BUILD-DEDUP-B rows. V3 config-lattice reuse (a991967f6b) was removed by
+  7d9ed49584: runtime WASM generations pin exact identity.
 - **Runtime wasm profile resolver — LANDED.** `src/molt/cli/runtime_build.py`
   `_resolve_wasm_cargo_profile`: precedence = explicit `MOLT_WASM_CARGO_PROFILE`
   → `MOLT_RUNTIME_BUILD_PROFILE` (iteration knob, e.g. `dev-fast`) → default
@@ -332,7 +332,7 @@ fast. tsrs informs both.
 
 | tsrs practice | tsrs number | Molt today | Owner |
 |---|---|---|---|
-| Edit-loop profile: `release` settings, no LTO, 256 codegen units, incremental | a checker edit rebuilds in 4.9 s against 176 s [T3] | dev builds default to `dev-fast` (no LTO, 256 codegen units) since 130b439e1 | — |
+| Edit-loop profile: `release` settings, no LTO, 256 codegen units, incremental | a checker edit rebuilds in 4.9 s against 176 s [T3] | dev builds default to `dev-fast` (no LTO, 256 codegen units) since a28225262 | — |
 | The pinned Go compiler is the specification; any diagnostic, order, text or exit-code difference is a tsrs defect | all 13,462 error baselines pass in the harness's `--baselines js` mode, measured at tsrs f250e637 on 2026-10-08 [T4] | CPython is the oracle; the differential suite has no enforced passing set | HF-106 |
 | The passing set never shrinks: `comm -23 before after` prints nothing before a merge | — [T5] | not enforced | HF-106 |
 | The 15,197-case conformance suite runs from baselines [T4] | 15 s wall, 51 s CPU [T3] | `molt_diff.py` builds and runs each program | — |
@@ -352,12 +352,12 @@ fast. tsrs informs both.
 | `#[cold]` splits of rare branches | parse 16.66 G → 15.07 G instructions | TIR facts (HF-201, HF-202) |
 | Huge pages for arena chunks only (`MADV_HUGEPAGE`) | −2 to −6% wall, 21–48x fewer faults | after HF-202 |
 | Heavy files split by statement range across checkers; the owner merges in order | check 0.40 s → 0.12 s at 32 checkers, byte-identical | the backend's per-function parallelism |
-| mimalloc v3 as the compiler's allocator | −3 to −14% wall against v2, jemalloc and glibc | a jemalloc switch for the backend daemon was deleted unmeasured (797be4558, HF-281): HF-458 |
-| Ship build: fat LTO, PGO and BOLT (frame pointers only in the profiling build) | PGO −13.5% instructions; BOLT −1.0 to −3.2% wall on a 38k-file codebase, −3.4 to −4.0% on vscode | `Makefile.pgo` (`pgo-full`, `bolt-backend`, `tools/bolt_optimize.sh`) builds a PGO and BOLT `molt-backend`; on 2026-04-23 (0c587cd8e) PGO gave about 0% because the backend was 1.5% of compile wall clock and the Python frontend dominated: HF-458 |
+| mimalloc v3 as the compiler's allocator | −3 to −14% wall against v2, jemalloc and glibc | a jemalloc switch for the backend daemon was deleted unmeasured (65a6e8826, HF-281): HF-458 |
+| Ship build: fat LTO, PGO and BOLT (frame pointers only in the profiling build) | PGO −13.5% instructions; BOLT −1.0 to −3.2% wall on a 38k-file codebase, −3.4 to −4.0% on vscode | `Makefile.pgo` (`pgo-full`, `bolt-backend`, `tools/bolt_optimize.sh`) builds a PGO and BOLT `molt-backend`; on 2026-04-23 (de0c1b22b) PGO gave about 0% because the backend was 1.5% of compile wall clock and the Python frontend dominated: HF-458 |
 
 ### 9.3 What Molt adopts
 
-1. Selection and overlap (landed 40438ab3d): a landing selects only the plan entries an edit
+1. Selection and overlap (landed 452bcb618): a landing selects only the plan entries an edit
    reaches (HF-457) and overlaps its Cargo and pytest gates (HF-334).
 2. HF-458: first re-measure the backend's share of compile time, which was 1.5% when April's PGO
    run found about 0% gain. Since then a resident daemon serves the backend, record cutoffs shorten

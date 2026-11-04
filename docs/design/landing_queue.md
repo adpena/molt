@@ -25,8 +25,8 @@ what a landing runs, bisection and the queue.
 Measured 2026-10-14 to 2026-10-17:
 
 - CI main failed on 40 consecutive completed runs. The last green run was
-  2026-10-14 at b5487aef3.
-- One CI run (39090704454, d259ff8c1) failed in six jobs: 42 frontend tests
+  2026-10-14 at c55df5661.
+- One CI run (39090704454, 5b913336c) failed in six jobs: 42 frontend tests
   (HF-341), a source-scraping test, rustfmt, a Linux-only Darwin link test,
   33 Windows runtime-gate tests, and others. No landing caught any of them:
   HF-331, HF-332, HF-336 to HF-341 and the uv-fixture gap recorded on
@@ -38,7 +38,7 @@ Measured 2026-10-14 to 2026-10-17:
   the families' declared inputs. These are two selection authorities, and
   the landing one misses tests by construction.
 - `integrate` keeps no landing receipt, so nothing shows which gates a landed
-  commit passed. fe30fd315 reached main unformatted, though the always-run
+  commit passed. 338e1c6c4 reached main unformatted, though the always-run
   rustfmt gate rejects it (HF-338).
 
 ## Import-graph selection density

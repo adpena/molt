@@ -121,7 +121,7 @@ publication and invalidation authorities instead of adding an independent epoch.
 
 The research verdict against the original 50% band is `DeferredPendingResearch`.
 The band is not a claim that names alone must account for the remaining work.
-The retained release comparison uses the original `26daee2644` executable and
+The retained release comparison uses the original `974f410a7e` executable and
 the `28d7c68594` code tree, macOS arm64, CPython frontend 3.12.15, seed 0 and five
 balanced pairs per successful primitive. Later retirement of the inlining probe
 restores that exact code tree; documentation changes do not change its producers.

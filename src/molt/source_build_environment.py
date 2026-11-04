@@ -192,13 +192,9 @@ print(json.dumps(dict(implementation_name=sys.implementation.name,implementation
                 verifier=verifier,
             )
         except PythonInterpreterError as exc:
-            fix = (
-                f"; run `uv python install {request.selector}`"
-                if request is not None
-                else ""
-            )
+            # The resolver names the missing release and its uv install fix.
             raise _contract.SourceBuildEnvironmentError(
-                f"cannot bind requested CPython {selector}: {exc}{fix}"
+                f"cannot bind requested CPython {selector}: {exc}"
             ) from exc
         python = Path(selected.executable).absolute()
         capture = _probe_source_build_python(

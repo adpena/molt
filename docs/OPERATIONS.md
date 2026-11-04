@@ -11,7 +11,7 @@ inventory and SSH staging owner as `cross_run.py`. From a clean, committed
 controller checkout and its managed Python image:
 
 ```sh
-python -B tools/trunk_loop.py run --host bat00 --commit 06d37eafd2 \
+python -B tools/trunk_loop.py run --host bat00 --commit fa784d0c77 \
   --cell portability.cargo-custody.windows --cell portability.queue.windows
 ```
 

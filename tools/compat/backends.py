@@ -413,6 +413,28 @@ class ItemBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class CompilerFrontend:
+    """The CPython that runs the Molt compiler for one differential run.
+
+    ``environment_root`` is the managed image that owns ``python``; ``None``
+    means the harness interpreter itself serves (HF-726).
+    """
+
+    python: str
+    version: str
+    environment_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.python, str) or not self.python:
+            raise TypeError("compiler frontend must name one executable")
+        if (
+            self.environment_root is not None
+            and not self.environment_root.is_absolute()
+        ):
+            raise ValueError("compiler frontend image root must be absolute")
+
+
+@dataclass(frozen=True, slots=True)
 class BackendExecutionContext:
     """One immutable compiler/runtime policy shared by every backend."""
 
@@ -422,6 +444,7 @@ class BackendExecutionContext:
     capabilities: str
     environment: Mapping[str, str]
     budget: ItemBudget
+    compiler_environment_root: Path | None = None
     stdlib_profile: Literal["micro", "full"] | None = field(init=False)
 
     def __post_init__(self) -> None:
@@ -432,6 +455,11 @@ class BackendExecutionContext:
             raise ValueError("backend target Python must be canonical")
         if not isinstance(self.molt_cli_python, str) or not self.molt_cli_python:
             raise TypeError("backend CLI Python must name one executable")
+        if self.compiler_environment_root is not None and (
+            not isinstance(self.compiler_environment_root, Path)
+            or not self.compiler_environment_root.is_absolute()
+        ):
+            raise TypeError("backend compiler image root must be an absolute path")
         if any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in self.environment.items()
@@ -711,6 +739,23 @@ def _guarded_run(
     )
 
 
+def compiler_environment(
+    context: BackendExecutionContext, env: Mapping[str, str]
+) -> dict[str, str]:
+    """``env`` for a compiler child: inside the frontend's image, if it has one.
+
+    Only compiler launches take the projection. Guest runs keep ``env``: the
+    runtime reads ``PYTHONDONTWRITEBYTECODE`` into ``sys.flags``, and the
+    CPython oracle never sees the image either.
+    """
+    root = context.compiler_environment_root
+    if root is None:
+        return dict(env)
+    from molt.dx import DxProject
+
+    return dict(DxProject(_REPO_ROOT).projected_uv_run_env(env, root=root))
+
+
 def _cross_build_env(context: BackendExecutionContext) -> dict[str, str]:
     env = dict(context.environment)
     selected = diff_output_layout.enforce_child(env, repo_root=_REPO_ROOT)
@@ -915,7 +960,7 @@ class WasmAdapter:
         build = _guarded_run(
             cmd,
             prefix="MOLT_COMPAT_WASM_BUILD",
-            env=env,
+            env=compiler_environment(context, env),
             budget=context.budget,
             backend=self.name,
             phase="build",
@@ -1040,7 +1085,7 @@ class LlvmAdapter:
         build = _guarded_run(
             cmd,
             prefix="MOLT_COMPAT_LLVM_BUILD",
-            env=env,
+            env=compiler_environment(context, env),
             budget=context.budget,
             backend=self.name,
             phase="build",
@@ -1158,7 +1203,7 @@ class JitAdapter:
                 extra_build_args=["--emit", "jit", "--output", str(image), "--json"],
             ),
             prefix="MOLT_COMPAT_JIT_BUILD",
-            env=env,
+            env=compiler_environment(context, env),
             budget=context.budget,
             backend=self.name,
             phase="build",
@@ -1246,7 +1291,7 @@ class LuauAdapter:
         build = _guarded_run(
             cmd,
             prefix="MOLT_COMPAT_LUAU_BUILD",
-            env=env,
+            env=compiler_environment(context, env),
             budget=context.budget,
             backend=self.name,
             phase="build",

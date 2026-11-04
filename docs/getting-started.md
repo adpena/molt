@@ -200,9 +200,14 @@ The oracle uses a fresh empty bytecode read namespace with writes disabled;
 ordinary site and environment behavior is retained. Its reported startup timing
 is diagnostic and does not compare matched warm image caches or qualify release
 performance. See the [compare contract](cli-reference.md#molt-compare).
-Differential tooling also uses its launching interpreter as the frontend, so
-`uv run --python 3.14 python tests/molt_diff.py --python-version 3.14 <test.py>`
-selects the frontend and matching CPython oracle without an interpreter override.
+Differential tooling selects its own frontend. `python tests/molt_diff.py
+--python-version 3.14 <test.py>` runs the oracle and the compiler on the target's
+pinned CPython release (a dotted patch such as `3.14.9` is exact). The harness
+interpreter compiles when it is that release; otherwise the harness compiles
+under a managed image of the release, published once per checkout. A missing
+release stops the run before any test and names its `uv python install`
+command; every target cell needs `uv python install 3.12.15 3.13.17 3.14.9`
+([design](design/target_frontend_selection.md)).
 Compiled programs require no host or fallback Python. See
 [compatibility](spec/areas/compat/README.md) for version- and target-scoped proof.
 

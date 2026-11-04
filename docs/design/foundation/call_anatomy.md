@@ -17,7 +17,7 @@ function with the thread state in a local variable, frames on a bump-allocated d
 caches inside the bytecode. So Molt pays more per Python-level step than the interpreter it should
 replace.
 
-**Headline numbers** (macOS arm64, release profile, origin/main `06d37eafd2`, CPython 3.12.15 on
+**Headline numbers** (macOS arm64, release profile, origin/main `fa784d0c77`, CPython 3.12.15 on
 the same host; instructions retired per unit with startup subtracted):
 
 | unit | Molt | CPython | Molt / CPython instructions | wall speed vs CPython |
@@ -90,7 +90,7 @@ parallel lanes; stages 2 and 3 follow stage 1; stage 7 follows stage 3.
   (other lanes were building). Instructions retired and cycles come from `/usr/bin/time -l` and do
   not depend on load. Wall times are medians of 5 runs (3 for the 15 s raise run).
 - Molt: a managed development image whose compiler, frontend, backend and runtime equal origin/main
-  `06d37eafd2` (`git diff origin/main HEAD -- runtime src/molt/frontend src/molt/cli` is empty). Build: `bin/python -B -m molt.cli build --build-profile
+  `fa784d0c77` (`git diff origin/main HEAD -- runtime src/molt/frontend src/molt/cli` is empty). Build: `bin/python -B -m molt.cli build --build-profile
   release` with `MOLT_KEEP_SYMBOLS=1`, Cranelift native backend.
   Binaries are 14.0 MB (23.2 MB with `import struct`).
 - CPython: the same image's interpreter, 3.12.15 (clang 22.1.3), run as `python -B -I -S prog.py`.
@@ -208,7 +208,7 @@ dead int costs `dec_ref_ptr_terminal` 33.7% because a leaf int runs the generic 
 - **Attribute (q3b, inline regime):** `molt_get_attr_object_ic` 42.3% and `molt_set_attr_object_ic`
   30.3% of the loop. Inside them, the cache check recomputes identity: `object_shape_id` 11.3%,
   `instance_dict_bits_ptr` 8.7%, `class_instance_shape_id` 7.4%, `object_has_class_shape` 7.1%.
-  The per-site field cache from bd8585aab exists, but it lives behind a call and its key is
+  The per-site field cache from ae016af96 exists, but it lives behind a call and its key is
   recomputed by four calls. CPython: `LOAD_ATTR_INSTANCE_VALUE` compares `tp_version_tag` and reads
   `values[index]`.
 - **Method (q4):** `molt_call_loaded_method1` 58.6% (frame push/pop again inside),
@@ -437,7 +437,7 @@ must be equal in hot-path instructions (gate in the anatomy tool).
   lowers to: load the object's class pointer; compare with the expected class; load or store field
   `j` at a generated offset. A miss calls the runtime, which updates the site record in a data
   section (V8 hidden classes; HotSpot field offsets; CPython `LOAD_ATTR_INSTANCE_VALUE`). Stores
-  apply the class's attribute protocol fact (53b88e901): plain classes take the inline store, data
+  apply the class's attribute protocol fact (ee15359a6): plain classes take the inline store, data
   descriptors take the slow path.
 - **Methods.** `obj.m(args)` with a class-version guard lowers to a native call of the resolved
   function with `self` as argument zero: no bound-method object, no name hashing (CPython

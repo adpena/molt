@@ -1670,3 +1670,42 @@ def test_a_pinned_tool_runs_on_its_runtime_never_from_path(
     with pytest.raises(cp.ProvisioningError, match="pins npm@9.9.9"):
         cp.ensure_input(tree)
     assert not (checkout / "pinned-run.log").exists()
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs the real uv")
+def test_python_release_image_names_the_missing_release_and_ignores_the_caller_image(
+    tmp_path,
+):
+    """A missing release fails at once with its uv fix (HF-726).
+
+    The caller's UV_PROJECT_ENVIRONMENT names the caller's image. Had it
+    survived, the selection would read that bogus root first and fail with a
+    selection error, so the bind error proves the selector was dropped.
+    """
+    from molt.python_interpreter import PythonInterpreterRequest
+
+    root = tmp_path / "project"
+    _init_repo(root)
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='release-fixture'\nversion='1.0'\n"
+        "requires-python='>=3.12'\ndependencies=[]\n",
+        encoding="utf-8",
+    )
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (root / ".python-version").write_text("3.12.999\n", encoding="utf-8")
+    environment = {
+        **os.environ,
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "caller-image"),
+        "MOLT_UV_PROJECT_PURPOSE": "caller",
+    }
+    with pytest.raises(cp.ProvisioningError) as missing:
+        cp.ensure_python_release(
+            root, environment, PythonInterpreterRequest(3, 12, 999)
+        )
+    message = str(missing.value)
+    assert "cannot bind requested CPython 3.12.999" in message
+    assert message.count("run `uv python install 3.12.999`") == 1
+    assert "caller-image" not in message
+    with pytest.raises(cp.ProvisioningError, match="names no patch release"):
+        cp.ensure_python_release(root, environment, PythonInterpreterRequest(3, 13))

@@ -24,7 +24,7 @@ builds once and checks the published bytes before execution.
 ## Consolidation, numerical correctness and kernel cost
 
 Pinned Rust 1.99.0, wasm32-unknown-unknown, release opt-level=z, Node 26.11.1.
-The original baseline is a fresh build of the Rust crate at bb0fd253bfbc; its
+The original baseline is a fresh build of the Rust crate at 98e905492ef8; its
 incorrect subnormal and special-value exp2 behavior is retained as a failing
 oracle control. The intermediate candidate corrected exp2 classification while
 retaining the degree-six polynomial and online softmax. The final implementation

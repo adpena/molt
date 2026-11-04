@@ -149,7 +149,7 @@ checks that make the declaration sound:
 
 ## Measurements
 
-macOS arm64, CPython 3.12.15, origin/main bac4c7416 against this change.
+macOS arm64, CPython 3.12.15, origin/main 882344abc against this change.
 
 | Metric | Before | After |
 | --- | --- | --- |

@@ -201,7 +201,7 @@ that discovers a whole toolchain writes about ten times.
 
 Measured on `examples/hello.py` (macOS arm64, `molt build --verbose`,
 children counted at `process_guard.run_completed_command`, 2026-10-21).
-The interleaved pairs ran the lane base (cb9413ec2) and the lane from
+The interleaved pairs ran the lane base (3bd16d092) and the lane from
 separate Cargo targets under the same venv, alternating, at a load average
 of 17 to 23; the link steps (`clang`, `lipo`, `dyld_info`, `llvm-strip`,
 `codesign`) re-ran in every sample because each sample named a new output.

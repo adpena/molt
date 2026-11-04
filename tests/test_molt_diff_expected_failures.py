@@ -88,11 +88,21 @@ def _declare_cpython_oracle(
     )
     command = module._resolve_python_command(python_exe)
 
+    release = f"{oracle.major}.{oracle.minor}.{oracle.micro}"
+
     def metadata(probed: tuple[str, ...], *, budget=None):
         assert probed == command, f"probed {probed}, not the oracle {command}"
-        return module._PythonOracleMetadata(oracle.feature_version, sys.executable)
+        return module._PythonOracleMetadata(
+            oracle.feature_version, sys.executable, release
+        )
+
+    def frontend(version, selected):
+        # The declared oracle has no image; declare its frontend the same way.
+        assert version == release and selected.selector == release
+        return module.compat_backends.CompilerFrontend(sys.executable, version)
 
     monkeypatch.setattr(module, "_python_command_metadata", metadata)
+    monkeypatch.setattr(module, "_compiler_frontend", frontend)
     return oracle
 
 
@@ -977,11 +987,6 @@ def test_batch_singleton_keeps_selected_interpreter_and_budget(monkeypatch, mode
         module, "_BATCH_COMPILE_SERVER_CLIENT", None if mode == "fresh" else cached
     )
     monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", os.getpid())
-    monkeypatch.setattr(
-        module,
-        "_resolve_molt_cli_python",
-        lambda: pytest.fail("the execution context already selected CLI Python"),
-    )
     budget = module.compat_backends.ItemBudget(
         module.compat_backends.TimeoutPolicy.from_environment({}),
         0.0 if mode == "expired" else None,
@@ -1357,7 +1362,6 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     context = module.compat_backends.BackendExecutionContext(
         molt_cli_python=sys.executable,
@@ -1466,7 +1470,6 @@ def test_run_molt_preserves_explicit_runtime_environment(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1522,7 +1525,6 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1574,7 +1576,6 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
         "parse_metadata",
         lambda file_path: test_policy.TestMetadata(stdlib_profile="full"),
     )
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/stringprep_semantics.py",
@@ -1668,7 +1669,6 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1721,7 +1721,6 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -2555,7 +2554,7 @@ def test_metadata_success_cache_excludes_item_deadlines(monkeypatch):
     clock.now = 4.0
     second = backends.ItemBudget.start(policy, ("native",))
     metadata = module._python_command_metadata(("fixture-python",), budget=second)
-    assert metadata == module._PythonOracleMetadata((3, 12), "oracle-python")
+    assert metadata == module._PythonOracleMetadata((3, 12), "oracle-python", "3.12.15")
     assert calls == [3]
     with pytest.raises(backends.ItemBudgetExpired):
         module._python_command_metadata(("fixture-python",), budget=first)

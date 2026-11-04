@@ -23,7 +23,7 @@ the lines that change there.
    The lease 0 → non-zero edge and the drain 0 → 1 edge write it; the matching release edges, a
    thread state switch and every unpublish of the ready pointer reset it. `runtime_state(py)`
    reads it with one load and falls back to today's full resolution when it is null. This deletes
-   the per-token state cache (`e458bccd3`).
+   the per-token state cache (`03778a0ca`).
 3. **B2: the exception byte is tested inline.** Every LLVM and WASM exception check that runs in a
    function that already holds the thread record loads the record's pending byte. It calls
    `molt_exception_pending` only when the byte is set, so that reader keeps its repair behavior.
@@ -36,9 +36,9 @@ the lines that change there.
 
 ### 1.1 Compiled code already holds the thread record
 
-Stage 1 (`b078d0654a`) put the lease, GIL, drain and runtime-state facts in one const-initialized
-thread-local with no destructor. `dbc28f4905` made that struct the thread record compiled code
-holds; HF-657 (`d102b4be97`) added the pending-work pointer. `molt-codegen-abi` declares the ABI
+Stage 1 (`5041f8cd05`) put the lease, GIL, drain and runtime-state facts in one const-initialized
+thread-local with no destructor. `67ccbbb110` made that struct the thread record compiled code
+holds; HF-657 (`465726e3da`) added the pending-work pointer. `molt-codegen-abi` declares the ABI
 prefix (`THREAD_RECORD_*`), and `state/tls.rs` asserts it with `offset_of!`:
 
 | offset | field | written by | read by |
@@ -253,7 +253,7 @@ the lane after B1 and B2, same environment.
 - **Residual guard cost:** the instructions a nested entry still spends on custody (thread-local
   access and predicate), read from the head disassembly.
 
-**Result** (2026-11-03; base `5209263c72`, head `0032a54f04`; instructions retired, medians of five
+**Result** (2026-11-03; base `f0244aaaae`, head `821ca692c2`; instructions retired, medians of five
 runs; CPython 3.12.16 for the ratios):
 
 | workload | base | head | change |
@@ -276,7 +276,7 @@ The first draft proposed that compiled code pass the thread record as the first 
 call-path runtime entries (`AttachedContext<'a>`, declared per manifest row), skipping the guard
 entirely. It also proposed inline recursion charges, a `repr(C)` `RuntimeState` prefix, and a
 compiled-to-compiled context parameter after HF-670. The design and its cost table remain in this
-file's history at `5209263c72`. The review found these blockers, which any later attached ABI must
+file's history at `f0244aaaae`. The review found these blockers, which any later attached ABI must
 answer:
 
 - **Destruction lanes run Python with no attach transition:** `ThreadLocalGuard::drop`,
