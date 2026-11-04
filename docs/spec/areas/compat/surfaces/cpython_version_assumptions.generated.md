@@ -60,7 +60,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/python_external_custody.py` | 1 | scattered-assumption | `3.10` |
 | `src/molt/python_interpreter.py` | 5 | authority-routed | `3.12` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |
-| `src/molt/python_runtime_identity.py` | 8 | operational-tooling | `sys.version_info` |
+| `src/molt/python_runtime_identity.py` | 11 | operational-tooling | `sys.version_info` |
 | `src/molt/release_matrix.py` | 3 | operational-tooling | `3.12` |
 | `src/molt/stdlib/__future__.py` | 3 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/_collections_abc.py` | 1 | scattered-assumption | `3.17` |
