@@ -638,6 +638,12 @@ pub(crate) unsafe fn field_at_offset(class: *mut u8, offset: usize) -> Option<Cl
 /// change __class__ and retire its old class while the visitor still runs.
 /// The empty view owns no names and needs no pin. Nonempty consumers share one
 /// projection and one token-bound owner, including across arbitrary callbacks.
+///
+/// # Safety
+/// `class` is a live sealed class when entered. The callback snapshots its
+/// physical rows; copied names need an independent owner beyond the callback.
+/// It must preserve the token's thread/GIL custody. Raw handles do not acquire
+/// ownership merely by appearing in this scoped view.
 #[inline]
 pub(crate) unsafe fn with_fields<R>(
     py: &PyToken<'_>,
@@ -1309,6 +1315,73 @@ mod tests {
             assert!(!exception_pending(py));
             class
         }
+    }
+
+    #[test]
+    fn scoped_rows_pin_retiring_class_and_balance_early_exit_and_unwind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let base = slotted_class(py, b"ScopedRowsBase", builtin_classes(py).object, &[]);
+                let first = slotted_class(py, b"ScopedRowsFirst", base, &[b"x", b"y"]);
+                let second = slotted_class(py, b"ScopedRowsSecond", base, &[b"x", b"y"]);
+                let class = obj_from_bits(first).as_ptr().unwrap();
+                let object = alloc_instance_for_class(py, class);
+                let ptr = obj_from_bits(object).as_ptr().unwrap();
+                let record = super::super::layout::class_field_layout_bits(class);
+                let record_ptr = obj_from_bits(record).as_ptr().unwrap();
+                // An observer keeps refcount assertions safe even if the pin
+                // regresses; the assertion detects that defect independently.
+                inc_ref_bits(py, record);
+                let refs = || (*header_from_obj_ptr(record_ptr)).ref_count_snapshot();
+                let before = refs();
+                with_fields(py, class, |mut rows| {
+                    assert_eq!(refs(), before + 1);
+                    assert!(rows.next().is_some());
+                    // Leave a row unread: the scoped owner still balances.
+                });
+                assert_eq!(refs(), before);
+                let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    with_fields(py, class, |_rows| {
+                        assert_eq!(refs(), before + 1);
+                        panic!("exercise scoped row unwinding");
+                    });
+                }));
+                assert!(unwind.is_err());
+                assert_eq!(refs(), before);
+                let class_name = crate::NameId::DunderClass.owned_bits(py).unwrap();
+                super::super::field_storage::with_instance_fields(py, ptr, class, |mut rows| {
+                    assert_eq!(rows.len(), 2);
+                    let (first_field, first_slot) = rows.next().unwrap();
+                    *first_slot = MoltObject::from_int(41).bits();
+                    assert_eq!(
+                        crate::molt_set_attr_name(object, class_name, second),
+                        MoltObject::none().bits()
+                    );
+                    assert!(!exception_pending(py));
+                    super::super::heap_lifecycle::clear_cycle_edges(py, class);
+                    dec_ref_bits(py, first);
+                    // Only the observer and active traversal own this record.
+                    assert_eq!(refs(), 2);
+                    let (next_field, next_slot) = rows.next().unwrap();
+                    assert_ne!(first_field.offset, next_field.offset);
+                    assert_eq!(
+                        next_slot as usize - first_slot as usize,
+                        next_field.offset - first_field.offset
+                    );
+                    assert_eq!(*first_slot, MoltObject::from_int(41).bits());
+                    assert!(is_missing_bits(py, *next_slot));
+                    *next_slot = MoltObject::from_int(42).bits();
+                    assert!(rows.next().is_none());
+                });
+                assert_eq!(refs(), 1);
+                assert_eq!(object_class_bits(ptr), second);
+                for bits in [class_name, record, object, second, base] {
+                    dec_ref_bits(py, bits);
+                }
+                assert!(!exception_pending(py));
+            }
+        });
     }
 
     #[test]

@@ -60,6 +60,13 @@ impl ExactSizeIterator for InstanceFields<'_> {
 }
 
 #[inline]
+/// # Safety
+/// The caller keeps `object` alive and unmoved throughout the callback, with
+/// `class` its admitted sealed layout. Rows snapshot that layout; compatible
+/// class replacement may retire metadata but cannot move/reclassify slots.
+/// Copied slot pointers and name handles are not lifetime-checked owners.
+/// Do not hold Rust references across reentrant calls, or mutate receiver
+/// ownership from a GC visitor. Stage transitions before reentrant releases.
 pub(crate) unsafe fn with_instance_fields<R>(
     py: &PyToken<'_>,
     object: *mut u8,

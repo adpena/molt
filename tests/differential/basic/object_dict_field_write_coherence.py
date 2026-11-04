@@ -91,10 +91,13 @@ for text in ("", "abc", "abcdefghi"):
     print("native-tail", str(native), native.value, native.other, native.extra,
           namespace is native.__dict__, type(native) is NativeRight)
 
-try:
-    vars(SlotBase(1))
-except TypeError as error:
-    print("no-dict", type(error).__name__)
+
+class EmptyNative(str):
+    __slots__ = ()
+
+
+native_empty = EmptyNative("nonempty intrinsic tail")
+print("empty-native", str(native_empty), type(native_empty) is EmptyNative)
 
 
 events = []
@@ -151,3 +154,9 @@ try:
     RaisesInit()
 except ValueError as error:
     print("init-error", str(error))
+
+
+try:
+    vars(SlotBase(1))
+except TypeError as error:
+    print("no-dict", type(error).__name__)
