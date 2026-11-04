@@ -1638,9 +1638,12 @@ def test_legacy_cargo_declaration_requires_current_readmission(tmp_path, renumbe
 
 
 def test_current_cargo_root_survives_device_renumbering(tmp_path, monkeypatch):
+    from molt.durable_file_identity import file_identity
     from tests.test_dx_run_context import _renumber_stat_devices
 
     root = _root(tmp_path)
+    identity = file_identity(root)
     declaration = layout.declare_root(str(root))
     _renumber_stat_devices(monkeypatch)
+    assert file_identity(root) == identity
     assert layout.validate_root(declaration) == declaration

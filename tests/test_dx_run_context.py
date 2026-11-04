@@ -2867,9 +2867,15 @@ def _renumber_stat_devices(monkeypatch):
                     "st_birthtime_ns",
                     "st_file_attributes",
                     "st_reparse_tag",
+                    "st_rdev",
                 )
                 if hasattr(metadata, name)
             }
+            # A block node's rdev names the device being renumbered, whereas
+            # its dev names the filesystem containing /dev. Keep both sides
+            # of the filesystem-device -> UUID-node relation coherent.
+            if stat.S_ISBLK(metadata.st_mode):
+                extra["st_rdev"] += 1000
             return os.stat_result(fields, extra)
 
         return query
@@ -3055,40 +3061,53 @@ def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
     tmp_path, monkeypatch
 ):
     import stat
-    from types import SimpleNamespace
     from molt import durable_file_identity as durable
 
     by_uuid = tmp_path / "by-uuid"
     by_uuid.mkdir()
     (by_uuid / "ABCD-1234").touch()
     (by_uuid / "unrelated").touch()
-    original = Path.stat
+    devices = {"ABCD-1234": 91, "unrelated": 92}
+    original = os.stat
 
     def query(path, *args, **kwargs):
-        if path.parent == by_uuid:
-            return SimpleNamespace(
-                st_mode=stat.S_IFBLK,
-                st_dev=55,
-                st_rdev=91 if path.name == "ABCD-1234" else 92,
+        if isinstance(path, (str, os.PathLike)) and Path(path).parent == by_uuid:
+            return os.stat_result(
+                (stat.S_IFBLK, 42, 55, 1, 0, 0, 0, 1, 2, 3),
+                {
+                    "st_rdev": devices[Path(path).name],
+                    "st_atime_ns": 1_000_000_001,
+                    "st_mtime_ns": 2_000_000_002,
+                    "st_ctime_ns": 3_000_000_003,
+                },
             )
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "stat", query)
+    monkeypatch.setattr(os, "stat", query)
     assert durable._linux_volume(91, by_uuid) == "ABCD-1234"
-    with pytest.raises(durable.IdentityUnavailable, match="absent"):
+    with pytest.raises(durable.IdentityUnavailable, match="absent.*udev"):
         durable._linux_volume(55, by_uuid)
-    (by_uuid / "alias").touch()
-    monkeypatch.setattr(
-        Path,
-        "stat",
-        lambda path, *a, **kw: (
-            SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=91)
-            if path.parent == by_uuid
-            else original(path, *a, **kw)
-        ),
+
+    before = (by_uuid / "ABCD-1234").stat()
+    ordinary = tmp_path.stat()
+    _renumber_stat_devices(monkeypatch)
+    after = (by_uuid / "ABCD-1234").stat()
+    assert after.st_dev == before.st_dev + 1000
+    assert after.st_rdev == before.st_rdev + 1000
+    assert (after.st_ino, after.st_mode) == (before.st_ino, before.st_mode)
+    assert (after.st_atime_ns, after.st_mtime_ns, after.st_ctime_ns) == (
+        before.st_atime_ns,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
     )
-    with pytest.raises(durable.IdentityUnavailable, match="ambiguous"):
+    assert tmp_path.stat().st_rdev == ordinary.st_rdev
+    assert durable._linux_volume(1091, by_uuid) == "ABCD-1234"
+    with pytest.raises(durable.IdentityUnavailable, match="absent.*udev"):
         durable._linux_volume(91, by_uuid)
+    devices["alias"] = 91
+    (by_uuid / "alias").touch()
+    with pytest.raises(durable.IdentityUnavailable, match="ambiguous.*udev"):
+        durable._linux_volume(1091, by_uuid)
 
 
 def test_windows_file_id_info_preserves_high_file_id_bits():
@@ -3170,7 +3189,8 @@ def test_linux_persistent_filesystem_cannot_use_boot_identity(tmp_path, monkeypa
         lambda device: pytest.fail("unidentified persistent content must refuse"),
     )
     with pytest.raises(
-        durable.IdentityUnavailable, match="provide a unique filesystem UUID mapping"
+        durable.IdentityUnavailable,
+        match="provide a unique filesystem UUID mapping.*udev.*host prerequisite",
     ):
         durable.identity_from_fd(-1, metadata=SimpleNamespace(st_dev=91, st_ino=17))
 

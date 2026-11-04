@@ -12,6 +12,11 @@ development; consult [current status](spec/STATUS.md) for compatibility limits.
 - A native C compiler and linker: a platform toolchain on macOS/Linux, or MSVC
   Build Tools with the Windows SDK on Windows. Run Windows builds from a shell
   with that toolchain available.
+- On persistent Linux filesystems, udev with the filesystem's real, unique
+  `/dev/disk/by-uuid` block-device mapping visible to the process. WSL and
+  containers must expose this provider for developer tooling to establish
+  [durable file custody](design/durable_file_identity.md). A missing or
+  ambiguous mapping refuses with a diagnostic naming the prerequisite.
 
 Platform details and pitfalls live in:
 
