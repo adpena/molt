@@ -1365,8 +1365,9 @@ The shared lookup boundary is `molt_obj_model::AttributeLookup<T>`: `Found`
 transfers one owned value (runtime bits or a native object, including `None`
 or `0.0`), `Missing` creates no exception, and
 `Error` preserves the pending Python failure. Object, scalar, type, module and
-special-method observers and native C-API generic/type observers use this
-result; raw namespace and descriptor
+special-method observers, native C-API generic/type observers and extracted
+HTTP/GPU bridges use this result. Its C layout lets internal satellite symbols
+share the type without a second status protocol. Raw namespace and descriptor
 computations retain Rust's fallible computation protocol internally. Required
 Python entrypoints construct `AttributeError` after the complete lookup misses.
 `lookup_attribute` implements optional observation, suppressing only a real

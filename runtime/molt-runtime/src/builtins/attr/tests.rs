@@ -30,6 +30,15 @@ fn ordinary_missing_observation_needs_no_allocation() {
             );
             assert!(!crate::exception_pending(py));
         }
+        #[cfg(feature = "stdlib_http")]
+        assert_eq!(
+            molt_runtime_http::bridge::attr_optional(
+                py.core_token(),
+                instance,
+                b"absent_http_lookup"
+            ),
+            Ok(None)
+        );
         struct ResetTracker;
         impl Drop for ResetTracker {
             fn drop(&mut self) {
@@ -47,6 +56,30 @@ fn ordinary_missing_observation_needs_no_allocation() {
                 super::AttributeLookup::Missing
             );
             assert!(!crate::exception_pending(py));
+            #[cfg(feature = "stdlib_http")]
+            {
+                assert_eq!(
+                    crate::http_bridge::__molt_http_lookup_attribute(receiver, name),
+                    super::AttributeLookup::Missing
+                );
+                assert_eq!(
+                    molt_runtime_http::bridge::attr_optional(
+                        py.core_token(),
+                        instance,
+                        b"absent_http_lookup"
+                    ),
+                    Ok(None)
+                );
+                assert!(!crate::exception_pending(py));
+            }
+            #[cfg(feature = "molt_gpu_primitives")]
+            {
+                assert_eq!(
+                    crate::gpu_bridge::__molt_gpu_lookup_attribute(receiver, name),
+                    super::AttributeLookup::Missing
+                );
+                assert!(!crate::exception_pending(py));
+            }
         }
         drop(reset);
         for bits in [instance, class, module, class_name] {

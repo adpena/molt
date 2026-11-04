@@ -4,8 +4,11 @@
 /// the caller's owned representation: runtime bits or an owned native object.
 /// Missing never requires an exception object; only a required Python boundary
 /// materializes AttributeError. A callback's real failure remains Error.
+/// The C layout carries runtime bits across internal satellite bridge symbols;
+/// both declarations and producers use this type instead of a second status tag.
 #[derive(Debug, Eq, PartialEq)]
 #[must_use]
+#[repr(C)]
 pub enum AttributeLookup<T = u64> {
     Found(T),
     Missing,
