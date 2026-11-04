@@ -44,6 +44,12 @@ development-image publisher still owns proof environments and their admission.
 Provisioning requires CMake among its system prerequisites and runs
 `molt doctor --json --strict`: a JSON error report cannot count as a successful
 install merely because the report-only doctor mode exits zero.
+System packages stay an operator step, except on a WSL gate guest whose inventory
+record carries `install_system_packages = true`, the owner's per-host approval
+(molt-gate, 2026-11-04). There provision installs the missing packages of
+`trunk_loop.WSL_GUEST_PACKAGES` as root inside the guest (`wsl.exe --user root`)
+before the user-level install, and reports what it installed; a second run
+installs nothing.
 
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of

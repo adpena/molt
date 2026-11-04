@@ -2828,6 +2828,14 @@ owner = "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs"
 summary = "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the rustc version string of the build; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty."
 
 [[variable]]
+name = "MOLT_LANDING_GATE_HOST"
+audience = "developer"
+kind = "string"
+default = ""
+owner = "tools/trunk_landing.py"
+summary = "Opt-in remote landing gates: the inventory host name (tools/cross_hosts.toml) on which the Mac landing runner executes the selected gate cohorts; queue state, the merge and the push stay on the Mac. Unset runs every gate locally."
+
+[[variable]]
 name = "MOLT_LEAK_TOLERANCE"
 audience = "user"
 kind = "int"

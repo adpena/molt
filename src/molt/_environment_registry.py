@@ -4387,6 +4387,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "developer",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_LANDING_GATE_HOST",
+      "output_neutral": false,
+      "owner": "tools/trunk_landing.py",
+      "summary": "Opt-in remote landing gates: the inventory host name (tools/cross_hosts.toml) on which the Mac landing runner executes the selected gate cohorts; queue state, the merge and the push stay on the Mac. Unset runs every gate locally.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "",
       "kind": "int",
