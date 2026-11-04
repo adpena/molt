@@ -254,3 +254,50 @@ exercises custody, immortal, terminal, overflow and revival transitions; and
 measures loop, id, memo_get, getattr_miss, recursion and dataclass_construction
 against exact CPython 3.12.16 with native binary sizes. HF-733, borrow inference
 and closed-world dead-code removal own further size reduction.
+
+## Variant E development measurements (2026-11-04)
+
+The paired experiment uses the same merged source and runtime encoding. Its
+control sends dynamic heap RC to the runtime while retaining producer elision;
+it isolates heap inlining, rather than recreating the original pre-HF-205 tree.
+Both arms use native Cranelift, release compiler and guest profiles, the
+release-output runtime, and exact CPython 3.12.16. Five alternating N=0/N pairs
+per arm retain raw `/usr/bin/time -l` counters and executable identities.
+
+| Primitive | Runtime-call control instr/op | E instr/op | CPython instr/op | Control binary bytes | E binary bytes |
+|---|---:|---:|---:|---:|---:|
+| loop | 223.20 | 223.39 | 518.59 | 27,269,448 | 35,773,240 |
+| id | 723.86 | 650.31 | 1,184.35 | 27,285,288 | 35,789,080 |
+| memo_get | 2,845.05 | 2,279.69 | 1,569.62 | 27,268,592 | 35,755,872 |
+| getattr_miss | 2,644.37 | 2,446.90 | 1,032.86 | 27,252,128 | 35,755,920 |
+| recursion | 397,509.74 | 380,745.47 | 56,348.68 | 27,268,800 | 35,772,592 |
+| dataclass_construction | 32,410.64 | 28,559.25 | 1,965.05 | 29,236,792 | 38,846,888 |
+
+N is 1,000,000 except dataclass construction 100,000. Recursion normalizes
+by 10,000 depth-100 traversals; other rows normalize per iteration. Median
+instruction changes are +0.08%, -10.16%, -19.87%, -7.47%, -4.22% and -11.88%
+in table order. E binaries are larger in every row. No size ratchet is reset.
+
+These are development observations, not release or ratchet qualification.
+E pair spreads range 0.70% to 13.89%; loop, id and dataclass measurements are
+especially noisy. Small deltas must not be interpreted as gains, and the
+dataclass distributions also limit the strength of its median comparison.
+Positive-N wall medians are coarse (0.02 to 0.15s); E peak RSS medians range
+16,678,912 to 28,737,536 bytes, versus control 16,039,936 to 24,903,680 bytes.
+These are process RSS observations, not allocation or live-heap measurements.
+No link-time improvement is claimed.
+
+The retained E loop body has 3,081 static instructions. Its smallest natural
+loop union has 304 instructions and six cold RC sites (two retain, four
+release). On inline-integer bindings, all six pointer-tag branches bypass
+the count loads and cold calls: zero RC calls per normal immediate iteration.
+The natural-loop union still includes rejected heap/terminal paths. The normal
+path retains iterator work; generic arithmetic and pending-work service remain
+cold alternatives owned by their respective ledger families.
+
+The separately requested N=0/10,000,000 loop slope reuses those exact binaries
+without rebuilding. Five paired medians are 222.05758 control, 223.08928 E and
+520.33324 CPython instructions/iteration. E/control is 1.00465; E/CPython
+is 0.42874. Pair spreads are 0.84% control, 1.06% E and
+0.86% CPython. The small control/E difference lies within this
+noise envelope; heap inlining does not establish an immediate-loop gain.
