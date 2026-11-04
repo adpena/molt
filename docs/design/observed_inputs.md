@@ -111,8 +111,9 @@ it never substitutes for a passing result. Pytest's parallel scheduler may finis
 
 Postsubmit runs the full transitive selection on the newest main head when no landing is pending,
 using the same proof executor and receipts. A new request cancels postsubmit. A postsubmit whose
-runnable commands all pass advances `refs/molt/last-green` by compare-and-swap; new lanes use it unless their base
-is explicit, and say when they fall back to `origin/main`. A failure retains last green, names
+runnable commands all pass advances `refs/molt/last-green` by compare-and-swap. Last green is the delta
+base for the next postsubmit, not a branch point: new lanes start at the fetched `origin/main` (or an explicit
+`--base`) and report how far main is past last green (HF-767). A failure retains last green, names
 every commit since it as a suspect and prints the exact revert command for the integrator. The
 runner never reverts. The integrator restores green within about an hour. If transitive misses
 exceed about one landing in five, retain the cases for an owner decision about widening presubmit.
