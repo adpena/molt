@@ -273,7 +273,11 @@ def create_owned_python_venv(root: Path, *, environment: Path | None = None) -> 
     """
     base = Path(sys.base_prefix).resolve()
     install = root / "python"
-    shutil.copytree(base, install, symlinks=True)
+    # Bytecode is a cache of the shared install; a fixture copy carries none, so a
+    # test that asserts a child wrote no bytecode sees only that child's writes.
+    shutil.copytree(
+        base, install, symlinks=True, ignore=shutil.ignore_patterns("__pycache__")
+    )
     base_executable = install / Path(sys._base_executable).resolve().relative_to(base)
     if environment is None:
         environment = root / "venv"
@@ -281,6 +285,9 @@ def create_owned_python_venv(root: Path, *, environment: Path | None = None) -> 
     completed = run_guarded_test_process(
         [
             str(base_executable),
+            # The copied base is a fixture; building its venv writes no bytecode,
+            # so tests that assert a child wrote none observe only that child.
+            "-B",
             "-m",
             "venv",
             "--without-pip",
