@@ -872,7 +872,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_AGENT_EVIDENCE_IDLE_DAYS",
       "output_neutral": false,
       "owner": "src/molt/checkout_state.py",
-      "summary": "Days a terminal coordination task must remain unused before the daily disk guard harvests its payload through soft retirement. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window.",
+      "summary": "Days a terminal coordination task must remain unused before the daily disk guard compacts its payload into an indexed evidence archive. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window.",
       "values": []
     },
     {
@@ -5826,7 +5826,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_SCRATCH_IDLE_DAYS",
       "output_neutral": false,
       "owner": "src/molt/checkout_state.py",
-      "summary": "Days lane-owned or untracked artifact-root scratch may remain unused before daily soft retirement. A removed lane owner permits retirement after two hours. Recursive activity, locks, open guard markers and protected paths keep scratch; incomplete inventories defer collection. Must cover the two-hour protection window.",
+      "summary": "Days lane-owned or untracked artifact-root scratch may remain unused before the daily disk guard deletes it. A removed lane owner permits deletion after two hours. Recursive activity, locks, open guard markers and protected paths keep scratch; incomplete inventories defer collection. Must cover the two-hour protection window.",
       "values": []
     },
     {

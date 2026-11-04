@@ -610,6 +610,12 @@ Reclaim through the existing owners:
   plans eligible build-state reclamation. Review its scope before applying.
   A successful plan or collector run does not admit the next build: remeasure
   the actual output filesystem through the capacity authority.
+- `tools/disk_guard.py --root <artifact-root> --reclaim-retired --dry-run --json`
+  previews one bounded pass over the historical `retired/` backlog. Repeat
+  with `--apply` to delete proven regenerable roots; `--max-roots` and
+  `--budget-seconds` bound each pass, and the next pass resumes after the last
+  examined entry. Unproven records and durable evidence stay
+  ([storage authority](design/storage_authority.md)).
 - `tools/molt_cache_prune.py --cache-dir <cache-root> --max-gb <budget> --dry-run`
   plans cache retention. Protected legacy publishers, held readers and
   installation state remain protected; an empty plan is not permission for
