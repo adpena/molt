@@ -70,8 +70,8 @@ fn every_available_task_shape_keeps_capture_and_dictionary_ownership_disjoint() 
                     Ok(None)
                 ));
                 assert!(field_storage::field_at_offset(py, ptr, 0).is_none());
-                let mut fields = 0;
-                field_storage::for_each_instance_field(py, ptr, class_ptr, &mut |_, _| fields += 1);
+                let fields =
+                    field_storage::with_instance_fields(py, ptr, class_ptr, |fields| fields.len());
                 assert_eq!(fields, 0, "{shape:?}");
                 assert!(field_storage::slot_state_names(py, ptr).is_none());
                 field_storage::reset(py, ptr);
@@ -194,8 +194,8 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
                 Ok(None)
             ));
             assert!(field_storage::field_at_offset(py, ptr, 0).is_none());
-            let mut fields = 0;
-            field_storage::for_each_instance_field(py, ptr, class_ptr, &mut |_, _| fields += 1);
+            let fields =
+                field_storage::with_instance_fields(py, ptr, class_ptr, |fields| fields.len());
             assert_eq!(fields, 0);
             field_storage::reset(py, ptr);
             let after = ptr

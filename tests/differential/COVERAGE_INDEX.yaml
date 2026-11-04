@@ -22,6 +22,7 @@ core:
       - tests/differential/basic/class_annotation_namespace.py
       - tests/differential/basic/class_annotation_namespace_313.py
       - tests/differential/basic/class_constructor_cell_callbacks.py
+      - tests/differential/basic/object_dict_field_write_coherence.py
       - tests/differential/basic/super_comprehension_frame_ownership.py
       - tests/differential/basic/super_runtime_frame_context.py
       - tests/differential/basic/super_runtime_frame_mutating_receiver.py

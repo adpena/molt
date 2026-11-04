@@ -621,22 +621,25 @@ pub extern "C" fn __molt_gpu_default_field(object: u64, name: *const u8, len: us
                         return refused();
                     };
                     let mut selected = None;
-                    crate::object::field_storage::for_each_instance_field(
+                    crate::object::field_storage::with_instance_fields(
                         py,
                         object,
                         class,
-                        &mut |field, slot| {
-                            let Some(key) = crate::obj_from_bits(field.name).as_ptr() else {
-                                return;
-                            };
-                            if field.kind == crate::object::class_layout::ClassFieldKind::Inferred
-                                && crate::object_type_id(key) == crate::TYPE_ID_STRING
-                                && std::slice::from_raw_parts(
-                                    crate::string_bytes(key),
-                                    crate::string_len(key),
-                                ) == name
-                            {
-                                selected = Some(*slot);
+                        |fields| {
+                            for (field, slot) in fields {
+                                let Some(key) = crate::obj_from_bits(field.name).as_ptr() else {
+                                    continue;
+                                };
+                                if field.kind
+                                    == crate::object::class_layout::ClassFieldKind::Inferred
+                                    && crate::object_type_id(key) == crate::TYPE_ID_STRING
+                                    && std::slice::from_raw_parts(
+                                        crate::string_bytes(key),
+                                        crate::string_len(key),
+                                    ) == name
+                                {
+                                    selected = Some(*slot);
+                                }
                             }
                         },
                     );
@@ -921,13 +924,10 @@ pub extern "C" fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64)
                 return 0;
             };
             let mut selected = None;
-            crate::object::field_storage::for_each_instance_field(
-                py,
-                object,
-                class,
-                &mut |field, slot| {
+            crate::object::field_storage::with_instance_fields(py, object, class, |fields| {
+                for (field, slot) in fields {
                     let Some(key) = crate::obj_from_bits(field.name).as_ptr() else {
-                        return;
+                        continue;
                     };
                     if field.kind.is_inferred()
                         && crate::object_type_id(key) == crate::TYPE_ID_STRING
@@ -939,8 +939,8 @@ pub extern "C" fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64)
                     {
                         selected = Some(field.offset);
                     }
-                },
-            );
+                }
+            });
             let Some(offset) = selected else {
                 return 0;
             };

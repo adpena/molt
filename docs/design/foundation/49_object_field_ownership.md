@@ -12,6 +12,20 @@ inline inferred attributes to dictionary backing. Declared slots stay inline.
 Runtime traversal, serialization, field access, dictionary publication, and GC
 consume this authority; mutable class dictionaries never redefine physical layout.
 
+Construction and retirement traverse the sealed physical rows with scoped
+typed iterators. Count and traversal consume one projection; each field does
+not cross another erased callback boundary.
+The physical field base is projected once per traversal, including native
+subtype tails. Layout-compatible `__class__` replacement cannot move that
+payload. The immutable record remains pinned across callback-capable visits,
+using the existing token-bound tuple owner to avoid a public RC runtime entry;
+declared slots and hidden inherited owners retain their distinct rows. The
+same row authority supplies the count: an empty layout needs no field-base
+projection, missing-sentinel preparation or record pin. The existing
+inline-to-dictionary transition follows CPython's managed
+instance values and demand materialization
+([CPython 3.12 dictobject.c](https://github.com/python/cpython/blob/v3.12.0/Objects/dictobject.c)).
+
 `object/accessors.rs` retains the incoming value, publishes the new slot, then
 releases the displaced value. A callback triggered by release sees the new state.
 Dictionary-backed access uses the dictionary's ownership protocol. Initialization

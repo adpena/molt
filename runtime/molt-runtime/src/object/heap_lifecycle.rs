@@ -387,16 +387,13 @@ unsafe fn visit_class_shaped_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mut 
     let class_bits = unsafe { object_class_bits(ptr) };
     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
         unsafe {
-            super::field_storage::for_each_instance_field(
-                py,
-                ptr,
-                class_ptr,
-                &mut |_field, slot| {
+            super::field_storage::with_instance_fields(py, ptr, class_ptr, |fields| {
+                for (_, slot) in fields {
                     if !crate::is_missing_bits(py, *slot) {
                         visit_bits(*slot, visit);
                     }
-                },
-            );
+                }
+            });
         }
     }
     let dictionary = unsafe { instance_dict_bits(ptr) };
@@ -1105,17 +1102,14 @@ unsafe fn clear_class_shaped_edges(py: &PyToken<'_>, ptr: *mut u8, sink: &mut De
     let class_bits = unsafe { object_class_bits(ptr) };
     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
         unsafe {
-            super::field_storage::for_each_instance_field(
-                py,
-                ptr,
-                class_ptr,
-                &mut |_field, slot| {
+            super::field_storage::with_instance_fields(py, ptr, class_ptr, |fields| {
+                for (_, slot) in fields {
                     let old = slot.replace(crate::missing_bits(py));
                     if !crate::is_missing_bits(py, old) {
                         sink.detach_if_heap(old);
                     }
-                },
-            );
+                }
+            });
         }
     }
     let dict = unsafe { super::instance_dict_bits_ptr(ptr) };

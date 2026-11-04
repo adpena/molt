@@ -17,6 +17,7 @@ tests/differential/basic/expression_result_authority.py
 tests/differential/basic/module_attribute_miss.py
 tests/differential/basic/module_function_observation.py
 tests/differential/basic/namespace_publication_release.py
+tests/differential/basic/object_dict_field_write_coherence.py
 tests/differential/basic/pattern_matching_basic.py
 tests/differential/basic/pattern_matching_core_matrix.py
 tests/differential/basic/pep448_unpacking_generalizations.py
