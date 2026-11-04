@@ -3124,7 +3124,9 @@ def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
         before.st_mtime_ns,
         before.st_ctime_ns,
     )
-    assert getattr(tmp_path.stat(), "st_rdev", None) == getattr(ordinary, "st_rdev", None)
+    assert getattr(tmp_path.stat(), "st_rdev", None) == getattr(
+        ordinary, "st_rdev", None
+    )
     assert durable._linux_volume(1091, by_uuid) == "ABCD-1234"
     with pytest.raises(durable.IdentityUnavailable, match="absent.*udev"):
         durable._linux_volume(91, by_uuid)
