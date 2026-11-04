@@ -3083,7 +3083,10 @@ def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
             )
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(os, "stat", query)
+    # Keep the synthetic block-device namespace local to this test module;
+    # the shared renumber helper then wraps that same private OS boundary.
+    install_module_view(monkeypatch, "os", os, sys.modules[__name__], stat=query)
+    monkeypatch.setattr(Path, "stat", lambda path, *a, **kw: os.stat(path, *a, **kw))
     assert durable._linux_volume(91, by_uuid) == "ABCD-1234"
     with pytest.raises(durable.IdentityUnavailable, match="absent.*udev"):
         durable._linux_volume(55, by_uuid)
