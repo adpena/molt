@@ -2304,6 +2304,54 @@ contents; a compiler edit must not require republishing that whole image.
 
 ## Managed Python images
 
+Development-image freshness observes a fresh isolated interpreter at `ensure`,
+including `lane start`. Publication writes `molt-python-interpreter.json` with
+the realized base interpreter's physical path and CPython version before full
+image capture. That file is installed image content, not an admission cache.
+The existing recipe still owns the requested runtime closure; full attestation
+owns the record's bytes. Freshness compares the live pair with both the record
+and recipe version. Missing records require replacement, never a current claim.
+Ordinary launch path selection retains its subprocess-free contract below.
+
+The publisher passes the realized full patch version to `uv sync --python`
+with downloads disabled, then verifies that uv created the selected physical
+interpreter binding. A path's `realpath()` alone is insufficient: in uv 0.13.6,
+[file and directory requests do not include a patch](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-types/src/request.rs#L469-L485).
+[UpgradePolicy::from_request](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-managed/src/managed.rs#L755-L779)
+therefore permits patch upgrades for those requests, while an exact patch
+request selects `Fixed`. The
+[managed-link selector](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-managed/src/managed.rs#L872-L883)
+returns no minor alias for `Fixed`; the
+[virtualenv producer](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-virtualenv/src/virtualenv.rs#L204-L241)
+uses that choice for both `home` and the launcher. Molt never edits uv's links
+or `pyvenv.cfg`. A missing or mismatched install names the found interpreter
+and `uv python install <patch>`; no download or patch fallback is permitted.
+
+An existing matching interpreter returns directly from
+[find_or_download](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-discovery/src/installation.rs#L174-L204);
+a minor request alone does not unconditionally move its link. On the fetch
+path, even `AlreadyAvailable` flows into
+[highest-patch link publication](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-discovery/src/installation.rs#L315-L364).
+`uv python install` also
+[reasserts highest-patch links](https://github.com/astral-sh/uv/blob/0.13.6/crates/uv-python-commands/src/install.rs#L720-L729),
+whose producer uses `replace_symlink`. These paths can retarget an existing
+alias; the historical invoking command is not established by this source audit.
+Image permanence therefore assumes that any subsequent provider operation may
+move the alias. Regression coverage moves it after publication, then checks
+both actual patch execution and canonical ensure freshness.
+
+Only canonical ensure replaces an interpreter-stale development generation.
+Under the existing checkout provisioner and address locks, it observes the
+interpreter before acquiring exclusive checkout-state retirement custody:
+guarded probes are themselves managed readers. Executable/configuration
+generation fences and selection validation remain active through acquisition;
+their file handles close before rename. Live readers refuse replacement. `soft_retire` writes its
+existing recovery record and renames the generation under the artifact root's
+`retired/` namespace before rebuilding; it deletes no published image. Explicit
+`UV_PROJECT_ENVIRONMENT` selections remain caller-owned and refuse replacement.
+Malformed metadata and unrelated image corruption remain admission failures.
+Linux and Windows image behavior requires its own execution qualification.
+
 Managed images compile source on import rather than publishing caches for every
 installed and standard-library module at optimization levels 0, 1 and 2. The
 source-build address includes schema v9 and `cpython-source-only.v1`; old image

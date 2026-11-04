@@ -232,6 +232,17 @@ The code that decides whether a change lands is never the change.
 ### 2. Declarative checkout provisioning
 
 A checkout's inputs come from its lock files, on demand, as `uv run` does.
+Managed Python freshness, including the landing sandbox, follows the
+[managed image contract](foundation/56_dx_buildspeed_tooling.md#managed-python-images).
+Gate preparation and generated-merge regeneration both call canonical `ensure`,
+including explicit `UV_PROJECT_ENVIRONMENT` selections. Neither a valid recipe
+nor a stored selection can call an interpreter current after its patch changes.
+The runner clears inherited environment selectors before selecting its own
+sandbox, so ensure can retire an idle drifted generation by rename and rebuild
+it with an exact patch request. An explicit caller selection instead refuses
+replacement, and live reader locks preserve the old image. The pinned
+controller owns the implementation of ensure; existing immutable controllers
+are refreshed from landed main, never patched in place.
 
 - **Prior art.** `uv run` syncs the environment from `uv.lock` before each
   run. rustup installs the toolchain that `rust-toolchain.toml` names on first

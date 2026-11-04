@@ -482,6 +482,7 @@ def python_capture_authority_paths(
         "python_capture",
         "python_interpreter",
         "target_python",
+        "host_python",
         "target_python_policy",
         "_python_release_generated",
         "verified_subset",

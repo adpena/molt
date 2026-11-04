@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -600,14 +601,17 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
     module = dev
     clone = _isolated_checkout(module, monkeypatch, tmp_path)
     image = materialize_development_environment(
-        clone, clone, python="3.12", select=True
+        clone,
+        clone,
+        python=".".join(map(str, module.sys.version_info[:3])),
+        select=True,
     )
     calls: list[tuple[list[str], dict[str, str], object | None]] = []
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
         calls.append((list(cmd), dict(env), limits))
 
-    fake_limits = object()
+    fake_limits = module.harness_memory_guard.limits_from_env("MOLT_CLI", {})
     monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
     monkeypatch.setattr(
         module.harness_memory_guard,
@@ -618,7 +622,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
 
     module.run_uv(
         ["python", "-c", "print('ok')"],
-        python="3.12",
+        python=".".join(map(str, module.sys.version_info[:3])),
         env={
             "PATH": "/usr/bin",
             "MOLT_EXT_ROOT": str(module.ROOT),
@@ -699,22 +703,27 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     explicit_root = tmp_path / "external-root"
     explicit_cache = tmp_path / "cache"
     image = materialize_development_environment(clone, explicit_root, select=True)
-    # Alias preservation is part of dispatch: the synthetic image must actually
-    # supply the requested entry, rather than relying on a canonical fallback.
+    # Alias preservation is part of dispatch. Replace the venv's alias itself,
+    # never write through a link into the shared base interpreter installation.
     alias = image.python_executable.with_name(
         "python3.exe" if os.name == "nt" else "python3"
     )
-    alias.write_bytes(image.python_executable.read_bytes())
+    alias.unlink(missing_ok=True)
+    if os.name == "nt":
+        alias.write_bytes(image.python_executable.read_bytes())
+    else:
+        alias.symlink_to(image.python_executable.name)
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
         del limits
         calls.append((list(cmd), dict(env)))
 
     monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
+    limits = module.harness_memory_guard.limits_from_env("MOLT_CLI", {})
     monkeypatch.setattr(
         module.harness_memory_guard,
         "limits_from_env",
-        lambda prefix, env: object(),
+        lambda prefix, env: limits,
         raising=True,
     )
 
@@ -787,33 +796,35 @@ def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> No
     assert calls == [("guarded", ["pytest", "-q"])]
 
 
-def test_dev_py_uv_no_sync_uses_exact_projection_without_runtime_reprobe(
+def test_dev_py_uv_no_sync_uses_exact_projection_without_republication(
     monkeypatch, tmp_path
 ) -> None:
     from molt import source_build_environment as publisher
     from molt.checkout_provisioning import ProvisioningError
 
     clone = _isolated_checkout(dev, monkeypatch, tmp_path)
+    python = ".".join(map(str, sys.version_info[:3]))
+    foreign_python = "3.13" if sys.version_info[:2] != (3, 13) else "3.12"
     image = materialize_development_environment(
-        clone, clone, python="3.12", select=True
+        clone, clone, python=python, select=True
     )
     next_image = materialize_development_environment(
-        clone, clone, python="3.13", select=True
+        clone, clone, python=foreign_python, select=True
     )
     calls = []
     monkeypatch.setattr(
         dev, "_check_call_guarded", lambda cmd, env, **kwargs: calls.append(cmd)
     )
 
-    def forbid_runtime_probe(*args, **kwargs):
-        raise AssertionError("a current selector must not reprobe or publish")
+    def forbid_republication(*args, **kwargs):
+        raise AssertionError("a current selector must not recapture or publish")
 
-    monkeypatch.setattr(publisher, "development_environment", forbid_runtime_probe)
+    monkeypatch.setattr(publisher, "development_environment", forbid_republication)
     env = {"MOLT_EXT_ROOT": str(clone), "UV_PROJECT_ENVIRONMENT": str(image.root)}
-    dev.run_uv(["python", "--version"], python="3.12", env=env)
+    dev.run_uv(["python", "--version"], python=python, env=env)
     assert len(calls) == 1 and "--no-sync" in calls[0] and "--no-config" in calls[0]
     with pytest.raises(ProvisioningError, match="different requested Python"):
-        dev.run_uv(["python", "--version"], python="3.13", env=env)
+        dev.run_uv(["python", "--version"], python=foreign_python, env=env)
     assert len(calls) == 1, "a conflicting exact request must never launch or resync"
     # Installation reaches the existing ensure owner directly. It must not
     # require another managed Python child to select the first image.
@@ -822,9 +833,27 @@ def test_dev_py_uv_no_sync_uses_exact_projection_without_runtime_reprobe(
     dev.main()
     assert len(calls) == 1
     # A requested matrix intent is bound before DX can rediscover the default
-    # image. Both current projections stay reusable without a runtime probe.
+    # image. A foreign-version selector fixture has synthetic runtime custody;
+    # supply that observation at its interpreter boundary. The host-image
+    # operations above exercise the actual fresh interpreter observation.
+    from molt import python_interpreter as interpreter
+
+    observe = interpreter.observe_python_interpreter
+    foreign = interpreter.RealizedPythonInterpreter(
+        Path(sys._base_executable).resolve(),
+        str(next_image.custody["python_runtime"]["version"]),
+    )
+
+    def observed(executable, *args, **kwargs):
+        if executable == next_image.python_executable:
+            return foreign
+        return observe(executable, *args, **kwargs)
+
+    monkeypatch.setattr(interpreter, "observe_python_interpreter", observed)
     dev.run_uv(
-        ["python", "--version"], python="3.13", env={"MOLT_EXT_ROOT": str(clone)}
+        ["python", "--version"],
+        python=foreign_python,
+        env={"MOLT_EXT_ROOT": str(clone)},
     )
     assert calls[-1][calls[-1].index("--python") + 1] == str(
         next_image.python_executable

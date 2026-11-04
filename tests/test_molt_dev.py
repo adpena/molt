@@ -59,7 +59,6 @@ import sysconfig
 import subprocess
 import textwrap
 import time
-import venv
 from collections.abc import Sequence
 from pathlib import Path
 from tests.process_guard_common import (
@@ -944,10 +943,10 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
 
 
 def _make_gate_venv(path: Path, token: str | None) -> Path:
-    # POSIX venvs share the immutable interpreter image; prefixes, packages and
-    # marker modules remain private. Windows keeps CPython's copy/redirector path.
-    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(path)
-    # EnvBuilder uses this interpreter's venv scheme. Actual selected-Python
+    from tests.python_environment_test_support import create_test_venv
+
+    create_test_venv(path)
+    # The private copy uses this interpreter's venv scheme. Actual selected-Python
     # execution below proves prefix, imports, encoding and shell activation;
     # fixture setup needs no guarded interpreter just to repeat this path query.
     site = Path(
@@ -1780,6 +1779,43 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
                 requires_python=True,
             ),
         )
+
+
+@pytest.mark.parametrize("consumer", ["gate", "generated-merge"])
+def test_landing_consumers_refuse_a_drifted_explicit_managed_image(
+    drv, tmp_path, monkeypatch, consumer
+):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+    from molt.python_interpreter import INTERPRETER_RECORD
+    from tools import generated_merge
+
+    root, artifacts = tmp_path / "landing-sandbox", tmp_path / "artifacts"
+    _init_repo(root)
+    image = materialize_development_environment(root, artifacts, select=True)
+    record_path = image.root / INTERPRETER_RECORD
+    record = json.loads(record_path.read_text())
+    parts = list(map(int, record["version"].split(".")))
+    parts[-1] += 1
+    record["version"] = ".".join(map(str, parts))
+    record_path.write_text(json.dumps(record))
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    before = image.manifest_path.read_bytes()
+    with pytest.raises(
+        (DriverError, generated_merge.GeneratedMergeError),
+        match="stale interpreter.*explicit UV_PROJECT_ENVIRONMENT",
+    ):
+        if consumer == "gate":
+            drv.prepare_gate_environment(
+                root, ProcessEnvironment(os.environ), requires_python=True
+            )
+        else:
+            generated_merge.regenerate(root, ())
+    assert image.manifest_path.read_bytes() == before
+    assert not list((artifacts / "retired").glob("*/*.retirement.json"))
 
 
 def _write_gates(tmp_path: Path) -> Path:
@@ -8382,6 +8418,12 @@ def test_detached_python_child_preserves_startup_policy_without_writes(
     tmp_path, prefix_selected, utf8
 ):
     from tools.command_execution import CommandExecutor
+    from tests.python_environment_test_support import create_test_venv
+
+    # Isolated startup must not import a borrowed image's editable donor via
+    # sitecustomize before the child selects this checkout. Keep the private
+    # installation outside the probe tree whose bytecode writes we observe.
+    python = create_test_venv(tmp_path.with_name(tmp_path.name + "-python"))
 
     fixture = tmp_path / "fixture"
     fixture.mkdir()
@@ -8409,7 +8451,7 @@ def test_detached_python_child_preserves_startup_policy_without_writes(
     )
     completed = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").run(
         [
-            sys.executable,
+            str(python),
             "-I",
             "-B",
             "-X",

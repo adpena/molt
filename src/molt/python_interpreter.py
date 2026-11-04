@@ -740,3 +740,111 @@ def python_command_for_min_version(
     return resolve_python_interpreter(
         request, verifier=verifier, override=override, env=env, cwd=cwd
     ).command
+
+
+INTERPRETER_RECORD = "molt-python-interpreter.json"
+_SCHEMA = "molt.realized-python-interpreter.v1"
+_PROBE = f"""import json,platform,sys
+from pathlib import Path
+print(json.dumps(dict(schema={_SCHEMA!r},
+ executable=str(Path(getattr(sys,'_base_executable',None) or sys.executable).resolve(strict=True)),
+ version=platform.python_version(),implementation=sys.implementation.name)))
+"""
+
+
+@dataclass(frozen=True)
+class RealizedPythonInterpreter:
+    executable: Path
+    version: str
+
+    @classmethod
+    def parse(cls, payload: object) -> RealizedPythonInterpreter:
+        from molt import python_environment_contract as contract
+
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"schema", "executable", "version", "implementation"}
+            or payload["schema"] != _SCHEMA
+            or payload["implementation"] != "cpython"
+            or not isinstance(payload["executable"], str)
+            or not Path(payload["executable"]).is_absolute()
+        ):
+            raise contract.SourceBuildEnvironmentError(
+                "invalid realized Python interpreter"
+            )
+        version = contract.parse_canonical_python_runtime_version(payload["version"])
+        return cls(Path(payload["executable"]), version.text)
+
+    def publish(self, root: Path) -> None:
+        from molt.exact_json import write_exact
+
+        write_exact(
+            root / INTERPRETER_RECORD,
+            {
+                "schema": _SCHEMA,
+                "implementation": "cpython",
+                "executable": str(self.executable),
+                "version": self.version,
+            },
+        )
+
+
+def observe_python_interpreter(
+    executable: Path, environ: Mapping[str, str], *, cwd: Path | None = None
+) -> RealizedPythonInterpreter:
+    """Observe a fresh CPython process without importing the editable project."""
+    from molt import process_guard
+    from molt import python_environment_contract as contract
+    from molt.exact_json import loads_exact
+    from molt.process_environment import ProcessEnvironment
+    from molt.toolchain_identity import stable_executable_probe
+
+    with stable_executable_probe(executable, label="image interpreter") as (entry, _):
+        result = process_guard.run_completed_command(
+            [str(entry), "-I", "-B", "-S", "-c", _PROBE],
+            env=ProcessEnvironment(environ),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60.0,
+        )
+    if result.returncode != 0:
+        raise contract.SourceBuildEnvironmentError(
+            f"cannot observe image interpreter {executable}: "
+            + (
+                result.stderr or result.stdout or f"returncode={result.returncode}"
+            ).strip()
+        )
+    return RealizedPythonInterpreter.parse(loads_exact(result.stdout))
+
+
+def development_interpreter_problem(
+    root: Path, version: str, environ: Mapping[str, str], *, cwd: Path | None = None
+) -> str | None:
+    """Return drift, leaving malformed records and failed observations loud."""
+    from molt.exact_json import read_exact
+    from molt.python_environment_location import environment_python_path
+    from molt.process_environment import ProcessEnvironment
+
+    environment = ProcessEnvironment(environ)
+    if environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
+        # This coordinate has already been selected against its checkout.
+        # Pass the physical selection across the guard boundary: rebasing a
+        # relative activation against the guard's source root changes custody.
+        environment = environment.updated({"UV_PROJECT_ENVIRONMENT": str(root)})
+    found = observe_python_interpreter(
+        environment_python_path(root), environment, cwd=cwd
+    )
+    record = root / INTERPRETER_RECORD
+    if not record.exists() and not record.is_symlink():
+        return f"missing realized interpreter record; found {found.executable} (CPython {found.version})"
+    recorded = RealizedPythonInterpreter.parse(
+        read_exact(record, max_bytes=65536, label="realized Python interpreter")
+    )
+    if found != recorded or found.version != version:
+        return (
+            f"recorded {recorded.executable} (CPython {recorded.version}), "
+            f"found {found.executable} (CPython {found.version}); expected CPython {version}"
+        )
+    return None

@@ -120,7 +120,7 @@ def regenerate(root: Path, tools: tuple[str, ...]) -> tuple[str, ...]:
     from tools.venv_exec import VenvExecError, resolve_venv, venv_env, venv_python
     from molt import checkout_provisioning
 
-    if os.environ.get("UV_PROJECT_ENVIRONMENT") or os.environ.get("MOLT_VENV"):
+    if os.environ.get("MOLT_VENV"):
         try:
             image = resolve_venv(repo_root=root)
         except VenvExecError as exc:

@@ -406,7 +406,10 @@ toolchains = []
         output.write_text(gen_finding_ids.render(repo), encoding="utf-8")
         _git(repo, "commit", "-qam", f"open {key}")
     _git(repo, "switch", "-q", "main")
-    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", sys.prefix)
+    # This tiny Git fixture borrows the runner's image; it does not publish a
+    # managed image bound to the disposable merged checkout.
+    monkeypatch.setenv("MOLT_VENV", sys.prefix)
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     return repo, base, ledger, output
 
 
@@ -655,9 +658,7 @@ def test_merge_regeneration_names_an_unavailable_selected_image(tmp_path, monkey
 
     monkeypatch.delenv("MOLT_VENV", raising=False)
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "missing-image"))
-    with pytest.raises(
-        generated_merge.GeneratedMergeError, match="virtualenv Python not found"
-    ):
+    with pytest.raises(generated_merge.GeneratedMergeError, match="missing-image"):
         generated_merge.regenerate(ROOT, ("tools/gen_finding_ids.py",))
 
 

@@ -27,6 +27,202 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "tools" / "molt_dev.py"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake uv installation links")
+@pytest.mark.parametrize(
+    "fault", ["drift", "unrecorded", "exact", "explicit", "reader", "refresh"]
+)
+def test_development_interpreter_freshness_and_lossless_replacement(
+    tmp_path, monkeypatch, fault
+):
+    """Real processes and link moves judge freshness, not a mocked state answer."""
+    import shlex
+    from contextlib import nullcontext
+    from molt import source_build_environment as publisher
+    from molt.checkout_state import checkout_state_use, read_soft_retirement
+    from molt.python_interpreter import (
+        RealizedPythonInterpreter,
+        INTERPRETER_RECORD,
+    )
+    from tests.python_environment_test_support import copy_python_capture_authority
+
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    _init_repo(root)
+    copy_python_capture_authority(root)
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='selector-fixture'\nversion='1.0'\n"
+        "requires-python='>=3.12'\ndependencies=[]\n[dependency-groups]\n"
+    )
+    image = materialize_development_environment(root, artifacts, select=True)
+    version = str(image.custody["python_runtime"]["version"])
+    parts = list(map(int, version.split(".")))
+    parts[-1] += 1
+    newer = ".".join(map(str, parts))
+    installations = tmp_path / "uv-python"
+
+    def installation(patch):
+        executable = installations / f"cpython-{patch}-test" / "bin/python"
+        executable.parent.mkdir(parents=True)
+        payload = json.dumps(
+            {
+                "schema": "molt.realized-python-interpreter.v1",
+                "implementation": "cpython",
+                "version": patch,
+                "executable": str(executable),
+            }
+        )
+        executable.write_text(
+            "#!/bin/sh\nprintf '%s\\n' " + shlex.quote(payload) + "\n"
+        )
+        executable.chmod(0o755)
+        return executable
+
+    exact = installation(version)
+    replacement = installation(newer)
+    alias = installations / "cpython-minor-test"
+    alias.symlink_to(exact.parent.parent, target_is_directory=True)
+    image.python_executable.unlink()
+    image.python_executable.symlink_to(
+        exact if fault == "exact" else alias / "bin/python"
+    )
+    RealizedPythonInterpreter(exact, version).publish(image.root)
+    if fault == "unrecorded":
+        (image.root / INTERPRETER_RECORD).unlink()
+    preserved = {
+        p.relative_to(image.root): p.read_bytes()
+        for p in image.root.rglob("*")
+        if p.is_file() and not p.is_symlink()
+    }
+    alias.unlink()
+    alias.symlink_to(replacement.parent.parent, target_is_directory=True)
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifacts)})
+    if fault == "explicit":
+        environment = environment.updated({"UV_PROJECT_ENVIRONMENT": str(image.root)})
+    spec = cp.checkout_input("uv-environment", root, environment)
+    assert cp.input_state(spec) == ("current" if fault == "exact" else "stale")
+
+    # A fake uv implements the real process boundary. Its filesystem effects
+    # independently show which patch request publication passed to it.
+    uv = tmp_path / "uv"
+    log = tmp_path / "uv-requests.json"
+    uv.write_text(
+        "#!" + sys.executable + "\n"
+        "import json,os,pathlib,sys\n"
+        f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        f"assert sys.argv[sys.argv.index('--python')+1] == {version!r}\n"
+        "target=pathlib.Path(os.environ['UV_PROJECT_ENVIRONMENT'])\n"
+        "(target/'bin').mkdir(parents=True)\n"
+        f"(target/'bin/python').symlink_to({str(exact)!r})\n"
+        f"(target/'pyvenv.cfg').write_text('home = {exact.parent}\\nversion_info = {version}\\n')\n"
+    )
+    uv.chmod(0o755)
+    custody = {k: v for k, v in image.custody.items() if k != "realized_image"}
+    realized = image.custody["realized_image"]["image"]
+    monkeypatch.setattr(
+        publisher,
+        "_selected_python_recipe",
+        lambda *_args: (exact, custody["python_runtime"], {}, {}),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "_environment_spec",
+        lambda *_args, **_kwargs: (
+            image.root,
+            image.python_executable,
+            image.manifest_path,
+            custody,
+            uv,
+        ),
+    )
+    monkeypatch.setattr(
+        publisher, "_probe_environment_identity", lambda *_args, **_kwargs: realized
+    )
+    lease = (
+        checkout_state_use(((image.root, None),), publish=False)
+        if fault == "reader"
+        else nullcontext()
+    )
+    with lease:
+        if fault in {"reader", "explicit"}:
+            with pytest.raises(
+                (cp.ProvisioningError, _contract.SourceBuildEnvironmentError),
+                match="live readers|explicit UV_PROJECT_ENVIRONMENT",
+            ):
+                cp.ensure_input(spec)
+            assert image.root.is_dir() and not log.exists()
+            assert not list((artifacts / "retired").glob("*/*.retirement.json"))
+            return
+        result = cp.ensure_input(spec, refresh_runtime=fault == "refresh")
+    assert result.provisioned == (fault != "exact")
+    assert result.environment_root == image.root
+    assert cp.input_state(spec) == "current"
+    if fault == "exact":
+        assert not log.exists()
+        return
+    request = json.loads(log.read_text())
+    assert request[request.index("--python") + 1] == version
+    assert "--no-python-downloads" in request
+    assert image.python_executable.resolve() == exact
+    records = list((artifacts / "retired").glob("*/*.retirement.json"))
+    assert len(records) == 1
+    retired = read_soft_retirement(records[0], artifacts)
+    assert retired is not None and retired.original == image.root
+    for relative, data in preserved.items():
+        assert (retired.path / relative).read_bytes() == data
+    assert "stale development interpreter" in retired.reason
+    assert not cp.ensure_input(spec).provisioned
+    # Permanence: move the minor link again *after* canonical publication.
+    # The launcher must still execute the exact patch that uv selected.
+    parts[-1] += 1
+    later = installation(".".join(map(str, parts)))
+    alias.unlink()
+    alias.symlink_to(later.parent.parent, target_is_directory=True)
+    from molt.python_interpreter import observe_python_interpreter
+
+    assert observe_python_interpreter(
+        image.python_executable, environment
+    ) == RealizedPythonInterpreter(exact, version)
+    assert cp.input_state(spec) == "current"
+    assert not cp.ensure_input(spec).provisioned
+
+
+def test_unrecorded_real_python_image_retires_without_probing_under_exclusive_lock(
+    tmp_path, monkeypatch
+):
+    from molt import source_build_environment as publisher
+    from molt.python_interpreter import INTERPRETER_RECORD
+
+    root, artifacts = tmp_path / "landing-sandbox", tmp_path / "artifacts"
+    _init_repo(root)
+    old = materialize_development_environment(root, artifacts, select=True)
+    (old.root / INTERPRETER_RECORD).unlink()
+    before = old.manifest_path.read_bytes()
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifacts)})
+    monkeypatch.setattr(
+        publisher,
+        "development_environment",
+        lambda *_args, **_kwargs: dataclasses.replace(
+            materialize_development_environment(root, artifacts), provisioned=True
+        ),
+    )
+    assert (
+        cp.input_state(cp.checkout_input("uv-environment", root, environment))
+        == "stale"
+    )
+    assert cp.ensure("uv-environment", root, environment).provisioned
+    assert (
+        cp.input_state(cp.checkout_input("uv-environment", root, environment))
+        == "current"
+    )
+    records = list((artifacts / "retired").glob("*/*.retirement.json"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    preserved = records[0].with_name(records[0].name.removesuffix(".retirement.json"))
+    assert record["original_path"] == str(old.root)
+    assert (
+        preserved / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    ).read_bytes() == before
+
+
 def test_artifact_root_command_binds_reports_and_clears(
     checkout, tmp_path, monkeypatch, capsys
 ):

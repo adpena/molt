@@ -3216,10 +3216,10 @@ def test_managed_empty_prefix_membership_retains_final_fence(tmp_path):
 def test_managed_capture_refuses_cache_inserted_at_inventory_boundary(
     tmp_path, leave_present
 ):
-    import venv
+    from tests.python_environment_test_support import create_test_venv
 
     root = tmp_path / "image"
-    venv.EnvBuilder(with_pip=False).create(root)
+    create_test_venv(root)
     (root / "bytecode").mkdir()
     provisional = location.environment_provisioning_record_path(root)
     provisional.parent.mkdir()
