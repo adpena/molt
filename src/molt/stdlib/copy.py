@@ -1,7 +1,7 @@
 # Adapted from CPython 3.12 Lib/copy.py: copy, deepcopy, _keep_alive and
 # _reconstruct. Copyright Python Software Foundation; PSF-2.0, see
-# collections/LICENSE.cpython. Molt retains replace and uses its exact-builtin
-# runtime primitives where measured; protocol dispatch and memo remain Python.
+# collections/LICENSE.cpython. replace follows CPython 3.13 Lib/copy.py. Molt
+# uses exact-builtin runtime primitives; protocol dispatch and memo remain Python.
 """Generic (shallow and deep) copying operations.
 
 Interface summary:
@@ -313,19 +313,11 @@ del types, weakref
 if _sys.version_info >= (3, 13):
     __all__.append("replace")
 
+    # CPython v3.13.9 and v3.14.0 Lib/copy.py: replace (PSF-2.0).
     def replace(obj, /, **changes):
-        """Return a modified copy of obj with the given attribute changes applied."""
-        cls = type(obj)
-        # The __replace__ protocol was introduced in Python 3.13.
-        replacer = getattr(cls, "__replace__", None)
-        if replacer is not None:
-            return replacer(obj, **changes)
-        # For namedtuple-like objects with _replace
-        _replace = getattr(obj, "_replace", None)
-        if _replace is not None:
-            return _replace(**changes)
-        # Generic fallback: shallow copy then apply changes
-        new = copy(obj)
-        for key, value in changes.items():
-            setattr(new, key, value)
-        return new
+        """Return a new object replacing specified fields with new values."""
+        cls = obj.__class__
+        func = getattr(cls, "__replace__", None)
+        if func is None:
+            raise TypeError(f"replace() does not support {cls.__name__} objects")
+        return func(obj, **changes)

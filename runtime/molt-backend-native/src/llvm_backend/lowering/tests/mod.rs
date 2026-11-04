@@ -149,12 +149,13 @@ fn make_dummy_lowering<'ctx, 'func>(
         llvm_pred_map: HashMap::new(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
-        repr_facts: crate::representation_plan::LlvmReprFacts::default(),
+        repr_facts: crate::representation_plan::ProducerCarrierPlan::default(),
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
         poll_context: None,
         polls_async_work: super::function_polls_async_work(func),
         frame_homes: None,
+        owned_frame_entered: None,
     }
 }
 

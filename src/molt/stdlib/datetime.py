@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
+import sys as _sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
+_MOLT_INDEX = _require_intrinsic("molt_operator_index")
 _MOLT_DT_VALIDATE_DATE = _require_intrinsic("molt_datetime_validate_date")
 _MOLT_DT_VALIDATE_TIME = _require_intrinsic("molt_datetime_validate_time")
 _MOLT_DT_IS_LEAP = _require_intrinsic("molt_datetime_is_leap")
@@ -111,6 +113,15 @@ def _normalize_day_second_micro(
 
 _UNSET = object()
 _SENTINEL = object()
+
+
+def _replace_int(value):
+    # _datetimemodule.c's replace Clinic converters use a C int, including
+    # __index__ conversion and overflow, before calling the subtype constructor.
+    value = _MOLT_INDEX(value)
+    if not -2147483648 <= value <= 2147483647:
+        raise OverflowError("Python int too large to convert to C int")
+    return value
 
 
 def _format_time(
@@ -385,15 +396,19 @@ class date:
 
     def replace(
         self,
-        year: int | None = None,
-        month: int | None = None,
-        day: int | None = None,
+        year: Any = _UNSET,
+        month: Any = _UNSET,
+        day: Any = _UNSET,
     ) -> date:
-        return date(
-            year if year is not None else self.year,
-            month if month is not None else self.month,
-            day if day is not None else self.day,
+        return type(self)(
+            _replace_int(year) if year is not _UNSET else self.year,
+            _replace_int(month) if month is not _UNSET else self.month,
+            _replace_int(day) if day is not _UNSET else self.day,
         )
+
+    # CPython v3.13.9/v3.14.0 Lib/_pydatetime.py: replace alias.
+    if _sys.version_info >= (3, 13):
+        __replace__ = replace
 
     def strftime(self, fmt: str) -> str:
         return str(
@@ -461,22 +476,26 @@ class time:
 
     def replace(
         self,
-        hour: int | None = None,
-        minute: int | None = None,
-        second: int | None = None,
-        microsecond: int | None = None,
+        hour: Any = _UNSET,
+        minute: Any = _UNSET,
+        second: Any = _UNSET,
+        microsecond: Any = _UNSET,
         tzinfo: Any = _UNSET,
         *,
-        fold: int | None = None,
+        fold: Any = _UNSET,
     ) -> time:
-        return time(
-            hour if hour is not None else self.hour,
-            minute if minute is not None else self.minute,
-            second if second is not None else self.second,
-            microsecond if microsecond is not None else self.microsecond,
+        return type(self)(
+            _replace_int(hour) if hour is not _UNSET else self.hour,
+            _replace_int(minute) if minute is not _UNSET else self.minute,
+            _replace_int(second) if second is not _UNSET else self.second,
+            _replace_int(microsecond) if microsecond is not _UNSET else self.microsecond,
             tzinfo=tzinfo if tzinfo is not _UNSET else self.tzinfo,
-            fold=fold if fold is not None else self.fold,
+            fold=_replace_int(fold) if fold is not _UNSET else self.fold,
         )
+
+    # CPython v3.13.9/v3.14.0 Lib/_pydatetime.py: replace alias.
+    if _sys.version_info >= (3, 13):
+        __replace__ = replace
 
     @classmethod
     def fromisoformat(cls, value: str) -> time:
@@ -939,28 +958,32 @@ class datetime:
 
     def replace(
         self,
-        year: int | None = None,
-        month: int | None = None,
-        day: int | None = None,
-        hour: int | None = None,
-        minute: int | None = None,
-        second: int | None = None,
-        microsecond: int | None = None,
+        year: Any = _UNSET,
+        month: Any = _UNSET,
+        day: Any = _UNSET,
+        hour: Any = _UNSET,
+        minute: Any = _UNSET,
+        second: Any = _UNSET,
+        microsecond: Any = _UNSET,
         tzinfo: Any = _SENTINEL,
         *,
-        fold: int | None = None,
+        fold: Any = _UNSET,
     ) -> datetime:
-        return datetime(
-            year if year is not None else self.year,
-            month if month is not None else self.month,
-            day if day is not None else self.day,
-            hour if hour is not None else self.hour,
-            minute if minute is not None else self.minute,
-            second if second is not None else self.second,
-            microsecond if microsecond is not None else self.microsecond,
+        return type(self)(
+            _replace_int(year) if year is not _UNSET else self.year,
+            _replace_int(month) if month is not _UNSET else self.month,
+            _replace_int(day) if day is not _UNSET else self.day,
+            _replace_int(hour) if hour is not _UNSET else self.hour,
+            _replace_int(minute) if minute is not _UNSET else self.minute,
+            _replace_int(second) if second is not _UNSET else self.second,
+            _replace_int(microsecond) if microsecond is not _UNSET else self.microsecond,
             tzinfo=tzinfo if tzinfo is not _SENTINEL else self.tzinfo,
-            fold=fold if fold is not None else self.fold,
+            fold=_replace_int(fold) if fold is not _UNSET else self.fold,
         )
+
+    # CPython v3.13.9/v3.14.0 Lib/_pydatetime.py: replace alias.
+    if _sys.version_info >= (3, 13):
+        __replace__ = replace
 
     def timetuple(self) -> tuple[int, ...]:
         yday = self.toordinal() - date(self.year, 1, 1).toordinal() + 1

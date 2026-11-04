@@ -197,10 +197,17 @@ fn handle_add_op(
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let op_prefers_str_lane = |op: &OpIR| {
-        scalar_fast_paths_enabled && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Str)
+        scalar_fast_paths_enabled
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Str)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -270,10 +277,8 @@ fn handle_add_op(
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         builder.inst_results(call)[0]
     } else if op_prefers_float_lane(op) {
-        // Both operands known to be f64 — direct float arithmetic.
-        // Float-primary operands are read as raw F64; other
-        // float-like operands recover F64 by bitcasting their
-        // main boxed I64 value.
+        // Producer-proven numeric operands: read raw floats, convert raw
+        // integers/bools, or extract an exact boxed float (including heap NaNs).
         let lhs_name = &args[0];
         let rhs_name = &args[1];
         let lhs_f = float_value_for_mixed(
@@ -284,8 +289,9 @@ fn handle_add_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            lhs_name,
+            representation_plan
+                .numeric_operand(lhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let rhs_f = float_value_for_mixed(
             &mut *module,
@@ -295,8 +301,9 @@ fn handle_add_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            rhs_name,
+            representation_plan
+                .numeric_operand(rhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let result_f = builder.ins().fadd(lhs_f, rhs_f);
         if op
@@ -878,10 +885,17 @@ fn handle_inplace_add_op(
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let op_prefers_str_lane = |op: &OpIR| {
-        scalar_fast_paths_enabled && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Str)
+        scalar_fast_paths_enabled
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Str)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -956,8 +970,9 @@ fn handle_inplace_add_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            lhs_name,
+            representation_plan
+                .numeric_operand(lhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let rhs_f = float_value_for_mixed(
             &mut *module,
@@ -967,8 +982,9 @@ fn handle_inplace_add_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            rhs_name,
+            representation_plan
+                .numeric_operand(rhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let result_f = builder.ins().fadd(lhs_f, rhs_f);
         if op
@@ -1199,7 +1215,10 @@ fn handle_sub_op(
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -1240,8 +1259,9 @@ fn handle_sub_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            lhs_name,
+            representation_plan
+                .numeric_operand(lhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let rhs_f = float_value_for_mixed(
             &mut *module,
@@ -1251,8 +1271,9 @@ fn handle_sub_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            rhs_name,
+            representation_plan
+                .numeric_operand(rhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let result_f = builder.ins().fsub(lhs_f, rhs_f);
         if op
@@ -1499,7 +1520,10 @@ fn handle_inplace_sub_op(
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -1540,8 +1564,9 @@ fn handle_inplace_sub_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            lhs_name,
+            representation_plan
+                .numeric_operand(lhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let rhs_f = float_value_for_mixed(
             &mut *module,
@@ -1551,8 +1576,9 @@ fn handle_inplace_sub_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            rhs_name,
+            representation_plan
+                .numeric_operand(rhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let result_f = builder.ins().fsub(lhs_f, rhs_f);
         if op
@@ -1776,7 +1802,10 @@ fn handle_mul_op(
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -1817,8 +1846,9 @@ fn handle_mul_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            lhs_name,
+            representation_plan
+                .numeric_operand(lhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let rhs_f = float_value_for_mixed(
             &mut *module,
@@ -1828,8 +1858,9 @@ fn handle_mul_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            rhs_name,
+            representation_plan
+                .numeric_operand(rhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let result_f = builder.ins().fmul(lhs_f, rhs_f);
         if op
@@ -2072,7 +2103,10 @@ fn handle_inplace_mul_op(
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -2113,8 +2147,9 @@ fn handle_inplace_mul_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            lhs_name,
+            representation_plan
+                .numeric_operand(lhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let rhs_f = float_value_for_mixed(
             &mut *module,
@@ -2124,8 +2159,9 @@ fn handle_inplace_mul_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            nbc,
-            rhs_name,
+            representation_plan
+                .numeric_operand(rhs_name)
+                .expect("producer-proven numeric operand"),
         );
         let result_f = builder.ins().fmul(lhs_f, rhs_f);
         if op

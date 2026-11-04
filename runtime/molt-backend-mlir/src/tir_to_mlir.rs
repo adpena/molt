@@ -20,6 +20,7 @@ use melior::{
     ir::{BlockLike, Location, Module as MlirModule, operation::OperationLike},
 };
 use molt_backend::tir::{blocks::Terminator, function::TirFunction, ops::OpCode};
+use molt_backend::{repr::Repr, representation_plan::ProducerCarrierPlan};
 
 use self::function_builder::{build_func_op, build_state_dispatch_runtime_declaration};
 
@@ -36,7 +37,7 @@ pub fn build_mlir_module<'c>(
     // the module builder so every public entry point (including direct users)
     // observes the same dialect contract.
     ctx.set_allow_unregistered_dialects(true);
-    preflight_tir_function(tir_func)?;
+    let carriers = preflight_tir_function(tir_func)?;
     let location = Location::unknown(ctx);
     let module = MlirModule::new(location);
 
@@ -49,7 +50,7 @@ pub fn build_mlir_module<'c>(
             .body()
             .append_operation(build_state_dispatch_runtime_declaration(ctx, location));
     }
-    let func_op = build_func_op(tir_func, ctx, location)?;
+    let func_op = build_func_op(tir_func, &carriers, ctx, location)?;
     module.body().append_operation(func_op);
 
     if let Some(dump_dir) = std::env::var_os("MOLT_MLIR_DUMP_DIR") {
@@ -84,8 +85,20 @@ pub fn build_mlir_module<'c>(
     Ok(module)
 }
 
-fn preflight_tir_function(tir_func: &TirFunction) -> Result<(), String> {
+fn preflight_tir_function(tir_func: &TirFunction) -> Result<ProducerCarrierPlan, String> {
     let target = molt_backend::tir::TargetInfo::mlir_release_fast();
+    let entry = tir_func
+        .blocks
+        .get(&tir_func.entry_block)
+        .ok_or_else(|| format!("{} has no entry block", tir_func.name))?;
+    if entry.args.len() != tir_func.param_types.len() {
+        return Err(format!(
+            "{} entry has {} arguments for {} parameters",
+            tir_func.name,
+            entry.args.len(),
+            tir_func.param_types.len()
+        ));
+    }
     let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|block| block.0);
     if let Some(entry) = block_ids
@@ -153,5 +166,46 @@ fn preflight_tir_function(tir_func: &TirFunction) -> Result<(), String> {
             return Err(error);
         }
     }
-    Ok(())
+    let carriers = ProducerCarrierPlan::build(tir_func);
+    // MLIR has no Molt runtime provider: a boxed boundary is unsupported,
+    // rather than permission to reinterpret annotation bits as a scalar.
+    let require_raw = |id: molt_backend::tir::values::ValueId, role: &str| {
+        if matches!(
+            carriers.repr_by_value.get(&id),
+            Some(Repr::RawI64Safe | Repr::RawI64FullDeopt | Repr::Bool | Repr::FloatUnboxed)
+        ) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} {role} %{} has no producer-proven machine carrier (annotation-only or boxed value); MLIR has no Molt runtime provider",
+                tir_func.name, id.0
+            ))
+        }
+    };
+    let mut blocks: Vec<_> = tir_func.blocks.values().collect();
+    blocks.sort_by_key(|block| (block.id != tir_func.entry_block, block.id.0));
+    for block in blocks {
+        for arg in &block.args {
+            require_raw(
+                arg.id,
+                if block.id == tir_func.entry_block {
+                    "parameter"
+                } else {
+                    "block argument"
+                },
+            )?;
+        }
+        if let Terminator::Return { values } = &block.terminator {
+            if values.is_empty() && tir_func.return_abi.returns_value() {
+                return Err(format!(
+                    "{} return value <implicit None> has no producer-proven machine carrier; MLIR has no Molt runtime provider",
+                    tir_func.name
+                ));
+            }
+            for &value in values {
+                require_raw(value, "return value")?;
+            }
+        }
+    }
+    Ok(carriers)
 }

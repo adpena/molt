@@ -220,6 +220,14 @@ def delete_path(path: Path, *, owning_root: Path | None = None) -> tuple[bool, s
         if stat.S_ISDIR(metadata.st_mode) and not (
             getattr(metadata, "st_file_attributes", 0) & 0x400
         ):
+            from molt.filesystem_mounts import require_unmounted_directory
+
+            try:
+                require_unmounted_directory(path, metadata)
+            except FileNotFoundError:
+                if not os.path.lexists(path):
+                    return True, ""
+                raise
             if owning_root is not None and os.name == "posix":
                 _unseal_owned_directories(path, metadata)
             shutil.rmtree(_recursive_deletion_path(path, metadata), onexc=_rmtree_error)

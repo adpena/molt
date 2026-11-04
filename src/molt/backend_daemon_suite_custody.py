@@ -130,6 +130,7 @@ def _source_digest() -> str:
         file_deletion,
         file_locks,
         file_publication,
+        filesystem_mounts,
     )
     from molt import process_model
 
@@ -148,6 +149,7 @@ def _source_digest() -> str:
         Path(file_publication.__file__),
         Path(temporary_artifacts.__file__),
         Path(file_deletion.__file__),
+        Path(filesystem_mounts.__file__),
         Path(process_model.__file__),
     ):
         value.update(source.read_bytes())

@@ -486,8 +486,10 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
 }
 
 #[test]
-fn function_type_code_declaration_rejects_mutable_native_string_subclasses() {
-    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+fn function_type_code_declaration_preserves_mutable_native_string_subclasses() {
+    // Code metadata keeps str subclass identity (CPython's code.replace does);
+    // a mutable child promotes code tracking so the possible cycle is collectible.
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = crate::dynamic_attr_name_bits(py, b"inner").unwrap();
@@ -506,43 +508,43 @@ fn function_type_code_declaration_rejects_mutable_native_string_subclasses() {
             let mutable_ptr = obj_from_bits(mutable).as_ptr().unwrap();
             assert_eq!(object_type_id(mutable_ptr), TYPE_ID_STRING);
             assert_eq!(crate::object_class_bits(mutable_ptr), subclass);
-            let code = alloc_code_obj(
-                py,
-                name,
-                name,
-                1,
-                MoltObject::none().bits(),
-                empty,
-                empty,
-                0,
-                0,
-                0,
-            );
-            let before = (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot();
             for (qualname, doc) in [(mutable, MoltObject::none().bits()), (name, mutable)] {
+                let code = alloc_code_obj(
+                    py,
+                    name,
+                    name,
+                    1,
+                    MoltObject::none().bits(),
+                    empty,
+                    empty,
+                    0,
+                    0,
+                    0,
+                );
+                assert!(!crate::object::gc::gc_is_tracked(code));
+                let before = (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot();
                 assert!(
                     crate::object::layout::code_publish_declaration_metadata(
                         py, code, qualname, doc
                     )
-                    .is_err()
+                    .is_ok()
                 );
-                assert!(exception_pending(py));
-                crate::molt_exception_clear();
-                assert!(!crate::object::layout::code_declaration_is_published(code));
-                assert_eq!(*code.cast::<u64>().add(23), 0);
-                assert_eq!(*code.cast::<u64>().add(24), 0);
+                assert!(!exception_pending(py));
+                assert!(crate::object::layout::code_declaration_is_published(code));
+                assert!(crate::object::gc::gc_is_tracked(code));
+                assert_eq!(*code.cast::<u64>().add(23), qualname);
+                assert_eq!(*code.cast::<u64>().add(24), doc);
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot(),
+                    before + 1
+                );
+                dec_ref_bits(py, MoltObject::from_ptr(code).bits());
                 assert_eq!(
                     (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot(),
                     before
                 );
             }
-            for bits in [
-                name,
-                empty,
-                subclass,
-                mutable,
-                MoltObject::from_ptr(code).bits(),
-            ] {
+            for bits in [name, empty, subclass, mutable] {
                 dec_ref_bits(py, bits);
             }
         }

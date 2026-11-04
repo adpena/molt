@@ -23,7 +23,6 @@ from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager, ExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import errno
 import hashlib
 import os
 from pathlib import Path
@@ -145,7 +144,7 @@ assert isinstance(_SCRATCH_RETENTION, Regenerable)
 DEFAULT_SCRATCH_IDLE_DAYS = _SCRATCH_RETENTION.max_idle_s / 86400
 RETIRED_DIR = "retired"
 RETIREMENT_RECORD_SUFFIX = ".retirement.json"
-RETIREMENT_WINDOW_S = 7 * 86400.0
+INTEGRATION_EVIDENCE_IDLE_S = 7 * 86400.0
 _RETIREMENT_SCHEMA = "molt.soft-retirement.v2"
 # The automatic GC runs at most once per interval per artifact root.
 GC_INTERVAL_S = 24 * 3600.0
@@ -694,14 +693,13 @@ def checkout_state_retirement(
             yield False
             return
         yield True
-        # Python generation metadata lives outside its immutable payload.
-        # Keep it through soft retirement so rename-back restores ownership;
-        # only final GC may forget it, and never while a replacement exists.
+        # Managed owner/use metadata can live outside its immutable payload.
+        # Remove it only after physical reclamation, including historical
+        # retired generations, and never while a replacement exists.
         if (
             purged_root is not None
             and not os.path.lexists(purged_root)
             and coordinate is not None
-            and coordinate.kind == "python-environment"
         ):
             metadata = _state_metadata_root(root)
             if not os.path.lexists(root):
@@ -1695,6 +1693,8 @@ def _idle_limit_s(
 
 @dataclass(frozen=True, slots=True)
 class SoftRetirement:
+    """Historical v2 metadata; current producers delete regenerable roots."""
+
     path: Path
     original: Path
     reason: str
@@ -1940,81 +1940,8 @@ def compact_evidence(
         staging.unlink(missing_ok=True)
 
 
-def soft_retire(
-    root: Path,
-    owning_root: Path,
-    *,
-    reason: str,
-    owner: str,
-    kind: StorageClass,
-    now: float | None = None,
-) -> SoftRetirement:
-    """Retire a root with one same-filesystem rename and one small record.
-
-    The caller owns eligibility and exclusive custody. Artifact state stays
-    under its artifact root; checkout evidence stays under its family custody
-    root. No copying or cross-device fallback is permitted. The sidecar is
-    published before the rename, so interruption never leaves moved bytes
-    without a recovery address. A sidecar without payload grants no deletion.
-    Recovery is ``retirement.path.rename(retirement.original)`` after clearing
-    any replacement at the original coordinate.
-    """
-    from .file_publication import resolve_owned_path
-
-    from .custody_layout import Regenerable
-
-    if not isinstance(storage_rule(kind).retention, Regenerable):
-        raise ValueError(f"durable evidence requires indexed compaction: {kind}")
-
-    root, owning_root = resolve_owned_path(root), resolve_owned_path(owning_root)
-    if root == owning_root or owning_root not in root.parents:
-        raise ValueError(f"retirement outside owning root: {root}")
-    if root.is_relative_to(owning_root / RETIRED_DIR):
-        raise ValueError(f"root is already retired: {root}")
-    if (
-        not isinstance(reason, str)
-        or not reason
-        or not isinstance(owner, str)
-        or not owner
-    ):
-        raise ValueError("retirement requires a reason and owner")
-    moment = time.time() if now is None else now
-    if type(moment) not in (float, int) or not 0 <= moment < float("inf"):
-        raise ValueError("retirement requires a finite, nonnegative timestamp")
-    date = datetime.fromtimestamp(moment, UTC).strftime("%Y-%m-%d")
-    parent = resolve_owned_path(owning_root / RETIRED_DIR / date)
-    parent.mkdir(parents=True, exist_ok=True)
-    if root.stat().st_dev != parent.stat().st_dev:
-        raise OSError(
-            errno.EXDEV, "soft retirement requires the same filesystem", str(root)
-        )
-    retirement = SoftRetirement(
-        parent / _retirement_name(root, moment), root, reason, moment, owner, kind
-    )
-    if os.path.lexists(retirement.path):
-        raise FileExistsError(str(retirement.path))
-    write_exact(
-        retirement.record_path,
-        {
-            "schema": _RETIREMENT_SCHEMA,
-            "original_path": str(root),
-            "reason": reason,
-            "retired_at": moment,
-            "owner": owner,
-            "kind": kind,
-        },
-        exclusive=True,
-    )
-    try:
-        root.rename(retirement.path)
-    except BaseException:
-        retirement.record_path.unlink()
-        raise
-    return retirement
-
-
 def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | None:
-    """Validate a sidecar's exact coordinate; malformed records keep payloads."""
+    """Decode historical v2 retirement custody; no current producer writes it."""
     from .file_publication import resolve_owned_path
 
     try:
@@ -2067,7 +1994,10 @@ def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | No
         )
         if retirement.record_path != record or resolve_owned_path(expected) != expected:
             return None
-        return retirement if os.path.lexists(expected) else None
+        # Payload deletion and sidecar removal are separate operations. Valid
+        # custody survives an interrupted unlink so the collector can finish
+        # metadata reclamation without adopting or deleting a replacement.
+        return retirement
     except (OSError, ExactJsonError, ValueError, OverflowError):
         return None
 
@@ -2197,6 +2127,13 @@ class WalkRotation:
             family.walk_s += elapsed
         family.walks += 1
         return result
+
+    def defer(self, name: WalkFamily, key: str) -> None:
+        """Resume constant-work entries after a bounded reclamation pass."""
+        family = self._family(name)
+        if family.next_cursor is None:
+            family.next_cursor = key
+        family.deferred += 1
 
     def next_cursors(self) -> dict[str, str]:
         return {

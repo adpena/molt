@@ -127,14 +127,24 @@ fn test_compile_checked_lowers_zero_division_guards() {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "zero_division_guard_test".to_string(),
-            params: vec!["a".to_string(), "b".to_string()],
-            param_types: Some(vec!["int".to_string(), "int".to_string()]),
+            params: vec![],
+            param_types: None,
             source_file: None,
             is_extern: false,
             codegen_partition: false,
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
+                OpIR {
+                    value: Some(7),
+                    out: Some("a".into()),
+                    ..OpIR::new(molt_ir::OpKind::Const)
+                },
+                OpIR {
+                    value: Some(0),
+                    out: Some("b".into()),
+                    ..OpIR::new(molt_ir::OpKind::Const)
+                },
                 OpIR {
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("quotient".to_string()),
@@ -174,12 +184,30 @@ fn test_compile_checked_lowers_zero_division_guards() {
     assert!(!source.contains("[unsupported op: floordiv]"));
 
     let mut typed_ir = ir;
-    typed_ir.functions[0].param_types = Some(vec!["float".to_string(), "float".to_string()]);
+    typed_ir.functions[0].ops[0] = OpIR {
+        f_value: Some(7.0),
+        out: Some("a".into()),
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
+    };
+    typed_ir.functions[0].ops[1] = OpIR {
+        f_value: Some(0.0),
+        out: Some("b".into()),
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
+    };
     let float_source = LuauBackend::new().compile(&typed_ir);
     assert!(float_source.contains("if b == 0 then molt_numeric_error(\"truediv:float\") end"));
     assert!(float_source.contains("if b == 0 then molt_numeric_error(\"floordiv:float\") end"));
     assert!(float_source.contains("if b == 0 then molt_numeric_error(\"mod:float\") end"));
-    typed_ir.functions[0].param_types = Some(vec!["int".to_string(), "bool".to_string()]);
+    typed_ir.functions[0].ops[0] = OpIR {
+        value: Some(7),
+        out: Some("a".into()),
+        ..OpIR::new(molt_ir::OpKind::Const)
+    };
+    typed_ir.functions[0].ops[1] = OpIR {
+        value: Some(0),
+        out: Some("b".into()),
+        ..OpIR::new(molt_ir::OpKind::ConstBool)
+    };
     for operation in &mut typed_ir.functions[0].ops {
         if [
             molt_ir::OpKind::Div,

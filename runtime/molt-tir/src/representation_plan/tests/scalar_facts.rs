@@ -5,7 +5,7 @@
 
 use super::super::test_fixtures::{function, op};
 use super::super::*;
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{AttrValue, OpCode};
 
 fn native_representation_plan(func_ir: &FunctionIR) -> ScalarRepresentationPlan {
     ScalarRepresentationPlan::for_function_ir_for_target(
@@ -221,6 +221,25 @@ fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
             ],
         );
         let plan = native_representation_plan(&func);
+        if kind == molt_ir::OpKind::StoreFast {
+            // StoreFast is rejected by native binding-op admission. Its
+            // transport metadata cannot authorize a scalar interpretation.
+            for name in [
+                "wide_snapshot",
+                "wide_copy",
+                "float_snapshot",
+                "bool_snapshot",
+            ] {
+                assert!(
+                    plan.name_scalar_witness(name).is_none(),
+                    "unsupported {name}"
+                );
+                assert!(!plan.is_raw_int_carrier_name(name), "unsupported {name}");
+                assert!(!plan.is_float_unboxed(name), "unsupported {name}");
+                assert!(!plan.is_bool_unboxed(name), "unsupported {name}");
+            }
+            continue;
+        }
         assert!(plan.is_full_deopt_int_name("wide"), "{kind}");
         assert!(plan.is_full_deopt_int_name("wide_snapshot"), "{kind}");
         assert!(
@@ -276,14 +295,32 @@ fn alias_facts_follow_argument_before_transport_var_metadata() {
             [("snapshot", "integer")]
         );
         let plan = native_representation_plan(&func);
+        if matches!(
+            kind,
+            molt_ir::OpKind::Copy | molt_ir::OpKind::IdentityAlias | molt_ir::OpKind::BindingAlias
+        ) {
+            // Unlike copy_var/load_var, these kinds have a sole semantic
+            // input. A second var read is a malformed alias, never a proof.
+            assert!(
+                crate::validate_simple_ir(&crate::SimpleIR {
+                    functions: vec![func.clone()],
+                    profile: None,
+                })
+                .is_err()
+            );
+            assert!(plan.name_scalar_witness("snapshot").is_none());
+            assert!(!plan.is_raw_int_carrier_name("snapshot"));
+            assert!(!plan.scalar_store_targets(ScalarKind::Int).contains("slot"));
+            continue;
+        }
         assert_eq!(
-            plan.op_scalar_lane(&func.ops[2]),
+            plan.op_scalar_lane(&func.ops[2]).map(|proof| proof.kind()),
             Some(ScalarKind::Int),
             "{kind}"
         );
         assert!(
             plan.scalar_store_targets(ScalarKind::Int).contains("slot"),
-            "{kind}"
+            "{kind}: {plan:#?}"
         );
         assert!(
             !plan
@@ -341,7 +378,11 @@ fn scalar_store_facts_project_both_checked_results_and_all_constant_spellings() 
                 ],
             );
             let plan = native_representation_plan(&function);
-            assert_eq!(plan.op_scalar_lane(&function.ops[0]), Some(ScalarKind::Int));
+            assert_eq!(
+                plan.op_scalar_lane(&function.ops[0])
+                    .map(|proof| proof.kind()),
+                Some(ScalarKind::Int)
+            );
             assert_eq!(
                 plan.scalar_store_targets(ScalarKind::Int),
                 BTreeSet::from(["value_slot".into(), "snapshot_slot".into()]),
@@ -420,7 +461,7 @@ fn dynbox_i64_fact_is_not_a_scalar_integer() {
         "boxed_word".to_string(),
         ScalarRepresentationFact {
             ty: TirType::I64,
-            repr: LirRepr::DynBox,
+            producer: None,
         },
     );
     let func = function("empty", &[], None, vec![]);
@@ -707,8 +748,8 @@ fn semantic_list_bool_index_does_not_authorize_raw_bool_primary() {
     let primary = plan.primary_name_sets();
 
     assert!(
-        bool_like.contains("item"),
-        "semantic list[bool] indexing should refine the element type"
+        !bool_like.contains("item"),
+        "semantic list[bool] element types cannot mint a scalar producer witness"
     );
     assert!(
         !primary.bool_.contains("item"),
@@ -721,7 +762,7 @@ fn semantic_list_bool_index_does_not_authorize_raw_bool_primary() {
 }
 
 #[test]
-fn index_result_lane_comes_from_element_fact_not_key() {
+fn semantic_element_and_key_types_do_not_prove_index_payload() {
     let index = op(
         molt_ir::OpKind::Index,
         Some("item"),
@@ -738,9 +779,9 @@ fn index_result_lane_comes_from_element_fact_not_key() {
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
     let primary = plan.primary_name_sets();
 
-    assert_eq!(plan.op_scalar_lane(&index), Some(ScalarKind::Int));
-    assert!(plan.op_index_key_is_integer_family(&index));
-    assert!(int_like.contains("item"));
+    assert_eq!(plan.op_scalar_lane(&index).map(|proof| proof.kind()), None);
+    assert!(!plan.op_index_key_is_integer_family(&index));
+    assert!(!int_like.contains("item"));
     assert!(
         !primary.int.contains("item"),
         "generic index results are boxed transport unless lowering proves a raw element carrier"
@@ -831,7 +872,10 @@ fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
         "downstream arithmetic must consume ord_at's structural integer-family fact"
     );
     assert_eq!(plan.name_container_kind("code"), None);
-    assert_eq!(plan.op_scalar_lane(&add), Some(ScalarKind::Int));
+    assert_eq!(
+        plan.op_scalar_lane(&add).map(|proof| proof.kind()),
+        Some(ScalarKind::Int)
+    );
     assert!(
         plan.integer_family_names().contains("code"),
         "legacy result metadata must not be required for ord_at integer-family propagation"
@@ -871,7 +915,7 @@ fn generic_index_does_not_promote_result_from_integer_key() {
     let (int_like, _, _, _, _) = plan.scalar_name_sets();
     let primary = plan.primary_name_sets();
 
-    assert_eq!(plan.op_scalar_lane(&index), None);
+    assert_eq!(plan.op_scalar_lane(&index).map(|proof| proof.kind()), None);
     assert!(plan.op_index_key_is_integer_family(&index));
     assert!(!int_like.contains("object_type_tag"));
     assert!(!primary.int.contains("object_type_tag"));
@@ -1068,7 +1112,10 @@ fn iter_next_done_flag_uses_fused_bool_fact() {
         !int_like.contains("done_flag"),
         "the index result cannot override the fused done flag's bool type"
     );
-    assert_eq!(plan.op_scalar_lane(&done), Some(ScalarKind::Bool));
+    assert_eq!(
+        plan.op_scalar_lane(&done).map(|proof| proof.kind()),
+        Some(ScalarKind::Bool)
+    );
     assert!(
         !primary.int.contains("done_flag"),
         "done flag must never be routed through raw-int primary storage"
@@ -1176,14 +1223,18 @@ fn conflicting_facts_do_not_pick_order_dependent_scalar_lane() {
         "ambiguous".to_string(),
         ScalarRepresentationFact {
             ty: TirType::I64,
-            repr: LirRepr::I64,
+            producer: Some(crate::representation_plan::test_fixtures::scalar_witness(
+                crate::repr::ScalarKind::Int,
+            )),
         },
     );
     plan.insert_fact(
         "ambiguous".to_string(),
         ScalarRepresentationFact {
             ty: TirType::Bool,
-            repr: LirRepr::Bool1,
+            producer: Some(crate::representation_plan::test_fixtures::scalar_witness(
+                crate::repr::ScalarKind::Bool,
+            )),
         },
     );
     let func = function("empty", &[], None, vec![]);
@@ -1198,7 +1249,7 @@ fn conflicting_facts_do_not_pick_order_dependent_scalar_lane() {
 }
 
 #[test]
-fn plan_uses_entry_param_names_as_scalar_facts() {
+fn entry_annotations_do_not_mint_scalar_facts() {
     let func = function(
         "typed_params",
         &["x", "flag"],
@@ -1208,8 +1259,8 @@ fn plan_uses_entry_param_names_as_scalar_facts() {
 
     let (int_like, bool_like, _, _, _) = native_representation_plan(&func).scalar_name_sets();
 
-    assert!(int_like.contains("x"));
-    assert!(bool_like.contains("flag"));
+    assert!(!int_like.contains("x"));
+    assert!(!bool_like.contains("flag"));
 }
 
 #[test]
@@ -1265,7 +1316,9 @@ fn unknown_store_target_blocks_alias_output_reinsertion() {
     let mut plan = ScalarRepresentationPlan::default();
     let int_fact = ScalarRepresentationFact {
         ty: TirType::I64,
-        repr: LirRepr::I64,
+        producer: Some(crate::representation_plan::test_fixtures::scalar_witness(
+            crate::repr::ScalarKind::Int,
+        )),
     };
     plan.insert_fact("seed".to_string(), int_fact.clone());
     plan.insert_fact("slot".to_string(), int_fact);
@@ -1300,9 +1353,10 @@ fn generic_type_hint_does_not_seed_plan_scalar_fact() {
 fn integer_family_preserves_boxed_unbounded_arithmetic_lane() {
     let func = function(
         "integer_family",
-        &["seed"],
-        Some(vec!["int"]),
+        &[],
+        None,
         vec![
+            const_int("seed", 1_i64 << 62),
             const_int("factor", 3_266_489_917),
             op(
                 molt_ir::OpKind::Mul,
@@ -1599,7 +1653,7 @@ fn scalar_lane_does_not_classify_unbounded_int_pow_as_inline_int() {
 
     let plan = native_representation_plan(&func);
 
-    assert_eq!(plan.op_scalar_lane(&pow), None);
+    assert_eq!(plan.op_scalar_lane(&pow).map(|proof| proof.kind()), None);
 }
 
 #[test]
@@ -1610,13 +1664,13 @@ fn transport_hints_do_not_prove_scalar_representation() {
 
     let plan = native_representation_plan(&func);
 
-    assert_eq!(plan.op_scalar_lane(&add), None);
+    assert_eq!(plan.op_scalar_lane(&add).map(|proof| proof.kind()), None);
     assert!(!plan.op_prefers_integer_runtime_lane(&add));
     assert!(!plan.op_args_are_integer_family(&add));
 }
 
 #[test]
-fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
+fn parameter_annotations_do_not_prove_integer_operands() {
     let add = op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]);
     let mul = op(molt_ir::OpKind::Mul, Some("product"), None, &["lhs", "rhs"]);
     let func = function(
@@ -1628,10 +1682,10 @@ fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
 
     let plan = native_representation_plan(&func);
 
-    assert!(plan.op_prefers_integer_runtime_lane(&add));
-    assert!(plan.op_prefers_integer_runtime_lane(&mul));
-    assert!(plan.op_args_are_integer_family(&add));
-    assert!(plan.op_args_are_integer_family(&mul));
+    assert!(!plan.op_prefers_integer_runtime_lane(&add));
+    assert!(!plan.op_prefers_integer_runtime_lane(&mul));
+    assert!(!plan.op_args_are_integer_family(&add));
+    assert!(!plan.op_args_are_integer_family(&mul));
     assert_eq!(plan.op_direct_numeric_repr(0, &add), None);
     assert_eq!(plan.op_direct_numeric_repr(1, &mul), None);
 }
@@ -1876,14 +1930,21 @@ fn scalar_lane_keeps_float_pow_on_float_lane() {
     let pow = op(molt_ir::OpKind::Pow, Some("powv"), None, &["base", "exp"]);
     let func = function(
         "float_pow",
-        &["base", "exp"],
-        Some(vec!["float", "float"]),
-        vec![pow.clone()],
+        &[],
+        None,
+        vec![
+            const_float("base", 2.0),
+            const_float("exp", 3.0),
+            pow.clone(),
+        ],
     );
 
     let plan = native_representation_plan(&func);
 
-    assert_eq!(plan.op_scalar_lane(&pow), Some(ScalarKind::Float));
+    assert_eq!(
+        plan.op_scalar_lane(&pow).map(|proof| proof.kind()),
+        Some(ScalarKind::Float)
+    );
 }
 
 #[test]
@@ -2394,6 +2455,43 @@ fn cold_numeric_results_retain_direct_carriers_without_primary_names() {
         assert!(plan.primary_name_sets().int.is_empty());
         assert!(plan.primary_name_sets().float.is_empty());
         assert!(!plan.is_raw_int_carrier_name("unknown"));
+    }
+}
+
+#[test]
+fn mixed_float_comparison_requires_lossless_integer_conversion() {
+    let func = function(
+        "mixed_comparison_producers",
+        &[],
+        None,
+        vec![
+            const_float("floating", 1.0),
+            const_int("small", 7),
+            const_bool("flag", true),
+            const_int("wide", 9_007_199_254_740_993),
+        ],
+    );
+    let plan = native_representation_plan(&func);
+    assert!(plan.numeric_operand("wide").is_some());
+    assert!(plan.is_raw_int_carrier_name("wide"));
+    for kind in [
+        molt_ir::OpKind::Eq,
+        molt_ir::OpKind::Ne,
+        molt_ir::OpKind::Lt,
+        molt_ir::OpKind::Le,
+        molt_ir::OpKind::Gt,
+        molt_ir::OpKind::Ge,
+    ] {
+        for (integer, lossless) in [("small", true), ("flag", true), ("wide", false)] {
+            for args in [["floating", integer], [integer, "floating"]] {
+                let comparison = op(kind, Some("result"), None, &args);
+                assert_eq!(
+                    plan.float_comparison_operands(&comparison).is_some(),
+                    lossless,
+                    "{kind}: {args:?}"
+                );
+            }
+        }
     }
 }
 

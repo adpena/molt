@@ -1428,25 +1428,43 @@ pub(crate) fn acyclic_slot_edge(
     bits: u64,
 ) -> bool {
     use crate::object::heap_kinds_generated::{HeapAcyclicEdgeDomain, heap_acyclic_slot_domain};
-    let obj = obj_from_bits(bits);
     match heap_acyclic_slot_domain(slot) {
         HeapAcyclicEdgeDomain::Int => acyclic_int_edge(bits),
-        HeapAcyclicEdgeDomain::Str => obj
+    }
+}
+
+pub(crate) fn code_metadata_slot_edge(
+    slot: crate::object::layout::CodeMetadataSlot,
+    bits: u64,
+) -> bool {
+    use crate::object::layout::CodeMetadataSlot;
+    let object = obj_from_bits(bits);
+    let string = || {
+        object
             .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING }),
-        HeapAcyclicEdgeDomain::BytesOrNone => {
-            obj.is_none()
-                || obj
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+    };
+    match slot {
+        CodeMetadataSlot::Filename | CodeMetadataSlot::Name | CodeMetadataSlot::Qualname => {
+            string()
+        }
+        CodeMetadataSlot::Linetable => {
+            object.is_none()
+                || object
                     .as_ptr()
                     .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTES })
         }
-        HeapAcyclicEdgeDomain::StrTuple => code_string_tuple_edge(bits),
-        HeapAcyclicEdgeDomain::StrOrNone => {
-            obj.is_none()
-                || obj
-                    .as_ptr()
-                    .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
-        }
+        CodeMetadataSlot::Varnames
+        | CodeMetadataSlot::Names
+        | CodeMetadataSlot::ArgNames
+        | CodeMetadataSlot::Kwonly
+        | CodeMetadataSlot::Freevars
+        | CodeMetadataSlot::Cellvars => code_string_tuple_edge(bits),
+        CodeMetadataSlot::Posonly => acyclic_int_edge(bits),
+        CodeMetadataSlot::Vararg
+        | CodeMetadataSlot::Varkw
+        | CodeMetadataSlot::GpuDescriptor
+        | CodeMetadataSlot::Doc => object.is_none() || string(),
     }
 }
 
@@ -1587,17 +1605,26 @@ pub(crate) fn alloc_code_obj(
     posonlyargcount: u64,
     kwonlyargcount: u64,
 ) -> *mut u8 {
-    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
-    if !acyclic_slot_edge(HeapAcyclicSlot::CodeFilename, filename_bits)
-        || !acyclic_slot_edge(HeapAcyclicSlot::CodeName, name_bits)
-        || !acyclic_slot_edge(HeapAcyclicSlot::CodeLinetable, linetable_bits)
-        || !acyclic_slot_edge(HeapAcyclicSlot::CodeVarnames, varnames_bits)
-        || !acyclic_slot_edge(HeapAcyclicSlot::CodeNames, names_bits)
-    {
+    if !crate::object::builders::code_metadata_slot_edge(
+        crate::object::layout::CodeMetadataSlot::Filename,
+        filename_bits,
+    ) || !crate::object::builders::code_metadata_slot_edge(
+        crate::object::layout::CodeMetadataSlot::Name,
+        name_bits,
+    ) || !crate::object::builders::code_metadata_slot_edge(
+        crate::object::layout::CodeMetadataSlot::Linetable,
+        linetable_bits,
+    ) || !crate::object::builders::code_metadata_slot_edge(
+        crate::object::layout::CodeMetadataSlot::Varnames,
+        varnames_bits,
+    ) || !crate::object::builders::code_metadata_slot_edge(
+        crate::object::layout::CodeMetadataSlot::Names,
+        names_bits,
+    ) {
         raise_exception::<u64>(
             _py,
             BuiltinExc::SystemError,
-            "code constructor violated generated code_metadata acyclic capability",
+            "code constructor violated code metadata field types",
         );
         return std::ptr::null_mut();
     }
@@ -1609,7 +1636,8 @@ pub(crate) fn alloc_code_obj(
     // immutable callable-context provenance paired with slots 9..11. Slot 22
     // owns optional immutable GPU body metadata; 23..24 own declaration
     // qualname/doc once packed metadata publishes them. Slot 25 owns an optional
-    // immutable dataclass initializer body plan. No function grows.
+    // immutable dataclass initializer body plan. Slot 26 fixes module execution
+    // identity independently of mutable replacement metadata. No function grows.
     let empty_lexical_ptr = alloc_tuple(_py, &[]);
     if empty_lexical_ptr.is_null() {
         return std::ptr::null_mut();
@@ -1617,7 +1645,7 @@ pub(crate) fn alloc_code_obj(
     let empty_lexical_bits = MoltObject::from_ptr(empty_lexical_ptr).bits();
     // Word 25 owns an optional immutable dataclass initialization plan. It
     // contains indices only; Python defaults/factories remain function owners.
-    let total = std::mem::size_of::<MoltHeader>() + 26 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 27 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         dec_ref_bits(_py, empty_lexical_bits);
@@ -1652,6 +1680,10 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(23 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(24 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(25 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *ptr.cast::<u64>().add(26) = u64::from(
+            crate::object::ops::exact_string_bytes(_py, name_bits)
+                .is_some_and(|name| name == b"<module>"),
+        );
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
         }
@@ -1670,6 +1702,19 @@ pub(crate) fn alloc_code_obj(
         inc_ref_bits(_py, empty_lexical_bits);
         inc_ref_bits(_py, empty_lexical_bits);
     }
+    unsafe {
+        crate::object::gc::gc_track_owned_references(
+            _py,
+            ptr,
+            &[
+                filename_bits,
+                name_bits,
+                linetable_bits,
+                varnames_bits,
+                names_bits,
+            ],
+        );
+    }
     dec_ref_bits(_py, empty_lexical_bits);
     ptr
 }
@@ -1678,16 +1723,40 @@ pub(crate) fn alloc_code_obj(
 /// new code object's publication. Object-valued slots are retained through the
 /// ordinary constructor/signature setters; the source remains untouched.
 pub(crate) unsafe fn clone_code_obj_with_protocol_flags(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     source: *mut u8,
     added_protocol_flags: u64,
 ) -> *mut u8 {
     unsafe {
+        clone_code_obj(
+            py,
+            source,
+            added_protocol_flags,
+            crate::object::layout::CodeReplacementMetadata::from_code(source),
+        )
+    }
+}
+
+pub(crate) unsafe fn clone_code_obj_with_metadata(
+    py: &PyToken<'_>,
+    source: *mut u8,
+    metadata: crate::object::layout::CodeReplacementMetadata,
+) -> *mut u8 {
+    unsafe { clone_code_obj(py, source, 0, metadata) }
+}
+
+unsafe fn clone_code_obj(
+    _py: &PyToken<'_>,
+    source: *mut u8,
+    added_protocol_flags: u64,
+    metadata: crate::object::layout::CodeReplacementMetadata,
+) -> *mut u8 {
+    unsafe {
         let clone = alloc_code_obj(
             _py,
-            code_filename_bits(source),
-            code_name_bits(source),
-            code_firstlineno(source),
+            metadata.filename,
+            metadata.name,
+            metadata.firstlineno,
             code_linetable_bits(source),
             code_varnames_bits(source),
             code_names_bits(source),
@@ -1698,11 +1767,13 @@ pub(crate) unsafe fn clone_code_obj_with_protocol_flags(
         if clone.is_null() {
             return clone;
         }
-        if crate::object::layout::code_declaration_is_published(source)
+        *clone.cast::<u64>().add(26) = u64::from(crate::object::layout::code_is_module(source));
+        if (crate::object::layout::code_declaration_is_published(source)
+            || metadata.qualname != metadata.name)
             && crate::object::layout::code_publish_declaration_metadata(
                 _py,
                 clone,
-                crate::object::layout::code_qualname_bits(source),
+                metadata.qualname,
                 crate::object::layout::code_doc_bits(source),
             )
             .is_err()
@@ -3486,6 +3557,7 @@ mod sequence_builder_tests {
 mod tests {
     use super::{
         acyclic_slot_edge, alloc_code_obj, alloc_function_obj, clone_code_obj_with_protocol_flags,
+        code_metadata_slot_edge,
     };
     use crate::object::heap_kinds_generated::HeapAcyclicSlot;
     use crate::object::layout::{
@@ -4026,32 +4098,35 @@ mod tests {
             let invalid_tuple_ptr = alloc_tuple(_py, &[list_bits]);
             let invalid_tuple_bits = MoltObject::from_ptr(invalid_tuple_ptr).bits();
 
-            assert!(acyclic_slot_edge(
-                HeapAcyclicSlot::CodeLinetable,
+            assert!(crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Linetable,
                 bytes_bits,
             ));
-            assert!(acyclic_slot_edge(
-                HeapAcyclicSlot::CodeLinetable,
+            assert!(crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Linetable,
                 MoltObject::none().bits(),
             ));
-            assert!(acyclic_slot_edge(
-                HeapAcyclicSlot::CodeVarnames,
+            assert!(crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Varnames,
                 valid_tuple_bits,
             ));
-            assert!(acyclic_slot_edge(HeapAcyclicSlot::CodeVararg, text_bits));
-            assert!(acyclic_slot_edge(
-                HeapAcyclicSlot::CodeVararg,
+            assert!(crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Vararg,
+                text_bits
+            ));
+            assert!(crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Vararg,
                 MoltObject::none().bits(),
             ));
             for bad_slot in [
-                HeapAcyclicSlot::CodeLinetable,
-                HeapAcyclicSlot::CodeVarnames,
-                HeapAcyclicSlot::CodeVararg,
+                crate::object::layout::CodeMetadataSlot::Linetable,
+                crate::object::layout::CodeMetadataSlot::Varnames,
+                crate::object::layout::CodeMetadataSlot::Vararg,
             ] {
-                assert!(!acyclic_slot_edge(bad_slot, list_bits));
+                assert!(!code_metadata_slot_edge(bad_slot, list_bits));
             }
-            assert!(!acyclic_slot_edge(
-                HeapAcyclicSlot::CodeVarnames,
+            assert!(!crate::object::builders::code_metadata_slot_edge(
+                crate::object::layout::CodeMetadataSlot::Varnames,
                 invalid_tuple_bits,
             ));
 

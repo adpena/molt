@@ -62,6 +62,81 @@ impl BorrowedOperands<'_> {
 }
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    /// Match native/WASM invocation ownership: entry can fail before a frame
+    /// exists, and every return (including suspension) closes only its own.
+    pub(super) fn initialize_owned_execution_frame(&mut self) {
+        if self.func.execution_context != crate::ir::ExecutionContextPolicy::Local {
+            return;
+        }
+        assert!(self.owned_frame_entered.is_none());
+        let builder = self.backend.context.create_builder();
+        let entry = self
+            .llvm_fn
+            .get_first_basic_block()
+            .expect("function entry");
+        if let Some(first) = entry.get_first_instruction() {
+            builder.position_before(&first);
+        } else {
+            builder.position_at_end(entry);
+        }
+        let slot = builder
+            .build_alloca(self.backend.context.bool_type(), "owned_frame_entered")
+            .unwrap();
+        builder
+            .build_store(slot, self.backend.context.bool_type().const_zero())
+            .unwrap();
+        self.owned_frame_entered = Some(slot);
+    }
+
+    fn exit_owned_execution_frame(&mut self) {
+        let Some(slot) = self.owned_frame_entered else {
+            return;
+        };
+        let source = self
+            .backend
+            .builder
+            .get_insert_block()
+            .expect("return block");
+        let active = self
+            .backend
+            .builder
+            .build_load(self.backend.context.bool_type(), slot, "frame_entered")
+            .unwrap()
+            .into_int_value();
+        let pop = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "owned_frame_exit");
+        let done = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "owned_frame_exited");
+        self.all_llvm_blocks.extend([pop, done]);
+        self.backend
+            .builder
+            .build_conditional_branch(active, pop, done)
+            .unwrap();
+        self.record_llvm_edge(source, pop);
+        self.record_llvm_edge(source, done);
+        self.backend.builder.position_at_end(pop);
+        // Retire the credit before releasing homes can call Python again.
+        self.backend
+            .builder
+            .build_store(slot, self.backend.context.bool_type().const_zero())
+            .unwrap();
+        let exit = self.ensure_runtime_i64_fn("molt_trace_exit", 0);
+        self.backend
+            .builder
+            .build_call(exit, &[], "trace_exit")
+            .unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(done)
+            .unwrap();
+        self.record_llvm_edge(pop, done);
+        self.backend.builder.position_at_end(done);
+    }
+
     pub(super) fn program_slot_id(
         &self,
         kind: molt_ir::code_slots::ProgramSlotKind,
@@ -555,6 +630,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let linkage_abi = require_function_linkage_abi(self.func, self.backend);
         match linkage_abi.return_type.clone() {
             None => {
+                self.exit_owned_execution_frame();
                 self.backend.builder.build_return(None).unwrap();
             }
             Some(return_type) => {
@@ -582,6 +658,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     lower_type(self.backend.context, &return_type),
                     current_bb,
                 );
+                self.exit_owned_execution_frame();
                 self.backend.builder.build_return(Some(&ret_val)).unwrap();
             }
         }
@@ -760,43 +837,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Representation authority ──
 
-    /// Effective semantic carrier type for a block argument (phi).
-    ///
-    /// The carrier is reconciled with the single `is_inline_safe_int`
-    /// representation authority (`repr_by_value`'s `RawI64Safe` view), which is
-    /// derived from the value-range proof shared with native/WASM. Two
-    /// directions, both keyed on that same authority so `value_types` can never
-    /// diverge from the `Repr` the raw-i64 lanes gate on:
-    ///
-    ///   * **Demotion** `I64 -> DynBox`: a `TirType::I64` phi the plan does NOT
-    ///     prove overflow-safe is carried `DynBox` (NaN-boxed). `type_refine`
-    ///     assigns `add(I64, I64) -> I64` with no overflow proof, so an unproven
-    ///     i64 accumulator must stay boxed across the back-edge instead of
-    ///     unboxing a runtime BigInt into a truncating 47-bit payload.
-    ///   * **Promotion** `DynBox -> I64`: a `DynBox`-declared phi the plan DOES
-    ///     prove overflow-safe is carried as a raw `I64`. This is the masked
-    ///     back-edge accumulator (`s = (s << 1) & MASK`): the value-range phi
-    ///     narrowing proves `s` fits the inline window, so `is_inline_safe_int`
-    ///     mints `RawI64Safe` for it — but `type_refine` (which runs without that
-    ///     value-range fact) left the phi `DynBox`. Without this promotion the
-    ///     phi carries boxed, so the in-loop `<<`/`&` see a `DynBox` operand and
-    ///     bail to the boxed `molt_lshift`/`molt_bit_and` runtime even though the
-    ///     raw lane was proven legal — defeating the whole narrowing. The phi
-    ///     incoming edges are reconciled by `coerce_to_tir_type`, which unboxes a
-    ///     boxed incoming (`molt_int_from_i64` / a boxed back-edge value) into the
-    ///     raw i64 the I64 phi slot expects. The promotion is sound because
-    ///     `is_inline_safe_int` is granted ONLY for values a value-range proof
-    ///     places entirely within the inline-int47 window (so a heap BigInt can
-    ///     never reach the raw slot); it is restricted to a `DynBox` declared
-    ///     type so a non-integer carrier (`Str`/`F64`/container) is never
-    ///     reinterpreted as i64.
+    /// Parameters and phis project the same producer facts as frozen linkage.
     pub(super) fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
-        let inline_safe = self.repr_facts.is_inline_safe_int(id);
-        match declared {
-            TirType::I64 if !inline_safe => TirType::DynBox,
-            TirType::DynBox if inline_safe => TirType::I64,
-            _ => declared.clone(),
-        }
+        self.repr_facts.effective_value_type(id, declared)
     }
 
     /// Resolve the specialized `len` runtime function from the operand's
@@ -995,6 +1038,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap_or(TirType::I64)
         };
 
+        let target_ty = self.repr_facts.effective_value_type(result_id, &target_ty);
         let unboxed = self.unbox_from_dynbox(operand, &target_ty);
         if Self::tir_type_is_dynbox_like(&target_ty) {
             let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
@@ -1285,6 +1329,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         Some(values[0]),
                     );
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
+                    self.exit_owned_execution_frame();
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 } else {
                     // Multi-value return: pack into struct.
@@ -1315,6 +1360,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         Some(values[0]),
                     );
                     let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
+                    self.exit_owned_execution_frame();
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 }
             }

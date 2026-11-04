@@ -1216,7 +1216,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_dataclasses_fields": ("molt_dataclasses_fields", 2),
     "molt_dataclasses_asdict": ("molt_dataclasses_asdict", 3),
     "molt_dataclasses_astuple": ("molt_dataclasses_astuple", 3),
-    "molt_dataclasses_replace": ("molt_dataclasses_replace", 4),
+    "molt_dataclasses_replace": ("molt_dataclasses_replace", 5),
     "molt_dataclasses_set_field_metadata": ("molt_dataclasses_set_field_metadata", 2),
     "molt_class_set_base": ("molt_class_set_base", 2),
     "molt_class_apply_set_name": ("molt_class_apply_set_name", 1),

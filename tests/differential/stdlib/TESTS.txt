@@ -184,6 +184,7 @@ tests/differential/stdlib/cached_runtime_class_mutability.py
 tests/differential/stdlib/cmath_basic.py
 tests/differential/stdlib/cmd_basic.py
 tests/differential/stdlib/code_basic.py
+tests/differential/stdlib/code_replace_execution_policy.py
 tests/differential/stdlib/codec_registered_encode_callback.py
 tests/differential/stdlib/codecs_basic.py
 tests/differential/stdlib/codecs_charmap_generic.py

@@ -438,6 +438,7 @@ def python_capture_authority_paths(
         "durable_file_identity",
         "disk_capacity",
         "file_deletion",
+        "filesystem_mounts",
         "file_locks",
         "custody_layout",
         "memory_guard_paths",

@@ -910,6 +910,7 @@ def test_committed_source_checks_precede_complete_native_build_selection():
         "native-object-emission",
         "backend-luau",
         "tir-midend",
+        "pending-call-source-authority",
     ]
     lint_gate = (
         "python tools/check_changed_clippy.py --base {integration_upstream_commit}"

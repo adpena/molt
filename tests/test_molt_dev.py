@@ -4210,7 +4210,7 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
 def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
     from tools import disk_guard
     from tests.test_dx_run_context import _git
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
 
     main = tmp_path / "molt-src"
     main.mkdir()
@@ -4219,8 +4219,8 @@ def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
     receipts.mkdir(parents=True)
     now = time.time()
     for name, age in {
-        "old": RETIREMENT_WINDOW_S + 60,
-        "recent": RETIREMENT_WINDOW_S - 60,
+        "old": INTEGRATION_EVIDENCE_IDLE_S + 60,
+        "recent": INTEGRATION_EVIDENCE_IDLE_S - 60,
     }.items():
         receipt = receipts / f"{name}.gates.json"
         receipt.write_text("{}", encoding="utf-8")
@@ -4248,7 +4248,7 @@ def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
 def test_gate_receipts_stay_while_the_integration_lock_is_held(tmp_path):
     from tools import disk_guard
     from tests.test_dx_run_context import _git
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     main = tmp_path / "molt-src"
@@ -4259,7 +4259,7 @@ def test_gate_receipts_stay_while_the_integration_lock_is_held(tmp_path):
     receipt = receipts / "old.gates.json"
     receipt.write_text("{}", encoding="utf-8")
     now = time.time()
-    os.utime(receipt, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    os.utime(receipt, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
     lock = _try_acquire_file_lock(main / ".git/molt-integrate.lock")
     assert lock is not None
     try:
@@ -6843,6 +6843,31 @@ def test_land_precheck_runs_precheck_rules_in_the_lane_and_leaves_builds(
     assert sorted(counter.read_text(encoding="utf-8").split()) == ["static", "try"]
 
 
+def test_land_static_only_runs_static_gates_and_skips_the_try_run(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    """The fast path's never-waived tier: static gates only, nothing queued."""
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    lane = work.parent / "lane-static"
+    _lane(work, "static", {"a.py": "a = 1\n"})
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--static-only") == EXIT_OK
+
+    assert counter.read_text(encoding="utf-8").split() == ["static"]
+    assert queue.pending(queue.queue_paths(lane)) == []
+    with pytest.raises(SystemExit):
+        drv.build_parser().parse_args(
+            ["land", "--repo", str(lane), "--static-only", "--precheck-only"]
+        )
+
+
 def test_land_try_run_failure_queues_nothing(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
@@ -8836,6 +8861,148 @@ def _commit_integration_policy(work: Path, commands: list[str]) -> str:
 
 def _integration_python(source: str) -> str:
     return shlex.join([sys.executable, "-c", source])
+
+
+@pytest.mark.parametrize("exitcode", [0, 7])
+def test_remote_landing_executes_selected_gates_without_publishing(
+    drv, origin_and_clone, tmp_path, borrowed_gate_python, exitcode
+):
+    from tools import trunk_landing
+
+    _, work = origin_and_clone
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    command = _integration_python(
+        f"print('remote gate ran'); raise SystemExit({exitcode})"
+    )
+    commit = _commit_integration_policy(work, [command])
+    gate = SelectedGate(command, ())
+    request = {
+        "commit": commit,
+        "tree": _git(work, "rev-parse", "HEAD^{tree}").stdout.strip(),
+        "gates": trunk_landing.gate_records([gate]),
+        "toolchains": [],
+    }
+    output = tmp_path / "remote-output"
+    output.mkdir()
+    rc = trunk_landing.execute({"landing": request, "checkout": str(work)}, output)
+    receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+    assert rc == (0 if exitcode == 0 else 1)
+    assert receipt["status"] == ("success" if exitcode == 0 else "failure")
+    assert "remote gate ran" in (output / "gate-001.stdout.log").read_text(
+        encoding="utf-8"
+    )
+    if exitcode:
+        with pytest.raises(CandidateFailure, match="remote landing gate failed"):
+            trunk_landing.admit_result(receipt, request)
+    else:
+        trunk_landing.admit_result(receipt, request)
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == upstream
+    )
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == commit
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("source_commit", "f" * 40),
+        ("source_tree", "f" * 40),
+        ("source_tree_state", "dirty"),
+        ("request_sha256", "f" * 64),
+        ("passed", []),
+        ("seconds", []),
+        ("toolchains", {}),
+    ],
+)
+def test_remote_landing_admission_rejects_substituted_or_partial_success(field, value):
+    from tools import trunk_landing
+
+    gates = [
+        SelectedGate(
+            ("python", "-c", "print('with spaces')"),
+            ("python",),
+            collection_command=("python", "-V"),
+        )
+    ]
+    request = {
+        "commit": "1" * 40,
+        "tree": "2" * 40,
+        "gates": trunk_landing.gate_records(gates),
+        "toolchains": ["python"],
+    }
+    assert trunk_landing.decode_gates(request["gates"]) == tuple(gates)
+    receipt = {
+        "schema": trunk_landing.SCHEMA,
+        "source_commit": request["commit"],
+        "source_tree": request["tree"],
+        "source_tree_state": "clean",
+        "request_sha256": trunk_landing.request_digest(request),
+        "status": "success",
+        "passed": [0],
+        "seconds": [[1.0, "gate"]],
+        "toolchains": {"python": {"identity": "remote"}},
+    }
+    trunk_landing.admit_result(receipt, request)
+    receipt[field] = value
+    with pytest.raises(DriverError):
+        trunk_landing.admit_result(receipt, request)
+
+
+def test_remote_landing_transport_failure_is_infrastructure(drv, tmp_path, monkeypatch):
+    from tools import trunk_landing, trunk_loop
+
+    monkeypatch.setattr(trunk_loop, "checked", lambda *_a, **_k: "2" * 40)
+
+    def failed(*_a, **_k):
+        raise RuntimeError("SSH unavailable")
+
+    monkeypatch.setattr(trunk_loop, "start", failed)
+    with pytest.raises(
+        DriverError, match="infrastructure failed.*SSH unavailable"
+    ) as error:
+        trunk_landing.run_remote(tmp_path, "1" * 40, [], host="molt-gate")
+    assert not isinstance(error.value, CandidateFailure)
+
+
+@pytest.mark.parametrize("farm_failure", [False, True])
+def test_integrate_remote_gate_opt_in_keeps_mac_publication_boundary(
+    drv, origin_and_clone, monkeypatch, farm_failure
+):
+    from tools import trunk_landing
+
+    _, work = origin_and_clone
+    commit = _commit_integration_policy(work, ["echo selected-on-mac"])
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    monkeypatch.setenv(trunk_landing.HOST_SETTING, "molt-gate")
+    seen = []
+
+    def remote(repo, selected, gates, *, host):
+        assert repo == work and selected == commit and host == "molt-gate"
+        assert [gate.command for gate in gates] == ["echo selected-on-mac"]
+        seen.append(host)
+        if farm_failure:
+            raise DriverError("farm unavailable")
+        return [(1.0, "echo selected-on-mac")]
+
+    monkeypatch.setattr(trunk_landing, "run_remote", remote)
+    monkeypatch.setattr(
+        drv,
+        "run_selected_gates",
+        lambda *_a, **_k: pytest.fail("local gate ran despite remote opt-in"),
+    )
+    if farm_failure:
+        with pytest.raises(DriverError, match="farm unavailable"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+        expected = upstream
+    else:
+        assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
+        expected = commit
+    assert seen == ["molt-gate"]
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == expected
+    )
 
 
 @pytest.mark.parametrize("remote", ["origin", "publication"])

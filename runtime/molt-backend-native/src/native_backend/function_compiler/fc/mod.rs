@@ -63,7 +63,10 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
                 .all(|arg| representation_plan.name_is_integer_scalar(arg))
     });
     scalar_fast_paths_enabled
-        && (representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
+        && (representation_plan
+            .op_scalar_lane(op)
+            .map(|proof| proof.kind())
+            == Some(ScalarKind::Int)
             || (matches!(
                 op.kind,
                 OpKind::Add

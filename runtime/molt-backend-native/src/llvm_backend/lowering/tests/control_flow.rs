@@ -2,6 +2,104 @@ use super::*;
 use molt_ir::OpKind;
 
 #[test]
+fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "frame_return_edges".into(),
+        vec![TirType::Bool, TirType::Bool],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    func.execution_context = crate::ir::ExecutionContextPolicy::Local;
+    let early = func.fresh_block();
+    let entered = func.fresh_block();
+    let normal = func.fresh_block();
+    let suspension = func.fresh_block();
+    let args: Vec<_> = func.blocks[&func.entry_block]
+        .args
+        .iter()
+        .map(|arg| arg.id)
+        .collect();
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+        cond: args[0],
+        then_block: entered,
+        then_args: vec![],
+        else_block: early,
+        else_args: vec![],
+    };
+    let marker = |kind, attrs| TirOp {
+        origin: Some(kind),
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![],
+        results: vec![],
+        attrs,
+        source_span: None,
+    };
+    func.blocks.insert(
+        entered,
+        TirBlock {
+            id: entered,
+            args: vec![],
+            ops: vec![marker(
+                OpKind::TraceEnterSlot,
+                AttrDict::from([(
+                    "s_value".into(),
+                    AttrValue::Str("frame_return_edges".into()),
+                )]),
+            )],
+            terminator: Terminator::CondBranch {
+                cond: args[1],
+                then_block: normal,
+                then_args: vec![],
+                else_block: suspension,
+                else_args: vec![],
+            },
+        },
+    );
+    for (id, ops) in [
+        (early, vec![]),
+        (normal, vec![marker(OpKind::TraceExit, AttrDict::new())]),
+        (suspension, vec![]),
+    ] {
+        func.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops,
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    let function = lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().unwrap();
+    let ir = function.print_to_string().to_string();
+    assert_eq!(ir.matches("@molt_trace_enter_slot(").count(), 1, "{ir}");
+    assert_eq!(
+        ir.matches("@molt_trace_exit(").count(),
+        3,
+        "every return needs its own guarded closure: {ir}"
+    );
+    assert_eq!(
+        ir.matches("store i1 true").count(),
+        1,
+        "only a returned entry attempt grants a balancing credit: {ir}"
+    );
+    assert_eq!(
+        ir.matches("store i1 false").count(),
+        4,
+        "one initial empty credit, retired before each potential pop: {ir}"
+    );
+    assert_eq!(
+        ir.matches("br i1 %frame_entered").count(),
+        3,
+        "early exits must not pop the caller: {ir}"
+    );
+}
+
+#[test]
 fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
@@ -114,10 +212,23 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 TirType::DynBox,
                 molt_ir::FunctionReturnAbi::Value,
             );
+            func.execution_context = crate::ir::ExecutionContextPolicy::Local;
             let result = func.fresh_value();
             let pending = func.fresh_value();
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             let args: Vec<_> = entry.args.iter().map(|arg| arg.id).collect();
+            entry.ops.push(TirOp {
+                origin: Some(OpKind::TraceEnterSlot),
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![],
+                results: vec![],
+                attrs: AttrDict::from([(
+                    "s_value".into(),
+                    AttrValue::Str("task_failure_cleanup".into()),
+                )]),
+                source_span: None,
+            });
             let mut attrs = AttrDict::from([
                 ("s_value".into(), AttrValue::Str("opaque_task_body".into())),
                 (
@@ -261,9 +372,35 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             assert!(!init_ir.contains("ret "), "{ir}");
             assert!(ready_ir.contains("@molt_exception_pending("), "{ir}");
             assert_eq!(ready_ir.matches("@molt_dec_ref_obj(").count(), 2, "{ir}");
-            assert!(ready_ir.contains("@molt_trace_exit("), "{ir}");
             assert!(
-                ready_ir.contains(&format!("ret i64 %{call_name}")),
+                allocation_ir.contains("store i1 true"),
+                "frame credit must precede allocation: {ir}"
+            );
+            assert!(
+                ready_ir.contains(
+                    "br i1 %frame_entered, label %owned_frame_exit, label %owned_frame_exited"
+                ),
+                "cleanup must reach guarded frame exit: {ir}"
+            );
+            let pop_ir = block_ir(
+                blocks
+                    .iter()
+                    .find(|bb| block_ir(bb).contains("@molt_trace_exit("))
+                    .expect("owned frame exit"),
+            );
+            assert!(
+                pop_ir.contains("store i1 false")
+                    && pop_ir.contains("br label %owned_frame_exited"),
+                "retire the frame credit before finalizers: {ir}"
+            );
+            let return_ir = block_ir(
+                blocks
+                    .iter()
+                    .find(|bb| bb.get_name().to_str().unwrap() == "owned_frame_exited")
+                    .expect("return after frame closure"),
+            );
+            assert!(
+                return_ir.contains(&format!("ret i64 %{call_name}")),
                 "boxed result must survive unchanged: {ir}"
             );
             assert!(

@@ -9,7 +9,7 @@ fn lower_i64_add_overflow_safe_uses_native_add() {
     // marked overflow-safe by the representation plan. The backend may then
     // emit a raw machine `add` instead of routing through the runtime.
     let (func, v_sum) = build_i64_add_func();
-    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+    let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     // A native machine `add` is sound only when BOTH operands and the result
     // are value-range-proven exact-i64 carriers. The two `i64` parameters
     // (entry args %0/%1) carry as boxed `DynBox` unless proven overflow-safe
@@ -57,40 +57,55 @@ fn lower_i64_add_not_overflow_safe_routes_to_runtime() {
 }
 
 #[test]
-fn lower_f64_add() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-
-    // Build: fn fadd(a: f64, b: f64) -> f64 { return a + b }
-    let mut func = TirFunction::new(
-        "add_f64".into(),
-        vec![TirType::F64, TirType::F64],
-        TirType::F64,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let v_sum = func.fresh_value();
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(TirOp {
-        origin: None,
-        dialect: Dialect::Molt,
-        opcode: OpCode::Add,
-        operands: vec![ValueId(0), ValueId(1)],
-        results: vec![v_sum],
-        attrs: AttrDict::new(),
-        source_span: None,
-    });
-    entry.terminator = Terminator::Return {
-        values: vec![v_sum],
-    };
-
-    let llvm_fn = lower_tir_to_llvm(&func, &backend);
-    let ir = llvm_fn.print_to_string().to_string();
-
-    assert!(
-        ir.contains("fadd double"),
-        "expected native f64 add in IR: {}",
-        ir
-    );
+fn f64_add_requires_exact_producers() {
+    for exact in [false, true] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "add_f64".into(),
+            if exact { vec![] } else { vec![TirType::F64; 2] },
+            TirType::F64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let operands = if exact {
+            let left = func.fresh_value();
+            let right = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            for (id, value) in [(left, 1.25), (right, 2.5)] {
+                entry.ops.push(TirOp {
+                    origin: None,
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstFloat,
+                    operands: vec![],
+                    results: vec![id],
+                    attrs: [("f_value".into(), AttrValue::Float(value))]
+                        .into_iter()
+                        .collect(),
+                    source_span: None,
+                });
+            }
+            vec![left, right]
+        } else {
+            vec![ValueId(0), ValueId(1)]
+        };
+        let sum = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            origin: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands,
+            results: vec![sum],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![sum] };
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend.module.verify().unwrap();
+        let ir = llvm_fn.print_to_string().to_string();
+        assert_eq!(ir.contains("call i64 @molt_add"), !exact, "{ir}");
+        assert_eq!(ir.contains("ret double"), exact, "{ir}");
+    }
 }
 
 #[test]

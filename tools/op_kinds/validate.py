@@ -2395,11 +2395,13 @@ def _validate_binding_views(data: dict) -> None:
 
 
 def _validate_scalar_value_forwarding(data: dict) -> None:
-    """Scalar forwarding is a unary borrowed-result fact, never an alias rule.
+    """Scalar forwarding is a unary mathematical-value fact, never custody.
 
     Runtime admission additionally requires exactly one result. The retained
     Copy carrier has variable result arity, so the registry's operand shape
     cannot grant a fact to malformed zero/multiple-result operations.
+    Owned aliases already require one semantic source at wire admission (args
+    or var); their normalized TIR shape is checked by scalar_value_source.
     """
     members = data.get("classifier_scalar_value_forward", [])
     if (
@@ -2412,7 +2414,10 @@ def _validate_scalar_value_forwarding(data: dict) -> None:
         )
     shapes = {row["kind"]: row for row in data.get("simpleir_op_shape", [])}
     views = set(data.get("classifier_binding_view", []))
+    aliases = set(data.get("classifier_owned_alias", []))
     for member in members:
+        if member in aliases:
+            continue
         shape = shapes.get(member)
         if (
             member not in views
@@ -2421,7 +2426,7 @@ def _validate_scalar_value_forwarding(data: dict) -> None:
             or shape["operands"] != 1
         ):
             raise OpKindTableError(
-                f"classifier_scalar_value_forward {member!r} requires a declared unary binding view"
+                f"classifier_scalar_value_forward {member!r} requires a declared unary binding view or owned alias"
             )
 
 

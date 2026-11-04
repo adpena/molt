@@ -993,8 +993,20 @@ def cmd_land(args: argparse.Namespace) -> int:
             git, repo, head=head, upstream=upstream, session_id=session_id
         )
         precheck = precheck_landing(
-            git, repo, head=head, upstream=upstream, session_id=session_id
+            git,
+            repo,
+            head=head,
+            upstream=upstream,
+            session_id=session_id,
+            static_only=args.static_only,
         )
+    if args.static_only:
+        _ok(
+            f"{git.short(head)} is already on {args.remote}/{args.branch}; nothing to check"
+            if already_landed
+            else f"static gates passed for {git.short(head)}; no try run, nothing queued"
+        )
+        return EXIT_OK
     if args.precheck_only:
         # A worker's handoff check: the same controller, selection and gate
         # environment as a landing, and no queue state or runner.
@@ -1616,6 +1628,13 @@ def add_queue_arguments(
         help="repair and precheck the lane exactly as land does, then stop: "
         "nothing is queued and no runner starts (a worker's handoff check); "
         "a precheck the budget cut short exits 1",
+    )
+    precheck.add_argument(
+        "--static-only",
+        action="store_true",
+        help="repair the lane and run its static gates (lint, format, generators, "
+        "registries, policy), then stop: no try run, nothing queued; the tier a "
+        "fast-path push never waives",
     )
     add_pinned_controller_arguments(p_land)
     p_land.set_defaults(func=cmd_land)

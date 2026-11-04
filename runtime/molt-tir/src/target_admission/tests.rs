@@ -520,11 +520,24 @@ fn extern_linkage_capability_is_one_shared_target_admission_gate() {
 
 #[test]
 fn fixed_width_targets_admit_exact_float_basics_only() {
-    validate_numeric_target_contract(
-        &binary(molt_ir::OpKind::Add, "float"),
-        &crate::tir::TargetInfo::rust_release_fast(),
-    )
-    .expect("float add is exact in the target policy");
+    let mut floats = binary(molt_ir::OpKind::Add, "float");
+    validate_numeric_target_contract(&floats, &crate::tir::TargetInfo::rust_release_fast())
+        .expect_err("annotations do not prove the target's numeric capability");
+    let func = &mut floats.functions[0];
+    func.params.clear();
+    func.param_types = None;
+    for name in ["rhs", "lhs"] {
+        func.ops.insert(
+            0,
+            OpIR {
+                out: Some(name.into()),
+                f_value: Some(1.25),
+                ..OpIR::new(molt_ir::OpKind::ConstFloat)
+            },
+        );
+    }
+    validate_numeric_target_contract(&floats, &crate::tir::TargetInfo::rust_release_fast())
+        .expect("producer-proven float add is exact in the target policy");
 
     for kind in [
         molt_ir::OpKind::Pow,

@@ -18,7 +18,12 @@ impl LuauBackend {
                     let lhs_num = self.numeric_operand_expr(&args[0]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
                     let is_numeric = self.scalar_plan.op_prefers_integer_runtime_lane(op)
-                        || matches!(self.scalar_plan.op_scalar_lane(op), Some(ScalarKind::Float));
+                        || matches!(
+                            self.scalar_plan
+                                .op_scalar_lane(op)
+                                .map(|proof| proof.kind()),
+                            Some(ScalarKind::Float)
+                        );
                     if is_numeric {
                         self.emit_line(&format!("local {out}: number = {lhs_num} + {rhs_num}"));
                     } else {

@@ -10,6 +10,7 @@ use melior::{
         r#type::{FunctionType, IntegerType},
     },
 };
+use molt_backend::representation_plan::ProducerCarrierPlan;
 use molt_backend::tir::{blocks::BlockId, function::TirFunction};
 
 use super::{
@@ -18,6 +19,7 @@ use super::{
 
 pub(super) fn build_func_op<'c>(
     tir_func: &TirFunction,
+    carriers: &ProducerCarrierPlan,
     ctx: &'c MlirContext,
     location: Location<'c>,
 ) -> Result<melior::ir::Operation<'c>, String> {
@@ -26,15 +28,18 @@ pub(super) fn build_func_op<'c>(
     let i1_type: Type<'c> = IntegerType::new(ctx, 1).into();
 
     // Map parameter and return types.
-    let param_mlir_types: Vec<Type<'c>> = tir_func
-        .param_types
+    let param_mlir_types: Vec<Type<'c>> = carriers
+        .effective_param_types(tir_func)
         .iter()
         .map(|ty| mlir_type_for_tir(ctx, ty))
         .collect();
     let return_mlir_types: Vec<Type<'c>> = if !tir_func.return_abi.returns_value() {
         vec![]
     } else {
-        vec![mlir_type_for_tir(ctx, &tir_func.return_type)]
+        vec![mlir_type_for_tir(
+            ctx,
+            &carriers.effective_return_type(tir_func),
+        )]
     };
 
     let func_type = FunctionType::new(ctx, &param_mlir_types, &return_mlir_types);
@@ -64,7 +69,12 @@ pub(super) fn build_func_op<'c>(
             tir_block
                 .args
                 .iter()
-                .map(|a| (mlir_type_for_tir(ctx, &a.ty), location))
+                .map(|a| {
+                    (
+                        mlir_type_for_tir(ctx, &carriers.effective_value_type(a.id, &a.ty)),
+                        location,
+                    )
+                })
                 .collect()
         };
         mlir_blocks.push(Block::new(&arg_types));
@@ -74,7 +84,7 @@ pub(super) fn build_func_op<'c>(
     // operations. TIR ValueIds are function-scoped and values defined in a
     // dominating block remain visible to successor blocks; rebuilding this map
     // per block silently discarded those definitions.
-    let mut value_map = ValueMap::new(&tir_func.value_types);
+    let mut value_map = ValueMap::new(tir_func, carriers);
     for (block_idx, &bid) in block_ids.iter().enumerate() {
         let tir_block = &tir_func.blocks[&bid];
         let block = &mlir_blocks[block_idx];

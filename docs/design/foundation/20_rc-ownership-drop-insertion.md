@@ -432,6 +432,9 @@ one.
 
 The generated scalar-forwarding contract separately preserves a plain
 `frame_home_store` result's exact mathematical scalar value from operand zero.
+The same contract forwards an already-proven scalar across `binding_alias`.
+That operation still mints its own droppable reference; mathematical-value
+forwarding never makes it a transparent alias or merges its ownership root.
 The store returns the saved operand view after publishing it and releasing the
 displaced binding; it does not reread a finalizer's replacement. Exact scalar
 provenance, ranges, recurrences and physical representation consume this fact.
