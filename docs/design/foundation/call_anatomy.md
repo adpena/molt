@@ -415,8 +415,11 @@ existing proven pure, non-throwing, non-callback effect fact permits omission; m
 conservative. The opcode has no SSA operands/results, a nonnegative immediate, no Python callback
 or exception, and an impure side effect. Use the current conservative memory-effect representation
 if it cannot distinguish frame-observation memory. Optimizers may coalesce adjacent redundant
-publications only without an intervening observation, failure, control-flow or terminator boundary;
-they cannot eliminate or move a publication across those boundaries. Backend-generated exits retain
+publications only when every incoming path already carries the required location; they cannot
+move a publication across an observation, failure or terminator. An exceptional check preserves
+the known location on its normal fallthrough, so an identical fallthrough store is redundant.
+Its exceptional target publishes at its own label, where location knowledge resets. Other
+control-flow boundaries reset that knowledge conservatively. Backend-generated exits retain
 their originating source terminator's location.
 
 Reserve a raw location word beside each executing frame's binding homes, even for module bodies
