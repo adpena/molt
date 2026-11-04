@@ -27,6 +27,10 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     scripts = []
 
     class Transport:
+        def wsl_root_command(self, script):
+            assert "systemd=true" in script
+            return '{"changed":false,"restart":false}'
+
         def windows_command(self, script):
             return json.dumps(
                 {
@@ -43,6 +47,10 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
                 return str(80 * 1024**3)
             if script.startswith("df -Pk / |"):
                 return str(2 * 1024**2)
+            if "flock -n" in script:
+                return ""
+            if "udevadm settle" in script:
+                return '{"systemd":true,"root_uuid":"root-uuid"}'
             if script.startswith("$d=Get-PSDrive"):
                 return json.dumps({"free": 30 * 1024**3})
             if script.startswith(("df -Pk", "p=")):
@@ -63,7 +71,7 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     assert len(installs) == 2
     install = installs[0]
     assert "uv sync --locked --group dev" in install
-    assert "uv run --locked molt doctor --json" in install
+    assert "uv run --locked molt doctor --json --strict" in install
     assert "--default-toolchain none" in install
     assert "rustup show active-toolchain" in install
     assert "git clone --" in install and "fetch origin" in install
@@ -71,6 +79,165 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     assert "envs/molt-dx-py312" not in install
     if name == "molt-gate":
         assert any(script.startswith("df -Pk /mnt/c ") for script in scripts)
+
+
+@pytest.mark.parametrize(
+    "changed,restart", [(True, True), (False, True), (False, False)]
+)
+def test_guest_boot_configuration_restart_and_root_uuid_admission(changed, restart):
+    events = []
+
+    class Transport:
+        def shell_command(self, script):
+            events.append("lock" if "flock -n" in script else "admit")
+            return (
+                ""
+                if "flock -n" in script
+                else '{"systemd":true,"root_uuid":"root-uuid"}'
+            )
+
+        def wsl_root_command(self, script):
+            events.append("configure")
+            return json.dumps({"changed": changed, "restart": restart})
+
+        def windows_command(self, script):
+            events.append("restart")
+            assert "--terminate 'molt-gate'" in script
+            assert "--shutdown" not in script and "MoltCodonUbuntu" not in script
+
+    result = trunk_loop.provision_wsl_guest(host_named("molt-gate"), Transport())
+    assert events == ["lock", "configure", *(["restart"] if restart else []), "admit"]
+    assert result == {
+        "systemd": True,
+        "root_uuid": "root-uuid",
+        "config_changed": changed,
+        "restarted": restart,
+    }
+
+
+def test_guest_missing_uuid_mapping_refuses_after_restart():
+    class Transport:
+        def shell_command(self, script):
+            if "flock -n" in script:
+                return ""
+            raise RuntimeError(
+                "Missing root filesystem UUID mapping: /dev/disk/by-uuid/ for /dev/sdd"
+            )
+
+        def wsl_root_command(self, script):
+            return '{"changed":true,"restart":true}'
+
+        def windows_command(self, script):
+            pass
+
+    with pytest.raises(
+        RuntimeError, match="Missing root filesystem UUID mapping: /dev/disk/by-uuid/"
+    ):
+        trunk_loop.provision_wsl_guest(host_named("molt-gate"), Transport())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX guest admission script")
+def test_guest_uuid_admission_reports_the_actual_missing_mapping():
+    from tests.process_guard_common import run_custody_subject_process
+
+    class Transport:
+        def shell_command(self, script):
+            script = script.replace("$(cat /proc/1/comm)", "systemd")
+            script = script.replace("udevadm settle --timeout=30", ":")
+            script = script.replace("$(findmnt -nro SOURCE /)", "/dev/missing-root")
+            script = script.replace("$(findmnt -nro UUID /)", "missing-root-uuid")
+            result = run_custody_subject_process(
+                ["bash", "-s"], input=script, text=True, capture_output=True
+            )
+            assert result.returncode == 2
+            assert result.stdout == ""
+            assert (
+                "Missing root filesystem UUID mapping: /dev/disk/by-uuid/missing-root-uuid for /dev/missing-root"
+                in result.stderr
+            )
+            raise RuntimeError(result.stderr)
+
+    with pytest.raises(RuntimeError, match="Missing root filesystem UUID mapping"):
+        trunk_loop.admit_wsl_guest(host_named("molt-gate"), Transport())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX configuration publication")
+@pytest.mark.parametrize(
+    "original",
+    [
+        "",
+        "[network]\nhostname=gate\n",
+        "[boot]\nsystemd=false\n[interop]\nenabled=true\n",
+        "[boot]\n[network]\nhostname=gate\n",
+        "[boot]\nsystemd=false\nsystemd=true\n",
+        "[boot]\nsystemd=true\n[boot]\nsystemd=false\n",
+    ],
+)
+def test_guest_configuration_publication_preserves_settings_and_second_run_bytes(
+    tmp_path, original
+):
+    from tests.process_guard_common import run_custody_subject_process
+
+    config = tmp_path / "wsl.conf"
+    # Run the real awk/publication script against an owned configuration file.
+    # The OS prerequisites and PID 1 are external to this filesystem contract.
+    script = trunk_loop.wsl_systemd_script()
+    script = script[script.index("config=/etc/wsl.conf") :]
+    script = script.replace("/etc/wsl.conf", str(config)).replace(
+        "/etc/.molt-wsl.conf.", str(tmp_path / ".molt-wsl.conf.")
+    )
+    script = script.replace("$(cat /proc/1/comm)", "systemd")
+    if original:
+        config.write_text(original)
+    first = run_custody_subject_process(
+        ["bash", "-s"], input=script, text=True, capture_output=True
+    )
+    if original.count("[boot]") > 1 or original.count("systemd=") > 1:
+        assert first.returncode == 2
+        assert "Ambiguous [boot] systemd declaration" in first.stderr
+        assert config.read_text() == original
+        return
+    assert first.returncode == 0, first.stderr
+    published = config.read_bytes()
+    assert b"systemd=true" in published
+    assert all(
+        line.encode() in published
+        for line in original.splitlines()
+        if not line.startswith("systemd=")
+    )
+    before = config.stat()
+    second = run_custody_subject_process(
+        ["bash", "-s"], input=script, text=True, capture_output=True
+    )
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout) == {"changed": False, "restart": False}
+    assert config.read_bytes() == published
+    assert config.stat().st_mtime_ns == before.st_mtime_ns
+
+
+def test_wsl_root_transport_uses_stdin_and_only_the_inventoried_distro(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, '{"changed":true}', "")
+
+    monkeypatch.setattr(cross_run, "_guarded_run", run)
+    transport = cross_run.SSHTransport(host_named("molt-gate"))
+    script = "printf '%s' \"a'b with spaces\""
+    assert transport.wsl_root_command(script) == '{"changed":true}'
+    argv, kwargs = calls[0]
+    assert argv[-8:] == [
+        "wsl.exe",
+        "-d",
+        "molt-gate",
+        "--user",
+        "root",
+        "--",
+        "bash",
+        "-s",
+    ]
+    assert kwargs["input"] == script + "\n"
 
 
 @pytest.mark.parametrize("used_gib", [61, 81])
@@ -340,8 +507,9 @@ def test_inventory_rejects_retired_python_contract(tmp_path):
 
 
 @pytest.mark.parametrize("name", ["macmini", "molt-gate"])
+@pytest.mark.parametrize("doctor_error", [False, True])
 @pytest.mark.skipif(os.name == "nt", reason="POSIX bootstrap script execution")
-def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name):
+def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_error):
     from tests.process_guard_common import run_custody_subject_process
 
     root = tmp_path / "host"
@@ -350,12 +518,20 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name):
     bin_dir = root / ".local/bin"
     bin_dir.mkdir(parents=True)
     log = root / "calls"
-    for command in ("uv", "rustup", "git", "curl", "cc"):
+    for command in ("uv", "rustup", "git", "curl", "cc", "cmake"):
         executable = bin_dir / command
         executable.write_text(
             "#!/bin/sh\n"
             '[ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}${MOLT_VENV:-}" ] || exit 93\n'
-            f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n',
+            f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n'
+            + (
+                'case "$*" in\n'
+                ' "run --locked molt doctor --json --strict") exit 7;;\n'
+                ' "run --locked molt doctor --json") echo \'{"status":"error"}\';;\n'
+                "esac\n"
+                if command == "uv" and doctor_error
+                else ""
+            ),
             encoding="utf-8",
         )
         executable.chmod(0o755)
@@ -374,7 +550,7 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name):
         result = run_custody_subject_process(
             ["/bin/sh"], input=script, text=True, capture_output=True, env=env
         )
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == (7 if doctor_error else 0), result.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
     assert (
         calls
@@ -382,7 +558,7 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name):
             f"git -C {checkout} fetch origin",
             "rustup show active-toolchain",
             "uv sync --locked --group dev",
-            "uv run --locked molt doctor --json",
+            "uv run --locked molt doctor --json --strict",
         ]
         * 2
     )

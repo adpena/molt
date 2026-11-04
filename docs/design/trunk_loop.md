@@ -41,6 +41,9 @@ uv owns bootstrap Python and dependencies; the inventory cannot select a
 hand-made interpreter. Host-side Python entry points use
 `uv run --locked python -B` in the selected checkout. The existing immutable
 development-image publisher still owns proof environments and their admission.
+Provisioning requires CMake among its system prerequisites and runs
+`molt doctor --json --strict`: a JSON error report cannot count as a successful
+install merely because the report-only doctor mode exits zero.
 
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of
@@ -113,10 +116,19 @@ Pinned releases use `molt.tool_releases`, not a second downloader or installer.
 Unsupported or absent providers fail provisioning before any test starts.
 Persistent Linux volumes also need the unique filesystem UUID mapping required
 by [durable file identity](durable_file_identity.md). WSL images without
-`/dev/disk/by-uuid` cannot run guarded doctor/proof commands. Providing that
-system prerequisite is an operator step; farm provisioning does not install or
-enable udev, fabricate UUID links, or substitute device numbers for durable
-identity.
+`/dev/disk/by-uuid` cannot run guarded doctor/proof commands. Under the
+2026-11-04 correction, provisioning declares `[boot] systemd=true` in
+`molt-gate`'s `/etc/wsl.conf`, preserving other sections and publishing only
+changed bytes. This follows Microsoft's
+[documented WSL systemd mechanism](https://learn.microsoft.com/windows/wsl/systemd#how-to-enable-systemd).
+It restarts only `molt-gate` when the declaration changes or PID 1 has not yet
+become systemd; it never restarts another distribution. An active farm-worker
+lock refuses the restart. Provisioning and proof-run admission wait for udev
+and require the root filesystem's real `/dev/disk/by-uuid/<UUID>` block-device
+mapping. A missing or mismatched mapping refuses with its path before install
+or proof staging. The systemd/udev packages are host prerequisites; no UUID link
+is fabricated and no durable-identity contract is changed (HF-761 owns the
+udev-free Linux provider).
 The inventory also selects the two short, disjoint fixture-output roles that
 `ci.yml`'s portability setup supplies. Each run exclusively claims a child and
 admits it through `proof_queue_pkg.cargo_output_layout.declare_root` before tests.

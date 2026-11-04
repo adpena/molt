@@ -108,18 +108,18 @@ Set-Location -LiteralPath {ps(checkout)}
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 & uv sync --locked --group dev
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
-& uv run --locked molt doctor --json
+& uv run --locked molt doctor --json --strict
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 """
     system_command = (
-        "xcode-select --install"
+        "xcode-select --install; brew install cmake"
         if host.os == authorities().HostOS.MACOS
-        else "sudo apt-get update && sudo apt-get install git curl clang lld build-essential"
+        else "sudo apt-get update && sudo apt-get install git curl clang lld cmake build-essential"
     )
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-for tool in git curl cc; do
+for tool in git curl cc cmake; do
  command -v "$tool" >/dev/null || {{ echo {shlex.quote("Missing system prerequisites; run: " + system_command)} >&2; exit 2; }}
 done
 if ! command -v uv >/dev/null; then
@@ -145,7 +145,7 @@ fi
 cd {shlex.quote(checkout)}
 rustup show active-toolchain
 uv sync --locked --group dev
-uv run --locked molt doctor --json
+uv run --locked molt doctor --json --strict
 """
 
 
@@ -258,6 +258,87 @@ def admit_wsl_profile(host, transport, *, provision_disk: bool = False) -> dict:
     return profile
 
 
+def wsl_systemd_script() -> str:
+    """Preserve other guest settings; publish only a changed boot declaration."""
+    return r"""set -eu
+test -x /usr/lib/systemd/systemd && test /sbin/init -ef /usr/lib/systemd/systemd && command -v udevadm >/dev/null || {
+ echo 'molt-gate requires the systemd, systemd-sysv and udev system prerequisites' >&2; exit 2;
+}
+config=/etc/wsl.conf
+test ! -L "$config" || { echo 'Refusing symlink /etc/wsl.conf' >&2; exit 2; }
+test ! -e "$config" || test -f "$config" || { echo 'Refusing non-file /etc/wsl.conf' >&2; exit 2; }
+input=/dev/null
+test ! -e "$config" || input="$config"
+temp=$(mktemp /etc/.molt-wsl.conf.XXXXXX)
+trap 'rm -f "$temp"' EXIT
+if test -f "$config"; then cp -p -- "$config" "$temp"; else chmod 644 "$temp"; fi
+awk '
+ /^[[:space:]]*\[/ {
+   if (boot && !setting) { print "systemd=true"; setting=1 }
+   boot=(tolower($0) ~ /^[[:space:]]*\[boot\][[:space:]]*([#;].*)?$/)
+   if (boot && ++sections > 1) exit 2
+ }
+ boot && tolower($0) ~ /^[[:space:]]*systemd[[:space:]]*=/ {
+   if (++keys > 1) exit 2
+   print "systemd=true"; setting=1; next
+ }
+ { print }
+ END {
+   if (sections > 1 || keys > 1) exit 2
+   if (!sections) print "[boot]"
+   if (!setting) print "systemd=true"
+ }' "$input" > "$temp" || {
+ echo 'Ambiguous [boot] systemd declaration in /etc/wsl.conf; preserved original' >&2; exit 2;
+}
+changed=false
+if ! cmp -s "$temp" "$config"; then
+ mv -- "$temp" "$config"
+ changed=true
+fi
+restart=false
+if test "$changed" = true || test "$(cat /proc/1/comm)" != systemd; then restart=true; fi
+printf '{"changed":%s,"restart":%s}\n' "$changed" "$restart"
+"""
+
+
+def admit_wsl_guest(host, transport) -> dict:
+    """Admit the real root UUID namespace, never fabricate a device alias."""
+    return json.loads(
+        transport.shell_command(
+            r"""set -eu
+test "$(cat /proc/1/comm)" = systemd || { echo 'molt-gate requires systemd as PID 1; run trunk_loop.py provision --host molt-gate' >&2; exit 2; }
+udevadm settle --timeout=30
+root_device=$(findmnt -nro SOURCE /)
+uuid=$(findmnt -nro UUID /)
+mapping=/dev/disk/by-uuid/$uuid
+if test -z "$uuid" || ! test -b "$mapping" || ! test "$mapping" -ef "$root_device"; then
+ echo "Missing root filesystem UUID mapping: /dev/disk/by-uuid/$uuid for $root_device" >&2; exit 2
+fi
+printf '{"systemd":true,"root_uuid":"%s"}\n' "$uuid"
+"""
+        )
+    )
+
+
+def provision_wsl_guest(host, transport) -> dict:
+    # As for disk maintenance, never restart an active farm proof.
+    transport.shell_command(
+        f"set -eu\nlock={shlex.quote(host.remote_dir + '/trunk-worker.lock')}\n"
+        'if test -f "$lock"; then flock -n "$lock" true; fi'
+    )
+    state = json.loads(transport.wsl_root_command(wsl_systemd_script()))
+    if state["restart"]:
+        transport.windows_command(
+            f"& wsl.exe --terminate {ps(host.wsl_distribution)}\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }"
+        )
+    return {
+        **admit_wsl_guest(host, transport),
+        "config_changed": state["changed"],
+        "restarted": state["restart"],
+    }
+
+
 def provision_host(args, *, transport=None) -> dict:
     cross = authorities()
     host = next(
@@ -293,6 +374,7 @@ def provision_host(args, *, transport=None) -> dict:
         if host.wsl_distribution
         else None
     )
+    guest = provision_wsl_guest(host, transport) if host.wsl_distribution else None
     import tomllib
 
     releases = tomllib.loads(
@@ -321,6 +403,7 @@ def provision_host(args, *, transport=None) -> dict:
         "free_bytes": free,
         "proof_build_gb": host.proof_build_gb,
         "wsl": profile,
+        "guest": guest,
         "install_log": result,
         "retention": retention,
     }
@@ -646,6 +729,7 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
     transport = cross.SSHTransport(host)
     if host.wsl_distribution:
         admit_wsl_profile(host, transport)
+        admit_wsl_guest(host, transport)
     checkout, control = host_paths(host, transport._nonce)
     from molt.dx import artifact_root
 

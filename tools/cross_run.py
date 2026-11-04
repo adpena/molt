@@ -704,7 +704,7 @@ class SSHTransport(Transport):
             )
         return result.stdout.strip()
 
-    def _wsl_argv(self, *argv: str) -> list[str]:
+    def _wsl_argv(self, *argv: str, root: bool = False) -> list[str]:
         distribution = self.host.wsl_distribution
         if distribution is None:
             raise ValueError("WSL execution requires an inventoried distribution")
@@ -712,9 +712,23 @@ class SSHTransport(Transport):
             "wsl.exe",
             "-d",
             distribution,
+            *(["--user", "root"] if root else []),
             "--",
             *argv,
         ]
+
+    def wsl_root_command(self, script: str, *, timeout: int = 60) -> str:
+        """Apply declared guest provisioning through the existing stdin boundary."""
+        result = _guarded_run(
+            self._wsl_argv("bash", "-s", root=True),
+            input=script + "\n",
+            timeout=timeout,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"{self.host.name}: WSL root command failed: {result.stderr} {result.stdout}"
+            )
+        return result.stdout.strip()
 
     def shell_command(self, script: str, *, timeout: int = 60) -> str:
         """Execute a script through the same SSH owner; preserve PowerShell bytes.
