@@ -88,6 +88,7 @@ def _git(repo: Path, *args: str) -> str:
         capture_output=True,
         text=True,
         timeout=60,
+        encoding="utf-8",
     ).stdout
 
 
