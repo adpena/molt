@@ -12,6 +12,7 @@ from __future__ import annotations
 __all__ = [
     "BUILD_ENV",
     "CONTRACT_CONSTANT_NAMES",
+    "DESIGN_REVIEW",
     "DISTILL",
     "EVIDENCE_REVIEW",
     "GIT_CUSTODY",
@@ -164,6 +165,18 @@ PREMISE_VERIFICATION = (
     "conflicts or unsettled semantic decisions to the parent; do not open a competing lane."
 )
 
+DESIGN_REVIEW = (
+    "DESIGN REVIEW (Elephant Goldfish Model): before implementation, write artifacts/design.md "
+    "in your lane: the problem with measured evidence, prior art, the chosen mechanism, its "
+    "invariants, the consumers it changes and the test plan. Then have at least two Goldfish "
+    "reviewers read only that file, never your session: Claude workers use the egm reviewer "
+    "agents (egm-design, egm-implementation-readiness, egm-codebase-details, egm-zoom-out); "
+    "Codex workers run separate `codex exec -s read-only` reviews, one at a time, each given "
+    "only the file path and a reviewer role. Fix or answer each finding in the file; at most "
+    "two rounds, then cut scope. Commit design.md with its review record before code, and "
+    "report the outcome. A one-line fix may use one reviewer."
+)
+
 # --- Registry (consumed by the anti-rot gate + the tests) ----------------------------------
 
 CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
@@ -180,6 +193,7 @@ CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "MODEL_TIER",
     "TRIALITY_WIRING",
     "PREMISE_VERIFICATION",
+    "DESIGN_REVIEW",
     "HANDOFF_PRECHECK",
 )
 
@@ -197,6 +211,7 @@ MECHANIZES: dict[str, str] = {
     "MODEL_TIER": "M70",
     "TRIALITY_WIRING": "M63",
     "PREMISE_VERIFICATION": "M22/M24",
+    "DESIGN_REVIEW": "M22/M24 (owner 2026-11-04: Elephant Goldfish review before implementation)",
     "HANDOFF_PRECHECK": "M05/M12",
 }
 
@@ -214,6 +229,7 @@ KEY_PHRASES: dict[str, str] = {
     "MODEL_TIER": "Respect operator concurrency limits",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
+    "DESIGN_REVIEW": "Elephant Goldfish",
     "HANDOFF_PRECHECK": "--precheck-only",
 }
 
