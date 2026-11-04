@@ -95,7 +95,7 @@ None of this enters the user's compile path.
 
 1. Anchors, the fingerprint and `query`, seeded from doc 75 §4, HF-263's measured rejection, the
    ledger's measured rejections, the gate-speed measurements (HF-457, HF-334), and the April
-   compiler PGO verdict (0c587cd8e: about 0% while the backend was 1.5% of compile wall clock). Verdicts
+   compiler PGO verdict (de0c1b22b: about 0% while the backend was 1.5% of compile wall clock). Verdicts
    start as hand-written falling rules, each with its evidence.
 2. Fit SLIM scores and learned rule lists for each family that has enough anchors. Add the
    reopen trigger on fingerprint changes.

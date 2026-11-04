@@ -3,7 +3,7 @@
 ## 2026-04-22: Current-State Reconciliation After Rust Safety Tranche
 
 This entry reconciles deployment documentation with the canonical handoff after
-the Rust Clippy/Miri cleanup in commit `ec069ded`.
+the Rust Clippy/Miri cleanup in commit `542326ff`.
 
 ### Verified in this tranche
 

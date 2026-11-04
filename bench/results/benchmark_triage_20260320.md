@@ -14,7 +14,7 @@
 > See `tools/PERF_AUTHORITY.md`.
 >
 > - generated_at: `2026-03-20`
-> - git_rev: `8f6eb682b3db64fcfd83ef72c6eb7be339f0b63f`
+> - git_rev: `f53431cacd1313d19e3cc429ef51d66784397859`
 
 # Benchmark Triage - 2026-03-20
 
@@ -30,7 +30,7 @@
 
 - Platform: macOS-26.3.1-arm64-arm-64bit (Apple Silicon, 18 cores)
 - Python: 3.12.13
-- Git rev: 8f6eb682b3db64fcfd83ef72c6eb7be339f0b63f
+- Git rev: f53431cacd1313d19e3cc429ef51d66784397859
 - Samples: 3
 
 ## Results JSON

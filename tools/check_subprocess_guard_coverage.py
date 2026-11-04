@@ -389,10 +389,16 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/check_public_source_boundary.py",
-        "tracked_paths",
+        "_git",
         "run",
-        "one bounded git ls-files for the public-source boundary gate; runs "
-        "before the project environment exists",
+        "bounded git ls-files and one path-limited git log for the "
+        "public-source boundary gate; runs before the project environment exists",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_check_public_source_boundary.py",
+        "_git",
+        "run",
+        "bounded synthetic-repository git helper for the purged-history control",
     ),
     AllowedRawSubprocessUse(
         "tools/ledger_merge.py",

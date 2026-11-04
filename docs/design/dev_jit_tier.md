@@ -46,7 +46,7 @@ runtime written in Rust; it can do the same.
 One code generator, two code owners. The native backend's Cranelift lowering builds every
 function into a `cranelift_module::Module`; only the module that owns the code differs.
 
-1. **Generic module** (7c86a042a). The function compiler takes
+1. **Generic module** (389199062). The function compiler takes
    `&mut dyn cranelift_module::Module`, as cg_clif's does. `SimpleBackend` holds a
    `CodeOwner`: `Object` (an `ObjectModule`, for the system linker) or `ProcessMemory`
    (a `JITModule`, feature `jit`). `CodeOwner` implements `Module` by forwarding every
@@ -427,7 +427,7 @@ stdlib set into the runtime image and compile only the application partition.
 ## Verification
 
 - Step 1: identical object bytes before and after the generic-module change (12 of 12
-  objects, 7c86a042a) and after the code-owner change (hello object and archive).
+  objects, 389199062) and after the code-owner change (hello object and archive).
 - Code owner: `runtime/molt-jit/tests/jit_code_owner.rs` compiles the program that
   `native_direct_symbol_object_call_links_provider_archive_and_executes` links against a
   provider archive, but into memory against the same provider symbols, and runs it; it
@@ -466,7 +466,7 @@ stdlib set into the runtime image and compile only the application partition.
   CPython oracle for every compiled program, so `tests/cli/test_jit_run_tier.py` proves
   the `sys.executable` path: executing an image starts its runner with the image as
   argv[0] and the new arguments.
-  On macOS arm64 (2026-10-21, main 9e0f94f11, dev compiler, `--jobs 4`, 201 min at load
+  On macOS arm64 (2026-10-21, main 7dde93b84, dev compiler, `--jobs 4`, 201 min at load
   10-27), 514 programs ran: the 510 basic programs a native calibration lists as passing,
   without its two expected-failure programs that both tiers pass (XPASS), the two
   process-state cases and two spawn-mode `multiprocessing` programs. 480 pass under both
@@ -475,7 +475,7 @@ stdlib set into the runtime image and compile only the application partition.
   and its spawned JIT worker is still compiling the program. Two programs that first
   failed on a runtime build lock timeout at cold start (HF-388) passed on a recheck.
   The lane now runs those 480 and two more process-state cases, `closed_stderr_start.py`
-  and `reexec_keeps_parent_environment.py`. On the lane tip (2026-10-22, main 1c317eeb8,
+  and `reexec_keeps_parent_environment.py`. On the lane tip (2026-10-22, main ce7cda34d,
   126 min at load 10-60) all 482 pass under both tiers, and the three pinned expected
   failures end exactly as pinned; 8 native builds first failed on 120 s backend-daemon
   lock timeouts (HF-388) and passed on a recheck. Each full run so far lost cases to an

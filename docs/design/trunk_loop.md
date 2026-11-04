@@ -256,7 +256,7 @@ commands plus owning-lane input files. There is no automatic revert.
 The parked postsubmit donor `37e82b522c34` supplies useful exact-source and
 single-runner concepts; its revert policy and landing-policy edits conflict with
 the owner-approved fix-forward workflow and are not imported. The triage donor
-`b3e790d89462` and its owning design remain preserved for Stage 2; importing its
+`c527e1af3aaf` and its owning design remain preserved for Stage 2; importing its
 second JUnit parser or uncorrected review-v2 behavior would duplicate authority.
 
 - [LUCI Swarming bots](https://chromium.googlesource.com/infra/luci/luci-py/+/HEAD/appengine/swarming/doc/Bot.md)

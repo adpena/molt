@@ -119,7 +119,7 @@ An independent audit (2026-10-17) found more:
 
 One unfiltered pytest invocation previously inherited every selected owner's
 toolchain requirements and the largest worker-memory envelope. In the retained
-429255673 landing, 5,517 tests used three workers under a 20.11 GiB tree cap;
+364427f6e landing, 5,517 tests used three workers under a 20.11 GiB tree cap;
 the largest observed worker was 1.50 GiB. The declared 6.25 GiB envelope remains
 necessary for its owning family. It must not restrict unrelated test families.
 The aggregate Cargo requirement also left a 56.73-second serialized tail.

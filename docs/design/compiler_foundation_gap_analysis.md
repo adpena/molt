@@ -92,7 +92,7 @@ distinguishes remaining consumer gaps from mechanisms already implemented.
   (frontend:2964) opts functions out of EH bookkeeping by a syntactic scan, but raising callees set
   the pending flag regardless → a `needs_exception_stack=False` lambda with a raising call (e.g.
   `lambda: int("x")`) leaves an unobserved pending exception, returns None → silent wrong propagation.
-  Only the iterator-consumer manifestation was patched (LOOP_BREAK_IF_EXCEPTION, 813f789cb/3f8a457e5).
+  Only the iterator-consumer manifestation was patched (LOOP_BREAK_IF_EXCEPTION, de2985c12/227e5e40a).
   Structural fix: make the per-op exception-routing decision effect-oracle-driven (S3), OR default
   needs_exception_stack=True and lean on check_exception_elim to drop redundant checks.
 - **C3: async `*_poll` "TIR roundtrip emitted invalid labels" panic** (simple_backend.rs:2526). A
@@ -206,7 +206,7 @@ distinguishes remaining consumer gaps from mechanisms already implemented.
 
 ## Codon CIR comparison (2026-10-14)
 
-Source: Codon `develop` at 45261e03, read against Molt at e578a709d. Codon is fast for one reason:
+Source: Codon `develop` at 45261e03, read against Molt at da5c5ee53. Codon is fast for one reason:
 every fact it needs is proven at compile time, so it emits direct calls, fixed field offsets, raw
 loop counters and no exception checks outside `try`. It gets those proofs by excluding Python
 dynamism (64-bit `int`, fixed fields, compile-time `__getattr__`, no rebinding). Molt keeps CPython

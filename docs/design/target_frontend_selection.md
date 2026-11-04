@@ -41,7 +41,7 @@ Measured evidence (this host, 2026-11-04):
 - 3.14.9 cannot publish an image today. The runtime identity probe fails:
   "CPython's configured dynamic-extension root is outside its configured
   exec_prefix: …/cpython-3.14.9-…/lib/python3.14/lib-dynload not under
-  <image root>". Cause: `python_runtime_identity._base_runtime_paths` (fe6234761d,
+  <image root>". Cause: `python_runtime_identity._base_runtime_paths` (25854ece07,
   HF-766) reads the configured anchor as `sysconfig.get_config_var
   ("exec_prefix")`. On 3.12 and 3.13, `_init_posix` overwrites that variable
   with the build-time value. From 3.14 on (GH-126920), the build-time data no

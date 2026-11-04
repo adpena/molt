@@ -241,7 +241,7 @@ catalog variable outside the build-identity group travels with each daemon reque
 
 **Phase 1 — LTO regression gate:**
 - New test in `runtime/molt-backend/tests/`: `test_lto_profile_correctness.rs` — compiles a representative TIR function under `release-fast` (thin LTO) and verifies output bytewise matches the `release` reference. This test is a build-system test, not a runtime test; it verifies that the Cranelift object emitted is identical under thin vs fat LTO for a fixed function.
-- Existing `tools/verify_native_binary_valid.sh` (the binary-size self-protection gate from commit 68357c0b2) must pass after the LTO change.
+- Existing `tools/verify_native_binary_valid.sh` (the binary-size self-protection gate from commit f86935f6f) must pass after the LTO change.
 
 **Phase 2 — function_compiler split:**
 - No new behavioral tests needed — the split is a pure module reorganization. The test gate is: `cargo test -p molt-backend --features native-backend` must pass 882+ tests (current baseline) with 0 new warnings.
