@@ -457,7 +457,10 @@ class _NamespacePath:
 # The runtime constructs file-hit specs from these classes and wraps namespace
 # portions in _NamespacePath. The declaration names this body's own classes, so
 # a replaced sys.modules entry cannot substitute them.
-_require_intrinsic("molt_importlib_file_loader_types_declare")(globals())
+_MOLT_IMPORTLIB_FILE_LOADER_TYPES_DECLARE = _require_intrinsic(
+    "molt_importlib_file_loader_types_declare"
+)
+_MOLT_IMPORTLIB_FILE_LOADER_TYPES_DECLARE(globals())
 
 
 class NamespaceLoader:
