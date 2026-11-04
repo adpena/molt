@@ -1325,9 +1325,11 @@ data and measure the instructions-retired delta at N=0.
 
 ## X. Object model compilation
 
-**Problem.** Lookup misses allocate exceptions (HF-679), known receivers still
+**Problem.** Optional readers, including native generic/type observers, crossed
+required lookup boundaries (HF-679); managed hot misses already returned absence,
+but still paid redundant handler framing and name ownership. Known receivers
 resolve methods by name (HF-680), generic type protocols dominate type tests
-(HF-681), and construction/instance dictionaries need measured fixed layouts
+(HF-681), and construction and instance dictionaries need measured fixed layouts
 (HF-685). These costs belong to the object capability rather than late-bound
 runtime entry.
 
