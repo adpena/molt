@@ -282,13 +282,39 @@ HF-680/HF-688, HF-205 or HF-79/HF-226.
 
 Two sequential read-only design and implementation-readiness reviews accepted
 this mechanism after an explicit producer/consumer lifetime audit, initialization
-and reentry rules, and a fixed performance criterion. Required semantic proof covers
-constructor/new/init variants, namespace identity/update, slots, vars, pickling,
-argument failure/expansion and reentrant release across native, LLVM and WASM.
+and reentry rules, and a fixed performance criterion. The affected differentials
+pass against CPython 3.12 on native, LLVM and WASM, covering constructor/new/init
+variants, namespace identity/update, slots, vars, pickling, argument
+failure/expansion and reentrant release. The runtime semantic gate also passes.
+Serial failed-cell retries retain the guards: the initial concurrent LLVM build
+reported unequal bytes for identical object inputs, and two WASM builds exceeded
+their 600-second guard. Those build incidents do not become semantic passes;
+the matching serial receipts establish the affected semantic cells.
 The five-pair native hardware A/B uses exact CPython 3.12.16 and the unchanged
 per-primitive noise bounds. Plain qualification requires every head slope below
 every base slope; material regression on either other primitive is an increase
 beyond its existing bound. Allocation/RSS and artifact size remain separate claims.
+
+A single five-pair hardware run on macOS aarch64 compares the same programs and
+profiles at base `ca1cdefc68c1` and head `4c8b6bd2e5` (production sources equal to
+`540e467c5d`), with exact CPython 3.12.16. Counts below are median N=K minus N=0
+`/usr/bin/time -l` retired-instruction slopes; K is 100,000 actual operations.
+The paired ratio median need not equal the ratio of the two medians.
+
+| Primitive | Base retired/op | Head retired/op | Paired head/base median | Paired spread | Qualification |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `plain_construction` | 16670.41749 | 12110.77932 | 0.726705 | 0.169% | separated; within existing spread bound |
+| `new_and_update` | 27460.99875 | 27519.57211 | 1.001775 | 29.721% | inconclusive; head/CPython spread exceeds 1.5% bound |
+| `dataclass_construction` | 28975.14136 | 28938.18734 | 0.999063 | 0.093% | within existing spread bound; effectively unchanged |
+
+Plain's per-runtime Molt/CPython spreads are 1.180%/1.405%, below its 4.2%
+bound, and every head slope is below every base slope. Dataclass's corresponding
+spreads are 0.291%/0.291%, below 1.4%. New-and-update retains the head outlier of
+35,685.84246 retired/op and its 29.305% head/CPython spread; no sample is discarded
+or repeated, and no family-wide no-regression claim follows. Median peak RSS
+falls 0.42%, 0.83% and 0.15% for plain, new-and-update and dataclass respectively;
+binary size grows 1.58%, 1.50% and 1.41%. These cells establish the scoped plain
+construction improvement, not closure of the broader construction gap.
 
 The tables retain the top 15 exclusive functions of **each** build as one union.
 Ranks identify membership; `-` means outside that build's top 15. Costs retain
