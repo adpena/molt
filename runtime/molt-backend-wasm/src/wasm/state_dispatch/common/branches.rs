@@ -99,16 +99,37 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
             context.reloc_enabled,
         );
     }
-    emit_conditional_state_branch(
+    func.instruction(&Instruction::If(BlockType::Empty));
+    match op.exception_edge.expect("verified exceptional edge kind") {
+        molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
+            context
+                .frame
+                .emit_exception_origin(func, context.import_ids, context.reloc_enabled);
+        }
+        molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {}
+    }
+    emit_static_dispatch_edge(
         func,
         context,
         plan,
         locals,
         source,
         plan.successor(source, EdgeRole::Exception),
+        depth,
+        1,
+    );
+    func.instruction(&Instruction::Else);
+    emit_static_dispatch_edge(
+        func,
+        context,
+        plan,
+        locals,
+        source,
         plan.successor(source, EdgeRole::Normal),
         depth,
+        1,
     );
+    func.instruction(&Instruction::End);
 }
 
 pub(in crate::wasm::state_dispatch) fn emit_conditional_state_branch(

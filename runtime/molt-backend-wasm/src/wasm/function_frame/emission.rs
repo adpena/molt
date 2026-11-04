@@ -275,6 +275,21 @@ impl WasmFunctionFrame {
         }
     }
 
+    pub(in crate::wasm) fn emit_exception_origin(
+        &self,
+        func: &mut Function,
+        import_ids: &TrackedImportIds,
+        reloc_enabled: bool,
+    ) {
+        self.emit_origin_homes(func);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[WasmRuntimeImport::ExceptionFrameOrigin],
+        );
+        func.instruction(&Instruction::Drop);
+    }
+
     pub(in crate::wasm) fn emit_frame_location(&self, func: &mut Function, location: i64) {
         let homes = self.frame_homes();
         func.instruction(&Instruction::LocalGet(homes.local));

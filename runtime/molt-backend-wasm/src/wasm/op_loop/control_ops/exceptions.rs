@@ -90,14 +90,9 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
     match op.exception_edge.expect("verified exceptional edge kind") {
         molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
             func.instruction(&Instruction::If(BlockType::Empty));
-            context.frame.emit_origin_homes(func);
-            crate::wasm_binary::emit_call(
-                func,
-                context.reloc_enabled,
-                context.import_ids
-                    [crate::wasm_abi_generated::WasmRuntimeImport::ExceptionFrameOrigin],
-            );
-            func.instruction(&Instruction::Drop);
+            context
+                .frame
+                .emit_exception_origin(func, context.import_ids, context.reloc_enabled);
             func.instruction(&Instruction::Br(depth + 1));
             func.instruction(&Instruction::End);
         }

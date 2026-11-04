@@ -182,7 +182,14 @@ def publish_frame_locations(
                     )
                     last_location = location
             rewritten.append(op)
-            if kind in _CONTROL_WIRE and kind != WireKinds.TRACE_EXIT:
+            # A check's normal successor is this fallthrough. It changes no
+            # location; its exceptional successor publishes at its own label.
+            # Retain the known word here rather than repeating an identical
+            # store after every operation in an authored statement.
+            if kind in _CONTROL_WIRE and kind not in {
+                WireKinds.TRACE_EXIT,
+                WireKinds.CHECK_EXCEPTION,
+            }:
                 last_location = None
             if kind == WireKinds.TRACE_ENTER_SLOT:
                 entered = True
