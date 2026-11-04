@@ -1466,8 +1466,8 @@ def load_development_environment(
 def retire_drifted_development_environment(
     root: Path, repo_root: Path, environ: Mapping[str, str]
 ) -> None:
-    """Replace only interpreter-stale images, preserving bytes and live readers."""
-    from molt.checkout_state import checkout_state_retirement, soft_retire
+    """Delete only interpreter-stale regenerable images, preserving live readers."""
+    from molt.checkout_state import checkout_state_retirement
     from molt.python_interpreter import development_interpreter_problem
     from molt.python_interpreter import INTERPRETER_RECORD
     from molt.source_build_environment_selection import (
@@ -1482,7 +1482,7 @@ def retire_drifted_development_environment(
     try:
         # Observe before taking exclusive retirement custody: a guarded probe
         # is itself a managed reader. Fence its executable and configuration
-        # through lock acquisition, then close those file handles before rename.
+        # through lock acquisition, then close those file handles before deletion.
         with ExitStack() as observation:
             observation.enter_context(
                 stable_executable_probe(
@@ -1503,7 +1503,7 @@ def retire_drifted_development_environment(
             )
             if problem is None:
                 return
-            with checkout_state_retirement(root) as exclusive:
+            with checkout_state_retirement(root, purged_root=root) as exclusive:
                 if not exclusive:
                     raise _contract.SourceBuildEnvironmentError(
                         f"cannot replace stale Python image with live readers: {root}"
@@ -1523,13 +1523,11 @@ def retire_drifted_development_environment(
                         "interpreter record appeared during retirement"
                     )
                 observation.close()
-                soft_retire(
-                    root,
-                    artifact_root(repo_root, environ),
-                    reason=f"stale development interpreter: {problem}",
-                    owner=str(repo_root),
-                    kind="python-environment",
+                deleted, error = delete_path(
+                    root, owning_root=artifact_root(repo_root, environ)
                 )
+                if not deleted:
+                    raise _contract.SourceBuildEnvironmentError(error)
     finally:
         _release_file_lock(handle)
 

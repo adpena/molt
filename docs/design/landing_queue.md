@@ -238,7 +238,7 @@ Gate preparation and generated-merge regeneration both call canonical `ensure`,
 including explicit `UV_PROJECT_ENVIRONMENT` selections. Neither a valid recipe
 nor a stored selection can call an interpreter current after its patch changes.
 The runner clears inherited environment selectors before selecting its own
-sandbox, so ensure can retire an idle drifted generation by rename and rebuild
+sandbox, so ensure can delete an idle drifted generation in place and rebuild
 it with an exact patch request. An explicit caller selection instead refuses
 replacement, and live reader locks preserve the old image. The pinned
 controller owns the implementation of ensure; existing immutable controllers

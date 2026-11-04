@@ -1795,11 +1795,11 @@ def test_landing_consumers_refuse_a_drifted_explicit_managed_image(
     _init_repo(root)
     image = materialize_development_environment(root, artifacts, select=True)
     record_path = image.root / INTERPRETER_RECORD
-    record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text(encoding="utf-8"))
     parts = list(map(int, record["version"].split(".")))
     parts[-1] += 1
     record["version"] = ".".join(map(str, parts))
-    record_path.write_text(json.dumps(record))
+    record_path.write_text(json.dumps(record), encoding="utf-8")
     monkeypatch.delenv("MOLT_VENV", raising=False)
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))

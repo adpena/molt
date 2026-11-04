@@ -2711,7 +2711,13 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
             + "]\n",
             encoding="utf-8",
         )
-    runtime_capture = publisher._python_identity()
+    # Address and attest the private base this fixture actually launches.
+    # A copied installation can have a different closure from the shared donor.
+    bootstrap = create_test_venv(tmp_path / "bootstrap")
+    with publisher.PythonIdentityVerifier() as verifier:
+        runtime_capture = publisher._probe_source_build_python(
+            bootstrap, verifier=verifier, capture_wheel_target=True
+        )
     runtime = runtime_capture["runtime"]
     if not development:
         (source / ".python-version").write_text(
@@ -2769,7 +2775,18 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         if development
         else tmp_path / "published"
     ) / canonical_json_sha256(recipe)
-    executable = create_test_venv(root)
+    check_output_custody_subject_process(
+        [
+            str(bootstrap),
+            "-B",
+            "-m",
+            "venv",
+            "--without-pip",
+            "--copies" if os.name == "nt" else "--symlinks",
+            str(root),
+        ]
+    )
+    executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     site = root / (
         "Lib/site-packages"
         if os.name == "nt"

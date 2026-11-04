@@ -719,7 +719,9 @@ def materialize_development_environment(
             create_test_venv(root)
             home = next(
                 line.partition(" = ")[2]
-                for line in (root / "pyvenv.cfg").read_text().splitlines()
+                for line in (root / "pyvenv.cfg")
+                .read_text(encoding="utf-8")
+                .splitlines()
                 if line.startswith("home = ")
             )
             base_executable = (Path(home) / base_executable.name).resolve(strict=True)

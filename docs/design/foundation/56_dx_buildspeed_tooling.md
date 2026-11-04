@@ -2350,9 +2350,11 @@ Under the existing checkout provisioner and address locks, it observes the
 interpreter before acquiring exclusive checkout-state retirement custody:
 guarded probes are themselves managed readers. Executable/configuration
 generation fences and selection validation remain active through acquisition;
-their file handles close before rename. Live readers refuse replacement. `soft_retire` writes its
-existing recovery record and renames the generation under the artifact root's
-`retired/` namespace before rebuilding; it deletes no published image. Explicit
+their file handles close before deletion. Live readers refuse replacement.
+Under that custody, `molt.file_deletion.delete_path` deletes the regenerable
+generation in place before rebuilding, following the
+[physical deletion policy](../storage_authority.md). No retirement record is
+written. Deletion failures refuse replacement with the primitive's error. Explicit
 `UV_PROJECT_ENVIRONMENT` selections remain caller-owned and refuse replacement.
 Malformed metadata and unrelated image corruption remain admission failures.
 Linux and Windows image behavior requires its own execution qualification.
