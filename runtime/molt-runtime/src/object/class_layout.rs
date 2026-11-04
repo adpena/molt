@@ -565,6 +565,7 @@ pub(crate) unsafe fn projection_parts(record: u64) -> (u64, u64) {
     }
 }
 
+#[inline]
 pub(crate) unsafe fn decode_row(row: &[u64]) -> ClassField {
     assert_eq!(row.len(), 3);
     ClassField {
@@ -574,6 +575,37 @@ pub(crate) unsafe fn decode_row(row: &[u64]) -> ClassField {
             .and_then(|value| usize::try_from(value).ok())
             .expect("sealed field offset"),
         kind: ClassFieldKind::decode(row[2]).expect("sealed field kind"),
+    }
+}
+
+/// Scoped physical rows; count and traversal consume the same immutable view.
+pub(crate) struct ClassFields<'rows> {
+    rows: std::slice::Iter<'rows, [u64; 3]>,
+}
+
+impl ClassFields<'_> {
+    pub(crate) fn empty() -> ClassFields<'static> {
+        ClassFields { rows: [].iter() }
+    }
+}
+
+impl Iterator for ClassFields<'_> {
+    type Item = ClassField;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.rows.next().map(|row| unsafe { decode_row(row) })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.rows.size_hint()
+    }
+}
+
+impl ExactSizeIterator for ClassFields<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.rows.len()
     }
 }
 
@@ -604,66 +636,55 @@ pub(crate) unsafe fn field_at_offset(class: *mut u8, offset: usize) -> Option<Cl
 
 /// Pin the complete record before handing out row/name borrows. A callback may
 /// change __class__ and retire its old class while the visitor still runs.
-pub(crate) unsafe fn for_each_field(
+/// The empty view owns no names and needs no pin. Nonempty consumers share one
+/// projection and one token-bound owner, including across arbitrary callbacks.
+///
+/// # Safety
+/// `class` is a live sealed class when entered. The callback snapshots its
+/// physical rows; copied names need an independent owner beyond the callback.
+/// It must preserve the token's thread/GIL custody. Raw handles do not acquire
+/// ownership merely by appearing in this scoped view.
+#[inline]
+pub(crate) unsafe fn with_fields<R>(
     py: &PyToken<'_>,
     class: *mut u8,
-    visit: &mut dyn FnMut(ClassField),
-) {
+    read: impl for<'rows> FnOnce(ClassFields<'rows>) -> R,
+) -> R {
     unsafe {
         let record = super::layout::class_field_layout_bits(class);
         let record_ptr = obj_from_bits(record)
             .as_ptr()
             .expect("physical traversal requires sealed layout");
-        inc_ref_bits(py, record);
-        let _record_owner = crate::PtrDropGuard::new(record_ptr);
         let (_, rows) = projection_parts(record);
         let rows = obj_from_bits(rows).as_ptr().expect("sealed row tuple");
         super::seq_access::with_immutable_tuple_slice(rows, |rows| {
             assert_eq!(rows.len() % 3, 0, "invalid physical rows");
-            for row in rows.as_chunks::<3>().0 {
-                visit(decode_row(row));
+            if rows.is_empty() {
+                return read(ClassFields::empty());
             }
+            let _record_owner = super::seq_access::pin_tuple(py, record_ptr)
+                .expect("physical record must be an exact tuple");
+            read(ClassFields {
+                rows: rows.as_chunks::<3>().0.iter(),
+            })
         })
-        .expect("sealed row tuple");
+        .expect("sealed row tuple")
     }
 }
 
 pub(crate) unsafe fn fields_match(py: &PyToken<'_>, left: *mut u8, right: *mut u8) -> bool {
     unsafe {
-        let left = super::layout::class_field_layout_bits(left);
-        let right = super::layout::class_field_layout_bits(right);
-        inc_ref_bits(py, left);
-        inc_ref_bits(py, right);
-        let _left = crate::PtrDropGuard::new(obj_from_bits(left).as_ptr().unwrap());
-        let _right = crate::PtrDropGuard::new(obj_from_bits(right).as_ptr().unwrap());
-        let (_, left) = projection_parts(left);
-        let (_, right) = projection_parts(right);
-        super::seq_access::with_immutable_tuple_slice(
-            obj_from_bits(left).as_ptr().unwrap(),
-            |left| {
-                super::seq_access::with_immutable_tuple_slice(
-                    obj_from_bits(right).as_ptr().unwrap(),
-                    |right| {
-                        left.len() == right.len()
-                            && left
-                                .as_chunks::<3>()
-                                .0
-                                .iter()
-                                .zip(right.as_chunks::<3>().0)
-                                .all(|(left, right)| {
-                                    let left = decode_row(left);
-                                    let right = decode_row(right);
-                                    left.offset == right.offset
-                                        && left.kind == right.kind
-                                        && (left.kind.is_intrinsic()
-                                            || string_storage_equal(left.name, right.name))
-                                })
-                    },
-                )
-                .expect("sealed row tuple")
-            },
-        )
-        .expect("sealed row tuple")
+        with_fields(py, left, |left| {
+            with_fields(py, right, |right| {
+                left.len() == right.len()
+                    && left.zip(right).all(|(left, right)| {
+                        left.offset == right.offset
+                            && left.kind == right.kind
+                            && (left.kind.is_intrinsic()
+                                || string_storage_equal(left.name, right.name))
+                    })
+            })
+        })
     }
 }
 
@@ -802,11 +823,13 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             let base_size = super::layout::class_cached_layout_size(base).unwrap();
             inherited_size = inherited_size.max(base_size);
             let mut first_field: Option<usize> = None;
-            for_each_field(py, base, &mut |field| {
-                first_field =
-                    Some(first_field.map_or(field.offset, |offset| offset.min(field.offset)));
-                if !field.kind.is_inferred() {
-                    rows.push(field);
+            with_fields(py, base, |fields| {
+                for field in fields {
+                    first_field =
+                        Some(first_field.map_or(field.offset, |offset| offset.min(field.offset)));
+                    if !field.kind.is_inferred() {
+                        rows.push(field);
+                    }
                 }
             });
             if shape != super::ObjectShapeId::Plain && shape == best.native.shape {
@@ -926,9 +949,11 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             }
             let base = obj_from_bits(bits).as_ptr().expect("class MRO entry");
             let mut names = Vec::new();
-            for_each_field(py, base, &mut |field| {
-                if field.kind.is_inferred() {
-                    names.push(field.name);
+            with_fields(py, base, |fields| {
+                for field in fields {
+                    if field.kind.is_inferred() {
+                        names.push(field.name);
+                    }
                 }
             });
             for name in names {
@@ -1293,6 +1318,73 @@ mod tests {
     }
 
     #[test]
+    fn scoped_rows_pin_retiring_class_and_balance_early_exit_and_unwind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let base = slotted_class(py, b"ScopedRowsBase", builtin_classes(py).object, &[]);
+                let first = slotted_class(py, b"ScopedRowsFirst", base, &[b"x", b"y"]);
+                let second = slotted_class(py, b"ScopedRowsSecond", base, &[b"x", b"y"]);
+                let class = obj_from_bits(first).as_ptr().unwrap();
+                let object = alloc_instance_for_class(py, class);
+                let ptr = obj_from_bits(object).as_ptr().unwrap();
+                let record = super::super::layout::class_field_layout_bits(class);
+                let record_ptr = obj_from_bits(record).as_ptr().unwrap();
+                // An observer keeps refcount assertions safe even if the pin
+                // regresses; the assertion detects that defect independently.
+                inc_ref_bits(py, record);
+                let refs = || (*header_from_obj_ptr(record_ptr)).ref_count_snapshot();
+                let before = refs();
+                with_fields(py, class, |mut rows| {
+                    assert_eq!(refs(), before + 1);
+                    assert!(rows.next().is_some());
+                    // Leave a row unread: the scoped owner still balances.
+                });
+                assert_eq!(refs(), before);
+                let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    with_fields(py, class, |_rows| {
+                        assert_eq!(refs(), before + 1);
+                        panic!("exercise scoped row unwinding");
+                    });
+                }));
+                assert!(unwind.is_err());
+                assert_eq!(refs(), before);
+                let class_name = crate::NameId::DunderClass.owned_bits(py).unwrap();
+                super::super::field_storage::with_instance_fields(py, ptr, class, |mut rows| {
+                    assert_eq!(rows.len(), 2);
+                    let (first_field, first_slot) = rows.next().unwrap();
+                    *first_slot = MoltObject::from_int(41).bits();
+                    assert_eq!(
+                        crate::molt_set_attr_name(object, class_name, second),
+                        MoltObject::none().bits()
+                    );
+                    assert!(!exception_pending(py));
+                    super::super::heap_lifecycle::clear_cycle_edges(py, class);
+                    dec_ref_bits(py, first);
+                    // Only the observer and active traversal own this record.
+                    assert_eq!(refs(), 2);
+                    let (next_field, next_slot) = rows.next().unwrap();
+                    assert_ne!(first_field.offset, next_field.offset);
+                    assert_eq!(
+                        next_slot as usize - first_slot as usize,
+                        next_field.offset - first_field.offset
+                    );
+                    assert_eq!(*first_slot, MoltObject::from_int(41).bits());
+                    assert!(is_missing_bits(py, *next_slot));
+                    *next_slot = MoltObject::from_int(42).bits();
+                    assert!(rows.next().is_none());
+                });
+                assert_eq!(refs(), 1);
+                assert_eq!(object_class_bits(ptr), second);
+                for bits in [class_name, record, object, second, base] {
+                    dec_ref_bits(py, bits);
+                }
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
     fn static_and_dynamic_slot_admission_share_sealed_native_policy() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -1585,15 +1677,17 @@ mod tests {
                         assert!(!marker.is_null());
                         let marker_refs = || (*header_from_obj_ptr(marker)).ref_count_snapshot();
                         let mut owners = 0;
-                        super::super::field_storage::for_each_instance_field(
+                        super::super::field_storage::with_instance_fields(
                             py,
                             instance_ptr,
                             class_ptr,
-                            &mut |_, slot| {
-                                assert!(is_missing_bits(py, *slot));
-                                inc_ref_bits(py, marker_bits);
-                                *slot = marker_bits;
-                                owners += 1;
+                            |fields| {
+                                for (_, slot) in fields {
+                                    assert!(is_missing_bits(py, *slot));
+                                    inc_ref_bits(py, marker_bits);
+                                    *slot = marker_bits;
+                                    owners += 1;
+                                }
                             },
                         );
                         assert_eq!(owners, 3, "hidden inherited and duplicate slots survive");
@@ -1677,8 +1771,7 @@ mod tests {
                 let child = slotted_class(py, b"PhysicalListChild", base, &[b"x", b"x"]);
                 let base_ptr = obj_from_bits(base).as_ptr().unwrap();
                 let child_ptr = obj_from_bits(child).as_ptr().unwrap();
-                let mut rows = Vec::new();
-                for_each_field(py, child_ptr, &mut |field| rows.push(field));
+                let rows: Vec<_> = with_fields(py, child_ptr, |fields| fields.collect());
                 assert_eq!(rows.len(), 3);
                 assert!(rows.iter().all(|field| field.kind.is_declared_slot()));
                 assert!(rows.windows(2).all(|pair| pair[0].offset < pair[1].offset));
@@ -1833,8 +1926,10 @@ mod tests {
                     Ok(Some(backing))
                 );
                 assert_eq!(*tail, backing);
-                for_each_field(py, class_ptr, &mut |field| {
-                    assert!(field.offset + WORD <= tail as usize - ptr as usize);
+                with_fields(py, class_ptr, |fields| {
+                    for field in fields {
+                        assert!(field.offset + WORD <= tail as usize - ptr as usize);
+                    }
                 });
                 // Corrupt non-dictionary storage must be reported, never replaced
                 // with a second owner that hides the broken physical invariant.

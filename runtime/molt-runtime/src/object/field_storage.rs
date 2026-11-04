@@ -14,26 +14,83 @@ pub(crate) mod debug;
 /// The same layout traversal serves backing transitions, GC, and serialization.
 /// Concrete typed rows retain every physical owner, including hidden inherited
 /// slots. The pinned class record outlives callback-capable visits.
-pub(crate) unsafe fn for_each_instance_field(
+pub(crate) struct InstanceFields<'rows> {
+    fields: super::class_layout::ClassFields<'rows>,
+    base: *mut u8,
+    extent: usize,
+}
+
+impl InstanceFields<'_> {
+    fn empty() -> InstanceFields<'static> {
+        InstanceFields {
+            fields: super::class_layout::ClassFields::empty(),
+            base: std::ptr::null_mut(),
+            extent: 0,
+        }
+    }
+}
+
+impl Iterator for InstanceFields<'_> {
+    type Item = (InstanceField, *mut u64);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let field = self.fields.next()?;
+        assert!(
+            field.offset % size_of::<u64>() == 0
+                && field
+                    .offset
+                    .checked_add(size_of::<u64>())
+                    .is_some_and(|end| end <= self.extent),
+            "sealed physical field must fit the instance extent"
+        );
+        Some((field, unsafe { self.base.add(field.offset).cast() }))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.fields.size_hint()
+    }
+}
+
+impl ExactSizeIterator for InstanceFields<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.fields.len()
+    }
+}
+
+#[inline]
+/// # Safety
+/// The caller keeps `object` alive and unmoved throughout the callback, with
+/// `class` its admitted sealed layout. Rows snapshot that layout; compatible
+/// class replacement may retire metadata but cannot move/reclassify slots.
+/// Copied slot pointers and name handles are not lifetime-checked owners.
+/// Do not hold Rust references across reentrant calls, or mutate receiver
+/// ownership from a GC visitor. Stage transitions before reentrant releases.
+pub(crate) unsafe fn with_instance_fields<R>(
     py: &PyToken<'_>,
     object: *mut u8,
     class: *mut u8,
-    visit: &mut dyn FnMut(InstanceField, *mut u64),
-) {
+    read: impl for<'rows> FnOnce(InstanceFields<'rows>) -> R,
+) -> R {
     unsafe {
         if !super::object_has_class_shape(object) && !super::native_instance::has_fields(object) {
-            return;
+            return read(InstanceFields::empty());
         }
-        let extent =
-            super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
-        for_each_class_field(py, class, extent, &mut |field| {
-            visit(
-                field,
-                super::native_instance::field_base(object)
-                    .add(field.offset)
-                    .cast(),
-            );
-        });
+        super::class_layout::with_fields(py, class, |fields| {
+            if fields.len() == 0 {
+                return read(InstanceFields::empty());
+            }
+            // Layout-compatible __class__ assignment cannot move this payload.
+            let extent =
+                super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
+            let base = super::native_instance::field_base(object);
+            read(InstanceFields {
+                fields,
+                base,
+                extent,
+            })
+        })
     }
 }
 
@@ -48,38 +105,25 @@ pub(crate) unsafe fn initialize_fields(
     payload_bytes: usize,
 ) -> Result<(), ()> {
     unsafe {
-        let missing = missing_bits(py);
-        if obj_from_bits(missing).as_ptr().is_none() {
-            return Err(());
-        }
-        let extent = payload_bytes.saturating_sub(size_of::<u64>());
-        for_each_class_field(py, class, extent, &mut |field| {
-            *super::native_instance::field_base_for_class(object, class)
-                .add(field.offset)
-                .cast::<u64>() = missing;
-        });
-        Ok(())
-    }
-}
-
-unsafe fn for_each_class_field(
-    py: &PyToken<'_>,
-    class: *mut u8,
-    field_extent: usize,
-    visit: &mut dyn FnMut(InstanceField),
-) {
-    unsafe {
-        super::class_layout::for_each_field(py, class, &mut |field| {
-            assert!(
-                field.offset % size_of::<u64>() == 0
-                    && field
-                        .offset
-                        .checked_add(size_of::<u64>())
-                        .is_some_and(|end| end <= field_extent),
-                "sealed physical field must fit the instance extent"
-            );
-            visit(field);
-        });
+        super::class_layout::with_fields(py, class, |fields| {
+            if fields.len() == 0 {
+                return Ok(());
+            }
+            let missing = missing_bits(py);
+            if obj_from_bits(missing).as_ptr().is_none() {
+                return Err(());
+            }
+            let extent = payload_bytes.saturating_sub(size_of::<u64>());
+            let base = super::native_instance::field_base_for_class(object, class);
+            for (_, slot) in (InstanceFields {
+                fields,
+                base,
+                extent,
+            }) {
+                *slot = missing;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -156,16 +200,21 @@ unsafe fn inferred_inline_owners(
         if let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr()
             && object_type_id(class) == TYPE_ID_TYPE
         {
-            // Traversal reads sealed layout rows. Its only fallible preparation
-            // is the canonical missing singleton, whose pointer is the status.
-            if obj_from_bits(missing_bits(py)).as_ptr().is_none() {
-                return Err(());
-            }
-            for_each_instance_field(py, object, class, &mut |field, slot| {
-                if field.kind.is_inferred() && !is_missing_bits(py, *slot) {
-                    fields.push((field.name, slot, *slot));
+            with_instance_fields(py, object, class, |physical| {
+                if physical.len() == 0 {
+                    return Ok(());
                 }
-            });
+                // Prepare the singleton before examining any physical owner.
+                if obj_from_bits(missing_bits(py)).as_ptr().is_none() {
+                    return Err(());
+                }
+                for (field, slot) in physical {
+                    if field.kind.is_inferred() && !is_missing_bits(py, *slot) {
+                        fields.push((field.name, slot, *slot));
+                    }
+                }
+                Ok(())
+            })?;
         }
         Ok(fields)
     }
@@ -479,10 +528,7 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
         if obj_from_bits(missing).as_ptr().is_none() {
             return;
         }
-        let mut count = 0usize;
-        for_each_instance_field(py, object, class, &mut |_, _| {
-            count += 1;
-        });
+        let count = with_instance_fields(py, object, class, |fields| fields.len());
         let Some(detached) =
             super::backing::tracked_vec_box_with_capacity::<(*mut u64, u64)>(count)
         else {
@@ -492,8 +538,10 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
         let mut detached = super::backing::tracked_vec_box_from_raw(detached);
         // Sealed physical offsets are unique.
         // Reserve and collect the complete transition before destructive writes.
-        for_each_instance_field(py, object, class, &mut |_, slot| {
-            detached.push((slot, *slot));
+        with_instance_fields(py, object, class, |fields| {
+            for (_, slot) in fields {
+                detached.push((slot, *slot));
+            }
         });
         let old_dict = instance_dict_bits(object);
         debug::dictionary(py, "instance_reset", object, old_dict, None, None);
