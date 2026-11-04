@@ -3069,6 +3069,20 @@ def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
     (by_uuid / "unrelated").touch()
     devices = {"ABCD-1234": 91, "unrelated": 92}
     original = os.stat
+    native_stat_result = os.stat_result
+
+    class LinuxStat:
+        # Windows' native stat_result has no st_rdev. Model the Linux boundary
+        # explicitly while retaining CPython's tuple layout and other fields.
+        def __init__(self, fields, extra):
+            self._stat = native_stat_result(fields, extra)
+            self.__dict__.update(extra)
+
+        def __iter__(self):
+            return iter(self._stat)
+
+        def __getattr__(self, name):
+            return getattr(self._stat, name)
 
     def query(path, *args, **kwargs):
         if isinstance(path, (str, os.PathLike)) and Path(path).parent == by_uuid:
@@ -3085,7 +3099,14 @@ def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
 
     # Keep the synthetic block-device namespace local to this test module;
     # the shared renumber helper then wraps that same private OS boundary.
-    install_module_view(monkeypatch, "os", os, sys.modules[__name__], stat=query)
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        sys.modules[__name__],
+        stat=query,
+        stat_result=LinuxStat,
+    )
     monkeypatch.setattr(Path, "stat", lambda path, *a, **kw: os.stat(path, *a, **kw))
     assert durable._linux_volume(91, by_uuid) == "ABCD-1234"
     with pytest.raises(durable.IdentityUnavailable, match="absent.*udev"):
@@ -3103,7 +3124,7 @@ def test_linux_volume_uuid_uses_block_device_number_and_refuses_ambiguity(
         before.st_mtime_ns,
         before.st_ctime_ns,
     )
-    assert tmp_path.stat().st_rdev == ordinary.st_rdev
+    assert getattr(tmp_path.stat(), "st_rdev", None) == getattr(ordinary, "st_rdev", None)
     assert durable._linux_volume(1091, by_uuid) == "ABCD-1234"
     with pytest.raises(durable.IdentityUnavailable, match="absent.*udev"):
         durable._linux_volume(91, by_uuid)
