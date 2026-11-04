@@ -1,8 +1,7 @@
 # Target frontend selection for differential cells (HF-726 slice 1)
 
-Status: design, round 2, reviewed before code. Owners: `tests/molt_diff.py`
-(harness) and `molt.checkout_provisioning` (images). Ledger row: HF-726,
-family T.
+Status: implemented (slice 1). Owners: `tests/molt_diff.py` (harness) and
+`molt.checkout_provisioning` (images). Ledger row: HF-726, family T.
 
 ## Problem
 
@@ -356,8 +355,9 @@ Gate: `python -B tools/molt_dev.py land --repo <slot> --precheck-only`.
 - Harness case: one string compare per run.
 - Image case, first run in a checkout: one image publication per release and
   per generation of the declared inputs (`pyproject.toml`, `uv.lock`,
-  `.python-version`) and artifact root. Measured: 24.8 s and 36 MB for
-  3.13.17 with a warm uv cache. Each slot publishes its own; an edit to a
+  `.python-version`) and artifact root. Measured with a warm uv cache:
+  24.8 s and 36 MB for 3.13.17; 28.7 s and 36 MB for 3.14.9 after
+  decision 9. Each slot publishes its own; an edit to a
   declared input publishes a new generation. Superseded generations age out
   through the existing checkout-state retention by last use; this slice adds
   no retention rule.

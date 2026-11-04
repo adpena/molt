@@ -304,7 +304,10 @@ def _configured_build_vars() -> Mapping[str, object]:
     """
     import importlib
 
-    module = importlib.import_module(sysconfig._get_sysconfigdata_name())
+    # Private, but present and unchanged in CPython 3.12 to 3.15; typeshed
+    # omits it. PEP 739 build-details.json replaces it once 3.14 is the floor.
+    name = sysconfig._get_sysconfigdata_name()  # ty: ignore[unresolved-attribute]
+    module = importlib.import_module(name)
     return module.build_time_vars
 
 
