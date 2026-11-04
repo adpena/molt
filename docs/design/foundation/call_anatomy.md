@@ -454,20 +454,31 @@ must retain its particular activation's shared frame owner and freeze its locati
 recursion. `tb_lineno`/`tb_lasti` decode the frozen site while `tb_frame` can continue moving.
 Do not reconstruct offsets by matching only a line or selecting its widest span.
 
-The native location prototype exposed an unqualified membership boundary: after propagation
-through `finally`, the existing nearest-handler snapshot retains the raising frame but omits
-the module's receiving call site. A second design round rejected the proposed error-edge repair.
-Deduplicating against activation owners anywhere in a traceback loses legitimate repeated entries
-when one exception traverses the same caller again. Automatic capture can also recreate a frame
-deliberately removed before a bare raise. Propagation episodes and bare-reraise preservation need
-an explicit state contract before replacing the existing protocol. Capturing every active caller
-is insufficient: a runtime helper can suppress a callback error. The location prototype is not
-ready to land while that semantic decision remains unsettled.
+The native location prototype exposed a membership defect: propagation through `finally` retains
+the raising frame but omits the module's receiving call site. The settled correction follows
+[CPython 3.12's event model](https://github.com/python/cpython/blob/v3.12.0/Python/ceval.c): `error`
+calls `PyTraceBack_Here`, while `exception_unwind` skips it. Every exceptional check carries a
+static, typed kind generated from the opcode authority:
+
+- **Origin:** an operation fails, a call/await/yield-from receives an error, explicit raise,
+  bare raise without an active exception, or throw/close injection. Prepend exactly this activation
+  at its frozen location to the exception's current traceback, on the taken error edge only.
+- **Unwind:** valid bare raise, finally/with/except cleanup reraising, unmatched handler dispatch,
+  synthetic follow-on checks, exceptional loop breaks, finally pending polling and pending-error
+  function exit. Forward the exception without adding an entry.
+
+No deduplication or runtime propagation-episode state exists: repeated Origin events through one
+activation produce repeated entries. Capturing the current traceback honors editing and
+`with_traceback`; valid bare raise preserves those edits while the receiving caller's Origin adds
+its call site. A runtime helper suppressing a callback error takes no caller error edge.
+Delete eager nearest-handler range capture; it cannot remain a fallback. Split any check that
+joins pending sources of different kinds, and reject unclassified/mixed checks in the verifier.
+All five backend consumers match both kinds. Origin capture is cold; the normal path adds no call.
 
 Two independent, serial read-only design reviews required explicit terminal publication, stateful
 view reattachment, exception capture timing and membership, and optimizer memory effects. The
-location contracts above incorporate those findings; the second-round propagation findings
-remain unresolved. Required independent adversaries cover retained views
+location contracts above incorporate those findings; the parent's event model settles the
+second-round propagation findings. Required independent adversaries cover retained views
 ending with a pure return, multiline and same-line expressions, callbacks inside optimized loops,
 recursive activations, internally caught and propagating exceptions, bare/explicit reraising,
 cleanup that raises a new exception, and retained views during resumed callbacks after arena reuse.
