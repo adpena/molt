@@ -295,6 +295,19 @@ def _runtime_capabilities(
     }
 
 
+def _configured_build_vars() -> Mapping[str, object]:
+    """CPython's configure-time variables, as the installer patched them.
+
+    3.12 and 3.13 overwrite sysconfig's live prefixes with these values; 3.14
+    keeps the live ones (``_init_config_vars``), so only this module gives the
+    configured pair on every supported release.
+    """
+    import importlib
+
+    module = importlib.import_module(sysconfig._get_sysconfigdata_name())
+    return module.build_time_vars
+
+
 def _base_runtime_paths() -> dict[str, Path]:
     base = str(Path(sys.base_prefix).resolve(strict=True))
     paths = sysconfig.get_paths(
@@ -320,8 +333,12 @@ def _base_runtime_paths() -> dict[str, Path]:
         # install time; a copy keeps the original). getpath.py derives the
         # lib-dynload entry the interpreter imports from from the live
         # exec_prefix, so keep the configured layout and rebase its anchor.
-        dynload = sysconfig.get_config_var("DESTSHARED")
-        configured_exec_prefix = sysconfig.get_config_var("exec_prefix")
+        # Both values come from the build-time data: from 3.14 on, sysconfig's
+        # runtime view sets exec_prefix to the live sys.exec_prefix, which in
+        # a virtual environment is the environment, not the installation.
+        configured = _configured_build_vars()
+        dynload = configured.get("DESTSHARED")
+        configured_exec_prefix = configured.get("exec_prefix")
         if (
             not isinstance(dynload, str)
             or not dynload
