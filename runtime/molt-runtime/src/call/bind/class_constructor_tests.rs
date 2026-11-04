@@ -58,7 +58,7 @@ unsafe fn function_constructor_call(
     unsafe {
         let class = builtin_classes(py).function;
         let callable = if direct_new {
-            let name = crate::attr_name_bits_from_bytes(py, b"__new__").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"__new__").unwrap();
             let result = crate::molt_get_attr_name(class, name);
             dec_ref_bits(py, name);
             assert!(!exception_pending(py));
@@ -77,7 +77,7 @@ unsafe fn function_constructor_call(
             molt_callargs_push_pos(builder, value);
         }
         for &(name, value) in keywords {
-            let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+            let key = crate::dynamic_attr_name_bits(py, name).unwrap();
             molt_callargs_push_kw(builder, key, value);
             dec_ref_bits(py, key);
         }
@@ -180,7 +180,7 @@ fn function_type_new_descriptor_requires_positional_subtype_and_lambda_alias() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let class = builtin_classes(py).function;
-            let new_name = crate::attr_name_bits_from_bytes(py, b"__new__").unwrap();
+            let new_name = crate::dynamic_attr_name_bits(py, b"__new__").unwrap();
             let constructor = crate::molt_get_attr_name(class, new_name);
             assert!(!exception_pending(py));
             for (receiver, expected) in [
@@ -209,7 +209,7 @@ fn function_type_new_descriptor_requires_positional_subtype_and_lambda_alias() {
                 dec_ref_bits(py, result);
             }
             let builder = molt_callargs_new(0, 1);
-            let receiver_name = crate::attr_name_bits_from_bytes(py, b"type").unwrap();
+            let receiver_name = crate::dynamic_attr_name_bits(py, b"type").unwrap();
             molt_callargs_push_kw(builder, receiver_name, class);
             let result = molt_call_bind(constructor, builder);
             let error = crate::exception_last_bits_noinc(py).expect("receiver is positional-only");
@@ -225,7 +225,7 @@ fn function_type_new_descriptor_requires_positional_subtype_and_lambda_alias() {
             assert!(!exception_pending(py));
             let dictionary = obj_from_bits(payload).as_ptr().unwrap();
             for spelling in [b"FunctionType".as_slice(), b"LambdaType".as_slice()] {
-                let key = crate::attr_name_bits_from_bytes(py, spelling).unwrap();
+                let key = crate::dynamic_attr_name_bits(py, spelling).unwrap();
                 assert_eq!(dict_get_in_place(py, dictionary, key).unwrap(), Some(class));
                 dec_ref_bits(py, key);
             }
@@ -251,7 +251,7 @@ fn function_type_constructor_binds_named_defaults_and_retains_identity_by_target
             assert!(!source.is_null());
             let code = crate::object::layout::ensure_function_code_bits(py, source);
             let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
-            let name = crate::attr_name_bits_from_bytes(py, b"renamed").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"renamed").unwrap();
             let defaults = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
             let closure = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
             let kwdefaults = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
@@ -351,7 +351,7 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             use crate::object::function_metadata::FunctionMetadataField as Field;
-            let text = |value: &[u8]| crate::attr_name_bits_from_bytes(py, value).unwrap();
+            let text = |value: &[u8]| crate::dynamic_attr_name_bits(py, value).unwrap();
             let name = text(b"inner");
             let qualname = text(b"outer.<locals>.inner");
             let doc = text(b"declaration documentation");
@@ -486,11 +486,13 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
 }
 
 #[test]
-fn function_type_code_declaration_rejects_mutable_native_string_subclasses() {
-    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+fn function_type_code_declaration_preserves_mutable_native_string_subclasses() {
+    // Code metadata keeps str subclass identity (CPython's code.replace does);
+    // a mutable child promotes code tracking so the possible cycle is collectible.
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = crate::attr_name_bits_from_bytes(py, b"inner").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"inner").unwrap();
             let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
             let classes = builtin_classes(py);
             let subclass = empty_type(
@@ -506,43 +508,43 @@ fn function_type_code_declaration_rejects_mutable_native_string_subclasses() {
             let mutable_ptr = obj_from_bits(mutable).as_ptr().unwrap();
             assert_eq!(object_type_id(mutable_ptr), TYPE_ID_STRING);
             assert_eq!(crate::object_class_bits(mutable_ptr), subclass);
-            let code = alloc_code_obj(
-                py,
-                name,
-                name,
-                1,
-                MoltObject::none().bits(),
-                empty,
-                empty,
-                0,
-                0,
-                0,
-            );
-            let before = (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot();
             for (qualname, doc) in [(mutable, MoltObject::none().bits()), (name, mutable)] {
+                let code = alloc_code_obj(
+                    py,
+                    name,
+                    name,
+                    1,
+                    MoltObject::none().bits(),
+                    empty,
+                    empty,
+                    0,
+                    0,
+                    0,
+                );
+                assert!(!crate::object::gc::gc_is_tracked(code));
+                let before = (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot();
                 assert!(
                     crate::object::layout::code_publish_declaration_metadata(
                         py, code, qualname, doc
                     )
-                    .is_err()
+                    .is_ok()
                 );
-                assert!(exception_pending(py));
-                crate::molt_exception_clear();
-                assert!(!crate::object::layout::code_declaration_is_published(code));
-                assert_eq!(*code.cast::<u64>().add(23), 0);
-                assert_eq!(*code.cast::<u64>().add(24), 0);
+                assert!(!exception_pending(py));
+                assert!(crate::object::layout::code_declaration_is_published(code));
+                assert!(crate::object::gc::gc_is_tracked(code));
+                assert_eq!(*code.cast::<u64>().add(23), qualname);
+                assert_eq!(*code.cast::<u64>().add(24), doc);
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot(),
+                    before + 1
+                );
+                dec_ref_bits(py, MoltObject::from_ptr(code).bits());
                 assert_eq!(
                     (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot(),
                     before
                 );
             }
-            for bits in [
-                name,
-                empty,
-                subclass,
-                mutable,
-                MoltObject::from_ptr(code).bits(),
-            ] {
+            for bits in [name, empty, subclass, mutable] {
                 dec_ref_bits(py, bits);
             }
         }
@@ -554,7 +556,7 @@ fn function_type_constructor_retains_dict_subclass_keyword_defaults_for_invocati
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let flag = crate::attr_name_bits_from_bytes(py, b"flag").unwrap();
+            let flag = crate::dynamic_attr_name_bits(py, b"flag").unwrap();
             let positional_names = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
             let keyword_names = MoltObject::from_ptr(alloc_tuple(py, &[flag])).bits();
             let source = super::test_support::metadata_function(
@@ -666,10 +668,10 @@ fn type_call_dispatch_publishes_cells_for_direct_and_metaclass_winner_paths() {
                     type_bits
                 };
                 let base = empty_type(_py, b"CellBase", meta, &[]);
-                let name = crate::attr_name_bits_from_bytes(_py, b"CellSubject").unwrap();
-                let class_key = crate::attr_name_bits_from_bytes(_py, b"__classcell__").unwrap();
-                let dict_key = crate::attr_name_bits_from_bytes(_py, b"__classdictcell__").unwrap();
-                let value_key = crate::attr_name_bits_from_bytes(_py, b"value").unwrap();
+                let name = crate::dynamic_attr_name_bits(_py, b"CellSubject").unwrap();
+                let class_key = crate::dynamic_attr_name_bits(_py, b"__classcell__").unwrap();
+                let dict_key = crate::dynamic_attr_name_bits(_py, b"__classdictcell__").unwrap();
+                let value_key = crate::dynamic_attr_name_bits(_py, b"value").unwrap();
                 let prepared =
                     alloc_dict_with_pairs(_py, &[value_key, MoltObject::from_int(1).bits()]);
                 let prepared_bits = MoltObject::from_ptr(prepared).bits();
@@ -769,9 +771,9 @@ fn type_call_invalid_cell_releases_copied_namespace_payload() {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             for cell_name in [b"__classcell__".as_slice(), b"__classdictcell__".as_slice()] {
-                let name = crate::attr_name_bits_from_bytes(_py, b"RejectedCell").unwrap();
-                let key = crate::attr_name_bits_from_bytes(_py, cell_name).unwrap();
-                let payload_key = crate::attr_name_bits_from_bytes(_py, b"payload").unwrap();
+                let name = crate::dynamic_attr_name_bits(_py, b"RejectedCell").unwrap();
+                let key = crate::dynamic_attr_name_bits(_py, cell_name).unwrap();
+                let payload_key = crate::dynamic_attr_name_bits(_py, b"payload").unwrap();
                 let payload = crate::alloc_list(_py, &[]);
                 let payload_bits = MoltObject::from_ptr(payload).bits();
                 let ns = alloc_dict_with_pairs(
@@ -812,9 +814,9 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
         unsafe {
             for cell_name in [b"__classcell__".as_slice(), b"__classdictcell__".as_slice()] {
                 for invalid_cell in [false, true] {
-                    let name = crate::attr_name_bits_from_bytes(_py, b"InvalidQualname").unwrap();
-                    let qualname = crate::attr_name_bits_from_bytes(_py, b"__qualname__").unwrap();
-                    let cell_key = crate::attr_name_bits_from_bytes(_py, cell_name).unwrap();
+                    let name = crate::dynamic_attr_name_bits(_py, b"InvalidQualname").unwrap();
+                    let qualname = crate::dynamic_attr_name_bits(_py, b"__qualname__").unwrap();
+                    let cell_key = crate::dynamic_attr_name_bits(_py, cell_name).unwrap();
                     let marker = MoltObject::from_int(7).bits();
                     let cell = crate::object::cells::alloc_cell(_py, marker);
                     assert!(!cell.is_null());
@@ -887,7 +889,7 @@ extern "C" fn record_set_name(_descriptor: u64, owner: u64, name: u64) -> i64 {
                 owner_dict
             );
             if name_text == "first" {
-                let second = crate::attr_name_bits_from_bytes(_py, b"second").unwrap();
+                let second = crate::dynamic_attr_name_bits(_py, b"second").unwrap();
                 crate::dict_del_in_place(_py, obj_from_bits(owner_dict).as_ptr().unwrap(), second)
                     .expect("owner namespace deletion succeeds");
                 crate::dict_del_in_place(_py, obj_from_bits(prepared).as_ptr().unwrap(), second)
@@ -917,10 +919,11 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
             let super_ptr = crate::object::builders::alloc_super_obj(py, child, child, child);
             assert!(!super_ptr.is_null());
             let super_bits = MoltObject::from_ptr(super_ptr).bits();
-            let key = crate::attr_name_bits_from_bytes(py, b"__init_subclass__").unwrap();
-            let descriptor = crate::builtins::methods::object_method_bits(py, "__init_subclass__")
-                .expect("method lookup succeeds")
-                .unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__init_subclass__").unwrap();
+            let descriptor =
+                crate::builtins::methods::object_method_bits(py, crate::NameId::DunderInitSubclass)
+                    .expect("method lookup succeeds")
+                    .unwrap();
             let descriptor_ptr = obj_from_bits(descriptor).as_ptr().unwrap();
             // Native descriptor identity is its declared Python class, not a
             // managed classmethod wrapper around the portable function payload.
@@ -930,7 +933,11 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
                 builtins.classmethod_descriptor
             );
             assert_eq!(
-                crate::call::function::function_metadata_bits(py, descriptor_ptr, b"__objclass__"),
+                crate::call::function::function_metadata_bits(
+                    py,
+                    descriptor_ptr,
+                    crate::object::function_metadata::FunctionMetadataField::Owner
+                ),
                 builtins.object
             );
             assert!(
@@ -1039,8 +1046,8 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             let left = empty_type(_py, b"Left", ty, &[]);
             let right = empty_type(_py, b"Right", ty, &[]);
             let descriptor_type = empty_type(_py, b"Descriptor", ty, &[]);
-            let hook_key = crate::attr_name_bits_from_bytes(_py, b"__init_subclass__").unwrap();
-            let set_key = crate::attr_name_bits_from_bytes(_py, b"__set_name__").unwrap();
+            let hook_key = crate::dynamic_attr_name_bits(_py, b"__init_subclass__").unwrap();
+            let set_key = crate::dynamic_attr_name_bits(_py, b"__set_name__").unwrap();
             for (owner, function) in [
                 (left, record_left_hook as *const ()),
                 (right, record_right_hook as *const ()),
@@ -1092,8 +1099,8 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
                 _py,
                 obj_from_bits(descriptor_type).as_ptr().unwrap(),
             );
-            let first_key = crate::attr_name_bits_from_bytes(_py, b"first").unwrap();
-            let second_key = crate::attr_name_bits_from_bytes(_py, b"second").unwrap();
+            let first_key = crate::dynamic_attr_name_bits(_py, b"first").unwrap();
+            let second_key = crate::dynamic_attr_name_bits(_py, b"second").unwrap();
             let ns = alloc_dict_with_pairs(_py, &[first_key, first, second_key, second]);
             let ns_bits = MoltObject::from_ptr(ns).bits();
             // The prepared mapping is now the only owner of each descriptor.
@@ -1103,8 +1110,8 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             let namespace_cell = crate::object::cells::alloc_cell(_py, ns_bits);
             let class_cell_bits = MoltObject::from_ptr(class_cell).bits();
             let namespace_cell_bits = MoltObject::from_ptr(namespace_cell).bits();
-            let class_key = crate::attr_name_bits_from_bytes(_py, b"__classcell__").unwrap();
-            let dict_key = crate::attr_name_bits_from_bytes(_py, b"__classdictcell__").unwrap();
+            let class_key = crate::dynamic_attr_name_bits(_py, b"__classcell__").unwrap();
+            let dict_key = crate::dynamic_attr_name_bits(_py, b"__classdictcell__").unwrap();
             assert!(crate::dict_set_in_place(
                 _py,
                 ns,
@@ -1123,7 +1130,7 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
                 state.class_cell = class_cell_bits;
                 state.namespace_cell = namespace_cell_bits;
             });
-            let name = crate::attr_name_bits_from_bytes(_py, b"Subject").unwrap();
+            let name = crate::dynamic_attr_name_bits(_py, b"Subject").unwrap();
             let bases = alloc_tuple(_py, &[left, right]);
             let bases_bits = MoltObject::from_ptr(bases).bits();
             let result = call_type(_py, name, bases_bits, ns_bits);

@@ -780,6 +780,12 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
             *(["op-kind-registry"] if reads_op_kind_sources else []),
             "rust-clippy-changed",
             "tir-midend",
+            # The pending-call authority test reads ops.rs (21c55b2710).
+            *(
+                ["pending-call-source-authority"]
+                if path == "runtime/molt-ir/src/tir/ops.rs"
+                else []
+            ),
         ]
     rule = next(rule for rule in matched if rule.name == "tir-midend")
     assert set(rule.gates) <= set(gates)
@@ -904,12 +910,14 @@ def test_committed_source_checks_precede_complete_native_build_selection():
         "native-object-emission",
         "backend-luau",
         "tir-midend",
+        "pending-call-source-authority",
     ]
     lint_gate = (
         "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
     )
     assert {rule.name for rule in matched} == source_names | set(build_names) | {
-        "rust-clippy-changed"
+        "rust-clippy-changed",
+        "pending-call-source-authority",
     }
     source_rules = [rule for rule in matched if rule.name in source_names]
     build_rules = [rule for rule in matched if rule.name in build_names]
@@ -949,6 +957,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry():
         "rust-clippy-changed",
         "backend-luau",
         "tir-midend",
+        "pending-call-source-authority",
     ]
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_op_kinds.py --check" not in gates
@@ -1025,17 +1034,22 @@ def test_committed_gate_manifest_selects_wasm_host_ratchet():
     assert "cargo build --locked --profile release-fast -p molt-wasm-host" in gates
 
 
-def test_land_precheck_selects_only_gates_that_read_the_candidate():
+def test_land_precheck_runs_static_gates_and_the_lane_try_run():
     # The committed policy, for a frontend source and a runtime source.
     cfg = GateConfig.load(COMMITTED_GATES)
-    gates, _rules = cfg.select(
-        [
-            "src/molt/cli/backend_compile.py",
-            "runtime/molt-runtime/src/builtins/exceptions.rs",
-        ]
-    )
+    touched = [
+        "src/molt/cli/backend_compile.py",
+        "runtime/molt-runtime/src/builtins/exceptions.rs",
+    ]
+    gates, _rules = cfg.select(touched)
     shown = {display(gate.command): gate for gate in gates}
     pre = {name for name, gate in shown.items() if gate.precheck}
+    # The graph's cohorts are this lane's changed tests and direct readers.
+    selection = cfg.graph_selection(touched)
+    assert selection is not None
+    graph_targets = {
+        target for envelope in selection.run.values() for target in envelope.targets
+    }
 
     def runs_pytest(gate) -> bool:
         return "pytest" in _gate_args(gate.command)
@@ -1043,11 +1057,19 @@ def test_land_precheck_selects_only_gates_that_read_the_candidate():
     # Every always gate and the frontend type check read files only.
     assert {display(command) for command in cfg.always} <= pre
     assert "python -m ty check src" in pre
-    # A pytest session, a Cargo build or a compiled-program gate waits for the
-    # queue's batch, and every gate that the precheck skips is one of those.
+    # Changed-crate Clippy runs in the lane: its rule declares `precheck`.
+    clippy = "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
+    assert clippy in pre and "cargo" in shown[clippy].toolchains
     for name, gate in shown.items():
-        builds = "cargo" in gate.toolchains
-        if runs_pytest(gate) or builds:
+        args = _gate_args(gate.command)
+        graph_cohort = runs_pytest(gate) and "--maxfail=1" in args
+        if graph_cohort:
+            # Every graph cohort runs in the lane, and only graph targets.
+            assert name in pre, name
+            assert {arg for arg in args if arg.startswith("tests/")} <= graph_targets
+        elif runs_pytest(gate) or ("cargo" in gate.toolchains and name != clippy):
+            # Curated rule cohorts, Cargo builds and compiled programs wait
+            # for the queue's batch.
             assert name not in pre, name
         else:
             assert name in pre or not set(gate.toolchains) <= {
@@ -1057,7 +1079,8 @@ def test_land_precheck_selects_only_gates_that_read_the_candidate():
                 "generators",
                 "rustfmt",
             }, name
-    assert any(runs_pytest(gate) for gate in shown.values())
+    assert any(runs_pytest(gate) and name in pre for name, gate in shown.items())
+    assert any(runs_pytest(gate) and name not in pre for name, gate in shown.items())
     assert any("cargo" in gate.toolchains for gate in shown.values())
 
 

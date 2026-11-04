@@ -4,6 +4,13 @@ Use expert judgment and first-principles reasoning. These are outcome and invari
 not a fixed implementation recipe. Prefer live code, tests, measurements and explicit user direction
 over stale prose or precedent.
 
+## Work as an early-stage, world-class AOT compiler project
+
+- Before each design, dispatch, review, landing or report, ask what an early-stage, world-class AOT
+  compiler project (early Bun, Zig, Go and LLVM; GraalVM Native Image, Codon, mypyc) would do; act
+  on it unprompted. Process only keeps trunk green and moving: short presubmit, revert within an
+  hour, few lanes, differential tests over implementation pins, gates apart from development load.
+
 ## Own the outcome
 
 - Own the authorized outcome: choose the design and undertake necessary cross-layer refactors,
@@ -17,9 +24,8 @@ over stale prose or precedent.
 - Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
   useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
 - Minimize wall clock to qualified user outcomes. Consult the published V1 ledger below before
-  choosing work; update it as evidence changes scope, priorities, blockers or qualification.
-  It alone owns current V1 burndown state; other roadmaps link to it. Keep WIP small and
-  land/retire coherent outcomes before adjacent apparatus. State passes, failures and unknowns.
+  choosing work; update it as evidence changes scope, priorities, blockers or qualification. It
+  alone owns current V1 burndown state; other roadmaps link to it. State passes, failures, unknowns.
 - Follow safer live facts over stale guidance; repair in-scope guidance in the same change.
 
 ## Engineer coherent systems
@@ -149,9 +155,6 @@ over stale prose or precedent.
 - Reuse one compiled producer for compatible profiles/features and affected selectors. Batch useful
   checks without adding unrelated suites to amortize a compile; avoid cold targets and competing
   Cargo writers. Measure the actual critical path before changing concurrency or coverage.
-- Preflight actual output/backing filesystems, including VM disks. Route growth through DX; use
-  `tools/disk_guard.py`, `tools/molt_cache_prune.py` and `tools/linux_vm.py` under
-  `docs/OPERATIONS.md`. Diagnose recurring growth; cleanup alone does not establish a durable fix.
 - Preflight selected toolchain/target/runtime prerequisites with the actual child environment before
   expensive work; parser acceptance is not readiness. Validate mutations at their canonical boundary.
 - Stop dependent batches at the first failure and keep its receipts; classify product, harness,
@@ -168,9 +171,8 @@ over stale prose or precedent.
 - Preserve unrelated files, credentials, external systems, and people. Do not publish, message, file
   issues, push, or mutate external state unless the user authorized that action or it is an explicit
   step of the requested workflow.
-- Never add Claude or other AI attribution to a commit or pull request: no `Co-Authored-By: Claude`
-  trailer and no "Generated with Claude Code" footer. `tools/check_commit_attribution.py` enforces
-  this in the `commit-msg` hook and in CI (the `repository_policy` proof-plan family).
+- Never add Claude or other AI attribution (`Co-Authored-By: Claude`, "Generated with Claude Code")
+  to a commit or pull request; `tools/check_commit_attribution.py` enforces it in hooks and CI.
 - Dependencies, toolchains, Actions: newest release >=7 days old; advisory fixes by dated exemption.
 - Destructive Git operations and broad filesystem cleanup require explicit authorization and verified targets.
 - Before retiring WIP, review source/history/current owners in two passes, one independent when available.
@@ -180,8 +182,6 @@ over stale prose or precedent.
 - Molt process cleanup may stop only a live-proved Molt-owned child or worker; test observers use `tests/process_guard_common.py`.
   Never stop Codex, Claude, app/renderer/server helpers, MCP/plugin processes, shell hosts,
   Git pollers, ancestors or ambiguous host control-plane processes; preserve evidence and repair unclear custody.
-- Before risky/long proofs, record recoverable command/cwd/status/evidence in existing guard/incident
-  custody; use `docs/agent/PROOF_QUEUE.md` for expensive/contention-heavy work when needed.
 
 ## Useful authorities
 

@@ -44,31 +44,14 @@ OUTPUTS = (OUT_CODEGEN, OUT_CORE, OUT_RUNTIME, OUT_PYTHON)
 FIELDS = ("layout", "edges", "cycle", "weakref", "shape", "drop", "metrics")
 PUBLICATION_POLICIES = {"python", "linear_unpublished"}
 EXTERNAL_GC_POLICIES = {"none", "opaque_rust_arc", "cpython_bridge"}
-ACYCLIC_CAPABILITIES = {"none", "int_triplet", "int_cells", "code_metadata"}
-ACYCLIC_EDGE_DOMAINS = {"int", "str", "bytes_or_none", "str_tuple", "str_or_none"}
+ACYCLIC_CAPABILITIES = {"none", "int_triplet", "int_cells"}
+ACYCLIC_EDGE_DOMAINS = {"int"}
 ACYCLIC_SLOT_SCHEMAS = {
     "BUFFER2D": (("cell", "int"),),
     "RANGE": (
         ("start", "int"),
         ("stop", "int"),
         ("step", "int"),
-    ),
-    "CODE": (
-        ("filename", "str"),
-        ("name", "str"),
-        ("linetable", "bytes_or_none"),
-        ("varnames", "str_tuple"),
-        ("names", "str_tuple"),
-        ("arg_names", "str_tuple"),
-        ("posonly", "int"),
-        ("kwonly", "str_tuple"),
-        ("vararg", "str_or_none"),
-        ("varkw", "str_or_none"),
-        ("freevars", "str_tuple"),
-        ("cellvars", "str_tuple"),
-        ("gpu_descriptor", "str_or_none"),
-        ("qualname", "str"),
-        ("doc", "str_or_none"),
     ),
 }
 ALLOWED = {
@@ -115,7 +98,6 @@ ALLOWED = {
         "range",
         "slice",
         "exception",
-        "dataclass",
         "buffer2d",
         "context_manager",
         "file_handle",
@@ -171,6 +153,7 @@ TRACK_PROJECTIONS = {
     "dict_dynamic",
     "foreign_dynamic",
     "tuple_dynamic",
+    "code_dynamic",
     "native_subtype",
 }
 OBJECT_SHAPE_FAMILIES = {
@@ -256,7 +239,6 @@ def load_table(path: Path = TABLE) -> list[dict[str, object]]:
         expected_acyclic = {
             "RANGE": "int_triplet",
             "BUFFER2D": "int_cells",
-            "CODE": "code_metadata",
         }.get(str(name), "none")
         if acyclic != expected_acyclic:
             raise ValueError(

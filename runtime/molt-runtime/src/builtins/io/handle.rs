@@ -51,13 +51,11 @@ pub(super) fn resolve_file_handle_ptr(
         }
         return Ok(handle_ptr);
     }
-    let name_bits = intern_static_name(_py, &runtime_state(_py).interned.handle_name, b"_handle");
-    let missing = missing_bits(_py);
-    let attr_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if !is_missing_bits(_py, attr_bits) {
+    let name_bits = crate::NameId::PrivateHandle.bits(_py);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits)
+        .into_result()
+        .map_err(|()| MoltObject::none().bits())?;
+    if let Some(attr_bits) = result {
         let mut resolved = None;
         if let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr()
             && unsafe { object_type_id(attr_ptr) } == TYPE_ID_FILE_HANDLE

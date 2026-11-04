@@ -1,14 +1,16 @@
 use crate::BuiltinExc;
+#[cfg(test)]
+use crate::missing_bits;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt as NumBigInt;
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 
 use crate::builtins::exceptions::clear_exception;
 use crate::{
-    TYPE_ID_STRING, alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable0,
-    call_callable1, call_callable2, call_callable3, dec_ref_bits, decode_value_list, ellipsis_bits,
-    exception_pending, inc_ref_bits, int_bits_from_bigint, missing_bits, molt_getattr_builtin,
-    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
+    TYPE_ID_STRING, alloc_string, alloc_tuple, call_callable0, call_callable1, call_callable2,
+    call_callable3, dec_ref_bits, decode_value_list, dynamic_attr_name_bits, ellipsis_bits,
+    exception_pending, inc_ref_bits, int_bits_from_bigint, obj_from_bits, object_type_id,
+    raise_exception, string_obj_to_owned,
 };
 
 struct AstParseCtors<'a, 'py> {
@@ -499,31 +501,21 @@ fn convert_stmt(
 fn get_attr_optional(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<Option<u64>, u64> {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits).into_result();
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
 fn node_kind_name(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<Option<String>, u64> {
-    let Some(class_bits) = get_attr_optional(_py, obj_bits, b"__class__")? else {
+    let Some(class_bits) = get_attr_optional(_py, obj_bits, crate::NameId::DunderClass)? else {
         return Ok(None);
     };
-    let out = match get_attr_optional(_py, class_bits, b"__name__")? {
+    let out = match get_attr_optional(_py, class_bits, crate::NameId::DunderName)? {
         Some(name_bits) => {
             let name = string_obj_to_owned(obj_from_bits(name_bits));
             dec_if_heap(_py, name_bits);
@@ -538,7 +530,7 @@ fn node_kind_name(_py: &crate::PyToken<'_>, obj_bits: u64) -> Result<Option<Stri
 fn push_attr_child(
     _py: &crate::PyToken<'_>,
     node_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
     children: &mut Vec<u64>,
 ) -> Result<(), u64> {
     let Some(value_bits) = get_attr_optional(_py, node_bits, name)? else {
@@ -555,7 +547,7 @@ fn push_attr_child(
 fn push_attr_children_from_seq(
     _py: &crate::PyToken<'_>,
     node_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
     children: &mut Vec<u64>,
 ) -> Result<(), u64> {
     let Some(seq_bits) = get_attr_optional(_py, node_bits, name)? else {
@@ -582,36 +574,67 @@ fn collect_child_nodes(_py: &crate::PyToken<'_>, node_bits: u64) -> Result<Vec<u
     let kind = node_kind_name(_py, node_bits)?;
     let collected: Result<(), u64> = (|| {
         match kind.as_deref() {
-            Some("Module") => push_attr_children_from_seq(_py, node_bits, b"body", &mut children)?,
-            Some("Expression") => push_attr_child(_py, node_bits, b"body", &mut children)?,
+            Some("Module") => {
+                push_attr_children_from_seq(_py, node_bits, crate::NameId::Body, &mut children)?
+            }
+            Some("Expression") => {
+                push_attr_child(_py, node_bits, crate::NameId::Body, &mut children)?
+            }
             Some("FunctionDef") => {
-                push_attr_child(_py, node_bits, b"args", &mut children)?;
-                push_attr_children_from_seq(_py, node_bits, b"body", &mut children)?;
-                push_attr_children_from_seq(_py, node_bits, b"decorator_list", &mut children)?;
-                push_attr_child(_py, node_bits, b"returns", &mut children)?;
+                push_attr_child(_py, node_bits, crate::NameId::Args, &mut children)?;
+                push_attr_children_from_seq(_py, node_bits, crate::NameId::Body, &mut children)?;
+                push_attr_children_from_seq(
+                    _py,
+                    node_bits,
+                    crate::NameId::DecoratorList,
+                    &mut children,
+                )?;
+                push_attr_child(_py, node_bits, crate::NameId::Returns, &mut children)?;
             }
             Some("arguments") => {
-                push_attr_children_from_seq(_py, node_bits, b"posonlyargs", &mut children)?;
-                push_attr_children_from_seq(_py, node_bits, b"args", &mut children)?;
-                push_attr_child(_py, node_bits, b"vararg", &mut children)?;
-                push_attr_children_from_seq(_py, node_bits, b"kwonlyargs", &mut children)?;
-                push_attr_children_from_seq(_py, node_bits, b"kw_defaults", &mut children)?;
-                push_attr_child(_py, node_bits, b"kwarg", &mut children)?;
-                push_attr_children_from_seq(_py, node_bits, b"defaults", &mut children)?;
+                push_attr_children_from_seq(
+                    _py,
+                    node_bits,
+                    crate::NameId::Posonlyargs,
+                    &mut children,
+                )?;
+                push_attr_children_from_seq(_py, node_bits, crate::NameId::Args, &mut children)?;
+                push_attr_child(_py, node_bits, crate::NameId::Vararg, &mut children)?;
+                push_attr_children_from_seq(
+                    _py,
+                    node_bits,
+                    crate::NameId::Kwonlyargs,
+                    &mut children,
+                )?;
+                push_attr_children_from_seq(
+                    _py,
+                    node_bits,
+                    crate::NameId::KwDefaults,
+                    &mut children,
+                )?;
+                push_attr_child(_py, node_bits, crate::NameId::Kwarg, &mut children)?;
+                push_attr_children_from_seq(
+                    _py,
+                    node_bits,
+                    crate::NameId::Defaults,
+                    &mut children,
+                )?;
             }
-            Some("arg") => push_attr_child(_py, node_bits, b"annotation", &mut children)?,
-            Some("Return") => push_attr_child(_py, node_bits, b"value", &mut children)?,
-            Some("Expr") => push_attr_child(_py, node_bits, b"value", &mut children)?,
+            Some("arg") => {
+                push_attr_child(_py, node_bits, crate::NameId::Annotation, &mut children)?
+            }
+            Some("Return") => push_attr_child(_py, node_bits, crate::NameId::Value, &mut children)?,
+            Some("Expr") => push_attr_child(_py, node_bits, crate::NameId::Value, &mut children)?,
             Some("Assign") => {
-                push_attr_children_from_seq(_py, node_bits, b"targets", &mut children)?;
-                push_attr_child(_py, node_bits, b"value", &mut children)?;
+                push_attr_children_from_seq(_py, node_bits, crate::NameId::Targets, &mut children)?;
+                push_attr_child(_py, node_bits, crate::NameId::Value, &mut children)?;
             }
             Some("BinOp") => {
-                push_attr_child(_py, node_bits, b"left", &mut children)?;
-                push_attr_child(_py, node_bits, b"op", &mut children)?;
-                push_attr_child(_py, node_bits, b"right", &mut children)?;
+                push_attr_child(_py, node_bits, crate::NameId::Left, &mut children)?;
+                push_attr_child(_py, node_bits, crate::NameId::Op, &mut children)?;
+                push_attr_child(_py, node_bits, crate::NameId::Right, &mut children)?;
             }
-            Some("Name") => push_attr_child(_py, node_bits, b"ctx", &mut children)?,
+            Some("Name") => push_attr_child(_py, node_bits, crate::NameId::Ctx, &mut children)?,
             _ => {}
         }
         Ok(())
@@ -802,7 +825,7 @@ pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
 pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let _ = clean_bits;
-        let Some(body_bits) = (match get_attr_optional(_py, node_bits, b"body") {
+        let Some(body_bits) = (match get_attr_optional(_py, node_bits, crate::NameId::Body) {
             Ok(value) => value,
             Err(err) => return err,
         }) else {
@@ -817,7 +840,8 @@ pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64
             return MoltObject::none().bits();
         }
         let first_bits = body_items[0];
-        let Some(expr_value_bits) = (match get_attr_optional(_py, first_bits, b"value") {
+        let Some(expr_value_bits) = (match get_attr_optional(_py, first_bits, crate::NameId::Value)
+        {
             Ok(value) => value,
             Err(err) => {
                 dec_if_heap(_py, body_bits);
@@ -827,14 +851,16 @@ pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64
             dec_if_heap(_py, body_bits);
             return MoltObject::none().bits();
         };
-        let Some(const_value_bits) = (match get_attr_optional(_py, expr_value_bits, b"value") {
-            Ok(value) => value,
-            Err(err) => {
-                dec_if_heap(_py, expr_value_bits);
-                dec_if_heap(_py, body_bits);
-                return err;
-            }
-        }) else {
+        let Some(const_value_bits) =
+            (match get_attr_optional(_py, expr_value_bits, crate::NameId::Value) {
+                Ok(value) => value,
+                Err(err) => {
+                    dec_if_heap(_py, expr_value_bits);
+                    dec_if_heap(_py, body_bits);
+                    return err;
+                }
+            })
+        else {
             dec_if_heap(_py, expr_value_bits);
             dec_if_heap(_py, body_bits);
             return MoltObject::none().bits();
@@ -870,22 +896,16 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
                 "expected an AST node, got None",
             );
         }
-        let missing = missing_bits(_py);
-        let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
+        let Some(fields_key) = crate::NameId::PrivateFields.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let fields_bits = molt_getattr_builtin(node_bits, fields_key, missing);
+        // _fields itself is required; only an absent named field is skipped.
+        let fields = crate::builtins::attributes::get_attr_name(_py, node_bits, fields_key);
         dec_if_heap(_py, fields_key);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            dec_if_heap(_py, fields_bits);
-            let list_ptr = crate::alloc_list(_py, &[]);
-            return if list_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(list_ptr).bits()
-            };
-        }
+        let fields_bits = match fields {
+            Ok(bits) => bits,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let mut result_entries: Vec<u64> = Vec::new();
         let out = (|| {
             let Some(fields_values) = decode_value_list(_py, obj_from_bits(fields_bits)) else {
@@ -904,15 +924,21 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
                 let Some(field_name) = string_obj_to_owned(obj_from_bits(field_bits)) else {
                     continue;
                 };
-                let Some(attr_key) = attr_name_bits_from_bytes(_py, field_name.as_bytes()) else {
+                let Some(attr_key) = dynamic_attr_name_bits(_py, field_name.as_bytes()) else {
                     return MoltObject::none().bits();
                 };
-                let val_bits = molt_getattr_builtin(node_bits, attr_key, missing);
+                let val_bits = match crate::lookup_attribute(_py, node_bits, attr_key) {
+                    crate::AttributeLookup::Found(bits) => bits,
+                    crate::AttributeLookup::Missing => {
+                        dec_if_heap(_py, attr_key);
+                        continue;
+                    }
+                    crate::AttributeLookup::Error => MoltObject::none().bits(),
+                };
                 dec_if_heap(_py, attr_key);
                 if exception_pending(_py) {
-                    clear_exception(_py);
                     dec_if_heap(_py, val_bits);
-                    continue;
+                    return MoltObject::none().bits();
                 }
                 let name_ptr = alloc_string(_py, field_name.as_bytes());
                 if name_ptr.is_null() {
@@ -945,20 +971,23 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
 
 /// Helper: check if an object has a `_fields` attribute (heuristic for AST node).
 fn has_fields_attr(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool {
-    let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
+    let Some(fields_key) = crate::NameId::PrivateFields.owned_bits(_py) else {
         return false;
     };
-    let missing = missing_bits(_py);
-    let result = molt_getattr_builtin(obj_bits, fields_key, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, fields_key);
     dec_ref_bits(_py, fields_key);
-    if exception_pending(_py) {
-        clear_exception(_py);
-        dec_if_heap(_py, result);
-        return false;
+    match result {
+        crate::AttributeLookup::Found(bits) => {
+            let present = !obj_from_bits(bits).is_none();
+            dec_if_heap(_py, bits);
+            present
+        }
+        crate::AttributeLookup::Missing => false,
+        crate::AttributeLookup::Error => {
+            clear_exception(_py);
+            false
+        }
     }
-    let present = !obj_from_bits(result).is_none();
-    dec_if_heap(_py, result);
-    present
 }
 
 /// Return a list of direct AST child nodes for an AST node.
@@ -974,22 +1003,16 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
                 "expected an AST node, got None",
             );
         }
-        let missing = missing_bits(_py);
-        let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
+        let Some(fields_key) = crate::NameId::PrivateFields.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let fields_bits = molt_getattr_builtin(node_bits, fields_key, missing);
+        // _fields itself is required; only an absent named field is skipped.
+        let fields = crate::builtins::attributes::get_attr_name(_py, node_bits, fields_key);
         dec_if_heap(_py, fields_key);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            dec_if_heap(_py, fields_bits);
-            let list_ptr = crate::alloc_list(_py, &[]);
-            return if list_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(list_ptr).bits()
-            };
-        }
+        let fields_bits = match fields {
+            Ok(bits) => bits,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let mut children: Vec<u64> = Vec::new();
         let out = (|| {
             let Some(fields_values) = decode_value_list(_py, obj_from_bits(fields_bits)) else {
@@ -1007,15 +1030,21 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
                 let Some(field_name) = string_obj_to_owned(obj_from_bits(field_bits)) else {
                     continue;
                 };
-                let Some(attr_key) = attr_name_bits_from_bytes(_py, field_name.as_bytes()) else {
+                let Some(attr_key) = dynamic_attr_name_bits(_py, field_name.as_bytes()) else {
                     return MoltObject::none().bits();
                 };
-                let val_bits = molt_getattr_builtin(node_bits, attr_key, missing);
+                let val_bits = match crate::lookup_attribute(_py, node_bits, attr_key) {
+                    crate::AttributeLookup::Found(bits) => bits,
+                    crate::AttributeLookup::Missing => {
+                        dec_if_heap(_py, attr_key);
+                        continue;
+                    }
+                    crate::AttributeLookup::Error => MoltObject::none().bits(),
+                };
                 dec_if_heap(_py, attr_key);
                 if exception_pending(_py) {
-                    clear_exception(_py);
                     dec_if_heap(_py, val_bits);
-                    continue;
+                    return MoltObject::none().bits();
                 }
                 let completed = (|| {
                     let val_obj = obj_from_bits(val_bits);
@@ -1227,10 +1256,10 @@ mod snapshot_tests {
     fn ast_field_and_child_callbacks_keep_remaining_sequence_elements_owned() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"AstSnapshotNode").unwrap();
+            let name = dynamic_attr_name_bits(py, b"AstSnapshotNode").unwrap();
             let class = crate::molt_class_new(name);
             crate::molt_class_set_base(class, crate::builtin_classes(py).object);
-            let getter_name = attr_name_bits_from_bytes(py, b"__getattribute__").unwrap();
+            let getter_name = dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr(
@@ -1357,10 +1386,10 @@ mod snapshot_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"ast_snapshot_denial").unwrap();
+            let name = dynamic_attr_name_bits(py, b"ast_snapshot_denial").unwrap();
             let node = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
-            let fields_key = attr_name_bits_from_bytes(py, b"_fields").unwrap();
-            let body_key = attr_name_bits_from_bytes(py, b"body").unwrap();
+            let fields_key = dynamic_attr_name_bits(py, b"_fields").unwrap();
+            let body_key = dynamic_attr_name_bits(py, b"body").unwrap();
             let item = alloc_string_bits(py, "snapshot field").unwrap();
             let source = MoltObject::from_ptr(crate::alloc_list(py, &[item])).bits();
             let ctors =
@@ -1386,7 +1415,13 @@ mod snapshot_tests {
                     1 => {
                         let mut children = Vec::new();
                         assert!(
-                            push_attr_children_from_seq(py, node, b"body", &mut children).is_err()
+                            push_attr_children_from_seq(
+                                py,
+                                node,
+                                crate::NameId::Body,
+                                &mut children
+                            )
+                            .is_err()
                         );
                         assert!(children.is_empty());
                     }

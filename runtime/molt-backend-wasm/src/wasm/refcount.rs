@@ -128,7 +128,7 @@ fn generate(sink: &mut impl Sink, scratch: WasmRefcountScratch, operation: Refco
         scratch.words,
         scratch.admission,
         operation,
-        RefcountStorage::Plain,
+        RefcountStorage::for_build(false),
     );
     b.sink.push(Instruction::Br(1));
     b.sink.push(Instruction::End);
@@ -199,12 +199,6 @@ impl<S: Sink> RefcountBuilder for WasmRefcountBuilder<'_, S> {
         self.sink.push(Instruction::I64Add);
         self.word()
     }
-    fn shift_right(&mut self, value: u32, amount: u32) -> u32 {
-        self.get(value);
-        self.get(amount);
-        self.sink.push(Instruction::I64ShrU);
-        self.word()
-    }
     fn compare(&mut self, comparison: RefcountComparison, left: u32, right: u32) -> u32 {
         self.get(left);
         self.get(right);
@@ -213,12 +207,6 @@ impl<S: Sink> RefcountBuilder for WasmRefcountBuilder<'_, S> {
             RefcountComparison::NotEqual => Instruction::I64Ne,
             RefcountComparison::UnsignedLessThan => Instruction::I64LtU,
         });
-        self.predicate()
-    }
-    fn either(&mut self, left: u32, right: u32) -> u32 {
-        self.get(left);
-        self.get(right);
-        self.sink.push(Instruction::I32Or);
         self.predicate()
     }
     fn both(&mut self, left: u32, right: u32) -> u32 {

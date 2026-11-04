@@ -1,5 +1,5 @@
 use crate::BuiltinExc;
-use crate::builtins::attr::lookup_special_method_bits;
+use crate::builtins::attr::lookup_special_method;
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::*;
 
@@ -68,18 +68,10 @@ fn classinfo_type_error_message(protocol: ClassInfoProtocol) -> &'static str {
     }
 }
 
-fn classinfo_protocol_name_bits(py: &PyToken<'_>, protocol: ClassInfoProtocol) -> u64 {
+fn classinfo_protocol_name(protocol: ClassInfoProtocol) -> crate::NameId {
     match protocol {
-        ClassInfoProtocol::Instance => intern_static_name(
-            py,
-            &runtime_state(py).interned.instancecheck_name,
-            b"__instancecheck__",
-        ),
-        ClassInfoProtocol::Subclass => intern_static_name(
-            py,
-            &runtime_state(py).interned.subclasscheck_name,
-            b"__subclasscheck__",
-        ),
+        ClassInfoProtocol::Instance => crate::NameId::DunderInstancecheck,
+        ClassInfoProtocol::Subclass => crate::NameId::DunderSubclasscheck,
     }
 }
 
@@ -238,13 +230,13 @@ impl<'a, 'py> ClassInfoTuple<'a, 'py> {
 fn classinfo_attribute<'a, 'py>(
     py: &'a PyToken<'py>,
     value: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Option<Option<crate::builtins::exceptions::ExceptionValue<'a, 'py>>> {
     use crate::builtins::exceptions::ExceptionValue;
-    let Some(pointer) = obj_from_bits(value).as_ptr() else {
+    if obj_from_bits(value).as_ptr().is_none() {
         // Immediate builtin values cannot override attributes. Their __class__
         // still participates in abstract isinstance; they have no __bases__.
-        return if name == b"__class__" {
+        return if name == crate::NameId::DunderClass {
             match unsafe { crate::object::class_layout::real_type_bits(py, value) } {
                 Ok(class) => Some(Some(ExceptionValue::adopt(py, class))),
                 Err(()) => {
@@ -255,11 +247,17 @@ fn classinfo_attribute<'a, 'py>(
         } else {
             Some(None)
         };
-    };
-    let name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, name)?);
-    match unsafe { attr_lookup_ptr_allow_missing(py, pointer, name.bits()) } {
-        Ok(result) => Some(result.map(|bits| ExceptionValue::adopt(py, bits))),
-        Err(()) => None,
+    }
+    // Registered names belong to the runtime for the whole lookup; only the
+    // selected result needs a new owner across subsequent Python callbacks.
+    let name = name.bits(py);
+    if name == 0 {
+        return None;
+    }
+    match lookup_attribute(py, value, name) {
+        AttributeLookup::Found(bits) => Some(Some(ExceptionValue::adopt(py, bits))),
+        AttributeLookup::Missing => Some(None),
+        AttributeLookup::Error => None,
     }
 }
 
@@ -267,7 +265,7 @@ fn abstract_bases<'a, 'py>(
     py: &'a PyToken<'py>,
     class: u64,
 ) -> Option<Option<ClassInfoTuple<'a, 'py>>> {
-    let Some(bases) = classinfo_attribute(py, class, b"__bases__")? else {
+    let Some(bases) = classinfo_attribute(py, class, crate::NameId::DunderBases)? else {
         return Some(None);
     };
     ClassInfoTuple::from_bits(py, bases.bits())
@@ -329,7 +327,7 @@ pub(crate) fn instancecheck_default(py: &PyToken<'_>, value: u64, class: u64) ->
         if structural_classinfo_match(py, value, class, ClassInfoProtocol::Instance)? {
             return Some(true);
         }
-        let Some(apparent) = classinfo_attribute(py, value, b"__class__")? else {
+        let Some(apparent) = classinfo_attribute(py, value, crate::NameId::DunderClass)? else {
             return Some(false);
         };
         let actual = match unsafe { crate::object::class_layout::real_type_bits(py, value) } {
@@ -349,7 +347,7 @@ pub(crate) fn instancecheck_default(py: &PyToken<'_>, value: u64, class: u64) ->
         class,
         classinfo_type_error_message(ClassInfoProtocol::Instance),
     )?;
-    let Some(apparent) = classinfo_attribute(py, value, b"__class__")? else {
+    let Some(apparent) = classinfo_attribute(py, value, crate::NameId::DunderClass)? else {
         return Some(false);
     };
     abstract_subclass(py, apparent.bits(), class)
@@ -442,8 +440,8 @@ fn classinfo_match(
     if !hooks {
         return structural_classinfo_match(py, value, classinfo, protocol);
     }
-    let name = classinfo_protocol_name_bits(py, protocol);
-    let method = match unsafe { lookup_special_method_bits(py, owner.bits(), name) } {
+    let name = classinfo_protocol_name(protocol);
+    let method = match unsafe { lookup_special_method(py, owner.bits(), name).into_result() } {
         Ok(method) => method.map(|method| ExceptionValue::adopt(py, method)),
         Err(()) => return None,
     };
@@ -602,7 +600,6 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 return class_bits;
             }
             return match tid {
-                TYPE_ID_DATACLASS => builtins.object,
                 TYPE_ID_FLOAT => builtins.float,
                 TYPE_ID_STRING => builtins.str,
                 TYPE_ID_BYTES => builtins.bytes,
@@ -823,7 +820,7 @@ mod tests {
                 let pointer = obj_from_bits(receiver).as_ptr().unwrap();
                 let dictionary = obj_from_bits(instance_dict_bits(pointer)).as_ptr().unwrap();
                 let failure_name =
-                    ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"failure").unwrap());
+                    ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"failure").unwrap());
                 if let Some(failure) = dict_get_in_place(py, dictionary, failure_name.bits())
                     .expect("dictionary lookup succeeds")
                 {
@@ -840,8 +837,7 @@ mod tests {
                         );
                     }
                 };
-                let field =
-                    ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, field).unwrap());
+                let field = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, field).unwrap());
                 match dict_get_in_place(py, dictionary, field.bits())
                     .expect("dictionary lookup succeeds")
                 {
@@ -860,12 +856,10 @@ mod tests {
     fn protocol_class<'a, 'py>(py: &'a PyToken<'py>) -> ExceptionValue<'a, 'py> {
         let name = ExceptionValue::adopt(
             py,
-            attr_name_bits_from_bytes(py, b"AbstractClassInfo").unwrap(),
+            dynamic_attr_name_bits(py, b"AbstractClassInfo").unwrap(),
         );
-        let method_name = ExceptionValue::adopt(
-            py,
-            attr_name_bits_from_bytes(py, b"__getattribute__").unwrap(),
-        );
+        let method_name =
+            ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"__getattribute__").unwrap());
         let function = alloc_function_obj(py, fn_addr!(protocol_attribute), 2);
         assert!(!function.is_null());
         let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
@@ -898,7 +892,7 @@ mod tests {
         let object =
             unsafe { alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap()) };
         let object = ExceptionValue::adopt(py, object);
-        let field = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, field).unwrap());
+        let field = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, field).unwrap());
         crate::molt_set_attr_name(object.bits(), field.bits(), value);
         assert!(!exception_pending(py));
         object

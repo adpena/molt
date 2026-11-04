@@ -222,6 +222,17 @@ macro_rules! unpack_str {
     }};
 }
 
+// CPython v3.13.9/v3.14.0 Modules/_datetimemodule.c: check_date_args
+// and check_time_args. Only the failing path queries the target; valid
+// construction and replacement keep their existing cost.
+fn component_range_message(name: &str, minimum: i64, maximum: i64, value: i64) -> String {
+    if rt_target_at_least(3, 14) {
+        format!("{name} must be in {minimum}..{maximum}, not {value}")
+    } else {
+        format!("{name} must be in {minimum}..{maximum}")
+    }
+}
+
 // ===========================================================================
 // 1. Calendar math
 // ===========================================================================
@@ -238,7 +249,7 @@ pub extern "C" fn molt_datetime_days_in_month(year_bits: u64, month_bits: u64) -
             Err(e) => return e,
         };
         if !(1..=12).contains(&month) {
-            let msg = format!("month must be in 1..12, not {month}");
+            let msg = component_range_message("month", 1, 12, i64::from(month));
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
         }
         MoltObject::from_int(days_in_month_impl(year, month) as i64).bits()
@@ -2218,16 +2229,24 @@ pub extern "C" fn molt_datetime_validate_date(y_bits: u64, m_bits: u64, d_bits: 
             Err(e) => return e,
         };
         if !(1..=9999).contains(&y) {
-            let msg = format!("year must be in 1..9999, not {y}");
+            let msg = if rt_target_at_least(3, 14) {
+                component_range_message("year", 1, 9999, y)
+            } else {
+                format!("year {y} is out of range")
+            };
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(1..=12).contains(&m) {
-            let msg = format!("month must be in 1..12, not {m}");
+            let msg = component_range_message("month", 1, 12, m);
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         let max_day = days_in_month_impl(y as i32, m as i32) as i64;
         if !(1..=max_day).contains(&d) {
-            let msg = format!("day {d} must be in range 1..{max_day} for month {m} in year {y}");
+            let msg = if rt_target_at_least(3, 14) {
+                format!("day {d} must be in range 1..{max_day} for month {m} in year {y}")
+            } else {
+                "day is out of range for month".to_owned()
+            };
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         MoltObject::from_bool(true).bits()
@@ -2264,23 +2283,27 @@ pub extern "C" fn molt_datetime_validate_time(
             Err(e) => return e,
         };
         if !(0..24).contains(&h) {
-            let msg = format!("hour must be in 0..23, not {h}");
+            let msg = component_range_message("hour", 0, 23, h);
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..60).contains(&mi) {
-            let msg = format!("minute must be in 0..59, not {mi}");
+            let msg = component_range_message("minute", 0, 59, mi);
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..60).contains(&sec) {
-            let msg = format!("second must be in 0..59, not {sec}");
+            let msg = component_range_message("second", 0, 59, sec);
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..1_000_000).contains(&us) {
-            let msg = format!("microsecond must be in 0..999999, not {us}");
+            let msg = component_range_message("microsecond", 0, 999999, us);
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..=1).contains(&fold) {
-            let msg = format!("fold must be either 0 or 1, not {fold}");
+            let msg = if rt_target_at_least(3, 14) {
+                format!("fold must be either 0 or 1, not {fold}")
+            } else {
+                "fold must be either 0 or 1".to_owned()
+            };
             return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         MoltObject::from_bool(true).bits()

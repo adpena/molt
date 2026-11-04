@@ -48,18 +48,40 @@ def test_trunk_inventory_admits_only_declared_commands(tmp_path):
         trunk_loop.selected_host(
             cross_run.DEFAULT_INVENTORY, "bat00", ["portability.guard.windows"]
         )
-    with pytest.raises(ValueError, match="no admitted"):
-        trunk_loop.selected_host(
-            cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
-        )
+    mac = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "macmini", ["portability.queue.macos"]
+    )
+    assert mac.launcher == cross_run.DetachedLauncher.POSIX_SESSION
     text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
-    inventory = tmp_path / "hosts.toml"
-    inventory.write_text(
-        text.replace('launcher = "windows-cim"', 'launcher = "posix-session"'),
+    cellless = tmp_path / "cellless.toml"
+    cellless.write_text(
+        text.replace(
+            'proof_cells = ["portability.cargo-custody.macos", "portability.queue.macos"]',
+            "proof_cells = []",
+        ),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="launcher, OS and shell disagree"):
-        cross_run.parse_inventory(inventory)
+    with pytest.raises(ValueError, match="no admitted"):
+        trunk_loop.selected_host(cellless, "macmini", ["portability.queue.macos"])
+    gate = trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "molt-gate", ["portability.queue.linux"]
+    )
+    assert gate.launcher == cross_run.DetachedLauncher.WSL_SESSION
+    inventory = tmp_path / "hosts.toml"
+    for old, new in (
+        ('launcher = "windows-cim"', 'launcher = "posix-session"'),
+        # A guest-side session cannot hold its WSL instance (HF-600 slice 4).
+        ('launcher = "wsl-session"', 'launcher = "posix-session"'),
+        # The WSL launcher needs a distribution to hold.
+        (
+            'launcher = "posix-session"\nproof_cells = ["portability.cargo-custody.macos"',
+            'launcher = "wsl-session"\nproof_cells = ["portability.cargo-custody.macos"',
+        ),
+    ):
+        assert old in text
+        inventory.write_text(text.replace(old, new), encoding="utf-8")
+        with pytest.raises(ValueError, match="launcher, OS, shell and WSL"):
+            cross_run.parse_inventory(inventory)
 
 
 @pytest.mark.parametrize(
@@ -92,6 +114,7 @@ def test_trunk_windows_launcher_uses_cim_and_preserves_literal_arguments():
         host,
         [r"C:\Molt\Python\python.exe", "-c", 'print("hello world")'],
         r"C:\Molt\scratch\owned",
+        r"C:\Molt\scratch\trunk-loop\molt-cross-owned",
     )
     assert "Invoke-CimMethod -ClassName Win32_Process -MethodName Create" in script
     assert (
@@ -100,9 +123,34 @@ def test_trunk_windows_launcher_uses_cim_and_preserves_literal_arguments():
     )
     assert "CurrentDirectory='C:\\Molt\\scratch\\owned'" in script
     assert "Start-Process" not in script
-    assert (
-        trunk_loop.acknowledge(json.dumps({"ReturnValue": 0, "ProcessId": 212})) == 212
+    # The acknowledgement carries the created process's stored creation stamp.
+    assert script.index("ConvertTo-Json") < script.index(
+        '-Filter "ProcessId=$probePid"'
     )
+    assert "$probePid=[int]($result.ProcessId)" in script
+    assert "CreationDate" in script
+    assert trunk_loop.acknowledge(json.dumps({"ReturnValue": 0, "ProcessId": 212})) == (
+        212,
+        None,
+    )
+    probe = {
+        "pid": 212,
+        "state": "R",
+        "started": "2026-11-04T08:22:00.0000000Z",
+        "instance": "",
+        "instance_started_at": "2026-11-01T00:00:00Z",
+    }
+    pid, worker = trunk_loop.acknowledge(
+        json.dumps({"ReturnValue": 0, "ProcessId": 212}) + "\r\n" + json.dumps(probe)
+    )
+    assert (pid, worker.identity) == (212, (212, probe["started"], ""))
+    for malformed in ({**probe, "pid": True}, {**probe, "extra": ""}):
+        with pytest.raises(ValueError, match="malformed worker identity"):
+            trunk_loop.acknowledge(
+                json.dumps({"ReturnValue": 0, "ProcessId": 212})
+                + "\n"
+                + json.dumps(malformed)
+            )
     for response in (
         {"ReturnValue": 9, "ProcessId": 0},
         {"ReturnValue": 0, "ProcessId": 0},
@@ -133,6 +181,22 @@ def test_windows_sftp_source_and_destination_use_forward_slashes(tmp_path, monke
     assert transport.remote_path("results.zip") == r"C:\Molt\scratch\owned\results.zip"
 
 
+def _local_probe(host, pid):
+    """Run the real POSIX identity probe for a local pid; its output is the subject."""
+    from tests.process_guard_common import check_output_custody_subject_process
+
+    return trunk_loop.ProcessProbe.parse(
+        check_output_custody_subject_process(
+            [
+                "/bin/sh",
+                "-c",
+                f"set -eu\n{trunk_loop.posix_probe(host)}molt_probe {pid}",
+            ],
+            text=True,
+        )
+    )
+
+
 @pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX launcher contract")
 def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
     import json
@@ -144,44 +208,77 @@ def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
         name="local",
         target="aarch64-apple-darwin",
         transport="ssh",
-        python=sys.executable,
         os=cross_run.HostOS.MACOS,
         launcher=cross_run.DetachedLauncher.POSIX_SESSION,
     )
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="detached-probe"\nversion="0.0.0"\nrequires-python=">=3.12"\n',
+        encoding="utf-8",
+    )
+    # Exercise the real uv wrapper without borrowing or resynchronizing the
+    # pytest process's immutable development image.
+    env = dict(os.environ)
+    env.update(
+        UV_PROJECT_ENVIRONMENT=str(tmp_path / "environment"),
+        UV_PYTHON=sys.executable,
+        UV_PYTHON_DOWNLOADS="never",
+        UV_OFFLINE="1",
+    )
+    locked = cross_run._guarded_run(
+        ["uv", "lock", "--project", str(tmp_path)], env=env, timeout=60
+    )
+    assert locked.returncode == 0, locked.stderr
     ready, release, complete = [
         tmp_path / name for name in ("ready", "release", "complete")
     ]
     child = """import json,os,pathlib,sys,time
 r,g,c=map(pathlib.Path,sys.argv[1:])
-r.write_text(json.dumps({'pid':os.getpid(),'session':os.getsid(0)}))
+def publish(path,value):
+    stage=path.with_suffix('.tmp')
+    stage.write_text(value)
+    stage.replace(path)
+publish(r,json.dumps({'pid':os.getpid(),'session':os.getsid(0)}))
 deadline=time.monotonic()+15
 while not g.exists() and time.monotonic()<deadline:time.sleep(.01)
-if g.exists():c.write_text('completed after launcher exit')
+if g.exists():publish(c,'completed after launcher exit')
 """
     script = trunk_loop.detached_script(
         host,
-        [sys.executable, "-B", "-c", child, str(ready), str(release), str(complete)],
+        trunk_loop.uv_python("-c", child, str(ready), str(release), str(complete)),
+        str(tmp_path),
         str(tmp_path),
     )
     launcher = subprocess.run(
-        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8", timeout=10
+        ["/bin/sh", "-c", script], capture_output=True, encoding="utf-8", env=env
     )
     assert launcher.returncode == 0, launcher.stderr
-    pid = trunk_loop.acknowledge(launcher.stdout)
-    deadline = time.monotonic() + 10
-    while not ready.exists() and time.monotonic() < deadline:
+    pid, worker = trunk_loop.acknowledge(launcher.stdout)
+    assert worker is not None and worker.pid == pid
+    from molt.process_model import pid_alive
+
+    def probe():
+        return _local_probe(host, pid)
+
+    # The detached child's liveness is the progress signal; the harness's
+    # per-test timeout owns hang detection, so load cannot fail a slow start.
+    while not ready.exists() and pid_alive(pid):
         time.sleep(0.01)
     try:
-        assert json.loads(ready.read_text(encoding="utf-8")) == {
-            "pid": pid,
-            "session": pid,
-        }
+        observed = json.loads(ready.read_text(encoding="utf-8"))
+        assert observed["pid"] > 0
+        assert observed["session"] == pid
         assert pid != os.getsid(0)
+        # The OS-stored start stamp, not the pid alone, names the live worker.
+        assert worker.identity is not None
+        assert probe().identity == worker.identity
     finally:
         release.write_text("parent already exited", encoding="utf-8")
-    while not complete.exists() and time.monotonic() < deadline:
+    while not complete.exists() and pid_alive(pid):
         time.sleep(0.01)
     assert complete.read_text(encoding="utf-8") == "completed after launcher exit"
+    while pid_alive(pid):
+        time.sleep(0.01)
+    assert probe().identity is None
 
 
 def test_trunk_seed_inputs_reuses_content_addressed_archives(tmp_path, monkeypatch):
@@ -218,7 +315,15 @@ def test_trunk_seed_inputs_reuses_content_addressed_archives(tmp_path, monkeypat
     local = tmp_path / "stage"
     local.mkdir()
     seeds = trunk_loop.seed_inputs(
-        {"releases": {"first": {"asset": asset}, "second": {"asset": asset}}},
+        {
+            "releases": {
+                "first": {"asset": asset},
+                "second": {"asset": asset},
+                # uv must never reach the archive provisioner, even when the
+                # selected proof policy includes it in the toolchain closure.
+                "uv": {},
+            }
+        },
         Transfer(),
         local,
     )
@@ -245,12 +350,21 @@ def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
     commit, run_id = "1" * 40, "owned-run"
     record_path = tmp_path / commit / "host/runs" / run_id / "run.json"
     record_path.parent.mkdir(parents=True)
+    worker = {
+        "pid": 592,
+        "state": "S",
+        "started": "100",
+        "instance": "boot/1",
+        "instance_started_at": "2026-11-04T08:20:00Z",
+    }
     record = {
         "schema": trunk_loop.SCHEMA,
         "commit": commit,
         "run_id": run_id,
         "cells": ["cell"],
         "state": "launched",
+        "launcher_pid": 592,
+        "worker": worker,
     }
     record_path.write_text(json.dumps(record), encoding="utf-8")
     output = io.BytesIO()
@@ -276,7 +390,9 @@ def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
             return "/owned/" + name
 
         def shell_command(self, _script):
-            return json.dumps(terminal)
+            # The worker published its receipt and exited: the receipt wins.
+            gone = {**worker, "state": "", "started": ""}
+            return json.dumps(gone) + "\n" + json.dumps(terminal)
 
         def pull(self, name, target):
             assert name == "results.zip"
@@ -322,6 +438,264 @@ def test_trunk_collect_recovers_interrupted_transfer_and_preserves_evidence(
     assert evidence.read_bytes() == b"retained original bytes\r\n"
     assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == "collected"
     assert transport.calls == (2 if interruption == "transport" else 1)
+
+
+def _wsl_gate():
+    return trunk_loop.selected_host(
+        cross_run.DEFAULT_INVENTORY, "molt-gate", ["portability.queue.linux"]
+    )
+
+
+def test_wsl_launcher_holds_one_wsl_client_for_the_worker_lifetime():
+    """WSL 3.0.3 keeps an instance only while a wsl.exe client is registered."""
+    import shlex
+
+    host = _wsl_gate()
+    stage = "/home/adpena/Molt/scratch/trunk-loop/molt-cross-" + "a" * 32
+    argv = trunk_loop.uv_python("/w/tools/trunk_loop.py", "_worker", "--record", "r")
+    script = trunk_loop.detached_script(host, argv, "/w", stage)
+    # CIM creates the client outside the SSH job; --exec runs no Windows-quoted
+    # shell, and the launch script itself crosses only as a stage file.
+    assert (
+        "-Arguments @{CommandLine='wsl.exe -d molt-gate --exec /bin/sh "
+        + stage
+        + "/launch.sh'}"
+    ) in script
+    assert "uv run" not in script and "_worker" not in script
+    # The client is observed before the identity: no identity after its exit
+    # means none will come, so the launcher never waits on a dead client.
+    loop = script[script.index("do {") :]
+    assert loop.index("Get-Process -Id $result.ProcessId") < loop.index("test -s")
+    assert loop.endswith("} while ($alive)")
+    for forbidden in ("--shutdown", "--terminate", "MoltCodonUbuntu", ".wslconfig"):
+        assert forbidden not in script
+    launch = trunk_loop.wsl_launch_script(host, argv, "/w", stage)
+    assert launch.startswith("set -eu\nexec </dev/null >>")
+    assert launch.rstrip().endswith("exec " + shlex.join(argv))
+    assert launch.index("molt_probe $$") < launch.index("exec uv run")
+    for unsafe in ("/home/a b", "/home/a'b"):
+        with pytest.raises(ValueError, match="need no quoting"):
+            trunk_loop.detached_script(host, argv, "/w", unsafe)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX launch script execution")
+def test_wsl_launch_script_publishes_the_worker_identity_then_becomes_it(tmp_path):
+    """Run the real launch script under a stand-in for wsl.exe's session root."""
+    import sys
+    import time
+    from dataclasses import replace
+
+    # The local OS selects its own probe; molt-gate's Linux probe runs in Linux cells.
+    host = replace(
+        _wsl_gate(),
+        os=cross_run.HostOS.MACOS
+        if sys.platform == "darwin"
+        else cross_run.HostOS.LINUX,
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    release = tmp_path / "release"
+    child = (
+        "import os,pathlib,sys,time\n"
+        "print('worker', os.getpid(), repr(sys.stdin.read()), flush=True)\n"
+        "while not pathlib.Path(sys.argv[1]).exists(): time.sleep(0.01)\n"
+    )
+    launch = stage / "launch.sh"
+    launch.write_text(
+        trunk_loop.wsl_launch_script(
+            host, [sys.executable, "-c", child, str(release)], str(tmp_path), str(stage)
+        ),
+        encoding="utf-8",
+    )
+
+    def probe(pid):
+        return _local_probe(host, pid)
+
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    # wsl.exe holds the instance exactly while this root process lives.
+    root = start_owned_test_process(["/bin/sh", str(launch)], stdin=subprocess.PIPE)
+    try:
+        identity_path = stage / "worker.identity"
+        log = stage / "worker.log"
+        while root.poll() is None and not (
+            identity_path.exists() and b"worker" in log.read_bytes()
+        ):
+            time.sleep(0.01)
+        published = trunk_loop.ProcessProbe.parse(
+            identity_path.read_text(encoding="utf-8")
+        )
+        # exec kept the pid: the identity is the worker's own, not a wrapper's.
+        assert published.pid == root.pid
+        assert log.read_text(encoding="utf-8") == f"worker {root.pid} ''\n"
+        assert not (stage / "worker.identity.partial").exists()
+        assert probe(root.pid).identity == published.identity is not None
+    finally:
+        release.write_text("done", encoding="utf-8")
+        try:
+            root.wait(timeout=60)
+        finally:
+            close_owned_test_process(root)
+    assert root.returncode == 0
+    assert probe(root.pid).identity is None
+
+
+def _launched_record(tmp_path, *, worker=True):
+    record_path = tmp_path / "runs" / "owned-run" / "run.json"
+    record_path.parent.mkdir(parents=True)
+    record = {
+        "schema": trunk_loop.SCHEMA,
+        "commit": "1" * 40,
+        "run_id": "owned-run",
+        "cells": ["portability.queue.linux"],
+        "stage": "/home/adpena/Molt/scratch/trunk-loop/molt-cross-owned",
+        "state": "launched",
+        "launcher_pid": 7804,
+        "worker": {
+            "pid": 592,
+            "state": "S",
+            "started": "5639846",
+            "instance": "boot/5639415",
+            "instance_started_at": "2026-11-04T08:20:00Z",
+        }
+        if worker
+        else None,
+    }
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    return record_path, record
+
+
+class _ObservedTransport:
+    """Answers each collector round trip with the next scripted observation."""
+
+    def __init__(self, observations):
+        self.observations = list(observations)
+        self.scripts = []
+        self.pulled = []
+
+    def remote_path(self, name):
+        return "/home/adpena/Molt/scratch/trunk-loop/molt-cross-owned/" + name
+
+    def shell_command(self, script):
+        self.scripts.append(script)
+        probe, terminal = self.observations.pop(0)
+        return json.dumps(probe) + ("\n" + json.dumps(terminal) if terminal else "")
+
+    def pull(self, name, target):
+        self.pulled.append(name)
+        target.write_bytes(b"uv sync finished\n")
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        # The distro idled out and the collector's own probe booted a new one.
+        (
+            {
+                "state": "",
+                "started": "",
+                "instance": "boot/7200000",
+                "instance_started_at": "2026-11-04T08:48:35Z",
+            },
+            "distro restarted at 2026-11-04T08:48:35Z (worker launched under "
+            "the instance started at 2026-11-04T08:20:00Z)",
+        ),
+        ({"state": "", "started": ""}, "the process no longer exists"),
+        ({"state": "Z"}, "the process exited (state Z)"),
+        ({"started": "9999999"}, "the pid now names another process started 9999999"),
+    ],
+)
+def test_collect_fails_at_once_with_evidence_when_the_worker_vanishes(
+    tmp_path, monkeypatch, change, reason
+):
+    record_path, record = _launched_record(tmp_path)
+    transport = _ObservedTransport([({**record["worker"], **change}, None)])
+    monkeypatch.setattr(
+        trunk_loop, "transfer_for_record", lambda _record: (_wsl_gate(), transport)
+    )
+    import time
+
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        trunk_loop,
+        sleep=lambda _s: pytest.fail("waited on a gone worker"),
+    )
+    with pytest.raises(trunk_loop.WorkerVanished) as failure:
+        trunk_loop.collect(record_path)
+    message = str(failure.value)
+    assert message.startswith(
+        "worker 592 on molt-gate is gone with no terminal receipt: " + reason
+    )
+    assert record["stage"] in message
+    # Evidence is durable beside the record; the remote stage is retained.
+    assert transport.pulled == ["worker.log"]
+    assert (record_path.parent / "worker.log").read_bytes() == b"uv sync finished\n"
+    saved = json.loads(record_path.read_text(encoding="utf-8"))
+    assert saved["state"] == "vanished"
+    assert saved["vanished"]["reason"] == reason
+    assert saved["vanished"]["current"]["pid"] == 592
+    # One round trip probes the worker before it reads the receipt.
+    script = transport.scripts[0]
+    assert script.index("molt_probe 592") < script.index("terminal.json")
+
+
+def test_collect_fails_at_once_when_the_worker_never_published_identity(
+    tmp_path, monkeypatch
+):
+    record_path, _record = _launched_record(tmp_path, worker=False)
+    transport = _ObservedTransport([(None, None)])
+    monkeypatch.setattr(
+        trunk_loop, "transfer_for_record", lambda _record: (_wsl_gate(), transport)
+    )
+    with pytest.raises(
+        trunk_loop.WorkerVanished, match="worker 7804 .*before publishing"
+    ):
+        trunk_loop.collect(record_path)
+    assert "molt_probe" not in transport.scripts[0]
+
+
+def test_collect_refuses_an_unacknowledged_launch_without_waiting(
+    tmp_path, monkeypatch
+):
+    record_path, record = _launched_record(tmp_path, worker=False)
+    del record["launcher_pid"], record["worker"]
+    record["state"] = "preparing"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    transport = _ObservedTransport([(None, None)])
+    monkeypatch.setattr(
+        trunk_loop, "transfer_for_record", lambda _record: (_wsl_gate(), transport)
+    )
+    with pytest.raises(RuntimeError, match="never acknowledged"):
+        trunk_loop.collect(record_path)
+    assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == "preparing"
+
+
+def test_collect_waits_only_while_the_worker_identity_holds(tmp_path, monkeypatch):
+    record_path, record = _launched_record(tmp_path)
+    alive = record["worker"]
+    transport = _ObservedTransport([(alive, None), (alive, None)])
+    monkeypatch.setattr(
+        trunk_loop, "transfer_for_record", lambda _record: (_wsl_gate(), transport)
+    )
+    # A live worker with no receipt is unknown, never success or failure.
+    assert trunk_loop.collect(record_path, wait=False) == 3
+    import time
+
+    slept = []
+    install_module_view(monkeypatch, "time", time, trunk_loop, sleep=slept.append)
+    # The worker exits after publishing; the receipt then wins over its absence.
+    transport.observations.append(
+        ({**alive, "state": "", "started": ""}, {"commit": "different"})
+    )
+    with pytest.raises(ValueError, match="does not bind this run"):
+        trunk_loop.collect(record_path)
+    assert slept == [20]
+    assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == "launched"
 
 
 def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):

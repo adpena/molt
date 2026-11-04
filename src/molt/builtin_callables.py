@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from enum import IntEnum
+from molt._public_objects_generated import PUBLIC_OBJECTS
 
 
 class BuiltinBindingPolicy(IntEnum):
@@ -37,76 +38,73 @@ class BuiltinFuncSpec:
     pos_or_kw_params: tuple[str, ...] = ()
     kwonly_params: tuple[str, ...] = ()
     kw_defaults: tuple[ast.expr | None, ...] = ()
-    module: str = "builtins"
     bind_kind: BuiltinBindingPolicy | None = None
     text_signature: str | None = None
+
+    @property
+    def module(self) -> str:
+        return PUBLIC_OBJECTS[self.runtime].module
 
 
 _MOLT_MISSING = ast.Name(id="__molt_missing__", ctx=ast.Load())
 
 
-BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
-    "isinstance": BuiltinFuncSpec(
+_BUILTIN_FUNC_SIGNATURES: tuple[BuiltinFuncSpec, ...] = (
+    BuiltinFuncSpec(
         "molt_isinstance",
         ("obj", "classinfo"),
         text_signature="($module, obj, class_or_tuple, /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "issubclass": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_issubclass",
         ("sub", "classinfo"),
         text_signature="($module, cls, class_or_tuple, /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "len": BuiltinFuncSpec("molt_len", ("obj",), text_signature="($module, obj, /)"),
-    "hash": BuiltinFuncSpec(
-        "molt_hash_builtin", ("obj",), text_signature="($module, obj, /)"
-    ),
-    "ord": BuiltinFuncSpec("molt_ord", ("obj",), text_signature="($module, c, /)"),
-    "chr": BuiltinFuncSpec("molt_chr", ("obj",), text_signature="($module, i, /)"),
-    "abs": BuiltinFuncSpec(
-        "molt_abs_builtin", ("obj",), text_signature="($module, x, /)"
-    ),
-    "ascii": BuiltinFuncSpec(
+    BuiltinFuncSpec("molt_len", ("obj",), text_signature="($module, obj, /)"),
+    BuiltinFuncSpec("molt_hash_builtin", ("obj",), text_signature="($module, obj, /)"),
+    BuiltinFuncSpec("molt_ord", ("obj",), text_signature="($module, c, /)"),
+    BuiltinFuncSpec("molt_chr", ("obj",), text_signature="($module, i, /)"),
+    BuiltinFuncSpec("molt_abs_builtin", ("obj",), text_signature="($module, x, /)"),
+    BuiltinFuncSpec(
         "molt_ascii_from_obj", ("obj",), text_signature="($module, obj, /)"
     ),
-    "bin": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_bin_builtin", ("obj",), text_signature="($module, number, /)"
     ),
-    "oct": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_oct_builtin", ("obj",), text_signature="($module, number, /)"
     ),
-    "hex": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_hex_builtin", ("obj",), text_signature="($module, number, /)"
     ),
-    "divmod": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_divmod_builtin",
         ("a", "b"),
         text_signature="($module, x, y, /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "repr": BuiltinFuncSpec(
-        "molt_repr_builtin", ("obj",), text_signature="($module, obj, /)"
-    ),
-    "format": BuiltinFuncSpec(
+    BuiltinFuncSpec("molt_repr_builtin", ("obj",), text_signature="($module, obj, /)"),
+    BuiltinFuncSpec(
         "molt_format_builtin",
         ("value", "format_spec"),
         (ast.Constant(""),),
         text_signature="($module, value, format_spec='', /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "callable": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_callable_builtin", ("obj",), text_signature="($module, obj, /)"
     ),
-    "id": BuiltinFuncSpec("molt_id", ("obj",), text_signature="($module, obj, /)"),
-    "enumerate": BuiltinFuncSpec(
+    BuiltinFuncSpec("molt_id", ("obj",), text_signature="($module, obj, /)"),
+    BuiltinFuncSpec(
         "molt_enumerate_builtin",
         (),
         (_MOLT_MISSING,),
         pos_or_kw_params=("iterable", "start"),
         text_signature="(iterable, start=0)",
     ),
-    "pow": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_pow_mod",
         (),
         (ast.Constant(None),),
@@ -114,7 +112,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         bind_kind=BuiltinBindingPolicy.CLINIC_NAMED,
         text_signature="($module, /, base, exp, mod=None)",
     ),
-    "round": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_round_builtin",
         (),
         (_MOLT_MISSING,),
@@ -122,52 +120,50 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         bind_kind=BuiltinBindingPolicy.CLINIC_NAMED,
         text_signature="($module, /, number, ndigits=None)",
     ),
-    "iter": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_iter_builtin",
         ("obj", "sentinel"),
         (_MOLT_MISSING,),
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "map": BuiltinFuncSpec("molt_map_builtin", ("func",), vararg="iterables"),
-    "filter": BuiltinFuncSpec("molt_filter_builtin", ("func", "iterable")),
-    "zip": BuiltinFuncSpec(
+    BuiltinFuncSpec("molt_map_builtin", ("func",), vararg="iterables"),
+    BuiltinFuncSpec("molt_filter_builtin", ("func", "iterable")),
+    BuiltinFuncSpec(
         "molt_zip_builtin",
         (),
         vararg="iterables",
         kwonly_params=("strict",),
         kw_defaults=(ast.Constant(False),),
     ),
-    "reversed": BuiltinFuncSpec(
-        "molt_reversed_builtin", ("seq",), text_signature="(sequence, /)"
-    ),
-    "any": BuiltinFuncSpec(
+    BuiltinFuncSpec("molt_reversed_builtin", ("seq",), text_signature="(sequence, /)"),
+    BuiltinFuncSpec(
         "molt_any_builtin", ("iterable",), text_signature="($module, iterable, /)"
     ),
-    "all": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_all_builtin", ("iterable",), text_signature="($module, iterable, /)"
     ),
-    "sum": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_sum_builtin",
         ("iterable",),
         (ast.Constant(0),),
         pos_or_kw_params=("start",),
         text_signature="($module, iterable, /, start=0)",
     ),
-    "min": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_min_builtin",
         (),
         vararg="args",
         kwonly_params=("key", "default"),
         kw_defaults=(ast.Constant(None), _MOLT_MISSING),
     ),
-    "max": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_max_builtin",
         (),
         vararg="args",
         kwonly_params=("key", "default"),
         kw_defaults=(ast.Constant(None), _MOLT_MISSING),
     ),
-    "sorted": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_sorted_builtin",
         ("iterable",),
         kwonly_params=("key", "reverse"),
@@ -177,13 +173,13 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     # CPython: dir([object]) uses the caller's locals() when called with no args.
     # Lower as a single-arg runtime call with an explicit MOLT_MISSING sentinel
     # default so the runtime can detect the no-arg case cheaply.
-    "dir": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_dir_builtin",
         ("obj",),
         (_MOLT_MISSING,),
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "open": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_open_builtin",
         (),
         (
@@ -205,51 +201,50 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
             "closefd",
             "opener",
         ),
-        module="_io",
         bind_kind=BuiltinBindingPolicy.CLINIC_NAMED,
         text_signature="($module, /, file, mode='r', buffering=-1, encoding=None,\n     errors=None, newline=None, closefd=True, opener=None)",
     ),
-    "next": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_next_builtin",
         ("iterator", "default"),
         (_MOLT_MISSING,),
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "aiter": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_aiter", ("obj",), text_signature="($module, async_iterable, /)"
     ),
-    "anext": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_anext_builtin",
         ("aiter", "default"),
         (_MOLT_MISSING,),
         text_signature="($module, aiterator, default=<unrepresentable>, /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "getattr": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_getattr_builtin",
         ("obj", "name", "default"),
         (_MOLT_MISSING,),
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "setattr": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_set_attr_name",
         ("obj", "name", "value"),
         text_signature="($module, obj, name, value, /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "delattr": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_del_attr_name",
         ("obj", "name"),
         text_signature="($module, obj, name, /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "hasattr": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_has_attr_name",
         ("obj", "name"),
         text_signature="($module, obj, name, /)",
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "compile": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_compile_builtin",
         (),
         (ast.Constant(0), ast.Constant(False), ast.Constant(-1)),
@@ -263,7 +258,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         ),
         text_signature="($module, /, source, filename, mode, flags=0,\n        dont_inherit=False, optimize=-1, *, _feature_version=-1)",
     ),
-    "print": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_print_builtin",
         (),
         (),
@@ -278,17 +273,15 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         text_signature="($module, /, *args, sep=' ', end='\\n', file=None, flush=False)",
     ),
     # CPython parity: vars() is equivalent to locals() with no arguments.
-    "vars": BuiltinFuncSpec(
+    BuiltinFuncSpec(
         "molt_vars_builtin",
         ("obj",),
         (_MOLT_MISSING,),
         bind_kind=BuiltinBindingPolicy.POSITIONAL_RANGE,
     ),
-    "globals": BuiltinFuncSpec(
-        "molt_globals_builtin", (), text_signature="($module, /)"
-    ),
-    "locals": BuiltinFuncSpec("molt_locals_builtin", (), text_signature="($module, /)"),
-    "__import__": BuiltinFuncSpec(
+    BuiltinFuncSpec("molt_globals_builtin", (), text_signature="($module, /)"),
+    BuiltinFuncSpec("molt_locals_builtin", (), text_signature="($module, /)"),
+    BuiltinFuncSpec(
         "molt_importlib_import_transaction",
         (),
         (
@@ -301,6 +294,10 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         bind_kind=BuiltinBindingPolicy.CLINIC_NAMED,
         text_signature="($module, /, name, globals=None, locals=None, fromlist=(),\n           level=0)",
     ),
+)
+
+BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
+    PUBLIC_OBJECTS[spec.runtime].name: spec for spec in _BUILTIN_FUNC_SIGNATURES
 }
 
 

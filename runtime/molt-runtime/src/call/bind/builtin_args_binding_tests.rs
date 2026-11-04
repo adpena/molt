@@ -399,7 +399,7 @@ fn published_native_constructors_own_raw_admission_and_argument_custody() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let builtins = builtin_classes(py);
-            let key = crate::attr_name_bits_from_bytes(py, b"__new__").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__new__").unwrap();
             let receiver_ptr = alloc_list(py, &[]);
             assert!(!receiver_ptr.is_null());
             let receiver = MoltObject::from_ptr(receiver_ptr).bits();
@@ -504,10 +504,10 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = crate::attr_name_bits_from_bytes(py, b"declared_probe").unwrap();
-            let qualified = crate::attr_name_bits_from_bytes(py, b"declared_qualified").unwrap();
-            let module = crate::attr_name_bits_from_bytes(py, b"probe_module").unwrap();
-            let keyword = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"declared_probe").unwrap();
+            let qualified = crate::dynamic_attr_name_bits(py, b"declared_qualified").unwrap();
+            let module = crate::dynamic_attr_name_bits(py, b"probe_module").unwrap();
+            let keyword = crate::dynamic_attr_name_bits(py, b"value").unwrap();
             for (arity, address) in [
                 (0, none_of_none as *const ()),
                 (1, none_of_one as *const ()),
@@ -637,8 +637,8 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                 }
                 // __module__ is the one writable native display field. It
                 // changes error display without changing convention or entry.
-                let key = crate::attr_name_bits_from_bytes(py, b"__module__").unwrap();
-                let builtins = crate::attr_name_bits_from_bytes(py, b"builtins").unwrap();
+                let key = crate::dynamic_attr_name_bits(py, b"__module__").unwrap();
+                let builtins = crate::dynamic_attr_name_bits(py, b"builtins").unwrap();
                 crate::molt_set_attr_name(function, key, builtins);
                 assert!(!exception_pending(py));
                 call_function_obj_vec(py, function, &positional[..2]);
@@ -713,7 +713,7 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let qualified = crate::attr_name_bits_from_bytes(py, b"sealed_probe").unwrap();
+            let qualified = crate::dynamic_attr_name_bits(py, b"sealed_probe").unwrap();
             let function = metadata_function(
                 py,
                 none_of_one as *const (),
@@ -809,7 +809,7 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
                 (b"__defaults__".as_slice(), defaults),
                 (b"__molt_arg_names__".as_slice(), defaults),
             ] {
-                let key = crate::attr_name_bits_from_bytes(py, field).unwrap();
+                let key = crate::dynamic_attr_name_bits(py, field).unwrap();
                 crate::molt_set_attr_name(function, key, replacement);
                 let error = crate::exception_last_bits_noinc(py)
                     .expect("native shape is not public mutable state");

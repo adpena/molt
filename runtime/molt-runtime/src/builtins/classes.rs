@@ -19,9 +19,9 @@ use crate::{
     TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
     TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
     TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, class_bump_layout_version, class_dict_bits, dec_ref_bits,
-    dict_set_in_place, inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
+    class_bump_layout_version, class_dict_bits, dec_ref_bits, dict_set_in_place, inc_ref_bits,
+    molt_class_set_base, obj_from_bits, object_type_id, raise_exception, runtime_state,
+    runtime_state_for_gil, string_obj_to_owned,
 };
 
 static BUILTIN_CLASSES_INIT_LOCK: Mutex<()> = Mutex::new(());
@@ -338,7 +338,7 @@ fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
 fn set_class_attr_text(
     py: &PyToken<'_>,
     class_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
     value: Option<&str>,
 ) -> Option<()> {
     let class_ptr = obj_from_bits(class_bits).as_ptr()?;
@@ -349,7 +349,7 @@ fn set_class_attr_text(
     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
         return None;
     }
-    let name_bits = attr_name_bits_from_bytes(py, name)?;
+    let name_bits = name.owned_bits(py)?;
     let value_bits = if let Some(value) = value {
         let ptr = alloc_string(py, value.as_bytes());
         if ptr.is_null() {
@@ -391,11 +391,7 @@ fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) -> Option<()> {
     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
         return None;
     }
-    let layout_name_bits = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.molt_layout_size,
-        b"__molt_layout_size__",
-    );
+    let layout_name_bits = crate::NameId::DunderMoltLayoutSize.bits(_py);
     if layout_name_bits == 0 {
         return None;
     }
@@ -1107,38 +1103,58 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
             union_type,
             reference_type,
         ] {
-            set_class_attr_text(_py, bits, b"__module__", Some("builtins"))?;
+            set_class_attr_text(_py, bits, crate::NameId::DunderModule, Some("builtins"))?;
             // Prevent inheriting `object.__text_signature__` across the builtins type graph.
             // CPython generally defines `__text_signature__ = None` on builtin types unless
             // a specific public signature is provided.
-            set_class_attr_text(_py, bits, b"__text_signature__", None)?;
+            set_class_attr_text(_py, bits, crate::NameId::DunderTextSignature, None)?;
         }
         // Signature metadata for builtin types used by `inspect.signature` (CPython parity).
         // Keep these in sync with the 3.12+ union expectations in differential probes.
-        let overrides: &[(u64, &[u8], Option<&str>)] = &[
+        let overrides: &[(u64, crate::NameId, Option<&str>)] = &[
             (
                 property,
-                b"__text_signature__",
+                crate::NameId::DunderTextSignature,
                 Some("(fget=None, fset=None, fdel=None, doc=None)"),
             ),
-            (object, b"__text_signature__", Some("()")),
-            (memoryview, b"__text_signature__", Some("(object)")),
+            (object, crate::NameId::DunderTextSignature, Some("()")),
+            (
+                memoryview,
+                crate::NameId::DunderTextSignature,
+                Some("(object)"),
+            ),
             (
                 enumerate,
-                b"__text_signature__",
+                crate::NameId::DunderTextSignature,
                 Some("(iterable, start=0)"),
             ),
-            (reversed, b"__text_signature__", Some("(sequence, /)")),
-            (complex, b"__text_signature__", Some("(real=0, imag=0)")),
-            (float, b"__text_signature__", Some("(x=0, /)")),
-            (list, b"__text_signature__", Some("(iterable=(), /)")),
-            (list, b"__hash__", None),
-            (tuple, b"__text_signature__", Some("(iterable=(), /)")),
-            (reference_type, b"__module__", Some("weakref")),
-            (generic_alias, b"__module__", Some("types")),
+            (
+                reversed,
+                crate::NameId::DunderTextSignature,
+                Some("(sequence, /)"),
+            ),
+            (
+                complex,
+                crate::NameId::DunderTextSignature,
+                Some("(real=0, imag=0)"),
+            ),
+            (float, crate::NameId::DunderTextSignature, Some("(x=0, /)")),
+            (
+                list,
+                crate::NameId::DunderTextSignature,
+                Some("(iterable=(), /)"),
+            ),
+            (list, crate::NameId::DunderHash, None),
+            (
+                tuple,
+                crate::NameId::DunderTextSignature,
+                Some("(iterable=(), /)"),
+            ),
+            (reference_type, crate::NameId::DunderModule, Some("weakref")),
+            (generic_alias, crate::NameId::DunderModule, Some("types")),
             (
                 reference_type,
-                b"__text_signature__",
+                crate::NameId::DunderTextSignature,
                 Some("(object, callback=None, /)"),
             ),
         ];
@@ -1146,7 +1162,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
             set_class_attr_text(_py, bits, name, value)?;
         }
         for bits in immutable_heap {
-            set_class_attr_text(_py, bits, b"__module__", Some("_io"))?;
+            set_class_attr_text(_py, bits, crate::NameId::DunderModule, Some("_io"))?;
         }
         Some(())
     })();
@@ -1744,10 +1760,10 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let refs = |ptr| unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
-            // The name cache is warm, but these non-identifier strings are not
-            // immortal interned values: a leaked temporary name owner is visible.
-            let name = b"bootstrap metadata probe";
-            let key = attr_name_bits_from_bytes(py, name).unwrap();
+            // The canonical known-name owner is warm; temporary borrowed-name
+            // ownership must still balance across failed publication.
+            let name = crate::NameId::DunderTextSignature;
+            let key = name.owned_bits(py).unwrap();
             let key_ptr = obj_from_bits(key).as_ptr().unwrap();
             let _key_owner = PtrDropGuard::new(key_ptr);
             for value in [Some("(runtime metadata)"), None] {
@@ -1802,9 +1818,22 @@ mod tests {
                 }
                 assert_eq!(refs(class_ptr), baseline.0);
                 assert_eq!(refs(dict), baseline.1);
-                assert_eq!(refs(key_ptr), baseline.2 + 1);
+                // Canonical identifier strings are immortal; their ownership
+                // is observed by identity, not an ordinary refcount increment.
+                assert_eq!(baseline.2, molt_codegen_abi::IMMORTAL_REFCOUNT);
+                assert_eq!(unsafe { dict_entries(dict)[0].key }, key);
+                assert_eq!(refs(key_ptr), baseline.2);
+                let value_owner = value.is_some().then(|| {
+                    let pointer = obj_from_bits(stored).as_ptr().unwrap();
+                    assert_eq!(refs(pointer), 1, "the namespace owns the prepared text");
+                    inc_ref_bits(py, stored);
+                    (pointer, PtrDropGuard::new(pointer))
+                });
                 drop(class_owner);
                 assert_eq!(refs(key_ptr), baseline.2);
+                if let Some((pointer, _owner)) = value_owner {
+                    assert_eq!(refs(pointer), 1, "retiring the class releases its value");
+                }
             }
         });
     }

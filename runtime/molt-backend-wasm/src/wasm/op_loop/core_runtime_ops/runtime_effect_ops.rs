@@ -41,13 +41,12 @@ fn emit_exception_pending(
     // downstream `br_if`/`if` truthiness path calls
     // `is_truthy`, which interprets its operand as a NaN-boxed
     // value.  Non-foldable: it observes mutable runtime state.
-    emit_call(
+    crate::wasm::pending_work::emit_exception_pending_test(
         func,
-        reloc_enabled,
+        crate::wasm::pending_work::thread_record_local(locals),
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+        reloc_enabled,
     );
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
     emit_box_bool_from_i32(func);
     store_result_or_drop(func, op, locals);
 }

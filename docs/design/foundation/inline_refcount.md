@@ -43,9 +43,10 @@ leak them when the frame exits.
 `molt-codegen-abi::inline_refcount::generate_refcount` is the single
 builder-parametric IR generator. Its adapters spell instructions and explicit
 blocks for Cranelift, LLVM and WASM. Layout offsets, tags and header masks come
-from the ABI owner. Sparse heap membership is generated from `heap_kinds.toml`;
-the runtime validator consumes that exact projection too. A broad min/max test
-would incorrectly admit retired ids 205, 220 and 231.
+from the ABI owner. The runtime header validator consumes exact sparse heap membership generated
+from `heap_kinds.toml`. Debug compiled sites delegate pointer transitions to
+that validator; release compiled sites consume the owned-pointer lifetime
+obligation and the count-word custody encoding detailed in variant E below.
 
 For dynamic words, the generated decision is:
 
@@ -53,23 +54,23 @@ For dynamic words, the generated decision is:
 2. Atomic mode delegates pointer transitions to the existing runtime. Plain
    mode requires the invocation's complete execution admission, before reading
    any header. WASM also proves that the address fits its target pointer width.
-3. Validate the heap kind before accessing flags or count. An immortal flag
-   skips all writes. Native flag loads acquire publication of C-view custody;
-   refcount loads/stores remain plain under admitted GIL custody.
-4. C-API views delegate to the canonical bridge transaction. A retain also
-   delegates terminal/deallocating state, zero, sentinel corruption and overflow.
-   Its ordinary interval is 1 through `u32::MAX - 2` inclusive.
-5. A release stores one subtraction only for counts 2 through `u32::MAX - 1`.
-   Count 1 reaches the existing runtime **before** its decrement: that runtime
-   owns the sole zero transition, finalizer/revival window, weakref handling,
-   bounded child release and physical free. Error paths likewise receive the
-   original word and unchanged count. There is no second terminal entry ABI.
+3. In release builds, load the count word once. The unsigned interval check
+   admits retain counts 1 through 2^30 and release counts 2 through 2^30+1.
+   The custody bit places flags and exceptional counts outside that interval.
+4. Store one addition or subtraction only inside that interval. Every other
+   mortal word delegates unchanged to the canonical runtime transaction,
+   including C-API views, deallocation, zero, overflow and terminal release.
+5. The immortal sentinel skips all writes. Count 1 reaches the runtime before
+   decrement: that authority owns the sole zero transition, finalizer/revival
+   window, weakrefs, bounded child release and physical free. There is no second
+   terminal entry ABI. Debug builds delegate every non-null pointer transition
+   to the runtime before any compiled header access.
 
-The pure `retain_next` and `release_transition` algebra remains authoritative.
-The generator's interval specialization is checked against it, including every
-terminal/overflow boundary and mirrored/immortal flag combination. LLVM shifts
-mask their count before evaluation: an invalid type id cannot create poison
-even on an otherwise rejected branch.
+The pure `retain_next` and `release_transition` algebra operates on decoded
+owners, with the exclusive owner bound from the ABI. The generator's window
+specialization refines it; custody, terminal and overflow boundaries retain
+unchanged cold dispatch. Header-kind validation is not general stale-address
+protection: neither a tag nor a valid kind establishes pointer liveness.
 
 Each emitted RC site has one cold call. Native and WASM spell its blocks
 directly. LLVM generates internal `alwaysinline` bodies with two arguments
@@ -148,7 +149,7 @@ primitive scoreboard identity, loop anatomy, 0 versus ten-million-iteration
 instruction slopes, and binary size. No performance or release verdict follows
 from type checking or the symbolic generator oracle alone.
 
-## Observed native tradeoff
+## Observed original native tradeoff (2026-11-02)
 
 The November 2026 macOS arm64 worker measurement used the primitive authority's
 v26 release workload and exact CPython 3.12.16 image, with five paired samples.
@@ -172,3 +173,84 @@ and grows from 169 to 421 instructions. The checks have been duplicated at each
 dynamic site; retaining their invariants has a real size price. Integration must
 assess this tradeoff explicitly. Text reduction must preserve admission,
 exact header eligibility, diagnostics and the unchanged terminal transaction.
+
+## Variant E: runtime custody in the count word (2026-11-04)
+
+This addendum replaces the per-site eligibility sequence above. Bit 31 of the
+stored refcount word marks runtime custody; bits 0 through 30 carry mortal
+owners. The all-ones immortal sentinel remains distinct: mortal owner counts
+must stay below `0x7fffffff`, so adding custody cannot spell immortality.
+The pure transition algebra operates on decoded owners; retain rejects a
+result at or above `0x7fffffff`, while the sentinel remains a special no-op.
+Snapshots expose owners, never the custody bit. Runtime retain, release,
+upgrade, revival and C-view hold transitions preserve the stored custody bit.
+The ABI identity must distinguish this encoding from the earlier full-width
+count representation; cached objects must never mix the two contracts.
+
+`MoltHeader` flag mutators are the sole authority that grants and retires
+runtime custody (the immortal sentinel carries it by construction). They enter
+custody before publishing IMMORTAL, HAS_ABI_VIEW or DEALLOCATING and reconcile
+after publication or retirement. Removing one flag must not clear another
+flag's custody. A failed flag CAS settles its speculative custody against the
+observed flags. Allocation initializes the count before initializing flags.
+These are requirements on every flag mutator, including initialization,
+compare/exchange, take, and test-only stores; callers cannot write flags directly.
+Immortalization first stores the sentinel under exclusive unpublished custody,
+then publishes the flag. Generic flag retirement never clears the sentinel.
+Shutdown demotion, after concurrent readers stop, replaces it with one owner
+plus custody; retiring the immortal flag subsequently returns it to plain mode.
+Terminal detection uses decoded owners, so encoded zero (`0x80000000`) is zero
+to the existing release/upgrade/revival transaction. DEALLOCATING publication
+stays in that terminal transaction; no generated site decrements to zero.
+
+The single `molt-codegen-abi` generator retains tag/null, pointer-width and
+complete invocation-admission checks. A plain admitted site reads one count
+word. An unsigned window test admits retain counts 1 through 2^30 and release
+counts 2 through 2^30+1. It adds or subtracts and stores only in that interval.
+Every other mortal word reaches the unchanged runtime transaction with its
+original bits and count. The immortal sentinel performs no write. Atomic
+builds continue through the runtime; no biased owner-thread layout exists yet.
+The retained variant-E arm64 release-site measurement is 17 inline and five
+cold instructions, compared with 44 plus four in the original lowering.
+These are observations from the prototype, not a promise for every backend.
+
+Release builds drop the per-site sparse type-id stale-pointer check. Valid
+owned pointers are a compiler/runtime lifetime obligation; a tag check cannot
+prove that an arbitrary pointer is live. Debug compilers (`debug_assertions`) select the generated HardenedPlain mode:
+dynamic pointer transitions call the existing runtime, whose exact heap-kind
+validator runs before count access and terminates on a rejected kind. It does
+not call back into generated code or repeat a rejected transaction. This is
+header-kind validation, not general stale-address protection: reading an
+unmapped header can fault and a reused live allocation can pass the check.
+The generated algorithm owns this profile distinction; adapters only spell
+its instructions.
+
+A flag/count publication can temporarily disagree. Under the GIL, no admitted
+plain transition can interleave with its flag mutator. In today's atomic build,
+compiled transitions always call the runtime and runtime count CAS operations
+preserve custody; eligibility does not rely on observing a simultaneous pair.
+When clearing custody, reconciliation reloads synchronized flags afterward
+and restores custody if any requiring flag is present. Thus a stale failed-CAS
+observation cannot leave a completed publisher without custody. A publisher
+also restores the bit after its flag CAS. There can still be transient disagreement;
+atomic runtime operations do not consult the custody bit for eligibility. Their
+existing flag CAS, owner-count CAS, exclusive immortalization, and bridge
+transaction remain the linearization authorities; no ordering decision moves
+to this bit. The reconcile/recheck sequence is not an atomic two-word state transition and
+must not be used to justify a future lock-free biased plain path. Biased RC
+requires one CAS over a coherent eligibility/ownership state (or an equivalent
+serialized transition) before a thread may take that path. That future design
+must close the flag/bit window; this change neither implements nor qualifies it.
+
+HF-720 now owns None-word materialization and guarded invocation-credit
+retirement. The merged LLVM code consumes those implementations once; RC
+inlining does not create a second frame lifecycle. Mutation controls must
+separately distinguish carrier and boxed RC obligations, including full-width
+integers whose carrier is raw but whose boxing can allocate. A BoxVal result
+receives Immortal64 only from its own BoxedImmortal producer proof.
+
+The focused acceptance compares native, LLVM and WASM lifetime witnesses;
+exercises custody, immortal, terminal, overflow and revival transitions; and
+measures loop, id, memo_get, getattr_miss, recursion and dataclass_construction
+against exact CPython 3.12.16 with native binary sizes. HF-733, borrow inference
+and closed-world dead-code removal own further size reduction.

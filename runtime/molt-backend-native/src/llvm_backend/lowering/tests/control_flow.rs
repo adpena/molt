@@ -85,7 +85,7 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
     assert_eq!(
         ir.matches("store i1 true").count(),
         1,
-        "only completed entry grants ownership: {ir}"
+        "only a returned entry attempt grants a balancing credit: {ir}"
     );
     assert_eq!(
         ir.matches("store i1 false").count(),
@@ -371,20 +371,16 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             );
             assert!(!init_ir.contains("ret "), "{ir}");
             assert!(ready_ir.contains("@molt_exception_pending("), "{ir}");
-            assert_eq!(
-                ready_ir.matches("@__molt_inline_release(").count(),
-                2,
-                "{ir}"
-            );
+            assert_eq!(ready_ir.matches("@__molt_inline_release(").count(), 2, "{ir}");
             assert!(
                 allocation_ir.contains("store i1 true"),
-                "frame must be owned before allocation: {ir}"
+                "frame credit must precede allocation: {ir}"
             );
             assert!(
                 ready_ir.contains(
                     "br i1 %frame_entered, label %owned_frame_exit, label %owned_frame_exited"
                 ),
-                "cleanup must reach the guarded frame exit: {ir}"
+                "cleanup must reach guarded frame exit: {ir}"
             );
             let pop_ir = block_ir(
                 blocks
@@ -395,7 +391,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             assert!(
                 pop_ir.contains("store i1 false")
                     && pop_ir.contains("br label %owned_frame_exited"),
-                "retire frame ownership before its finalizers: {ir}"
+                "retire the frame credit before finalizers: {ir}"
             );
             let return_ir = block_ir(
                 blocks

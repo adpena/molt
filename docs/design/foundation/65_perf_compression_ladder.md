@@ -370,10 +370,13 @@ function body cannot pay the `MaybeBigInt` dispatch tax once it is specialized p
 `(Repr, Repr)` tuple. Boxing precision becomes a *proven fact* (`Repr`), not a
 per-pass heuristic (doc 51 §5 "Repr/TirType convergence").
 
-**The fact + representation.** The `Repr` lattice already exists
-(`representation_plan.rs:838`: `Never/RawI64Safe/Bool/MaybeBigInt/FloatUnboxed/DynBox`),
-and `MaybeBigInt` is *the* documented un-unboxable state (every Python `int` floors
-there, raised to `RawI64Safe` only by an overflow/range proof — `representation_plan.rs:866`).
+**The fact + representation.** `runtime/molt-ir/src/repr.rs` owns the `Repr`
+lattice and its physical carrier projection. An annotation alone grants no raw
+carrier: exact scalar producers authorize Bool/F64, while integer range and
+checked-overflow proofs authorize raw integer carriers. Unknown-magnitude boxed
+integers retain `MaybeBigInt`; annotation-only float/bool parameters retain
+`DynBox`. The exact SSA solver constructs the producer witnesses; a semantic
+type floor cannot replace that proof.
 Two completions:
 1. **Repr/TirType convergence** — make `Repr` the *single* carried representation fact
    on every value (not a parallel side-computation reconstructed at lower-to-LIR). The
@@ -390,7 +393,7 @@ Two completions:
    can name) + `typed_return` (to propagate the specialized Repr back).
 
 **Producers:** `overflow_peel.rs` / `value_range.rs` / `scev.rs` (the proofs that raise
-`MaybeBigInt`→`RawI64Safe`), `type_refine.rs` (TirType→Repr floor), the E5 specializer
+`MaybeBigInt`→`RawI64Safe`), `type_refine/exact.rs` (exact scalar producer witnesses), the E5 specializer
 (per-tuple clones). **Consumers:** every arithmetic lowering (raw vs boxed lane),
 **Rung 5** (only `RawI64Safe`/`FloatUnboxed` enter SIMD lanes — doc 05 §2 axis 1), the
 RC calculus (`Raw` is the no-obligation bottom of Rung 1's lattice — doc 27 §1.2).

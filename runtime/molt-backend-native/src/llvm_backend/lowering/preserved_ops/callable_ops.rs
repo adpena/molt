@@ -626,6 +626,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_call(enter_fn, &[code_id.into()], "trace_enter_slot")
                     .unwrap();
+                // Even a failed entry attempt records a runtime credit that
+                // must be balanced; this is not proof that a frame was pushed.
                 self.backend
                     .builder
                     .build_store(
@@ -642,8 +644,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::TraceExit => {
-                // Like native/WASM, the invocation's guarded return owns the
-                // pop, including generated suspension and early-error returns.
+                // The invocation's guarded return owns the pop, including
+                // generated suspension and early-error returns.
                 true
             }
             OpKind::FrameHomeStore | OpKind::FrameHomeCell | OpKind::FrameHomePrivateCell => {

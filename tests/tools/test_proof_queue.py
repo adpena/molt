@@ -938,14 +938,19 @@ def test_guarded_exec_rejects_two_delegation_layers() -> None:
         )
 
 
-def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -> None:
-    node = shutil.which("node")
-    assert node is not None
+def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This boundary binds bytes; it neither runs Node nor needs an installed Node.
+    node = tmp_path / native_executable_name("node")
+    shutil.copy2(native_executable_donor(), node)
+    monkeypatch.setenv("PATH", "")
     command = [
         sys.executable,
         "tools/guarded_exec.py",
         "--",
-        node,
+        str(node),
         "--version",
     ]
     envelope = command_admission.envelope_for_command(command)
@@ -964,14 +969,36 @@ def test_guarded_exec_binds_canonical_script_and_delegated_binary_by_content() -
     assert delegated is not None and command_identity._content_identity_available(
         delegated
     )
+    for identity, path in (
+        (guarded_exec, state.ROOT / "tools" / "guarded_exec.py"),
+        (delegated, node),
+    ):
+        contents = path.read_bytes()
+        assert identity["size_bytes"] == len(contents)
+        assert identity["sha256"] == hashlib.sha256(contents).hexdigest()
+
+    # Same path and size, different bytes must produce a different binding.
+    contents = node.read_bytes()
+    node.write_bytes(contents[:-1] + bytes([contents[-1] ^ 1]))
+    rebound_script, rebound_binary = command_identity._bind_delegated_command(
+        envelope, list(command), cwd=state.ROOT, env=os.environ
+    )
+    assert rebound_script == guarded_exec
+    assert rebound_binary is not None
+    assert rebound_binary["size_bytes"] == delegated["size_bytes"]
+    assert rebound_binary["sha256"] == hashlib.sha256(node.read_bytes()).hexdigest()
+    assert rebound_binary["sha256"] != delegated["sha256"]
 
 
 @pytest.mark.parametrize("mode", ["relative", "absolute", "module"])
 def test_guarded_exec_spellings_share_one_recursive_binding_authority(
     mode: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    node = shutil.which("node")
-    assert node is not None
+    node = tmp_path / native_executable_name("node")
+    shutil.copy2(native_executable_donor(), node)
+    monkeypatch.setenv("PATH", "")
     canonical = (state.ROOT / "tools" / "guarded_exec.py").resolve()
     if mode == "module":
         target = ["-m", "tools.guarded_exec"]
@@ -979,7 +1006,7 @@ def test_guarded_exec_spellings_share_one_recursive_binding_authority(
         target = [str(canonical)]
     else:
         target = ["tools/guarded_exec.py"]
-    command = [sys.executable, *target, "--", node, "--version"]
+    command = [sys.executable, *target, "--", str(node), "--version"]
     envelope = command_admission.envelope_for_command(command)
     assert envelope["guarded_exec"]["mode"] == (
         "module" if mode == "module" else "script"
@@ -992,6 +1019,9 @@ def test_guarded_exec_spellings_share_one_recursive_binding_authority(
     assert os.path.normcase(exact[-2]) == os.path.normcase(os.path.abspath(node))
     assert command_identity._content_identity_available(guarded or {})
     assert command_identity._content_identity_available(delegated or {})
+    assert guarded is not None and delegated is not None
+    assert guarded["sha256"] == hashlib.sha256(canonical.read_bytes()).hexdigest()
+    assert delegated["sha256"] == hashlib.sha256(node.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize(
@@ -2601,7 +2631,7 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
             ],
             (project if kind.startswith("uv") else tmp_path).resolve(),
             environment,
-            120.0,
+            python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S,
         )
     ]
     assert dict(environment) == {
@@ -2711,7 +2741,13 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
             + "]\n",
             encoding="utf-8",
         )
-    runtime_capture = publisher._python_identity()
+    # Address and attest the private base this fixture actually launches.
+    # A copied installation can have a different closure from the shared donor.
+    bootstrap = create_test_venv(tmp_path / "bootstrap")
+    with publisher.PythonIdentityVerifier() as verifier:
+        runtime_capture = publisher._probe_source_build_python(
+            bootstrap, verifier=verifier, capture_wheel_target=True
+        )
     runtime = runtime_capture["runtime"]
     if not development:
         (source / ".python-version").write_text(
@@ -2769,7 +2805,18 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         if development
         else tmp_path / "published"
     ) / canonical_json_sha256(recipe)
-    executable = create_test_venv(root)
+    check_output_custody_subject_process(
+        [
+            str(bootstrap),
+            "-B",
+            "-m",
+            "venv",
+            "--without-pip",
+            "--copies" if os.name == "nt" else "--symlinks",
+            str(root),
+        ]
+    )
+    executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     site = root / (
         "Lib/site-packages"
         if os.name == "nt"
@@ -6160,7 +6207,7 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
 
 @pytest.mark.slow
 def test_cached_python_authorities_recapture_once_under_the_execution_patch(
-    guarded_execution_authorities: GuardedExecutionAuthorities,
+    python_location_authorities: GuardedExecutionAuthorities,
 ) -> None:
     """Drift in a cached row recaptures through the unpatched authority.
 
@@ -6168,7 +6215,11 @@ def test_cached_python_authorities_recapture_once_under_the_execution_patch(
     fixture; a recapture that looked that name up again would re-enter
     current() without bound and hash the inventory until the recursion limit.
     """
-    authorities = guarded_execution_authorities
+    # This test requires stable bytes between successive current() calls. The
+    # full editable development image admits mutable source bytecode and is
+    # shared with other workers; use the existing private interpreter/source
+    # authority. The stale-row and reentrant-capture oracles remain real.
+    authorities = python_location_authorities
     before = authorities.recaptures
     stale = copy.deepcopy(authorities.python_identity)
     rows = stale["file_custody"]
@@ -6261,7 +6312,9 @@ def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
         "error",
         "-c",
         str(state.ROOT / "pyproject.toml"),
-        str(test_file),
+        # Start at the fixture module, without walking its out-of-repo ancestors.
+        "--pyargs",
+        test_file.stem,
     ]
     rewritten = command_admission._python_bootstrap_command(
         envelope, declared, environment_root=Path(sys.prefix)
@@ -12504,6 +12557,7 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         "from tools.import_file import bind_repository_imports\n"
         "bind_repository_imports(pathlib.Path(root)/'tools/proof_queue.py')\n"
         "from tools.command_execution import detached_command_use\n"
+        "from molt.exact_json import write_exact\n"
         "ready=pathlib.Path(ready); release=pathlib.Path(release)\n"
         "if mode=='early_exit': raise SystemExit(2)\n"
         "with ExitStack() as use:\n"
@@ -12513,7 +12567,7 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         " else:\n"
         "  ack={'schema_version':1,'pid':(0 if mode=='invalid_pid' else True if mode=='bool_pid' else os.getpid()),'use_token':('0'*32 if mode=='wrong_nonce' else token)}\n"
         "  if mode=='extra_key': ack['extra']=1\n"
-        "  ready.write_text(json.dumps(None if mode=='null_ack' else ack),encoding='utf-8')\n"
+        "  write_exact(ready,None if mode=='null_ack' else ack,exclusive=True)\n"
         " deadline=time.monotonic()+15\n"
         " while not release.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
         " assert release.exists(), 'worker release deadline'\n",

@@ -6,7 +6,7 @@ pub(super) fn importlib_resources_module_name_from_bits(
     module_bits: u64,
     fallback_bits: u64,
 ) -> Result<String, u64> {
-    let module_name_name = intern_runtime_static_name(_py, b"__name__");
+    let module_name_name = crate::NameId::DunderName.bits(_py);
     if let Some(name_bits) = getattr_optional_bits(_py, module_bits, module_name_name)? {
         let out = string_obj_to_owned(obj_from_bits(name_bits));
         if !obj_from_bits(name_bits).is_none() {
@@ -32,9 +32,9 @@ pub(super) fn importlib_resources_module_name_from_bits(
         }
     }
 
-    let spec_name = intern_runtime_static_name(_py, b"__spec__");
+    let spec_name = crate::NameId::DunderSpec.bits(_py);
     if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
-        let name_attribute = intern_runtime_static_name(_py, b"name");
+        let name_attribute = crate::NameId::Name.bits(_py);
         let spec_module_name = getattr_optional_bits(_py, spec_bits, name_attribute);
         if !obj_from_bits(spec_bits).is_none() {
             dec_ref_bits(_py, spec_bits);
@@ -52,7 +52,7 @@ pub(super) fn importlib_resources_module_name_from_bits(
         }
     }
 
-    let package_name = intern_runtime_static_name(_py, b"__package__");
+    let package_name = crate::NameId::DunderPackage.bits(_py);
     if let Some(package_bits) = getattr_optional_bits(_py, module_bits, package_name)? {
         let out = string_obj_to_owned(obj_from_bits(package_bits));
         if !obj_from_bits(package_bits).is_none() {
@@ -76,8 +76,8 @@ pub(super) fn importlib_resources_loader_reader_from_bits(
     module_bits: u64,
     module_name: &str,
 ) -> Result<Option<u64>, u64> {
-    let loader_name = intern_runtime_static_name(_py, b"loader");
-    let get_resource_reader_name = intern_runtime_static_name(_py, b"get_resource_reader");
+    let loader_name = crate::NameId::Loader.bits(_py);
+    let get_resource_reader_name = crate::NameId::GetResourceReader.bits(_py);
 
     let try_loader = |loader_bits: u64| -> Result<Option<u64>, u64> {
         let Some(call_bits) =
@@ -98,7 +98,7 @@ pub(super) fn importlib_resources_loader_reader_from_bits(
         Ok(Some(reader_bits))
     };
 
-    let spec_name = intern_runtime_static_name(_py, b"__spec__");
+    let spec_name = crate::NameId::DunderSpec.bits(_py);
     if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
         let mut out: Option<u64> = None;
         if let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)? {
@@ -172,7 +172,7 @@ pub(super) fn importlib_resources_reader_roots_impl(
     _py: &PyToken<'_>,
     reader_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    let molt_roots_name = intern_runtime_static_name(_py, b"molt_roots");
+    let molt_roots_name = crate::NameId::MoltRoots.bits(_py);
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, molt_roots_name)? {
         let values_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -202,7 +202,7 @@ pub(super) fn importlib_resources_reader_contents_impl(
     _py: &PyToken<'_>,
     reader_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    let contents_name = intern_runtime_static_name(_py, b"contents");
+    let contents_name = crate::NameId::Contents.bits(_py);
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, contents_name)? {
         let values_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -242,7 +242,7 @@ pub(super) fn importlib_resources_reader_resource_path_impl(
     reader_bits: u64,
     name: &str,
 ) -> Result<Option<String>, u64> {
-    let resource_path_name = intern_runtime_static_name(_py, b"resource_path");
+    let resource_path_name = crate::NameId::ResourcePath.bits(_py);
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, resource_path_name)?
     {
         let name_bits = alloc_str_bits(_py, name)?;
@@ -436,7 +436,7 @@ pub(super) fn importlib_resources_reader_is_resource_impl(
     reader_bits: u64,
     name: &str,
 ) -> Result<bool, u64> {
-    let is_resource_name = intern_runtime_static_name(_py, b"is_resource");
+    let is_resource_name = crate::NameId::IsResource.bits(_py);
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, is_resource_name)? {
         let name_bits = alloc_str_bits(_py, name)?;
         let value_bits = unsafe { call_callable1(_py, call_bits, name_bits) };
@@ -488,7 +488,7 @@ pub(super) fn importlib_resources_reader_open_resource_bytes_impl(
     reader_bits: u64,
     name: &str,
 ) -> Result<Vec<u8>, u64> {
-    let open_resource_name = intern_runtime_static_name(_py, b"open_resource");
+    let open_resource_name = crate::NameId::OpenResource.bits(_py);
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, open_resource_name)?
     {
         let name_bits = alloc_str_bits(_py, name)?;
@@ -523,7 +523,7 @@ pub(super) fn importlib_resources_reader_open_resource_bytes_impl(
             return Ok(bytes);
         }
 
-        let read_name = intern_runtime_static_name(_py, b"read");
+        let read_name = crate::NameId::Read.bits(_py);
         let read_bits = match importlib_reader_lookup_callable(_py, handle_bits, read_name)? {
             Some(bits) => bits,
             None => {
@@ -546,7 +546,7 @@ pub(super) fn importlib_resources_reader_open_resource_bytes_impl(
             return Err(MoltObject::none().bits());
         }
 
-        let close_name = intern_runtime_static_name(_py, b"close");
+        let close_name = crate::NameId::Close.bits(_py);
         if let Some(close_bits) = importlib_reader_lookup_callable(_py, handle_bits, close_name)? {
             let _ = unsafe { call_callable0(_py, close_bits) };
             dec_ref_bits(_py, close_bits);

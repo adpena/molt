@@ -96,7 +96,6 @@ pub(in crate::native_backend::function_compiler) enum FixedAggregateConstructor 
     List,
     Tuple,
     Dict,
-    Dataclass,
     ClassDefinition {
         nbases: usize,
         nattrs: usize,
@@ -800,7 +799,6 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
             );
             ("molt_dict_from_pairs", 0, 3)
         }
-        FixedAggregateConstructor::Dataclass => ("molt_dataclass_new_from_values", 3, 5),
         FixedAggregateConstructor::ClassDefinition { nbases, nattrs, .. } => {
             let expected = nattrs
                 .checked_mul(2)
@@ -863,11 +861,6 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
                 words.iter().skip(1).step_by(2).copied(),
             );
             vec![keys, values, count]
-        }
-        FixedAggregateConstructor::Dataclass => {
-            let (address, count) =
-                store_borrowed_word_range(builder, pointer_type, words.iter().copied());
-            vec![operands[0], operands[1], address, count, operands[2]]
         }
         FixedAggregateConstructor::ClassDefinition {
             nbases,

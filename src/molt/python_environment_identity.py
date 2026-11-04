@@ -380,6 +380,13 @@ def python_identity_verifier_arguments(verifier_bytecode_prefix: Path) -> list[s
     ]
 
 
+# A capture walks the environment and its external roots, so its wall time
+# measures disk contention, not work: on 2026-11-01 one capture took 444.6 s
+# wall for 3,470 ms of user CPU (HF-638), and a 120 s bound failed healthy
+# landings. This bound only catches a hung probe; HF-638 owns the capture cost.
+PYTHON_IDENTITY_PROBE_TIMEOUT_S = 900.0
+
+
 def python_identity_probe_arguments(
     arguments: Sequence[str],
     *,
@@ -431,6 +438,7 @@ def python_capture_authority_paths(
         "durable_file_identity",
         "disk_capacity",
         "file_deletion",
+        "filesystem_mounts",
         "file_locks",
         "custody_layout",
         "memory_guard_paths",
@@ -475,6 +483,7 @@ def python_capture_authority_paths(
         "python_capture",
         "python_interpreter",
         "target_python",
+        "host_python",
         "target_python_policy",
         "_python_release_generated",
         "verified_subset",

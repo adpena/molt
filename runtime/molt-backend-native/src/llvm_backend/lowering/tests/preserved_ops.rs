@@ -1109,7 +1109,7 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
 }
 
 #[test]
-fn marked_finally_observer_lowers_to_the_fused_runtime_projection() {
+fn marked_finally_observer_loads_the_work_word_and_selects_the_passive_or_cold_projection() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
     let mut func = TirFunction::new(
@@ -1144,8 +1144,16 @@ fn marked_finally_observer_lowers_to_the_fused_runtime_projection() {
         "marked observer must use the fused poll/object-return primitive:\n{ir}"
     );
     assert!(
-        !ir.contains("call i64 @molt_exception_last_pending"),
-        "marked observer must not emit the unfused runtime call:\n{ir}"
+        ir.contains("call i64 @molt_exception_last_pending"),
+        "the empty work edge must observe the passive exception payload:\n{ir}"
+    );
+    assert!(
+        ir.contains("load atomic volatile i32") && ir.contains("monotonic"),
+        "{ir}"
+    );
+    assert!(
+        ir.contains("async_poll_cold") && ir.contains("async_poll_fast"),
+        "{ir}"
     );
 }
 
@@ -1686,21 +1694,8 @@ fn lower_preserved_list_pop_calls_runtime() {
 }
 
 #[test]
-fn lower_preserved_dataclass_new_values_calls_runtime_with_value_slice() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let ir = lower_preserved_kind_ir(&backend, OpKind::DataclassNewValues, 5, true, None)
-        .expect("dataclass_new_values must lower through its value-slice runtime call");
-    assert!(ir.contains("molt_dataclass_new_from_values"), "{ir}");
-    assert!(ir.contains("alloca i64, i64 2"), "{ir}");
-}
-
-#[test]
 fn preserved_word_ranges_use_static_entry_block_slots() {
-    for (kind, operand_count, result_count) in [
-        (OpKind::UnpackSequence, 1, 2),
-        (OpKind::DataclassNewValues, 5, 1),
-    ] {
+    for (kind, operand_count, result_count) in [(OpKind::UnpackSequence, 1, 2)] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let mut func = TirFunction::new(

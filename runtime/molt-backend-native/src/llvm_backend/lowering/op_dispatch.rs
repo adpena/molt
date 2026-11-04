@@ -461,21 +461,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    on a mid-iteration raise.  Non-foldable: it observes mutable
             //    runtime state, so the value (and the break) always survive.
             OpCode::ExceptionPending => {
-                let pend_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
-                let raw = self
-                    .backend
-                    .builder
-                    .build_call(pend_fn, &[], "exc_pending")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
+                let raw = self.emit_exception_pending_word("exc_pending");
                 if let Some(&result_id) = op.results.first() {
                     let pending = self
                         .backend
                         .builder
                         .build_int_compare(
                             inkwell::IntPredicate::NE,
-                            raw.into_int_value(),
+                            raw,
                             self.backend.context.i64_type().const_zero(),
                             "exc_pending_bool",
                         )
@@ -520,19 +513,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     );
                     return;
                 };
-                let pending_symbol = if op.is_async_work_poll() {
-                    "molt_async_work_poll_and_exception_pending"
+                let result = if op.is_async_work_poll() {
+                    self.emit_async_work_poll(false)
                 } else {
-                    "molt_exception_pending"
+                    self.emit_exception_pending_word("check_exc").into()
                 };
-                let check_fn = self.ensure_runtime_i64_fn(pending_symbol, 0);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(check_fn, &[], "check_exc")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);

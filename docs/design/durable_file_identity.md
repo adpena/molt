@@ -47,7 +47,29 @@ defines that option as 0x200. A combined non-root FILEID/volume-UUID query is no
 used: volume queries substitute the mount root and reject the leaf FILEID field.
 Linux maps the live file's device to a **block node's rdev**
 in `/dev/disk/by-uuid`; absent or ambiguous mappings on non-volatile filesystems
-refuse durable custody with a remedy to provide a unique filesystem UUID mapping.
+refuse durable custody with a remedy to provide a unique filesystem UUID mapping
+and a diagnostic naming **udev as a Linux host prerequisite**. Persistent Linux
+custody requires udev's real block-device UUID namespace to be visible to the
+process. WSL without that provider and containers exposing only an overlay
+filesystem or hiding its block-device mapping cannot establish this custody.
+No UUID link is fabricated. This prerequisite applies to developer tooling,
+not to execution of emitted programs.
+
+The metadata-only contract rules out replacing that provider with
+`FS_IOC_GETFSUUID`: [Linux open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
+specifies that `ioctl` on `O_PATH` returns `EBADF`, including direct symlink
+handles. Reopening leaves would impose read permissions and reopening ancestors
+would need a separate cross-mount proof. Nor is `statfs.f_fsid` the full UUID:
+[ext4's statfs](https://github.com/torvalds/linux/blob/v6.6/fs/ext4/super.c)
+uses [uuid_to_fsid](https://github.com/torvalds/linux/blob/v6.6/include/linux/statfs.h),
+which XOR-folds 128 bits into 64. Distinct filesystem UUIDs can produce the same
+fsid. It cannot replace the persisted UUID substitution boundary. The existing
+UUID wire format and all records remain unchanged.
+
+Renumbering tests must move both ends of the live relation: the file's
+`st_dev` and its UUID block node's `st_rdev`. Changing only the former produces
+an inconsistent device namespace, not a remount. The shared stat fixture keeps
+UUID names, inode IDs and mutation clocks unchanged while renumbering both.
 Linux first queries the held descriptor's filesystem type. For tmpfs and ramfs,
 `boot-scoped` contains the kernel boot ID plus the mount's **unique** ID from
 `statx(fd, "", AT_EMPTY_PATH, STATX_MNT_ID_UNIQUE, ...)`. The ctypes layout and

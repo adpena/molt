@@ -15,7 +15,6 @@ pub const TYPE_ID_BYTEARRAY: u32 = 211;
 pub const TYPE_ID_RANGE: u32 = 212;
 pub const TYPE_ID_SLICE: u32 = 213;
 pub const TYPE_ID_EXCEPTION: u32 = 214;
-pub const TYPE_ID_DATACLASS: u32 = 215;
 pub const TYPE_ID_BUFFER2D: u32 = 216;
 pub const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
 pub const TYPE_ID_FILE_HANDLE: u32 = 218;
@@ -63,7 +62,7 @@ pub const TYPE_ID_CONTEXT_COLLISION_NODE: u32 = 261;
 
 pub const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
 pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_CONTEXT_COLLISION_NODE;
-pub const ALL_HEAP_TYPE_IDS: [u32; 60] = [
+pub const ALL_HEAP_TYPE_IDS: [u32; 59] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
     TYPE_ID_LIST,
@@ -79,7 +78,6 @@ pub const ALL_HEAP_TYPE_IDS: [u32; 60] = [
     TYPE_ID_RANGE,
     TYPE_ID_SLICE,
     TYPE_ID_EXCEPTION,
-    TYPE_ID_DATACLASS,
     TYPE_ID_BUFFER2D,
     TYPE_ID_CONTEXT_MANAGER,
     TYPE_ID_FILE_HANDLE,
@@ -126,7 +124,7 @@ pub const ALL_HEAP_TYPE_IDS: [u32; 60] = [
     TYPE_ID_CONTEXT_COLLISION_NODE,
 ];
 pub const HEAP_TYPE_ID_SPAN: u64 = 62;
-pub const HEAP_TYPE_ID_VALID_MASK: u64 = 0x3fffffff7fefffdf;
+pub const HEAP_TYPE_ID_VALID_MASK: u64 = 0x3fffffff7fef7fdf;
 #[inline(always)]
 pub const fn is_valid_heap_type_id(type_id: u32) -> bool {
     let index = type_id.wrapping_sub(MIN_HEAP_TYPE_ID);

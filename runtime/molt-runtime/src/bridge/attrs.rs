@@ -1,12 +1,12 @@
 use molt_runtime_core::prelude::*;
 
 #[cfg(not(feature = "stdlib_http"))]
-use super::{dec_ref_bits, exception_pending};
+use super::dec_ref_bits;
 
 #[cfg(not(feature = "stdlib_http"))]
 pub fn attr_name_bits_from_bytes(_py: &CoreGilToken, name: &[u8]) -> Option<u64> {
     crate::with_gil_entry_nopanic!(py, {
-        crate::builtins::attr::attr_name_bits_from_bytes(py, name)
+        crate::builtins::attr::dynamic_attr_name_bits(py, name)
     })
 }
 
@@ -54,21 +54,11 @@ pub fn attr_optional(_py: &CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<O
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::with_gil_entry_nopanic!(py, {
+        crate::lookup_attribute(py, obj_bits, name_bits).into_result()
+    });
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if crate::with_gil_entry_nopanic!(py, {
-            crate::builtins::attr::clear_attribute_error_if_pending(py)
-        }) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
 #[cfg(not(feature = "stdlib_http"))]

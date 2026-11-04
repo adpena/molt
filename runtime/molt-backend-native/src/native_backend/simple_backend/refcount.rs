@@ -52,11 +52,7 @@ pub(crate) struct NativeRefcountSite {
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn emit_refcount(builder: &mut FunctionBuilder, value: Value, site: NativeRefcountSite) {
-    let storage = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
-        RefcountStorage::Atomic
-    } else {
-        RefcountStorage::Plain
-    };
+    let storage = RefcountStorage::for_build(molt_codegen_abi::MOLT_REFCOUNT_ATOMIC);
     let mut emitter = NativeRefcountBuilder {
         builder,
         site,
@@ -99,9 +95,6 @@ impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
     fn add(&mut self, value: Value, delta: i64) -> Value {
         self.builder.ins().iadd_imm_s(value, delta)
     }
-    fn shift_right(&mut self, value: Value, amount: Value) -> Value {
-        self.builder.ins().ushr(value, amount)
-    }
     fn compare(&mut self, comparison: RefcountComparison, left: Value, right: Value) -> Value {
         use cranelift_codegen::ir::condcodes::IntCC;
         let condition = match comparison {
@@ -111,25 +104,14 @@ impl RefcountBuilder for NativeRefcountBuilder<'_, '_> {
         };
         self.builder.ins().icmp(condition, left, right)
     }
-    fn either(&mut self, left: Value, right: Value) -> Value {
-        self.builder.ins().bor(left, right)
-    }
     fn both(&mut self, left: Value, right: Value) -> Value {
         self.builder.ins().band(left, right)
     }
     fn load_header_u32(&mut self, pointer: Value, offset: i32) -> Value {
-        let value = if offset == molt_codegen_abi::HEADER_FLAGS_OFFSET
-            && molt_codegen_abi::MOLT_FLAGS_ATOMIC
-        {
-            let address = self.builder.ins().iadd_imm_s(pointer, offset as i64);
-            self.builder
-                .ins()
-                .atomic_load(types::I32, MemFlagsData::new(), address)
-        } else {
-            self.builder
-                .ins()
-                .load(types::I32, MemFlagsData::new(), pointer, offset)
-        };
+        let value = self
+            .builder
+            .ins()
+            .load(types::I32, MemFlagsData::new(), pointer, offset);
         self.builder.ins().uextend(types::I64, value)
     }
     fn store_header_u32(&mut self, pointer: Value, offset: i32, value: Value) {

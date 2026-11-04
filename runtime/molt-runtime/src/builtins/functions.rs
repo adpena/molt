@@ -13,14 +13,14 @@ use crate::builtins::exceptions::{
 use crate::builtins::functions_re::this_build_rot13_text;
 use crate::builtins::platform::molt_importlib_import_transaction;
 use crate::builtins::types::{
-    molt_importlib_compiled_loader_create_module, molt_importlib_compiled_loader_exec_module,
-    molt_importlib_compiled_loader_find_spec, molt_importlib_compiled_loader_load_module,
-    molt_importlib_module_spec_cached_get, molt_importlib_module_spec_cached_set,
-    molt_importlib_module_spec_has_location_get, molt_importlib_module_spec_has_location_set,
-    molt_importlib_module_spec_init, molt_importlib_module_spec_parent,
-    molt_importlib_module_spec_repr, molt_object_new_bound, molt_type_init, molt_type_new,
-    molt_types_capsule_new, molt_types_cell_new, molt_types_coroutine,
-    molt_types_dynamic_class_attr_init, molt_types_get_original_bases,
+    molt_dataclasses_init_trampoline, molt_importlib_compiled_loader_create_module,
+    molt_importlib_compiled_loader_exec_module, molt_importlib_compiled_loader_find_spec,
+    molt_importlib_compiled_loader_load_module, molt_importlib_module_spec_cached_get,
+    molt_importlib_module_spec_cached_set, molt_importlib_module_spec_has_location_get,
+    molt_importlib_module_spec_has_location_set, molt_importlib_module_spec_init,
+    molt_importlib_module_spec_parent, molt_importlib_module_spec_repr, molt_object_new_bound,
+    molt_type_init, molt_type_new, molt_types_capsule_new, molt_types_cell_new,
+    molt_types_coroutine, molt_types_dynamic_class_attr_init, molt_types_get_original_bases,
     molt_types_mappingproxy_init, molt_types_mappingproxy_new, molt_types_method_init,
     molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
     molt_types_resolve_bases, molt_types_simplenamespace_init,
@@ -42,8 +42,8 @@ use crate::{
     FunctionCallAbi, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CODE, TYPE_ID_FUNCTION, TYPE_ID_MODULE,
     TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_code_obj, alloc_dict_with_pairs,
     alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, call_callable1,
-    call_callable2, dec_ref_bits, dict_get_in_place, ensure_function_code_bits, exception_pending,
+    bound_method_func_bits, builtin_classes, call_callable1, call_callable2, dec_ref_bits,
+    dict_get_in_place, dynamic_attr_name_bits, ensure_function_code_bits, exception_pending,
     function_globals_bits, function_set_closure_bits, function_set_globals_bits,
     function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
     molt_cpython_abi_cext_call_trampoline, molt_getattr_builtin, molt_getitem_method, molt_iter,
@@ -60,6 +60,7 @@ mod wasm_callables_generated;
 
 pub use compile_codeop::*;
 pub use function_abi::*;
+pub use native_callable::molt_native_callable_reduce;
 pub use opcode_payload::*;
 pub use tokenize::*;
 
@@ -82,7 +83,7 @@ fn enum_set_attr(
     name: &[u8],
     value_bits: u64,
 ) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = dynamic_attr_name_bits(_py, name) else {
         return false;
     };
     let _ = crate::molt_set_attr_name(target_bits, name_bits, value_bits);
@@ -816,7 +817,7 @@ fn bisect_insert_at(
     x_bits: u64,
 ) -> Result<(), u64> {
     let missing = missing_bits(_py);
-    let Some(insert_name_bits) = attr_name_bits_from_bytes(_py, b"insert") else {
+    let Some(insert_name_bits) = crate::NameId::Insert.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
     let insert_bits = molt_getattr_builtin(seq_bits, insert_name_bits, missing);

@@ -233,7 +233,7 @@ unsafe fn dict_replace_value(
             ptr,
             dict_entries(ptr)[value_index].key,
         );
-        crate::object::gc::gc_track_dict_references(_py, ptr, &[new_bits]);
+        crate::object::gc::gc_track_owned_references(_py, ptr, &[new_bits]);
         crate::object::field_storage::debug::replacement(
             _py,
             "dict_replace",
@@ -254,7 +254,7 @@ unsafe fn dict_commit_insertion(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64, 
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
         dict_commit_structure(ptr);
-        crate::object::gc::gc_track_dict_references(_py, ptr, &[key_bits, value_bits]);
+        crate::object::gc::gc_track_owned_references(_py, ptr, &[key_bits, value_bits]);
     }
 }
 

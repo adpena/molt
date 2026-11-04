@@ -82,6 +82,50 @@ def _make_dir(path: Path, *, size_bytes: int, age_s: float, now: float) -> int:
     return size_bytes
 
 
+def _historical_retirement(root, owning_root, *, reason, owner, kind, now=None):
+    """An independent persisted-v2 fixture; no current producer may write it."""
+    import hashlib
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    moment = 1_700_000_000.0 if now is None else now
+    name = (
+        hashlib.sha256(os.fsencode(root)).hexdigest()
+        + f"-{int(moment * 1_000_000_000)}"
+    )
+    target = (
+        owning_root
+        / "retired"
+        / datetime.fromtimestamp(moment, UTC).strftime("%Y-%m-%d")
+        / name
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    root.rename(target)
+    record = target.with_name(target.name + ".retirement.json")
+    record.write_text(
+        json.dumps(
+            {
+                "schema": "molt.soft-retirement.v2",
+                "original_path": str(root),
+                "reason": reason,
+                "retired_at": moment,
+                "owner": owner,
+                "kind": kind,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return SimpleNamespace(
+        path=target,
+        record_path=record,
+        original=root,
+        reason=reason,
+        retired_at=moment,
+        owner=owner,
+        kind=kind,
+    )
+
+
 class _SimulatedVolume:
     """A controlled capacity feed, publishing changes after each retirement.
 
@@ -849,12 +893,14 @@ def test_build_control_keeps_its_owner_after_its_target_retires(
     )
     _guard_marker(markers, 8181, "spawn_pending", **fields)
     protection = dg._guard_protection((ext,))
-    cs.soft_retire(target, ext, reason="gc", owner=str(checkout), kind="scratch")
+    _historical_retirement(
+        target, ext, reason="gc", owner=str(checkout), kind="scratch"
+    )
     assert not target.exists()
     assert protection.protects(control, ext) == (marker_owner == "checkout"), (
         "a control's target owner survives target retirement; it never becomes namespace-owned"
     )
-    retirement = cs.soft_retire(
+    retirement = _historical_retirement(
         control, ext, reason="gc", owner=str(target), kind="scratch"
     )
     assert protection.protects(retirement.original, ext, recorded_owner=target) == (
@@ -1846,9 +1892,9 @@ def test_due_collection_returns_real_reclaim_errors_and_throttles_failure(
     monkeypatch.setattr(dg, "_default_free_fn", lambda _root: lambda: 40 * _GB)
 
     def refuse(*_args, **_kwargs):
-        raise PermissionError("fixture-denied")
+        return False, "fixture-denied"
 
-    monkeypatch.setattr(dg, "soft_retire", refuse)
+    monkeypatch.setattr(dg, "delete_path", refuse)
     results = dg.collect_due(root=ext, env=env)
     errors = [error for result in results for error in result.errors]
     assert errors and all(error.endswith(": fixture-denied") for error in errors)
@@ -2102,6 +2148,10 @@ def test_published_nonzero_result_dispatches_selected_root_alongside_live_use(
             molt_dev, "prepare_gate_environment", lambda *_a, **_k: context
         )
         monkeypatch.setattr(molt_dev, "run_gate", lambda *_a, **_k: payload())
+        (projects / "tools").mkdir(exist_ok=True)
+        (projects / "tools" / "proof_plan.toml").write_text(
+            'repair = ["python tools/encoding_gate.py --fix"]\n', encoding="utf-8"
+        )
         args = molt_dev.build_parser().parse_args(["fix", "--repo", str(projects)])
 
         def run():
@@ -2931,8 +2981,9 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
     assert not chosen.exists()
     assert any(path == chosen or path in chosen.parents for path in reclaimed)
     if selected == "python-environment":
-        assert checkout_state.read_checkout_owner(chosen) == owner
-        _gc(ext, env, now + 7 * DAY + 1)
+        # Physical reclamation releases external use/owner metadata in the
+        # same collection; no retained rename generation needs it afterward.
+        assert checkout_state.read_checkout_owner(chosen) is None
         assert not checkout_state._state_metadata_root(chosen).exists()
 
 
@@ -3258,7 +3309,7 @@ def test_incremental_retirement_removes_only_reviewed_cache(completed_incrementa
     assert session.is_dir() and receipt.read_bytes() == receipt_bytes
     assert (
         kept.read_bytes() == b"retain product and evidence"
-        and kept.stat().st_nlink == 2
+        and kept.stat().st_nlink == 1
     )
     for name in ("build/keep", ".fingerprint/keep", "keep.generation.json"):
         assert (cache.parent / name).read_bytes() == b"retain product and evidence"
@@ -3478,43 +3529,28 @@ def test_incremental_retirement_refuses_indirect_ancestor(completed_incremental)
     assert (actual / cache.relative_to(session)).is_dir()
 
 
-def test_incremental_retirement_preserves_durable_failure_evidence(
+def test_incremental_deletion_error_retains_payload_and_success_receipt(
     completed_incremental, monkeypatch
 ):
-    import time
-
-    from molt.checkout_state import RETIREMENT_RECORD_SUFFIX, RETIREMENT_WINDOW_S
-
-    root, _, _, cache, receipt = completed_incremental
+    _, _, _, cache, receipt = completed_incremental
+    original_receipt = receipt.read_bytes()
     plan = _incremental_plan(completed_incremental)
-    result = _incremental_plan(
-        completed_incremental,
-        apply=True,
-        expected_inventory_sha256=plan["inventory_sha256"],
-    )
-    # Apply only renames: the live name goes, the reviewed bytes stay recoverable.
-    retired = Path(result["retired_path"])
-    assert result["applied"] is True and not cache.exists() and retired.is_dir()
-    payload = retired / "sample-session/query-cache.bin"
-    assert payload.read_bytes() == b"discardable generated cache"
-    assert receipt.exists() and (cache.parent / "deps/keep.rlib").exists()
-    [record] = retired.parent.glob("*" + RETIREMENT_RECORD_SUFFIX)
 
-    # Final deletion belongs to the GC after the window. A storage failure there
-    # must be reported, keep the bytes and the record for the next pass, and
-    # never recreate the live name.
     def deny_deletion(path, *, owning_root=None):
         return False, "injected storage error"
 
     monkeypatch.setattr(dg, "delete_path", deny_deletion)
-    later = time.time() + RETIREMENT_WINDOW_S + 60
-    collected = dg.gc(root=root, config=_cfg(), env={}, now_fn=lambda: later, log=False)
-    assert any(
-        str(retired) in error and "injected storage error" in error
-        for error in collected.errors
-    )
-    assert payload.read_bytes() == b"discardable generated cache"
-    assert record.is_file() and not cache.exists()
+    with pytest.raises(OSError, match="injected storage error"):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert (
+        cache / "sample-session/query-cache.bin"
+    ).read_bytes() == b"discardable generated cache"
+    assert receipt.read_bytes() == original_receipt
+    assert (cache.parent / "deps/keep.rlib").exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="independent POSIX flock holder")
@@ -3562,7 +3598,7 @@ def test_incremental_retirement_holds_both_split_locks_through_deletion(
 
     _, _, session, cache, _ = completed_incremental
     plan = _incremental_plan(completed_incremental)
-    original = dg.soft_retire
+    original = dg.delete_path
     observed = []
 
     def check_locks(path, *args, **kwargs):
@@ -3576,7 +3612,7 @@ def test_incremental_retirement_holds_both_split_locks_through_deletion(
             observed.append(lock)
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(dg, "soft_retire", check_locks)
+    monkeypatch.setattr(dg, "delete_path", check_locks)
     _incremental_plan(
         completed_incremental,
         apply=True,
@@ -3801,7 +3837,7 @@ def test_each_same_second_collection_log_survives(tmp_path, monkeypatch):
     assert len(set(paths)) == 3
     records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     assert [record["operation"] for record in records] == ["gc", "pressure", "gc"]
-    assert [record["schema_version"] for record in records] == [2, 2, 2]
+    assert [record["schema_version"] for record in records] == [3, 3, 3]
     assert records[0]["reclaimed"] == [{"path": "first", "kind": "lane"}]
     assert records[1]["triggered"] is False
     assert records[2]["reclaimed"] == [{"path": "second", "kind": "lane"}]
@@ -3832,7 +3868,7 @@ def test_pressure_result_attributes_independent_phase_and_delete_time(
     monkeypatch.setattr(dg, "time", ModuleView(dg.time, monotonic=clock))
     discover = dg.discover_candidates
     plan = dg.plan_reclaim
-    remove = dg.soft_retire
+    remove = dg.delete_path
 
     def delayed_discovery(*args, **kwargs):
         clock.advance(2.0)
@@ -3846,12 +3882,12 @@ def test_pressure_result_attributes_independent_phase_and_delete_time(
     def delayed_delete(path, *args, **kwargs):
         clock.advance(7.0)
         if denied:
-            raise PermissionError("fixture-denied")
+            return False, "fixture-denied"
         return remove(path, *args, **kwargs)
 
     monkeypatch.setattr(dg, "discover_candidates", delayed_discovery)
     monkeypatch.setattr(dg, "plan_reclaim", delayed_plan)
-    monkeypatch.setattr(dg, "soft_retire", delayed_delete)
+    monkeypatch.setattr(dg, "delete_path", delayed_delete)
     result = dg.ensure_free(
         root=tmp_path,
         env={},
@@ -3864,11 +3900,12 @@ def test_pressure_result_attributes_independent_phase_and_delete_time(
     assert result.elapsed_s == 12.0
     assert result.phase_elapsed_s == {
         "setup": 0.0,
+        "retired-roots": 0.0,
         "discovery": 2.0,
         "planning": 3.0,
         "retirement": 7.0,
     }
-    assert result.retirement_elapsed_s == {str(stale.resolve()): 7.0}
+    assert result.deletion_elapsed_s == {str(stale.resolve()): 7.0}
     if denied:
         assert stale.is_dir()
         assert result.reclaimed == []
@@ -3903,23 +3940,21 @@ def test_all_retirement_consumers_measure_actual_deletions(
         expected = list(roots.values())
         keep = []
     clock = _ElapsedClock()
-    remove = dg.soft_retire
+    remove = dg.delete_path
     monkeypatch.setattr(dg, "time", ModuleView(dg.time, monotonic=clock))
 
     def delayed_delete(path, *args, **kwargs):
         clock.advance(2.0)
         return remove(path, *args, **kwargs)
 
-    monkeypatch.setattr(dg, "soft_retire", delayed_delete)
+    monkeypatch.setattr(dg, "delete_path", delayed_delete)
     if operation == "checkout-retirement":
         assert checkout is not None
         result = dg.reclaim_checkout_state(checkout, root=ext, env=env)
     else:
         result = _gc(ext, env, time.time())
     assert _reclaimed(result) == _resolved(expected)
-    assert result.retirement_elapsed_s == {
-        str(path.resolve()): 2.0 for path in expected
-    }
+    assert result.deletion_elapsed_s == {str(path.resolve()): 2.0 for path in expected}
     assert result.elapsed_s == 2.0 * len(expected)
     phase = "superseded-layouts" if operation == "superseded-layouts" else "retirement"
     assert result.phase_elapsed_s[phase] == result.elapsed_s
@@ -4012,87 +4047,57 @@ def test_due_collection_owns_real_admission_until_result_or_exception(
     assert dg.collect_due(root=root, env={"fixture": "selected"}) == []
 
 
-def test_soft_retirement_and_recovery_are_single_renames(tmp_path, monkeypatch):
-    from molt import checkout_state
+def test_historical_retirement_decoder_binds_the_exact_payload(tmp_path):
+    from molt import checkout_state as cs
 
     root = tmp_path / "payload"
     root.mkdir()
-    (root / "evidence.bin").write_bytes(b"recover all bytes")
-    inode = root.stat().st_ino
-    renamed, written = [], []
-    rename, write = Path.rename, checkout_state.write_exact
-
-    def observe_rename(path, destination):
-        renamed.append((path, destination))
-        return rename(path, destination)
-
-    def observe_record(path, value, **kwargs):
-        written.append(path)
-        return write(path, value, **kwargs)
-
-    monkeypatch.setattr(Path, "rename", observe_rename)
-    monkeypatch.setattr(checkout_state, "write_exact", observe_record)
-    retired = checkout_state.soft_retire(
-        root,
-        tmp_path,
-        reason="test",
-        owner="task-owner",
-        now=1_800_000_000.0,
-        kind="scratch",
+    (root / "evidence.bin").write_bytes(b"historical payload")
+    historical = _historical_retirement(
+        root, tmp_path, reason="test", owner="owner", kind="scratch"
     )
-    assert renamed == [(root, retired.path)] and written == [retired.record_path]
-    assert retired.path.parent == tmp_path / "retired/2027-01-15"
-    assert retired.path.stat().st_ino == inode and not root.exists()
-    assert json.loads(retired.record_path.read_bytes()) == {
-        "schema": "molt.soft-retirement.v2",
-        "kind": "scratch",
-        "original_path": str(root),
-        "reason": "test",
-        "retired_at": 1_800_000_000.0,
-        "owner": "task-owner",
-    }
-    retired.path.rename(root)
-    assert renamed[-1] == (retired.path, root)
-    assert root.stat().st_ino == inode
-    assert (root / "evidence.bin").read_bytes() == b"recover all bytes"
-    # A recovered root cannot be garbage collected by its leftover sidecar.
-    assert checkout_state.read_soft_retirement(retired.record_path, tmp_path) is None
+    decoded = cs.read_soft_retirement(historical.record_path, tmp_path)
+    assert decoded is not None
+    assert decoded.path == historical.path and decoded.original == root
+    assert decoded.kind == "scratch"
+    # Custody remains decodable after payload removal, without referring to
+    # a restored source as the retired generation.
+    historical.path.rename(root)
+    assert cs.read_soft_retirement(historical.record_path, tmp_path) == decoded
+    assert decoded.path != root and not decoded.path.exists()
+    assert (root / "evidence.bin").read_bytes() == b"historical payload"
 
 
-def test_soft_retirement_refuses_cross_device_before_rename(tmp_path, monkeypatch):
-    from molt import checkout_state
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("kind", "unknown"),
+        ("schema", "untrusted"),
+        ("original_path", "/outside-owner"),
+        ("retired_at", -1),
+    ],
+)
+def test_historical_retirement_decoder_rejects_changed_custody(tmp_path, field, value):
+    from molt import checkout_state as cs
 
     root = tmp_path / "payload"
     root.mkdir()
-    original_stat = Path.stat
-
-    def other_device(path, **kwargs):
-        found = original_stat(path, **kwargs)
-        if path == root:
-            fields = list(found)
-            fields[2] += 1
-            return os.stat_result(fields)
-        return found
-
-    def forbidden(*_args, **_kwargs):
-        pytest.fail("cross-device retirement attempted a rename")
-
-    monkeypatch.setattr(Path, "stat", other_device)
-    monkeypatch.setattr(Path, "rename", forbidden)
-    with pytest.raises(OSError) as caught:
-        checkout_state.soft_retire(
-            root, tmp_path, reason="test", owner="owner", kind="scratch"
-        )
-    assert caught.value.errno == errno.EXDEV and root.is_dir()
-    assert not list(tmp_path.glob("retired/*/*.retirement.json"))
+    (root / "keep").write_bytes(b"retain unknown state")
+    historical = _historical_retirement(
+        root, tmp_path, reason="test", owner="owner", kind="scratch"
+    )
+    payload = json.loads(historical.record_path.read_text(encoding="utf-8"))
+    payload[field] = value
+    historical.record_path.write_text(json.dumps(payload), encoding="utf-8")
+    assert cs.read_soft_retirement(historical.record_path, tmp_path) is None
+    assert (historical.path / "keep").read_bytes() == b"retain unknown state"
 
 
 @pytest.mark.parametrize("protection", ["none", "path", "lock"])
 @pytest.mark.parametrize("sealed", [False, True])
-def test_retirement_clock_controls_gc_and_live_custody_keeps_it(
+def test_historical_retirements_use_live_custody_without_new_grace(
     tmp_path, protection, sealed
 ):
-    from molt import checkout_state
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     now = 1_800_000_000.0
@@ -4110,7 +4115,7 @@ def test_retirement_clock_controls_gc_and_live_custody_keeps_it(
             seal_environment_installation(root)
         os.utime(root / "value", (now - 100 * DAY,) * 2)
         roots.append(
-            checkout_state.soft_retire(
+            _historical_retirement(
                 root,
                 tmp_path,
                 reason="test",
@@ -4129,7 +4134,7 @@ def test_retirement_clock_controls_gc_and_live_custody_keeps_it(
         assert handle is not None
     try:
         result = _gc(tmp_path, environment, now)
-        assert young.path.is_dir() and young.record_path.is_file()
+        assert not young.path.exists() and not young.record_path.exists()
         assert old.path.exists() is (protection != "none")
         assert old.record_path.exists() is (protection != "none")
         assert (str(old.path) in _reclaimed(result)) is (protection == "none")
@@ -4138,27 +4143,21 @@ def test_retirement_clock_controls_gc_and_live_custody_keeps_it(
             _release_file_lock(handle)
 
 
-def test_the_retirement_window_alone_keeps_a_young_root(tmp_path, monkeypatch):
-    from molt import checkout_state
-
+def test_historical_regenerable_retirement_has_no_new_delay(tmp_path):
     root = tmp_path / "payload"
     root.mkdir()
     now = 1_800_000_000.0
-    retired = checkout_state.soft_retire(
-        root,
-        tmp_path,
-        reason="test",
-        owner="owner",
-        now=now - 1,
-        kind="scratch",
+    historical = _historical_retirement(
+        root, tmp_path, reason="test", owner="owner", now=now - 1, kind="scratch"
     )
-    # With no window, the same one-second-old root and its record go at once.
-    monkeypatch.setattr(dg, "RETIREMENT_WINDOW_S", 0)
     _gc(tmp_path, {}, now)
-    assert not retired.path.exists() and not retired.record_path.exists()
+    assert not historical.path.exists() and not historical.record_path.exists()
 
 
-def test_soft_retirement_does_not_free_space_in_pressure_accounting(tmp_path):
+def test_pressure_physically_deletes_regenerable_state_without_retaining_a_copy(
+    tmp_path,
+):
+    """A vanished source is insufficient: no renamed payload may remain."""
     now = 1_800_000_000.0
     root = tmp_path / "target/sessions/idle"
     _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
@@ -4170,13 +4169,422 @@ def test_soft_retirement_does_not_free_space_in_pressure_accounting(tmp_path):
         free_bytes_fn=lambda: 10 * _GB,
         log=False,
     )
+    assert not result.errors
     assert not root.exists()
-    assert Path(result.retirements[str(root)]).is_dir()
-    assert result.free_before == result.free_after == 10 * _GB
-    assert result.reclaimed_bytes == 0
+    assert not list(tmp_path.rglob("artifact.bin")), (
+        "renaming does not reclaim the payload"
+    )
 
 
-# HF-435 item 1 shares checkout-state ownership and soft retirement. These
+def test_pressure_reclaims_known_retired_payload_before_active_state(tmp_path):
+
+    now = 1_800_000_000.0
+    root = tmp_path / "target/sessions/previously-retired"
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    result = dg.ensure_free(
+        root=tmp_path,
+        env={},
+        config=_cfg(),
+        now_fn=lambda: now,
+        free_bytes_fn=lambda: 10 * _GB,
+        log=False,
+    )
+    assert not result.errors
+    assert not historical.path.exists(), "pressure must reach the retired backlog"
+    assert not historical.record_path.exists()
+
+
+@pytest.mark.parametrize("protection", ["path", "native-lock", "unknown", "evidence"])
+def test_backlog_cleanup_keeps_busy_or_unproven_state(tmp_path, protection):
+    from contextlib import ExitStack
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    now = 1_800_000_000.0
+    protected = tmp_path / "target/sessions/protected"
+    eligible = tmp_path / "target/sessions/eligible"
+    for root in (protected, eligible):
+        _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    held = _historical_retirement(
+        protected,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="diagnostics" if protection == "evidence" else "cargo-target",
+        now=now - HOUR,
+    )
+    disposable = _historical_retirement(
+        eligible,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    if protection == "unknown":
+        value = json.loads(held.record_path.read_text(encoding="utf-8"))
+        value["kind"] = "unregistered"
+        held.record_path.write_text(json.dumps(value), encoding="utf-8")
+    env = {"CARGO_TARGET_DIR": str(held.path)} if protection == "path" else {}
+    with ExitStack() as stack:
+        if protection == "native-lock":
+            handle = _try_acquire_file_lock(held.path / ".cargo-lock")
+            assert handle is not None
+            stack.callback(_release_file_lock, handle)
+        result = dg.reclaim_retired(
+            root=tmp_path, env=env, apply=True, now_fn=lambda: now, log=False
+        )
+    assert not result.errors
+    assert held.path.is_dir() and held.record_path.is_file()
+    assert (held.path / "artifact.bin").read_bytes() == bytes(4096)
+    assert any(
+        row["path"] in {str(held.path), str(held.record_path)} for row in result.skipped
+    )
+    assert not disposable.path.exists() and not disposable.record_path.exists()
+
+
+@pytest.mark.parametrize("indirection", ["payload", "date", "retired"])
+def test_backlog_never_follows_an_indirect_retirement(tmp_path, indirection):
+    """A link at any retirement component keeps the bytes it reaches."""
+    now = 1_800_000_000.0
+    artifact, outside = tmp_path / "artifact", tmp_path / "outside"
+    root = artifact / "target/sessions/linked"
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        artifact,
+        reason="pressure",
+        owner=str(artifact),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    component = {
+        "payload": historical.path,
+        "date": historical.path.parent,
+        "retired": artifact / "retired",
+    }[indirection]
+    moved = outside / component.name
+    outside.mkdir()
+    component.rename(moved)
+    component.symlink_to(moved, target_is_directory=True)
+    before = {
+        str(path): path.read_bytes() for path in outside.rglob("*") if path.is_file()
+    }
+    assert any(name.endswith("artifact.bin") for name in before)
+    result = dg.reclaim_retired(
+        root=artifact, env={}, apply=True, now_fn=lambda: now, log=False
+    )
+    assert before == {
+        str(path): path.read_bytes() for path in outside.rglob("*") if path.is_file()
+    }
+    assert component.is_symlink() and not result.reclaimed
+    assert any(row["reason"] == "unproven-retirement" for row in result.skipped)
+
+
+def test_backlog_refuses_a_mounted_retired_payload_before_deleting(
+    tmp_path, monkeypatch
+):
+    from molt import filesystem_mounts
+
+    now = 1_800_000_000.0
+    root = tmp_path / "target/sessions/mounted"
+    guest = root / "guest"
+    guest.mkdir(parents=True)
+    (guest / "external-data").write_bytes(b"another filesystem")
+    os.utime(guest, (now - 100_000,) * 2)
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    mounted = historical.path / "guest"
+    monkeypatch.setattr(
+        filesystem_mounts, "_mount_points", lambda: (str(mounted.resolve()),)
+    )
+    result = dg.reclaim_retired(
+        root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+    )
+    assert (mounted / "external-data").read_bytes() == b"another filesystem"
+    assert (historical.path / "artifact.bin").read_bytes() == bytes(4096)
+    assert historical.record_path.is_file() and not result.reclaimed
+    assert any("mounted filesystem" in error for error in result.errors)
+
+
+def test_backlog_dry_run_and_bounded_passes_resume_past_unknown_state(tmp_path):
+    now = 1_800_000_000.0
+    historical = []
+    for name in ("first", "second"):
+        root = tmp_path / "target/sessions" / name
+        _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+        historical.append(
+            _historical_retirement(
+                root,
+                tmp_path,
+                reason="pressure",
+                owner=str(tmp_path),
+                kind="cargo-target",
+                now=now - HOUR,
+            )
+        )
+    unknown = historical[0].path.parent / "000-unproven"
+    unknown.mkdir()
+    (unknown / "keep").write_bytes(b"not classified")
+    before = {
+        str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    }
+    preview = dg.reclaim_retired(
+        root=tmp_path, env={}, apply=False, now_fn=lambda: now, log=False
+    )
+    assert len(preview.reclaimed) == 2
+    assert before == {
+        str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    }
+    first = dg.reclaim_retired(
+        root=tmp_path, env={}, apply=True, max_roots=1, now_fn=lambda: now, log=False
+    )
+    assert (
+        first.reclaimed == [] and first.walk_rotation["retired-scratch"]["next_cursor"]
+    )
+    for _ in range(3):
+        result = dg.reclaim_retired(
+            root=tmp_path,
+            env={},
+            apply=True,
+            max_roots=1,
+            now_fn=lambda: now,
+            log=False,
+        )
+        assert not result.errors
+    assert all(
+        not item.path.exists() and not item.record_path.exists() for item in historical
+    )
+    assert (unknown / "keep").read_bytes() == b"not classified"
+
+
+def test_backlog_failure_is_resumable_without_recreating_a_payload(
+    tmp_path, monkeypatch
+):
+    now = 1_800_000_000.0
+    root = tmp_path / "target/sessions/retired"
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            dg, "delete_path", lambda *_args, **_kwargs: (False, "fixture-denied")
+        )
+        failed = dg.reclaim_retired(
+            root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+        )
+    assert failed.errors == [f"{historical.path}: fixture-denied"]
+    assert (
+        historical.path.exists()
+        and historical.record_path.exists()
+        and not root.exists()
+    )
+    retried = dg.reclaim_retired(
+        root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+    )
+    assert (
+        not retried.errors
+        and not historical.path.exists()
+        and not historical.record_path.exists()
+    )
+
+
+def test_backlog_finishes_interrupted_sidecar_unlink_without_deleting_replacements(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+    from molt import checkout_state as cs
+
+    now = 1_800_000_000.0
+    root = tmp_path / "target/sessions/retired"
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    unlink = Path.unlink
+
+    def interrupted_unlink(path, *args, **kwargs):
+        if path == historical.record_path:
+            raise PermissionError("fixture-sidecar-unlink-interrupted")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", interrupted_unlink)
+        interrupted = dg.reclaim_retired(
+            root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+        )
+    assert len(interrupted.errors) == 1
+    assert "fixture-sidecar-unlink-interrupted" in interrupted.errors[0]
+    assert not historical.path.exists() and historical.record_path.is_file()
+    # A new original generation is independent of leftover retirement metadata.
+    root.mkdir()
+    (root / "replacement").write_bytes(b"current source generation")
+    acquire = cs.checkout_state_retirement
+
+    @contextmanager
+    def replacement_at_lease(*args, **kwargs):
+        with acquire(*args, **kwargs) as exclusive:
+            historical.path.mkdir()
+            (historical.path / "replacement").write_bytes(
+                b"new retired-path generation"
+            )
+            yield exclusive
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cs, "checkout_state_retirement", replacement_at_lease)
+        changed = dg.reclaim_retired(
+            root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+        )
+    assert changed.reclaimed == [] and not changed.errors
+    assert changed.skipped == [
+        {"path": str(historical.path), "reason": "retirement-custody-changed"}
+    ]
+    assert (
+        historical.path / "replacement"
+    ).read_bytes() == b"new retired-path generation"
+    # Move the new generation out of this retired address before resuming.
+    saved = tmp_path / "replacement-kept"
+    historical.path.rename(saved)
+
+    def no_payload_deletion(*_args, **_kwargs):
+        pytest.fail("metadata-only resumption must not invoke recursive deletion")
+
+    monkeypatch.setattr(dg, "delete_path", no_payload_deletion)
+    resumed = dg.reclaim_retired(
+        root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+    )
+    assert not resumed.errors and not historical.record_path.exists()
+    assert not historical.path.exists()
+    assert resumed.reclaimed == [
+        {
+            "path": str(historical.record_path),
+            "kind": "cargo-target",
+            "provenance": "historical-retirement-metadata",
+        }
+    ]
+    assert (root / "replacement").read_bytes() == b"current source generation"
+    assert (saved / "replacement").read_bytes() == b"new retired-path generation"
+
+
+def test_backlog_rechecks_payload_identity_under_exclusive_custody(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+    from molt import checkout_state as cs
+
+    now = 1_800_000_000.0
+    root = tmp_path / "target/sessions/retired"
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    saved = historical.path.with_name("preserved-original")
+
+    @contextmanager
+    def replace_at_lease(*_args, **_kwargs):
+        historical.path.rename(saved)
+        historical.path.mkdir()
+        (historical.path / "replacement").write_bytes(b"not the admitted generation")
+        yield True
+
+    monkeypatch.setattr(cs, "checkout_state_retirement", replace_at_lease)
+    result = dg.reclaim_retired(
+        root=tmp_path, env={}, apply=True, now_fn=lambda: now, log=False
+    )
+    assert not result.errors and result.reclaimed == []
+    assert result.skipped == [
+        {"path": str(historical.path), "reason": "retirement-custody-changed"}
+    ]
+    assert (saved / "artifact.bin").exists()
+    assert (
+        historical.path / "replacement"
+    ).read_bytes() == b"not the admitted generation"
+
+
+def test_backlog_cli_requires_apply_and_reports_real_capacity(tmp_path, capsys):
+    import time
+
+    now = time.time()
+    root = tmp_path / "target/sessions/retired"
+    _make_dir(root, size_bytes=4096, age_s=100_000, now=now)
+    historical = _historical_retirement(
+        root,
+        tmp_path,
+        reason="pressure",
+        owner=str(tmp_path),
+        kind="cargo-target",
+        now=now - HOUR,
+    )
+    arguments = ["--root", str(tmp_path), "--reclaim-retired", "--json"]
+    assert dg.main([*arguments, "--dry-run"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert (
+        preview["mode"] == "dry-run"
+        and preview["reclaimed_bytes"] == preview["free_after"] - preview["free_before"]
+    )
+    assert historical.path.exists() and historical.record_path.exists()
+    assert dg.main([*arguments, "--apply"]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["mode"] == "apply" and applied["schema_version"] == 3
+    assert not historical.path.exists() and not historical.record_path.exists()
+
+
+def test_regenerable_provider_reclamation_removes_only_finished_use_metadata(tmp_path):
+    import time
+    from molt.checkout_state import (
+        materialize_provider_cache,
+        _state_metadata_root,
+        checkout_state_use,
+    )
+    from tools.molt_dev_storage import retire_regenerable
+
+    root = tmp_path / ".ruff-cache"
+    materialize_provider_cache(root, kind="ruff-cache")
+    (root / "entry").write_bytes(b"regenerable cache")
+    metadata = _state_metadata_root(root)
+    now = time.time()
+    for entry in (root, root / "entry", *metadata.iterdir()):
+        os.utime(entry, (now - 40 * DAY,) * 2)
+    with checkout_state_use(((root, None),), publish=False):
+        busy = retire_regenerable([root], kind="ruff-cache", now=now, apply=True)
+        assert busy[0]["action"] == "state-in-use"
+        assert root.exists() and metadata.is_dir()
+    retired = retire_regenerable([root], kind="ruff-cache", now=now, apply=True)
+    assert retired[0]["action"] == "retire"
+    assert not root.exists() and not metadata.exists()
+
+
+# HF-435 item 1 shares checkout-state ownership and physical reclamation. These
 # filesystem oracles also kill removal of each policy gate independently.
 def _age_scratch_tree(root: Path, moment: float) -> None:
     for path in [*root.rglob("*"), root]:
@@ -4245,9 +4653,7 @@ def test_scratch_constructor_binds_one_lane_and_throttles_metadata(
 
 
 @pytest.mark.parametrize("owner_gone", [False, True])
-def test_scratch_used_survives_then_idle_or_orphaned_retires_softly(
-    tmp_path, owner_gone
-):
+def test_scratch_used_survives_then_idle_or_orphaned_is_deleted(tmp_path, owner_gone):
     from molt import checkout_state as cs
 
     ext, projects, env = _checkout_family(tmp_path)
@@ -4255,40 +4661,24 @@ def test_scratch_used_survives_then_idle_or_orphaned_retires_softly(
     owner.mkdir()
     root = cs.scratch_state_root(ext / "tmp", owner=owner)
     payload = root / "retained.txt"
-    payload.write_bytes(b"recover this exact scratch payload")
-    inode = root.stat().st_ino
+    payload.write_bytes(b"delete only after proven idle")
     now = 2_000_000_000.0
     if owner_gone:
         owner.rmdir()
     _age_scratch_tree(root, now - HOUR)
     assert str(root) not in _reclaimed(_gc(ext, env, now))
-    # Removing the owner selects the two-hour rule; a live owner's scratch
-    # gets the complete three-day idle limit instead.
     age = 2 * HOUR if owner_gone else 3 * DAY
     _age_scratch_tree(root, now - age)
     dry = dg.gc(root=ext, env=env, now_fn=lambda: now, apply=False, log=False)
-    selected = [row for row in dry.reclaimed if row["path"] == str(root)]
-    # The stamp decides a constructor root without a walk, so its bytes
-    # are not estimated.
-    assert selected == [{"path": str(root), "kind": "scratch"}]
-    assert (
-        root.is_dir() and payload.read_bytes() == b"recover this exact scratch payload"
-    )
+    assert [row for row in dry.reclaimed if row["path"] == str(root)] == [
+        {"path": str(root), "kind": "scratch"}
+    ]
+    assert payload.read_bytes() == b"delete only after proven idle"
     result = _gc(ext, env, now)
-    retired = Path(result.retirements[str(root)])
-    assert not root.exists() and retired.stat().st_ino == inode
-    assert (
-        retired / payload.name
-    ).read_bytes() == b"recover this exact scratch payload"
-    record = cs.read_soft_retirement(
-        retired.with_name(retired.name + cs.RETIREMENT_RECORD_SUFFIX), ext
-    )
-    assert (
-        record is not None and record.owner == str(owner) and record.retired_at == now
-    )
-    assert str(retired) not in _reclaimed(_gc(ext, env, now + 7 * DAY - 1))
-    assert str(retired) in _reclaimed(_gc(ext, env, now + 7 * DAY))
-    assert not retired.exists()
+    assert not root.exists() and str(root) in _reclaimed(result)
+    assert str(root) not in result.retirements
+    assert not list(ext.glob("retired/*/*/retained.txt"))
+    assert str(root) not in _reclaimed(_gc(ext, env, now + 1))
 
 
 def test_untracked_scratch_uses_its_registered_limit_and_recursive_last_use(tmp_path):
@@ -4308,11 +4698,15 @@ def test_untracked_scratch_uses_its_registered_limit_and_recursive_last_use(tmp_
     _age_scratch_tree(root, now - 4 * DAY)
     # The same registration owns the new and the pre-constructor limits.
     assert str(root) not in _reclaimed(_gc(ext, {**env, cs.SCRATCH_IDLE_ENV: "5"}, now))
+    assert nested.read_bytes() == b"legacy payload"
+    assert not (root / cs.OWNER_RECORD).exists(), "GC must never invent an owner"
     result = _gc(ext, env, now)
     assert str(root) in _reclaimed(result)
-    retired = Path(result.retirements[str(root)])
-    assert (retired / "nested/deep/file").read_bytes() == b"legacy payload"
-    assert not (retired / cs.OWNER_RECORD).exists(), "GC must never invent an owner"
+    assert not root.exists()
+    assert str(root) not in result.retirements
+    assert not list(ext.glob("retired/*/*/nested/deep/file")), (
+        "regenerable legacy scratch must not retain a renamed payload"
+    )
 
 
 def test_scratch_rule_preserves_every_existing_control_container(tmp_path):
@@ -4576,7 +4970,6 @@ def _assert_rotation_bound(
 def test_every_legacy_scratch_walk_is_evaluated_within_the_rotation_bound(
     tmp_path, monkeypatch, family
 ):
-    from molt import checkout_state as cs
 
     now = 2_000_000_000.0
     roots: dict[str, Path] = {}
@@ -4602,7 +4995,7 @@ def test_every_legacy_scratch_walk_is_evaluated_within_the_rotation_bound(
             _legacy_scratch(root, moment=now - (4 if family == "scratch" else 20) * DAY)
         roots[name], keys[name] = root, str(root)
         if family == "retired-scratch":
-            retired = cs.soft_retire(
+            retired = _historical_retirement(
                 root,
                 gc_root,
                 reason="scratch",
@@ -4640,10 +5033,10 @@ def test_every_legacy_scratch_walk_is_evaluated_within_the_rotation_bound(
                 )
         elif root.exists():
             assert (root / "part-0" / "file-0").read_bytes() == b"legacy payload 0"
-        elif family != "retired-scratch":
-            # Each idle tree was retired softly, whole, after its complete walks.
-            moved = Path(retirements[str(root)])
-            assert (moved / "part-2" / "file-11").read_bytes() == b"legacy payload 11"
+        else:
+            assert str(root) not in retirements, (
+                "regenerable payload has no archive copy"
+            )
 
 
 def test_stamped_scratch_is_decided_by_its_stamp_without_a_walk(tmp_path, monkeypatch):
@@ -4709,10 +5102,12 @@ def test_stamped_scratch_is_decided_by_its_stamp_without_a_walk(tmp_path, monkey
     assert any(legacy in path.parents for path in listed)
     assert dry.walk_rotation["scratch"]["walks"] == 1
     result = _gc(ext, env, now)
-    assert inside_stamped() == []
-    moved = Path(result.retirements[str(roots["idle"])])
     assert not roots["idle"].exists()
-    assert (moved / "purpose/part-0/file-0").read_bytes() == b"legacy payload 0"
+    assert str(roots["idle"]) not in result.retirements
+    assert not any(
+        roots["used"] == path or roots["used"] in path.parents
+        for path in inside_stamped()
+    )
     assert roots["used"].is_dir() and used_stamp.is_file()
 
 
@@ -4731,7 +5126,7 @@ def test_an_incomplete_scratch_walk_never_authorizes_retirement(
         _legacy_scratch(root, moment=now - 4 * DAY)
     watched = later if interrupted == "later" else first
     if interrupted == "final":
-        retired = cs.soft_retire(
+        retired = _historical_retirement(
             first,
             ext,
             reason="scratch",
@@ -4766,7 +5161,7 @@ def test_an_incomplete_scratch_walk_never_authorizes_retirement(
         row["reason"] for row in result.skipped if row["path"] == str(watched)
     }
     if interrupted == "later":
-        assert str(first) in result.retirements, "the completed walk retires"
+        assert str(first) in _reclaimed(result), "the completed walk reclaims"
         cursor = json.loads(ext.joinpath(*cs.WALK_ROTATION_RECORD).read_bytes())
         assert cursor["cursors"] == {"scratch": str(later)}
         dg._print_result(result, as_json=False)
@@ -4911,7 +5306,6 @@ def test_expired_scratch_retirement_stays_while_custody_or_activity_holds_it(
     tmp_path, held
 ):
     from contextlib import ExitStack
-    from molt import checkout_state as cs
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     ext, _, env = _checkout_family(tmp_path)
@@ -4921,7 +5315,7 @@ def test_expired_scratch_retirement_stays_while_custody_or_activity_holds_it(
     file.write_bytes(b"keep until quiescent")
     now = 2_000_000_000.0
     _age_scratch_tree(root, now - 20 * DAY)
-    retired = cs.soft_retire(
+    retired = _historical_retirement(
         root,
         ext,
         reason="scratch",
@@ -4966,7 +5360,6 @@ def test_expired_scratch_retirement_stays_while_custody_or_activity_holds_it(
         "lock",
         "guard",
         "protected-path",
-        "retirement-window",
     ],
 )
 def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, rule):
@@ -5029,8 +5422,6 @@ def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, 
         patch(dg, "_guard_protection", lambda *_: dg._GuardProtection())
     elif rule == "protected-path":
         patch(dg, "_protected_paths", lambda *_: [])
-    else:
-        patch(dg, "RETIREMENT_WINDOW_S", 0.0)
 
     # The same positive tests run normally above, so fixture failures cannot
     # masquerade as a killed mutant. They inspect actual records and payloads.
@@ -5039,8 +5430,8 @@ def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, 
             test_scratch_constructor_binds_one_lane_and_throttles_metadata(
                 tmp_path, monkeypatch
             )
-        elif rule in {"used", "idle", "orphan", "retirement-window"}:
-            test_scratch_used_survives_then_idle_or_orphaned_retires_softly(
+        elif rule in {"used", "idle", "orphan"}:
+            test_scratch_used_survives_then_idle_or_orphaned_is_deleted(
                 tmp_path, rule == "orphan"
             )
         elif rule in {"untracked-limit", "recursive-activity"}:

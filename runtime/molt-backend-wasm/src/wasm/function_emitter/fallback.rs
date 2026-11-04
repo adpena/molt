@@ -30,7 +30,7 @@ pub(super) fn emit_fallback_function_body(
             frame.dispatch_locals(),
         );
     }
-    frame.emit_entry_initializers(&mut func);
+    frame.emit_entry_initializers(&mut func, import_ids, reloc_enabled);
     frame
         .locals()
         .refcount()

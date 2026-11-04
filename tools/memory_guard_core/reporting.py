@@ -139,6 +139,22 @@ def sampling_telemetry_payload(
     }
 
 
+def retention_warning(artifacts: Mapping[str, object] | None) -> str | None:
+    """Other runs' soft retention errors are diagnostic, never this outcome."""
+    retention = None if artifacts is None else artifacts.get("retention")
+    errors = retention.get("errors") if isinstance(retention, Mapping) else None
+    if (
+        not isinstance(errors, Sequence)
+        or isinstance(errors, (str, bytes))
+        or not errors
+    ):
+        return None
+    return (
+        "memory_guard: temporary artifact retention sweep reported errors: "
+        + json.dumps([str(error) for error in errors], sort_keys=True)
+    )
+
+
 def infrastructure_failure_payload(
     failure: GuardInfrastructureFailure | None,
 ) -> dict[str, object] | None:
@@ -832,6 +848,8 @@ def emit_terminal_report(
             "inside a suite-level sentinel that drains at scope exit.",
             file=stderr,
         )
+    if warning := retention_warning(result.temporary_artifacts):
+        print(warning, file=stderr)
     if result.infrastructure_failure is not None:
         print(
             "memory_guard: infrastructure_error during "

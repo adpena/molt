@@ -396,8 +396,12 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 Regenerable(86400.0, None, 1),
             )
         case "scratch-evidence":
+            # Only legacy-temp migration archives here; guard scratch does not.
             return StorageRule(
-                "artifact", "process guards", ("evidence", "scratch"), DurableEvidence()
+                "artifact",
+                "legacy-temp migration",
+                ("evidence", "scratch"),
+                DurableEvidence(),
             )
         case "sccache-server-evidence":
             return StorageRule(

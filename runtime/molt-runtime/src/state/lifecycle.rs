@@ -46,9 +46,8 @@ use crate::{
     builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_type_cache,
     clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
     dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
-    exceptions_clear_runtime_state, inc_ref_bits, intern_static_name, module_dict_bits,
-    molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
-    runtime_state,
+    exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush, obj_from_bits,
+    object_type_id, reset_ptr_registry, runtime_state,
 };
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -68,8 +67,8 @@ fn trace_thread_local_drop(stage: &'static str) {
 }
 
 use super::{
-    RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache,
-    cache::clear_runtime_static_names, runtime_extension_states_clear_and_drop,
+    RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache, cache::clear_runtime_names,
+    runtime_extension_states_clear_and_drop,
 };
 
 thread_local! {
@@ -365,8 +364,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
                 changed |= retirement.clear_contents(_py, origin);
             }
             changed |= clear_thread_local_state(_py);
-            changed |= clear_interned_names(_py, state);
-            changed |= clear_runtime_static_names(_py, state);
+            changed |= clear_runtime_names(_py, state);
             changed
         };
         // Keep one actual C record through the whole fixed point. Its queue is
@@ -1369,22 +1367,21 @@ fn flush_stdio_target(_py: &PyToken<'_>, target_bits: u64) {
             }
         }
     }
-    let flush_name_bits = intern_static_name(_py, &state_interned(_py).flush_name, b"flush");
-    let flush_bits = molt_get_attr_name(target_bits, flush_name_bits);
-    if exception_pending(_py) {
-        clear_exception(_py);
-        return;
-    }
+    let flush_name_bits = crate::NameId::Flush.bits(_py);
+    let flush_bits = match crate::lookup_attribute(_py, target_bits, flush_name_bits) {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => return,
+        crate::AttributeLookup::Error => {
+            clear_exception(_py);
+            return;
+        }
+    };
     let res_bits = unsafe { call_callable0(_py, flush_bits) };
     dec_ref_bits(_py, flush_bits);
     dec_ref_bits(_py, res_bits);
     if exception_pending(_py) {
         clear_exception(_py);
     }
-}
-
-fn state_interned(_py: &PyToken<'_>) -> &'static crate::state::cache::InternedNames {
-    &runtime_state(_py).interned
 }
 
 fn clear_utf8_caches(state: &RuntimeState) {
@@ -1417,12 +1414,6 @@ fn drain_heap_tls() {
     });
 }
 
-fn clear_interned_names(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
-    crate::gil_assert();
-    let slots = state.interned.slots();
-    clear_atomic_slots(_py, &slots)
-}
-
 fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let slots = vec![
@@ -1439,10 +1430,7 @@ pub(crate) mod shutdown_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{
-        THREAD_LOCAL_DROP_TEST_TRACE, clear_interned_names, clear_special_cache,
-        clear_worker_thread_state,
-    };
+    use super::{THREAD_LOCAL_DROP_TEST_TRACE, clear_special_cache, clear_worker_thread_state};
     use crate::{MoltObject, alloc_string, runtime_state};
     use std::sync::atomic::Ordering;
 
@@ -1690,7 +1678,7 @@ pub(crate) mod tests {
     }
 
     fn reentrant_context_class(py: &crate::PyToken<'_>) -> u64 {
-        let name = crate::attr_name_bits_from_bytes(py, b"ReentrantContextDefault").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"ReentrantContextDefault").unwrap();
         let class = crate::molt_class_new(name);
         crate::dec_ref_bits(py, name);
         crate::molt_class_set_base(class, crate::builtin_classes(py).object);
@@ -1705,7 +1693,7 @@ pub(crate) mod tests {
             1,
         );
         assert!(!method.is_null());
-        let key = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let method = MoltObject::from_ptr(method).bits();
         crate::molt_set_attr_name(class, key, method);
         crate::dec_ref_bits(py, key);
@@ -1807,7 +1795,7 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     impl WorkerIcWitness {
         fn new(py: &crate::PyToken<'_>) -> Self {
-            let name = crate::attr_name_bits_from_bytes(py, b"WorkerIcOwner").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"WorkerIcOwner").unwrap();
             let class = crate::molt_class_new(name);
             crate::dec_ref_bits(py, name);
             crate::molt_class_set_base(class, crate::builtin_classes(py).object);
@@ -1823,7 +1811,7 @@ pub(crate) mod tests {
             );
             assert!(!method.is_null());
             let method = MoltObject::from_ptr(method).bits();
-            let name = crate::attr_name_bits_from_bytes(py, b"cached").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"cached").unwrap();
             crate::molt_set_attr_name(class, name, method);
             crate::dec_ref_bits(py, name);
             let receiver = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
@@ -2017,29 +2005,6 @@ pub(crate) mod tests {
                     .load(Ordering::Acquire),
                 0
             );
-        });
-    }
-
-    #[test]
-    fn clear_interned_names_releases_every_manifest_slot() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            clear_interned_names(_py, state);
-
-            let slots = state.interned.slots();
-            for (index, slot) in slots.iter().enumerate() {
-                let name = format!("interned-name-slot-{index}");
-                let ptr = alloc_string(_py, name.as_bytes());
-                assert!(!ptr.is_null());
-                slot.store(MoltObject::from_ptr(ptr).bits(), Ordering::Release);
-            }
-
-            clear_interned_names(_py, state);
-
-            for slot in slots {
-                assert_eq!(slot.load(Ordering::Acquire), 0);
-            }
         });
     }
 }

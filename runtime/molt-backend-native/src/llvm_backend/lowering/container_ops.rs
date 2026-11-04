@@ -79,28 +79,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.bind_owned_runtime_result(op, result);
     }
 
-    /// `dataclass_new_values(name, field_names, flags, *values)`: the header
-    /// words are direct operands and the values one borrowed range of the same
-    /// constructor transaction.
-    pub(super) fn emit_dataclass_from_values(&mut self, op: &TirOp) -> bool {
-        if op.operands.len() < 3 {
-            return false;
-        }
-        let result =
-            self.with_borrowed_boxed_operands(&op.operands, "dataclass", |this, words, name| {
-                let (address, count) =
-                    this.store_borrowed_word_range(words[3..].iter().copied(), "dataclass_values");
-                let constructor = this.ensure_runtime_i64_fn("molt_dataclass_new_from_values", 5);
-                this.build_constructor_call(
-                    constructor,
-                    &[words[0], words[1], address, count, words[2]],
-                    name,
-                )
-            });
-        self.bind_owned_runtime_result(op, result);
-        true
-    }
-
     /// `class_def(name, *bases, *namespace_pairs)`: the bases and the namespace
     /// pairs are two borrowed ranges of one constructor transaction.
     pub(super) fn emit_class_definition(

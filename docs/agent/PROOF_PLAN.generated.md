@@ -16,9 +16,9 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 448 |
-| Local path rules | 35 | 82 |
-| Unique local commands | 73 | 82 |
+| Hashed executable authority inputs | 1 | 454 |
+| Local path rules | 35 | 85 |
+| Unique local commands | 73 | 84 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 237 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 239 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -57,7 +57,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 155 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 156 |
 
 ## Scheduled families
 
@@ -124,7 +124,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `posix-true` | `executable` | — | `^$` | `.` | `host POSIX utility` | 1 |
 | `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
 | `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
-| `uv` | `executable` | — | `^uv 0\.13\.5\b` | `.` | `0.13.5` | 2 |
+| `uv` | `executable` | — | `^uv 0\.13\.6\b` | `.` | `0.13.6` | 2 |
 | `node` | `executable` | — | `^v26\.12\.1$` | `.` | `26.12.1` | 3 |
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |
@@ -362,6 +362,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 |---|---:|---:|
 | `browser-loader-deployment` | 12 | 0 |
 | `frontend-python` | 1 | 3 |
+| `finding-ids-static` | 1 | 1 |
 | `python-source-dependencies` | 15 | 0 |
 | `frontend-ir-assembly` | 63 | 1 |
 | `build-output-identity` | 6 | 0 |
@@ -371,7 +372,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `runtime-profile-schema-authority` | 6 | 0 |
 | `op-kind-registry` | 20 | 1 |
 | `tinygrad-op-contract` | 9 | 2 |
-| `intrinsic-registry` | 15 | 0 |
+| `intrinsic-registry` | 22 | 0 |
 | `llvm-runtime-abi` | 8 | 1 |
 | `source-extension-package-sets` | 44 | 0 |
 | `source-extension-proof-policy` | 58 | 0 |
@@ -440,8 +441,10 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
+| `pending-call-source-authority` | 20 | 1 |
 | `compression-stream-state` | 1 | 1 |
 | `release-work-state` | 5 | 0 |
+| `runtime-name-registry` | 4 | 0 |
 
 ## Selection contract
 

@@ -211,8 +211,8 @@ fn python_subclasses_keep_both_length_slots_through_override_and_deletion() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let name = crate::attr_name_bits_from_bytes(py, b"mappingproxy").unwrap();
-            let key = crate::attr_name_bits_from_bytes(py, b"__len__").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"mappingproxy").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let seventeen = function(py, length_seventeen as *const (), 1);
             for base in [
                 crate::builtin_classes(py).dict,
@@ -299,10 +299,10 @@ fn native_unraisable_args_inherit_tuple_protocol_slots_and_consumers() {
         unsafe {
             // Obtain the real hidden native subtype through its production
             // reporting path, retaining the exact argument passed to the hook.
-            let sys_name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+            let sys_name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
             let sys = crate::builtins::modules::molt_module_new(sys_name);
             crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
-            let key = crate::attr_name_bits_from_bytes(py, b"unraisablehook").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"unraisablehook").unwrap();
             let hook = function(py, capture_protocol_args as *const (), 1);
             crate::builtins::modules::molt_module_set_attr(sys, key, hook);
             assert!(!crate::exception_pending(py));
@@ -422,7 +422,7 @@ fn native_unraisable_args_inherit_tuple_protocol_slots_and_consumers() {
 
 unsafe fn native_protocol_subclass(py: &crate::PyToken<'_>, name: &[u8], base: u64) -> u64 {
     unsafe {
-        let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+        let name = crate::dynamic_attr_name_bits(py, name).unwrap();
         let class = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         let pointer = obj_from_bits(class).as_ptr().unwrap();
@@ -455,8 +455,8 @@ fn native_inherited_slot_admission_obeys_nearest_declaration_and_sibling_names()
                 pointer,
                 &[molt_cpython_abi::hooks::NativeProtocolSlot::MappingLength],
             );
-            let len = crate::attr_name_bits_from_bytes(py, b"__len__").unwrap();
-            let mul = crate::attr_name_bits_from_bytes(py, b"__mul__").unwrap();
+            let len = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
+            let mul = crate::dynamic_attr_name_bits(py, b"__mul__").unwrap();
             let length = function(py, length_seventeen as *const (), 1);
             let multiply = function(py, protocol_multiply_seventeen as *const (), 2);
             crate::molt_set_attr_name(parent, len, length);

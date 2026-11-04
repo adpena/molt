@@ -12087,7 +12087,7 @@ def test_collect_imports_resolves_canonical_relative_importlib_wrapper() -> None
     assert "importlib.machinery" in imports
 
 
-def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> None:
+def test_collect_imports_real_importlib_init_defers_util() -> None:
     importlib_init = (
         cli_module_resolution._stdlib_root_path() / "importlib" / "__init__.py"
     )
@@ -12103,7 +12103,8 @@ def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> No
     )
 
     assert "importlib.machinery" in imports
-    assert "importlib.util" in imports
+    # As in CPython, the package body leaves importlib.util to its first import.
+    assert "importlib.util" not in imports
     assert "importlib._bootstrap" in imports
     assert "importlib._bootstrap_external" in imports
 
@@ -20272,12 +20273,17 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
     entry = tmp_path / "main.py"
     entry.write_text("print(1)\n", encoding="utf-8")
     graph = _discover_with_core_modules(entry)
-    assert "builtins" in graph
-    assert "sys" in graph
-    # importlib is only included when MOLT_STDLIB_PROFILE != "micro" (the default)
-    assert "warnings" not in graph
-    assert "re" not in graph
-    assert "dataclasses" not in graph
+    # The micro core must not admit providers of copyreg's union recipe.
+    # Their intrinsic handles preserve identity without Python import edges.
+    assert set(graph) == {
+        "main",
+        "__future__",
+        "_io",
+        "_sitebuiltins",
+        "builtins",
+        "copyreg",
+        "sys",
+    }
 
 
 def test_typing_module_init_imports_collections_abc_without_warnings_regex() -> None:

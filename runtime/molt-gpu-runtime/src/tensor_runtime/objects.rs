@@ -261,18 +261,13 @@ pub(super) unsafe fn module_global_bits(
     }
     let attr_bits =
         attr_name_bits_from_bytes(_py, attr_name).ok_or_else(|| MoltObject::none().bits())?;
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(module_bits, attr_bits, missing);
+    let result = lookup_attribute(module_bits, attr_bits);
     dec_ref_bits(_py, attr_bits);
     dec_ref_bits(_py, module_bits);
-    if exception_pending(_py) && !is_missing_bits(_py, value_bits) {
-        let _ = molt_exception_clear();
-    }
-    if exception_pending(_py) {
-        return Err(value_bits);
-    }
-    if is_missing_bits(_py, value_bits) {
-        return Err(raise_exception::<_>(
+    match result {
+        molt_obj_model::AttributeLookup::Found(bits) => Ok(bits),
+        molt_obj_model::AttributeLookup::Error => Err(MoltObject::none().bits()),
+        molt_obj_model::AttributeLookup::Missing => Err(raise_exception::<_>(
             _py,
             BuiltinExc::AttributeError,
             &format!(
@@ -280,9 +275,8 @@ pub(super) unsafe fn module_global_bits(
                 String::from_utf8_lossy(module_name),
                 attr_label
             ),
-        ));
+        )),
     }
-    Ok(value_bits)
 }
 
 pub(super) unsafe fn ensure_tensor_object_bits(_py: &PyToken, value_bits: u64) -> Result<u64, u64> {

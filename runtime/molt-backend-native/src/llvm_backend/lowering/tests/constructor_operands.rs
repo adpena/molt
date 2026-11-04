@@ -34,12 +34,11 @@ enum OperandConstructor {
     Slice,
     PreservedSlice,
     DirectSlice,
-    DataclassValues,
     Class,
 }
 
 impl OperandConstructor {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 8] = [
         Self::Tuple,
         Self::List,
         Self::PreservedTuple,
@@ -47,7 +46,6 @@ impl OperandConstructor {
         Self::Slice,
         Self::PreservedSlice,
         Self::DirectSlice,
-        Self::DataclassValues,
         Self::Class,
     ];
 
@@ -56,7 +54,6 @@ impl OperandConstructor {
             Self::Tuple | Self::PreservedTuple => "molt_tuple_from_values",
             Self::List | Self::PreservedList => "molt_list_from_values",
             Self::Slice | Self::PreservedSlice | Self::DirectSlice => "molt_slice_new",
-            Self::DataclassValues => "molt_dataclass_new_from_values",
             Self::Class => "molt_guarded_class_def",
         }
     }
@@ -65,7 +62,6 @@ impl OperandConstructor {
         match self {
             Self::Slice => "slice",
             Self::PreservedSlice | Self::DirectSlice => "boxed_call",
-            Self::DataclassValues => "dataclass",
             Self::Class => "class",
             _ => "sequence",
         }
@@ -78,8 +74,8 @@ impl OperandConstructor {
     }
 
     /// The operation whose constructor words are `[first, first, second]`.
-    /// Header operands (the dataclass-values name, fields and flags; the class
-    /// name) are None. The class takes `first` as its base and `(first, second)`
+    /// The class name header is None. The class takes `first` as its base and
+    /// `(first, second)`
     /// as one namespace pair: operand roles do not change transport custody.
     fn operation(
         self,
@@ -95,7 +91,6 @@ impl OperandConstructor {
             Self::PreservedList => Some(OpKind::ListNew),
             Self::PreservedSlice => Some(OpKind::SliceNew),
             Self::DirectSlice => Some(OpKind::Call),
-            Self::DataclassValues => Some(OpKind::DataclassNewValues),
             Self::Class => Some(OpKind::ClassDef),
         };
         let (opcode, operands, attrs) = match self {
@@ -109,11 +104,6 @@ impl OperandConstructor {
                 OpCode::Call,
                 words,
                 AttrDict::from([("s_value".into(), AttrValue::Str("molt_slice_new".into()))]),
-            ),
-            Self::DataclassValues => (
-                OpCode::Copy,
-                [vec![none; 3], words].concat(),
-                AttrDict::new(),
             ),
             Self::Class => {
                 let mut attrs = AttrDict::new();
@@ -456,7 +446,6 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
         "%sequence_owner = alloca i64",
         "%slice_owner = alloca i64",
         "%sequence_values = alloca i64, i64 3",
-        "%dataclass_values = alloca i64, i64 3",
         "%class_bases = alloca i64, i64 1",
         "%class_attrs = alloca i64, i64 2",
         "%unpack_out = alloca i64, i64 1",
@@ -562,17 +551,6 @@ pub extern "C" fn molt_slice_new(start: u64, stop: u64, step: u64) -> u64 {
     construct(&[start, stop, step])
 }
 #[no_mangle]
-pub unsafe extern "C" fn molt_dataclass_new_from_values(
-    name: u64,
-    fields: u64,
-    address: u64,
-    len: u64,
-    flags: u64,
-) -> u64 {
-    assert_eq!([name, fields, flags], [NONE; 3], "header words are direct arguments");
-    construct(unsafe { words(address, len) })
-}
-#[no_mangle]
 pub unsafe extern "C" fn molt_guarded_class_def(
     name: u64,
     bases: u64,
@@ -630,7 +608,6 @@ const EVERY_FAILURE: [(u64, u64); 4] = [(0, 0), (1, 0), (2, 0), (0, 1)];
 extern "C" {
     fn fixed_tuple() -> u64;
     fn fixed_list() -> u64;
-    fn fixed_dataclass_values() -> u64;
     fn fixed_class() -> u64;
     fn fixed_slice() -> u64;
     fn fixed_preserved_slice() -> u64;
@@ -698,7 +675,6 @@ fn main() {
     for (name, construct) in [
         ("tuple", fixed_tuple as unsafe extern "C" fn() -> u64),
         ("list", fixed_list),
-        ("dataclass_values", fixed_dataclass_values),
         ("class", fixed_class),
         ("slice", fixed_slice),
         ("preserved_slice", fixed_preserved_slice),
@@ -746,11 +722,6 @@ fn constructor_operands_execute_identity_failures_and_discarded_results() {
     for (name, constructor, bound) in [
         ("fixed_tuple", OperandConstructor::Tuple, true),
         ("fixed_list", OperandConstructor::List, true),
-        (
-            "fixed_dataclass_values",
-            OperandConstructor::DataclassValues,
-            true,
-        ),
         ("fixed_class", OperandConstructor::Class, true),
         ("fixed_slice", OperandConstructor::Slice, true),
         (
@@ -1979,7 +1950,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             // is not projected into TIR. The canonical producer must treat an
             // opaque TIR call as a boxed observation; this manual map does not
             // qualify a producer exemption for a raw native call operand.
-            let mut facts = crate::representation_plan::LlvmReprFacts::default();
+            let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
             facts
                 .repr_by_value
                 .insert(view_id.unwrap(), crate::Repr::RawI64FullDeopt);
@@ -2087,11 +2058,11 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             // may instead keep a raw home with stable tagged observations.
             backend.function_repr_facts.insert(
                 func.name.clone(),
-                crate::representation_plan::LlvmReprFacts::default(),
+                crate::representation_plan::ProducerCarrierPlan::default(),
             );
             continue;
         }
-        let facts = crate::representation_plan::LlvmReprFacts::build(func);
+        let facts = crate::representation_plan::ProducerCarrierPlan::build(func);
         for op in func.blocks.values().flat_map(|block| &block.ops) {
             if matches!(op.origin, Some(OpKind::FrameHomeStore)) {
                 for &view in &op.results {
@@ -2223,7 +2194,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             },
         );
     }
-    let facts = crate::representation_plan::LlvmReprFacts::build(&numeric);
+    let facts = crate::representation_plan::ProducerCarrierPlan::build(&numeric);
     for value in [wide, view, alias, sum, expected] {
         assert!(
             facts.is_full_deopt_int(value),
@@ -2689,6 +2660,10 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
     functions.push(adopted_call_loop());
     functions.extend(binding_home_functions(&mut backend));
     for func in &functions {
+        backend
+            .function_repr_facts
+            .entry(func.name.clone())
+            .or_insert_with(|| crate::representation_plan::ProducerCarrierPlan::build(func));
         let lowered = lower_tir_to_llvm(func, &backend);
         assert_entry_only_allocas(lowered, &lowered.print_to_string().to_string());
     }

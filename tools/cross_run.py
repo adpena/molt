@@ -130,6 +130,7 @@ def _guarded_run(
     stderr_capture_path: Path | None = None,
     capture_tail_bytes: int | None = None,
     cancellation_requested: Callable[[], bool] | None = None,
+    input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
     proc = harness_memory_guard.guarded_completed_process(
         cmd,
@@ -139,6 +140,7 @@ def _guarded_run(
         capture_output=capture_output,
         text=text,
         timeout=timeout,
+        input=input,
         **(
             {"cancellation_requested": cancellation_requested}
             if cancellation_requested is not None
@@ -304,6 +306,10 @@ class HostOS(StrEnum):
 class DetachedLauncher(StrEnum):
     WINDOWS_CIM = "windows-cim"
     POSIX_SESSION = "posix-session"
+    # A WSL guest's instance lives only while a Windows wsl.exe client is
+    # registered with it (docs/design/trunk_loop.md). CIM creates that client
+    # outside the SSH job; it runs the worker and exits with it.
+    WSL_SESSION = "wsl-session"
 
 
 @dataclasses.dataclass
@@ -324,7 +330,16 @@ class Host:
     os: HostOS | None = None
     custody_root: str | None = None
     checkout: str | None = None
-    python: str | None = None
+    wsl_distribution: str | None = None
+    wsl_vhdx: str | None = None
+    wsl_disk_gb: int | None = None
+    wsl_memory_gb: int | None = None
+    wsl_swap_gb: int | None = None
+    # The WSL release whose disk resize and compaction the design reviewed.
+    wsl_engine_version: str | None = None
+    # Owner approval for provision to apt-install the declared guest packages.
+    install_system_packages: bool = False
+    proof_build_gb: int = 20
     launcher: DetachedLauncher | None = None
     proof_cells: tuple[str, ...] = ()
     proof_cargo_output_root: str | None = None
@@ -389,7 +404,14 @@ def parse_inventory(path: Path) -> list[Host]:
             os=HostOS(entry["os"]) if "os" in entry else None,
             custody_root=entry.get("custody_root"),
             checkout=entry.get("checkout"),
-            python=entry.get("python"),
+            wsl_distribution=entry.get("wsl_distribution"),
+            wsl_vhdx=entry.get("wsl_vhdx"),
+            wsl_disk_gb=entry.get("wsl_disk_gb"),
+            wsl_memory_gb=entry.get("wsl_memory_gb"),
+            wsl_swap_gb=entry.get("wsl_swap_gb"),
+            wsl_engine_version=entry.get("wsl_engine_version"),
+            install_system_packages=entry.get("install_system_packages", False),
+            proof_build_gb=entry.get("proof_build_gb", 20),
             launcher=DetachedLauncher(entry["launcher"])
             if "launcher" in entry
             else None,
@@ -407,18 +429,66 @@ def parse_inventory(path: Path) -> list[Host]:
             or len(set(host.proof_cells)) != len(host.proof_cells)
         ):
             raise ValueError(f"host {name!r}: proof_cells must be unique command ids")
-        if host.proof_cells and not all(
-            (host.os, host.custody_root, host.checkout, host.python, host.launcher)
+        if "python" in entry:
+            raise ValueError(
+                f"host {name!r}: Python is owned by uv; remove inventory python"
+            )
+        if type(host.proof_build_gb) is not int or host.proof_build_gb < 20:
+            raise ValueError(
+                "proof_build_gb must admit at least one 20 GiB proof build"
+            )
+        if type(host.install_system_packages) is not bool or (
+            host.install_system_packages and host.wsl_distribution is None
         ):
             raise ValueError(
-                f"host {name!r}: proof host needs OS, custody_root, checkout, python and launcher"
+                f"host {name!r}: install_system_packages is a boolean approval "
+                "for a WSL gate guest only"
+            )
+        if host.wsl_distribution is not None:
+            if (
+                host.os != HostOS.LINUX
+                or host.shell != "bash"
+                or not isinstance(host.wsl_distribution, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", host.wsl_distribution)
+                or not isinstance(host.wsl_vhdx, str)
+                or not host.wsl_vhdx.startswith("C:\\")
+                or not isinstance(host.wsl_engine_version, str)
+                or not re.fullmatch(r"\d+\.\d+\.\d+", host.wsl_engine_version)
+                or any(
+                    type(v) is not int or v <= 0
+                    for v in (host.wsl_disk_gb, host.wsl_memory_gb, host.wsl_swap_gb)
+                )
+                or host.wsl_disk_gb < host.proof_build_gb
+            ):
+                raise ValueError(f"host {name!r}: invalid WSL NVMe budget/profile")
+        elif any(
+            v is not None
+            for v in (
+                host.wsl_vhdx,
+                host.wsl_disk_gb,
+                host.wsl_memory_gb,
+                host.wsl_swap_gb,
+                host.wsl_engine_version,
+            )
+        ):
+            raise ValueError(f"host {name!r}: WSL profile requires a distribution")
+        if host.proof_cells and not all(
+            (host.os, host.custody_root, host.checkout, host.launcher)
+        ):
+            raise ValueError(
+                f"host {name!r}: proof host needs OS, custody_root, checkout and launcher"
             )
         if host.launcher is not None and (
             (host.os == HostOS.WINDOWS)
             != (host.launcher == DetachedLauncher.WINDOWS_CIM)
             or (host.os == HostOS.WINDOWS) != (host.shell == "powershell")
+            # A guest-side POSIX session cannot hold its WSL instance.
+            or (host.wsl_distribution is not None)
+            != (host.launcher == DetachedLauncher.WSL_SESSION)
         ):
-            raise ValueError(f"host {name!r}: launcher, OS and shell disagree")
+            raise ValueError(
+                f"host {name!r}: launcher, OS, shell and WSL distribution disagree"
+            )
         if transport == "ssh":
             if not host.hostname or not host.user:
                 raise ValueError(
@@ -644,24 +714,66 @@ class SSHTransport(Transport):
             ]
         return self._ssh_base() + [command]
 
+    def windows_command(self, script: str, *, timeout: int = 60) -> str:
+        command = self._ssh_base() + [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode(script.encode("utf-16-le")).decode("ascii"),
+        ]
+        result = _guarded_run(command, timeout=timeout)
+        if result.returncode:
+            raise RuntimeError(
+                f"{self.host.name}: Windows command failed: {result.stderr} {result.stdout}"
+            )
+        return result.stdout.strip()
+
+    def _wsl_argv(self, *argv: str, root: bool = False) -> list[str]:
+        distribution = self.host.wsl_distribution
+        if distribution is None:
+            raise ValueError("WSL execution requires an inventoried distribution")
+        return self._ssh_base() + [
+            "wsl.exe",
+            "-d",
+            distribution,
+            *(["--user", "root"] if root else []),
+            "--",
+            *argv,
+        ]
+
+    def wsl_root_command(self, script: str, *, timeout: int = 60) -> str:
+        """Apply declared guest provisioning through the existing stdin boundary."""
+        result = _guarded_run(
+            self._wsl_argv("bash", "-s", root=True),
+            input=script + "\n",
+            timeout=timeout,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"{self.host.name}: WSL root command failed: {result.stderr} {result.stdout}"
+            )
+        return result.stdout.strip()
+
     def shell_command(self, script: str, *, timeout: int = 60) -> str:
         """Execute a script through the same SSH owner; preserve PowerShell bytes.
 
         EncodedCommand avoids both cmd.exe and PowerShell reinterpreting quote
         boundaries. This is also used for the farm's detached launcher.
         """
-        command = (
-            self._ssh_base()
-            + [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                base64.b64encode(script.encode("utf-16-le")).decode("ascii"),
-            ]
-            if self.host.shell == "powershell"
-            else self._ssh_base() + ["sh -c " + shlex.quote(script)]
-        )
+        if self.host.wsl_distribution:
+            # Windows command-line quoting must never carry a POSIX script.
+            result = _guarded_run(
+                self._wsl_argv("bash", "-s"), input=script + "\n", timeout=timeout
+            )
+            if result.returncode:
+                raise RuntimeError(
+                    f"{self.host.name}: WSL command failed: {result.stderr} {result.stdout}"
+                )
+            return result.stdout.strip()
+        if self.host.shell == "powershell":
+            return self.windows_command(script, timeout=timeout)
+        command = self._ssh_base() + ["sh -c " + shlex.quote(script)]
         result = _guarded_run(command, timeout=timeout)
         if result.returncode:
             raise RuntimeError(
@@ -676,6 +788,16 @@ class SSHTransport(Transport):
             "..",
         }:
             raise ValueError("collection requires one literal stage filename")
+        if self.host.wsl_distribution:
+            result = _guarded_run(
+                self._wsl_argv("cat", self.remote_path(remote_name)),
+                text=False,
+                timeout=180,
+            )
+            if result.returncode:
+                raise RuntimeError(f"WSL collection failed: {result.stderr!r}")
+            destination.write_bytes(result.stdout)
+            return
         source = f"{self.host.user}@{self.host.hostname}:{self._scp_remote_path(self.remote_path(remote_name))}"
         result = _guarded_run(
             self._scp_base() + [source, str(destination)], timeout=180
@@ -722,6 +844,9 @@ class SSHTransport(Transport):
                 f"printf %s {self._nonce} > {marker} || {{ "
                 f"rm -f {marker}; rmdir {directory}; exit 1; }}; }}"
             )
+        if self.host.wsl_distribution:
+            self.shell_command(mkdir)
+            return
         proc = _guarded_run(
             self._remote_shell_invoke(mkdir),
             capture_output=True,
@@ -740,6 +865,24 @@ class SSHTransport(Transport):
         # scp each file individually so a single bad path doesn't sink the
         # whole batch; this keeps error reporting per-file.
         for src in local_files:
+            if self.host.wsl_distribution:
+                import io
+                import tarfile
+
+                payload = io.BytesIO()
+                with tarfile.open(
+                    fileobj=payload, mode="w", dereference=True
+                ) as archive:
+                    archive.add(src, arcname=src.name, recursive=False)
+                result = _guarded_run(
+                    self._wsl_argv("tar", "-xC", self.execution_dir),
+                    input=payload.getvalue(),
+                    text=False,
+                    timeout=180,
+                )
+                if result.returncode:
+                    raise RuntimeError(f"WSL transfer failed: {result.stderr!r}")
+                continue
             dest = f"{self.host.user}@{self.host.hostname}:{self._scp_remote_path(self.execution_dir)}/"
             cmd = self._scp_base() + [str(src), dest]
             proc = _guarded_run(cmd, capture_output=True, text=True, timeout=180)
@@ -750,6 +893,13 @@ class SSHTransport(Transport):
                 )
 
     def run(self, remote_argv: list[str], *, timeout: int) -> tuple[int, str, str]:
+        if self.host.wsl_distribution:
+            result = _guarded_run(
+                self._wsl_argv("bash", "-s"),
+                input=shlex.join(remote_argv) + "\n",
+                timeout=timeout,
+            )
+            return result.returncode, result.stdout, result.stderr
         if self.host.shell == "powershell":
             # Quote arguments using PowerShell single-quote rules.
             ps_args = []
@@ -792,6 +942,9 @@ class SSHTransport(Transport):
                 "{ echo 'SSH staging ownership differs; retained' >&2; exit 1; }; "
                 f"rm -rf {directory}; fi"
             )
+        if self.host.wsl_distribution:
+            self.shell_command(rm)
+            return
         proc = _guarded_run(
             self._remote_shell_invoke(rm),
             capture_output=True,

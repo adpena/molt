@@ -238,7 +238,8 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
             let sock_bits = *payload_ptr.add(ASYNCIO_SOCK_RECV_SLOT_SOCK);
             let size_bits = *payload_ptr.add(ASYNCIO_SOCK_RECV_SLOT_SIZE);
             let flags_bits = MoltObject::from_int(asyncio_msg_dontwait()).bits();
-            let out_bits = asyncio_call_method2(_py, sock_bits, b"recv", size_bits, flags_bits);
+            let out_bits =
+                asyncio_call_method2(_py, sock_bits, crate::NameId::Recv, size_bits, flags_bits);
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
                 let errno = asyncio_oserror_errno_from_exception(_py, exc_bits).unwrap_or(i64::MIN);
@@ -326,7 +327,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 
             let out_bits = asyncio_call_method3(
                 _py,
                 sock_bits,
-                b"recv_into",
+                crate::NameId::RecvInto,
                 buf_bits,
                 nbytes_bits,
                 flags_bits,
@@ -464,7 +465,13 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
                 }
 
                 let flags_bits = MoltObject::from_int(asyncio_msg_dontwait()).bits();
-                let out_bits = asyncio_call_method2(_py, sock_bits, b"send", tail_bits, flags_bits);
+                let out_bits = asyncio_call_method2(
+                    _py,
+                    sock_bits,
+                    crate::NameId::Send,
+                    tail_bits,
+                    flags_bits,
+                );
                 dec_ref_bits(_py, tail_bits);
                 if exception_pending(_py) {
                     let exc_bits = asyncio_take_pending_exception_bits(_py);
@@ -580,7 +587,13 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
             let sock_bits = *payload_ptr.add(ASYNCIO_SOCK_RECVFROM_SLOT_SOCK);
             let size_bits = *payload_ptr.add(ASYNCIO_SOCK_RECVFROM_SLOT_SIZE);
             let flags_bits = MoltObject::from_int(asyncio_msg_dontwait()).bits();
-            let out_bits = asyncio_call_method2(_py, sock_bits, b"recvfrom", size_bits, flags_bits);
+            let out_bits = asyncio_call_method2(
+                _py,
+                sock_bits,
+                crate::NameId::Recvfrom,
+                size_bits,
+                flags_bits,
+            );
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
                 let errno = asyncio_oserror_errno_from_exception(_py, exc_bits).unwrap_or(i64::MIN);
@@ -668,7 +681,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> 
             let out_bits = asyncio_call_method3(
                 _py,
                 sock_bits,
-                b"recvfrom_into",
+                crate::NameId::RecvfromInto,
                 buf_bits,
                 nbytes_bits,
                 flags_bits,
@@ -757,8 +770,14 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
             let data_bits = *payload_ptr.add(ASYNCIO_SOCK_SENDTO_SLOT_DATA);
             let addr_bits = *payload_ptr.add(ASYNCIO_SOCK_SENDTO_SLOT_ADDR);
             let flags_bits = MoltObject::from_int(asyncio_msg_dontwait()).bits();
-            let out_bits =
-                asyncio_call_method3(_py, sock_bits, b"sendto", data_bits, flags_bits, addr_bits);
+            let out_bits = asyncio_call_method3(
+                _py,
+                sock_bits,
+                crate::NameId::Sendto,
+                data_bits,
+                flags_bits,
+                addr_bits,
+            );
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
                 let errno = asyncio_oserror_errno_from_exception(_py, exc_bits).unwrap_or(i64::MIN);
@@ -852,7 +871,8 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
             let addr_bits = *payload_ptr.add(ASYNCIO_SOCK_CONNECT_SLOT_ADDR);
             let mut allow_immediate_retry = true;
             loop {
-                let rc_bits = asyncio_call_method1(_py, sock_bits, b"connect_ex", addr_bits);
+                let rc_bits =
+                    asyncio_call_method1(_py, sock_bits, crate::NameId::ConnectEx, addr_bits);
                 if exception_pending(_py) {
                     let exc_bits = asyncio_take_pending_exception_bits(_py);
                     let errno =
@@ -1001,7 +1021,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
             }
             let payload_ptr = obj_ptr as *mut u64;
             let sock_bits = *payload_ptr.add(ASYNCIO_SOCK_ACCEPT_SLOT_SOCK);
-            let out_bits = asyncio_call_method0(_py, sock_bits, b"accept");
+            let out_bits = asyncio_call_method0(_py, sock_bits, crate::NameId::Accept);
             if exception_pending(_py) {
                 let exc_bits = asyncio_take_pending_exception_bits(_py);
                 let errno = asyncio_oserror_errno_from_exception(_py, exc_bits).unwrap_or(i64::MIN);

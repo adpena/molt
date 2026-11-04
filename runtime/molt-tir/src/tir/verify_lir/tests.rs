@@ -578,3 +578,16 @@ fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
         }
     }
 }
+
+#[test]
+fn immortal_carriers_can_forget_but_never_invent_their_no_rc_proof() {
+    use super::signature::signature_value_accepts_repr;
+    let immortal = value(0, TirType::None, LirRepr::Immortal64);
+    assert!(signature_value_accepts_repr(&TirType::None, &immortal));
+    assert!(signature_value_accepts_repr(&TirType::DynBox, &immortal));
+    assert!(!signature_value_accepts_repr(&TirType::I64, &immortal));
+    assert!(LirRepr::DynBox.accepts(LirRepr::Immortal64));
+    assert!(!LirRepr::Immortal64.accepts(LirRepr::DynBox));
+    assert!(!LirRepr::I64.accepts(LirRepr::Immortal64));
+    assert!(!LirRepr::Immortal64.accepts(LirRepr::I64));
+}

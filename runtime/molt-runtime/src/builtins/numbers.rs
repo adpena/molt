@@ -1187,11 +1187,13 @@ pub(crate) fn exact_integer_from_storage(py: &PyToken<'_>, bits: u64) -> Option<
 
 /// One type-level slot call owns conversion, strict result validation, subtype
 /// warnings, and owned-result transfer. None without an error means absent.
-fn integer_from_special(py: &PyToken<'_>, bits: u64, name: &'static [u8]) -> Option<u64> {
-    let callable = match unsafe { crate::builtins::attr::lookup_special_method(py, bits, name) } {
-        Ok(method) => method?,
-        Err(()) => return None,
-    };
+fn integer_from_special(py: &PyToken<'_>, bits: u64, name: crate::NameId) -> Option<u64> {
+    let callable =
+        match unsafe { crate::builtins::attr::lookup_special_method(py, bits, name).into_result() }
+        {
+            Ok(method) => method?,
+            Err(()) => return None,
+        };
     let callable_owner = obj_from_bits(callable)
         .as_ptr()
         .map(crate::PtrDropGuard::new);
@@ -1201,7 +1203,7 @@ fn integer_from_special(py: &PyToken<'_>, bits: u64, name: &'static [u8]) -> Opt
     if exception_pending(py) {
         return None;
     }
-    let protocol = std::str::from_utf8(name).expect("integer protocol is ASCII");
+    let protocol = name.as_str();
     if let Some(native) = native_numeric_object(result) {
         use molt_cpython_abi::api::{abstract_number, object, refcount};
         let validated =
@@ -1289,7 +1291,7 @@ pub(crate) fn index_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
         });
         return native_numeric_result(py, result, "native index conversion");
     }
-    integer_from_special(py, bits, b"__index__")
+    integer_from_special(py, bits, crate::NameId::DunderIndex)
 }
 
 /// Required index conversion, shared by public operator.index and the private
@@ -1317,7 +1319,7 @@ pub(crate) fn index_bigint_from_obj(py: &PyToken<'_>, bits: u64, err: &str) -> O
         Ok(None) => {}
         Err(()) => return None,
     }
-    if let Some(result) = integer_from_special(py, bits, b"__index__") {
+    if let Some(result) = integer_from_special(py, bits, crate::NameId::DunderIndex) {
         let _owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
         return integer_storage_bigint(py, result).ok().flatten();
     }
@@ -1374,7 +1376,7 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
         }
         return Some(int_bits_from_bigint(py, bigint_from_f64_trunc(value)));
     }
-    if let Some(value) = integer_from_special(py, bits, b"__int__") {
+    if let Some(value) = integer_from_special(py, bits, crate::NameId::DunderInt) {
         return Some(exact_integer_from_owned(py, value));
     }
     if exception_pending(py) {
@@ -1386,11 +1388,13 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
     if exception_pending(py) || crate::object::ops_sys::runtime_target_minor(py) >= 14 {
         return None;
     }
-    let callable =
-        match unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__trunc__") } {
-            Ok(method) => method?,
-            Err(()) => return None,
-        };
+    let callable = match unsafe {
+        crate::builtins::attr::lookup_special_method(py, bits, crate::NameId::DunderTrunc)
+            .into_result()
+    } {
+        Ok(method) => method?,
+        Err(()) => return None,
+    };
     let callable_owner = obj_from_bits(callable)
         .as_ptr()
         .map(crate::PtrDropGuard::new);
@@ -1568,11 +1572,13 @@ pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
     {
         return integer_as_double(py, unsafe { bigint_ref(ptr) }).map(FloatConversion::value);
     }
-    let float_method =
-        match unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__float__") } {
-            Ok(method) => method,
-            Err(()) => return None,
-        };
+    let float_method = match unsafe {
+        crate::builtins::attr::lookup_special_method(py, bits, crate::NameId::DunderFloat)
+            .into_result()
+    } {
+        Ok(method) => method,
+        Err(()) => return None,
+    };
     if let Some(call_bits) = float_method {
         let callable_owner = obj_from_bits(call_bits)
             .as_ptr()
@@ -1740,7 +1746,7 @@ mod float_conversion_tests {
     }
 
     fn conversion_class(py: &PyToken<'_>, base: u64, float: bool, index: bool) -> u64 {
-        let name = attr_name_bits_from_bytes(py, b"FloatConversionContract").unwrap();
+        let name = dynamic_attr_name_bits(py, b"FloatConversionContract").unwrap();
         let class = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         crate::molt_class_set_base(class, base);
@@ -1762,7 +1768,7 @@ mod float_conversion_tests {
             if !enabled {
                 continue;
             }
-            let name = attr_name_bits_from_bytes(py, name).unwrap();
+            let name = dynamic_attr_name_bits(py, name).unwrap();
             let function =
                 alloc_runtime_function_obj(py, runtime_fn_addr(symbol, method as *const ()), 1);
             assert!(!function.is_null());
@@ -1822,7 +1828,7 @@ mod float_conversion_tests {
         callback: *const (),
         arity: u64,
     ) {
-        let name = attr_name_bits_from_bytes(py, name).unwrap();
+        let name = dynamic_attr_name_bits(py, name).unwrap();
         let function = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, callback), arity);
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
@@ -1855,7 +1861,7 @@ mod float_conversion_tests {
             let producer = plain_instance(py, producer_class);
             let wide = bigint_bits(py, (BigInt::from(1u8) << 100usize) + 13u8);
             let subtype = crate::molt_int_new(int_class, wide, missing_bits(py));
-            let ignore = attr_name_bits_from_bytes(py, b"ignore").unwrap();
+            let ignore = dynamic_attr_name_bits(py, b"ignore").unwrap();
             crate::molt_warnings_resetwarnings();
             crate::molt_warnings_simplefilter(
                 ignore,
@@ -2047,8 +2053,8 @@ mod float_conversion_tests {
                 py,
                 BuiltinExc::DeprecationWarning,
             );
-            let ignore = attr_name_bits_from_bytes(py, b"ignore").unwrap();
-            let error = attr_name_bits_from_bytes(py, b"error").unwrap();
+            let ignore = dynamic_attr_name_bits(py, b"ignore").unwrap();
+            let error = dynamic_attr_name_bits(py, b"error").unwrap();
             for minor in [12, 13, 14] {
                 transaction.with_target_python_minor(py, minor, || {
                     for (action, raises) in [(ignore, false), (error, true)] {
@@ -2168,7 +2174,7 @@ mod float_conversion_tests {
     fn float_conversion_contract_ordinary_words_and_unsealed_classes_are_not_scalar_storage() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"ScalarStorageLookalike").unwrap();
+            let name = dynamic_attr_name_bits(py, b"ScalarStorageLookalike").unwrap();
             let class = crate::molt_class_new(name);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             assert_eq!(
@@ -2187,8 +2193,8 @@ mod float_conversion_tests {
                 "scalar class has no matching intrinsic value word",
             );
             let base_result = crate::molt_class_set_base(class, builtin_classes(py).object);
-            let slots = attr_name_bits_from_bytes(py, b"__slots__").unwrap();
-            let field = attr_name_bits_from_bytes(py, b"payload").unwrap();
+            let slots = dynamic_attr_name_bits(py, b"__slots__").unwrap();
+            let field = dynamic_attr_name_bits(py, b"payload").unwrap();
             let declaration = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
             unsafe {
                 let namespace = obj_from_bits(class_dict_bits(class_ptr)).as_ptr().unwrap();
@@ -2377,7 +2383,7 @@ mod float_conversion_tests {
             );
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
 
-            let format = attr_name_bits_from_bytes(py, b"%d").unwrap();
+            let format = dynamic_attr_name_bits(py, b"%d").unwrap();
             let rendered = crate::molt_mod(format, value);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
@@ -2643,7 +2649,7 @@ mod float_conversion_tests {
                 (index_value, b"%x".as_slice()),
                 (index_value, b"%c".as_slice()),
             ] {
-                let format = attr_name_bits_from_bytes(py, format).unwrap();
+                let format = dynamic_attr_name_bits(py, format).unwrap();
                 for returned in [inline, heap, tagged] {
                     reset_callbacks(returned, false);
                     let failed = crate::molt_mod(format, receiver);
@@ -2872,7 +2878,7 @@ mod float_conversion_tests {
                 (large, ">26", " 1208925819614629174706176"),
             ] {
                 let value = crate::molt_int_new(class, payload, missing_bits(py));
-                let spec = attr_name_bits_from_bytes(py, spec.as_bytes()).unwrap();
+                let spec = dynamic_attr_name_bits(py, spec.as_bytes()).unwrap();
                 for receiver in [payload, value] {
                     for render in renderers {
                         reset_callbacks(0, true);
@@ -2889,7 +2895,7 @@ mod float_conversion_tests {
             reset_callbacks(0, false);
             let unrelated = conversion_class(py, builtin_classes(py).object, true, false);
             let value = plain_instance(py, unrelated);
-            let spec = attr_name_bits_from_bytes(py, b".2f").unwrap();
+            let spec = dynamic_attr_name_bits(py, b".2f").unwrap();
             for render in renderers {
                 reset_callbacks(MoltObject::from_float(2.5).bits(), false);
                 let failed = render(value, spec);
@@ -2917,8 +2923,8 @@ mod float_conversion_tests {
             let large = bigint_bits(py, BigInt::from(1u8) << 80usize);
             let integer = crate::molt_int_new(int_class, large, missing_bits(py));
             let floating = crate::molt_float_new(float_class, MoltObject::from_float(-0.0).bits());
-            let empty = attr_name_bits_from_bytes(py, b"").unwrap();
-            let custom = attr_name_bits_from_bytes(py, b"scalar-rendered").unwrap();
+            let empty = dynamic_attr_name_bits(py, b"").unwrap();
+            let custom = dynamic_attr_name_bits(py, b"scalar-rendered").unwrap();
             let unary: [extern "C" fn(u64) -> u64; 2] =
                 [crate::molt_repr_builtin, crate::molt_str_from_obj];
             let renderers: [extern "C" fn(u64, u64) -> u64; 2] =
@@ -2941,7 +2947,7 @@ mod float_conversion_tests {
                 }
                 if class == float_class {
                     for code in ["d", "x"] {
-                        let spec = attr_name_bits_from_bytes(py, code.as_bytes()).unwrap();
+                        let spec = dynamic_attr_name_bits(py, code.as_bytes()).unwrap();
                         for render in renderers {
                             reset_callbacks(0, true);
                             let failed = render(value, spec);
@@ -2984,7 +2990,7 @@ mod float_conversion_tests {
                     scalar_binary_override as *const (),
                     2,
                 );
-                let spec = attr_name_bits_from_bytes(py, spec.as_bytes()).unwrap();
+                let spec = dynamic_attr_name_bits(py, spec.as_bytes()).unwrap();
                 reset_callbacks(custom, false);
                 assert_scalar_rendered_text(
                     py,
@@ -3041,8 +3047,8 @@ mod float_conversion_tests {
         crate::with_gil_entry_nopanic!(py, {
             let class = conversion_class(py, builtin_classes(py).int, true, true);
             let huge = bigint_bits(py, BigInt::from(1u8) << 4096usize);
-            let spec = attr_name_bits_from_bytes(py, b".2f").unwrap();
-            let percent = attr_name_bits_from_bytes(py, b"%.2f").unwrap();
+            let spec = dynamic_attr_name_bits(py, b".2f").unwrap();
+            let percent = dynamic_attr_name_bits(py, b"%.2f").unwrap();
             for payload in [MoltObject::from_int(42).bits(), huge] {
                 let value = crate::molt_int_new(class, payload, missing_bits(py));
                 assert_eq!(
@@ -3087,10 +3093,12 @@ mod float_conversion_tests {
             let value =
                 crate::molt_int_new(inherited, MoltObject::from_int(42).bits(), missing_bits(py));
             reset_callbacks(MoltObject::from_int(99).bits(), true);
-            let method =
-                unsafe { crate::builtins::attr::lookup_special_method(py, value, b"__float__") }
-                    .expect("special lookup succeeds")
-                    .unwrap();
+            let method = unsafe {
+                crate::builtins::attr::lookup_special_method(py, value, crate::NameId::DunderFloat)
+                    .into_result()
+            }
+            .expect("special lookup succeeds")
+            .unwrap();
             let converted = unsafe { call_callable0(py, method) };
             assert_eq!(as_float_extended(obj_from_bits(converted)), Some(42.0));
             assert!(is_exact_float(py, converted));
@@ -3408,7 +3416,7 @@ mod float_conversion_tests {
             let returned = crate::molt_float_new(float_class, MoltObject::from_float(4.25).bits());
             let class = conversion_class(py, builtin_classes(py).object, true, false);
             let value = plain_instance(py, class);
-            let ignore = attr_name_bits_from_bytes(py, b"ignore").unwrap();
+            let ignore = dynamic_attr_name_bits(py, b"ignore").unwrap();
             crate::molt_warnings_simplefilter(
                 ignore,
                 category,
@@ -3418,7 +3426,7 @@ mod float_conversion_tests {
             reset_callbacks(returned, false);
             assert_eq!(float_as_double(py, value), Some(4.25));
             assert!(!exception_pending(py));
-            let error = attr_name_bits_from_bytes(py, b"error").unwrap();
+            let error = dynamic_attr_name_bits(py, b"error").unwrap();
             crate::molt_warnings_simplefilter(
                 error,
                 category,

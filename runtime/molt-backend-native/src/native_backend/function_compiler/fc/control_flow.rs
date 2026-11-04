@@ -54,7 +54,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 ) -> OpFlow {
     let op_prefers_bool_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Bool)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Bool)
     };
     let op_prefers_int_lane =
         |op: &OpIR| super::op_prefers_int_lane(scalar_fast_paths_enabled, representation_plan, op);

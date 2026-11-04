@@ -68,7 +68,7 @@ impl MemberOperation {
 }
 
 struct WrapperMember {
-    name: &'static str,
+    name: crate::NameId,
     owners: &'static [MemberOwner],
     flavor: NativeDescriptorFlavor,
     writable: bool,
@@ -82,7 +82,7 @@ const PROPERTY_WRAPPER: &[MemberOwner] = &[MemberOwner::Property];
 // One authority for publication, mutability, target gating and callback meaning.
 const WRAPPER_MEMBERS: &[WrapperMember] = &[
     WrapperMember {
-        name: "__thisclass__",
+        name: crate::NameId::DunderThisclass,
         owners: &[MemberOwner::Super],
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -90,7 +90,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::SuperReference(0),
     },
     WrapperMember {
-        name: "__self__",
+        name: crate::NameId::DunderSelf,
         owners: &[MemberOwner::Super],
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -98,7 +98,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::SuperReference(1),
     },
     WrapperMember {
-        name: "__self_class__",
+        name: crate::NameId::DunderSelfClass,
         owners: &[MemberOwner::Super],
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -106,7 +106,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::SuperReference(2),
     },
     WrapperMember {
-        name: "cr_running",
+        name: crate::NameId::CrRunning,
         owners: &[MemberOwner::Coroutine],
         flavor: NativeDescriptorFlavor::GetSet,
         writable: false,
@@ -114,7 +114,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::CoroutineRunning,
     },
     WrapperMember {
-        name: "cr_frame",
+        name: crate::NameId::CrFrame,
         owners: &[MemberOwner::Coroutine],
         flavor: NativeDescriptorFlavor::GetSet,
         writable: false,
@@ -122,7 +122,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::CoroutineFrame,
     },
     WrapperMember {
-        name: "cr_code",
+        name: crate::NameId::CrCode,
         owners: &[MemberOwner::Coroutine],
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -130,7 +130,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::CoroutineCode,
     },
     WrapperMember {
-        name: "cr_await",
+        name: crate::NameId::CrAwait,
         owners: &[MemberOwner::Coroutine],
         flavor: NativeDescriptorFlavor::GetSet,
         writable: false,
@@ -138,7 +138,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::CoroutineAwait,
     },
     WrapperMember {
-        name: "__annotate__",
+        name: crate::NameId::DunderAnnotate,
         owners: &[MemberOwner::Type],
         flavor: NativeDescriptorFlavor::RootMetadata,
         writable: true,
@@ -148,7 +148,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         ),
     },
     WrapperMember {
-        name: "__func__",
+        name: crate::NameId::DunderFunc,
         owners: FUNCTION_WRAPPERS,
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -156,7 +156,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Reference(0),
     },
     WrapperMember {
-        name: "__wrapped__",
+        name: crate::NameId::DunderWrapped,
         owners: FUNCTION_WRAPPERS,
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -164,7 +164,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Reference(0),
     },
     WrapperMember {
-        name: "__dict__",
+        name: crate::NameId::DunderDict,
         owners: FUNCTION_WRAPPERS,
         flavor: NativeDescriptorFlavor::GetSet,
         writable: true,
@@ -172,7 +172,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Dictionary,
     },
     WrapperMember {
-        name: "__isabstractmethod__",
+        name: crate::NameId::DunderIsabstractmethod,
         owners: FUNCTION_WRAPPERS,
         flavor: NativeDescriptorFlavor::GetSet,
         writable: false,
@@ -180,7 +180,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Abstract,
     },
     WrapperMember {
-        name: "__annotations__",
+        name: crate::NameId::DunderAnnotations,
         owners: FUNCTION_WRAPPERS,
         flavor: NativeDescriptorFlavor::GetSet,
         writable: true,
@@ -188,7 +188,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::LazyMetadata,
     },
     WrapperMember {
-        name: "__annotate__",
+        name: crate::NameId::DunderAnnotate,
         owners: FUNCTION_WRAPPERS,
         flavor: NativeDescriptorFlavor::GetSet,
         writable: true,
@@ -196,7 +196,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::LazyMetadata,
     },
     WrapperMember {
-        name: "fget",
+        name: crate::NameId::Fget,
         owners: PROPERTY_WRAPPER,
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -204,7 +204,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Reference(0),
     },
     WrapperMember {
-        name: "fset",
+        name: crate::NameId::Fset,
         owners: PROPERTY_WRAPPER,
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -212,7 +212,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Reference(1),
     },
     WrapperMember {
-        name: "fdel",
+        name: crate::NameId::Fdel,
         owners: PROPERTY_WRAPPER,
         flavor: NativeDescriptorFlavor::Member,
         writable: false,
@@ -220,7 +220,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Reference(2),
     },
     WrapperMember {
-        name: "__doc__",
+        name: crate::NameId::DunderDoc,
         owners: PROPERTY_WRAPPER,
         flavor: NativeDescriptorFlavor::Member,
         writable: true,
@@ -228,7 +228,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Reference(3),
     },
     WrapperMember {
-        name: "__name__",
+        name: crate::NameId::DunderName,
         owners: PROPERTY_WRAPPER,
         flavor: NativeDescriptorFlavor::GetSet,
         writable: true,
@@ -236,7 +236,7 @@ const WRAPPER_MEMBERS: &[WrapperMember] = &[
         operation: MemberOperation::Name,
     },
     WrapperMember {
-        name: "__isabstractmethod__",
+        name: crate::NameId::DunderIsabstractmethod,
         owners: PROPERTY_WRAPPER,
         flavor: NativeDescriptorFlavor::GetSet,
         writable: false,
@@ -394,7 +394,7 @@ pub(crate) fn prepare_wrapper_members(
                 if previous_version != 0 && member.minimum_minor == 0 {
                     continue;
                 }
-                let name_bits = attr_name_bits_from_bytes(py, member.name.as_bytes())?;
+                let name_bits = member.name.owned_bits(py)?;
                 let _name_owner = PtrDropGuard::new(obj_from_bits(name_bits).as_ptr().unwrap());
                 let (getter, setter, deleter) =
                     if matches!(member.operation, MemberOperation::RootMetadata(_)) {
@@ -914,18 +914,9 @@ pub extern "C" fn molt_wrapper_member_delete(descriptor: u64, instance: u64) -> 
 /// target through callbacks; returned values are owned.
 unsafe fn optional_attribute(py: &PyToken<'_>, target: u64, name: u64) -> Result<Option<u64>, ()> {
     inc_ref_bits(py, target);
-    let value = super::get_attr_name(py, target, name);
+    let value = lookup_attribute(py, target, name);
     dec_ref_bits(py, target);
-    match value {
-        Ok(value) => Ok(Some(value)),
-        Err(()) => {
-            if clear_attribute_error_if_pending(py) {
-                Ok(None)
-            } else {
-                Err(())
-            }
-        }
-    }
+    value.into_result()
 }
 
 /// Native property name query for both __name__ and descriptor diagnostics.
@@ -945,7 +936,7 @@ pub(crate) unsafe fn property_name_value(
         if obj_from_bits(getter).is_none() {
             return Ok(None);
         }
-        let name = attr_name_bits_from_bytes(py, b"__name__").ok_or(())?;
+        let name = crate::NameId::DunderName.owned_bits(py).ok_or(())?;
         let result = optional_attribute(py, getter, name);
         dec_ref_bits(py, name);
         result
@@ -954,7 +945,9 @@ pub(crate) unsafe fn property_name_value(
 
 unsafe fn abstract_member(py: &PyToken<'_>, object: *mut u8, kind: WrapperKind) -> Result<u64, ()> {
     unsafe {
-        let name = attr_name_bits_from_bytes(py, b"__isabstractmethod__").ok_or(())?;
+        let name = crate::NameId::DunderIsabstractmethod
+            .owned_bits(py)
+            .ok_or(())?;
         let count = if kind == WrapperKind::Property { 3 } else { 1 };
         let result = (|| {
             for index in 0..count {
@@ -1023,19 +1016,24 @@ pub(crate) unsafe fn wrapper_copy_metadata(py: &PyToken<'_>, object: u64, target
     inc_ref_bits(py, object);
     inc_ref_bits(py, target);
     let result = (|| unsafe {
-        let names: &[&[u8]] = if pep649_enabled(py) {
-            &[b"__module__", b"__name__", b"__qualname__", b"__doc__"]
+        let names: &[crate::NameId] = if pep649_enabled(py) {
+            &[
+                crate::NameId::DunderModule,
+                crate::NameId::DunderName,
+                crate::NameId::DunderQualname,
+                crate::NameId::DunderDoc,
+            ]
         } else {
             &[
-                b"__module__",
-                b"__name__",
-                b"__qualname__",
-                b"__doc__",
-                b"__annotations__",
+                crate::NameId::DunderModule,
+                crate::NameId::DunderName,
+                crate::NameId::DunderQualname,
+                crate::NameId::DunderDoc,
+                crate::NameId::DunderAnnotations,
             ]
         };
         for name in names {
-            let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+            let Some(name_bits) = name.owned_bits(py) else {
                 return false;
             };
             let completed = match optional_attribute(py, target, name_bits) {
@@ -1122,10 +1120,10 @@ mod tests {
                         let root = obj_from_bits(classes.type_obj).as_ptr().unwrap();
                         let namespace = class_dict_bits(root);
                         let dictionary = obj_from_bits(namespace).as_ptr().unwrap();
-                        let name = attr_name_bits_from_bytes(py, b"__annotate__").unwrap();
+                        let name = dynamic_attr_name_bits(py, b"__annotate__").unwrap();
                         let _name_owner =
                             crate::builtins::exceptions::ExceptionValue::adopt(py, name);
-                        let release = attr_name_bits_from_bytes(py, b"final").unwrap();
+                        let release = dynamic_attr_name_bits(py, b"final").unwrap();
                         let _release_owner =
                             crate::builtins::exceptions::ExceptionValue::adopt(py, release);
                         assert!(
@@ -1437,13 +1435,13 @@ mod tests {
                 let class = obj_from_bits(classes.staticmethod).as_ptr().unwrap();
                 let dictionary = class_dict_bits(class);
                 let pointer = obj_from_bits(dictionary).as_ptr().unwrap();
-                let func_name = attr_name_bits_from_bytes(py, b"__func__").unwrap();
-                let annotations_name = attr_name_bits_from_bytes(py, b"__annotations__").unwrap();
+                let func_name = dynamic_attr_name_bits(py, b"__func__").unwrap();
+                let annotations_name = dynamic_attr_name_bits(py, b"__annotations__").unwrap();
                 let func = dict_get_in_place(py, pointer, func_name)
                     .expect("dictionary lookup succeeds")
                     .unwrap();
-                let object_class_name = attr_name_bits_from_bytes(py, b"__objclass__").unwrap();
-                let member_name = attr_name_bits_from_bytes(py, b"__name__").unwrap();
+                let object_class_name = dynamic_attr_name_bits(py, b"__objclass__").unwrap();
+                let member_name = dynamic_attr_name_bits(py, b"__name__").unwrap();
                 let read_name = molt_get_attr_name(func, member_name);
                 let read_owner = molt_get_attr_name(func, object_class_name);
                 assert!(!exception_pending(py));
@@ -1478,7 +1476,7 @@ mod tests {
                 let root = obj_from_bits(classes.type_obj).as_ptr().unwrap();
                 let root_namespace = class_dict_bits(root);
                 let root_dictionary = obj_from_bits(root_namespace).as_ptr().unwrap();
-                let root_name = attr_name_bits_from_bytes(py, b"__annotate__").unwrap();
+                let root_name = dynamic_attr_name_bits(py, b"__annotate__").unwrap();
                 let root_version = class_layout_version_bits(root);
                 let original_version = class_layout_version_bits(class);
                 let staged = prepare_wrapper_members(py, 3, 14).unwrap();
@@ -1523,8 +1521,7 @@ mod tests {
                             .iter()
                             .filter(|member| member.owners.contains(&kind))
                         {
-                            let name =
-                                attr_name_bits_from_bytes(py, member.name.as_bytes()).unwrap();
+                            let name = member.name.owned_bits(py).unwrap();
                             let descriptor = dict_get_in_place(py, namespace, name)
                                 .expect("dictionary lookup succeeds");
                             if member.enabled(3, minor) {
@@ -1575,12 +1572,12 @@ mod tests {
 
     unsafe fn test_class(py: &PyToken<'_>, base: u64, attrs: &[(&[u8], u64)]) -> u64 {
         unsafe {
-            let name = attr_name_bits_from_bytes(py, b"WrapperFallbackProbe").unwrap();
+            let name = dynamic_attr_name_bits(py, b"WrapperFallbackProbe").unwrap();
             let namespace = alloc_dict_with_pairs(py, &[]);
             assert!(!namespace.is_null());
             let namespace_bits = MoltObject::from_ptr(namespace).bits();
             for &(key, value) in attrs {
-                let key = attr_name_bits_from_bytes(py, key).unwrap();
+                let key = dynamic_attr_name_bits(py, key).unwrap();
                 assert!(dict_set_in_place(py, namespace, key, value));
                 dec_ref_bits(py, key);
             }
@@ -1612,7 +1609,7 @@ mod tests {
 
     extern "C" fn getter_replaces_fallback_then_misses(receiver: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"__getattr__").unwrap();
+            let name = dynamic_attr_name_bits(py, b"__getattr__").unwrap();
             molt_set_attr_name(type_of_bits(py, receiver), name, MoltObject::none().bits());
             dec_ref_bits(py, name);
             raise_exception::<u64>(
@@ -1673,16 +1670,16 @@ mod tests {
                 );
                 let instance =
                     crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap());
-                let name = attr_name_bits_from_bytes(py, b"probe").unwrap();
+                let name = dynamic_attr_name_bits(py, b"probe").unwrap();
                 let result = molt_get_attr_name(instance, name);
                 assert!(!exception_pending(py));
                 assert_eq!(result, name);
                 dec_ref_bits(py, result);
                 crate::molt_object_getattribute(instance, name);
                 assert!(clear_attribute_error_if_pending(py));
-                let hook_name = attr_name_bits_from_bytes(py, b"__getattr__").unwrap();
+                let hook_name = dynamic_attr_name_bits(py, b"__getattr__").unwrap();
                 molt_set_attr_name(class, hook_name, fallback);
-                let failure_name = attr_name_bits_from_bytes(py, b"failure").unwrap();
+                let failure_name = dynamic_attr_name_bits(py, b"failure").unwrap();
                 molt_get_attr_name(instance, failure_name);
                 assert!(exception_pending(py));
                 let error = molt_exception_last_pending();
@@ -1762,14 +1759,14 @@ mod tests {
                     TYPE_ID_LIST
                 );
                 assert_eq!(object_class_bits(instance_ptr), class);
-                let missing = attr_name_bits_from_bytes(py, b"probe").unwrap();
+                let missing = dynamic_attr_name_bits(py, b"probe").unwrap();
                 let result = molt_get_attr_name(instance, missing);
                 assert!(!exception_pending(py));
                 assert_eq!(result, missing);
                 dec_ref_bits(py, result);
                 crate::molt_object_getattribute(instance, missing);
                 assert!(clear_attribute_error_if_pending(py));
-                let append = attr_name_bits_from_bytes(py, b"append").unwrap();
+                let append = dynamic_attr_name_bits(py, b"append").unwrap();
                 molt_get_attr_name(instance, append);
                 assert!(exception_pending(py));
                 let error = molt_exception_last_pending();
@@ -1781,7 +1778,7 @@ mod tests {
                 molt_exception_clear();
                 dec_ref_bits(py, error);
                 // An unshadowed builtin member is found before __getattr__.
-                let clear = attr_name_bits_from_bytes(py, b"clear").unwrap();
+                let clear = dynamic_attr_name_bits(py, b"clear").unwrap();
                 let result = molt_get_attr_name(instance, clear);
                 assert!(!exception_pending(py));
                 assert_ne!(result, clear);
@@ -1814,7 +1811,7 @@ mod tests {
                 );
                 let instance =
                     crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap());
-                let name = attr_name_bits_from_bytes(py, b"__name__").unwrap();
+                let name = dynamic_attr_name_bits(py, b"__name__").unwrap();
                 let result = molt_get_attr_name(instance, name);
                 assert!(!exception_pending(py));
                 assert_eq!(result, name);
@@ -1838,8 +1835,8 @@ mod tests {
                 let none = MoltObject::none().bits();
                 let object = alloc_property_obj(py, none, none, none);
                 assert!(!object.is_null());
-                let doc = attr_name_bits_from_bytes(py, b"__doc__").unwrap();
-                let text = attr_name_bits_from_bytes(py, b"native property documentation").unwrap();
+                let doc = dynamic_attr_name_bits(py, b"__doc__").unwrap();
+                let text = dynamic_attr_name_bits(py, b"native property documentation").unwrap();
                 molt_set_attr_name(MoltObject::from_ptr(object).bits(), doc, text);
                 assert!(!exception_pending(py));
                 let actual = molt_get_attr_name(MoltObject::from_ptr(object).bits(), doc);
@@ -1880,7 +1877,7 @@ mod tests {
                     let dictionary = crate::object::field_storage::materialize(py, object).unwrap();
                     let dictionary_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
                     for name in [b"__func__".as_slice(), b"__wrapped__".as_slice()] {
-                        let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
+                        let name_bits = dynamic_attr_name_bits(py, name).unwrap();
                         assert!(dict_set_in_place(
                             py,
                             dictionary_ptr,

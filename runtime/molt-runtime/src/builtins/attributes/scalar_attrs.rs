@@ -31,29 +31,29 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
         };
         let _getter = PtrDropGuard::new(getter_ptr);
         let builtins = builtin_classes(py);
-        type MemberDefinition = (&'static str, NumericMember, &'static str);
+        type MemberDefinition = (crate::NameId, NumericMember, &'static str);
         let definitions: [(u64, NativeDescriptorFlavor, &[MemberDefinition]); 3] = [
             (
                 builtins.int,
                 NativeDescriptorFlavor::GetSet,
                 &[
                     (
-                        "real",
+                        crate::NameId::Real,
                         NumericMember::IntegerReal,
                         "the real part of a complex number",
                     ),
                     (
-                        "imag",
+                        crate::NameId::Imag,
                         NumericMember::IntegerImag,
                         "the imaginary part of a complex number",
                     ),
                     (
-                        "numerator",
+                        crate::NameId::Numerator,
                         NumericMember::IntegerReal,
                         "the numerator of a rational number in lowest terms",
                     ),
                     (
-                        "denominator",
+                        crate::NameId::Denominator,
                         NumericMember::IntegerDenominator,
                         "the denominator of a rational number in lowest terms",
                     ),
@@ -64,12 +64,12 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
                 NativeDescriptorFlavor::GetSet,
                 &[
                     (
-                        "real",
+                        crate::NameId::Real,
                         NumericMember::FloatReal,
                         "the real part of a complex number",
                     ),
                     (
-                        "imag",
+                        crate::NameId::Imag,
                         NumericMember::FloatImag,
                         "the imaginary part of a complex number",
                     ),
@@ -80,12 +80,12 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
                 NativeDescriptorFlavor::Member,
                 &[
                     (
-                        "real",
+                        crate::NameId::Real,
                         NumericMember::ComplexReal,
                         "the real part of a complex number",
                     ),
                     (
-                        "imag",
+                        crate::NameId::Imag,
                         NumericMember::ComplexImag,
                         "the imaginary part of a complex number",
                     ),
@@ -111,7 +111,7 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
                 return false;
             }
             for &(name, operation, doc) in members {
-                let Some(name) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+                let Some(name) = name.owned_bits(py) else {
                     return false;
                 };
                 let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
@@ -298,7 +298,7 @@ fn resolve_scalar_method(
     _py: &PyToken<'_>,
     self_bits: u64,
     kind: ScalarKind,
-    name: &str,
+    name: crate::NameId,
     mode: AttributeLookupMode<'_>,
 ) -> Result<Option<u64>, ()> {
     let builtins = builtin_classes(_py);
@@ -353,47 +353,49 @@ fn resolve_scalar_method(
 /// numeric-scalar attribute path:
 /// `molt_get_attr_name`, `molt_get_attr_name_default`, `molt_has_attr_name`,
 /// `molt_get_attr_object`, `attr_lookup_ptr`, and `molt_object_getattribute`.
-pub(crate) fn resolve_scalar_attr(
-    py: &PyToken<'_>,
-    object: u64,
-    name: &str,
-) -> Result<Option<u64>, ()> {
+pub(crate) fn resolve_scalar_attr(py: &PyToken<'_>, object: u64, name: u64) -> AttributeLookup {
     resolve_scalar_attr_with_mode(py, object, name, AttributeLookupMode::Value)
 }
 
 pub(crate) fn resolve_scalar_attr_with_mode(
     py: &PyToken<'_>,
     object: u64,
-    name: &str,
+    name: u64,
     mode: AttributeLookupMode<'_>,
-) -> Result<Option<u64>, ()> {
-    let class = type_of_bits(py, object);
-    let key = attr_name_bits_from_bytes(py, name.as_bytes()).ok_or(())?;
-    let value = unsafe {
-        (|| {
-            let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
-                return Ok(None);
-            };
-            match class_attr_lookup_raw_mro(py, class_ptr, key)? {
-                Some(descriptor) => mode.bind(
-                    py,
-                    descriptor,
-                    Some(class),
-                    Some(object),
-                    DescriptorCallPolicy::Required,
-                ),
-                None => Ok(None),
-            }
-        })()
-    };
-    dec_ref_bits(py, key);
-    if let Some(value) = value? {
-        return Ok(Some(value));
-    }
-    match numeric_scalar_kind_from_bits(py, object) {
-        Some(kind) => resolve_scalar_method(py, object, kind, name, mode),
-        None => Ok(None),
-    }
+) -> AttributeLookup {
+    AttributeLookup::from_result((|| {
+        let class = type_of_bits(py, object);
+        let key = name;
+        inc_ref_bits(py, key);
+        let value = unsafe {
+            (|| {
+                let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
+                    return Ok(None);
+                };
+                match class_attr_lookup_raw_mro(py, class_ptr, key)? {
+                    Some(descriptor) => mode.bind(
+                        py,
+                        descriptor,
+                        Some(class),
+                        Some(object),
+                        DescriptorCallPolicy::Required,
+                    ),
+                    None => Ok(None),
+                }
+            })()
+        };
+        dec_ref_bits(py, key);
+        if let Some(value) = value? {
+            return Ok(Some(value));
+        }
+        let Some(name) = crate::NameId::from_bits(py, name) else {
+            return Ok(None);
+        };
+        match numeric_scalar_kind_from_bits(py, object) {
+            Some(kind) => resolve_scalar_method(py, object, kind, name, mode),
+            None => Ok(None),
+        }
+    })())
 }
 
 #[cfg(test)]
@@ -411,7 +413,7 @@ mod numeric_member_tests {
     }
 
     fn name(py: &PyToken<'_>, value: &str) -> u64 {
-        attr_name_bits_from_bytes(py, value.as_bytes()).unwrap()
+        dynamic_attr_name_bits(py, value.as_bytes()).unwrap()
     }
 
     fn descriptor(py: &PyToken<'_>, class: u64, attr: &str) -> u64 {
@@ -465,7 +467,8 @@ mod numeric_member_tests {
             let nan =
                 crate::object::ops::alloc_heap_float(py, f64::from_bits(0x7ff8_0000_0000_0042));
             for receiver in [MoltObject::from_int(3).bits(), wide, nan] {
-                let result = resolve_scalar_attr(py, receiver, "real")
+                let result = resolve_scalar_attr(py, receiver, crate::NameId::Real.bits(py))
+                    .into_result()
                     .expect("numeric member lookup succeeds")
                     .expect("numeric real member exists");
                 assert_eq!(result, receiver, "exact numeric real retains identity");
@@ -477,17 +480,27 @@ mod numeric_member_tests {
                 wide,
             ] {
                 for (attr, expected) in [("imag", 0), ("denominator", 1)] {
-                    let result = resolve_scalar_attr(py, receiver, attr)
-                        .expect("numeric member lookup succeeds")
-                        .expect("numeric member exists");
+                    let result = resolve_scalar_attr(
+                        py,
+                        receiver,
+                        crate::NameId::from_bytes(attr.as_bytes()).unwrap().bits(py),
+                    )
+                    .into_result()
+                    .expect("numeric member lookup succeeds")
+                    .expect("numeric member exists");
                     assert_eq!(obj_from_bits(result).as_int(), Some(expected));
                     assert_eq!(type_of_bits(py, result), builtins.int);
                     dec_ref_bits(py, result);
                 }
             }
-            let bool_real = resolve_scalar_attr(py, MoltObject::from_bool(true).bits(), "real")
-                .expect("boolean member lookup succeeds")
-                .expect("boolean real member exists");
+            let bool_real = resolve_scalar_attr(
+                py,
+                MoltObject::from_bool(true).bits(),
+                crate::NameId::Real.bits(py),
+            )
+            .into_result()
+            .expect("boolean member lookup succeeds")
+            .expect("boolean real member exists");
             assert_eq!(obj_from_bits(bool_real).as_int(), Some(1));
             dec_ref_bits(py, bool_real);
             for (base, conversion, value) in [

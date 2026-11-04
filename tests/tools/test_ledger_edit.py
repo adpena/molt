@@ -50,6 +50,10 @@ def _root(tmp_path: Path, prior_art: str = _PRIOR_ART) -> Path:
     (tmp_path / "docs/design/findings_prior_art.md").write_text(
         prior_art, encoding="utf-8"
     )
+    (tmp_path / "bench").mkdir()
+    (tmp_path / "bench/primitive_ratchet.json").write_text(
+        '{"axes": {"loop/per_op": {}, "empty/startup": {}}}', encoding="utf-8"
+    )
     return tmp_path
 
 
@@ -100,6 +104,31 @@ def test_open_inserts_the_row_joins_its_family_and_projects_it(tmp_path: Path) -
         ledger_edit.next_key((root / ledger_edit.LEDGER).read_text(encoding="utf-8"))
         == "HF-4"
     )
+
+
+def test_class_restates_one_row_and_refuses_a_no_op_or_unclassified_row(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+
+    assert (
+        ledger_edit.main(["class", "HF-2", "--v1-class", "apparatus"], root=root) == 0
+    )
+
+    status = _status(root)
+    assert status.classes["HF-2"] is finding_status.V1Class.APPARATUS
+    assert status.classes["HF-1"] is finding_status.V1Class.RELEASE_BLOCKING
+    assert _family_keys(root) == {"A": ("HF-1",), "B": ("HF-2",)}
+    after = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    assert len(after.split("\n")) == len(before.split("\n"))
+    assert (
+        ledger_edit.main(["class", "HF-2", "--v1-class", "apparatus"], root=root) == 2
+    )
+    assert (
+        ledger_edit.main(["class", "HF-0", "--v1-class", "apparatus"], root=root) == 2
+    )
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == after
 
 
 def test_close_moves_the_row_to_fixed_and_leaves_its_family(tmp_path: Path) -> None:
@@ -291,6 +320,33 @@ def test_family_describe_must_match_its_prior_art(tmp_path: Path) -> None:
     )
     family = next(f for f in _status(renamed).dependency_families if f.letter == "B")
     assert (family.name, family.keys) == ("Gamma", ("HF-2",))
+
+
+def test_family_describe_restates_axes_and_keeps_every_per_op_axis_owned(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    describe = ["family", "describe", "A", "--name", "Alpha", "--cause", "cause a"]
+    ratchet = root / "bench/primitive_ratchet.json"
+    ratchet.write_text(
+        '{"axes": {"loop/per_op": {}, "call/per_op": {}}}', encoding="utf-8"
+    )
+    before = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+
+    # Dropping the only owner of loop/per_op leaves a measured cost unowned.
+    assert ledger_edit.main([*describe, "--axes", "call/per_op"], root=root) == 1
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == before
+
+    assert (
+        ledger_edit.main([*describe, "--axes", "loop/per_op, call/per_op"], root=root)
+        == 0
+    )
+    family = next(f for f in _status(root).dependency_families if f.letter == "A")
+    assert family.axes == ("loop/per_op", "call/per_op")
+    # Without --axes the column stays as it is.
+    assert ledger_edit.main(describe, root=root) == 0
+    family = next(f for f in _status(root).dependency_families if f.letter == "A")
+    assert family.axes == ("loop/per_op", "call/per_op")
 
 
 def test_family_recut_renames_and_moves_atomically(tmp_path: Path) -> None:

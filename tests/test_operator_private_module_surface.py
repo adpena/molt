@@ -13,7 +13,7 @@ _PROBE = f"""
 import importlib.util
 import _operator as _host_operator
 import sys
-from tests.stdlib_intrinsic_registry import install_registry
+from tests.stdlib_intrinsic_registry import install_registry, record_builtin_promotion
 
 
 class itemgetter:
@@ -29,6 +29,7 @@ class methodcaller:
 
 
 install_registry({{
+    "molt_function_set_builtin": record_builtin_promotion,
     "molt_operator_abs": abs,
     "molt_operator_add": lambda a, b: a + b,
     "molt_operator_sub": lambda a, b: a - b,

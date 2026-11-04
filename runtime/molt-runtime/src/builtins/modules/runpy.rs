@@ -114,15 +114,9 @@ fn runpy_optional_attr(
     target_bits: u64,
     name_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(target_bits, name_bits, missing);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if is_missing_bits(_py, value_bits) {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    crate::lookup_attribute(_py, target_bits, name_bits)
+        .into_result()
+        .map_err(|()| MoltObject::none().bits())
 }
 
 fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, u64> {
@@ -139,7 +133,7 @@ fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, 
         }
         return Err(MoltObject::none().bits());
     }
-    let find_spec_name = crate::intern_runtime_static_name(_py, b"find_spec");
+    let find_spec_name = crate::NameId::FindSpec.bits(_py);
     let find_spec_bits = match runpy_optional_attr(_py, util_bits, find_spec_name) {
         Ok(Some(bits)) => bits,
         Ok(None) => {
@@ -178,7 +172,7 @@ fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, 
 }
 
 fn runpy_spec_is_package(_py: &PyToken<'_>, spec_bits: u64) -> Result<bool, u64> {
-    let name = crate::intern_runtime_static_name(_py, b"submodule_search_locations");
+    let name = crate::NameId::SubmoduleSearchLocations.bits(_py);
     let Some(value_bits) = runpy_optional_attr(_py, spec_bits, name)? else {
         return Ok(false);
     };
@@ -190,7 +184,7 @@ fn runpy_spec_is_package(_py: &PyToken<'_>, spec_bits: u64) -> Result<bool, u64>
 }
 
 fn runpy_spec_origin(_py: &PyToken<'_>, spec_bits: u64, fallback: &str) -> Result<String, u64> {
-    let name = crate::intern_runtime_static_name(_py, b"origin");
+    let name = crate::NameId::Origin.bits(_py);
     let Some(value_bits) = runpy_optional_attr(_py, spec_bits, name)? else {
         return Ok(fallback.to_string());
     };

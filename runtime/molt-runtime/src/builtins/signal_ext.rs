@@ -88,6 +88,7 @@ static ASYNC_WORK_NOTIFIERS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static SIGNALS_TRIPPED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) struct SignalRuntimeState {
+    pending_work: std::sync::Arc<crate::state::pending_work::PendingWork>,
     handlers: [AtomicU64; MAX_SIGNAL],
     wakeup_fd: AtomicI32,
     pending: [AtomicU64; MAX_SIGNAL],
@@ -106,8 +107,11 @@ fn initial_handler_bits(slot: usize) -> u64 {
 }
 
 impl SignalRuntimeState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(
+        pending_work: std::sync::Arc<crate::state::pending_work::PendingWork>,
+    ) -> Self {
         Self {
+            pending_work,
             handlers: std::array::from_fn(|slot| AtomicU64::new(initial_handler_bits(slot))),
             wakeup_fd: AtomicI32::new(-1),
             pending: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -162,6 +166,8 @@ impl SignalRuntimeState {
         }
         self.pending[slot].store(1, Ordering::SeqCst);
         SIGNALS_TRIPPED.store(true, Ordering::SeqCst);
+        self.pending_work
+            .request(crate::state::pending_work::PendingWorkKind::Signals);
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         write_wakeup_byte(self.wakeup_fd.load(Ordering::SeqCst), signum as u8);
         self.notify_parked_owner();
@@ -243,9 +249,25 @@ pub(crate) fn signal_runtime_state_publish(
         .is_ok();
     if published {
         UNHANDLED_KEYBOARD_INTERRUPT.store(false, Ordering::SeqCst);
+        // Pending-call admission can open during initialization, before this
+        // signal-safe notification route is published. Join notifications that
+        // could have seen the old null route before inspecting their queue.
+        // A notifier seeing the new route sets the bit itself. The existing
+        // SC admission counter supplies the acquire edge for an old notifier;
+        // merely publishing the pointer then reading the queue can miss both.
+        quiesce_admitted_notifications();
+        if molt_cpython_abi::api::pending_calls::has_pending_calls() {
+            state
+                .pending_work
+                .request(crate::state::pending_work::PendingWorkKind::PendingCalls);
+        }
     }
     published
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "signal_ext/pending_work_tests.rs"]
+mod pending_work_tests;
 
 #[inline]
 fn active_signal_runtime(py: &PyToken<'_>) -> bool {
@@ -304,7 +326,12 @@ fn with_admitted_state(record: impl FnOnce(&'static SignalRuntimeState)) {
 pub(crate) fn notify_pending_calls() {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     let saved = raw_errno::get();
-    with_admitted_state(SignalRuntimeState::notify_parked_owner);
+    with_admitted_state(|signal| {
+        signal
+            .pending_work
+            .request(crate::state::pending_work::PendingWorkKind::PendingCalls);
+        signal.notify_parked_owner();
+    });
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     raw_errno::set(saved);
 }
@@ -581,6 +608,9 @@ fn run_pending_handlers(py: &PyToken<'_>) -> bool {
                 .any(|pending| pending.load(Ordering::SeqCst) != 0)
             {
                 SIGNALS_TRIPPED.store(true, Ordering::SeqCst);
+                signal
+                    .pending_work
+                    .request(crate::state::pending_work::PendingWorkKind::Signals);
             }
             return true;
         }
@@ -1827,7 +1857,9 @@ mod tests {
     fn signal_runtime_state_retains_getsignal_and_clears_handlers() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let state = SignalRuntimeState::new();
+            let state = SignalRuntimeState::new(std::sync::Arc::new(
+                crate::state::pending_work::PendingWork::new(),
+            ));
             let ptr = alloc_string(_py, b"signal handler sentinel");
             assert!(!ptr.is_null());
             let bits = MoltObject::from_ptr(ptr).bits();
@@ -1853,7 +1885,9 @@ mod tests {
     fn signal_runtime_state_replacement_transfers_old_handler_ownership() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let state = SignalRuntimeState::new();
+            let state = SignalRuntimeState::new(std::sync::Arc::new(
+                crate::state::pending_work::PendingWork::new(),
+            ));
             let ptr = alloc_string(_py, b"replace handler sentinel");
             assert!(!ptr.is_null());
             let bits = MoltObject::from_ptr(ptr).bits();
@@ -1877,7 +1911,9 @@ mod tests {
     fn signal_runtime_state_clear_resets_wakeup_pending_and_startup_dispositions() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let state = SignalRuntimeState::new();
+            let state = SignalRuntimeState::new(std::sync::Arc::new(
+                crate::state::pending_work::PendingWork::new(),
+            ));
             assert_eq!(state.swap_wakeup_fd(9), -1);
             state.pending[2].store(1, AtomicOrdering::SeqCst);
             assert!(state.pending_for_test(2));
@@ -1906,7 +1942,9 @@ mod tests {
 
     #[test]
     fn startup_sigint_is_the_default_int_disposition_and_other_slots_are_default() {
-        let state = SignalRuntimeState::new();
+        let state = SignalRuntimeState::new(std::sync::Arc::new(
+            crate::state::pending_work::PendingWork::new(),
+        ));
         assert_eq!(state.handler_bits(libc::SIGINT), HANDLER_DEFAULT_INT);
         assert_eq!(state.handler_bits(libc::SIGTERM), HANDLER_SIG_DFL);
     }
@@ -1934,6 +1972,13 @@ mod delivery_tests {
 
     extern "C" fn raising_handler(_signum_bits: u64, _frame_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
+            // A compiled handler can itself reach call-return/backedge polls.
+            // The signal summary was taken by the outer dispatch; this nested
+            // service must not make its later recorded deliveries disappear.
+            assert_eq!(
+                crate::builtins::exceptions::molt_async_work_poll_and_exception_pending(),
+                0
+            );
             raise_exception::<u64>(py, BuiltinExc::ValueError, "handler")
         })
     }
@@ -2166,6 +2211,13 @@ mod delivery_tests {
             assert_eq!(take_pending_exception_kind(py), "ValueError");
             assert_eq!(RECORDED_SIGNUM.load(Ordering::SeqCst), 0);
             assert!(signal_tripped(), "the later delivery must stay recorded");
+            let work = unsafe { &*runtime_state(py).pending_work.word_ptr() };
+            assert_ne!(
+                work.load(Ordering::Relaxed)
+                    & crate::state::pending_work::PendingWorkKind::Signals as u32,
+                0,
+                "a raising handler must rearm work after its nested poll"
+            );
             assert!(!signal_safepoint(py));
             assert_eq!(RECORDED_SIGNUM.load(Ordering::SeqCst), high as i64);
             assert!(RECORDED_FRAME_NONE.load(Ordering::SeqCst));

@@ -81,7 +81,7 @@ audience = "developer"
 kind = "float"
 default = "3"
 owner = "src/molt/checkout_state.py"
-summary = "Days a terminal coordination task must remain unused before the daily disk guard harvests its payload through soft retirement. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window."
+summary = "Days a terminal coordination task must remain unused before the daily disk guard compacts its payload into an indexed evidence archive. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window."
 
 [[variable]]
 name = "MOLT_AGENT_ID"
@@ -2828,6 +2828,14 @@ owner = "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs"
 summary = "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the rustc version string of the build; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty."
 
 [[variable]]
+name = "MOLT_LANDING_GATE_HOST"
+audience = "developer"
+kind = "string"
+default = ""
+owner = "tools/trunk_landing.py"
+summary = "Opt-in remote landing gates: the inventory host name (tools/cross_hosts.toml) on which the Mac landing runner executes the selected gate cohorts; queue state, the merge and the push stay on the Mac. Unset runs every gate locally."
+
+[[variable]]
 name = "MOLT_LEAK_TOLERANCE"
 audience = "user"
 kind = "int"
@@ -3970,7 +3978,7 @@ audience = "developer"
 kind = "float"
 default = "3"
 owner = "src/molt/checkout_state.py"
-summary = "Days lane-owned or untracked artifact-root scratch may remain unused before daily soft retirement. A removed lane owner permits retirement after two hours. Recursive activity, locks, open guard markers and protected paths keep scratch; incomplete inventories defer collection. Must cover the two-hour protection window."
+summary = "Days lane-owned or untracked artifact-root scratch may remain unused before the daily disk guard deletes it. A removed lane owner permits deletion after two hours. Recursive activity, locks, open guard markers and protected paths keep scratch; incomplete inventories defer collection. Must cover the two-hour protection window."
 
 [[variable]]
 name = "MOLT_SCRATCH_STORAGE"

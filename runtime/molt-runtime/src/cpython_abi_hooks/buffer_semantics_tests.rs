@@ -593,10 +593,10 @@ extern "C" fn release_native_slice_parent(_self: u64) -> u64 {
 }
 
 fn native_slice_index(py: &crate::PyToken<'_>) -> u64 {
-    let name = crate::attr_name_bits_from_bytes(py, b"NativeSliceIndex").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"NativeSliceIndex").unwrap();
     let class = crate::molt_class_new(name);
     crate::molt_class_set_base(class, crate::builtin_classes(py).object);
-    let method = crate::attr_name_bits_from_bytes(py, b"__index__").unwrap();
+    let method = crate::dynamic_attr_name_bits(py, b"__index__").unwrap();
     let function = crate::alloc_runtime_function_obj(
         py,
         crate::runtime_fn_addr(
@@ -2093,11 +2093,11 @@ fn builtin_buffer_names_share_cold_runtime_lookup_and_native_readiness() {
             );
             let get_name = OwnedRuntimeValue::from_owned_bits(
                 py.core_token(),
-                crate::attr_name_bits_from_bytes(&py, b"__buffer__").unwrap(),
+                crate::dynamic_attr_name_bits(&py, b"__buffer__").unwrap(),
             );
             let release_name = OwnedRuntimeValue::from_owned_bits(
                 py.core_token(),
-                crate::attr_name_bits_from_bytes(&py, b"__release_buffer__").unwrap(),
+                crate::dynamic_attr_name_bits(&py, b"__release_buffer__").unwrap(),
             );
             let flags = refcount::OwnedPyObject::from_owned(
                 molt_cpython_abi::api::numbers::PyLong_FromLong(0),

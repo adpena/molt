@@ -29,7 +29,7 @@ A tight loop like `for i in range(N): total += x` pays at minimum 4 FFI calls pe
 
 ### Complete Categorized Inventory of Imported Runtime Functions
 
-All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by category. Declaration count indicates how many separate `declare_function` call sites exist in `lib.rs` (higher count = used in more codegen paths).
+All 369 unique `molt_*` functions imported via `Linkage::Import`, organized by category. Declaration count indicates how many separate `declare_function` call sites exist in `lib.rs` (higher count = used in more codegen paths).
 
 #### RC Operations (3 functions, ~73 emission sites per compiled function)
 
@@ -341,7 +341,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_exceptiongroup_match` | 1 | Low | |
 | `molt_exceptiongroup_combine` | 1 | Low | |
 
-#### Object/Class System (19 functions)
+#### Object/Class System (15 functions)
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
@@ -359,10 +359,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_classmethod_new` | 1 | Low | |
 | `molt_staticmethod_new` | 1 | Low | |
 | `molt_property_new` | 1 | Low | |
-| `molt_dataclass_new` | 1 | Low | |
-| `molt_dataclass_get` | 1 | Moderate | |
-| `molt_dataclass_set` | 1 | Moderate | |
-| `molt_dataclass_set_class` | 1 | Low | |
 
 #### Attribute Access (13 functions)
 

@@ -3,7 +3,6 @@ use crate::runtime_flags::{self, RuntimeFlag};
 use std::alloc::Layout;
 #[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -30,7 +29,12 @@ pub fn global_type_version() -> u64 {
 
 #[inline(always)]
 pub fn bump_type_version() -> u64 {
-    GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::AcqRel) + 1
+    GLOBAL_TYPE_VERSION
+        .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |version| {
+            version.checked_add(1)
+        })
+        .expect("global type generation exhausted")
+        + 1
 }
 
 pub(crate) mod accessors;
@@ -588,9 +592,40 @@ const fn flag_transition_is_synchronized(changed: u32) -> bool {
     changed & HEADER_FLAG_SYNCHRONIZED_STATE_MASK != 0
 }
 
+const HEADER_FLAGS_REFCOUNT_CUSTODY: u32 = molt_codegen_abi::HEADER_FLAGS_REFCOUNT_CUSTODY;
+
 impl MoltHeader {
+    /// Sole producer of the count word's runtime-custody bit. A transition
+    /// that publishes a custody flag places the count word under custody
+    /// before and after the flag publication; a transition that retires the
+    /// last custody flag returns it to plain custody and re-checks, so racing
+    /// publishers converge on "custody flag present => custody bit present".
+    /// Every call site passes constant masks, so non-custody flags fold away.
+    #[inline(always)]
+    fn refcount_custody_before(&self, set: u32) {
+        if set & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+            self.ref_count.enter_runtime_custody();
+        }
+    }
+
+    #[inline(always)]
+    fn refcount_custody_after(&self, set: u32, previous: u32, current: u32) {
+        if set & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+            self.ref_count.enter_runtime_custody();
+        }
+        if previous & !current & HEADER_FLAGS_REFCOUNT_CUSTODY != 0
+            && current & HEADER_FLAGS_REFCOUNT_CUSTODY == 0
+        {
+            self.ref_count.leave_runtime_custody();
+            if self.load_synchronized_flags() & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+                self.ref_count.enter_runtime_custody();
+            }
+        }
+    }
+
     /// Construct the flag word before an object is published. This pointer API
     /// deliberately avoids creating a reference to uninitialized atomic state.
+    /// The refcount word must already be initialized.
     #[inline(always)]
     pub(crate) unsafe fn initialize_flags_before_publication(header: *mut Self, value: u32) {
         unsafe {
@@ -598,11 +633,15 @@ impl MoltHeader {
                 std::ptr::addr_of_mut!((*header).flags),
                 MoltFlags::new(value),
             );
+            if value & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+                (*header).ref_count.enter_runtime_custody();
+            }
         }
     }
 
     /// Construct an unpublished collector state directly, without any
-    /// intermediate published flag word.
+    /// intermediate published flag word. The refcount word must already be
+    /// initialized.
     #[inline(always)]
     pub(crate) unsafe fn initialize_flags_gc_unpublished(header: *mut Self, value: u32) {
         unsafe {
@@ -610,6 +649,9 @@ impl MoltHeader {
                 std::ptr::addr_of_mut!((*header).flags),
                 MoltFlags::new_unpublished(value),
             );
+            if value & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+                (*header).ref_count.enter_runtime_custody();
+            }
         }
     }
 
@@ -636,26 +678,34 @@ impl MoltHeader {
     #[inline(always)]
     #[cfg(test)]
     pub(crate) fn store_flags(&self, value: u32) {
+        self.refcount_custody_before(value);
+        let previous = self.flags.load(AtomicOrdering::Acquire);
         self.flags.store(value, AtomicOrdering::Release);
+        self.refcount_custody_after(value, previous, value);
     }
 
     #[inline(always)]
     pub(crate) fn fetch_or_flags(&self, value: u32) -> u32 {
-        if flag_transition_is_synchronized(value) {
+        self.refcount_custody_before(value);
+        let previous = if flag_transition_is_synchronized(value) {
             self.flags.update_synchronized(value, 0)
         } else {
             self.flags.update_relaxed(value, 0)
-        }
+        };
+        self.refcount_custody_after(value, previous, previous | value);
+        previous
     }
 
     #[inline(always)]
     pub(crate) fn fetch_and_flags(&self, value: u32) -> u32 {
         let clear = !value;
-        if flag_transition_is_synchronized(clear) {
+        let previous = if flag_transition_is_synchronized(clear) {
             self.flags.update_synchronized(0, clear)
         } else {
             self.flags.update_relaxed(0, clear)
-        }
+        };
+        self.refcount_custody_after(0, previous, previous & value);
+        previous
     }
 
     #[inline(always)]
@@ -664,12 +714,21 @@ impl MoltHeader {
         current: u32,
         new: u32,
     ) -> Result<u32, u32> {
-        self.flags.compare_exchange(
+        let set = new & !current;
+        self.refcount_custody_before(set);
+        let result = self.flags.compare_exchange(
             current,
             new,
             AtomicOrdering::AcqRel,
             AtomicOrdering::Acquire,
-        )
+        );
+        match result {
+            Ok(previous) => self.refcount_custody_after(set, previous, new),
+            // A failed publication may have entered custody for a flag that
+            // never appeared: settle against the observed word.
+            Err(observed) => self.refcount_custody_after(0, set | observed, observed),
+        }
+        result
     }
 
     /// Atomically apply one coherent flag-state transition. Callers that move
@@ -678,11 +737,14 @@ impl MoltHeader {
     /// a torn intermediate state.
     #[inline(always)]
     pub(crate) fn update_flags(&self, set: u32, clear: u32) -> u32 {
-        if flag_transition_is_synchronized(set | clear) {
+        self.refcount_custody_before(set);
+        let previous = if flag_transition_is_synchronized(set | clear) {
             self.flags.update_synchronized(set, clear)
         } else {
             self.flags.update_relaxed(set, clear)
-        }
+        };
+        self.refcount_custody_after(set, previous, (previous | set) & !clear);
+        previous
     }
 
     /// Clear and return the selected bits as one indivisible consume action.
@@ -869,29 +931,6 @@ pub(crate) struct PtrSlot(pub(crate) *mut u8);
 // Raw pointers are guarded by locks; it is safe to share slots across threads.
 unsafe impl Send for PtrSlot {}
 unsafe impl Sync for PtrSlot {}
-
-/// Per-instance projection of sealed class storage onto a dataclass vector.
-/// Logical dataclass fields remain first; hidden declared rows follow them.
-#[derive(Clone, Copy)]
-pub(crate) struct DataclassField {
-    pub(crate) name: u64,
-    pub(crate) kind: class_layout::ClassFieldKind,
-    pub(crate) slot_offset: Option<usize>,
-}
-
-pub(crate) struct DataclassDesc {
-    pub(crate) name: String,
-    pub(crate) field_names: Vec<String>,
-    // Immutable physical-layout projection, prepared before class publication.
-    pub(crate) field_layout: Vec<DataclassField>,
-    pub(crate) field_name_to_index: HashMap<String, usize>,
-    pub(crate) frozen: bool,
-    pub(crate) repr: bool,
-    pub(crate) slots: bool,
-    pub(crate) allows_dict: bool,
-    pub(crate) field_flags: Vec<u8>,
-    pub(crate) hash_mode: u8,
-}
 
 pub(crate) struct Buffer2D {
     pub(crate) rows: u64,
@@ -2569,7 +2608,6 @@ pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
         match object_type_id(ptr) {
             TYPE_ID_TYPE => return class_storage::class_generic_dict_bits_ptr(ptr),
             TYPE_ID_FUNCTION => return layout::function_dict_bits_ptr(ptr),
-            TYPE_ID_DATACLASS => return dataclass_dict_bits_ptr(ptr),
             TYPE_ID_EXCEPTION => return crate::builtins::exceptions::exception_dict_bits_ptr(ptr),
             TYPE_ID_FILE_HANDLE => {
                 // Exact and extended IO objects share this one dictionary owner.
@@ -3325,21 +3363,6 @@ pub(crate) unsafe fn memoryview_strides(ptr: *mut u8) -> Option<&'static [isize]
     }
 }
 
-pub(crate) unsafe fn dataclass_desc_ptr(ptr: *mut u8) -> *mut DataclassDesc {
-    unsafe { *(ptr as *const *mut DataclassDesc) }
-}
-
-pub(crate) unsafe fn dataclass_fields_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *const *mut Vec<u64>) }
-}
-
-pub(crate) unsafe fn dataclass_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
-    unsafe {
-        ptr.add(std::mem::size_of::<*mut DataclassDesc>() + std::mem::size_of::<*mut Vec<u64>>())
-            as *mut u64
-    }
-}
-
 pub(crate) unsafe fn buffer2d_ptr(ptr: *mut u8) -> *mut Buffer2D {
     ptr.cast::<Buffer2D>()
 }
@@ -3727,7 +3750,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
             }
         },
         || {
-            let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
+            let Some(del_name_bits) = crate::NameId::DunderDel.owned_bits(py) else {
                 return;
             };
             let _del_name_owner = obj_from_bits(del_name_bits)
@@ -4605,13 +4628,7 @@ unsafe fn dec_ref_ptr_terminal_body(
                     drop_detached_tracked_vec(memoryview_shape_ptr(ptr));
                     drop_detached_tracked_vec(memoryview_strides_ptr(ptr));
                 }
-                Some(HeapDropPolicy::Dataclass) => {
-                    drop_detached_tracked_vec(dataclass_fields_ptr(ptr));
-                    let desc = dataclass_desc_ptr(ptr);
-                    if !desc.is_null() {
-                        drop(Box::from_raw(desc));
-                    }
-                }
+
                 Some(HeapDropPolicy::Map) => drop_detached_tracked_vec(map_iters_ptr(ptr)),
                 Some(HeapDropPolicy::WeakContainer) => {
                     weak_container::weakcontainer_drop_detached_state(ptr)
@@ -5141,7 +5158,7 @@ mod tests {
             unsafe { super::class_finish_definition(_py, class_ptr) }
                 .expect("seal replacement class before measuring assignment ownership");
             assert!(unsafe { super::class_definition_is_finished(class_ptr) });
-            let dict_name = crate::attr_name_bits_from_bytes(_py, b"__dict__")
+            let dict_name = crate::dynamic_attr_name_bits(_py, b"__dict__")
                 .expect("instance dictionary descriptor name");
             let namespace = crate::obj_from_bits(unsafe { crate::class_dict_bits(class_ptr) })
                 .as_ptr()
@@ -5408,6 +5425,7 @@ mod tests {
         let mut header = std::mem::MaybeUninit::<super::MoltHeader>::zeroed();
         let header = header.as_mut_ptr();
         unsafe {
+            super::MoltHeader::initialize_refcount_before_publication(header, 1);
             super::MoltHeader::initialize_flags_before_publication(
                 header,
                 super::HEADER_FLAG_TASK_QUEUED | super::HEADER_FLAG_CANCEL_PENDING,
@@ -5447,6 +5465,7 @@ mod tests {
         let mut header = std::mem::MaybeUninit::<super::MoltHeader>::zeroed();
         let header = header.as_mut_ptr();
         unsafe {
+            super::MoltHeader::initialize_refcount_before_publication(header, 1);
             super::MoltHeader::initialize_flags_gc_unpublished(
                 header,
                 super::HEADER_FLAG_CONTAINS_REFS,
@@ -5460,14 +5479,16 @@ mod tests {
     }
 
     fn refcount_header(count: u32, flags: u32) -> super::MoltHeader {
-        super::MoltHeader {
+        let header = super::MoltHeader {
             type_id: 0,
             ref_count: molt_codegen_abi::MoltRefCount::new(count),
-            flags: molt_codegen_abi::MoltFlags::new(flags),
+            flags: molt_codegen_abi::MoltFlags::new(0),
             size_class: 0,
             aux_kind: 0,
             aux: super::MoltAuxWord::new(0),
-        }
+        };
+        header.fetch_or_flags(flags);
+        header
     }
 
     #[test]

@@ -45,6 +45,7 @@ from molt.file_locks import (
     _release_file_lock,
     _try_acquire_file_lock,
 )
+from molt.file_deletion import delete_path
 from molt.file_publication import resolve_owned_path
 from tools.driver_errors import DriverError
 
@@ -398,7 +399,9 @@ def retire_idle_controllers(
                 else:
                     row["action"] = "retire"
                     if apply:
-                        shutil.rmtree(entry)
+                        ok, error = delete_path(entry, owning_root=directory)
+                        if not ok:
+                            raise OSError(error)
         except OSError as exc:
             row.update(action="failed", error=str(exc))
             _warn(f"controller retention left {entry}: {exc}")
@@ -651,9 +654,14 @@ def retire_regenerable(
         # A two-hour grace covers the existing one-hour use-stamp resolution.
         eligible = eligible and now - last_use >= PROTECTION_WINDOW_S
         if eligible:
-            with checkout_state_retirement(root) as exclusive:
+            with checkout_state_retirement(root, purged_root=root) as exclusive:
                 if not exclusive:
                     reason = "state-in-use"
+                elif (
+                    _managed_coordinate(root) != coordinate
+                    or read_checkout_owner(root) != owner
+                ):
+                    reason = "owner-changed"
                 elif live_protection is not None and live_protection(root):
                     reason = "guard-in-use"
                 elif checkout_state_last_use(root) != last_use:
@@ -662,10 +670,12 @@ def retire_regenerable(
                     reason = "retire"
                     if apply:
                         owned = resolve_owned_path(root)
-                        if owned.is_dir():
-                            shutil.rmtree(owned)
-                        else:
-                            owned.unlink()
+                        # The lock coordinate can live in common Git storage
+                        # for a package environment. It is not a physical
+                        # ancestor of the already-proven payload.
+                        ok, error = delete_path(owned, owning_root=owned.parent)
+                        if not ok:
+                            raise OSError(error)
                     total -= size
         rows.append(
             {

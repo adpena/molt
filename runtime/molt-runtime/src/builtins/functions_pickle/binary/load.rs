@@ -30,7 +30,7 @@ fn pickle_apply_dict_state(
     if unsafe { crate::dict_len(state_ptr) == 0 } {
         return Ok(());
     }
-    let Some(name) = attr_name_bits_from_bytes(_py, b"__dict__") else {
+    let Some(name) = crate::NameId::DunderDict.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
     let dictionary = crate::molt_get_attr_name(inst_bits, name);
@@ -114,7 +114,7 @@ pub(crate) fn pickle_vm_append_items(
         }
         return Ok(());
     }
-    if let Some(extend_bits) = pickle_attr_optional(_py, target_bits, b"extend")? {
+    if let Some(extend_bits) = pickle_attr_optional(_py, target_bits, crate::NameId::Extend)? {
         let list_ptr = alloc_list_with_capacity(_py, items, items.len());
         if list_ptr.is_null() {
             dec_ref_bits(_py, extend_bits);
@@ -130,7 +130,7 @@ pub(crate) fn pickle_vm_append_items(
         dec_ref_bits(_py, result);
         return Ok(());
     }
-    let Some(append_bits) = pickle_attr_optional(_py, target_bits, b"append")? else {
+    let Some(append_bits) = pickle_attr_optional(_py, target_bits, crate::NameId::Append)? else {
         let type_name = type_name(_py, obj_from_bits(target_bits));
         let message = format!("'{type_name}' object has no attribute 'append'");
         return Err(raise_exception(
@@ -304,7 +304,12 @@ pub(crate) fn pickle_apply_newobj(
     args_bits: u64,
     kwargs_bits: Option<u64>,
 ) -> Result<u64, u64> {
-    let new_bits = pickle_attr_required(_py, PickleError::Unpickling, cls_bits, b"__new__")?;
+    let new_bits = pickle_attr_required(
+        _py,
+        PickleError::Unpickling,
+        cls_bits,
+        crate::NameId::DunderNew,
+    )?;
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
         dec_ref_bits(_py, new_bits);
         return Err(PickleError::Unpickling.raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
@@ -348,17 +353,14 @@ pub(crate) fn pickle_apply_newobj(
     Ok(out_bits)
 }
 
-/// Initialize all typed field slots (and dataclass field values) to the missing
+/// Initialize all typed field slots to the missing
 /// sentinel. Called after NEWOBJ to ensure fields not populated by BUILD are
 /// correctly absent.
 fn pickle_init_missing_fields(_py: &crate::PyToken<'_>, inst_bits: u64) {
     let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
         return;
     };
-    let type_id = unsafe { object_type_id(inst_ptr) };
-    if unsafe { crate::object::object_has_class_shape(inst_ptr) }
-        || type_id == crate::TYPE_ID_DATACLASS
-    {
+    if unsafe { crate::object::object_has_class_shape(inst_ptr) } {
         unsafe { crate::object::field_storage::reset(_py, inst_ptr) };
     }
 }
@@ -371,7 +373,9 @@ pub(crate) fn pickle_apply_build(
     if obj_from_bits(state_bits).is_none() {
         return Ok(inst_bits);
     }
-    if let Some(setstate_bits) = pickle_attr_optional(_py, inst_bits, b"__setstate__")? {
+    if let Some(setstate_bits) =
+        pickle_attr_optional(_py, inst_bits, crate::NameId::DunderSetstate)?
+    {
         let _ = unsafe { call_callable1(_py, setstate_bits, state_bits) };
         dec_ref_bits(_py, setstate_bits);
         if exception_pending(_py) {

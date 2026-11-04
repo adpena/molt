@@ -12,6 +12,7 @@ from __future__ import annotations
 __all__ = [
     "BUILD_ENV",
     "CONTRACT_CONSTANT_NAMES",
+    "DESIGN_REVIEW",
     "DISTILL",
     "EVIDENCE_REVIEW",
     "GIT_CUSTODY",
@@ -37,6 +38,12 @@ Molt is a world-class, early-stage ahead-of-time (AOT) compiler for Python, not 
 Build it the way leading compilers are built (LLVM and MLIR, Cranelift, rustc, GraalVM Native Image,
 mypyc, Codon). Prove facts at compile and build time in the closed world (spec 0216); compiled code
 calls the runtime only for work it cannot do itself.
+
+Work the way an early-stage, world-class AOT compiler project works (Bun's early years, Zig, Go
+2009-2012, early LLVM): before each decision, ask what such a project would do, and do it. Keep
+trunk green and moving with small changes; delete instead of keeping compatibility; prefer
+differential end-to-end tests over tests that pin an implementation; add process only for a
+measured bottleneck.
 
 Typing is our friend. Identity is typed, never spelled: runtime names are `NameId`; op kinds,
 exceptions and intrinsics are generated closed types; facts live on typed SSA values. Never compare,
@@ -108,8 +115,10 @@ NO_FAKES = (
 
 HANDOFF_PRECHECK = (
     "HANDOFF PRECHECK: before reporting a commit ready, run `python -B tools/molt_dev.py land "
-    "--repo <your checkout> --precheck-only` with the slot image. It runs the landing's static "
-    "gates through main's controller and queues nothing. Run it and your changed tests from the "
+    "--repo <your checkout> --precheck-only` with the slot image. It applies the plan's "
+    "repairs (committing any change), then runs the landing's static gates and its try run "
+    "(changed-crate Clippy, changed tests and their direct readers) within the precheck budget "
+    "through main's controller, and queues nothing; a budget refusal exits 1. Run it and your changed tests from the "
     "landing runner's plain environment (`env -u CARGO_TARGET_DIR -u UV_PROJECT_ENVIRONMENT "
     "TMPDIR=<data-volume dir>`), never under a sourced lane env.sh: its exported selectors hide "
     "failures the runner sees. Fix every failure. Commit each green slice at once with exact "
@@ -156,6 +165,18 @@ PREMISE_VERIFICATION = (
     "conflicts or unsettled semantic decisions to the parent; do not open a competing lane."
 )
 
+DESIGN_REVIEW = (
+    "DESIGN REVIEW (Elephant Goldfish Model): before implementation, write artifacts/design.md "
+    "in your lane: the problem with measured evidence, prior art, the chosen mechanism, its "
+    "invariants, the consumers it changes and the test plan. Then have at least two Goldfish "
+    "reviewers read only that file, never your session: Claude workers use the egm reviewer "
+    "agents (egm-design, egm-implementation-readiness, egm-codebase-details, egm-zoom-out); "
+    "Codex workers run separate `codex exec -s read-only` reviews, one at a time, each given "
+    "only the file path and a reviewer role. Fix or answer each finding in the file; at most "
+    "two rounds, then cut scope. Commit design.md with its review record before code, and "
+    "report the outcome. A one-line fix may use one reviewer."
+)
+
 # --- Registry (consumed by the anti-rot gate + the tests) ----------------------------------
 
 CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
@@ -172,6 +193,7 @@ CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "MODEL_TIER",
     "TRIALITY_WIRING",
     "PREMISE_VERIFICATION",
+    "DESIGN_REVIEW",
     "HANDOFF_PRECHECK",
 )
 
@@ -189,6 +211,7 @@ MECHANIZES: dict[str, str] = {
     "MODEL_TIER": "M70",
     "TRIALITY_WIRING": "M63",
     "PREMISE_VERIFICATION": "M22/M24",
+    "DESIGN_REVIEW": "M22/M24 (owner 2026-11-04: Elephant Goldfish review before implementation)",
     "HANDOFF_PRECHECK": "M05/M12",
 }
 
@@ -206,6 +229,7 @@ KEY_PHRASES: dict[str, str] = {
     "MODEL_TIER": "Respect operator concurrency limits",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
+    "DESIGN_REVIEW": "Elephant Goldfish",
     "HANDOFF_PRECHECK": "--precheck-only",
 }
 

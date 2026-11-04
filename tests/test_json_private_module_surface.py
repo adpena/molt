@@ -58,8 +58,8 @@ enc = _private.make_encoder({{}}, None, _private.encode_basestring_ascii, None, 
 sc = _private.make_scanner(_host_json.JSONDecoder())
 
 checks = {{
-    "encoder": type(enc).__name__ == "make_encoder" and enc({{"a": 1}}, 0) == ('{{"a":1}}',),
-    "scanner": type(sc).__name__ == "make_scanner" and sc('{{"a":1}}', 0) == ({{"a": 1}}, 7),
+    "encoder": type(enc).__name__ == _host_json.encoder.c_make_encoder.__name__ and enc({{"a": 1}}, 0) == ('{{"a":1}}',),
+    "scanner": type(sc).__name__ == _host_json.scanner.c_make_scanner.__name__ and sc('{{"a":1}}', 0) == ({{"a": 1}}, 7),
     "private_handles_hidden": (
         "molt_json_dumps_ex" not in _private.__dict__
         and "molt_json_default_separators" not in _private.__dict__

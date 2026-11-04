@@ -4,10 +4,12 @@
 //! generator specializes it to one owner, with explicit control flow and an
 //! unchanged slow operand. The terminal release has not been applied when it
 //! reaches the runtime: that authority performs the sole 1 -> 0 transaction.
+//!
+//! Plain eligibility lives in the count word (`REFCOUNT_RUNTIME_CUSTODY`), so a
+//! site is tag/null, admission, one load, one window compare, add and store.
 
 use crate::{
-    HEADER_FLAG_DEALLOCATING, HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_IMMORTAL, HEADER_FLAGS_OFFSET,
-    HEADER_REFCOUNT_OFFSET, HEADER_TYPE_ID_OFFSET, IMMORTAL_REFCOUNT, POINTER_MASK,
+    COMPILED_PLAIN_REFCOUNT_WINDOW, HEADER_REFCOUNT_OFFSET, IMMORTAL_REFCOUNT, POINTER_MASK,
     QNAN_TAG_MASK_I64, QNAN_TAG_PTR_I64,
 };
 
@@ -32,6 +34,20 @@ pub enum RefcountOperation {
 pub enum RefcountStorage {
     Plain,
     Atomic,
+    /// Debug compilers retain runtime header-kind validation at every site.
+    HardenedPlain,
+}
+
+impl RefcountStorage {
+    pub const fn for_build(atomic: bool) -> Self {
+        if atomic {
+            Self::Atomic
+        } else if cfg!(debug_assertions) {
+            Self::HardenedPlain
+        } else {
+            Self::Plain
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,14 +70,12 @@ pub trait RefcountBuilder: Sized {
     fn constant(&mut self, value: u64) -> Self::Word;
     fn and(&mut self, value: Self::Word, mask: u64) -> Self::Word;
     fn add(&mut self, value: Self::Word, delta: i64) -> Self::Word;
-    fn shift_right(&mut self, value: Self::Word, amount: Self::Word) -> Self::Word;
     fn compare(
         &mut self,
         comparison: RefcountComparison,
         left: Self::Word,
         right: Self::Word,
     ) -> Self::Predicate;
-    fn either(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate;
     fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate;
     fn load_header_u32(&mut self, pointer: Self::Word, offset: i32) -> Self::Word;
     fn store_header_u32(&mut self, pointer: Self::Word, offset: i32, value: Self::Word);
@@ -105,7 +119,7 @@ pub fn generate_refcount<B: RefcountBuilder>(
             b.if_else(
                 nonnull,
                 |b| {
-                    if storage == RefcountStorage::Atomic {
+                    if storage != RefcountStorage::Plain {
                         b.slow_call(operation, bits);
                         return;
                     }
@@ -140,6 +154,13 @@ pub fn generate_refcount<B: RefcountBuilder>(
     );
 }
 
+/// The plain transition reads exactly one header word. Eligibility was decided
+/// when the object was allocated or changed state: `MoltHeader`'s flag
+/// authority sets `REFCOUNT_RUNTIME_CUSTODY` before it publishes any custody
+/// flag (immortal, C view, deallocating), and the immortal sentinel carries the
+/// bit by construction. One unsigned window compare therefore rejects custody,
+/// the terminal edge, zero and overflow; only the immortal no-op is decided
+/// inline on the cold side, matching the runtime's own early return.
 fn generate_attached_transition<B: RefcountBuilder>(
     b: &mut B,
     bits: B::Word,
@@ -147,75 +168,29 @@ fn generate_attached_transition<B: RefcountBuilder>(
     operation: RefcountOperation,
 ) {
     use RefcountComparison::*;
-    let type_id = b.load_header_u32(pointer, HEADER_TYPE_ID_OFFSET);
-    // This exact sparse membership projection is generated from heap_kinds.toml.
-    // A range check alone admits retired ids and is not the runtime boundary.
-    let object = compare_immediate(b, Equal, type_id, crate::TYPE_ID_OBJECT as u64);
-    let index = b.add(type_id, -(crate::MIN_HEAP_TYPE_ID as i64));
-    let in_range = compare_immediate(b, UnsignedLessThan, index, crate::HEAP_TYPE_ID_SPAN);
-    let mask = b.constant(crate::HEAP_TYPE_ID_VALID_MASK);
-    // LLVM's shift is poison for an out-of-range index even when `in_range`
-    // is false. Mask it before evaluation; membership still requires range.
-    let shift = b.and(index, 63);
-    let present = b.shift_right(mask, shift);
-    let present = b.and(present, 1);
-    let present = compare_immediate(b, NotEqual, present, 0);
-    let dense_member = b.both(in_range, present);
-    let valid = b.either(object, dense_member);
+    let count = b.load_header_u32(pointer, HEADER_REFCOUNT_OFFSET);
+    // Retain: 1..=WINDOW. Release: 2..=WINDOW + 1. The runtime authority sees
+    // the original bits for every other word.
+    let minimum = match operation {
+        RefcountOperation::Retain => 1,
+        RefcountOperation::Release => 2,
+    };
+    let index = b.add(count, -minimum);
+    let plain = compare_immediate(b, UnsignedLessThan, index, COMPILED_PLAIN_REFCOUNT_WINDOW);
     b.if_else(
-        valid,
+        plain,
         |b| {
-            let flags = b.load_header_u32(pointer, HEADER_FLAGS_OFFSET);
-            let immortal = b.and(flags, HEADER_FLAG_IMMORTAL as u64);
-            let mortal = compare_immediate(b, Equal, immortal, 0);
-            b.if_else(
-                mortal,
-                |b| {
-                    let rejected = HEADER_FLAG_HAS_ABI_VIEW
-                        | match operation {
-                            RefcountOperation::Retain => HEADER_FLAG_DEALLOCATING,
-                            RefcountOperation::Release => 0,
-                        };
-                    let rejected = b.and(flags, rejected as u64);
-                    let ordinary = compare_immediate(b, Equal, rejected, 0);
-                    b.if_else(
-                        ordinary,
-                        |b| {
-                            let count = b.load_header_u32(pointer, HEADER_REFCOUNT_OFFSET);
-                            // Retain: 1..MAX-2. Release: 2..MAX-1. The terminal edge,
-                            // zero, corrupt immortal sentinel and overflow stay untouched
-                            // until the checked runtime authority sees the original bits.
-                            let minimum = match operation {
-                                RefcountOperation::Retain => 1,
-                                RefcountOperation::Release => 2,
-                            };
-                            let index = b.add(count, -minimum);
-                            let ordinary_count = compare_immediate(
-                                b,
-                                UnsignedLessThan,
-                                index,
-                                (IMMORTAL_REFCOUNT - 2) as u64,
-                            );
-                            b.if_else(
-                                ordinary_count,
-                                |b| {
-                                    let delta = match operation {
-                                        RefcountOperation::Retain => 1,
-                                        RefcountOperation::Release => -1,
-                                    };
-                                    let next = b.add(count, delta);
-                                    b.store_header_u32(pointer, HEADER_REFCOUNT_OFFSET, next);
-                                },
-                                |b| b.slow_call(operation, bits),
-                            );
-                        },
-                        |b| b.slow_call(operation, bits),
-                    );
-                },
-                |_| {},
-            );
+            let delta = match operation {
+                RefcountOperation::Retain => 1,
+                RefcountOperation::Release => -1,
+            };
+            let next = b.add(count, delta);
+            b.store_header_u32(pointer, HEADER_REFCOUNT_OFFSET, next);
         },
-        |b| b.slow_call(operation, bits),
+        |b| {
+            let mortal = compare_immediate(b, NotEqual, count, IMMORTAL_REFCOUNT as u64);
+            b.if_else(mortal, |b| b.slow_call(operation, bits), |_| {});
+        },
     );
 }
 

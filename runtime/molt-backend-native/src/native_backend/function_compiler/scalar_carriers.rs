@@ -75,6 +75,61 @@ pub(in crate::native_backend::function_compiler) fn emit_exception_pending_condi
     builder.ins().icmp_imm_s(IntCC::NotEqual, pending, 0)
 }
 
+/// Service async work only when its runtime word is set. The fast result is
+/// still an exception observation: poll placement marks existing checks after
+/// raising operations; it does not make their exception predicate redundant.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
+    builder: &mut FunctionBuilder<'_>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    work_ptr_slot: cranelift_codegen::ir::StackSlot,
+    record_slot: cranelift_codegen::ir::StackSlot,
+    cold_observer: FuncRef,
+    fast_observer: Option<FuncRef>,
+) -> Value {
+    let ptr = builder
+        .ins()
+        .stack_load(types::I64, types::I64, work_ptr_slot, 0);
+    // Cranelift's atomic_load is SC (its only atomic-load ordering). A normal
+    // load is unsound here: GVN/LICM may reuse it across an external request.
+    let word = builder
+        .ins()
+        .atomic_load(types::I32, MemFlagsData::trusted(), ptr);
+    let pending = builder.ins().icmp_imm_s(IntCC::NotEqual, word, 0);
+    let cold = builder.create_block();
+    builder.set_cold_block(cold);
+    let fast = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    builder.ins().brif(pending, cold, &[], fast, &[]);
+    switch_to_block_materialized(builder, cold);
+    seal_block_once(builder, sealed_blocks, cold);
+    let call = builder.ins().call(cold_observer, &[]);
+    let result = builder.inst_results(call)[0];
+    jump_block(builder, done, &[result]);
+    switch_to_block_materialized(builder, fast);
+    seal_block_once(builder, sealed_blocks, fast);
+    let cond =
+        emit_exception_pending_condition(builder, types::I64, cold_observer, Some(record_slot));
+    let result = if let Some(observer) = fast_observer {
+        let capture = builder.create_block();
+        let none = builder
+            .ins()
+            .iconst(types::I64, molt_codegen_abi::QNAN_TAG_NONE_I64);
+        brif_block(builder, cond, capture, &[], done, &[none]);
+        switch_to_block_materialized(builder, capture);
+        seal_block_once(builder, sealed_blocks, capture);
+        let call = builder.ins().call(observer, &[]);
+        builder.inst_results(call)[0]
+    } else {
+        builder.ins().uextend(types::I64, cond)
+    };
+    jump_block(builder, done, &[result]);
+    switch_to_block_materialized(builder, done);
+    seal_block_once(builder, sealed_blocks, done);
+    builder.block_params(done)[0]
+}
+
 #[cfg(feature = "native-backend")]
 /// Preserve the boxed runtime result unless semantic representation facts prove
 /// an exact Boolean. Rich comparisons may return arbitrary Python objects.
@@ -993,21 +1048,10 @@ pub(in crate::native_backend::function_compiler) fn float_value_from_boxed_exten
     builder.inst_results(call)[0]
 }
 
-/// Get a raw f64 value for an operand in a mixed float/int arithmetic context.
-///
-/// This handles the critical case where a float-lane operation has an int
-/// operand (e.g. `2.0 * x` where x is int). The resolution order is:
-///
-///   1. Float-primary Variable (use_var yields f64 directly)
-///   2. Int shadow → `fcvt_from_sint` (int-to-float conversion)
-///   3. Raw primary int → `fcvt_from_sint`
-///   4. NaN-boxed fallback → `unbox_int` + `fcvt_from_sint` for int-like
-///      names, runtime extended-float extraction for confirmed floats
-///
-/// **Critical correctness fix**: earlier code did a raw `bitcast(F64)` for
-/// ALL NaN-boxed fallback paths, which reinterprets the NaN-box tag bits as
-/// a float value. This produces garbage (NaN) for int operands. Now we
-/// correctly convert ints to f64 via `fcvt_from_sint`.
+/// Read the numeric payload authorized by a bound producer witness. Raw integer
+/// carriers convert directly; exact boxed bools use their payload bit; boxed
+/// floats use the extended extractor, including heap NaNs. Unknown-magnitude
+/// boxed integers remain on generic runtime dispatch.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
@@ -1018,24 +1062,24 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    nbc: &crate::NanBoxConsts,
-    name: &str,
+    operand: crate::representation_plan::NumericOperand<'_>,
 ) -> Value {
+    let name = operand.name();
+    // The operand carries a producer witness; an annotation cannot reach here.
     // 1. Try float-primary path first.
     if let Some(f_val) = float_value_for(builder, vars, representation_plan, name) {
         return f_val;
     }
 
     // 2. Operand is int — get raw i64 and convert to f64.
-    if representation_plan.name_is_integer_scalar(name) {
+    if matches!(operand.kind(), ScalarKind::Int | ScalarKind::Bool) {
         // Phase 1d: representation_plan members hold raw i64 in the main
         // Variable; reading via int_raw_value avoids the box/unbox detour.
         if let Some(raw_int_val) = int_raw_value(builder, vars, representation_plan, name) {
             return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
         }
-        // Fallback: name is int-typed but not in representation_plan → vars[name]
-        // holds the already-NaN-boxed value. Use overflow-safe boxing so this
-        // helper observes the same representation contract as generic reads.
+        // An exact boxed Boolean has only payload bit zero. Integer
+        // operands without a raw carrier are rejected by NumericOperand.
         let boxed = var_get_boxed_overflow_safe_base(
             module,
             import_ids,
@@ -1046,9 +1090,14 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
             name,
             representation_plan,
         )
-        .expect("Int operand not found");
-        let raw_int_val = crate::unbox_int(builder, *boxed, nbc);
-        return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
+        .expect("Numeric operand not found");
+        assert_eq!(
+            operand.kind(),
+            ScalarKind::Bool,
+            "integer producer lacks its raw carrier"
+        );
+        let raw = builder.ins().band_imm_u(*boxed, 1);
+        return builder.ins().fcvt_from_sint(types::F64, raw);
     }
 
     // 3. Not int — must be a boxed float. Use the runtime's extended float
@@ -1080,10 +1129,10 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     out_name: Option<&String>,
-    lhs_name: &str,
-    rhs_name: &str,
+    operands: crate::representation_plan::FloatComparisonOperands<'_>,
     cc: FloatCC,
 ) -> (Value, Value) {
+    let (lhs, rhs) = operands.operands();
     let lhs_f = float_value_for_mixed(
         module,
         import_ids,
@@ -1092,8 +1141,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         sealed_blocks,
         vars,
         representation_plan,
-        nbc,
-        lhs_name,
+        lhs,
     );
     let rhs_f = float_value_for_mixed(
         module,
@@ -1103,8 +1151,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         sealed_blocks,
         vars,
         representation_plan,
-        nbc,
-        rhs_name,
+        rhs,
     );
     let cmp = builder.ins().fcmp(cc, lhs_f, rhs_f);
     compare_bool_result_value(builder, representation_plan, out_name, cmp, nbc)

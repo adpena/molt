@@ -184,6 +184,7 @@ tests/differential/stdlib/cached_runtime_class_mutability.py
 tests/differential/stdlib/cmath_basic.py
 tests/differential/stdlib/cmd_basic.py
 tests/differential/stdlib/code_basic.py
+tests/differential/stdlib/code_replace_execution_policy.py
 tests/differential/stdlib/codec_registered_encode_callback.py
 tests/differential/stdlib/codecs_basic.py
 tests/differential/stdlib/codecs_charmap_generic.py
@@ -1100,6 +1101,7 @@ tests/differential/stdlib/future_module.py
 tests/differential/stdlib/gc_collect.py
 tests/differential/stdlib/gc_cycle_collector.py
 tests/differential/stdlib/gc_generational_control.py
+tests/differential/stdlib/gc_inline_poll_pressure.py
 tests/differential/stdlib/gc_public_authority.py
 tests/differential/stdlib/getpass_basic.py
 tests/differential/stdlib/gettext_basic.py
@@ -1242,6 +1244,7 @@ tests/differential/stdlib/importlib_module_reload.py
 tests/differential/stdlib/importlib_module_spec.py
 tests/differential/stdlib/importlib_namespace_path_protocol.py
 tests/differential/stdlib/importlib_optional_import_intrinsic.py
+tests/differential/stdlib/importlib_package_defers_util.py
 tests/differential/stdlib/importlib_package_path_identity.py
 tests/differential/stdlib/importlib_path_identity_ns/child.py
 tests/differential/stdlib/importlib_path_identity_pkg/__init__.py
@@ -1631,6 +1634,8 @@ tests/differential/stdlib/poplib_basic.py
 tests/differential/stdlib/posix_platform_basic.py
 tests/differential/stdlib/posix_userdb_basic.py
 tests/differential/stdlib/pprint_basic.py
+tests/differential/stdlib/public_native_types.py
+tests/differential/stdlib/public_object_identity.py
 tests/differential/stdlib/pwd_basic.py
 tests/differential/stdlib/py_compile_basic.py
 tests/differential/stdlib/queue_basic.py
@@ -1690,6 +1695,7 @@ tests/differential/stdlib/shutil_basic.py
 tests/differential/stdlib/signal_basic.py
 tests/differential/stdlib/signal_constants_extended.py
 tests/differential/stdlib/signal_dispatch_safepoints.py
+tests/differential/stdlib/signal_inline_backedge.py
 tests/differential/stdlib/signal_keyboardinterrupt.py
 tests/differential/stdlib/signal_keyboardinterrupt_subclass_exit.py
 tests/differential/stdlib/signal_strsignal_valid.py
@@ -1905,6 +1911,7 @@ tests/differential/stdlib/test_support_import_helper_basic.py
 tests/differential/stdlib/test_unittest_basic.py
 tests/differential/stdlib/textwrap_basic.py
 tests/differential/stdlib/this_basic.py
+tests/differential/stdlib/thread_interrupt_inline_poll.py
 tests/differential/stdlib/thread_lock_basic.py
 tests/differential/stdlib/threading_active_count_intrinsic.py
 tests/differential/stdlib/threading_barrier_basic.py

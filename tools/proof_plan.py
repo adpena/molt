@@ -60,6 +60,7 @@ from tools.command_execution import (  # noqa: E402
     GUARD_CANCELLATION_OBSERVATION_SECONDS,
 )
 from tools import proof_receipts, toolchain_probe  # noqa: E402
+from tools.proof_command_argv import is_python_command  # noqa: E402
 from molt import python_environment_contract as _contract  # noqa: E402
 from molt import host_capacity  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
@@ -743,6 +744,9 @@ _LOCAL_RULE_FIELDS = frozenset(
         "toolchains",
         "pinned_assets",
         "plan_entities",
+        # `land` runs the rule's gates in the lane before it queues the lane,
+        # beside the static gates its toolchains alone would admit there.
+        "precheck",
     }
 )
 
@@ -757,6 +761,8 @@ PLAN_SECTIONS: Mapping[str, str | None] = MappingProxyType(
         "authority_inputs": None,
         "always_toolchains": None,
         "always": None,
+        "repair_toolchains": None,
+        "repair": None,
         "receipt_schema": None,
         "executor_max_workers": None,
         "inventory_hash_workers": None,
@@ -1234,6 +1240,8 @@ def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
             f"{rule.get('name', 'local rule')}: unknown local rule fields: "
             + ", ".join(unknown)
         )
+    if type(rule.get("precheck", False)) is not bool:
+        return f"{rule.get('name', 'local rule')}: precheck must be a boolean"
     return None
 
 
@@ -1588,11 +1596,12 @@ def local_gate_commands(
             tuple(assets),
         )
 
-    for index, command in enumerate(data.get("always", [])):
-        identifier = f"local.always.{index}"
-        if error := local_gate_template_error(command):
-            raise ValueError(f"{identifier}: {error}")
-        add(identifier, command, data.get("always_toolchains", []))
+    for section in ("always", "repair"):
+        for index, command in enumerate(data.get(section, [])):
+            identifier = f"local.{section}.{index}"
+            if error := local_gate_template_error(command):
+                raise ValueError(f"{identifier}: {error}")
+            add(identifier, command, data.get(f"{section}_toolchains", []))
     for rule in data.get("rule", []):
         tools = rule.get("toolchains", [])
         gate_access = rule.get("cargo_target_access")
@@ -1649,6 +1658,26 @@ def clippy_diagnostic_format_error(arguments: Sequence[str]) -> str | None:
                 "toolchain (rust-lang/cargo#17519); use human diagnostics"
             )
     return None
+
+
+def local_command_section_errors(
+    policies: Sequence[ToolchainPolicy],
+    sections: Mapping[str, tuple[Sequence[str], Sequence[str]]],
+) -> list[str]:
+    """The `always` and `repair` sections share one contract: bindable
+    command templates and a closed declared toolchain set."""
+    errors: list[str] = []
+    for section, (commands, toolchains) in sections.items():
+        for index, command in enumerate(commands):
+            if not isinstance(command, str):
+                errors.append(f"local.{section}.{index}: command must be a string")
+            elif error := local_gate_template_error(command):
+                errors.append(f"local.{section}.{index}: {error}")
+        try:
+            toolchain_closure(policies, toolchains)
+        except ValueError as exc:
+            errors.append(f"local {section}: {exc}")
+    return errors
 
 
 def local_gate_template_error(command: str) -> str | None:
@@ -1827,6 +1856,8 @@ class ProofPlan:
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
     always_toolchains: tuple[str, ...] = ()
+    repair: tuple[str, ...] = ()
+    repair_toolchains: tuple[str, ...] = ()
     pinned_assets: Mapping[str, Mapping] = dataclass_field(default_factory=dict)
 
     def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
@@ -2028,6 +2059,8 @@ class ProofPlan:
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
+            repair=tuple(data.get("repair", [])),
+            repair_toolchains=tuple(data.get("repair_toolchains", [])),
             pinned_assets=load_pinned_assets(data),
         )
         errors = plan.validate() + plan_policy_errors(data)
@@ -3390,13 +3423,15 @@ class ProofPlan:
                         )
         local_names: set[str] = set()
         local_toolchain_names = {policy.name for policy in self.toolchain_policies}
-        for index, command in enumerate(self.always):
-            if error := local_gate_template_error(command):
-                errors.append(f"local.always.{index}: {error}")
-        try:
-            toolchain_closure(self.toolchain_policies, self.always_toolchains)
-        except ValueError as exc:
-            errors.append(f"local always: {exc}")
+        errors.extend(
+            local_command_section_errors(
+                self.toolchain_policies,
+                {
+                    "always": (self.always, self.always_toolchains),
+                    "repair": (self.repair, self.repair_toolchains),
+                },
+            )
+        )
         for rule in self.local_rules:
             if field_error := local_rule_field_error(rule):
                 errors.append(field_error)
@@ -3616,14 +3651,23 @@ def _source_identity() -> dict[str, str]:
 
 
 def resolved_command_argv(command: ProofCommand) -> tuple[str, ...]:
-    """The argv the executor launches, with the source-commit placeholder bound."""
-    if not command.binds_source_commit:
-        return command.argv
-    commit = _source_commit()
-    return tuple(
-        commit if part == PROOF_SOURCE_COMMIT_PLACEHOLDER else part
-        for part in command.argv
-    )
+    """The argv the executor launches, with its source commit and Python bound.
+
+    A bare Python argv0 runs the interpreter the ``python`` toolchain identity
+    admits and fingerprints (``sys.executable``), never the first one on PATH,
+    which on macOS is the Xcode system interpreter (HF-755).
+    """
+    argv = command.argv
+    if command.binds_source_commit:
+        commit = _source_commit()
+        argv = tuple(
+            commit if part == PROOF_SOURCE_COMMIT_PLACEHOLDER else part for part in argv
+        )
+    if Path(argv[0]).name == argv[0] and is_python_command(argv[0]):
+        if not sys.executable:
+            raise ValueError(f"{command.id}: the environment Python is unknown")
+        argv = (sys.executable, *argv[1:])
+    return argv
 
 
 def _source_tree_changes() -> tuple[str, ...]:
@@ -5237,20 +5281,31 @@ def _guard_closure_failure(
     ):
         return "guard job closure is uncertain"
     quarantine = metrics.get("cargo_incremental_quarantine")
+    status = (
+        quarantine.get("ownership_status") if isinstance(quarantine, dict) else None
+    )
     if quarantine is not None and (
         not isinstance(quarantine, dict)
-        or quarantine.get("ownership_status") not in {"quarantined", "not_required"}
+        or status not in {"quarantined", "not_required", "unobserved"}
         or not isinstance(quarantine.get("errors"), list)
         or quarantine.get("errors")
-        or quarantine.get("interruption_inventory_complete") is not True
-        or quarantine.get("interruption_inventory_error") is not None
         or (
-            quarantine.get("ownership_status") == "not_required"
+            # A kill before any rustc observation leaves nothing to recover,
+            # so it needs no interruption inventory (HF-655).
+            status != "unobserved"
+            and (
+                quarantine.get("interruption_inventory_complete") is not True
+                or quarantine.get("interruption_inventory_error") is not None
+            )
+        )
+        or (
+            status in {"not_required", "unobserved"}
             and (
                 quarantine.get("recovery_observations") != []
                 or quarantine.get("moved_paths") != []
             )
         )
+        or (status == "unobserved" and quarantine.get("ownership_observations") != [])
     ):
         return "Cargo quarantine ownership or recovery is unresolved"
     return None

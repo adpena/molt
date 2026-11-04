@@ -3,7 +3,6 @@ use super::super::super::frame_locals::WasmDispatchFrameLocals;
 use super::super::super::op_loop::WasmFunctionEmitContext;
 use super::super::DispatchMode;
 use super::super::plan::{ControlScopeDepth, NonLinearControlPlan, StaticDispatchEdge};
-use crate::wasm_binary::emit_call;
 use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use crate::{FunctionIR, OpIR};
@@ -82,17 +81,24 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     depth: ControlScopeDepth,
 ) {
     // Observe exactly the authored statement boundary, including async polls.
-    emit_call(
-        func,
-        context.reloc_enabled,
-        context.import_ids[if op.is_async_work_poll() {
-            crate::wasm_abi_generated::WasmRuntimeImport::AsyncWorkPollAndExceptionPending
-        } else {
-            crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending
-        }],
-    );
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
+    if op.is_async_work_poll() {
+        crate::wasm::pending_work::emit_poll(
+            func,
+            context.locals(),
+            context.import_ids,
+            context.reloc_enabled,
+            false,
+        );
+        func.instruction(&Instruction::I64Const(0));
+        func.instruction(&Instruction::I64Ne);
+    } else {
+        crate::wasm::pending_work::emit_exception_pending_test(
+            func,
+            crate::wasm::pending_work::thread_record_local(context.locals()),
+            context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+            context.reloc_enabled,
+        );
+    }
     emit_conditional_state_branch(
         func,
         context,

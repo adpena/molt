@@ -432,6 +432,9 @@ one.
 
 The generated scalar-forwarding contract separately preserves a plain
 `frame_home_store` result's exact mathematical scalar value from operand zero.
+The same contract forwards an already-proven scalar across `binding_alias`.
+That operation still mints its own droppable reference; mathematical-value
+forwarding never makes it a transparent alias or merges its ownership root.
 The store returns the saved operand view after publishing it and releasing the
 displaced binding; it does not reread a finalizer's replacement. Exact scalar
 provenance, ranges, recurrences and physical representation consume this fact.
@@ -919,16 +922,14 @@ receiver resurrection. The caller must separately prove every owner dies before
 the backing storage. No compiler producer/verifier establishes that lifetime, so
 the old class-frame opcode and its backend-specific realizations are retired.
 
-Dataclass construction is a two-phase protocol, not class reassignment. Both
-frontend constructor pairs and runtime builders allocate zeroed, unpublished
-payloads, then use `dataclass_finish_construction_unpublished` through the
-constructor-only `molt_dataclass_set_class` ABI where applicable. The finalizer
-rejects published or pre-attached receivers before mutating the target class,
-validates and seals a nonzero type, attaches its owned edge, refreshes metadata,
-and publishes exactly once after checking for a pending exception. Failed
-construction remains unpublished and destructible; retries cannot reclassify a
-published object or replace an attached class. No public attribute setter may
-enter this private construction protocol.
+Dataclasses use ordinary instance storage and class dispatch. Their generated
+initializers own field assignment as ordinary methods; allocation, failed
+initialization, finalization, slots and dictionary exposure use the same
+authorities as handwritten classes. The former dataclass heap kind, descriptor
+vectors, constructor pair and class-attachment ABI have no producer and are
+retired together. No per-instance dataclass metadata partition or projection
+competes with the real class layout. Class reassignment uses that layout's
+existing compatibility and edge-publication transaction.
 
 The boxed and pointer get/set/init ABIs delegate to `object/accessors.rs`.
 Generic lookup, deletion, GC, and serialization project the same storage owner.

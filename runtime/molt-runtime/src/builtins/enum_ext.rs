@@ -217,14 +217,14 @@ pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
             return MoltObject::from_bool(false).bits();
         }
         for attr_name in &[
-            b"__get__" as &[u8],
-            b"__set__",
-            b"__delete__",
-            b"fget",
-            b"fset",
-            b"fdel",
+            crate::NameId::DunderGet,
+            crate::NameId::DunderSet,
+            crate::NameId::DunderDelete,
+            crate::NameId::Fget,
+            crate::NameId::Fset,
+            crate::NameId::Fdel,
         ] {
-            if let Some(name_key) = attr_name_bits_from_bytes(_py, attr_name) {
+            if let Some(name_key) = attr_name.owned_bits(_py) {
                 let val = unsafe {
                     crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key)
                 };
@@ -253,7 +253,7 @@ pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
         if unsafe { object_type_id(owner_ptr) } != TYPE_ID_TYPE {
             return MoltObject::from_bool(false).bits();
         }
-        let Some(name_key) = attr_name_bits_from_bytes(_py, b"_molt_auto") else {
+        let Some(name_key) = crate::NameId::PrivateMoltAuto.owned_bits(_py) else {
             return MoltObject::from_bool(false).bits();
         };
         let val =
@@ -398,7 +398,7 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         let members_dict_bits = MoltObject::from_ptr(members_dict_ptr).bits();
 
         // Store __members__ on the class dict
-        if let Some(attr_key) = attr_name_bits_from_bytes(_py, b"__members__") {
+        if let Some(attr_key) = crate::NameId::DunderMembers.owned_bits(_py) {
             let cls_dict_bits = unsafe { class_dict_bits(cls_ptr) };
             if let Some(dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr()
                 && !unsafe { dict_set_in_place(_py, dict_ptr, attr_key, members_dict_bits) }
@@ -429,22 +429,19 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-
-        // Get __members__ from the class
-        let Some(attr_key) = attr_name_bits_from_bytes(_py, b"__members__") else {
+        let Some(attr_key) = crate::NameId::DunderMembers.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let members_bits = molt_getattr_builtin(cls_bits, attr_key, missing);
+        let result = crate::lookup_attribute(_py, cls_bits, attr_key);
         dec_ref_bits(_py, attr_key);
-
-        if exception_pending(_py) {
-            clear_exception(_py);
-            return MoltObject::none().bits();
-        }
-        if members_bits == missing {
-            return MoltObject::none().bits();
-        }
+        let members_bits = match result {
+            crate::AttributeLookup::Found(bits) => bits,
+            crate::AttributeLookup::Missing => return MoltObject::none().bits(),
+            crate::AttributeLookup::Error => {
+                clear_exception(_py);
+                return MoltObject::none().bits();
+            }
+        };
 
         // __members__ should be a dict; iterate its key/value pairs looking
         // for a value match while retaining the complete observation through equality callbacks.

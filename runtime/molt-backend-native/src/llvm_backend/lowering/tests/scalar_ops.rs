@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn refcount_none_annotation_cannot_replace_a_borrowed_boxed_word() {
+fn none_annotation_cannot_replace_a_borrowed_boxed_word() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     let mut func = TirFunction::new(
@@ -27,7 +27,7 @@ fn refcount_none_annotation_cannot_replace_a_borrowed_boxed_word() {
     };
     backend.function_repr_facts.insert(
         func.name.clone(),
-        crate::representation_plan::LlvmReprFacts::build(&func),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
     );
     let function = lower_tir_to_llvm(&func, &backend);
     backend.module.verify().unwrap();
@@ -40,6 +40,63 @@ fn refcount_none_annotation_cannot_replace_a_borrowed_boxed_word() {
         ir.contains("ret i64 %0"),
         "annotation must preserve the actual word: {ir}"
     );
+}
+
+#[test]
+fn annotation_only_unbox_preserves_a_boxed_owner_and_its_refcounts() {
+    for (annotation, wire_type) in [
+        (TirType::I64, "i64"),
+        (TirType::F64, "f64"),
+        (TirType::Bool, "bool"),
+    ] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "unproven_unbox".into(),
+            vec![annotation.clone()],
+            annotation.clone(),
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let result = func.fresh_value();
+        func.value_types.insert(result, annotation);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            origin: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::UnboxVal,
+            operands: vec![ValueId(0)],
+            results: vec![result],
+            attrs: [("type".into(), AttrValue::Str(wire_type.into()))]
+                .into_iter()
+                .collect(),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            origin: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::DecRef,
+            operands: vec![result],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        backend.function_repr_facts.insert(
+            func.name.clone(),
+            crate::representation_plan::ProducerCarrierPlan::build(&func),
+        );
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend.module.verify().unwrap();
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("ret i64 %0"), "object bits must survive: {ir}");
+        assert!(ir.contains("@__molt_inline_retain(i64 %0,"), "{ir}");
+        assert!(ir.contains("@__molt_inline_release(i64 %0,"), "{ir}");
+        assert!(!ir.contains("bitcast i64"), "{ir}");
+        assert!(!ir.contains("trunc i64"), "{ir}");
+        assert!(!ir.contains("@molt_int_from_i64"), "{ir}");
+    }
 }
 
 #[test]
@@ -247,6 +304,12 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     lowering.values.insert(ValueId(0), raw.into());
     lowering.value_types.insert(ValueId(0), TirType::DynBox);
     lowering.value_types.insert(ValueId(1), TirType::I64);
+    // Lowerer-only control: the caller guarantees a full-width integer
+    // extraction, rather than merely annotating an arbitrary Python object.
+    lowering
+        .repr_facts
+        .repr_by_value
+        .insert(ValueId(1), crate::Repr::RawI64FullDeopt);
     lowering.emit_unbox(&TirOp {
         origin: None,
         dialect: Dialect::Molt,
@@ -963,7 +1026,7 @@ fn lower_i64_comparison() {
     // The raw `icmp slt` path needs both operands proven exact-i64 carriers;
     // an unproven `i64` parameter carries boxed (`DynBox`) and dispatches the
     // comparison through the runtime. Prove the two parameters here.
-    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+    let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     for v in [ValueId(0), ValueId(1)] {
         facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
     }
@@ -1036,12 +1099,18 @@ fn lower_box_i64() {
         // `box(x)` emits the NaN-boxing arithmetic only when `x` is a RAW i64.
         // An unproven `i64` parameter carries already-boxed (`DynBox`), for which
         // `box` is a no-op; prove the parameter raw so the box path is exercised.
-        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+        let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
         facts
             .repr_by_value
             .insert(ValueId(0), crate::Repr::RawI64Safe);
         backend.function_repr_facts.insert(func.name.clone(), facts);
 
+        // This test owns an explicitly boxed destination ABI. Inferred
+        // producer-proven raw returns are tested separately by linkage tests.
+        backend.function_linkage_abis.insert(
+            func.name.clone(),
+            test_native_linkage_abi(vec![TirType::I64], Some(TirType::DynBox)),
+        );
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         backend.module.verify().unwrap();
         let ir = llvm_fn.print_to_string().to_string();
@@ -1181,7 +1250,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
     // The plan proves the masked accumulator chain RawI64Safe (what the
     // value-range phi narrowing yields end to end). The ConstInts are I64 by
     // their own lowering; the proof here is for the phi + the two op results.
-    let mut facts = crate::representation_plan::LlvmReprFacts::default();
+    let mut facts = crate::representation_plan::ProducerCarrierPlan::default();
     for v in [s_phi, shl, band] {
         facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
     }
@@ -1290,7 +1359,7 @@ fn proven_none_boxing_aliases_and_refcounts_emit_no_transition() {
     entry.terminator = Terminator::Return { values: vec![] };
     backend.function_repr_facts.insert(
         func.name.clone(),
-        crate::representation_plan::LlvmReprFacts::build(&func),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
     );
     let function = lower_tir_to_llvm(&func, &backend);
     backend.module.verify().unwrap();

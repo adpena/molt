@@ -12,15 +12,14 @@ use crate::builtins::classes::builtin_classes;
 use crate::builtins::type_ops::type_of_bits;
 use crate::call::class_init::alloc_instance_for_class;
 use crate::{
-    TYPE_ID_STRING, TYPE_ID_WEAKREF, alloc_string, attr_name_bits_from_bytes, dec_ref_bits,
-    exception_pending, inc_ref_bits, int_bits_from_i64, molt_weakref_find_nocallback,
-    molt_weakref_register, obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
-    type_name,
+    TYPE_ID_STRING, TYPE_ID_WEAKREF, alloc_string, dec_ref_bits, exception_pending, inc_ref_bits,
+    int_bits_from_i64, molt_weakref_find_nocallback, molt_weakref_register, obj_from_bits,
+    object_type_id, raise_exception, string_obj_to_owned, type_name,
 };
 
 fn referent_name(_py: &crate::PyToken<'_>, target_ptr: *mut u8) -> Result<Option<String>, ()> {
-    let name_attr = attr_name_bits_from_bytes(_py, b"__name__").ok_or(())?;
-    let name_bits = unsafe { attr_lookup_ptr(_py, target_ptr, name_attr) };
+    let name_attr = crate::NameId::DunderName.owned_bits(_py).ok_or(())?;
+    let name_bits = unsafe { attr_lookup_ptr(_py, target_ptr, name_attr).into_result() };
     dec_ref_bits(_py, name_attr);
     let Some(name_bits) = name_bits? else {
         return Ok(None);

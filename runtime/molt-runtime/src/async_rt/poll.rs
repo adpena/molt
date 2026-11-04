@@ -832,7 +832,7 @@ mod tests {
             let caller = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
             let builtins = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
             let replacement = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
-            let builtins_key = crate::attr_name_bits_from_bytes(py, b"__builtins__").unwrap();
+            let builtins_key = crate::dynamic_attr_name_bits(py, b"__builtins__").unwrap();
             let builtins_baseline = unsafe {
                 (*crate::header_from_obj_ptr(crate::obj_from_bits(builtins).as_ptr().unwrap()))
                     .ref_count_snapshot()
@@ -980,26 +980,28 @@ mod tests {
                         b"cr_frame" => b"cr_code".as_slice(),
                         _ => unreachable!(),
                     };
-                    let code_attr = crate::attr_name_bits_from_bytes(py, code_field).unwrap();
+                    let code_attr = crate::dynamic_attr_name_bits(py, code_field).unwrap();
                     let viewed_code = unsafe {
                         crate::builtins::attributes::attr_lookup_ptr(
                             py,
                             crate::obj_from_bits(owner).as_ptr().unwrap(),
                             code_attr,
                         )
+                        .into_result()
                     }
                     .expect("frame attribute lookup succeeds")
                     .expect("frame attribute exists");
                     assert_eq!(viewed_code, code_bits);
                     dec_ref_bits(py, viewed_code);
                     dec_ref_bits(py, code_attr);
-                    let attr = crate::attr_name_bits_from_bytes(py, field).unwrap();
+                    let attr = crate::dynamic_attr_name_bits(py, field).unwrap();
                     let frame = unsafe {
                         crate::builtins::attributes::attr_lookup_ptr(
                             py,
                             crate::obj_from_bits(owner).as_ptr().unwrap(),
                             attr,
                         )
+                        .into_result()
                     }
                     .expect("frame attribute lookup succeeds")
                     .expect("frame attribute exists");
@@ -1017,13 +1019,14 @@ mod tests {
                         (b"f_back".as_slice(), MoltObject::none().bits()),
                         (b"f_lineno".as_slice(), MoltObject::from_int(1).bits()),
                     ] {
-                        let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+                        let name = crate::dynamic_attr_name_bits(py, name).unwrap();
                         let value = unsafe {
                             crate::builtins::attributes::attr_lookup_ptr(
                                 py,
                                 crate::obj_from_bits(frame).as_ptr().unwrap(),
                                 name,
                             )
+                            .into_result()
                         }
                         .expect("frame attribute lookup succeeds")
                         .expect("frame attribute exists");

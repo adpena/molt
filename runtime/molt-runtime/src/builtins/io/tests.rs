@@ -164,7 +164,7 @@ fn vfs_metadata_admission_and_call_budget() {
                                     (b"st_atime".as_slice(), "float"),
                                     (b"st_atime_ns".as_slice(), "int"),
                                 ] {
-                                    let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+                                    let key = crate::dynamic_attr_name_bits(py, name).unwrap();
                                     let value = crate::molt_get_attr_name(result, key);
                                     assert!(!crate::exception_pending(py));
                                     assert_eq!(
@@ -234,7 +234,7 @@ fn native_stat_record_device_projection_tracks_python_version() {
                 raw.st_rdev = !1;
                 let record = crate::builtins::io_path::stat_result_from_libc_stat(py, &raw);
                 assert!(!crate::exception_pending(py));
-                let key = crate::attr_name_bits_from_bytes(py, b"st_rdev").unwrap();
+                let key = crate::dynamic_attr_name_bits(py, b"st_rdev").unwrap();
                 let value = crate::molt_get_attr_name(record, key);
                 assert!(!crate::exception_pending(py));
                 assert_eq!(crate::format_obj(py, obj_from_bits(value)), expected);

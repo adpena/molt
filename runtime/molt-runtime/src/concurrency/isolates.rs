@@ -19,7 +19,8 @@ use crate::GilGuard;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::audit::AuditArgs;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::builtins::attr::attr_name_bits_from_bytes;
+#[cfg(test)]
+use crate::builtins::attr::dynamic_attr_name_bits;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::builtins::modules::molt_module_cache_get;
 #[cfg(not(target_arch = "wasm32"))]
@@ -424,7 +425,7 @@ fn run_thread_payload(payload: Vec<u8>) {
             log_thread_exception(_py);
             return;
         }
-        let Some(attr_bits) = attr_name_bits_from_bytes(_py, b"_molt_thread_run") else {
+        let Some(attr_bits) = crate::NameId::PrivateMoltThreadRun.owned_bits(_py) else {
             dec_ref_bits(_py, loaded_bits);
             return;
         };
@@ -2004,7 +2005,7 @@ mod bootstrap_failure_tests {
                         ));
                         let mut owners = Vec::new();
                         let mut attribute = |value, name: &[u8]| {
-                            let key = attr_name_bits_from_bytes(py, name).unwrap();
+                            let key = dynamic_attr_name_bits(py, name).unwrap();
                             let result = crate::molt_get_attr_name(value, key);
                             dec_ref_bits(py, key);
                             assert!(!exception_pending(py), "isolate metadata lookup failed");
@@ -2024,7 +2025,7 @@ mod bootstrap_failure_tests {
                         assert_eq!(crate::molt_len(mro), MoltObject::from_int(2).bits());
                         let namespace = attribute(roots.type_obj, b"__dict__");
                         let get = attribute(namespace, b"get");
-                        let key = attr_name_bits_from_bytes(py, b"__name__").unwrap();
+                        let key = crate::NameId::DunderName.owned_bits(py).unwrap();
                         let descriptor = unsafe { crate::call_callable1(py, get, key) };
                         assert!(!exception_pending(py));
                         let pointer = obj_from_bits(descriptor).as_ptr().unwrap();

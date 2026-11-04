@@ -136,7 +136,7 @@ fn publish_test_module(name: &str, supplied_spec: Option<u64>) -> u64 {
 extern "C" fn init_test_sys() -> u64 {
     SYS_INIT_RUNS.fetch_add(1, Ordering::SeqCst);
     crate::with_gil_entry_nopanic!(py, {
-        let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
         let module = if let Some(module) = crate::builtins::modules::interpreter_sys_module(py) {
             inc_ref_bits(py, module);
             module
@@ -217,7 +217,7 @@ extern "C" fn init_g4_pkg() -> u64 {
             let modules_bits = crate::builtins::modules::sys_modules_dict_bits(_py, sys).unwrap();
             let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
             let _modules_owner = crate::PtrDropGuard::new(modules);
-            let child = crate::attr_name_bits_from_bytes(_py, b"g4_pkg.sub").unwrap();
+            let child = crate::dynamic_attr_name_bits(_py, b"g4_pkg.sub").unwrap();
             unsafe { assert!(crate::dict_set_in_place(_py, modules, child, replacement)) };
             dec_ref_bits(_py, child);
         }
@@ -365,7 +365,7 @@ impl<'a, 'py> ModuleTestRestore<'a, 'py> {
         assert_eq!(owner, 0);
         let state = table.initialization().states[index].load(Ordering::Acquire);
         assert!(!matches!(state, STATE_INITIALIZING));
-        let name_bits = crate::attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+        let name_bits = crate::dynamic_attr_name_bits(py, name.as_bytes()).unwrap();
         let previous = publication_for_test(py, name);
         if let Some(bits) = previous {
             inc_ref_bits(py, bits);
@@ -578,12 +578,12 @@ fn completed_public_false_probe_bypasses_execution_lock_admission() {
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         transaction.with_target_python_minor(py, 12, || {
-            let name = crate::attr_name_bits_from_bytes(py, b"_molt_completed_no_lock").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"_molt_completed_no_lock").unwrap();
             let module = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
             let spec = unsafe {
                 crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py))
             };
-            let key = crate::attr_name_bits_from_bytes(py, b"__spec__").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__spec__").unwrap();
             crate::builtins::modules::molt_module_set_attr(module, key, spec);
             set_spec_initializing(py, spec, false);
             let dictionary = module_dictionary(py).unwrap();
@@ -783,7 +783,7 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
         let _scope = BusyObservationScope;
         let name = ExceptionValue::adopt(
             py,
-            crate::attr_name_bits_from_bytes(py, b"_molt_busy_observation").unwrap(),
+            crate::dynamic_attr_name_bits(py, b"_molt_busy_observation").unwrap(),
         );
         let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
         crate::molt_class_set_base(class.bits(), crate::builtin_classes(py).object);
@@ -799,8 +799,7 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
                 finalize_busy_observation as *const (),
             ),
         ] {
-            let key =
-                ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, method).unwrap());
+            let key = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, method).unwrap());
             let function = ExceptionValue::adopt(
                 py,
                 MoltObject::from_ptr(alloc_runtime_function_obj(
@@ -837,7 +836,7 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
             (original.bits(), b"__spec__".as_slice(), spec.bits()),
         ] {
             let key =
-                ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, spelling).unwrap());
+                ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, spelling).unwrap());
             crate::molt_set_attr_name(receiver, key.bits(), value);
         }
         let dictionary = module_dictionary(py).unwrap();
@@ -889,7 +888,7 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
         assert!(crate::issubclass_bits(class, base));
         let name = ExceptionValue::adopt(
             py,
-            crate::attr_name_bits_from_bytes(py, b"_DeadlockError").unwrap(),
+            crate::dynamic_attr_name_bits(py, b"_DeadlockError").unwrap(),
         );
         for _ in 0..2 {
             let payload = ExceptionValue::adopt(py, crate::molt_importlib_frozen_payload());
@@ -904,7 +903,7 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
         }
         let key = ExceptionValue::adopt(
             py,
-            crate::attr_name_bits_from_bytes(py, b"__module__").unwrap(),
+            crate::dynamic_attr_name_bits(py, b"__module__").unwrap(),
         );
         let origin = ExceptionValue::adopt(
             py,
@@ -928,7 +927,7 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
         ] {
             let name = ExceptionValue::adopt(
                 py,
-                crate::attr_name_bits_from_bytes(py, internal.name().as_bytes()).unwrap(),
+                crate::dynamic_attr_name_bits(py, internal.name().as_bytes()).unwrap(),
             );
             let expected = crate::builtins::exceptions::exception_class_bits(py, internal);
             let lookup = ExceptionValue::adopt(py, crate::molt_builtin_class_lookup(name.bits()));
@@ -961,7 +960,7 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
         let dictionary = module_dictionary(py).unwrap();
         let name = ExceptionValue::adopt(
             py,
-            crate::attr_name_bits_from_bytes(py, b"_molt_policy_cycle_left").unwrap(),
+            crate::dynamic_attr_name_bits(py, b"_molt_policy_cycle_left").unwrap(),
         );
         let module = ExceptionValue::adopt(
             py,
@@ -970,10 +969,8 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
         let spec = ExceptionValue::adopt(py, unsafe {
             crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py))
         });
-        let spec_key = ExceptionValue::adopt(
-            py,
-            crate::attr_name_bits_from_bytes(py, b"__spec__").unwrap(),
-        );
+        let spec_key =
+            ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, b"__spec__").unwrap());
         crate::builtins::modules::molt_module_set_attr(module.bits(), spec_key.bits(), spec.bits());
         set_spec_initializing(py, spec.bits(), true);
         assert!(!exception_pending(py));
@@ -1200,7 +1197,7 @@ extern "C" fn init_g4_z_recursive() -> u64 {
                 }),
                 Ordering::SeqCst,
             );
-            let name = crate::attr_name_bits_from_bytes(py, b"g4_z_recursive").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"g4_z_recursive").unwrap();
             let dictionary = module_dictionary(py).unwrap();
             if mode != 0 {
                 unsafe {
@@ -1286,8 +1283,8 @@ extern "C" fn init_g4_z_success_mutation() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let dictionary = module_dictionary(py).unwrap();
         let pointer = crate::ptr_from_bits(dictionary);
-        let name = crate::attr_name_bits_from_bytes(py, b"g4_z_success_mutation").unwrap();
-        let nested = crate::attr_name_bits_from_bytes(py, b"_molt_completion_nested").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"g4_z_success_mutation").unwrap();
+        let nested = crate::dynamic_attr_name_bits(py, b"_molt_completion_nested").unwrap();
         unsafe {
             assert!(crate::dict_set_in_place(
                 py,
@@ -1554,7 +1551,7 @@ fn identity_mismatched_rollback_does_not_retain_replacement_observations() {
         let id = test_registry_id("g4_src");
         module_table_view_tombstone(py, id);
         let original = module_ensure(py, id);
-        let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
         let replacement = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
         inc_ref_bits(py, replacement);
         let old = replace_module_owned_for_test(py, "g4_src", Some(replacement)).unwrap();
@@ -1587,7 +1584,7 @@ fn explicit_private_body_self_import_reads_public_missing_present_and_none() {
         for mode in 0..3 {
             let (_restore, public) = ModuleTestRestore::fresh(py, "g4_src");
             let _self_scope = PrivateSelfScope(py);
-            let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
             let target = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
             let dictionary = module_dictionary(py).unwrap();
             if mode == 0 {
@@ -1659,7 +1656,7 @@ fn compiled_load_module_preseeds_exact_namespace_under_ordinary_owner() {
         let (_restore, previous) = ModuleTestRestore::fresh(py, "g4_src");
         let _self_scope = PrivateSelfScope(py);
         remove_for_test(py, "g4_src");
-        let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
         let loader = crate::builtins::types::molt_importlib_compiled_loader();
         let before = INIT_RUNS.load(Ordering::SeqCst);
         PRIVATE_SELF_IMPORT.store(1, Ordering::SeqCst);
@@ -1674,7 +1671,7 @@ fn compiled_load_module_preseeds_exact_namespace_under_ordinary_owner() {
         assert_eq!(loaded, PRIVATE_SELF_RESULT.load(Ordering::SeqCst));
         let public = module_lookup(py, "g4_src").unwrap().unwrap();
         assert_eq!(public, loaded);
-        let key = crate::attr_name_bits_from_bytes(py, b"__spec__").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"__spec__").unwrap();
         let spec = crate::builtins::attributes::get_attr_name(py, loaded, key).unwrap();
         assert_eq!(
             crate::builtins::platform::spec_is_initializing(py, spec, ModuleImportPolicy::Python),
@@ -1708,7 +1705,7 @@ fn private_script_and_runpy_cached_projection_preserve_versioned_init_globals() 
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     install_test_registry();
     crate::with_gil_entry_nopanic!(py, {
-        let cached = crate::attr_name_bits_from_bytes(py, b"__cached__").unwrap();
+        let cached = crate::dynamic_attr_name_bits(py, b"__cached__").unwrap();
         let spec = ExceptionValue::adopt(py, unsafe {
             crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py))
         });
@@ -1716,7 +1713,7 @@ fn private_script_and_runpy_cached_projection_preserve_versioned_init_globals() 
             (b"cached".as_slice(), MoltObject::from_int(431).bits()),
             (b"loader".as_slice(), none_bits()),
         ] {
-            let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+            let key = crate::dynamic_attr_name_bits(py, name).unwrap();
             crate::builtins::attributes::mutate_attr_name(
                 py,
                 spec.bits(),
@@ -1757,7 +1754,7 @@ fn private_script_and_runpy_cached_projection_preserve_versioned_init_globals() 
                         panic!("private metadata execution failed: {}", error.into_bits())
                     });
                     let module = ExceptionValue::adopt(py, module);
-                    let spec_key = crate::attr_name_bits_from_bytes(py, b"__spec__").unwrap();
+                    let spec_key = crate::dynamic_attr_name_bits(py, b"__spec__").unwrap();
                     let observed_spec =
                         crate::builtins::attributes::get_attr_name(py, module.bits(), spec_key)
                             .unwrap();
@@ -1796,7 +1793,7 @@ fn explicit_extension_publication_and_rollback_keep_own_custody_inside_private_b
     crate::with_gil_entry_nopanic!(py, {
         let (_restore, initial) = ModuleTestRestore::fresh(py, "g4_src");
         let id = test_registry_id("g4_src");
-        let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
         let extension = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
         let _context = InitializerContext::enter(py, id, InitializerKind::Execution);
         crate::cpython_abi_hooks::with_test_module_publication(py, name, extension, || {
@@ -1836,8 +1833,8 @@ fn explicit_spec_producer_owns_original_through_snapshot_and_metadata_replacemen
             unsafe { crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py)) };
         let replacement =
             unsafe { crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py)) };
-        let key = crate::attr_name_bits_from_bytes(py, b"__spec__").unwrap();
-        let flag = crate::attr_name_bits_from_bytes(py, b"_initializing").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"__spec__").unwrap();
+        let flag = crate::dynamic_attr_name_bits(py, b"_initializing").unwrap();
         crate::builtins::modules::molt_module_set_attr(module, key, replacement);
         assert_eq!(
             table.initialization().specs[index].load(Ordering::Acquire),
@@ -1902,11 +1899,11 @@ fn foreign_wait_uses_observed_public_spec_and_preserves_completed_replacements()
             let id = test_registry_id("g4_src");
             let table = module_table(py).unwrap();
             let index = id as usize;
-            let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
             let spec = unsafe {
                 crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py))
             };
-            let key = crate::attr_name_bits_from_bytes(py, b"__spec__").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__spec__").unwrap();
             let (published, blocks) = match mode {
                 0 => (module, true), // pre-metadata bootstrap phase
                 1 | 2 => {
@@ -2169,7 +2166,7 @@ fn sys_bootstrap_exposes_existing_dictionary_without_replay() {
         let _restore = ModuleTestRestore::capture(py, "g4_src");
         let before = module_dictionary(py).unwrap();
         let module = publish_test_module("g4_src", None);
-        let sys_name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+        let sys_name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
         let sys = crate::molt_module_new(sys_name);
         publish_interpreter_sys_for_test(py, sys);
         let exposed = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
@@ -2179,7 +2176,7 @@ fn sys_bootstrap_exposes_existing_dictionary_without_replay() {
         );
         let found = module_lookup(py, "g4_src").unwrap().unwrap();
         assert_eq!(found, module);
-        let modules_name = crate::attr_name_bits_from_bytes(py, b"modules").unwrap();
+        let modules_name = crate::dynamic_attr_name_bits(py, b"modules").unwrap();
         let replacement = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
         let namespace = unsafe { crate::module_dict_bits(crate::ptr_from_bits(sys)) };
         unsafe {
@@ -2221,7 +2218,7 @@ fn interpreter_sys_publication_requires_initializer_and_rejects_dictionary_paylo
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     install_test_registry();
     crate::with_gil_entry_nopanic!(py, {
-        let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
         remove_for_test(py, "sys");
         let module = crate::molt_module_new(name);
         let unrelated = crate::molt_module_new(name);
@@ -2263,7 +2260,7 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     install_test_registry();
     crate::with_gil_entry_nopanic!(py, {
-        let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
         remove_for_test(py, "sys");
         let id = test_registry_id("sys");
         let sys = module_ensure(py, id);
@@ -2274,10 +2271,10 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
         let dict = obj_from_bits(unsafe { crate::module_dict_bits(sys_ptr) })
             .as_ptr()
             .unwrap();
-        let version_key = crate::attr_name_bits_from_bytes(py, b"version_info").unwrap();
-        let implementation_key = crate::attr_name_bits_from_bytes(py, b"implementation").unwrap();
-        let path_key = crate::attr_name_bits_from_bytes(py, b"path").unwrap();
-        let stdout_key = crate::attr_name_bits_from_bytes(py, b"stdout").unwrap();
+        let version_key = crate::dynamic_attr_name_bits(py, b"version_info").unwrap();
+        let implementation_key = crate::dynamic_attr_name_bits(py, b"implementation").unwrap();
+        let path_key = crate::dynamic_attr_name_bits(py, b"path").unwrap();
+        let stdout_key = crate::dynamic_attr_name_bits(py, b"stdout").unwrap();
         let marker =
             MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(82).bits()])).bits();
         unsafe {
@@ -2408,7 +2405,7 @@ fn extension_publication_retires_ready_owner_and_preserves_foreign_custody() {
             table.initialization().states[idx].load(Ordering::Acquire),
             STATE_READY
         );
-        let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
         let new = crate::builtins::modules::molt_module_new(name);
         crate::builtins::modules::module_cache_publish(
             name,
@@ -2495,7 +2492,7 @@ fn import_outcome_registered_cache_refresh_preserves_initializer_custody() {
         let modules_bits = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
         let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
         let _modules_owner = crate::PtrDropGuard::new(modules);
-        let name = crate::attr_name_bits_from_bytes(py, b"g4_src").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
         let id = test_registry_id("g4_src");
         unsafe {
             crate::object::ops::dict_del_in_place(py, modules, name).expect("operation succeeds")
@@ -2546,7 +2543,7 @@ fn import_outcome_registered_cache_refresh_preserves_initializer_custody() {
         // Parent initialization may publish its child's public replacement
         // without invoking child ensure. The subsequent loop observes it.
         for text in ["g4_pkg.sub", "g4_pkg"] {
-            let key = crate::attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
+            let key = crate::dynamic_attr_name_bits(py, text.as_bytes()).unwrap();
             unsafe {
                 crate::object::ops::dict_del_in_place(py, modules, key).expect("operation succeeds")
             };
@@ -2674,7 +2671,7 @@ fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletio
         let io_dict = obj_from_bits(unsafe { crate::module_dict_bits(io_ptr) })
             .as_ptr()
             .unwrap();
-        let open_name = crate::attr_name_bits_from_bytes(py, b"open").unwrap();
+        let open_name = crate::dynamic_attr_name_bits(py, b"open").unwrap();
         let provider_open = unsafe {
             crate::dict_get_in_place(py, io_dict, open_name).expect("dictionary lookup succeeds")
         };
@@ -3001,7 +2998,7 @@ fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         inc_ref_bits(_py, modules_bits);
         let modules = Some(crate::ptr_from_bits(modules_bits));
         let _modules_owner = crate::PtrDropGuard::new(crate::ptr_from_bits(modules_bits));
-        let src_name = crate::attr_name_bits_from_bytes(_py, b"g4_src").unwrap();
+        let src_name = crate::dynamic_attr_name_bits(_py, b"g4_src").unwrap();
 
         // ── Uninit → Initializing → Ready; init exactly once (I5) ──
         let runs_before = INIT_RUNS.load(Ordering::SeqCst);
@@ -3285,7 +3282,7 @@ fn shutdown_registry_releases_owned_aliases_and_refuses_reconstruction() {
         crate::with_gil_entry_nopanic!(py, {
             // A plain module isolates dictionary custody from
             // molt_module_new's legitimate first intrinsic-registry role.
-            let name = crate::attr_name_bits_from_bytes(py, b"g4_target").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"g4_target").unwrap();
             let module = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
             dec_ref_bits(py, name);
             let pointer = obj_from_bits(module).as_ptr().unwrap();

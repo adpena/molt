@@ -61,7 +61,7 @@ unsafe fn check_headers(
 }
 
 unsafe fn identity_subclass(py: &PyToken<'_>, base: u64, name: &[u8]) -> u64 {
-    let name = attr_name_bits_from_bytes(py, name).unwrap();
+    let name = dynamic_attr_name_bits(py, name).unwrap();
     let class = crate::molt_class_new(name);
     let status = crate::molt_class_set_base(class, base);
     dec_ref_bits(py, status);
@@ -121,7 +121,7 @@ fn compiled_headers_follow_runtime_class_for_list_tuple_and_type_projections() {
         // A class object with a custom metaclass is physically PyType_Type.
         // Source code must still see that metaclass via Py_TYPE and TypeCheck.
         let meta = identity_subclass(&py, classes.type_obj, b"HeaderMeta");
-        let name = attr_name_bits_from_bytes(&py, b"HeaderClassWithMeta").unwrap();
+        let name = dynamic_attr_name_bits(&py, b"HeaderClassWithMeta").unwrap();
         let bases = MoltObject::from_ptr(alloc_tuple(&py, &[classes.object])).bits();
         let namespace = MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits();
         let keywords = MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits();

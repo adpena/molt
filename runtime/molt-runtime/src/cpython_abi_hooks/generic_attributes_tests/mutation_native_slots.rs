@@ -56,7 +56,7 @@ extern "C" fn collision_fallback(_: u64, _: u64) -> u64 {
 // Both regressions enter through the same real string-subclass comparison.
 unsafe fn collision_name(py: &crate::PyToken<'_>, spelling: u64) -> (u64, u64) {
     unsafe {
-        let name = crate::attr_name_bits_from_bytes(py, b"CollisionName").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"CollisionName").unwrap();
         let name_class = crate::molt_class_new(name);
         dec_ref_bits(py, name);
         crate::molt_class_set_base(name_class, crate::builtin_classes(py).str);
@@ -87,7 +87,7 @@ fn native_slot_mutation_reads_aliases_after_reentrant_dictionary_equality() {
                 root.as_ptr(),
                 c"__getattribute__".as_ptr(),
             ));
-            let spelling = crate::attr_name_bits_from_bytes(py, b"__getattribute__").unwrap();
+            let spelling = crate::dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             let key =
                 OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(spelling));
             assert_eq!(
@@ -418,7 +418,7 @@ fn exercise_watcher_alias_admission(preexisting_method: bool) {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let base = snapshot_class(py, b"LateSlotAlias");
-            let key = crate::attr_name_bits_from_bytes(py, b"__len__").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let twenty_three = function(py, length_twenty_three as *const (), 1);
             if preexisting_method {
                 let seventeen = function(py, length_seventeen as *const (), 1);
@@ -523,7 +523,7 @@ fn managed_slot_mutation_preserves_root_rebound_during_slot_lookup() {
         unsafe {
             let original_class = snapshot_class(py, b"LookupRebindOriginal");
             let replacement_class = snapshot_class(py, b"LookupRebindReplacement");
-            let key = crate::attr_name_bits_from_bytes(py, b"__len__").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             let seventeen = function(py, length_seventeen as *const (), 1);
             let twenty_three = function(py, length_twenty_three as *const (), 1);
             crate::molt_set_attr_name(replacement_class, key, seventeen);
@@ -651,7 +651,7 @@ extern "C" fn restricted_release(_: u64, view: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let pointer = obj_from_bits(view).as_ptr().unwrap();
-            let format = crate::attr_name_bits_from_bytes(py, b"B").unwrap();
+            let format = crate::dynamic_attr_name_bits(py, b"B").unwrap();
             let mut rejected = 0;
             for operation in 0..4 {
                 let result = match operation {
@@ -863,7 +863,7 @@ fn managed_base_mutation_publishes_native_descendants_before_retirement() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let base = snapshot_class(py, b"ManagedSlotBase");
-            let key = crate::attr_name_bits_from_bytes(py, b"__len__").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"__len__").unwrap();
             assert!(!GLOBAL_BRIDGE.type_has_projection(base));
             let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(base));
             let child = native_class(c"mutation.ManagedBaseChild", view.as_ptr(), vec![]);
@@ -1142,10 +1142,10 @@ fn native_optional_slot_policies_preserve_missing_none_and_lookup_errors() {
             assert!(!fallback.as_ptr().is_null());
             assert!(errors::PyErr_Occurred().is_null());
 
-            let sys_name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+            let sys_name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
             let sys = crate::builtins::modules::molt_module_new(sys_name);
             crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
-            let hook_key = crate::attr_name_bits_from_bytes(py, b"unraisablehook").unwrap();
+            let hook_key = crate::dynamic_attr_name_bits(py, b"unraisablehook").unwrap();
             let hook = function(py, optional_capture as *const (), 1);
             crate::builtins::modules::molt_module_set_attr(sys, hook_key, hook);
             OPTIONAL_UNRAISABLE.with(|count| count.set(0));
@@ -1208,7 +1208,7 @@ extern "C" fn power_protocol_inplace(_: u64, _: u64) -> u64 {
 fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::attr_name_bits_from_bytes(&py, b"NumericPowerProtocol").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"NumericPowerProtocol").unwrap();
         let left_class = crate::molt_class_new(name);
         let right_class = crate::molt_class_new(name);
         dec_ref_bits(&py, name);
@@ -1367,7 +1367,7 @@ fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() 
     type Operation = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::attr_name_bits_from_bytes(&py, b"NumericModeOwner").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"NumericModeOwner").unwrap();
         let class = crate::molt_class_new(name);
         dec_ref_bits(&py, name);
         crate::molt_class_set_base(class, crate::builtin_classes(&py).object);

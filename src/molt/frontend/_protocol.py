@@ -703,6 +703,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         class_node: ast.ClassDef,
         item: ast.FunctionDef,
         defaults: tuple[MoltValue, MoltValue],
+        *,
+        bind_receiver: bool = ...,
     ) -> MethodInfo: ...
 
     def _comprehension_binds_homes(self) -> bool: ...
@@ -1766,10 +1768,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, value: MoltValue | None, source_name: str | None = ...
     ) -> ClassId | None: ...
 
-    def _exact_dataclass_field(
-        self, obj: MoltValue, obj_name: str | None, attr: str
-    ) -> tuple[ClassId, int] | None: ...
-
     def _exact_primitive_operand_types(
         self, op: MoltOp, const_by_name: dict[str, Any] | None = ...
     ) -> tuple[str | None, ...]: ...
@@ -2822,14 +2820,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_emit_shape_builtin_call(self, node: ast.Call) -> Any: ...
 
     def _try_emit_split_call(self, node: ast.Call) -> Any: ...
-
-    def _try_emit_static_dataclass_constructor(
-        self,
-        node: ast.Call,
-        class_id: ClassId,
-        class_info: ClassInfo,
-        class_ref: MoltValue,
-    ) -> MoltValue | None: ...
 
     def _try_emit_user_method_static_call(
         self, node: ast.Call

@@ -771,14 +771,14 @@ extern "C" fn bridge_alloc_list_with_capacity(
     })
 }
 
-extern "C" fn bridge_attr_name_bits_from_bytes(
+extern "C" fn bridge_dynamic_attr_name_bits(
     name_ptr: *const u8,
     name_len: usize,
     out: *mut u64,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
-        match crate::builtins::attr::attr_name_bits_from_bytes(_py, name) {
+        match crate::builtins::attr::dynamic_attr_name_bits(_py, name) {
             Some(bits) => {
                 unsafe {
                     *out = bits;
@@ -912,7 +912,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     fill_os_random: bridge_fill_os_random,
     time_local_offset_host: bridge_time_local_offset_host,
     alloc_list_with_capacity: bridge_alloc_list_with_capacity,
-    attr_name_bits_from_bytes: bridge_attr_name_bits_from_bytes,
+    attr_name_bits_from_bytes: bridge_dynamic_attr_name_bits,
     call_class_init_with_args: bridge_call_class_init_with_args,
     missing_bits: bridge_missing_bits,
     molt_getattr_builtin: bridge_molt_getattr_builtin,

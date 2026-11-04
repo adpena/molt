@@ -34,7 +34,7 @@ unsafe extern "C" fn overridden_iter(_: *mut PyObject) -> *mut PyObject {
     ptr::null_mut()
 }
 
-fn descriptor(py: &PyToken<'_>, name: &str, args: &[u64]) -> u64 {
+fn descriptor(py: &PyToken<'_>, name: crate::NameId, args: &[u64]) -> u64 {
     let callable = crate::builtins::containers::tuple_method_bits(py, name)
         .unwrap()
         .unwrap();
@@ -73,36 +73,36 @@ fn assert_values(py: &PyToken<'_>, bits: u64, expected: &[i64]) {
 fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
     let one = MoltObject::from_int(1).bits();
     assert_eq!(
-        obj_from_bits(descriptor(py, "__len__", &[bits])).as_int(),
+        obj_from_bits(descriptor(py, crate::NameId::DunderLen, &[bits])).as_int(),
         Some(3)
     );
     assert_eq!(
         obj_from_bits(descriptor(
             py,
-            "__getitem__",
+            crate::NameId::DunderGetitem,
             &[bits, MoltObject::from_int(-1).bits()]
         ))
         .as_int(),
         Some(1)
     );
     assert_eq!(
-        obj_from_bits(descriptor(py, "__contains__", &[bits, one])).as_bool(),
+        obj_from_bits(descriptor(py, crate::NameId::DunderContains, &[bits, one])).as_bool(),
         Some(true)
     );
     assert_eq!(
-        obj_from_bits(descriptor(py, "count", &[bits, one])).as_int(),
+        obj_from_bits(descriptor(py, crate::NameId::Count, &[bits, one])).as_int(),
         Some(2)
     );
     assert_eq!(
-        obj_from_bits(descriptor(py, "index", &[bits, one])).as_int(),
+        obj_from_bits(descriptor(py, crate::NameId::Index, &[bits, one])).as_int(),
         Some(0)
     );
     assert_eq!(
-        obj_from_bits(descriptor(py, "index", &[bits, one, one])).as_int(),
+        obj_from_bits(descriptor(py, crate::NameId::Index, &[bits, one, one])).as_int(),
         Some(2)
     );
 
-    let iterator = descriptor(py, "__iter__", &[bits]);
+    let iterator = descriptor(py, crate::NameId::DunderIter, &[bits]);
     let iterator_owner = ExceptionValue::adopt(py, iterator);
     for expected in [1, 2, 1] {
         let mut value = MoltObject::none().bits();
@@ -133,26 +133,26 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
         MoltObject::from_ptr(alloc_tuple(py, &[one, MoltObject::from_int(2).bits(), one])).bits();
     let managed_owner = ExceptionValue::adopt(py, managed);
     for (name, expected) in [
-        ("__eq__", true),
-        ("__ne__", false),
-        ("__lt__", false),
-        ("__le__", true),
-        ("__gt__", false),
-        ("__ge__", true),
+        (crate::NameId::DunderEq, true),
+        (crate::NameId::DunderNe, false),
+        (crate::NameId::DunderLt, false),
+        (crate::NameId::DunderLe, true),
+        (crate::NameId::DunderGt, false),
+        (crate::NameId::DunderGe, true),
     ] {
         assert_eq!(
             obj_from_bits(descriptor(py, name, &[bits, managed])).as_bool(),
             Some(expected),
-            "{name}"
+            "{name:?}"
         );
         assert_eq!(
             obj_from_bits(descriptor(py, name, &[managed, bits])).as_bool(),
             Some(expected),
-            "reflected {name}"
+            "reflected {name:?}"
         );
     }
     for args in [[bits, managed], [managed, bits]] {
-        let result = ExceptionValue::adopt(py, descriptor(py, "__add__", &args));
+        let result = ExceptionValue::adopt(py, descriptor(py, crate::NameId::DunderAdd, &args));
         assert_values(py, result.bits(), &[1, 2, 1, 1, 2, 1]);
     }
     // The public C sequence APIs must share the same root tuple operations as
@@ -224,7 +224,7 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
             }
         }
     }
-    for name in ["__mul__", "__rmul__"] {
+    for name in [crate::NameId::DunderMul, crate::NameId::DunderRmul] {
         let result = ExceptionValue::adopt(
             py,
             descriptor(py, name, &[bits, MoltObject::from_int(2).bits()]),
@@ -237,7 +237,10 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
         MoltObject::none().bits(),
     );
     let slice_owner = ExceptionValue::adopt(py, slice_bits);
-    let result = ExceptionValue::adopt(py, descriptor(py, "__getitem__", &[bits, slice_bits]));
+    let result = ExceptionValue::adopt(
+        py,
+        descriptor(py, crate::NameId::DunderGetitem, &[bits, slice_bits]),
+    );
     assert_values(py, result.bits(), &[2, 1]);
     drop(result);
     drop(slice_owner);
@@ -404,7 +407,7 @@ fn native_tuple_rejection_and_pending_error_do_not_become_success() {
             .molt_value_for_pyobj(foreign.as_ptr())
             .unwrap();
         assert!(native_tuple(wrong).is_none());
-        let result = descriptor(&py, "__len__", &[wrong]);
+        let result = descriptor(&py, crate::NameId::DunderLen, &[wrong]);
         assert!(exception_pending(&py));
         crate::clear_exception(&py);
         errors::PyErr_Clear();
@@ -460,7 +463,11 @@ fn native_tuple_item_keeps_its_identity_after_source_retirement() {
             0
         );
         let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(tuple.as_ptr()).unwrap();
-        let value = descriptor(&py, "__getitem__", &[bits, MoltObject::from_int(0).bits()]);
+        let value = descriptor(
+            &py,
+            crate::NameId::DunderGetitem,
+            &[bits, MoltObject::from_int(0).bits()],
+        );
         assert!(!exception_pending(&py));
         drop(tuple);
         dec_ref_bits(&py, bits);

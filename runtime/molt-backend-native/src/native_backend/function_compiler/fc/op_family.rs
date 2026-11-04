@@ -25,7 +25,6 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     TextTransform,
     RuntimeOps,
     TypeConversions,
-    Dataclass,
     Compare,
     UnaryLogic,
     Coroutine,
@@ -82,7 +81,6 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         super::text_transform::handled_kinds_pattern!() => NativeOpFamily::TextTransform,
         super::runtime_ops::handled_kinds_pattern!() => NativeOpFamily::RuntimeOps,
         super::type_conversions::handled_kinds_pattern!() => NativeOpFamily::TypeConversions,
-        super::dataclass::handled_kinds_pattern!() => NativeOpFamily::Dataclass,
         super::unary_logic::handled_kinds_pattern!() => NativeOpFamily::UnaryLogic,
         super::coroutine::handled_kinds_pattern!() => NativeOpFamily::Coroutine,
         super::funcobj::handled_kinds_pattern!() => NativeOpFamily::Funcobj,
@@ -363,10 +361,6 @@ mod tests {
         (
             NativeOpFamily::TypeConversions,
             super::super::type_conversions::HANDLED_KINDS,
-        ),
-        (
-            NativeOpFamily::Dataclass,
-            super::super::dataclass::HANDLED_KINDS,
         ),
         (
             NativeOpFamily::UnaryLogic,

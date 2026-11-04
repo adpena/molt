@@ -84,7 +84,7 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
             func.blocks = rows.into_iter().collect::<HashMap<_, _>>();
             backend.function_repr_facts.insert(
                 func.name.clone(),
-                crate::representation_plan::LlvmReprFacts::build(&func),
+                crate::representation_plan::ProducerCarrierPlan::build(&func),
             );
             super::lowering::lower_tir_to_llvm(&func, &backend);
             backend.module.verify().unwrap();

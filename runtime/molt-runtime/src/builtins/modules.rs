@@ -15,7 +15,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
-    attr_name_bits_from_bytes, clear_attribute_error_if_pending, module_attr_lookup,
+    clear_attribute_error_if_pending, dynamic_attr_name_bits, module_attr_lookup,
 };
 use crate::builtins::classes::builtin_classes;
 use crate::builtins::exceptions::{
@@ -27,12 +27,11 @@ use crate::{
     alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple, call_callable0,
     call_callable1, call_callable2, class_mro_vec, clear_exception, dec_ref_bits,
     dict_del_in_place, dict_get_in_place, dict_set_in_place, exception_pending, format_obj_str,
-    frame_stack_active_globals_bits, has_capability, inc_ref_bits, init_atomic_bits,
-    intern_static_name, is_missing_bits, is_truthy, missing_bits, module_dict_bits,
-    module_name_bits, molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star,
-    molt_callargs_new, molt_callargs_push_pos, molt_exception_kind, molt_getattr_builtin,
-    molt_int_from_obj, molt_is_callable, obj_from_bits, object_type_id, ptr_from_bits,
-    raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
+    frame_stack_active_globals_bits, has_capability, inc_ref_bits, init_atomic_bits, is_truthy,
+    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
+    molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits, object_type_id,
+    ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
     string_obj_to_owned, type_name, type_of_bits,
 };
 
@@ -172,7 +171,7 @@ fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {
     }
 }
 
-const MODULES_OBJECT_SLOT_COUNT: usize = 14;
+const MODULES_OBJECT_SLOT_COUNT: usize = 5;
 
 pub(crate) struct ModulesRuntimeState {
     /// Serializes only user-visible process-state transitions made by
@@ -184,15 +183,6 @@ pub(crate) struct ModulesRuntimeState {
     copyreg_inverted_registry_bits: AtomicU64,
     copyreg_extension_cache_bits: AtomicU64,
     copyreg_constructor_registry_bits: AtomicU64,
-    runpy_import_dunder_name: AtomicU64,
-    module_path_name: AtomicU64,
-    module_name_name: AtomicU64,
-    module_file_name: AtomicU64,
-    module_package_name: AtomicU64,
-    module_cached_name: AtomicU64,
-    module_spec_name: AtomicU64,
-    module_doc_name: AtomicU64,
-    module_loader_name: AtomicU64,
 }
 
 impl ModulesRuntimeState {
@@ -204,15 +194,6 @@ impl ModulesRuntimeState {
             copyreg_inverted_registry_bits: AtomicU64::new(0),
             copyreg_extension_cache_bits: AtomicU64::new(0),
             copyreg_constructor_registry_bits: AtomicU64::new(0),
-            runpy_import_dunder_name: AtomicU64::new(0),
-            module_path_name: AtomicU64::new(0),
-            module_name_name: AtomicU64::new(0),
-            module_file_name: AtomicU64::new(0),
-            module_package_name: AtomicU64::new(0),
-            module_cached_name: AtomicU64::new(0),
-            module_spec_name: AtomicU64::new(0),
-            module_doc_name: AtomicU64::new(0),
-            module_loader_name: AtomicU64::new(0),
         }
     }
 
@@ -223,15 +204,6 @@ impl ModulesRuntimeState {
             &self.copyreg_inverted_registry_bits,
             &self.copyreg_extension_cache_bits,
             &self.copyreg_constructor_registry_bits,
-            &self.runpy_import_dunder_name,
-            &self.module_path_name,
-            &self.module_name_name,
-            &self.module_file_name,
-            &self.module_package_name,
-            &self.module_cached_name,
-            &self.module_spec_name,
-            &self.module_doc_name,
-            &self.module_loader_name,
         ]
     }
 }
@@ -683,7 +655,7 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
 /// Read one namespace item without overloading an object value as a miss/error
 /// sentinel. Exact dictionaries keep their borrowed fast path; subclasses and
 /// custom mappings retain Python's observable `__getitem__` dispatch.
-fn lookup_namespace_item(
+pub(crate) fn lookup_namespace_item(
     _py: &PyToken<'_>,
     namespace_bits: u64,
     name_bits: u64,
@@ -872,7 +844,7 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
         match module_import_attempt(name_bits) {
             Ok(ModuleImportOutcome::Imported(bits)) => bits,
             Ok(ModuleImportOutcome::Missing { diagnostic_name }) => {
-                let Some(name) = attr_name_bits_from_bytes(py, diagnostic_name.as_bytes()) else {
+                let Some(name) = dynamic_attr_name_bits(py, diagnostic_name.as_bytes()) else {
                     return MoltObject::none().bits();
                 };
                 let error = crate::builtins::exceptions::raise_module_not_found(
@@ -1135,31 +1107,25 @@ fn copyreg_add_constructor(_py: &PyToken<'_>, func_bits: u64) -> Result<(), u64>
 fn copyreg_attr_optional(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<Option<u64>, u64> {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits).into_result();
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if clear_attribute_error_if_pending(_py) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if is_missing_bits(_py, value_bits) {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
-fn copyreg_attr_required(_py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<u64, u64> {
+fn copyreg_attr_required(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    name: crate::NameId,
+) -> Result<u64, u64> {
     match copyreg_attr_optional(_py, obj_bits, name)? {
         Some(bits) => Ok(bits),
         None => {
-            let name_text = std::str::from_utf8(name).unwrap_or("attribute");
+            let name_text = name.as_str();
             let msg = format!("copyreg: missing required attribute {name_text}");
             Err(raise_exception::<_>(_py, BuiltinExc::AttributeError, &msg))
         }
@@ -1167,7 +1133,7 @@ fn copyreg_attr_required(_py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> Resul
 }
 
 fn copyreg_class_name(_py: &PyToken<'_>, cls_bits: u64) -> String {
-    if let Ok(Some(name_bits)) = copyreg_attr_optional(_py, cls_bits, b"__name__") {
+    if let Ok(Some(name_bits)) = copyreg_attr_optional(_py, cls_bits, crate::NameId::DunderName) {
         let name = string_obj_to_owned(obj_from_bits(name_bits))
             .unwrap_or_else(|| type_name(_py, obj_from_bits(cls_bits)).to_string());
         dec_ref_bits(_py, name_bits);
@@ -1177,7 +1143,7 @@ fn copyreg_class_name(_py: &PyToken<'_>, cls_bits: u64) -> String {
 }
 
 fn copyreg_slots_truthy(_py: &PyToken<'_>, obj_bits: u64) -> Result<bool, u64> {
-    if let Some(slots_bits) = copyreg_attr_optional(_py, obj_bits, b"__slots__")? {
+    if let Some(slots_bits) = copyreg_attr_optional(_py, obj_bits, crate::NameId::DunderSlots)? {
         let truthy = is_truthy(_py, obj_from_bits(slots_bits));
         dec_ref_bits(_py, slots_bits);
         return Ok(truthy);
@@ -1300,7 +1266,7 @@ pub extern "C" fn molt_copyreg_constructor(func_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_newobj(cls_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let new_bits = match copyreg_attr_required(_py, cls_bits, b"__new__") {
+        let new_bits = match copyreg_attr_required(_py, cls_bits, crate::NameId::DunderNew) {
             Ok(bits) => bits,
             Err(err_bits) => return err_bits,
         };
@@ -1328,7 +1294,7 @@ pub extern "C" fn molt_copyreg_newobj(cls_bits: u64, args_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_newobj_ex(cls_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let new_bits = match copyreg_attr_required(_py, cls_bits, b"__new__") {
+        let new_bits = match copyreg_attr_required(_py, cls_bits, crate::NameId::DunderNew) {
             Ok(bits) => bits,
             Err(err_bits) => return err_bits,
         };
@@ -1368,7 +1334,7 @@ pub extern "C" fn molt_copyreg_reconstructor(
         let builtins = builtin_classes(_py);
         let object_bits = builtins.object;
         let obj_bits = if base_bits == object_bits {
-            let new_bits = match copyreg_attr_required(_py, object_bits, b"__new__") {
+            let new_bits = match copyreg_attr_required(_py, object_bits, crate::NameId::DunderNew) {
                 Ok(bits) => bits,
                 Err(err_bits) => return err_bits,
             };
@@ -1389,7 +1355,7 @@ pub extern "C" fn molt_copyreg_reconstructor(
             }
             out_bits
         } else {
-            let new_bits = match copyreg_attr_required(_py, base_bits, b"__new__") {
+            let new_bits = match copyreg_attr_required(_py, base_bits, crate::NameId::DunderNew) {
                 Ok(bits) => bits,
                 Err(err_bits) => return err_bits,
             };
@@ -1416,14 +1382,16 @@ pub extern "C" fn molt_copyreg_reconstructor(
             out_bits
         };
         if base_bits != object_bits {
-            let base_init_bits = match copyreg_attr_optional(_py, base_bits, b"__init__") {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            };
-            let object_init_bits = match copyreg_attr_optional(_py, object_bits, b"__init__") {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            };
+            let base_init_bits =
+                match copyreg_attr_optional(_py, base_bits, crate::NameId::DunderInit) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => return err_bits,
+                };
+            let object_init_bits =
+                match copyreg_attr_optional(_py, object_bits, crate::NameId::DunderInit) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => return err_bits,
+                };
             match (base_init_bits, object_init_bits) {
                 (Some(base_bits), Some(object_bits)) => {
                     let needs = base_bits != object_bits;
@@ -1484,10 +1452,11 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
         let mut found_base = false;
         let mro = class_mro_vec(cls_bits);
         for candidate_bits in mro {
-            let flags_bits = match copyreg_attr_optional(_py, candidate_bits, b"__flags__") {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            };
+            let flags_bits =
+                match copyreg_attr_optional(_py, candidate_bits, crate::NameId::DunderFlags) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => return err_bits,
+                };
             if let Some(flags_bits) = flags_bits {
                 let input_owner = obj_from_bits(flags_bits)
                     .as_ptr()
@@ -1519,17 +1488,19 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
                     break;
                 }
             }
-            let new_bits = match copyreg_attr_optional(_py, candidate_bits, b"__new__") {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            };
+            let new_bits =
+                match copyreg_attr_optional(_py, candidate_bits, crate::NameId::DunderNew) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => return err_bits,
+                };
             if let Some(new_bits) = new_bits {
                 let new_type_bits = type_of_bits(_py, new_bits);
                 if builtins.is_builtin_callable_class(new_type_bits) {
-                    let self_obj_bits = match copyreg_attr_optional(_py, new_bits, b"__self__") {
-                        Ok(bits) => bits,
-                        Err(err_bits) => return err_bits,
-                    };
+                    let self_obj_bits =
+                        match copyreg_attr_optional(_py, new_bits, crate::NameId::DunderSelf) {
+                            Ok(bits) => bits,
+                            Err(err_bits) => return err_bits,
+                        };
                     if let Some(self_obj_bits) = self_obj_bits {
                         let matches = self_obj_bits == candidate_bits;
                         dec_ref_bits(_py, self_obj_bits);
@@ -1577,25 +1548,30 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
 
         let mut dict_bits = MoltObject::none().bits();
         let mut include_state = false;
-        let getstate_bits = match copyreg_attr_optional(_py, self_bits, b"__getstate__") {
-            Ok(bits) => bits,
-            Err(err_bits) => return err_bits,
-        };
+        let getstate_bits =
+            match copyreg_attr_optional(_py, self_bits, crate::NameId::DunderGetstate) {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
         if let Some(getstate_bits) = getstate_bits {
             let slots_truthy = match copyreg_slots_truthy(_py, self_bits) {
                 Ok(value) => value,
                 Err(err_bits) => return err_bits,
             };
             if slots_truthy {
-                let type_getstate = match copyreg_attr_optional(_py, cls_bits, b"__getstate__") {
-                    Ok(bits) => bits,
-                    Err(err_bits) => return err_bits,
-                };
-                let object_getstate =
-                    match copyreg_attr_optional(_py, builtins.object, b"__getstate__") {
+                let type_getstate =
+                    match copyreg_attr_optional(_py, cls_bits, crate::NameId::DunderGetstate) {
                         Ok(bits) => bits,
                         Err(err_bits) => return err_bits,
                     };
+                let object_getstate = match copyreg_attr_optional(
+                    _py,
+                    builtins.object,
+                    crate::NameId::DunderGetstate,
+                ) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => return err_bits,
+                };
                 if let (Some(type_bits), Some(object_bits)) = (type_getstate, object_getstate) {
                     let matches = type_bits == object_bits;
                     dec_ref_bits(_py, type_bits);
@@ -1636,10 +1612,11 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
                 dec_ref_bits(_py, args_bits);
                 return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
-            let state_dict_bits = match copyreg_attr_optional(_py, self_bits, b"__dict__") {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            };
+            let state_dict_bits =
+                match copyreg_attr_optional(_py, self_bits, crate::NameId::DunderDict) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => return err_bits,
+                };
             if let Some(state_dict_bits) = state_dict_bits {
                 dict_bits = state_dict_bits;
                 include_state = is_truthy(_py, obj_from_bits(dict_bits));
@@ -1975,7 +1952,7 @@ pub(crate) fn ensure_interpreter_sys_module(py: &PyToken<'_>) -> Option<u64> {
     {
         return None;
     }
-    let name = attr_name_bits_from_bytes(py, b"sys")?;
+    let name = crate::NameId::Sys.owned_bits(py)?;
     let imported = catalog_import_attempt(name);
     dec_ref_bits(py, name);
     match imported {
@@ -1993,7 +1970,7 @@ pub(crate) fn sys_modules_dict_bits(py: &PyToken<'_>, sys_bits: u64) -> Option<u
         return None;
     }
     let bits = crate::builtins::module_table::module_dictionary(py)?;
-    let name = intern_static_name(py, &runtime_state(py).interned.modules_name, b"modules");
+    let name = crate::NameId::Modules.bits(py);
     if name == 0 {
         return None;
     }
@@ -2015,7 +1992,7 @@ fn sys_modules_set_canonical_name<'a, 'py>(
     name: &str,
     module_bits: u64,
 ) -> Result<crate::object::ops::DetachedDictReferences<'a, 'py>, u64> {
-    let Some(key) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+    let Some(key) = dynamic_attr_name_bits(py, name.as_bytes()) else {
         return Err(MoltObject::none().bits());
     };
     let retired =
@@ -2217,14 +2194,16 @@ pub(crate) fn module_cache_publish(
                     }
                     let argv_name =
                         ExceptionValue::adopt(_py, MoltObject::from_ptr(argv_ptr).bits());
-                    let exe_val = match module_attr_lookup(_py, sys_ptr, exe_name.bits()) {
-                        Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
-                        Err(()) => return MoltObject::none().bits(),
-                    };
-                    let argv_val = match module_attr_lookup(_py, sys_ptr, argv_name.bits()) {
-                        Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
-                        Err(()) => return MoltObject::none().bits(),
-                    };
+                    let exe_val =
+                        match module_attr_lookup(_py, sys_ptr, exe_name.bits()).into_result() {
+                            Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
+                            Err(()) => return MoltObject::none().bits(),
+                        };
+                    let argv_val =
+                        match module_attr_lookup(_py, sys_ptr, argv_name.bits()).into_result() {
+                            Ok(value) => value.map(|bits| ExceptionValue::adopt(_py, bits)),
+                            Err(()) => return MoltObject::none().bits(),
+                        };
                     drop(exe_name);
                     drop(argv_name);
                     let exe_desc = exe_val
@@ -2395,7 +2374,9 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 }
             };
             let found =
-                match crate::builtins::attributes::attr_lookup_ptr(_py, module_ptr, attr_bits) {
+                match crate::builtins::attributes::attr_lookup_ptr(_py, module_ptr, attr_bits)
+                    .into_result()
+                {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 };
@@ -2485,7 +2466,7 @@ unsafe fn module_file_origin(py: &PyToken<'_>, module_bits: u64) -> Result<Optio
         let Some(dict_ptr) = obj_from_bits(module_dict_bits(module_ptr)).as_ptr() else {
             return Ok(None);
         };
-        let key = intern_static_name(py, &modules_state(py).module_file_name, b"__file__");
+        let key = crate::NameId::DunderFile.bits(py);
         if key == 0 {
             return Err(());
         }
@@ -2514,7 +2495,7 @@ fn import_from_attr<'a, 'py>(
     object: u64,
     name: &[u8],
 ) -> Result<Option<ExceptionValue<'a, 'py>>, u64> {
-    let key = attr_name_bits_from_bytes(py, name)
+    let key = dynamic_attr_name_bits(py, name)
         .map(|bits| ExceptionValue::adopt(py, bits))
         .ok_or_else(|| MoltObject::none().bits())?;
     crate::builtins::platform::getattr_optional_bits(py, object, key.bits())
@@ -2670,7 +2651,7 @@ pub(crate) fn publish_import_child(
     inc_ref_bits(py, parent_bits);
     inc_ref_bits(py, child_bits);
     let result = (|| {
-        let Some(name_bits) = attr_name_bits_from_bytes(py, child_name.as_bytes()) else {
+        let Some(name_bits) = dynamic_attr_name_bits(py, child_name.as_bytes()) else {
             return Err(MoltObject::none().bits());
         };
         let result = crate::molt_set_attr_name(parent_bits, name_bits, child_bits);
@@ -2734,9 +2715,13 @@ pub(crate) fn prepare_from_import_child(
                 "from-import expects module",
             ));
         }
-        let found =
-            crate::builtins::attr::attr_lookup_ptr_allow_missing(_py, module_ptr, attr_bits)
-                .map_err(|()| MoltObject::none().bits())?;
+        let found = crate::builtins::attr::lookup_attribute(
+            _py,
+            MoltObject::from_ptr(module_ptr).bits(),
+            attr_bits,
+        )
+        .into_result()
+        .map_err(|()| MoltObject::none().bits())?;
         if let Some(existing_bits) = found {
             dec_ref_bits(_py, existing_bits);
             return Ok(());
@@ -2782,9 +2767,13 @@ pub extern "C" fn molt_module_import_from(module_bits: u64, attr_bits: u64) -> u
         if let Some(ptr) = obj_from_bits(module_bits).as_ptr() {
             // Retain the existing pointer lookup fast path: a clean missing
             // attribute does not allocate a throwaway AttributeError.
-            match unsafe {
-                crate::builtins::attr::attr_lookup_ptr_allow_missing(py, ptr, attr_bits)
-            } {
+            match crate::builtins::attr::lookup_attribute(
+                py,
+                MoltObject::from_ptr(ptr).bits(),
+                attr_bits,
+            )
+            .into_result()
+            {
                 Ok(Some(value)) => return value,
                 Ok(None) => {}
                 Err(()) => return MoltObject::none().bits(),
@@ -2863,7 +2852,12 @@ pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64
             unsafe { dict_del_in_place(_py, ptr, name_bits) }.unwrap_or(false)
         } else {
             match unsafe {
-                crate::builtins::attr::lookup_special_method(_py, namespace_bits, b"__delitem__")
+                crate::builtins::attr::lookup_special_method(
+                    _py,
+                    namespace_bits,
+                    crate::NameId::DunderDelitem,
+                )
+                .into_result()
             } {
                 Ok(Some(method)) => {
                     let result = unsafe { call_callable1(_py, method, name_bits) };
@@ -3277,21 +3271,13 @@ pub(crate) fn module_set_attr(
         if let Some((module_name, attr_name)) = traced_module_attr(module_ptr, attr_bits) {
             eprintln!("molt module attr set module={module_name} attr={attr_name}");
         }
-        let annotations_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.annotations_name,
-            b"__annotations__",
-        );
+        let annotations_bits = crate::NameId::DunderAnnotations.bits(_py);
         if crate::object::ops_compare::string_storage_equal(attr_bits, annotations_bits) {
             if !dict_set_in_place(_py, dict_ptr, attr_bits, val_bits) {
                 return Err(());
             }
             if pep649_enabled(_py) {
-                let annotate_bits = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.annotate_name,
-                    b"__annotate__",
-                );
+                let annotate_bits = crate::NameId::DunderAnnotate.bits(_py);
                 let none_bits = MoltObject::none().bits();
                 if !dict_set_in_place(_py, dict_ptr, annotate_bits, none_bits) {
                     return Err(());
@@ -3299,11 +3285,7 @@ pub(crate) fn module_set_attr(
             }
             return Ok(());
         }
-        let annotate_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.annotate_name,
-            b"__annotate__",
-        );
+        let annotate_bits = crate::NameId::DunderAnnotate.bits(_py);
         if crate::object::ops_compare::string_storage_equal(attr_bits, annotate_bits)
             && pep649_enabled(_py)
         {

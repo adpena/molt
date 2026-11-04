@@ -1,5 +1,20 @@
 use super::support::*;
 
+#[test]
+fn pure_poll_can_read_its_execution_record_without_admitting_native_thread_spawn() {
+    use crate::wasm_abi_generated::WasmRuntimeImport;
+    for row in crate::wasm_abi_generated::IMPORT_REGISTRY {
+        if row.name.starts_with("thread_") {
+            assert_eq!(
+                WasmProfile::Pure.allows_runtime_import(row.import),
+                row.import == WasmRuntimeImport::ThreadRecord,
+                "only the execution record belongs to the Pure thread family: {}",
+                row.name,
+            );
+        }
+    }
+}
+
 fn poll_ir() -> SimpleIR {
     let poll = OpIR {
         value: Some(41),
@@ -93,56 +108,64 @@ fn jumpful_and_native_eh_dispatch_call_async_observer_then_branch() {
             .iter()
             .position(|op| op == &call)
             .expect("molt_main must call the async observer");
-        assert!(ops[call_pos + 1].starts_with("I64Const { value: 0"));
-        assert_eq!(ops[call_pos + 2], "I64Ne");
         assert!(
-            ops[call_pos + 3].starts_with("If"),
-            "dispatch must conditionally transfer to the function exception exit; ops={ops:?}"
+            ops[call_pos - 1].starts_with("If"),
+            "service must be conditional: {ops:?}"
+        );
+        assert_eq!(ops[call_pos + 1], "Else");
+        assert!(ops[..call_pos].iter().any(|op| op.starts_with("I32Load")));
+        assert!(
+            ops[call_pos + 1..]
+                .iter()
+                .any(|op| op.starts_with("I64Load8U"))
         );
     }
 }
 
 #[test]
-fn finally_pending_observer_marker_selects_one_branchless_runtime_import() {
+fn finally_pending_observer_services_only_the_notified_branch_without_exception_transfer() {
     for native_eh_enabled in [false, true] {
-        for (marked, selected_name, rejected_name) in [
-            (
-                false,
-                "exception_last_pending",
-                "async_work_poll_and_exception_last_pending",
-            ),
-            (
-                true,
-                "async_work_poll_and_exception_last_pending",
-                "exception_last_pending",
-            ),
-        ] {
+        for marked in [false, true] {
             let wasm = compile_ir(finally_pending_observer_ir(marked), native_eh_enabled);
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let imports = wasm_function_import_indices(&wasm);
-            let selected = *imports
-                .get(selected_name)
-                .unwrap_or_else(|| panic!("selected observer import {selected_name} must survive"));
-            assert!(
-                !imports.contains_key(rejected_name),
-                "unselected observer import {rejected_name} must not be demanded"
-            );
-
+            let passive = imports["exception_last_pending"];
             let calls = wasm_direct_call_indices_for_export(&wasm, "molt_main");
-            assert_eq!(calls, [imports["refcount_admission"], selected]);
+            assert!(calls.contains(&passive));
             let ops = wasm_operator_debug_for_export(&wasm, "molt_main");
-            let call = format!("Call {{ function_index: {selected} }}");
-            let call_pos = ops
-                .iter()
-                .position(|op| op == &call)
-                .expect("molt_main must call the selected observer");
-            assert!(ops[call_pos + 1].starts_with("LocalSet"));
             assert!(
-                ops[call_pos + 1..]
-                    .iter()
-                    .all(|op| !op.starts_with("BrIf") && !op.starts_with("If")),
-                "finally observation must stay on its authored reconciliation path: {ops:?}"
+                ops.iter().all(|op| !op.starts_with("BrIf")),
+                "finally must reconcile the returned payload on its authored path: {ops:?}"
             );
+            if marked {
+                let service = imports["async_work_poll_and_exception_last_pending"];
+                let index = ops
+                    .iter()
+                    .position(|op| op == &format!("Call {{ function_index: {service} }}"))
+                    .unwrap();
+                assert!(ops[index - 1].starts_with("If"));
+                assert_eq!(ops[index + 1], "Else");
+                let passive_index = ops
+                    .iter()
+                    .position(|op| op == &format!("Call {{ function_index: {passive} }}"))
+                    .unwrap();
+                assert!(
+                    ops[passive_index - 1].starts_with("If"),
+                    "empty exception state must also avoid runtime entry: {ops:?}"
+                );
+                assert_eq!(
+                    calls,
+                    [
+                        imports["thread_record"],
+                        imports["refcount_admission"],
+                        service,
+                        passive
+                    ]
+                );
+            } else {
+                assert!(!imports.contains_key("async_work_poll_and_exception_last_pending"));
+                assert_eq!(calls, [imports["refcount_admission"], passive]);
+            }
         }
     }
 }

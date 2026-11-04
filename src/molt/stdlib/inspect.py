@@ -1,3 +1,5 @@
+# Parameter.replace and Signature.replace adapted from CPython 3.13/3.14 (PSF-2.0).
+# Copyright Python Software Foundation; see collections/LICENSE.cpython.
 # Shim churn audit: 16 intrinsic-direct / 23 total exports
 """Minimal inspection helpers for Molt.
 
@@ -10,6 +12,8 @@ from typing import Any
 from functools import partial as _partial
 import collections.abc as _collections_abc
 import types as _types
+import sys as _sys
+from keyword import iskeyword as _iskeyword
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -206,6 +210,8 @@ class _Empty:
 
 
 _empty = _Empty()
+_void = object()
+_KIND_DESCRIPTIONS = ("positional-only", "positional or keyword", "variadic positional", "keyword-only", "variadic keyword")
 
 POSITIONAL_ONLY = 0
 POSITIONAL_OR_KEYWORD = 1
@@ -215,6 +221,7 @@ VAR_KEYWORD = 4
 
 
 class Parameter:
+    empty = _empty
     POSITIONAL_ONLY = POSITIONAL_ONLY
     POSITIONAL_OR_KEYWORD = POSITIONAL_OR_KEYWORD
     VAR_POSITIONAL = VAR_POSITIONAL
@@ -228,12 +235,44 @@ class Parameter:
         default: Any = _empty,
         annotation: Any = _empty,
     ) -> None:
-        if not name:
-            raise ValueError("parameter name must be non-empty")
+        if kind not in (0, 1, 2, 3, 4):
+            raise ValueError(f"value {kind!r} is not a valid Parameter.kind")
+        kind = int(kind)
+        if default is not _empty and kind in (VAR_POSITIONAL, VAR_KEYWORD):
+            raise ValueError(f"{_KIND_DESCRIPTIONS[kind]} parameters cannot have default values")
+        if name is _empty:
+            raise ValueError("name is a required attribute for Parameter")
+        if not isinstance(name, str):
+            raise TypeError(f"name must be a str, not a {type(name).__name__}")
+        if name.startswith(".") and name[1:].isdigit():
+            if kind != POSITIONAL_OR_KEYWORD:
+                raise ValueError(
+                    "implicit arguments must be passed as positional or keyword arguments, "
+                    f"not {_KIND_DESCRIPTIONS[kind]}"
+                )
+            kind = POSITIONAL_ONLY
+            name = f"implicit{name[1:]}"
+        if (_iskeyword(name) and kind != POSITIONAL_ONLY) or not name.isidentifier():
+            raise ValueError(f"{name!r} is not a valid parameter name")
         self.name = name
         self.kind = kind
         self.default = default
         self.annotation = annotation
+
+    # CPython v3.13.9/v3.14.0 Lib/inspect.py: Parameter.replace.
+    def replace(self, *, name=_void, kind=_void, annotation=_void, default=_void):
+        if name is _void:
+            name = self.name
+        if kind is _void:
+            kind = self.kind
+        if annotation is _void:
+            annotation = self.annotation
+        if default is _void:
+            default = self.default
+        return type(self)(name, kind, default=default, annotation=annotation)
+
+    if _sys.version_info >= (3, 13):
+        __replace__ = replace
 
     def __repr__(self) -> str:
         return f"<Parameter {self}>"
@@ -254,14 +293,44 @@ class Parameter:
 
 
 class Signature:
+    empty = _empty
     def __init__(
-        self, parameters: list[Parameter], return_annotation: Any = _empty
+        self, parameters: list[Parameter] | None = None, return_annotation: Any = _empty
     ) -> None:
         self._parameters: dict[str, Parameter] = {}
-        for param in parameters:
+        top_kind = POSITIONAL_ONLY
+        seen_default = False
+        for param in (() if parameters is None else parameters):
+            kind = param.kind
+            if kind < top_kind:
+                raise ValueError(
+                    f"wrong parameter order: {_KIND_DESCRIPTIONS[top_kind]} parameter "
+                    f"before {_KIND_DESCRIPTIONS[kind]} parameter"
+                )
+            if kind > top_kind:
+                top_kind = kind
+            if kind in (POSITIONAL_ONLY, POSITIONAL_OR_KEYWORD):
+                if param.default is _empty:
+                    if seen_default:
+                        raise ValueError("non-default argument follows default argument")
+                else:
+                    seen_default = True
+            if param.name in self._parameters:
+                raise ValueError(f"duplicate parameter name: {param.name!r}")
             self._parameters[param.name] = param
-        self._order = list(parameters)
+        self._order = list(self._parameters.values())
         self.return_annotation = return_annotation
+
+    # CPython v3.13.9/v3.14.0 Lib/inspect.py: Signature.replace.
+    def replace(self, *, parameters=_void, return_annotation=_void):
+        if parameters is _void:
+            parameters = self.parameters.values()
+        if return_annotation is _void:
+            return_annotation = self.return_annotation
+        return type(self)(parameters, return_annotation=return_annotation)
+
+    if _sys.version_info >= (3, 13):
+        __replace__ = replace
 
     @property
     def parameters(self) -> dict[str, Parameter]:

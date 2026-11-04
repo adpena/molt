@@ -181,8 +181,13 @@ pub(crate) fn fspath_bits_with_flavor(
         // PyOS_FSPath deliberately replaces a failed special-method lookup
         // with its operand TypeError. Python 3.13 also treats __fspath__ = None
         // as absence; 3.12 reaches ordinary non-callable validation.
-        let method = crate::builtins::attr::lookup_special_method(_py, file_bits, b"__fspath__")
-            .unwrap_or_default();
+        let method = crate::builtins::attr::lookup_special_method(
+            _py,
+            file_bits,
+            crate::NameId::DunderFspath,
+        )
+        .into_result()
+        .unwrap_or_default();
         if let Some(call_bits) = method {
             if obj_from_bits(call_bits).is_none()
                 && crate::object::ops_sys::runtime_target_at_least(_py, 3, 13)

@@ -6,8 +6,8 @@ from tools import check_instruction_hierarchy
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_DOC_MAX_BYTES = 32_768
-COMPACT_ROOT_BUDGET = 24 * 1024
+PROJECT_DOC_MAX_BYTES = check_instruction_hierarchy.CODEX_PROJECT_DOC_MAX_BYTES
+ROOT_BUDGET = check_instruction_hierarchy.ROOT_AGENT_MAX_BYTES
 DISCOVERABLE_AGENT_DOCS = {"AGENTS.md", "AGENTS.override.md"}
 
 
@@ -47,10 +47,10 @@ def test_root_agent_contracts_fit_codex_project_doc_budget() -> None:
     for name in ("AGENTS.md", "CLAUDE.md"):
         path = ROOT / name
         payload = path.read_bytes()
-        assert len(payload) <= COMPACT_ROOT_BUDGET, (
+        assert len(payload) <= ROOT_BUDGET, (
             f"{name} is {len(payload)} bytes; keep root agent contracts under "
-            f"{COMPACT_ROOT_BUDGET} bytes so Codex has headroom below the "
-            f"{PROJECT_DOC_MAX_BYTES}-byte project-doc default"
+            f"{ROOT_BUDGET} bytes so nested AGENTS.md files fit below the "
+            f"{PROJECT_DOC_MAX_BYTES}-byte project-doc limit"
         )
 
 

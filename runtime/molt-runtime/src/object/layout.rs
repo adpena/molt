@@ -1475,13 +1475,17 @@ impl PreparedFunctionCode {
                 code_publish_callable_identity_unchecked(code_ptr, identity);
             }
             *slot = self.bits;
-            let setup_signature =
-                if function_code_signature_metadata_bits(ptr, b"__molt_arg_names__").is_some() {
-                    super::function_metadata::FunctionMetadataField::SIGNATURE
-                        .map(|field| field.take(ptr))
-                } else {
-                    [0; 5]
-                };
+            let setup_signature = if function_code_signature_metadata_bits(
+                ptr,
+                crate::object::function_metadata::FunctionMetadataField::ArgumentNames,
+            )
+            .is_some()
+            {
+                super::function_metadata::FunctionMetadataField::SIGNATURE
+                    .map(|field| field.take(ptr))
+            } else {
+                [0; 5]
+            };
             // Code publication changes the active signature projection. Keep
             // every attachment path coherent before returning displaced edges
             // whose release can invoke Python finalizers.
@@ -1682,6 +1686,286 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
     }
 }
 
+/// Code publication field shapes, independent of whether retained subclasses
+/// can own mutable references. GC capability is projected from actual children.
+#[derive(Clone, Copy)]
+pub(crate) enum CodeMetadataSlot {
+    Filename,
+    Name,
+    Linetable,
+    Varnames,
+    Names,
+    ArgNames,
+    Posonly,
+    Kwonly,
+    Vararg,
+    Varkw,
+    Freevars,
+    Cellvars,
+    GpuDescriptor,
+    Qualname,
+    Doc,
+}
+
+/// CPython v3.13.9/v3.14.0 Objects/codeobject.c: code_replace_impl and
+/// Objects/clinic/codeobject.c.h: code_replace. This is the complete keyword
+/// schema and the sole metadata/execution classification (spec 0216 section 2).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodeReplaceField {
+    Argcount,
+    Posonlyargcount,
+    Kwonlyargcount,
+    Nlocals,
+    Stacksize,
+    Flags,
+    Firstlineno,
+    Code,
+    Consts,
+    Names,
+    Varnames,
+    Freevars,
+    Cellvars,
+    Filename,
+    Name,
+    Qualname,
+    Linetable,
+    Exceptiontable,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodeReplaceEffect {
+    Metadata,
+    Execution,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CodeReplaceValue {
+    Int,
+    Bytes,
+    Tuple,
+    String,
+}
+
+pub(crate) struct CodeReplaceFieldSpec {
+    pub field: CodeReplaceField,
+    pub name: crate::NameId,
+    pub value: CodeReplaceValue,
+    pub effect: CodeReplaceEffect,
+}
+
+pub(crate) const CODE_REPLACE_FIELDS: [CodeReplaceFieldSpec; 18] = {
+    use CodeReplaceEffect::{Execution, Metadata};
+    use CodeReplaceField::*;
+    use CodeReplaceValue::{Bytes, Int, String, Tuple};
+    [
+        CodeReplaceFieldSpec {
+            field: Argcount,
+            name: crate::NameId::CoArgcount,
+            value: Int,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Posonlyargcount,
+            name: crate::NameId::CoPosonlyargcount,
+            value: Int,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Kwonlyargcount,
+            name: crate::NameId::CoKwonlyargcount,
+            value: Int,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Nlocals,
+            name: crate::NameId::CoNlocals,
+            value: Int,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Stacksize,
+            name: crate::NameId::CoStacksize,
+            value: Int,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Flags,
+            name: crate::NameId::CoFlags,
+            value: Int,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Firstlineno,
+            name: crate::NameId::CoFirstlineno,
+            value: Int,
+            effect: Metadata,
+        },
+        CodeReplaceFieldSpec {
+            field: Code,
+            name: crate::NameId::CoCode,
+            value: Bytes,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Consts,
+            name: crate::NameId::CoConsts,
+            value: Tuple,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Names,
+            name: crate::NameId::CoNames,
+            value: Tuple,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Varnames,
+            name: crate::NameId::CoVarnames,
+            value: Tuple,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Freevars,
+            name: crate::NameId::CoFreevars,
+            value: Tuple,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Cellvars,
+            name: crate::NameId::CoCellvars,
+            value: Tuple,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Filename,
+            name: crate::NameId::CoFilename,
+            value: String,
+            effect: Metadata,
+        },
+        CodeReplaceFieldSpec {
+            field: Name,
+            name: crate::NameId::CoName,
+            value: String,
+            effect: Metadata,
+        },
+        CodeReplaceFieldSpec {
+            field: Qualname,
+            name: crate::NameId::CoQualname,
+            value: String,
+            effect: Metadata,
+        },
+        CodeReplaceFieldSpec {
+            field: Linetable,
+            name: crate::NameId::CoLinetable,
+            value: Bytes,
+            effect: Execution,
+        },
+        CodeReplaceFieldSpec {
+            field: Exceptiontable,
+            name: crate::NameId::CoExceptiontable,
+            value: Bytes,
+            effect: Execution,
+        },
+    ]
+};
+
+/// Module execution is fixed at allocation. A co_name metadata replacement
+/// cannot change flags or the compiled module's constant projection.
+pub(crate) unsafe fn code_is_module(ptr: *mut u8) -> bool {
+    unsafe { *ptr.cast::<u64>().add(26) != 0 }
+}
+
+/// Owned Python-visible value, shared by introspection and replace validation.
+impl CodeReplaceField {
+    pub(crate) unsafe fn read(self, py: &PyToken<'_>, ptr: *mut u8) -> Result<u64, ()> {
+        unsafe {
+            use CodeReplaceField::*;
+            let borrowed = match self {
+                Filename => code_filename_bits(ptr),
+                Name => code_name_bits(ptr),
+                Qualname => code_qualname_bits(ptr),
+                Linetable => code_linetable_bits(ptr),
+                Varnames => code_varnames_bits(ptr),
+                Names => code_names_bits(ptr),
+                Freevars => code_freevars_bits(ptr),
+                Cellvars => code_cellvars_bits(ptr),
+                Firstlineno => return Ok(MoltObject::from_int(code_firstlineno(ptr)).bits()),
+                Argcount => return Ok(MoltObject::from_int(code_argcount(ptr) as i64).bits()),
+                Posonlyargcount => {
+                    return Ok(MoltObject::from_int(code_posonlyargcount(ptr) as i64).bits());
+                }
+                Kwonlyargcount => {
+                    return Ok(MoltObject::from_int(code_kwonlyargcount(ptr) as i64).bits());
+                }
+                Flags => return Ok(MoltObject::from_int(code_flags(ptr) as i64).bits()),
+                Nlocals => {
+                    let count = obj_from_bits(code_varnames_bits(ptr))
+                        .as_ptr()
+                        .filter(|&p| object_type_id(p) == TYPE_ID_TUPLE)
+                        .map_or(0, |p| crate::tuple_len(p));
+                    return Ok(MoltObject::from_int(count as i64).bits());
+                }
+                Stacksize => return Ok(MoltObject::from_int(0).bits()),
+                Code | Exceptiontable => {
+                    // AOT code has no CPython bytecode, interpreter stack or
+                    // bytecode exception handlers. These are empty, not an
+                    // executable bytecode substitute.
+                    let value = crate::alloc_bytes(py, &[]);
+                    return if value.is_null() {
+                        Err(())
+                    } else {
+                        Ok(MoltObject::from_ptr(value).bits())
+                    };
+                }
+                Consts => {
+                    let module = [MoltObject::none().bits(), MoltObject::from_int(0).bits()];
+                    let values: &[u64] = if code_is_module(ptr) { &module } else { &[] };
+                    let value = alloc_tuple(py, values);
+                    return if value.is_null() {
+                        Err(())
+                    } else {
+                        Ok(MoltObject::from_ptr(value).bits())
+                    };
+                }
+            };
+            if borrowed != 0 && !obj_from_bits(borrowed).is_none() {
+                inc_ref_bits(py, borrowed);
+                return Ok(borrowed);
+            }
+            let empty = if self == Linetable {
+                crate::alloc_bytes(py, &[])
+            } else {
+                alloc_tuple(py, &[])
+            };
+            if empty.is_null() {
+                Err(())
+            } else {
+                Ok(MoltObject::from_ptr(empty).bits())
+            }
+        }
+    }
+}
+
+/// Final metadata values, validated before any clone is published.
+pub(crate) struct CodeReplacementMetadata {
+    pub filename: u64,
+    pub name: u64,
+    pub qualname: u64,
+    pub firstlineno: i64,
+}
+impl CodeReplacementMetadata {
+    pub(crate) unsafe fn from_code(source: *mut u8) -> Self {
+        unsafe {
+            Self {
+                filename: code_filename_bits(source),
+                name: code_name_bits(source),
+                qualname: code_qualname_bits(source),
+                firstlineno: code_firstlineno(source),
+            }
+        }
+    }
+}
+
 pub(crate) unsafe fn code_filename_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
@@ -1724,29 +2008,22 @@ unsafe fn prepare_code_declaration(
     qualname: u64,
     doc: u64,
 ) -> Result<PreparedCodeDeclaration, ()> {
-    use super::heap_kinds_generated::HeapAcyclicSlot;
     unsafe {
         crate::gil_assert();
-        // Storage kind alone also admits mutable native str subclasses. Code
-        // is acyclic: retain only the existing exact immutable str capability.
-        if !super::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeQualname, qualname)
-            || super::ops::exact_string_bytes(py, qualname).is_none()
-        {
-            crate::raise_exception::<()>(
-                py,
-                BuiltinExc::TypeError,
-                "code qualname must be exact str",
-            );
+        // Metadata preserves str subclass identity. The publication below
+        // promotes code tracking before a mutable child can gain a back-edge.
+        if !crate::object::builders::code_metadata_slot_edge(
+            crate::object::layout::CodeMetadataSlot::Qualname,
+            qualname,
+        ) {
+            crate::raise_exception::<()>(py, BuiltinExc::TypeError, "code qualname must be str");
             return Err(());
         }
-        if !super::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeDoc, doc)
-            || (!obj_from_bits(doc).is_none() && super::ops::exact_string_bytes(py, doc).is_none())
-        {
-            crate::raise_exception::<()>(
-                py,
-                BuiltinExc::TypeError,
-                "code doc must be exact str or None",
-            );
+        if !crate::object::builders::code_metadata_slot_edge(
+            crate::object::layout::CodeMetadataSlot::Doc,
+            doc,
+        ) {
+            crate::raise_exception::<()>(py, BuiltinExc::TypeError, "code doc must be str or None");
             return Err(());
         }
         let same = |left, right| {
@@ -1780,6 +2057,7 @@ impl PreparedCodeDeclaration {
             }
             *code.cast::<u64>().add(23) = self.0[0];
             *code.cast::<u64>().add(24) = self.0[1];
+            super::gc::gc_track_owned_references(py, code, &self.0);
         }
     }
 }
@@ -1881,9 +2159,9 @@ pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallable
 /// for runtime/native setup or unpublished code metadata.
 pub(crate) unsafe fn function_code_signature_metadata_bits(
     ptr: *mut u8,
-    name: &[u8],
+    field: crate::object::function_metadata::FunctionMetadataField,
 ) -> Option<u64> {
-    use crate::call::function::FunctionBindingField;
+    use crate::object::function_metadata::FunctionMetadataField;
     unsafe {
         let code_ptr = obj_from_bits(function_code_bits(ptr)).as_ptr()?;
         if object_type_id(code_ptr) != TYPE_ID_CODE
@@ -1895,12 +2173,12 @@ pub(crate) unsafe fn function_code_signature_metadata_bits(
         {
             return None;
         }
-        match FunctionBindingField::from_name(name)? {
-            FunctionBindingField::ArgumentNames => Some(code_arg_names_bits(code_ptr)),
-            FunctionBindingField::PositionalOnly => Some(code_signature_posonly_bits(code_ptr)),
-            FunctionBindingField::KeywordOnlyNames => Some(code_kwonly_names_bits(code_ptr)),
-            FunctionBindingField::Varargs => Some(code_vararg_bits(code_ptr)),
-            FunctionBindingField::VarKeywords => Some(code_varkw_bits(code_ptr)),
+        match field {
+            FunctionMetadataField::ArgumentNames => Some(code_arg_names_bits(code_ptr)),
+            FunctionMetadataField::PositionalOnly => Some(code_signature_posonly_bits(code_ptr)),
+            FunctionMetadataField::KeywordOnlyNames => Some(code_kwonly_names_bits(code_ptr)),
+            FunctionMetadataField::Varargs => Some(code_vararg_bits(code_ptr)),
+            FunctionMetadataField::VarKeywords => Some(code_varkw_bits(code_ptr)),
             _ => None,
         }
     }
@@ -2029,13 +2307,7 @@ pub(crate) unsafe fn code_publish_policy(
 /// immutable code policy; signature slots add the standard vararg flags.
 pub(crate) unsafe fn code_flags(ptr: *mut u8) -> u64 {
     unsafe {
-        let is_module = obj_from_bits(code_name_bits(ptr))
-            .as_ptr()
-            .is_some_and(|name_ptr| {
-                object_type_id(name_ptr) == TYPE_ID_STRING
-                    && std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr))
-                        == b"<module>"
-            });
+        let is_module = code_is_module(ptr);
         let mut flags = if is_module {
             0
         } else {
@@ -2108,13 +2380,25 @@ pub(crate) unsafe fn code_publish_gpu_descriptor(
     ptr: *mut u8,
     bits: u64,
 ) -> bool {
-    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
     unsafe {
-        if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeGpuDescriptor, bits) {
+        if !crate::object::builders::code_metadata_slot_edge(
+            crate::object::layout::CodeMetadataSlot::GpuDescriptor,
+            bits,
+        ) {
             crate::raise_exception::<u64>(
                 py,
                 BuiltinExc::TypeError,
                 "GPU code descriptor must be str or None",
+            );
+            return false;
+        }
+        // This compiler-owned descriptor may be published after callable
+        // sealing. It must not turn an atomic code owner into a mutable one.
+        if !obj_from_bits(bits).is_none() && super::ops::exact_string_bytes(py, bits).is_none() {
+            crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "GPU code descriptor must be exact str or None",
             );
             return false;
         }
@@ -2132,6 +2416,7 @@ pub(crate) unsafe fn code_publish_gpu_descriptor(
         }
         inc_ref_bits(py, bits);
         *slot = bits;
+        super::gc::gc_track_owned_references(py, ptr, &[bits]);
         true
     }
 }
@@ -2175,6 +2460,7 @@ unsafe fn publish_code_lexical_metadata_deferred(
             let slot = ptr.add((19 + offset) * std::mem::size_of::<u64>()) as *mut u64;
             displaced[offset] = std::mem::replace(&mut *slot, bits);
         }
+        super::gc::gc_track_owned_references(py, ptr, &lexical);
         displaced
     }
 }
@@ -2187,9 +2473,10 @@ pub(crate) unsafe fn validate_code_lexical_metadata(
 ) -> Result<(), ()> {
     unsafe {
         crate::gil_assert();
-        use crate::object::heap_kinds_generated::HeapAcyclicSlot;
-        if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeFreevars, freevars_bits)
-        {
+        if !crate::object::builders::code_metadata_slot_edge(
+            crate::object::layout::CodeMetadataSlot::Freevars,
+            freevars_bits,
+        ) {
             crate::raise_exception::<u64>(
                 _py,
                 BuiltinExc::TypeError,
@@ -2197,8 +2484,10 @@ pub(crate) unsafe fn validate_code_lexical_metadata(
             );
             return Err(());
         }
-        if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeCellvars, cellvars_bits)
-        {
+        if !crate::object::builders::code_metadata_slot_edge(
+            crate::object::layout::CodeMetadataSlot::Cellvars,
+            cellvars_bits,
+        ) {
             crate::raise_exception::<u64>(
                 _py,
                 BuiltinExc::TypeError,
@@ -2235,23 +2524,22 @@ pub(crate) fn prepare_code_signature(
     py: &PyToken<'_>,
     bits: [u64; 5],
 ) -> Result<PreparedCodeSignature, ()> {
-    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
     let slots = [
-        HeapAcyclicSlot::CodeArgNames,
-        HeapAcyclicSlot::CodePosonly,
-        HeapAcyclicSlot::CodeKwonly,
-        HeapAcyclicSlot::CodeVararg,
-        HeapAcyclicSlot::CodeVarkw,
+        crate::object::layout::CodeMetadataSlot::ArgNames,
+        crate::object::layout::CodeMetadataSlot::Posonly,
+        crate::object::layout::CodeMetadataSlot::Kwonly,
+        crate::object::layout::CodeMetadataSlot::Vararg,
+        crate::object::layout::CodeMetadataSlot::Varkw,
     ];
     if !slots
         .into_iter()
         .zip(bits)
-        .all(|(slot, bits)| crate::object::builders::acyclic_slot_edge(slot, bits))
+        .all(|(slot, bits)| crate::object::builders::code_metadata_slot_edge(slot, bits))
     {
         crate::raise_exception::<u64>(
             py,
             BuiltinExc::SystemError,
-            "code signature mutation violated generated code_metadata acyclic capability",
+            "code signature mutation violated code metadata field types",
         );
         return Err(());
     }
@@ -2297,6 +2585,7 @@ impl PreparedCodeSignature {
                 let slot = ptr.add((12 + offset) * std::mem::size_of::<u64>()) as *mut u64;
                 displaced[offset] = std::mem::replace(&mut *slot, bits);
             }
+            super::gc::gc_track_owned_references(py, ptr, &self.0);
             displaced
         }
     }
@@ -2622,7 +2911,8 @@ pub(crate) const CLASS_DEFINITION_WORD: usize = ClassReferenceSlot::NativeModule
 /// A plain scalar code address like the definition word: no reference, no
 /// inheritance, and teardown leaves it alone.
 pub(crate) const CLASS_NATIVE_NEXT_WORD: usize = CLASS_DEFINITION_WORD + 1;
-pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_NATIVE_NEXT_WORD + 1;
+pub(crate) const CLASS_PAYLOAD_WORDS: usize =
+    ClassReferenceSlot::DataclassInitTemplate as usize + 1;
 
 /// The identity of one compiled class statement (HF-220): its program slot
 /// plus one, so zero stays the word of every class no compiled statement
@@ -3490,7 +3780,7 @@ mod tests {
                 let original = super::ensure_function_code_bits(py, function);
                 let candidate = alloc_test_code(py, name, name, 1);
                 let candidate_bits = MoltObject::from_ptr(candidate).bits();
-                let snapshot = || std::slice::from_raw_parts(candidate.cast::<u64>(), 25).to_vec();
+                let snapshot = || std::slice::from_raw_parts(candidate.cast::<u64>(), 27).to_vec();
                 let refs = |bits| ref_count(obj_from_bits(bits).as_ptr().unwrap());
                 let candidate_refs = ref_count(candidate);
                 let original_refs = ref_count(obj_from_bits(original).as_ptr().unwrap());

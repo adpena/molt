@@ -271,33 +271,13 @@ def test_cli_compiler_profile_is_explicit_and_independent_of_build_profile(
             timeout=15,
         )
         assert baseline.returncode == 0
-        # A failed guarded no-op also publishes its durable scratch evidence.
-        # Verify that exact class rather than treating all new output as noise.
-        import hashlib
-        import tarfile
+        # Failure scratch stays under the existing bounded run namespace;
+        # no durable archive is a side effect of argument rejection.
         from molt.dx import storage_path
 
         evidence = storage_path(_ROOT, "scratch-evidence", env)
-        (archive,) = evidence.glob("*.tar.gz")
-        (index,) = evidence.glob("*.tar.index.json")
-        record = json.loads(index.read_text(encoding="utf-8"))
-        assert record["schema"] == "molt.evidence-index.v1"
-        assert record["class"] == "scratch-evidence"
-        assert Path(record["archive"]) == archive
-        with archive.open("rb") as stream:
-            assert (
-                hashlib.file_digest(stream, "sha256").hexdigest()
-                == record["archive_sha256"]
-            )
-        with tarfile.open(archive) as retained:
-            assert any(member.name == "terminal.json" for member in retained)
-        footprint = _footprint(artifact_root)
-        selected = evidence
-        while selected != artifact_root:
-            relative = selected.relative_to(artifact_root).as_posix()
-            assert footprint.pop(relative) == (2 if selected == evidence else 0)
-            selected = selected.parent
-        assert footprint == _footprint(baseline_root)
+        assert not evidence.exists()
+        assert _footprint(artifact_root) == _footprint(baseline_root)
         assert not (tmp_path / "tools").exists()
     else:
         assert "conflicts with explicit artifact paths" in result.stderr
@@ -1548,7 +1528,7 @@ def _install_held_backend_probe(initializer, initargs, released, entered):
                 "X" * (256 * 1024) + "NATIVE_END\n", "native diagnostic-tail", 1
             )
         assert backend == "wasm"
-        entered.set()
+        entered.wait(timeout=30)
         assert released.wait(15), "test must release the admitted WASM backend"
         return backends.BackendResult("oracle\n", "", 0)
 
@@ -1563,7 +1543,10 @@ def test_live_backend_failure_is_visible_while_later_backend_is_held(
     from concurrent.futures.process import ProcessPoolExecutor
 
     context = molt_diff.compiler_process.worker_context()
-    released, entered = context.Event(), context.Event()
+    # Observe two previews only after both admitted workers reach the held
+    # backend. One Event starts the deadline while the second worker may still
+    # be starting, conflating process startup with progress delivery.
+    released, entered = context.Event(), context.Barrier(3)
     for path in suite.files:
         path.write_text("print('oracle')\n", encoding="utf-8")
     records = tmp_path / "backend-results.jsonl"
@@ -1584,7 +1567,7 @@ def test_live_backend_failure_is_visible_while_later_backend_is_held(
 
     def observe():
         try:
-            assert entered.wait(10), "a later backend must actually start"
+            entered.wait(timeout=30)
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 captured = capfd.readouterr()
@@ -1633,6 +1616,7 @@ def test_live_backend_failure_is_visible_while_later_backend_is_held(
         )
     finally:
         released.set()
+        entered.abort()
         observer.join(timeout=20)
     assert not observer.is_alive()
     assert not seen, seen

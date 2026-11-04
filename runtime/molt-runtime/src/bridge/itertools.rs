@@ -74,6 +74,18 @@ pub fn alloc_instance_for_class(_py: &CoreGilToken, class_bits: u64) -> u64 {
     })
 }
 
+pub fn validate_constructor_class(_py: &CoreGilToken, actual: u64, expected: u64) -> bool {
+    crate::with_gil_entry_nopanic!(py, {
+        crate::itertools_class::validate_constructor_class(py, actual, expected)
+    })
+}
+
+pub fn constructor_repr(_py: &CoreGilToken, instance: u64, first: u64, second: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        crate::itertools_class::constructor_repr(py, instance, first, second)
+    })
+}
+
 pub fn alloc_itertools_class(
     _py: &CoreGilToken,
     name: &str,
@@ -94,10 +106,6 @@ pub fn alloc_itertools_class(
             constructor,
         )
     })
-}
-
-pub fn alloc_kwd_mark(_py: &CoreGilToken) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { crate::state::cache::alloc_kwd_mark(py) })
 }
 
 /// Read an iterator's declaring class while the caller owns it under the GIL.

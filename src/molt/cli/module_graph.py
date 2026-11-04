@@ -1660,13 +1660,16 @@ def _augment_module_graph_for_entry_and_runtime(
         import_admission_policy=import_admission_policy,
         target_python=target_python,
     )
-    explicit_imports.update(core_closure.explicit_imports)
     # Inventory custody does not imply executable admission. Core modules and
     # canonical builtin providers do own callable initializer lanes, without
     # introducing an eager import; provider execution remains resolver-gated.
-    dispatch_roots = explicit_imports | {
-        name for name in core_module_names if name in module_graph
-    }
+    # Imports reached from builtin bootstrap sources stay support dispatch
+    # roots, even when a Python adapter gives them a literal source import.
+    dispatch_roots = (
+        explicit_imports
+        | core_closure.explicit_imports
+        | {name for name in core_module_names if name in module_graph}
+    )
     spawn_enabled = False
     spawn_required = not is_wasm_target(target) and _requires_spawn_entry_override(
         module_graph, explicit_imports

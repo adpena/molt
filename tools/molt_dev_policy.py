@@ -20,7 +20,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Final, assert_never
 
 from tools.proof_plan import CellId, prerequisite_cell
 
@@ -53,6 +53,35 @@ class LandingMode(StrEnum):
     POSTSUBMIT = "postsubmit"
 
 
+class LandingClass(StrEnum):
+    """What a lane changes, which orders it in the landing queue (HF-711).
+
+    LEDGER: every changed path is in ``LEDGER_PATHS``, and there is at least
+    one. CODE: anything else, including a mixed ledger-plus-code diff.
+    """
+
+    LEDGER = "ledger"
+    CODE = "code"
+
+
+# POSIX repository paths, compared with git_identity.changed_paths() output.
+# tests/test_molt_dev.py holds them equal to finding_status.LEDGER_PATH and
+# gen_finding_ids.OUTPUT; importing those here would bind repository imports.
+LEDGER_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        "docs/agent/V1_HANDOFF_FINDINGS.md",
+        "tests/findings/finding_ids.py",
+    }
+)
+
+
+def landing_class(changed: Collection[str]) -> LandingClass:
+    """LEDGER when the change is nonempty and touches only the ledger paths."""
+    if changed and LEDGER_PATHS.issuperset(changed):
+        return LandingClass.LEDGER
+    return LandingClass.CODE
+
+
 class _EveryPlanEntity:
     """A plan edit whose changed entries cannot be read: every rule matches."""
 
@@ -71,14 +100,39 @@ class GateRule:
     pytest_select: list[LocalPytestSelection] = field(default_factory=list)
     # The plan entries this rule reads (proof_plan.local_rule_plan_claims).
     plan_entities: frozenset[PlanEntity] = frozenset()
+    # `land` runs this rule's gates in the lane before it queues the lane.
+    precheck: bool = False
 
 
 # The toolchains of a gate that only reads the candidate's files: linters,
 # formatters, type checkers, generators and policy audits. `land` runs those
-# gates in the lane before it queues the lane (molt_dev_precheck); a gate that
-# builds with Cargo, runs compiled programs or is a pytest session waits for the
-# queue's batch, which runs every selected gate once.
+# gates in the lane before it queues the lane (molt_dev_precheck), with the
+# lane's try run: the dependency graph's test cohorts (changed tests and their
+# direct readers) and the gates of rules that declare `precheck = true`
+# (changed-crate Clippy). Other Cargo builds, compiled programs and the rules'
+# curated pytest cohorts wait for the queue's batch, which runs every selected
+# gate once.
 PRECHECK_TOOLCHAINS = frozenset({"generators", "git", "python", "rustfmt", "uv"})
+
+
+@dataclass(frozen=True)
+class PrecheckBudget:
+    """The wall-clock limit of one lane try run (HF-710: 15 minutes at p90).
+
+    The static gates and the repairs before them run outside it. The try run
+    stops at the limit: its running gates are cancelled through
+    their guards and later gates never start. `land` names every gate the
+    limit refused; the queue's batch still runs each of them.
+    """
+
+    seconds: float
+
+    def __post_init__(self) -> None:
+        if not self.seconds > 0:
+            raise ValueError("a precheck budget must be positive")
+
+
+PRECHECK_BUDGET = PrecheckBudget(seconds=15 * 60)
 
 
 @dataclass(frozen=True)
@@ -95,6 +149,9 @@ class SelectedGate:
     cargo_target_access: CargoTargetAccess | None = None
     pinned_assets: tuple[str, ...] = ()
     cells: tuple[str, ...] = ()
+    # Its selector runs it in the lane's try run (a graph test cohort or a
+    # `precheck = true` rule); static gates qualify by their toolchains alone.
+    try_run: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -104,9 +161,14 @@ class SelectedGate:
         )
 
     @property
+    def static(self) -> bool:
+        """A gate that only reads the candidate's files."""
+        return not self.pytest and frozenset(self.toolchains) <= PRECHECK_TOOLCHAINS
+
+    @property
     def precheck(self) -> bool:
         """Whether `land` runs this gate in the lane before queueing it."""
-        return not self.pytest and frozenset(self.toolchains) <= PRECHECK_TOOLCHAINS
+        return self.static or self.try_run
 
 
 @dataclass(frozen=True)
@@ -221,6 +283,8 @@ class GateConfig:
     # The graph that selects tests by what they read. Without one (a driver
     # test's synthetic policy), rules alone select.
     dependency_graph: Callable[[], DependencyGraph] | None = None
+    # Mechanical repairs, in order; `land` applies them before its precheck.
+    repair: list[str] = field(default_factory=list)
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -315,11 +379,34 @@ class GateConfig:
                     pytest=pytest_targets,
                     pytest_select=resolved_selections,
                     plan_entities=claims,
+                    precheck=entry.get("precheck", False),
                 )
             )
         always = data.get("always", [])
         if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
             raise DriverError("gate manifest `always` must be a list of str")
+        repair = data.get("repair", [])
+        if not isinstance(repair, list) or not all(isinstance(g, str) for g in repair):
+            raise DriverError("gate manifest `repair` must be a list of str")
+        # Repairs rewrite the checkout before any gate runs, so their
+        # declaration is proven here, by the plan's own section contract.
+        from tools.proof_plan import (
+            load_toolchain_policies,
+            local_command_section_errors,
+        )
+
+        repair_toolchains = data.get("repair_toolchains", [])
+        try:
+            repair_errors = local_command_section_errors(
+                load_toolchain_policies(data, root=root, names=repair_toolchains),
+                {"repair": (repair, repair_toolchains)},
+            )
+        except (ValueError, KeyError, OSError, TypeError) as exc:
+            repair_errors = [f"local repair: {exc}"]
+        if repair_errors:
+            raise DriverError(
+                f"invalid repair declaration ({label}): " + "; ".join(repair_errors)
+            )
         try:
             memory_units = PytestMemoryUnits(data.get("command", ()), root=root)
             commands = local_gate_commands(data, memory_units=memory_units)
@@ -347,6 +434,7 @@ class GateConfig:
             commands=tuple(data.get("command", ())),
             matrix_cells=tuple(data.get("matrix_cell", ())),
             pinned_assets=assets,
+            repair=list(repair),
         )
 
     def graph_selection(
@@ -647,6 +735,7 @@ class GateConfig:
             cargo_target_access: CargoTargetAccess,
             pinned_assets: tuple[str, ...] = (),
             cells: tuple[str, ...] = (),
+            try_run: bool = False,
         ) -> None:
             from tools.proof_command_argv import pytest_arguments
 
@@ -671,6 +760,7 @@ class GateConfig:
                         dict.fromkeys((*prior.pinned_assets, *pinned_assets))
                     ),
                     cells=tuple(dict.fromkeys((*prior.cells, *cells))),
+                    try_run=prior.try_run or try_run,
                 )
             else:
                 indices[key] = len(selected)
@@ -684,6 +774,7 @@ class GateConfig:
                         cargo_target_access,
                         pinned_assets,
                         cells,
+                        try_run,
                     )
                 )
 
@@ -747,6 +838,7 @@ class GateConfig:
                     tools(f"{owner}.{index}"),
                     cargo_target_access=access(f"{owner}.{index}"),
                     pinned_assets=self.prerequisites[f"{owner}.{index}"].pinned_assets,
+                    try_run=rule.precheck,
                 )
             if rule.pytest:
                 if pytest_index is None:
@@ -823,6 +915,8 @@ class GateConfig:
                 cohort_tools,
                 cargo_target_access=cohort_access,
                 pytest=True,
+                # Changed tests and their direct readers: the lane's try run.
+                try_run=mode is LandingMode.PRESUBMIT,
                 cells=tuple(
                     dict.fromkeys(
                         cell

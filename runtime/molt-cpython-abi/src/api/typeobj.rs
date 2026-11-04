@@ -3105,6 +3105,22 @@ impl TypeNamespaceInvalidation {
 pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     unsafe {
+        // Runtime lookup does not depend on native tag admission. Notify its
+        // canonical class epoch before the native traversal's tag fast exit or
+        // any watcher can observe a manually edited namespace.
+        let _runtime_owner = if let Some(class) = GLOBAL_BRIDGE.molt_handle_for_pyobj(tp.cast()) {
+            // A C teardown pin can outlive runtime death. Preserve the same
+            // checked-retention boundary as native invalidation before touching
+            // runtime class storage, and keep it through watcher dispatch.
+            let Some(owner) = crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast())
+            else {
+                return;
+            };
+            (crate::hooks::hooks_or_stubs().type_modified)(class.bits());
+            Some(owner)
+        } else {
+            None
+        };
         visit_type_invalidation(std::iter::once(tp), |identity| {
             invalidate_type_identity(identity)
         });
@@ -4291,15 +4307,27 @@ pub(crate) unsafe fn type_short_name_bytes(tp: *mut PyTypeObject) -> Option<Vec<
 /// read callback-free structural metadata; native heap types use distinct
 /// ht_name/ht_qualname fields; static types derive their short tp_name. All
 /// other attributes retain normal metatype-descriptor and type-MRO precedence.
-unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mut PyObject {
+pub(crate) unsafe extern "C" fn type_getattro(
+    o: *mut PyObject,
+    name: *mut PyObject,
+) -> *mut PyObject {
+    let lookup = unsafe { type_lookup_attr(o, name) };
+    unsafe { crate::api::object::required_attribute_result(o, name, lookup) }
+}
+
+pub(crate) unsafe fn type_lookup_attr(
+    o: *mut PyObject,
+    name: *mut PyObject,
+) -> molt_lang_obj_model::AttributeLookup<crate::api::refcount::OwnedPyObject> {
     use crate::api::{descriptor, refcount::OwnedPyObject};
+    use molt_lang_obj_model::AttributeLookup;
     if o.is_null() || name.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return ptr::null_mut();
+        return AttributeLookup::Error;
     }
     let Some(_type_owner) = (unsafe { OwnedPyObject::try_from_borrowed(o) }) else {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return ptr::null_mut();
+        return AttributeLookup::Error;
     };
     let _name_owner = unsafe { OwnedPyObject::from_borrowed(name) };
     let tp = o.cast::<PyTypeObject>();
@@ -4307,22 +4335,22 @@ unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mu
     let _metatype_owner = unsafe { OwnedPyObject::from_borrowed(metatype.cast()) };
     let descriptor = match unsafe { type_lookup_borrowed(metatype, name) } {
         Ok(descriptor) => descriptor,
-        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return AttributeLookup::Error,
     };
     let meta_owner = unsafe { OwnedPyObject::from_borrowed(descriptor) };
     let meta_attribute = meta_owner.as_ptr();
     let is_data = match unsafe { descriptor::is_data(meta_attribute) } {
         Ok(value) => value,
-        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return AttributeLookup::Error,
     };
     if is_data && let Some(result) = unsafe { descriptor::get(meta_attribute, o, metatype.cast()) }
     {
-        return result;
+        return unsafe { crate::api::object::owned_attribute_result(result) };
     }
 
     let descriptor = match unsafe { type_lookup_borrowed(tp, name) } {
         Ok(descriptor) => descriptor,
-        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return AttributeLookup::Error,
     };
     let owner = unsafe { OwnedPyObject::from_borrowed(descriptor) };
     let attribute = owner.as_ptr();
@@ -4331,19 +4359,19 @@ unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mu
         // descriptor found on the class itself. Either edge may self-remove.
         drop(meta_owner);
         if let Some(result) = unsafe { descriptor::get(attribute, ptr::null_mut(), o) } {
-            return result;
+            return unsafe { crate::api::object::owned_attribute_result(result) };
         }
-        return owner.into_ptr();
+        return AttributeLookup::Found(owner);
     }
 
     if !meta_attribute.is_null() {
         if let Some(result) = unsafe { descriptor::get(meta_attribute, o, metatype.cast()) } {
-            return result;
+            return unsafe { crate::api::object::owned_attribute_result(result) };
         }
-        return meta_owner.into_ptr();
+        return AttributeLookup::Found(meta_owner);
     }
 
-    unsafe { crate::api::object::PyObject_GenericGetAttr(o, name) }
+    unsafe { crate::api::object::generic_lookup_with_optional_dict(o, name, ptr::null_mut(), 0) }
 }
 
 /// Install `type_getattro` on `PyType_Type` so metaclasses inherit it. Called

@@ -319,6 +319,36 @@ owner = "oracle-cell"
     assert set(evidence.rglob("*")) == before
 
 
+def test_candidate_controller_landing_refuses_while_a_runner_holds_the_queue(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A live runner is main's controller; it would fail a request whose plan
+    # only the candidate controller reads (presubmit lane, 2026-11-02).
+    from tools import molt_dev_queue as queue
+
+    checkout = _start(family, "candidate-busy")
+    _commit_file(checkout, "source.py", "VALUE = 1\n", "candidate")
+    paths = queue.queue_paths(checkout)
+    monkeypatch.setattr(queue, "_runner_lock_free", lambda _paths: False)
+    started: list[object] = []
+    monkeypatch.setattr(
+        queue, "_start_queue_runner", lambda *args: started.append(args)
+    )
+
+    def land(*flags: str) -> int:
+        return queue.cmd_land(
+            molt_dev.build_parser().parse_args(
+                ["land", "--repo", str(checkout), "--no-precheck", *flags]
+            )
+        )
+
+    assert land("--candidate-controller") == EXIT_FAIL
+    assert not queue.pending(paths)
+    assert not started
+    assert land() == EXIT_OK
+    assert len(queue.pending(paths)) == 1
+
+
 def _ref(repo: Path, ref: str) -> str | None:
     proc = _git(repo, "rev-parse", "--verify", "--quiet", ref, check=False)
     return proc.stdout.strip() if proc.returncode == 0 else None
@@ -422,32 +452,38 @@ def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> N
         lanes.cmd_lane_start(_args(family, slug="feature"))
 
 
-@pytest.mark.parametrize("selection", ["green", "absent", "override"])
-def test_lane_start_defaults_to_last_green_with_explicit_override(
+@pytest.mark.parametrize("selection", ["behind", "current", "absent", "override"])
+def test_lane_start_bases_on_fetched_main_and_reports_last_green(
     family: Path, capsys, selection: str
 ) -> None:
+    """HF-767: a stale last green never becomes the branch point."""
     from tools.molt_dev_queue import LAST_GREEN_REF
 
     main = family / "molt-src"
-    base = _ref(main, "refs/remotes/origin/main")
+    old = _ref(main, "refs/remotes/origin/main")
     head = _commit_file(main, "new-main.txt", "unqualified\n", "new main")
     _git(main, "push", "-q", "origin", "main")
-    if selection != "absent":
-        _git(main, "update-ref", LAST_GREEN_REF, base)
+    if selection in ("behind", "override"):
+        _git(main, "update-ref", LAST_GREEN_REF, old)
+    elif selection == "current":
+        _git(main, "update-ref", LAST_GREEN_REF, head)
     args = _args(
-        family, slug="green-base", base=head if selection == "override" else None
+        family, slug="main-base", base=old if selection == "override" else None
     )
     assert lanes.cmd_lane_start(args) == EXIT_OK
-    record = _record(family, "green-base")
-    expected = base if selection == "green" else head
+    record = _record(family, "main-base")
+    expected = old if selection == "override" else head
     assert record["lane"]["base_commit"] == expected
-    assert _ref(main, "refs/heads/lane/green-base") == expected
+    assert _ref(main, "refs/heads/lane/main-base") == expected
     output = capsys.readouterr()
     if selection == "absent":
-        assert LAST_GREEN_REF + " is absent" in output.err
-        assert "starting from origin/main" in output.err
-    elif selection == "green":
-        assert LAST_GREEN_REF in output.err
+        assert f"{LAST_GREEN_REF} is absent" in output.err
+    elif selection == "current":
+        assert f"{LAST_GREEN_REF} is origin/main" in output.err
+    else:
+        assert f"origin/main is 1 commit(s) past {LAST_GREEN_REF} ({old})" in (
+            output.err
+        )
 
 
 def test_a_lane_start_that_cannot_record_leaves_no_worktree_or_branch(
@@ -1252,8 +1288,20 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     state.mkdir(parents=True)
     (state / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
 
+    scratch = dx.scratch_root(worktree, create=True)
+    (scratch / "clone").mkdir()
+    (scratch / "clone" / "big.bin").write_bytes(b"x" * 64)
+    (scratch / "measure.json").write_text("{}", encoding="utf-8")
+
     assert lanes.cmd_lane_retire(_args(family, slug="landed")) == 0
     _assert_released(main, worktree)
+    # Lane scratch goes with the lane; the slot keeps its scratch binding.
+    assert sorted(p.name for p in scratch.iterdir()) == sorted(
+        n
+        for n in (".molt-state-owner.json", ".molt-last-use")
+        if (scratch / n).exists()
+    )
+    assert (scratch / ".molt-state-owner.json").exists()
     assert _registered(main) == [main.resolve(), worktree.resolve()]
     assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == tip
     assert _ref(main, "refs/heads/lane/landed") is None
@@ -1267,6 +1315,27 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     assert _start(family, "next") == worktree
     assert (state / "pyvenv.cfg").read_text(encoding="utf-8") == "home = /x\n"
     assert _record(family, "next")["lane"]["slot"] is True
+
+
+def test_lane_retire_finishes_a_landed_lane_whose_slot_another_lane_reuses(
+    family: Path,
+) -> None:
+    # HF-753: a landed lane's slot served another lane before its record was
+    # retired, and retire refused "exists outside its managed Git registration".
+    main = family / "molt-src"
+    worktree = _start(family, "first")
+    _commit_file(worktree, "first.txt", "first\n", "first work")
+    _git(worktree, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/lane/first")
+    _git(worktree, "checkout", "-q", "--detach")
+    assert _start(family, "second") == worktree
+
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == 0
+    assert _record(family, "first")["status"] == "landed"
+    assert _ref(main, "refs/heads/lane/first") is None
+    assert (
+        _git(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "lane/second"
+    )
 
 
 def _replay_onto_advanced_main(family: Path, commits: list[str], amend: bool) -> None:

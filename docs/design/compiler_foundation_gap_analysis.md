@@ -103,9 +103,9 @@ distinguishes remaining consumer gaps from mechanisms already implemented.
 - **C5: LirRepr::for_type two-tier correctness** (lower_to_lir.rs) — RESOLVED in the
   value-Repr authority cut. `lower_tir_to_wasm` now calls the value-keyed
   `lower_function_to_lir` path, which computes `repr_by_value_for(tir_func,
-  Some(&vr))`; the analysis-floor lowering is explicitly named
-  `lower_function_to_lir_for_repr_fact_extraction` and is not the production
-  WASM carrier path.
+  Some(&vr))`. The former analysis-floor lowering has been removed; native
+  fact extraction projects producer witnesses directly from TIR, and LIR
+  signatures and values use the same physical carrier authority.
 
 ---
 

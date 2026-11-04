@@ -11,7 +11,6 @@ use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 #[cfg(windows)]
 use std::os::windows::io::{FromRawSocket, RawSocket};
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(unix)]
@@ -26,8 +25,7 @@ use webpki_roots::TLS_SERVER_ROOTS;
 use super::super::stream::molt_stream_new_with_io_hooks;
 use crate::{
     GilReleaseGuard, MoltObject, PyToken, alloc_bytes, dec_ref_bits, exception_pending,
-    intern_static_name, is_missing_bits, missing_bits, molt_getattr_builtin, obj_from_bits,
-    pending_bits_i64, raise_exception, string_obj_to_owned, to_i64,
+    obj_from_bits, pending_bits_i64, raise_exception, string_obj_to_owned, to_i64,
 };
 
 struct NativeTlsStream {
@@ -594,16 +592,15 @@ pub(super) fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &s
 pub(super) fn tls_server_ssl_attr_string(
     _py: &PyToken<'_>,
     ssl_bits: u64,
-    slot: &AtomicU64,
-    name: &'static [u8],
+    name: crate::NameId,
 ) -> Result<Option<String>, u64> {
-    let attr_name_bits = intern_static_name(_py, slot, name);
-    let missing = missing_bits(_py);
-    let attr_bits = molt_getattr_builtin(ssl_bits, attr_name_bits, missing);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if is_missing_bits(_py, attr_bits) || obj_from_bits(attr_bits).is_none() {
+    let attr_name_bits = name.bits(_py);
+    let attr_bits = match crate::lookup_attribute(_py, ssl_bits, attr_name_bits) {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => return Ok(None),
+        crate::AttributeLookup::Error => return Err(MoltObject::none().bits()),
+    };
+    if obj_from_bits(attr_bits).is_none() {
         return Ok(None);
     }
     let Some(value) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
@@ -760,7 +757,7 @@ mod resolver_tests {
                 // Pending ownership is proven above. Ordinary descriptor lookup
                 // requires a clear error slot; `original` retains the exception.
                 clear_exception(py);
-                let errno_name = crate::attr_name_bits_from_bytes(py, b"errno").unwrap();
+                let errno_name = crate::dynamic_attr_name_bits(py, b"errno").unwrap();
                 let errno =
                     crate::molt_getattr_builtin(original, errno_name, MoltObject::none().bits());
                 assert!(!exception_pending(py));

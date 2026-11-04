@@ -2354,8 +2354,8 @@ def test_actual_darwin_custody_poll_tracks_the_tree_the_host_table_does() -> Non
             "-I",
             "-S",
             "-c",
-            "import os, subprocess\n"
-            "kids = [subprocess.Popen(['/bin/sleep', '30']) for _ in range(2)]\n"
+            "import os, subprocess, sys\n"
+            f"kids = [subprocess.Popen([sys.executable, '-I', '-S', '-c', {HUNG_CHILD_SOURCE!r}]) for _ in range(2)]\n"
             "os.write(1, b'x'); os.read(0, 1)\n"
             "for kid in kids: kid.kill(); kid.wait()\n",
         ],
@@ -2426,8 +2426,8 @@ def test_actual_custody_poll_judges_a_live_tree_as_the_host_table_does() -> None
             "-I",
             "-S",
             "-c",
-            "import os, subprocess\n"
-            "kids = [subprocess.Popen(['sleep', '30']) for _ in range(2)]\n"
+            "import os, subprocess, sys\n"
+            f"kids = [subprocess.Popen([sys.executable, '-I', '-S', '-c', {HUNG_CHILD_SOURCE!r}]) for _ in range(2)]\n"
             "os.write(1, b'x'); os.read(0, 1)\n"
             "for kid in kids: kid.kill(); kid.wait()\n",
         ],
@@ -7155,7 +7155,7 @@ def test_exit_signal_payload_classifies_windows_sigterm_status(
     }
 
 
-def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
+def test_run_guarded_signal_exit_is_unobserved_without_owned_incremental_evidence(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "target"
@@ -7214,8 +7214,65 @@ def test_run_guarded_signal_exit_defers_without_owned_incremental_evidence(
 
     assert result.returncode != 0
     assert result.cargo_incremental_quarantine is not None
-    assert result.cargo_incremental_quarantine.ownership_status == "deferred"
+    assert result.cargo_incremental_quarantine.ownership_status == "unobserved"
+    assert result.cargo_incremental_quarantine.moved_paths == ()
     assert live_file.exists()
+
+
+def test_cancelled_cargo_before_compiler_observation_closes_custody(
+    tmp_path: Path,
+) -> None:
+    """HF-655: a landing cancels a Cargo gate before any rustc starts.
+
+    The guard moves nothing and keeps the cache. The executor's closure check
+    (`_guard_closure_failure`) accepts the result, so the cancelled gate no
+    longer stops the whole gate block.
+    """
+    from tools import proof_plan
+
+    target = tmp_path / "target"
+    live_file = target / "debug" / "incremental" / "unit" / "work.o"
+    live_file.parent.mkdir(parents=True, exist_ok=True)
+    live_file.write_text("work", encoding="utf-8")
+    started = tmp_path / "cargo-started"
+    fake_cargo = tmp_path / ("cargo.cmd" if os.name == "nt" else "cargo")
+    body = (
+        f"import pathlib, time; pathlib.Path({str(started)!r}).touch(); time.sleep(120)"
+    )
+    if os.name == "nt":
+        fake_cargo.write_text(
+            f'@echo off\r\n"{sys.executable}" -c "{body}"\r\n', encoding="utf-8"
+        )
+    else:
+        fake_cargo.write_text(f"#!{sys.executable}\n{body}\n", encoding="utf-8")
+    fake_cargo.chmod(0o755)
+
+    result = memory_guard.run_guarded(
+        [str(fake_cargo)],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        cwd=tmp_path,
+        env={
+            **guard_custody_env(),
+            "CARGO_TARGET_DIR": str(target),
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        },
+        cancellation_requested=started.exists,
+    )
+
+    assert result.cancelled and result.descendants_closed
+    quarantine = result.cargo_incremental_quarantine
+    assert quarantine is not None
+    assert quarantine.ownership_status == "unobserved"
+    assert quarantine.moved_paths == () and quarantine.errors == ()
+    assert live_file.exists()
+    metrics = {
+        "descendants_closed": result.descendants_closed,
+        "cargo_incremental_quarantine": memory_guard._cargo_incremental_quarantine_payload(
+            quarantine
+        ),
+    }
+    assert proof_plan._guard_closure_failure(metrics) is None
 
 
 def _run_guarded_cargo_with_fake_orphan_cleanup(
@@ -9119,11 +9176,8 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
 @pytest.mark.parametrize(
     ("child_returncode", "retention_errors", "expected_returncode"),
     [
-        (
-            0,
-            ["prior generation receipt unreadable"],
-            memory_guard.INFRASTRUCTURE_RETURN_CODE,
-        ),
+        # Other runs' retention errors never change this command's result.
+        (0, ["prior generation receipt unreadable"], 0),
         (7, ["prior generation receipt unreadable"], 7),
         (137, ["prior generation receipt unreadable"], 137),
         (0, [], 0),
@@ -9131,6 +9185,7 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
 )
 def test_run_guarded_retention_sweep_health_preserves_primary_result(
     request: pytest.FixtureRequest,
+    capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     child_returncode: int,
@@ -9204,19 +9259,16 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     assert result.temporary_artifacts is not None
     assert result.temporary_artifacts["state"] == "reclaimed"
     assert result.temporary_artifacts["retention"]["protected_count"] == 3
+    assert result.infrastructure_failure is None
+    assert "temporary artifact custody incomplete" not in result.stderr
+    # The warning reaches the guard host's stderr, never the child's output.
+    assert "retention sweep reported errors" not in result.stderr
+    host_stderr = capsys.readouterr().err
     if retention_errors:
-        assert result.infrastructure_failure is not None
-        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
-        incident = memory_guard._incident_payload(result)
-        assert incident["reason"] == "infrastructure_error"
-        assert incident["child_returncode"] == child_returncode
-        assert "signal" not in incident
-        assert "prior generation receipt unreadable" in result.stderr
-        assert "retention sweep reported errors" in result.stderr
-    else:
-        assert result.infrastructure_failure is None
+        assert "prior generation receipt unreadable" in host_stderr
+        assert "retention sweep reported errors" in host_stderr
+    if child_returncode == 0:
         assert memory_guard._incident_payload(result) is None
-        assert "temporary artifact custody incomplete" not in result.stderr
     assert lease.release_calls == 1
 
     summary = tmp_path / "outcome.json"
@@ -9251,13 +9303,105 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
         signal_payload=memory_guard.exit_signal_payload,
         stderr=diagnostic,
     )
-    assert ("infrastructure_error" in diagnostic.getvalue()) is bool(retention_errors)
+    assert "infrastructure_error" not in diagnostic.getvalue()
+    assert ("retention sweep reported errors" in diagnostic.getvalue()) is bool(
+        retention_errors
+    )
+    assert payload["infrastructure_failure"] is None
+    assert payload["temporary_artifacts"]["retention"]["errors"] == retention_errors
     assert ("SIGKILL" in diagnostic.getvalue()) is (child_returncode == 137)
+
+
+@pytest.mark.parametrize(
+    ("child_returncode", "expected_returncode"),
+    [(0, memory_guard.INFRASTRUCTURE_RETURN_CODE), (7, 7)],
+)
+def test_run_guarded_fails_a_clean_run_whose_own_payload_stays_retained(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int,
+    expected_returncode: int,
+) -> None:
+    """A clean run reclaims its own payload; a failed run retains it.
+
+    A removal that failed leaves the payload retained and indexed for the
+    next sweep, which is still this clean run's own custody failure.
+    """
+    if run_in_fresh_guard_observer(request):
+        return
+
+    class FakeLease:
+        target = tmp_path / "guard-scratch"
+        release_calls = 0
+
+        def release(self) -> None:
+            self.release_calls += 1
+
+    lease = FakeLease()
+    lease.target.mkdir()
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "acquire_guard_scratch",
+        lambda _root, _env: lease,
+    )
+    monkeypatch.setattr(
+        memory_guard._temporary_artifacts,
+        "finish_guard_scratch",
+        lambda _lease, *, closed, success, evidence, timings: {
+            "state": "retained",
+            "receipt": str(tmp_path / "owner.json"),
+            "error": "payload removal deferred: fixture file in use"
+            if success
+            else None,
+            "retention": {
+                "reclaimed": [],
+                "retained_bytes": 0,
+                "retained_count": 1,
+                "protected_count": 0,
+                "errors": [],
+                "deferred": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "_temporary_artifact_descendant_closure",
+        lambda **_kwargs: (
+            True,
+            {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "test-closed",
+                "closed": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
+    env = dict(os.environ)
+    env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "memory_guard")
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", f"raise SystemExit({child_returncode})"],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+        cleanup_orphans=False,
+        env=env,
+    )
+
+    assert result.returncode == expected_returncode
+    assert result.child_returncode == child_returncode
+    assert (result.infrastructure_failure is not None) is (child_returncode == 0)
+    if child_returncode == 0:
+        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
+        assert "temporary artifact custody incomplete" in result.stderr
+    assert lease.release_calls == 1
 
 
 def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     from tools import disk_guard, harness_memory_guard
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
     from molt.memory_guard_paths import active_guard_marker_dirs_of
 
     now = time.time()
@@ -9266,7 +9410,7 @@ def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     old = directory / "old.json"
     old.write_text('{"diagnostic": "keep my evidence"}', encoding="utf-8")
     original = old.read_bytes()
-    os.utime(old, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    os.utime(old, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
     # Publishing the next incident no longer deletes older evidence.
     fresh = harness_memory_guard._write_incident_record(
         directory, {"recorded_at": "now"}
@@ -9293,7 +9437,7 @@ def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
     another = directory / "another.json"
     another.write_bytes(b"another diagnostic")
     for path in (recovery_path, another):
-        os.utime(path, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+        os.utime(path, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
     later = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert not another.exists()  # The collector really ran again.
     assert recovery_path.read_bytes() == recovery_bytes
@@ -9303,7 +9447,7 @@ def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
 
 def test_a_named_record_that_cannot_retire_is_reported(tmp_path, monkeypatch):
     from tools import disk_guard
-    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.checkout_state import INTEGRATION_EVIDENCE_IDLE_S
     from molt.memory_guard_paths import active_guard_marker_dirs_of
 
     now = time.time()
@@ -9311,7 +9455,7 @@ def test_a_named_record_that_cannot_retire_is_reported(tmp_path, monkeypatch):
     directory.mkdir(parents=True)
     record = directory / "old.json.tmp"
     record.write_text("crashed write", encoding="utf-8")
-    os.utime(record, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    os.utime(record, (now - INTEGRATION_EVIDENCE_IDLE_S - 60,) * 2)
 
     def refuse(*_args, **_kwargs):
         raise PermissionError("retirement denied")

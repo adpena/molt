@@ -206,6 +206,7 @@ from tools.molt_dev_queue import add_queue_arguments  # noqa: E402
 from tools import venv_exec  # noqa: E402
 from tools.memory_guard_core.repro_context import argv_head  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
+    CancelReason,
     GateOutcome,
     GateRuntime,
     admit_selected_output_capacity,
@@ -217,6 +218,7 @@ from tools.molt_dev_gates import (  # noqa: E402
     run_selected_gates,
 )
 from tools.molt_dev_policy import (  # noqa: E402
+    GATES_CONFIG_NAME,
     Deferred,
     GateConfig,
     GateEnvironment,
@@ -591,21 +593,19 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
     if env.get("MOLT_VENV"):
         return venv_exec.resolve_venv(repo_root=repo, env=env)
     from molt import checkout_provisioning
-    from molt.dx import DxConfigError, DxProject
-    from molt.source_build_environment_selection import (
-        read_development_environment_selection,
-    )
+    from molt.dx import DxConfigError
 
     try:
-        if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
-            selected = venv_exec.resolve_venv(repo_root=repo, env=env)
-            return read_development_environment_selection(
-                selected, repo_root=repo, groups=DxProject(repo).dependency_groups()
-            ).root
         spec = checkout_provisioning.checkout_input(
             "uv-environment", repo, env, guard_source_root=_COMMANDS.repo_root
         )
         if not checkout_provisioning.declares(spec):
+            if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
+                raise DriverError(
+                    "managed development image refused: explicit "
+                    f"UV_PROJECT_ENVIRONMENT={env['UV_PROJECT_ENVIRONMENT']} "
+                    f"has no declared Python project at {repo}"
+                )
             return None
         return checkout_provisioning.ensure_input(spec).environment_root
     except (
@@ -961,6 +961,7 @@ def _gate_runtime(
     receipt_kind: str = "gates",
     mode: LandingMode = LandingMode.PRESUBMIT,
     cancelled: Callable[[], bool] = lambda: False,
+    cancel_reason: CancelReason = CancelReason.PENDING_LANDING,
     deferred: tuple[Deferred, ...] = (),
 ) -> GateRuntime:
     from tools.proof_plan import load_toolchain_policies
@@ -1007,6 +1008,7 @@ def _gate_runtime(
         ),
         mode=mode,
         cancelled=cancelled,
+        cancel_reason=cancel_reason,
         deferred=deferred,
     )
 
@@ -1380,7 +1382,10 @@ def _integrate_exclusive(
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
-    if not dry:
+    from tools.trunk_landing import HOST_SETTING
+
+    farm_host = os.environ.get(HOST_SETTING, "").strip()
+    if not dry and not farm_host:
         _assert_integration_source(git, selected_commit)
         prepared = config.prepare(
             gate_cmds,
@@ -1414,6 +1419,12 @@ def _integrate_exclusive(
         for gate in gate_cmds:
             _assert_integration_source(git, selected_commit)
             _say(f"    would-run gate: {_gate_display(gate.command)}")
+    elif farm_host:
+        from tools.trunk_landing import run_remote
+
+        gate_seconds.extend(
+            run_remote(repo, selected_commit, gate_cmds, host=farm_host)
+        )
     else:
         run_selected_gates(
             gate_cmds,
@@ -2003,29 +2014,54 @@ def cmd_difftest(args: argparse.Namespace) -> int:
 def cmd_fix(args: argparse.Namespace) -> int:
     """Apply every mechanical repair the read-only gates ask for, in one pass.
 
+    The checkout's proof plan declares the repairs (``repair``); ``land``
+    applies the same steps to a lane before its precheck, against its merge
+    base. ``fix`` repairs the whole checkout: its base is the empty tree, so
+    every path counts as changed and every reproducible generator renders,
+    then the generator check proves every output current. A plan without a
+    ``repair`` section is refused, never reported as repaired.
     Pre-commit hooks stay read-only (they must never rewrite another agent's
     unstaged work); this is the one command their failures point to.
     """
+    from tools.molt_dev_precheck import repair_steps
+
     repo = Path(args.repo).resolve()
     context = prepare_gate_environment(
         repo, ProcessEnvironment(os.environ), requires_python=True
     )
-    python = "python"
-    steps = (
-        ("pin text encodings", f"{python} tools/encoding_gate.py --fix"),
-        ("format Python", f"{python} -m ruff format ."),
-        # One interpreter renders every CI-checkable manifest generator in
-        # upstream order (tools/generators.py), then proves them current.
-        ("regenerate stale generated outputs", f"{python} tools/generators.py write"),
-        ("verify generated outputs", f"{python} tools/generators.py check"),
-    )
-    for name, command in steps:
-        _step(name)
+    plan = repo / "tools" / GATES_CONFIG_NAME
+    try:
+        config = GateConfig.parse(
+            plan.read_text(encoding="utf-8"), str(plan), root=repo
+        )
+        empty_tree = (
+            Git(repo)
+            ._run(["hash-object", "-t", "tree", "--stdin"], input_text="")
+            .stdout.strip()
+        )
+        steps = repair_steps(config, base=empty_tree)
+    except (OSError, DriverError) as exc:
+        _fail(f"fix: cannot read the declared repairs: {exc}")
+        _collect_driver_maintenance(repo, context.environment)
+        return 1
+    if not steps:
+        _fail(f"fix: {plan} declares no `repair` steps; nothing was repaired")
+        _collect_driver_maintenance(repo, context.environment)
+        return 1
+    commands = [
+        *(step.command for step in steps),
+        "python tools/generators.py check",
+    ]
+    for command in commands:
+        _step(f"repair: {_gate_display(command)}")
         if run_gate(command, repo, context) != 0:
-            _fail(f"fix: {name} failed")
+            _fail(f"fix: {_gate_display(command)} failed")
             _collect_driver_maintenance(repo, context.environment)
             return 1
-    _say("fix: encodings pinned, formatted, every generated output current")
+    _say(
+        f"fix: {len(steps)} declared repair step(s) applied to the whole checkout; "
+        "every generated output current"
+    )
     _collect_driver_maintenance(repo, context.environment)
     return 0
 

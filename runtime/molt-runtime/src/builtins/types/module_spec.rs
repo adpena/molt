@@ -82,25 +82,29 @@ fn configure_module_spec_class(
         return false;
     }
     let module_bits = MoltObject::from_ptr(module_ptr).bits();
-    let published = set_class_method(py, dict_ptr, "__module__", module_bits);
+    let published = set_class_method(py, dict_ptr, crate::NameId::DunderModule, module_bits);
     dec_ref_bits(py, module_bits);
     if !published {
         return false;
     }
     let init_bits = module_spec_init_bits(py, state, class_bits);
-    if !set_class_method(py, dict_ptr, "__init__", init_bits) {
+    if !set_class_method(py, dict_ptr, crate::NameId::DunderInit, init_bits) {
         return false;
     }
     let repr_bits = builtin_func_bits(
         py,
-        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class_bits, "__repr__"),
+        NativeCallableSpec::declared(
+            NativeCallableKind::MethodDescriptor,
+            class_bits,
+            crate::NameId::DunderRepr,
+        ),
         crate::builtins::functions::runtime_fn_addr(
             "molt_importlib_module_spec_repr",
             molt_importlib_module_spec_repr as *const (),
         ),
         1,
     );
-    if !set_class_method(py, dict_ptr, "__repr__", repr_bits) {
+    if !set_class_method(py, dict_ptr, crate::NameId::DunderRepr, repr_bits) {
         return false;
     }
     let parent_bits = builtin_func_bits(
@@ -121,14 +125,14 @@ fn configure_module_spec_class(
         return false;
     }
     let property_bits = MoltObject::from_ptr(property_ptr).bits();
-    let published = set_class_method(py, dict_ptr, "parent", property_bits);
+    let published = set_class_method(py, dict_ptr, crate::NameId::Parent, property_bits);
     dec_ref_bits(py, property_bits);
     if !published {
         return false;
     }
     for (name, get_slot, get_name, get_fn, set_slot, set_name, set_fn) in [
         (
-            "cached",
+            crate::NameId::Cached,
             &state.module_spec_cached_get_fn,
             "molt_importlib_module_spec_cached_get",
             molt_importlib_module_spec_cached_get as *const (),
@@ -137,7 +141,7 @@ fn configure_module_spec_class(
             molt_importlib_module_spec_cached_set as *const (),
         ),
         (
-            "has_location",
+            crate::NameId::HasLocation,
             &state.module_spec_has_location_get_fn,
             "molt_importlib_module_spec_has_location_get",
             molt_importlib_module_spec_has_location_get as *const (),
@@ -206,7 +210,7 @@ fn module_spec_init_bits(py: &PyToken<'_>, state: &TypesRuntimeState, class_bits
                 NativeCallableSpec::declared(
                     NativeCallableKind::MethodDescriptor,
                     class_bits,
-                    "__init__",
+                    crate::NameId::DunderInit,
                 ),
             )
         } {
@@ -235,8 +239,8 @@ fn exact_str_ptr(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
 }
 
 /// `self.<name> = value` through the full attribute protocol.
-fn set_spec_attr(py: &PyToken<'_>, spec_bits: u64, name: &[u8], value_bits: u64) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+fn set_spec_attr(py: &PyToken<'_>, spec_bits: u64, name: crate::NameId, value_bits: u64) -> bool {
+    let Some(name_bits) = name.owned_bits(py) else {
         return false;
     };
     let _ = crate::molt_set_attr_name(spec_bits, name_bits, value_bits);
@@ -245,8 +249,8 @@ fn set_spec_attr(py: &PyToken<'_>, spec_bits: u64, name: &[u8], value_bits: u64)
 }
 
 /// Owned `obj.<name>` through the full attribute protocol.
-fn get_spec_attr(py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> Option<u64> {
-    let name_bits = attr_name_bits_from_bytes(py, name)?;
+fn get_spec_attr(py: &PyToken<'_>, obj_bits: u64, name: crate::NameId) -> Option<u64> {
+    let name_bits = name.owned_bits(py)?;
     let value_bits = crate::molt_get_attr_name(obj_bits, name_bits);
     dec_ref_bits(py, name_bits);
     if exception_pending(py) {
@@ -281,13 +285,13 @@ fn initialize_module_spec(
         }
         bits
     };
-    let named = set_spec_attr(py, spec_bits, b"name", name);
+    let named = set_spec_attr(py, spec_bits, crate::NameId::Name, name);
     dec_ref_bits(py, name);
     let none = MoltObject::none().bits();
     if !named
-        || !set_spec_attr(py, spec_bits, b"loader", loader_bits)
-        || !set_spec_attr(py, spec_bits, b"origin", origin_bits)
-        || !set_spec_attr(py, spec_bits, b"loader_state", none)
+        || !set_spec_attr(py, spec_bits, crate::NameId::Loader, loader_bits)
+        || !set_spec_attr(py, spec_bits, crate::NameId::Origin, origin_bits)
+        || !set_spec_attr(py, spec_bits, crate::NameId::LoaderState, none)
     {
         return false;
     }
@@ -304,14 +308,24 @@ fn initialize_module_spec(
     } else {
         none
     };
-    let located = set_spec_attr(py, spec_bits, b"submodule_search_locations", locations_bits);
+    let located = set_spec_attr(
+        py,
+        spec_bits,
+        crate::NameId::SubmoduleSearchLocations,
+        locations_bits,
+    );
     dec_ref_bits(py, locations_bits);
     // ModuleSpec's origin is descriptive. File factories separately admit
     // has_location from their actual file provenance, as CPython _set_fileattr.
     let has_location = MoltObject::from_bool(false).bits();
     located
-        && set_spec_attr(py, spec_bits, b"_set_fileattr", has_location)
-        && set_spec_attr(py, spec_bits, b"_cached", none)
+        && set_spec_attr(
+            py,
+            spec_bits,
+            crate::NameId::PrivateSetFileattr,
+            has_location,
+        )
+        && set_spec_attr(py, spec_bits, crate::NameId::PrivateCached, none)
 }
 
 // Before the defining frozen-external body runs, this dictionary owns its
@@ -324,16 +338,16 @@ fn new_module_spec_suffix_namespace(py: &PyToken<'_>) -> u64 {
     let mut pairs = Vec::new();
     for (name, suffixes) in [
         (
-            b"SOURCE_SUFFIXES".as_slice(),
+            crate::NameId::SourceSuffixes,
             if crate::builtins::platform::sys_platform_str() == "win32" {
                 &[".py", ".pyw"][..]
             } else {
                 &[".py"][..]
             },
         ),
-        (b"BYTECODE_SUFFIXES".as_slice(), &[".pyc"][..]),
+        (crate::NameId::BytecodeSuffixes, &[".pyc"][..]),
     ] {
-        let Some(key) = attr_name_bits_from_bytes(py, name) else {
+        let Some(key) = name.owned_bits(py) else {
             return 0;
         };
         owners.push(ExceptionValue::adopt(py, key));
@@ -376,9 +390,9 @@ fn module_spec_suffix_namespace(py: &PyToken<'_>) -> u64 {
 pub(crate) fn module_spec_suffix_value_from_namespace(
     py: &PyToken<'_>,
     namespace: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Option<u64> {
-    let key = attr_name_bits_from_bytes(py, name)?;
+    let key = name.owned_bits(py)?;
     let ptr = obj_from_bits(namespace).as_ptr()?;
     let result = unsafe { dict_get_in_place(py, ptr, key) };
     dec_ref_bits(py, key);
@@ -389,7 +403,7 @@ pub(crate) fn module_spec_suffix_value_from_namespace(
         let _ = raise_exception::<u64>(
             py,
             BuiltinExc::NameError,
-            &format!("name '{}' is not defined", String::from_utf8_lossy(name)),
+            &format!("name '{}' is not defined", name.as_str()),
         );
         return None;
     };
@@ -397,7 +411,7 @@ pub(crate) fn module_spec_suffix_value_from_namespace(
     Some(result)
 }
 
-pub(crate) fn module_spec_suffix_value(py: &PyToken<'_>, name: &[u8]) -> Option<u64> {
+pub(crate) fn module_spec_suffix_value(py: &PyToken<'_>, name: crate::NameId) -> Option<u64> {
     let namespace = module_spec_suffix_namespace(py);
     if namespace == 0 {
         return None;
@@ -436,8 +450,8 @@ pub(crate) fn commit_module_spec_suffix_namespace(py: &PyToken<'_>, globals: u64
         return true;
     }
     for name in [
-        b"SOURCE_SUFFIXES".as_slice(),
-        b"BYTECODE_SUFFIXES".as_slice(),
+        crate::NameId::SourceSuffixes,
+        crate::NameId::BytecodeSuffixes,
     ] {
         let Some(value) = module_spec_suffix_value_from_namespace(py, globals, name) else {
             return false;
@@ -466,11 +480,11 @@ pub(crate) fn commit_module_spec_suffix_namespace(py: &PyToken<'_>, globals: u64
 pub extern "C" fn molt_importlib_suffixes() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         use crate::builtins::exceptions::ExceptionValue;
-        let Some(source) = module_spec_suffix_value(py, b"SOURCE_SUFFIXES") else {
+        let Some(source) = module_spec_suffix_value(py, crate::NameId::SourceSuffixes) else {
             return MoltObject::none().bits();
         };
         let source = ExceptionValue::adopt(py, source);
-        let Some(bytecode) = module_spec_suffix_value(py, b"BYTECODE_SUFFIXES") else {
+        let Some(bytecode) = module_spec_suffix_value(py, crate::NameId::BytecodeSuffixes) else {
             return MoltObject::none().bits();
         };
         let bytecode = ExceptionValue::adopt(py, bytecode);
@@ -488,10 +502,11 @@ pub extern "C" fn molt_importlib_suffixes() -> u64 {
 fn module_spec_cached_from_origin(py: &PyToken<'_>, origin: u64) -> Option<u64> {
     use crate::builtins::exceptions::ExceptionValue;
     for name in [
-        b"SOURCE_SUFFIXES".as_slice(),
-        b"BYTECODE_SUFFIXES".as_slice(),
+        crate::NameId::SourceSuffixes,
+        crate::NameId::BytecodeSuffixes,
     ] {
-        let endswith = ExceptionValue::adopt(py, get_spec_attr(py, origin, b"endswith")?);
+        let endswith =
+            ExceptionValue::adopt(py, get_spec_attr(py, origin, crate::NameId::Endswith)?);
         let policy = ExceptionValue::adopt(py, module_spec_suffix_value(py, name)?);
         let suffixes =
             ExceptionValue::adopt(py, unsafe { tuple_from_iter_bits(py, policy.bits()) }?);
@@ -504,7 +519,7 @@ fn module_spec_cached_from_origin(py: &PyToken<'_>, origin: u64) -> Option<u64> 
         if !crate::object::ops::truth_value(py, obj_from_bits(result.bits())).ok()? {
             continue;
         }
-        if name == b"BYTECODE_SUFFIXES" {
+        if name == crate::NameId::BytecodeSuffixes {
             inc_ref_bits(py, origin);
             return Some(origin);
         }
@@ -529,26 +544,39 @@ pub extern "C" fn molt_importlib_module_spec_cached_get(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         use crate::builtins::exceptions::ExceptionValue;
         let result = (|| -> Option<u64> {
-            let cached = ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"_cached")?);
+            let cached = ExceptionValue::adopt(
+                py,
+                get_spec_attr(py, self_bits, crate::NameId::PrivateCached)?,
+            );
             if obj_from_bits(cached.bits()).is_none() {
-                let origin = ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"origin")?);
+                let origin =
+                    ExceptionValue::adopt(py, get_spec_attr(py, self_bits, crate::NameId::Origin)?);
                 if !obj_from_bits(origin.bits()).is_none() {
-                    let located =
-                        ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"_set_fileattr")?);
+                    let located = ExceptionValue::adopt(
+                        py,
+                        get_spec_attr(py, self_bits, crate::NameId::PrivateSetFileattr)?,
+                    );
                     if crate::object::ops::truth_value(py, obj_from_bits(located.bits())).ok()? {
-                        let origin =
-                            ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"origin")?);
+                        let origin = ExceptionValue::adopt(
+                            py,
+                            get_spec_attr(py, self_bits, crate::NameId::Origin)?,
+                        );
                         let cached = ExceptionValue::adopt(
                             py,
                             module_spec_cached_from_origin(py, origin.bits())?,
                         );
-                        if !set_spec_attr(py, self_bits, b"_cached", cached.bits()) {
+                        if !set_spec_attr(
+                            py,
+                            self_bits,
+                            crate::NameId::PrivateCached,
+                            cached.bits(),
+                        ) {
                             return None;
                         }
                     }
                 }
             }
-            get_spec_attr(py, self_bits, b"_cached")
+            get_spec_attr(py, self_bits, crate::NameId::PrivateCached)
         })();
         result.unwrap_or_else(|| MoltObject::none().bits())
     })
@@ -557,7 +585,7 @@ pub extern "C" fn molt_importlib_module_spec_cached_get(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_cached_set(self_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let _ = set_spec_attr(py, self_bits, b"_cached", value_bits);
+        let _ = set_spec_attr(py, self_bits, crate::NameId::PrivateCached, value_bits);
         MoltObject::none().bits()
     })
 }
@@ -565,7 +593,8 @@ pub extern "C" fn molt_importlib_module_spec_cached_set(self_bits: u64, value_bi
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_has_location_get(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        get_spec_attr(py, self_bits, b"_set_fileattr").unwrap_or_else(|| MoltObject::none().bits())
+        get_spec_attr(py, self_bits, crate::NameId::PrivateSetFileattr)
+            .unwrap_or_else(|| MoltObject::none().bits())
     })
 }
 
@@ -579,7 +608,7 @@ pub extern "C" fn molt_importlib_module_spec_has_location_set(
             let _ = set_spec_attr(
                 py,
                 self_bits,
-                b"_set_fileattr",
+                crate::NameId::PrivateSetFileattr,
                 MoltObject::from_bool(value).bits(),
             );
         }
@@ -603,7 +632,7 @@ fn module_parent_of_name(py: &PyToken<'_>, name_bits: u64) -> u64 {
         }
         return MoltObject::from_ptr(head_ptr).bits();
     }
-    let Some(rpartition_bits) = get_spec_attr(py, name_bits, b"rpartition") else {
+    let Some(rpartition_bits) = get_spec_attr(py, name_bits, crate::NameId::Rpartition) else {
         return MoltObject::none().bits();
     };
     let dot_ptr = alloc_string(py, b".");
@@ -649,13 +678,14 @@ pub extern "C" fn molt_importlib_module_spec_init(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_parent(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let Some(locations_bits) = get_spec_attr(py, self_bits, b"submodule_search_locations")
+        let Some(locations_bits) =
+            get_spec_attr(py, self_bits, crate::NameId::SubmoduleSearchLocations)
         else {
             return MoltObject::none().bits();
         };
         let is_package = !obj_from_bits(locations_bits).is_none();
         dec_ref_bits(py, locations_bits);
-        let Some(name_bits) = get_spec_attr(py, self_bits, b"name") else {
+        let Some(name_bits) = get_spec_attr(py, self_bits, crate::NameId::Name) else {
             return MoltObject::none().bits();
         };
         if is_package {
@@ -675,10 +705,10 @@ pub extern "C" fn molt_importlib_module_spec_repr(self_bits: u64) -> u64 {
         // then read it again only when the field is included.
         let mut fields = Vec::new();
         for (attr, optional, use_repr) in [
-            (b"name".as_slice(), false, true),
-            (b"loader".as_slice(), false, true),
-            (b"origin".as_slice(), true, true),
-            (b"submodule_search_locations".as_slice(), true, false),
+            (crate::NameId::Name, false, true),
+            (crate::NameId::Loader, false, true),
+            (crate::NameId::Origin, true, true),
+            (crate::NameId::SubmoduleSearchLocations, true, false),
         ] {
             if optional {
                 let Some(probe) = get_spec_attr(py, self_bits, attr) else {
@@ -693,7 +723,7 @@ pub extern "C" fn molt_importlib_module_spec_repr(self_bits: u64) -> u64 {
             if !fields.is_empty() {
                 fields.extend_from_slice(b", ");
             }
-            fields.extend_from_slice(attr);
+            fields.extend_from_slice(attr.as_str().as_bytes());
             fields.push(b'=');
             let Some(value) = get_spec_attr(py, self_bits, attr) else {
                 return MoltObject::none().bits();
@@ -702,10 +732,10 @@ pub extern "C" fn molt_importlib_module_spec_repr(self_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
         }
-        let Some(class_bits) = get_spec_attr(py, self_bits, b"__class__") else {
+        let Some(class_bits) = get_spec_attr(py, self_bits, crate::NameId::DunderClass) else {
             return MoltObject::none().bits();
         };
-        let class_name = get_spec_attr(py, class_bits, b"__name__");
+        let class_name = get_spec_attr(py, class_bits, crate::NameId::DunderName);
         dec_ref_bits(py, class_bits);
         let Some(class_name) = class_name else {
             return MoltObject::none().bits();

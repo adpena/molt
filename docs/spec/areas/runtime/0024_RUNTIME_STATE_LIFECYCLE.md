@@ -248,6 +248,14 @@ CPython 3.11+ builds the callee's `_PyInterpreterFrame` from the function object
 (`_PyFrame_PushUnchecked`, `Include/internal/pycore_frame.h`). The same record
 holds the pending-exception byte that inline exception checks load and the
 thread's Python recursion depth, as CPython keeps both on `PyThreadState`.
+
+The same record lends its runtime's atomic pending-work word for inline async
+polls. Its prefix offsets and the work-word width participate in the generated
+object ABI fingerprint (revision 6), so objects needing the new field cannot
+link to a runtime whose old record put recursion depth at that offset. The
+execution lease keeps the borrowed word alive for the invocation, including
+callbacks and isolate switches. [Inline async-work safepoints](../../../design/foundation/inline_async_work_poll.md)
+owns the producer, ordering, reentrancy and backend contract.
 Direct calls charge that depth without entering the object runtime
 (`molt_recursion_enter_fast`); the limit stays runtime policy.
 
@@ -629,13 +637,23 @@ or replacing a function's `__code__`, cannot rewrite the declaration or a
 sibling function's attributes. This follows
 [CPython 3.12](https://github.com/python/cpython/blob/v3.12.0/Objects/funcobject.c)
 and [3.15](https://github.com/python/cpython/blob/v3.15.0/Objects/funcobject.c).
-The code payload owns two additional words (16 bytes; the current 64-bit native
-allocation class grows from 208 to 224 bytes), with no function-payload growth, extra
-allocation or invocation-time lookup. Clone and heap traversal/retirement
-preserve both edges. Only exact immutable strings and a `None` docstring are
-admitted: native string subclasses can own mutable state and cannot enter this
-acyclic code edge. Repeated equal declaration values retain the original code
-owners, including when the producer supplies distinct equal string objects.
+The code payload owns 27 words (216 bytes before the header and allocator
+rounding): slots 23 and 24 retain declaration qualname/doc, slot 25 retains the
+optional immutable dataclass initializer body plan, and slot 26 fixes module
+execution identity independently of replaceable source metadata. Cloning retains
+the plan and the module identity separately; terminal release retires the plan. No
+function payload grows. Clone and heap traversal/retirement preserve the owned
+edges. `CodeMetadataSlot` validates field shapes, including string subclasses;
+the `code_dynamic` heap projection retains the untracked path for exact immutable
+metadata and promotes tracking before a mutable child is published. Container
+owners conservatively account for code with pending metadata publication, so a
+later subclass back-reference cannot hide a cycle. Once declaration and execution
+publication seal atomic metadata, container owners may use the atomic child path;
+the late compiler-owned GPU descriptor accepts only exact strings or None.
+Repeated equal declaration
+values retain original owners; `code.replace` constructs a fresh code object and
+retains explicitly supplied metadata by identity. See the code field contract in
+[spec 0216](../compat/contracts/dynamic_execution_policy_contract.md#2-allowed-surface-now).
 This declaration contract does not implement the missing constant-pool
 producer, `co_consts`, or the versioned `CO_HAS_DOCSTRING` projection; those
 remain explicit HF-235 acceptance obligations.
@@ -1085,8 +1103,14 @@ namespace.
 
 Container tracking is target-version-specific, not host-version-specific.
 `heap_lifecycle` owns the shared child predicate: mutable GC-capable children
-require tracking even when currently untracked; only immutable exact tuples
-can be treated as permanently atomic after demotion. Dictionary writes inspect
+require tracking even when currently untracked; immutable exact tuples
+can be treated as permanently atomic after demotion. Code metadata uses its
+validated immutable string-tuple contents directly, so fresh conservative tuple
+membership does not enroll an otherwise atomic code object. Native-subclass
+tails and mutable string-subclass children still enroll it; publication and
+collector projection share this predicate. Sealed atomic code cannot acquire
+mutable metadata later, while earlier container owners retain tracking until
+that publication boundary closes. Dictionary writes inspect
 only newly published references, before releasing displaced owners. They never
 rescan the whole dictionary or demote it. This applies to construction (including
 duplicate keys), replacement, deletion, clear, pop, staged publication, and

@@ -434,28 +434,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     if exact_info and not exact_info.get("dynamic"):
                         field_map = exact_info.get("fields", {})
                         if name_lit in field_map:
-                            exact_dataclass_field = self._exact_dataclass_field(
-                                obj, receiver_name, name_lit
-                            )
-                            if exact_dataclass_field is not None:
-                                _, field_offset = exact_dataclass_field
-                                idx_val = MoltValue(self.next_var(), type_hint="int")
-                                self.emit(
-                                    MoltOp(
-                                        kind="CONST",
-                                        args=[field_offset],
-                                        result=idx_val,
-                                    )
-                                )
-                                res = MoltValue(self.next_var())
-                                self.emit(
-                                    MoltOp(
-                                        kind="DATACLASS_GET",
-                                        args=[obj, idx_val],
-                                        result=res,
-                                    )
-                                )
-                                return res
                             if not exact_info.get("dataclass"):
                                 return self._emit_guarded_getattr(
                                     obj,
@@ -866,17 +844,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     )
                     return res
                 if class_info.get("dataclass"):
-                    static_dataclass = self._try_emit_static_dataclass_constructor(
-                        node,
-                        class_id,
-                        class_info,
-                        class_ref,
-                    )
-                    if static_dataclass is not None:
-                        self._stamp_exact_class(static_dataclass, class_id)
-                        return static_dataclass
-                    # A declined allocation proof uses the actual class protocol:
-                    # metaclass __call__, __new__, and live initializer validation.
+                    # Allocation and the generated method use the ordinary class protocol.
                     callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(

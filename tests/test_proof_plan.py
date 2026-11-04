@@ -6244,6 +6244,57 @@ def test_executor_binds_the_verified_checkout_commit_into_source_bound_argv(
     assert record["argv"][-1] == proof_plan.PROOF_SOURCE_COMMIT_PLACEHOLDER
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the PATH decoy is a POSIX shell script")
+def test_a_bare_python_argv0_runs_the_admitted_environment_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HF-755: the first ``python3`` on PATH (Xcode's on macOS) never runs a proof."""
+    decoy = tmp_path / "decoy-bin"
+    decoy.mkdir()
+    decoy_ran = tmp_path / "decoy-ran"
+    for name in ("python", "python3"):
+        script = decoy / name
+        script.write_text(
+            f"#!/bin/sh\ntouch {shlex.quote(str(decoy_ran))}\nexit 3\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(decoy), os.environ["PATH"])))
+    output = tmp_path / "interpreter.txt"
+    producer = _synthetic_executor_command("synthetic.bare-python")
+    producer = replace(
+        producer,
+        data={
+            **producer.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
+            # The child reports the interpreter that actually ran it.
+            "argv": [
+                "python3",
+                "-c",
+                "import pathlib, sys; "
+                "pathlib.Path(sys.argv[1]).write_text(sys.executable, encoding='utf-8')",
+                str(output),
+            ],
+        },
+    )
+    plan = _synthetic_executor_plan((producer,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        _admit_synthetic_python,
+    )
+    assert (
+        proof_plan.execute_commands(plan, (producer,), tmp_path / "receipt.json") == 0
+    )
+
+    assert not decoy_ran.exists()
+    assert output.read_text(encoding="utf-8") == sys.executable
+    # A path-qualified interpreter is the row's explicit choice and stays as written.
+    explicit = replace(producer, data={**producer.data, "argv": ["/opt/python3", "-V"]})
+    assert proof_plan.resolved_command_argv(explicit) == ("/opt/python3", "-V")
+
+
 def test_source_bound_commands_bind_one_whole_placeholder_in_ci_tiers() -> None:
     row = next(
         command
@@ -7329,6 +7380,19 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
         )
 
 
+# The guard's record of a Cargo command killed before any compiler
+# observation, with an incomplete interruption inventory (HF-655).
+_UNOBSERVED_QUARANTINE = {
+    "ownership_status": "unobserved",
+    "errors": [],
+    "moved_paths": [],
+    "ownership_observations": [],
+    "recovery_observations": [],
+    "interruption_inventory_complete": False,
+    "interruption_inventory_error": "interruption snapshot unavailable",
+}
+
+
 @pytest.mark.parametrize(
     "metrics, returncode, expected",
     [
@@ -7424,6 +7488,35 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
             124,
             "global",
         ),
+        # HF-655: a kill before any compiler observation is terminal without
+        # an inventory; the deadline stays the command's own failure.
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+                "cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE,
+            },
+            124,
+            "partition",
+        ),
+        # An observed compiler or a move is never "unobserved".
+        *(
+            (
+                {
+                    "timed_out": True,
+                    "termination_reports": [
+                        {"remaining_pids": [], "remaining_pgids": []}
+                    ],
+                    "cargo_incremental_quarantine": {
+                        **_UNOBSERVED_QUARANTINE,
+                        field: [{"rustc_pid": 1}],
+                    },
+                },
+                124,
+                "global",
+            )
+            for field in ("ownership_observations", "moved_paths")
+        ),
     ],
 )
 def test_executor_failure_scope_uses_guard_and_quarantine_authority(
@@ -7512,6 +7605,7 @@ def test_executor_missing_guard_outcome_is_a_global_stop() -> None:
             },
             "Cargo quarantine ownership or recovery is unresolved",
         ),
+        ({"cargo_incremental_quarantine": _UNOBSERVED_QUARANTINE}, None),
     ],
 )
 @pytest.mark.parametrize(
@@ -7724,11 +7818,11 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
-    # Windows Job lifetime accounting fences unseen births through termination.
-    # Ordinary POSIX snapshots cannot establish that stronger negative fact.
-    assert record["failure_scope"] == (
-        "partition" if sys.platform == "win32" else "global"
-    ), record
+    # No compiler ran in the timed partition. Windows Job lifetime accounting
+    # fences unseen births and records recovery as unnecessary; a POSIX
+    # snapshot cannot, but with no observed compiler there is nothing to
+    # recover (`unobserved`, HF-655). Either way the deadline is the command's.
+    assert record["failure_scope"] == "partition", record
     # The kill leaves the completed incremental cache exactly as it was.
     assert sorted(path.name for path in incremental.iterdir()) == compiled
 
@@ -12124,3 +12218,24 @@ def test_receipt_refuses_invalid_explicit_effect_declarations(value):
     command = replace(original, data={**original.data, "cargo_target_access": value})
     with pytest.raises((ValueError, TypeError)):
         proof_receipts.command_record(command)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("repair_toolchains", ("no-such-toolchain",), "local repair: "),
+        ("repair", ("python -m ruff format {nope}",), "local.repair.0: "),
+    ],
+)
+def test_repair_is_validated_and_projected_as_always_is(field, value, reason):
+    # The committed plan's repairs bind and close over declared toolchains.
+    assert PLAN.repair and not [error for error in PLAN.validate() if "repair" in error]
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))["local"]
+    assert projection["repair"] == list(PLAN.repair)
+    assert [
+        projection["commands"][identifier]
+        for identifier in projection["repair_command_ids"]
+    ] == list(PLAN.repair)
+    # An unbindable template or undeclared toolchain fails like `always`.
+    errors = replace(PLAN, **{field: value}).validate()
+    assert any(error.startswith(reason) for error in errors), errors

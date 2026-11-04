@@ -18,10 +18,12 @@ core:
       - tests/differential/basic/module_function_observation.py
       - tests/differential/basic/class_namespace_lookup.py
       - tests/differential/basic/attribute_lookup_transactions.py
+      - tests/differential/basic/attribute_optional_lookup.py
       - tests/differential/basic/module_attribute_miss.py
       - tests/differential/basic/class_annotation_namespace.py
       - tests/differential/basic/class_annotation_namespace_313.py
       - tests/differential/basic/class_constructor_cell_callbacks.py
+      - tests/differential/basic/object_dict_field_write_coherence.py
       - tests/differential/basic/super_comprehension_frame_ownership.py
       - tests/differential/basic/super_runtime_frame_context.py
       - tests/differential/basic/super_runtime_frame_mutating_receiver.py
@@ -1017,6 +1019,7 @@ stdlib:
       - tests/differential/stdlib/importlib_sourcefileloader_resolution.py
       - tests/differential/stdlib/importlib_spec_from_file_location_payload.py
       - tests/differential/stdlib/importlib_import_module_basic.py
+      - tests/differential/stdlib/importlib_package_defers_util.py
       - tests/differential/stdlib/importlib_util_spec_module.py
       - tests/differential/stdlib/importlib_util_exec_module.py
       - tests/differential/stdlib/importlib_spec_fields_basic.py

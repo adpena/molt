@@ -40,6 +40,19 @@ function instantiate(path) {
   const hooks = {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
+    thread_record() {
+      const record=256, work=288;
+      const view=new DataView(imports.env.memory.buffer);
+      // Keep the pending byte armed, as the work word below, so every inline
+      // exception test reaches this oracle; its answer decides, as the
+      // runtime reader's repair does for a stale byte.
+      view.setUint8(record,1);
+      view.setBigUint64(record+16,BigInt(work),true);
+      // This frame/custody oracle injects failures at servicing boundaries.
+      // Keep real work armed; the separate poll oracle tests empty readiness.
+      view.setUint32(work,8,true);
+      return BigInt(record);
+    },
     int_from_i64(value) {
       ensure(state.mixedCase && state.mixedAnchorLive && state.enters===0 && state.boxes<2
              && value === (1n << 62n) + BigInt(state.boxes), 'unexpected integer materialization');

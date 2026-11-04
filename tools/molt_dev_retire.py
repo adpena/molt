@@ -166,6 +166,35 @@ def release_slot(git, repo: Path, upstream_ref: str) -> int:
     return EXIT_OK
 
 
+def clear_slot_scratch(repo: Path) -> int:
+    """Delete a released slot's lane scratch; its signal lives in the report and ledger.
+
+    A slot keeps its warm Cargo target and environment for the next lane
+    (HF-491), but scratch (clones, measurement outputs, temporary trees) is
+    regenerable lane state: it goes when the lane goes. The root's owner record
+    and last-use stamp stay, so the slot's scratch binding survives.
+    """
+    import shutil
+
+    from molt.checkout_state import LAST_USE_STAMP, OWNER_RECORD, checkout_state_use
+    from molt.dx import scratch_root
+
+    root = scratch_root(repo)
+    if not root.is_dir() or root.is_symlink():
+        return 0
+    removed = 0
+    with checkout_state_use(((root, None),), publish=False):
+        for entry in root.iterdir():
+            if entry.name in {OWNER_RECORD, LAST_USE_STAMP}:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+    return removed
+
+
 @contextmanager
 def prepare_checkout_retirement(
     checkout: Path,

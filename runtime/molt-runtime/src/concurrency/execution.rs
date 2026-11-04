@@ -146,12 +146,28 @@ fn execution_is_nested() -> bool {
 /// isolate is not attached while the browser host is between app calls.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn current_thread_has_runtime_execution_custody() -> bool {
+    runtime_execution_custody_in(crate::state::execution_tls())
+}
+
+/// [`current_thread_has_runtime_execution_custody`] for a caller that has
+/// already read this thread's execution facts. wasm32 never writes the GIL
+/// depth, so its logical execution depth stands in for GIL custody.
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
     // Shutdown owns a distinct lifetime capability, not an ordinary admitted
     // execution frame. Its callbacks must remain attached without fabricating
     // a runtime lease or WASM execution depth during finalization.
-    current_thread_holds_shutdown_drain_custody()
-        || (crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
-            && execution_is_nested())
+    tls.shutdown_drain_depth.get() != 0 || (tls.lease_depth.get() != 0 && execution_is_nested())
+}
+
+/// Admission custody (a lease or shutdown-drain custody) and the GIL: the
+/// conditions under which today's re-entrant entry borrowed its caller's
+/// custody. A nested entry under them owns nothing.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(always)]
+fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
+    (tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0) && tls.gil_depth.get() != 0
 }
 
 pub(crate) fn current_thread_holds_shutdown_drain_custody() -> bool {
@@ -242,9 +258,11 @@ impl ShutdownDrainExecutionCustody {
             "shutdown drain custody must not overlap ordinary lifecycle admission"
         );
         {
-            let depth = &crate::state::execution_tls().shutdown_drain_depth;
+            let tls = crate::state::execution_tls();
+            let depth = &tls.shutdown_drain_depth;
             assert_eq!(depth.get(), 0, "duplicate shutdown drain execution custody");
             depth.set(1);
+            crate::state::runtime_state::bind_execution_state(tls);
         }
         enter_c_extension_execution_context();
         Self {
@@ -259,7 +277,8 @@ impl ShutdownDrainExecutionCustody {
     pub(crate) fn for_retained_worker(
         origin: crate::state::runtime_state::RuntimeWorkerOrigin,
     ) -> Self {
-        let mut custody = Self::enter();
+        // Record the origin before the custody edge binds this thread's
+        // runtime state: during Finalizing only the origin resolves it.
         assert!(
             crate::state::execution_tls()
                 .retained_worker_origin
@@ -267,6 +286,7 @@ impl ShutdownDrainExecutionCustody {
                 .is_none(),
             "duplicate retained worker origin"
         );
+        let mut custody = Self::enter();
         custody.retained_origin = true;
         custody
     }
@@ -294,9 +314,9 @@ impl Drop for ShutdownDrainExecutionCustody {
                     "retained worker origin lost"
                 );
             }
-            let previous = crate::state::execution_tls()
-                .shutdown_drain_depth
-                .replace(0);
+            let tls = crate::state::execution_tls();
+            let previous = tls.shutdown_drain_depth.replace(0);
+            crate::state::runtime_state::release_execution_state_binding(tls);
             assert_eq!(previous, 1, "shutdown drain execution custody corrupted");
         }));
         finish_panic_obligations([
@@ -538,10 +558,25 @@ impl RuntimeServiceExecutionGuard {
 /// GIL plus the exact attachment and worker-TLS obligations established at a
 /// public execution boundary.
 pub(crate) struct RuntimeExecutionGuard {
-    gil: Option<GilGuard>,
+    /// This thread's execution facts, read once at entry.
+    tls: &'static crate::state::ExecutionTls,
+    /// What this entry acquired. `None` for a nested entry: its thread already
+    /// held admission custody and the GIL, so the entry borrows both, adds no
+    /// GIL depth unit, and its drop does nothing.
+    owned: Option<OwnedExecution>,
+}
+
+/// The GIL guard and boundary obligations an entry acquired itself.
+struct OwnedExecution {
+    gil: GilGuard,
     custody: Option<RuntimeExecutionCustody>,
     active_lifecycle_lease: bool,
 }
+
+/// The encoded lane of a nested entry that borrowed its caller's custody. It
+/// lies outside the GIL lane byte and the custody and lease bits, so no owned
+/// lane can equal it.
+const BORROWED_EXECUTION_LANE: u64 = 1 << 13;
 
 impl RuntimeExecutionGuard {
     /// Enter a runtime call, lazily initializing only before acquiring the GIL.
@@ -567,22 +602,34 @@ impl RuntimeExecutionGuard {
     }
 
     /// Compiled code enters here on every runtime operation, already holding
-    /// a lease and the GIL: one thread-local read answers both, and the nested
-    /// guard is the whole cost. Everything else is the cold path, kept out of
-    /// line so its frame and saved registers stay off the hot one.
+    /// admission custody and the GIL: one thread-local read answers both, and
+    /// the entry borrows them, so it updates no depth and its drop does
+    /// nothing. Everything else is the cold path, kept out of line so its frame
+    /// and saved registers stay off the hot one.
     #[inline(always)]
     fn enter_with_policy(initialize_runtime: bool, cleanup_policy: ExecutionCleanupPolicy) -> Self {
         let tls = crate::state::execution_tls();
-        if (tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0)
-            && let Some(gil) = GilGuard::new_if_held_in(tls)
-        {
-            return Self {
-                gil: Some(gil),
-                custody: None,
-                active_lifecycle_lease: false,
-            };
+        if runtime_execution_custody_in(tls) {
+            return Self { tls, owned: None };
         }
         Self::enter_cold(tls, initialize_runtime, cleanup_policy)
+    }
+
+    #[inline(always)]
+    fn owned(
+        tls: &'static crate::state::ExecutionTls,
+        gil: GilGuard,
+        custody: Option<RuntimeExecutionCustody>,
+        active_lifecycle_lease: bool,
+    ) -> Self {
+        Self {
+            tls,
+            owned: Some(OwnedExecution {
+                gil,
+                custody,
+                active_lifecycle_lease,
+            }),
+        }
     }
 
     #[cold]
@@ -593,17 +640,20 @@ impl RuntimeExecutionGuard {
         cleanup_policy: ExecutionCleanupPolicy,
     ) -> Self {
         if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
+            // Custody whose GIL the inline test cannot borrow: the
+            // TLS-destruction GIL lane on native, a lease outside a logical
+            // WASM frame on wasm32. These keep the nested guard they always
+            // had, with no new custody.
+            if let Some(gil) = GilGuard::new_if_held_in(tls) {
+                return Self::owned(tls, gil, None, false);
+            }
             // Admission/retained shutdown custody survives GIL suspension.
             // Reentry must not wait for Ready: the finalization owner may be
             // joining this very worker. Own only newly acquired GIL/attachment
             // obligations and preserve the caller's requested cleanup policy.
             let gil = GilGuard::new();
             let custody = RuntimeExecutionCustody::enter(true, cleanup_policy);
-            return Self {
-                gil: Some(gil),
-                custody: Some(custody),
-                active_lifecycle_lease: false,
-            };
+            return Self::owned(tls, gil, Some(custody), false);
         }
         if !crate::state::runtime_state::current_thread_holds_runtime_execution_lease() {
             crate::state::touch_tls_guard();
@@ -649,11 +699,7 @@ impl RuntimeExecutionGuard {
                 initialize_runtime,
             ) {
                 let custody = RuntimeExecutionCustody::enter(!held_before, cleanup_policy);
-                return Self {
-                    gil: Some(gil),
-                    custody: Some(custody),
-                    active_lifecycle_lease,
-                };
+                return Self::owned(tls, gil, Some(custody), active_lifecycle_lease);
             }
             drop(gil);
             if active_lifecycle_lease {
@@ -692,26 +738,33 @@ impl RuntimeExecutionGuard {
         }
         let custody =
             RuntimeExecutionCustody::enter(!held_before, ExecutionCleanupPolicy::WorkerEnd);
-        Some(Self {
-            gil: Some(gil),
-            custody: Some(custody),
+        Some(Self::owned(
+            crate::state::execution_tls(),
+            gil,
+            Some(custody),
             active_lifecycle_lease,
-        })
+        ))
     }
 
     #[inline(always)]
     pub(crate) fn token(&self) -> PyToken<'_> {
-        self.gil.as_ref().expect("execution guard lost GIL").token()
+        // SAFETY: the entry holds or borrows this thread's GIL custody for as
+        // long as it lives, and `tls` is this thread's record.
+        unsafe { PyToken::with_custody(self.tls) }
     }
 
     pub(crate) fn into_encoded_lane(mut self) -> u64 {
-        let custody = self
-            .custody
-            .take()
-            .unwrap_or_else(RuntimeExecutionCustody::inherited);
-        let gil = self.gil.take().expect("execution guard lost GIL");
+        let Some(owned) = self.owned.take() else {
+            return BORROWED_EXECUTION_LANE;
+        };
+        let OwnedExecution {
+            gil,
+            custody,
+            active_lifecycle_lease,
+        } = owned;
+        let custody = custody.unwrap_or_else(RuntimeExecutionCustody::inherited);
         gil.into_encoded_lane()
-            | ((custody.encoded_bits() | (u64::from(self.active_lifecycle_lease) << 4)) << 8)
+            | ((custody.encoded_bits() | (u64::from(active_lifecycle_lease) << 4)) << 8)
     }
 
     /// Rebuild the exact guard returned by [`Self::into_encoded_lane`].
@@ -721,6 +774,10 @@ impl RuntimeExecutionGuard {
     /// `token` must be an unmatched token created on this thread and consumed
     /// exactly once.
     pub(crate) unsafe fn from_encoded_lane(token: u64) -> Self {
+        let tls = crate::state::execution_tls();
+        if token == BORROWED_EXECUTION_LANE {
+            return Self { tls, owned: None };
+        }
         let gil = unsafe { GilGuard::from_encoded_lane(token & 0xff) };
         let execution_bits = token >> 8;
         assert_eq!(
@@ -731,19 +788,17 @@ impl RuntimeExecutionGuard {
         let custody_bits = execution_bits & 0b1111;
         let custody =
             (custody_bits != 0).then(|| RuntimeExecutionCustody::from_encoded_bits(custody_bits));
-        Self {
-            gil: Some(gil),
-            custody,
-            active_lifecycle_lease: execution_bits & 0b1_0000 != 0,
-        }
+        Self::owned(tls, gil, custody, execution_bits & 0b1_0000 != 0)
     }
 }
 
 impl Drop for RuntimeExecutionGuard {
     #[inline(always)]
     fn drop(&mut self) {
-        if let Some(custody) = self.custody.take() {
-            self.finish_cold(custody);
+        if let Some(owned) = self.owned.as_mut()
+            && owned.custody.is_some()
+        {
+            Self::finish_cold(owned);
         }
     }
 }
@@ -751,10 +806,13 @@ impl Drop for RuntimeExecutionGuard {
 impl RuntimeExecutionGuard {
     #[cold]
     #[inline(never)]
-    fn finish_cold(&mut self, custody: RuntimeExecutionCustody) {
-        let gil = self.gil.as_ref().expect("execution custody lost GIL");
-        finish_execution(custody, &gil.token(), self.active_lifecycle_lease);
-        self.active_lifecycle_lease = false;
+    fn finish_cold(owned: &mut OwnedExecution) {
+        let custody = owned
+            .custody
+            .take()
+            .expect("execution custody finished twice");
+        finish_execution(custody, &owned.gil.token(), owned.active_lifecycle_lease);
+        owned.active_lifecycle_lease = false;
     }
 }
 
@@ -871,12 +929,15 @@ pub(crate) fn ensure_persistent_runtime_execution() {
     }
 
     let mut guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
-    let custody = guard
-        .custody
+    let OwnedExecution {
+        gil,
+        custody,
+        active_lifecycle_lease,
+    } = guard
+        .owned
         .take()
-        .expect("persistent entry lost attachment custody");
-    let active_lifecycle_lease = std::mem::replace(&mut guard.active_lifecycle_lease, false);
-    let gil = guard.gil.take().expect("persistent entry lost GIL");
+        .expect("persistent entry borrowed existing execution custody");
+    let custody = custody.expect("persistent entry lost attachment custody");
     crate::concurrency::gil::hold_runtime_gil(gil);
     PERSISTENT_RUNTIME_EXECUTION.with(|slot| {
         slot.set(Some(PersistentRuntimeExecution {
@@ -973,6 +1034,111 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn nested_entry_borrows_custody_without_a_depth_unit() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        std::thread::spawn(|| {
+            let tls = crate::state::execution_tls();
+            let outer = RuntimeExecutionGuard::enter_with_worker_cleanup();
+            assert!(
+                outer.owned.is_some(),
+                "the first entry acquires its custody"
+            );
+            let depth = tls.gil_depth.get();
+            {
+                let nested = RuntimeExecutionGuard::enter();
+                assert!(nested.owned.is_none());
+                assert_eq!(tls.gil_depth.get(), depth, "a borrow adds no depth unit");
+                let lane = nested.into_encoded_lane();
+                assert_eq!(lane, BORROWED_EXECUTION_LANE);
+                let rebuilt = unsafe { RuntimeExecutionGuard::from_encoded_lane(lane) };
+                assert!(rebuilt.owned.is_none());
+            }
+            assert_eq!(
+                tls.gil_depth.get(),
+                depth,
+                "a borrow's drop releases nothing"
+            );
+            drop(outer);
+            assert_eq!(tls.gil_depth.get(), 0);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn lease_custody_binds_the_resolved_state_until_its_release() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        std::thread::spawn(|| {
+            let tls = crate::state::execution_tls();
+            assert!(tls.bound_state.get().is_null());
+            {
+                let guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
+                let bound = tls.bound_state.get();
+                let resolved = crate::state::runtime_state::runtime_state_for_gil_in(tls)
+                    .expect("an admitted thread resolves its runtime");
+                assert!(std::ptr::eq(bound, resolved));
+                assert!(std::ptr::eq(crate::runtime_state(&guard.token()), resolved));
+            }
+            assert!(
+                tls.bound_state.get().is_null(),
+                "the last lease release resets the binding"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_runtime_switch_under_custody_rebinds_and_a_clear_unbinds() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        std::thread::spawn(|| {
+            let tls = crate::state::execution_tls();
+            let guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
+            let shared = crate::runtime_state(&guard.token()) as *const _;
+            let mut isolate = Box::new(crate::state::runtime_state::RuntimeState::new());
+            crate::state::runtime_state::set_thread_runtime_state(&mut *isolate);
+            assert!(std::ptr::eq(tls.bound_state.get(), &*isolate));
+            assert!(std::ptr::eq(
+                crate::runtime_state(&guard.token()),
+                &*isolate
+            ));
+            crate::state::runtime_state::clear_thread_runtime_state();
+            assert!(tls.bound_state.get().is_null());
+            assert!(std::ptr::eq(crate::runtime_state(&guard.token()), shared));
+            drop(guard);
+            drop(isolate);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn drain_custody_binds_and_its_drop_unbinds() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        std::thread::spawn(|| {
+            let tls = crate::state::execution_tls();
+            let gil = GilGuard::new();
+            let custody = ShutdownDrainExecutionCustody::enter();
+            let resolved = crate::state::runtime_state::runtime_state_for_gil_in(tls)
+                .expect("drain custody resolves the ready runtime");
+            assert!(std::ptr::eq(tls.bound_state.get(), resolved));
+            {
+                let nested = RuntimeExecutionGuard::enter();
+                assert!(nested.owned.is_none(), "a callback borrows drain custody");
+            }
+            drop(custody);
+            assert!(tls.bound_state.get().is_null());
+            drop(gil);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn suspended_gil_entry_inherits_ordinary_and_shutdown_custody() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         for shutdown in [false, true] {
@@ -1033,8 +1199,10 @@ mod tests {
         assert!(ShutdownDrainExecutionCustody::enter_if_needed().is_none());
         {
             let nested = RuntimeExecutionGuard::enter();
-            assert!(nested.custody.is_none());
-            assert!(!nested.active_lifecycle_lease);
+            assert!(
+                nested.owned.is_none(),
+                "a nested entry borrows drain custody and the GIL"
+            );
         }
         drop(custody);
         assert!(!current_thread_holds_shutdown_drain_custody());
@@ -1530,11 +1698,7 @@ mod tests {
             );
             {
                 let nested = RuntimeExecutionGuard::enter();
-                assert!(
-                    nested.custody.is_none(),
-                    "callback inherits shutdown custody"
-                );
-                assert!(!nested.active_lifecycle_lease);
+                assert!(nested.owned.is_none(), "callback inherits shutdown custody");
                 assert!(
                     !execution_is_nested(),
                     "shutdown callback is not an ordinary WASM frame"

@@ -71,7 +71,7 @@ extern "C" fn module_cycle_callback(_self: u64) -> u64 {
             .interpreter_sys
             .module(py)
             .expect("module-cycle finalizer lost the live sys namespace");
-        let stdout = crate::attr_name_bits_from_bytes(py, b"stdout").unwrap();
+        let stdout = crate::dynamic_attr_name_bits(py, b"stdout").unwrap();
         let stream = crate::molt_get_attr_name(sys, stdout);
         assert!(obj_from_bits(stream).as_ptr().is_some());
         dec_ref_bits(py, stream);
@@ -85,7 +85,7 @@ fn detach_finalizer_field(py: &PyToken<'_>, receiver: u64) {
     // Resolve the published method exactly as object.__setattr__ in a Python
     // finalizer does. Calling molt_object_setattr directly would bypass the
     // namespace whose premature retirement this control must detect.
-    let name = crate::attr_name_bits_from_bytes(py, b"__setattr__").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"__setattr__").unwrap();
     let setter = crate::molt_get_attr_name(crate::builtin_classes(py).object, name);
     dec_ref_bits(py, name);
     assert!(
@@ -93,7 +93,7 @@ fn detach_finalizer_field(py: &PyToken<'_>, receiver: u64) {
         "object.__setattr__ retired before finalizers"
     );
     assert!(obj_from_bits(setter).as_ptr().is_some());
-    let field = crate::attr_name_bits_from_bytes(py, b"handle").unwrap();
+    let field = crate::dynamic_attr_name_bits(py, b"handle").unwrap();
     let result =
         unsafe { crate::call_callable3(py, setter, receiver, field, MoltObject::none().bits()) };
     dec_ref_bits(py, setter);
@@ -160,13 +160,13 @@ fn runtime_function(py: &PyToken<'_>, address: *const (), arity: u64) -> u64 {
 }
 
 fn instance_with_method(py: &PyToken<'_>, name: &[u8], method: &[u8], address: *const ()) -> u64 {
-    let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let name = crate::dynamic_attr_name_bits(py, name).unwrap();
     let class = crate::molt_class_new(name);
     dec_ref_bits(py, name);
     crate::molt_class_set_base(class, crate::builtin_classes(py).object);
     let class_ptr = obj_from_bits(class).as_ptr().unwrap();
     unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
-    let key = crate::attr_name_bits_from_bytes(py, method).unwrap();
+    let key = crate::dynamic_attr_name_bits(py, method).unwrap();
     let function = runtime_function(py, address, 1);
     crate::molt_set_attr_name(class, key, function);
     dec_ref_bits(py, key);
@@ -208,12 +208,12 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
         let rooted_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .molt_value_for_pyobj(rooted.as_ptr())
             .unwrap();
-        let name = crate::attr_name_bits_from_bytes(py, b"shutdown_cycle_owner").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"shutdown_cycle_owner").unwrap();
         let owner_ptr = crate::alloc_module_obj(py, name);
         dec_ref_bits(py, name);
         assert!(!owner_ptr.is_null());
         let owner = MoltObject::from_ptr(owner_ptr).bits();
-        let key = crate::attr_name_bits_from_bytes(py, b"native_type").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"native_type").unwrap();
         crate::builtins::modules::molt_module_set_attr(owner, key, rooted_bits);
         dec_ref_bits(py, key);
         dec_ref_bits(py, rooted_bits);
@@ -225,10 +225,10 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
             b"__del__",
             module_cycle_callback as *const (),
         );
-        let edge = crate::attr_name_bits_from_bytes(py, b"edge").unwrap();
+        let edge = crate::dynamic_attr_name_bits(py, b"edge").unwrap();
         crate::molt_set_attr_name(cycle, edge, cycle);
         dec_ref_bits(py, edge);
-        let key = crate::attr_name_bits_from_bytes(py, b"cycle").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"cycle").unwrap();
         crate::builtins::modules::molt_module_set_attr(owner, key, cycle);
         dec_ref_bits(py, key);
         dec_ref_bits(py, cycle);
@@ -250,7 +250,7 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
             b"__del__",
             heap_namespace_callback as *const (),
         );
-        let key = crate::attr_name_bits_from_bytes(py, b"late_finalizer").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"late_finalizer").unwrap();
         // ExceptionGroup is a real mutable canonical heap type in CPython,
         // unlike an artificial test class injected into the runtime root list.
         crate::molt_set_attr_name(crate::builtin_classes(py).exception_group, key, heap_value);
@@ -287,14 +287,14 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
             b"flush",
             flush_callback as *const (),
         );
-        let sys_name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+        let sys_name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
         let sys = crate::builtins::modules::molt_module_new(sys_name);
         crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-        let stdout = crate::attr_name_bits_from_bytes(&py, b"stdout").unwrap();
+        let stdout = crate::dynamic_attr_name_bits(&py, b"stdout").unwrap();
         crate::builtins::modules::molt_module_set_attr(sys, stdout, stream);
         // Keep the bootstrap file-handle sibling live: teardown must traverse
         // both direct molt_file_flush and custom flush lookup/call branches.
-        let stderr_name = crate::attr_name_bits_from_bytes(&py, b"stderr").unwrap();
+        let stderr_name = crate::dynamic_attr_name_bits(&py, b"stderr").unwrap();
         let stderr = crate::molt_get_attr_name(sys, stderr_name);
         assert_eq!(
             unsafe { crate::object_type_id(obj_from_bits(stderr).as_ptr().unwrap()) },
@@ -312,7 +312,7 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
                 b"__del__",
                 cycle_callback as *const (),
             );
-            let edge = crate::attr_name_bits_from_bytes(&py, b"edge").unwrap();
+            let edge = crate::dynamic_attr_name_bits(&py, b"edge").unwrap();
             crate::molt_set_attr_name(cycle, edge, cycle);
             dec_ref_bits(&py, edge);
             dec_ref_bits(&py, cycle);

@@ -105,11 +105,61 @@ rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
   represented immediately in their main boxed I64 variable. The 100-year
   endpoint is to move the bool/F64 representation facts through typed
   value-keyed TIR/LIR and every backend without re-deriving native name facts.
+- Native operation selection consumes `ExactScalarWitness`, minted only by
+  the canonical exact SSA producer solver. The name projection preserves that
+  witness across admitted identity and storage joins; annotations cannot create
+  it. Arithmetic, in-place operations, comparisons, unary operations and truth
+  branches share it. Float payload readers take a bound `NumericOperand`;
+  arbitrary boxed integers retain runtime conversion and overflow semantics.
+  Mixed comparisons additionally require `FloatComparisonOperands`, which
+  admits integer conversion only with the existing inline-int47 range proof.
+  Full-width integers keep exact runtime comparison: arithmetic's rounding
+  conversion is not a comparison proof. This preserves Python's
+  [precision-preserving numeric comparisons](https://docs.python.org/3.12/reference/expressions.html#value-comparisons).
+  The native planner projects TIR facts directly instead of lowering another
+  semantic-floor LIR body or maintaining an integer type solver. The generated
+  field-role table distinguishes copy/load local-name metadata from semantic
+  alias inputs. Malformed aliases with a second read cannot mint a witness.
+  LIR has one producer/range representation path. Its parameter and return ABI
+  projections use `Repr::carrier_type`; its verifier checks raw interpretation
+  consistency and allows boxed values with scalar annotations.
 - `LirRepr::Ref64` is a runtime reference-word lane for proven reference
   values such as stack-eligible user-class allocations. It is physically an
   `i64` on WASM and native pointer-sized backends, but it is not the semantic
   `I64` scalar lane: object truthiness, dynamic signature boundaries, and
   reference provenance must continue to use runtime-object semantics.
+- `Repr::carrier_type` projects exact producer/range facts into machine
+  carriers for every scalar kind. An `int`, `float` or `bool` annotation alone
+  keeps the value boxed. Frozen native linkage rows, LLVM entry arguments,
+  phis and explicit unboxing, and proven LIR use that same projection. Return
+  slots join the carriers of executable return producers, including boxed
+  integer paths; callers and providers serialize the same decision. Reference
+  counting consumes the lowered physical carrier, so an annotated object
+  retains its identity and ownership. A semantic `None` annotation likewise
+  preserves its boxed word during materialization and frame-home publication;
+  only a `ConstNone` producer supplies the singleton. This follows
+  [Python's annotation semantics](https://docs.python.org/3.12/reference/compound_stmts.html#function-definitions)
+  and [LLVM's typed phi inputs](https://llvm.org/docs/LangRef.html#phi-instruction):
+  incoming edges reconcile to the producer-proven slot, never an annotation.
+  Progressive MLIR consumes the same `ProducerCarrierPlan` for signatures,
+  block arguments, returns and operand classification. It has no Molt runtime
+  provider: preflight refuses a parameter, block argument or returned value
+  without a producer-proven raw carrier, naming the function and SSA value.
+  An annotated entry parameter is unsupported; constants flowing into internal
+  block parameters can prove a raw carrier. No boxed MLIR ABI is invented.
+  Exact scalar loops retain their producer proof in functions with exception
+  polls: only resolved exception targets and explicit handler entries impose
+  conservative handler inputs. An ordinary control-flow label or a poll in the
+  source block does not make that block an exceptional entry. Refinement and
+  exact provenance share this classification and the canonical CFG resolver.
+  The generated scalar-value forwarding rule carries existing producer facts
+  across home publication and owned binding aliases. It grants no ownership,
+  heap-alias or effect-elision permission: an owned alias remains a distinct
+  droppable reference even when its mathematical scalar value is known.
+  A local LLVM invocation balances its trace-entry attempt on every return,
+  including suspension and early errors. Its guard retires that credit before
+  releasing frame homes can reenter Python; an inherited context never pops
+  its caller's frame.
 
 ## Implementation layout
 - Keep Rust crate entrypoints (`lib.rs`) thin; implement runtime/backend subsystems in focused modules under `src/` and re-export from `lib.rs`.

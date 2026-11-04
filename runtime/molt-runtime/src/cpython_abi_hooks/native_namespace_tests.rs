@@ -37,7 +37,7 @@ fn get_module_revalidates_callback_mutation_for_latest_313_through_315() {
     with_gil(|py| unsafe {
         let class_name = ExceptionValue::adopt(
             &py,
-            crate::attr_name_bits_from_bytes(&py, b"DeletingImportProbe").unwrap(),
+            crate::dynamic_attr_name_bits(&py, b"DeletingImportProbe").unwrap(),
         );
         let class = ExceptionValue::adopt(&py, crate::molt_class_new(class_name.bits()));
         let base = crate::molt_class_set_base(
@@ -66,7 +66,7 @@ fn get_module_revalidates_callback_mutation_for_latest_313_through_315() {
         let property = ExceptionValue::adopt(&py, MoltObject::from_ptr(property).bits());
         let flag = ExceptionValue::adopt(
             &py,
-            crate::attr_name_bits_from_bytes(&py, b"_initializing").unwrap(),
+            crate::dynamic_attr_name_bits(&py, b"_initializing").unwrap(),
         );
         crate::builtins::attributes::mutate_attr_name(
             &py,
@@ -80,7 +80,7 @@ fn get_module_revalidates_callback_mutation_for_latest_313_through_315() {
         let spec = ExceptionValue::adopt(&py, crate::call_callable0(&py, class.bits()));
         let name = ExceptionValue::adopt(
             &py,
-            crate::attr_name_bits_from_bytes(&py, b"_molt_capi_probe_version").unwrap(),
+            crate::dynamic_attr_name_bits(&py, b"_molt_capi_probe_version").unwrap(),
         );
         let module = ExceptionValue::adopt(
             &py,
@@ -88,7 +88,7 @@ fn get_module_revalidates_callback_mutation_for_latest_313_through_315() {
         );
         let spec_key = ExceptionValue::adopt(
             &py,
-            crate::attr_name_bits_from_bytes(&py, b"__spec__").unwrap(),
+            crate::dynamic_attr_name_bits(&py, b"__spec__").unwrap(),
         );
         crate::builtins::attributes::mutate_attr_name(
             &py,
@@ -166,7 +166,7 @@ fn import_dictionary_is_available_before_sys_and_survives_attribute_rebinding() 
         let imported =
             molt_cpython_abi::api::imports::PyImport_AddModule(c"_molt_presys_capi".as_ptr());
         assert!(!imported.is_null());
-        let name = crate::attr_name_bits_from_bytes(&py, b"_molt_presys_capi").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"_molt_presys_capi").unwrap();
         // Replacing the public dictionary entry retires its module owner.
         // Keep this independent owner through every replacement and reinsert.
         let module =
@@ -207,10 +207,10 @@ fn import_dictionary_is_available_before_sys_and_survives_attribute_rebinding() 
             bits
         ));
 
-        let sys_name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+        let sys_name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
         let sys = MoltObject::from_ptr(crate::alloc_module_obj(&py, sys_name)).bits();
         crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-        let modules_name = crate::attr_name_bits_from_bytes(&py, b"modules").unwrap();
+        let modules_name = crate::dynamic_attr_name_bits(&py, b"modules").unwrap();
         let replacement = MoltObject::from_ptr(crate::alloc_dict_with_pairs(&py, &[])).bits();
         let namespace = crate::ptr_from_bits(crate::module_dict_bits(crate::ptr_from_bits(sys)));
         assert!(crate::dict_set_in_place(
@@ -260,7 +260,7 @@ fn import_dictionary_is_available_before_sys_and_survives_attribute_rebinding() 
 fn eval_builtins_interpreter_role_survives_module_unpublication_and_replacement() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let name = crate::attr_name_bits_from_bytes(&py, b"builtins").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"builtins").unwrap();
         let module = MoltObject::from_ptr(crate::alloc_module_obj(&py, name)).bits();
         let dictionary = crate::module_dict_bits(crate::ptr_from_bits(module));
         crate::builtins::module_table::publish_interpreter_builtins_for_test(&py, module);
@@ -356,8 +356,8 @@ fn native_type_namespace_projects_the_owner_dictionary_and_preserves_edits() {
         let class = crate::obj_from_bits(classes.list).as_ptr().unwrap();
         let dictionary = crate::class_dict_bits(class);
         let dict = crate::obj_from_bits(dictionary).as_ptr().unwrap();
-        let append_name = crate::attr_name_bits_from_bytes(&py, b"append").unwrap();
-        let reverse_name = crate::attr_name_bits_from_bytes(&py, b"reverse").unwrap();
+        let append_name = crate::dynamic_attr_name_bits(&py, b"append").unwrap();
+        let reverse_name = crate::dynamic_attr_name_bits(&py, b"reverse").unwrap();
         let previous_reverse = crate::dict_get_in_place(&py, dict, reverse_name).unwrap();
         let append = crate::builtins::attr::class_namespace_lookup_raw(&py, class, append_name)
             .unwrap()
@@ -389,10 +389,15 @@ fn native_type_namespace_projects_the_owner_dictionary_and_preserves_edits() {
             dictionary
         );
         assert_eq!(mapping::PyDict_GetItem(namespace, c_name), raw);
+        // Warm after readiness has finished publishing the namespace. Otherwise
+        // first-time publication can invalidate the earlier lookup by accident.
+        assert_eq!(typeobj::_PyType_Lookup(type_view, c_name), raw);
         // Keep the original descriptor while the admitted C dictionary drops
         // its owner; repeat readiness and enumeration must not recreate it.
         crate::inc_ref_bits(&py, append);
         assert_eq!(mapping::PyDict_DelItem(namespace, c_name), 0);
+        // CPython requires notification after a manual tp_dict edit.
+        typeobj::PyType_Modified(type_view);
         assert_eq!(typeobj::PyType_Ready(type_view), 0);
         assert!(typeobj::_PyType_Lookup(type_view, c_name).is_null());
         assert!(errors::PyErr_Occurred().is_null());
@@ -406,6 +411,7 @@ fn native_type_namespace_projects_the_owner_dictionary_and_preserves_edits() {
                 .is_none()
         );
         assert!(crate::dict_set_in_place(&py, dict, append_name, append));
+        typeobj::PyType_Modified(type_view);
         crate::dec_ref_bits(&py, append);
         refcount::Py_DECREF(c_name);
         crate::dec_ref_bits(&py, append_name);
@@ -418,7 +424,7 @@ fn native_type_namespace_projects_the_owner_dictionary_and_preserves_edits() {
 fn managed_type_projection_owns_one_mirrored_dictionary_edge() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
-        let name = crate::attr_name_bits_from_bytes(&py, b"NativeNamespaceOwner").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"NativeNamespaceOwner").unwrap();
         let class = crate::molt_class_new(name);
         crate::dec_ref_bits(&py, name);
         crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
@@ -455,7 +461,7 @@ fn managed_type_projection_owns_one_mirrored_dictionary_edge() {
 fn gc_retires_type_mro_projection_cycle_before_releasing_candidate_pins() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
-        let name = crate::attr_name_bits_from_bytes(&py, b"CollectedProjectionOwner").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"CollectedProjectionOwner").unwrap();
         let class = crate::molt_class_new(name);
         crate::dec_ref_bits(&py, name);
         let result = crate::molt_class_set_base(class, crate::builtin_classes(&py).object);

@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_cc3e3a1cd01ab8fb_gil_v5")]
+#[unsafe(export_name = "molt_generated_object_abi_69bab6cda2adac1b_gil_v7")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,7 +34,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_cc3e3a1cd01ab8fb_free_threaded_v5")]
+#[unsafe(export_name = "molt_generated_object_abi_69bab6cda2adac1b_free_threaded_v7")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // Read-only semantic identity. Callable construction uses fn_addr! below to
@@ -140,6 +140,7 @@ mod ipaddress_bridge;
 #[cfg(feature = "stdlib_itertools")]
 mod itertools_bridge;
 mod itertools_class;
+pub use itertools_class::{molt_itertools_reduce, molt_itertools_setstate};
 #[cfg(feature = "stdlib_logging_ext")]
 mod logging_bridge;
 #[cfg(feature = "stdlib_math")]
@@ -533,10 +534,10 @@ pub use crate::builtins::array_mod::*;
 pub use crate::builtins::ast::*;
 pub use crate::builtins::atexit::*;
 pub(crate) use crate::builtins::attr::{
-    attr_error, attr_error_with_message, attr_error_with_obj, attr_error_with_obj_message,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, class_attr_lookup,
-    class_attr_lookup_raw_mro, descriptor_bind, descriptor_is_data, instance_bits_for_call,
-    is_iterator_bits, module_attr_lookup, raise_attr_name_type_error,
+    AttributeLookup, attr_error, attr_error_with_message, attr_error_with_obj,
+    attr_error_with_obj_message, class_attr_lookup, class_attr_lookup_raw_mro, descriptor_bind,
+    descriptor_is_data, dynamic_attr_name_bits, instance_bits_for_call, is_iterator_bits,
+    lookup_attribute, module_attr_lookup, raise_attr_name_type_error,
     setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
@@ -744,11 +745,11 @@ pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops::{
-    DecodeTextError, HashContext, class_break_cycles, decode_bytes_text, decode_string_list,
-    decode_value_list, dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place,
-    dict_find_entry, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_items_method,
-    dict_keys_method, dict_popitem_method, dict_set_in_place, dict_setdefault_method,
-    dict_update_method, dict_update_set_via_store, dict_values_method, format_obj, format_obj_str,
+    DecodeTextError, HashContext, class_break_cycles, decode_bytes_text, decode_value_list,
+    dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry,
+    dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_items_method, dict_keys_method,
+    dict_popitem_method, dict_set_in_place, dict_setdefault_method, dict_update_method,
+    dict_update_set_via_store, dict_values_method, format_obj, format_obj_str,
     frozenset_from_iter_bits, hash_slice_bits, is_truthy, list_from_iter_bits, set_add_in_place,
     set_clear_in_place, set_del_in_place, set_find_entry, tuple_from_isize_slice,
     tuple_from_iter_bits, type_name,
@@ -784,17 +785,16 @@ pub use crate::object::weakref::{
     molt_weakref_peek, molt_weakref_refs, molt_weakref_register,
 };
 pub(crate) use crate::object::{
-    Buffer2D, ClassEdgeOwnership, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
+    Buffer2D, ClassEdgeOwnership, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
     HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_FUNC_REQUIRES_BINDER,
     HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE,
     HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
     HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat, MemoryViewFormatKind,
     MoltFileHandle, MoltFileState, ObjectAuxPreselection, PtrSlot, alloc_object,
     alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr, bytes_data,
-    bytes_len, dataclass_desc_ptr, dataclass_fields_ptr, dec_ref_bits, file_handle_ptr,
-    header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
-    instance_set_dict_bits, maybe_ptr_from_bits, memoryview_base_bits, memoryview_data,
-    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
+    bytes_len, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits, init_atomic_bits,
+    instance_dict_bits, instance_set_dict_bits, maybe_ptr_from_bits, memoryview_base_bits,
+    memoryview_data, memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
     memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
     memoryview_released, memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits,
     object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size,
@@ -805,10 +805,8 @@ pub use crate::object::{
 };
 #[cfg(feature = "stdlib_regex")]
 pub use crate::regex_bridge::{molt_re_subject_snapshot, molt_re_subject_view};
-pub(crate) use crate::state::cache::{
-    InternedNames, MethodCache, RuntimeStaticNames, intern_runtime_static_name, intern_static_name,
-    runtime_static_name_slot,
-};
+pub(crate) use crate::state::cache::MethodCache;
+pub(crate) use crate::state::names::{NameId, RuntimeNames};
 pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
 #[allow(unused_imports)]
 pub(crate) use crate::state::{

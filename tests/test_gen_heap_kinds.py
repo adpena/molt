@@ -55,7 +55,9 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 262) if value not in (205, 220, 231)]
+    assert dense == [
+        value for value in range(200, 262) if value not in (205, 215, 220, 231)
+    ]
     assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
@@ -78,7 +80,6 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
     assert {row["name"]: row["acyclic_capability"] for row in capability_holders} == {
         "RANGE": "int_triplet",
         "BUFFER2D": "int_cells",
-        "CODE": "code_metadata",
     }
     assert {
         row["name"]
@@ -91,40 +92,30 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
         "stop": "int",
         "step": "int",
     }
-    assert by_name["CODE"]["acyclic_slots"] == {
-        "filename": "str",
-        "name": "str",
-        "linetable": "bytes_or_none",
-        "varnames": "str_tuple",
-        "names": "str_tuple",
-        "arg_names": "str_tuple",
-        "posonly": "int",
-        "kwonly": "str_tuple",
-        "vararg": "str_or_none",
-        "varkw": "str_or_none",
-        "freevars": "str_tuple",
-        "cellvars": "str_tuple",
-        "gpu_descriptor": "str_or_none",
-        "qualname": "str",
-        "doc": "str_or_none",
-    }
+    assert by_name["CODE"]["acyclic_capability"] == "none"
+    assert by_name["CODE"]["acyclic_slots"] == {}
+    assert by_name["CODE"]["cycle"] == "dynamic"
+    assert by_name["CODE"]["track"] == "code_dynamic"
     assert by_name["BUFFER2D"]["acyclic_slots"] == {"cell": "int"}
 
 
-@pytest.mark.parametrize("slot", ["qualname", "doc"])
-def test_code_declaration_edges_cannot_disappear_from_acyclic_authority(
-    tmp_path: Path, slot: str
+def test_code_payload_tracking_cannot_be_replaced_by_a_blanket_green_claim(
+    tmp_path: Path,
 ) -> None:
     gen = _gen()
     source = gen.TABLE.read_text(encoding="utf-8")
-    domain = "str" if slot == "qualname" else "str_or_none"
+    source = source.replace(
+        'cycle = "dynamic"\ntrack = "code_dynamic"', 'cycle = "never"', 1
+    )
     table = tmp_path / "heap_kinds.toml"
-    table.write_text(source.replace(f', {slot} = "{domain}"', "", 1), encoding="utf-8")
-    with pytest.raises(ValueError, match="CODE requires exact acyclic slots"):
+    table.write_text(source, encoding="utf-8")
+    with pytest.raises(
+        ValueError, match="GREEN ref-holder CODE requires an acyclic capability"
+    ):
         gen.load_table(table)
 
 
-@pytest.mark.parametrize("retired_id", [205, 220, 231])
+@pytest.mark.parametrize("retired_id", [205, 215, 220, 231])
 def test_retired_heap_ids_cannot_be_reused_or_silently_removed(
     tmp_path: Path, retired_id: int
 ) -> None:
@@ -137,13 +128,13 @@ def test_retired_heap_ids_cannot_be_reused_or_silently_removed(
     with pytest.raises(ValueError, match="never be reused"):
         gen.load_table(table)
     table.write_text(
-        source.replace("retired_ids = [205, 220, 231]", "retired_ids = []"),
+        source.replace("retired_ids = [205, 215, 220, 231]", "retired_ids = []"),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="allocated ABI domain"):
         gen.load_table(table)
     rendered = gen.render_all(gen.load_table())
-    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 3
+    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 4
     for output in rendered.values():
         assert "DICT_BUILDER" not in output and "SET_BUILDER" not in output
         assert "DictBuilder" not in output and "SetBuilder" not in output
@@ -202,7 +193,7 @@ def test_cycle_policy_models_cpython_dynamic_container_tracking() -> None:
     assert by_name["TUPLE"]["cycle"] == "dynamic"
     assert by_name["SLICE"]["cycle"] == "always"
     assert by_name["RANGE"]["cycle"] == "never"
-    assert by_name["CODE"]["cycle"] == "never"
+    assert by_name["CODE"]["cycle"] == "dynamic"
     assert by_name["DICT"]["track"] == "dict_dynamic"
     assert by_name["TUPLE"]["track"] == "tuple_dynamic"
     assert by_name["OBJECT"]["track"] == "always"
@@ -739,13 +730,13 @@ def test_generator_rejects_missing_or_unknown_acyclic_capability(
         gen.load_table(table)
     table.write_text(
         gen.TABLE.read_text(encoding="utf-8").replace(
-            'linetable = "bytes_or_none"',
-            'linetable = "nested_tuple"',
+            'start = "int"',
+            'start = "nested_tuple"',
             1,
         ),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="invalid acyclic edge domains for CODE"):
+    with pytest.raises(ValueError, match="invalid acyclic edge domains for RANGE"):
         gen.load_table(table)
 
 

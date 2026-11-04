@@ -195,6 +195,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/function_references.py": _P,
         # Generated tables and semantic helpers that lowering reads.
         "_intrinsic_symbols.py": _P,
+        "_public_objects_generated.py": _P,
         "_wasm_abi_generated.py": _P,
         "builtin_callables.py": _P,
         "compat.py": _P,
@@ -255,6 +256,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "compiler_process.py": _BUILD,
         "default_paths.py": _BUILD,
         "host_capacity.py": _BUILD,
+        # Admits or refuses the host interpreter; it never shapes a record.
+        "host_python.py": _BUILD,
         "source_root.py": _BUILD,
         "verified_subset.py": _BUILD,
     }

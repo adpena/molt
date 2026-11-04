@@ -65,7 +65,6 @@ from molt.file_locks import FileLockTimeout, _acquire_file_lock, _release_file_l
 from molt.process_environment import ProcessEnvironment
 from tools.driver_errors import EXIT_FAIL, EXIT_OK, EXIT_USAGE, DriverError  # noqa: E402
 from tools.molt_dev_common import (
-    _warn,
     _COMMANDS,
     _fail,
     _ok,
@@ -898,6 +897,19 @@ def cmd_lane_dispatch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _last_green_status(git: Any, upstream: str) -> str:
+    """How far the upstream head is past the postsubmit's last green commit."""
+    from tools.molt_dev_queue import LAST_GREEN_REF, last_green
+
+    green = last_green(git)
+    if green is None:
+        return f"{LAST_GREEN_REF} is absent: no postsubmit has qualified main"
+    ahead = int(git._run(["rev-list", "--count", f"{green}..{upstream}"]).stdout)
+    if ahead == 0:
+        return f"{LAST_GREEN_REF} is {upstream}"
+    return f"{upstream} is {ahead} commit(s) past {LAST_GREEN_REF} ({green})"
+
+
 def cmd_lane_start(args: argparse.Namespace) -> int:
     from tools import agent_coordination, coordination_records
 
@@ -946,19 +958,14 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
 
         _step(f"fetch {args.remote}/{args.branch}")
         git.fetch(args.remote, args.branch)
-        if args.base is not None:
-            base_ref = args.base
-        else:
-            from tools.molt_dev_queue import LAST_GREEN_REF, last_green
-
-            green = last_green(git)
-            if green is None:
-                base_ref = f"{args.remote}/{args.branch}"
-                _warn(f"{LAST_GREEN_REF} is absent; starting from {base_ref}")
-            else:
-                base_ref = green
-                _step(f"lane base: {LAST_GREEN_REF} ({green})")
+        # A lane branches from the trunk head, as Rust, LLVM, Go and Chromium
+        # developer branches do. Last green is the postsubmit's delta base, not
+        # a branch point: fast-path landings never advance it, so basing on it
+        # started lanes days behind main (HF-767). It is reported, not used.
+        upstream = f"{args.remote}/{args.branch}"
+        base_ref = args.base if args.base is not None else upstream
         base = git.rev_parse(f"{base_ref}^{{commit}}")
+        _step(f"lane base: {base_ref} ({base}); {_last_green_status(git, upstream)}")
         dispatch = _admit_dispatch(git, main, base, args)
 
         worktree, reused = _choose_slot(
@@ -1235,7 +1242,12 @@ def _retire_lane(
     worktree = _lane_worktree(worktrees, branch)
     if worktree is not None:
         validate_lane_handoff(git, branch, worktree, tip, ignore_globs=ignore_globs)
-    elif recorded_worktree.exists():
+    elif recorded_worktree.exists() and not any(
+        Path(record["path"]).resolve() == recorded_worktree for record in worktrees
+    ):
+        # A registered path is another lane's reused slot or a released one;
+        # only an unregistered directory is a stray this retirement must not
+        # take (HF-753).
         raise DriverError(
             f"{recorded_worktree} exists outside its managed Git registration"
         )
@@ -1312,6 +1324,8 @@ def _retire_lane(
         rc = molt_dev_retire.release_slot(driver.Git(worktree), worktree, upstream)
         if rc != EXIT_OK:
             return rc
+        if cleared := molt_dev_retire.clear_slot_scratch(worktree):
+            _ok(f"deleted {cleared} lane scratch entr{'y' if cleared == 1 else 'ies'}")
     elif worktree is not None:
         _step(f"remove worktree {worktree}")
         rc = molt_dev_retire.cleanup_worktree(

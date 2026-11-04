@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edit the v1.0 findings ledger by row: open, close, merge, note, next-key.
+"""Edit the v1.0 findings ledger by row: open, close, merge, note, class, next-key.
 
 ``docs/agent/V1_HANDOFF_FINDINGS.md`` owns the burndown. Its protocol moves a
 row, its family in the dependency order and the generated finding identities
@@ -16,6 +16,7 @@ release engineering" [--after HF-587] --defect ... --evidence ... --next ...
 [--evidence-note ...] [--next-note ...]
     ledger_edit.py note HF-185 [--defect-note ...] [--evidence-note ...] \
 [--next-note ...]
+    ledger_edit.py class HF-605 --v1-class release_apparatus
     ledger_edit.py family create W --stratum engine --axes empty/startup --name ... --cause ...
     ledger_edit.py edge add F W --reason ...
     ledger_edit.py edge remove F W
@@ -144,6 +145,21 @@ def _remove_membership(text: str, key: str) -> str:
     for entry in reversed(finding_status.project(text).v1_membership):
         if entry.key == key:
             del lines[entry.line - 1]
+    return "\n".join(lines)
+
+
+def classify_row(text: str, args: argparse.Namespace) -> str:
+    """Restate an open row's v1 class in place."""
+    entry = next(
+        (e for e in finding_status.project(text).v1_membership if e.key == args.key),
+        None,
+    )
+    if entry is None:
+        raise LedgerEditError(f"{args.key} has no v1 class")
+    if entry.classification == args.v1_class:
+        raise LedgerEditError(f"{args.key} is already {args.v1_class}")
+    lines = text.split("\n")
+    lines[entry.line - 1] = _row([args.key, args.v1_class])
     return "\n".join(lines)
 
 
@@ -282,13 +298,15 @@ def move_to_family(text: str, args: argparse.Namespace) -> str:
 
 
 def describe_family(text: str, args: argparse.Namespace) -> str:
-    """Restate one family's name and shared cause; its rows stay as they are."""
+    """Restate one family's name, shared cause and, if given, its HF-459 axes."""
     status = finding_status.project(text)
     lines = text.split("\n")
     index = _family_index(lines, status, args.letter)
     cells = finding_status.cells(lines[index])
     cells[0] = f"{args.letter}. {args.name}"
     cells[-2] = args.cause
+    if args.axes is not None:
+        cells[2] = args.axes
     lines[index] = _row(cells, empty_last=True)
     return "\n".join(lines)
 
@@ -364,11 +382,15 @@ def recut_families(text: str, args: argparse.Namespace) -> str:
     if not isinstance(spec, dict) or set(spec) - {"describe", "move"}:
         raise LedgerEditError("a re-cut spec holds only 'describe' and 'move' lists")
     for item in spec.get("describe", []):
-        if not isinstance(item, dict) or set(item) != {"letter", "name", "cause"}:
+        if not isinstance(item, dict) or not (
+            {"letter", "name", "cause"}
+            <= set(item)
+            <= {"letter", "name", "cause", "axes"}
+        ):
             raise LedgerEditError(
-                f"describe entry needs letter, name and cause: {item!r}"
+                f"describe entry needs letter, name and cause (axes optional): {item!r}"
             )
-        text = describe_family(text, argparse.Namespace(**item))
+        text = describe_family(text, argparse.Namespace(**{"axes": None, **item}))
     for item in spec.get("move", []):
         if not isinstance(item, dict) or set(item) != {"keys", "to"}:
             raise LedgerEditError(f"move entry needs keys and to: {item!r}")
@@ -386,9 +408,7 @@ def next_key(text: str) -> str:
 
 
 def _checked(root: Path, text: str) -> list[str]:
-    status = finding_status.project(text)
-    prior_art = (root / finding_coverage.PRIOR_ART_PATH).read_text(encoding="utf-8")
-    return finding_coverage.dependency_order_problems(status, prior_art)
+    return finding_coverage.ledger_problems(root, finding_status.project(text))
 
 
 def _references(text: str, key: str) -> list[str]:
@@ -427,6 +447,13 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     )
     noted = sub.add_parser("note")
     noted.add_argument("key")
+    classified = sub.add_parser("class", help="restate an open row's v1 class")
+    classified.add_argument("key")
+    classified.add_argument(
+        "--v1-class",
+        required=True,
+        choices=[value.value for value in finding_status.V1Class],
+    )
     for command in (merged, noted):
         for name in ("defect-note", "evidence-note", "next-note"):
             command.add_argument(f"--{name}")
@@ -439,6 +466,9 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     described.add_argument("letter")
     described.add_argument("--name", required=True)
     described.add_argument("--cause", required=True)
+    described.add_argument(
+        "--axes", help="comma-separated HF-459 ratchet axis keys (default: unchanged)"
+    )
     recut = family_sub.add_parser("recut")
     recut.add_argument("--spec", required=True, help="JSON: describe and move lists")
     created = family_sub.add_parser("create", help="add an empty family")
@@ -490,6 +520,7 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
             "close": close_row,
             "merge": merge_rows,
             "note": note_row,
+            "class": classify_row,
         }[args.command]
         subject = args.key
     try:

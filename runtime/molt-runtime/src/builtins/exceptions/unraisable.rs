@@ -4,9 +4,7 @@ use super::raised_state::{
     RaisedSnapshot, discard_current_raised, release_raised, resolve_raised, take_raised,
 };
 use super::*;
-use crate::{
-    call_callable1, molt_get_attr_name, molt_is_callable, molt_sys_stderr, object_class_bits,
-};
+use crate::{call_callable1, molt_is_callable, molt_sys_stderr, object_class_bits};
 
 fn try_join_text(parts: &[&str]) -> Option<String> {
     let capacity = parts
@@ -371,27 +369,26 @@ pub(crate) fn report_captured_unraisable(
     }
 }
 
-pub(super) fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
+pub(super) fn sys_attr_bits(_py: &PyToken<'_>, name: crate::NameId) -> u64 {
     let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py) else {
         return MoltObject::none().bits();
     };
     inc_ref_bits(_py, sys_bits);
-
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let name = name.bits(_py);
+    if name == 0 {
         dec_ref_bits(_py, sys_bits);
         return MoltObject::none().bits();
-    };
-    let value_bits = molt_get_attr_name(sys_bits, name_bits);
-    dec_ref_bits(_py, name_bits);
-    dec_ref_bits(_py, sys_bits);
-    if exception_pending(_py) || obj_from_bits(value_bits).is_none() {
-        discard_current_raised(_py);
-        if !obj_from_bits(value_bits).is_none() {
-            dec_ref_bits(_py, value_bits);
-        }
-        return MoltObject::none().bits();
     }
-    value_bits
+    let result = crate::lookup_attribute(_py, sys_bits, name);
+    dec_ref_bits(_py, sys_bits);
+    match result {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => MoltObject::none().bits(),
+        crate::AttributeLookup::Error => {
+            discard_current_raised(_py);
+            MoltObject::none().bits()
+        }
+    }
 }
 
 pub(crate) fn context_repr(_py: &PyToken<'_>, context_bits: u64) -> String {
@@ -564,7 +561,7 @@ fn try_hook(
     exc_bits: u64,
     err_msg: Option<&str>,
 ) -> HookOutcome {
-    let hook_bits = sys_attr_bits(_py, b"unraisablehook");
+    let hook_bits = sys_attr_bits(_py, crate::NameId::Unraisablehook);
     if obj_from_bits(hook_bits).is_none()
         || !is_truthy(_py, obj_from_bits(molt_is_callable(hook_bits)))
     {
@@ -624,7 +621,7 @@ fn write_stderr_line(_py: &PyToken<'_>, text: &str) {
         return;
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    let stderr_bits = sys_attr_bits(_py, b"stderr");
+    let stderr_bits = sys_attr_bits(_py, crate::NameId::Stderr);
     let stderr_bits = if obj_from_bits(stderr_bits).is_none() {
         molt_sys_stderr()
     } else {
@@ -692,6 +689,7 @@ fn report_unraisable_exception(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::molt_get_attr_name;
 
     fn ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
@@ -788,7 +786,7 @@ mod tests {
                 string_obj_to_owned(obj_from_bits(unsafe { class_name_bits(class_ptr) })),
                 Some("UnraisableHookArgs".to_string())
             );
-            let module_name = crate::attr_name_bits_from_bytes(_py, b"__module__").unwrap();
+            let module_name = crate::dynamic_attr_name_bits(_py, b"__module__").unwrap();
             let module = molt_get_attr_name(class_bits, module_name);
             assert!(!exception_pending(_py));
             assert_eq!(
@@ -822,7 +820,11 @@ mod tests {
             );
             assert_eq!(
                 unsafe {
-                    crate::call::function::function_metadata_bits(_py, repr_ptr, b"__objclass__")
+                    crate::call::function::function_metadata_bits(
+                        _py,
+                        repr_ptr,
+                        crate::object::function_metadata::FunctionMetadataField::Owner,
+                    )
                 },
                 class_bits
             );
@@ -853,7 +855,7 @@ mod tests {
             let source_ptr = alloc_tuple(_py, &fields);
             assert!(!source_ptr.is_null());
             let source_bits = MoltObject::from_ptr(source_ptr).bits();
-            let new_name = attr_name_bits_from_bytes(_py, b"__new__").unwrap();
+            let new_name = dynamic_attr_name_bits(_py, b"__new__").unwrap();
             let constructor = molt_get_attr_name(args_bits, new_name);
             assert_eq!(constructor, class_dict_value(_py, class_bits, "__new__"));
             let builder = crate::molt_callargs_new(

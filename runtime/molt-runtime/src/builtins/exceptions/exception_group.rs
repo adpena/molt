@@ -693,7 +693,7 @@ unsafe fn exception_group_subset<'a, 'py>(
     if unsafe { crate::object::seq_access::len(excs_ptr) } == 0 {
         return Some(None);
     }
-    let name = attr_name_bits_from_bytes(py, b"derive")?;
+    let name = crate::NameId::Derive.owned_bits(py)?;
     let name = Owned::adopt(py, name);
     let derive = crate::molt_get_attr_name(orig, name.bits());
     if exception_pending(py) {
@@ -756,13 +756,17 @@ unsafe fn exception_group_copy_metadata(
             destination.publish(py, field, value.bits())?;
         }
     }
-    let name = intern_static_name(py, &runtime_state(py).interned.notes_name, b"__notes__");
+    let name = crate::NameId::DunderNotes.bits(py);
     if name == 0 {
         return None;
     }
-    let notes = match unsafe {
-        attr_lookup_ptr_allow_missing(py, obj_from_bits(original_bits).as_ptr().unwrap(), name)
-    } {
+    let notes = match lookup_attribute(
+        py,
+        MoltObject::from_ptr(obj_from_bits(original_bits).as_ptr().unwrap()).bits(),
+        name,
+    )
+    .into_result()
+    {
         Ok(Some(notes)) => notes,
         Ok(None) => return Some(()),
         Err(()) => return None,

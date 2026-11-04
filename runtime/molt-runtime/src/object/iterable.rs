@@ -34,20 +34,21 @@ pub(crate) fn special_iteration_step(
     exhaustion: IterationExhaustion,
 ) -> Result<SpecialIterationStep, ()> {
     let frame = crate::builtins::exceptions::ExceptionStackScope::push(py);
-    let name: &[u8] = match kind {
-        SpecialIterationKind::Next => b"__next__",
-        SpecialIterationKind::SequenceItem(_) => b"__getitem__",
+    let name: crate::NameId = match kind {
+        SpecialIterationKind::Next => crate::NameId::DunderNext,
+        SpecialIterationKind::SequenceItem(_) => crate::NameId::DunderGetitem,
     };
     use crate::builtins::attr::DescriptorArguments;
     let args = match kind {
         SpecialIterationKind::Next => DescriptorArguments::Zero,
         SpecialIterationKind::SequenceItem(index) => DescriptorArguments::One(index),
     };
-    let (value, lookup_failed) =
-        match unsafe { crate::builtins::attr::invoke_special_method(py, receiver, name, args) } {
-            Ok(value) => (value, false),
-            Err(()) => (None, true),
-        };
+    let (value, lookup_failed) = match unsafe {
+        crate::builtins::attr::invoke_special_method(py, receiver, name, args).into_result()
+    } {
+        Ok(value) => (value, false),
+        Err(()) => (None, true),
+    };
     if lookup_failed || (value.is_some() && exception_pending(py)) {
         if let Some(value) = value {
             dec_ref_bits(py, value);

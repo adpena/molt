@@ -291,9 +291,8 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
 
     unsafe {
         use crate::object::class_storage::ClassReferenceSlot;
-        let bases_name =
-            intern_static_name(_py, &runtime_state(_py).interned.bases_name, b"__bases__");
-        let mro_name = intern_static_name(_py, &runtime_state(_py).interned.mro_name, b"__mro__");
+        let bases_name = crate::NameId::DunderBases.bits(_py);
+        let mro_name = crate::NameId::DunderMro.bits(_py);
         let Some(mut publication) =
             crate::builtins::attributes::TypeMutation::prepare(_py, class_ptr, bases_name)
         else {
@@ -406,8 +405,10 @@ pub(crate) unsafe fn class_apply_descriptor_names(_py: &PyToken<'_>, class_ptr: 
             let set_name = match crate::builtins::attr::lookup_special_method(
                 _py,
                 value_bits,
-                b"__set_name__",
-            ) {
+                crate::NameId::DunderSetName,
+            )
+            .into_result()
+            {
                 Ok(Some(value)) => value,
                 Ok(None) => continue,
                 Err(()) => return false,

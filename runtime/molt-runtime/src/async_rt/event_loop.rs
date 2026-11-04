@@ -369,7 +369,7 @@ fn signal_claimed(parked: Option<Arc<LoopParker>>) {
 
 fn cancel_io_handle(_py: &crate::PyToken<'_>, bits: u64) {
     unsafe {
-        let result = asyncio_call_method0(_py, bits, b"cancel");
+        let result = asyncio_call_method0(_py, bits, crate::NameId::Cancel);
         if !crate::obj_from_bits(result).is_none() {
             dec_ref_bits(_py, result);
         }
@@ -795,7 +795,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
 /// propagated fatal exception here or silently discard the rest of its batch.
 unsafe fn run_event_loop_handle(_py: &crate::PyToken<'_>, handle_bits: u64) {
     unsafe {
-        let result = asyncio_call_method0(_py, handle_bits, b"_run");
+        let result = asyncio_call_method0(_py, handle_bits, crate::NameId::PrivateRun);
         if !crate::obj_from_bits(result).is_none() {
             dec_ref_bits(_py, result);
         }

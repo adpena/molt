@@ -204,7 +204,7 @@ fn selected_body_availability_uses_source_provider_role_including_alias_metadata
                             crate::BuiltinExc::ModuleNotFoundError,
                         ));
                         crate::clear_exception(py);
-                        let key = crate::attr_name_bits_from_bytes(py, b"name").unwrap();
+                        let key = crate::dynamic_attr_name_bits(py, b"name").unwrap();
                         let missing =
                             crate::builtins::attributes::get_attr_name(py, error.bits(), key)
                                 .unwrap();

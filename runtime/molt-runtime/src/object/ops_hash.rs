@@ -641,35 +641,6 @@ fn hash_tuple(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     }
 }
 
-fn hash_dataclass_fields(
-    _py: &PyToken<'_>,
-    fields: &[u64],
-    flags: &[u8],
-    field_names: &[String],
-    type_label: &str,
-) -> i64 {
-    let mut acc = TupleHashAccumulator::new();
-    let mut count = 0usize;
-    for (idx, &elem) in fields.iter().enumerate() {
-        let flag = flags.get(idx).copied().unwrap_or(0x7);
-        if (flag & 0x4) == 0 {
-            continue;
-        }
-        if is_missing_bits(_py, elem) {
-            let name = field_names.get(idx).map(|s| s.as_str()).unwrap_or("field");
-            let _ = attr_error(_py, type_label, name);
-            return -1;
-        }
-        count += 1;
-        let lane = hash_bits_signed(_py, elem);
-        if lane == -1 {
-            return -1;
-        }
-        acc.push(lane);
-    }
-    acc.finish_tuple(count)
-}
-
 fn hash_generic_alias(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let origin_bits = unsafe { generic_alias_origin_bits(ptr) };
     let args_bits = unsafe { generic_alias_args_bits(ptr) };
@@ -913,7 +884,7 @@ unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> Result<HashDeclaratio
         if is_builtin_class_bits(py, class_bits) && crate::object::class_is_immutable(py, class) {
             return Ok(HashDeclaration::Builtin);
         }
-        let hash_name = intern_static_name(py, &runtime_state(py).interned.hash_name, b"__hash__");
+        let hash_name = crate::NameId::DunderHash.bits(py);
         if obj_from_bits(hash_name).is_none() {
             return Err(());
         }
@@ -1024,40 +995,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
             if type_id == TYPE_ID_TUPLE {
                 return hash_tuple(_py, ptr);
             }
-            if type_id == TYPE_ID_DATACLASS {
-                let desc_ptr = dataclass_desc_ptr(ptr);
-                if desc_ptr.is_null() {
-                    return hash_pointer(ptr as u64);
-                }
-                let desc = &*desc_ptr;
-                match desc.hash_mode {
-                    2 => return hash_unhashable(_py, obj),
-                    3 => {
-                        return hash_from_dunder(_py, obj, ptr)
-                            .unwrap_or_else(|| hash_pointer(ptr as u64));
-                    }
-                    1 => {
-                        let Some(fields) =
-                            crate::object::field_storage::dataclass_snapshot(_py, ptr, 0x4)
-                        else {
-                            return -1;
-                        };
-                        let type_label = if desc.name.is_empty() {
-                            "dataclass"
-                        } else {
-                            desc.name.as_str()
-                        };
-                        return hash_dataclass_fields(
-                            _py,
-                            &fields,
-                            &desc.field_flags,
-                            &desc.field_names,
-                            type_label,
-                        );
-                    }
-                    _ => return hash_pointer(ptr as u64),
-                }
-            }
+
             if type_id == TYPE_ID_TYPE {
                 return hash_pointer(ptr as u64);
             }
@@ -1090,8 +1028,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
 
 unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8) -> Option<i64> {
     unsafe {
-        let hash_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
+        let hash_name_bits = crate::NameId::DunderHash.bits(_py);
         let class_bits = type_of_bits(_py, obj.bits());
         let default_type_hashable = class_bits == builtin_classes(_py).type_obj;
         if obj_from_bits(hash_name_bits).is_none() {
@@ -1104,7 +1041,9 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
         }
         let class_ptr = obj_from_bits(class_bits).as_ptr()?;
         let call_bits =
-            match class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), hash_name_bits) {
+            match class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), hash_name_bits)
+                .into_result()
+            {
                 Ok(Some(bits)) => bits,
                 Ok(None) => return None,
                 Err(()) => return Some(-1),
@@ -1456,10 +1395,6 @@ mod numeric_hash_tests {
                     expected32
                 };
                 assert_eq!(super::hash_tuple(_py, tuple), expected);
-                assert_eq!(
-                    super::hash_dataclass_fields(_py, &values, &[], &[], "fixture"),
-                    expected,
-                );
                 dec_ref_bits(_py, MoltObject::from_ptr(tuple).bits());
             }
         });

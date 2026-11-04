@@ -6,8 +6,8 @@ use crate::{
     MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION,
     TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE, call_builtin_type_if_needed, call_function_obj_vec,
     class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits, exception_pending,
-    generic_alias_origin_bits, intern_static_name, molt_call_bind, obj_from_bits, object_type_id,
-    ptr_from_bits, raise_exception, raise_not_callable, runtime_state,
+    generic_alias_origin_bits, molt_call_bind, obj_from_bits, object_type_id, ptr_from_bits,
+    raise_exception, raise_not_callable,
 };
 
 #[inline]
@@ -29,14 +29,12 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
                 return raise_not_callable(_py, call_obj);
             };
             if object_type_id(call_ptr) == TYPE_ID_TYPE {
-                let new_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
+                let new_name_bits = crate::NameId::DunderNew.bits(_py);
                 let new_bits = match class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
                 };
-                let init_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
+                let init_name_bits = crate::NameId::DunderInit.bits(_py);
                 let init_bits = match class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) {
                     Ok(value) => value,
                     Err(()) => return MoltObject::none().bits(),
@@ -314,7 +312,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let _provider = crate::test_support::NativeProviderTestNamespace::new(py, "builtins");
-            let name = crate::attr_name_bits_from_bytes(py, b"len").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"len").unwrap();
             let callable = crate::builtins::functions::lookup_builtin_name(py, "len")
                 .expect("operation succeeds")
                 .unwrap();
@@ -383,9 +381,9 @@ mod tests {
             let captured = MoltObject::from_ptr(captured_ptr).bits();
             let globals = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
             let argument = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-            let public_name = crate::attr_name_bits_from_bytes(py, b"len").unwrap();
-            let custom_name = crate::attr_name_bits_from_bytes(py, b"custom_builtin").unwrap();
-            let runtime_name = crate::attr_name_bits_from_bytes(py, b"molt_len").unwrap();
+            let public_name = crate::dynamic_attr_name_bits(py, b"len").unwrap();
+            let custom_name = crate::dynamic_attr_name_bits(py, b"custom_builtin").unwrap();
+            let runtime_name = crate::dynamic_attr_name_bits(py, b"molt_len").unwrap();
             unsafe {
                 assert!(crate::dict_set_in_place(
                     py,

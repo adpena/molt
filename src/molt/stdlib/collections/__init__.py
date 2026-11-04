@@ -392,7 +392,7 @@ def namedtuple(
             raise TypeError(f"Expected {num_fields} arguments, got {len(items)}")
         return cls(*items)
 
-    def _replace(self, **kwds: Any) -> Any:
+    def _replace(self, /, **kwds: Any) -> Any:
         unexpected = [name for name in kwds if name not in field_index]
         if unexpected:
             raise TypeError(f"Got unexpected field names: {unexpected!r}")
@@ -432,6 +432,8 @@ def namedtuple(
         setattr(cls, "__new__", __new__)
         setattr(cls, "_make", classmethod(_make))
         setattr(cls, "_replace", _replace)
+        if _sys.version_info >= (3, 13):
+            setattr(cls, "__replace__", _replace)
         setattr(cls, "_asdict", _asdict)
         setattr(cls, "__getnewargs__", __getnewargs__)
         setattr(cls, "__repr__", __repr__)
@@ -456,6 +458,10 @@ def namedtuple(
         "__getnewargs__": __getnewargs__,
         "__repr__": __repr__,
     }
+    # CPython v3.13.9 Lib/collections/__init__.py: namedtuple class namespace.
+    if _sys.version_info >= (3, 13):
+        namespace["__replace__"] = _replace
+
     for idx, name in enumerate(field_tuple):
         namespace[name] = property(_field_getter(idx))
     cls = type.__new__(type, typename, (tuple,), namespace)

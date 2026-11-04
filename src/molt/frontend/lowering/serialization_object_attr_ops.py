@@ -32,15 +32,7 @@ _SERIALIZE_OBJECT_ATTR_OP_KINDS_2: frozenset[FrontendOpKind] = frozenset(
 
 class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
     def _serialize_object_attr_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
-        if op.kind == FrontendKinds.DATACLASS_NEW_VALUES:
-            ctx.json_ops.append(
-                {
-                    "kind": "dataclass_new_values",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == FrontendKinds.SETATTR:
+        if op.kind == FrontendKinds.SETATTR:
             obj, attr, val, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             # Metaclass __init__ receives `cls` which is a TYPE object,
@@ -145,30 +137,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "kind": "del_attr_generic_obj",
                     "args": [op.args[0].name],
                     "s_value": op.args[1],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == FrontendKinds.DATACLASS_GET:
-            ctx.json_ops.append(
-                {
-                    "kind": "dataclass_get",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == FrontendKinds.DATACLASS_SET:
-            ctx.json_ops.append(
-                {
-                    "kind": "dataclass_set",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == FrontendKinds.DATACLASS_SET_CLASS:
-            ctx.json_ops.append(
-                {
-                    "kind": "dataclass_set_class",
-                    "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )

@@ -39,17 +39,6 @@ pub extern "C" fn __molt_http_clear_exception() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_clear_attribute_error_if_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-            1
-        } else {
-            0
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_pending_exception_matches_builtin(kind_code: u16) -> i32 {
     crate::with_gil_entry_nopanic!(py, {
         if !exception_pending(py) {
@@ -399,7 +388,7 @@ pub extern "C" fn __molt_http_molt_iter(bits: u64) -> u64 {
 pub extern "C" fn __molt_http_attr_name_bits_from_bytes(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        crate::builtins::attr::attr_name_bits_from_bytes(_py, key).unwrap_or_default()
+        crate::builtins::attr::dynamic_attr_name_bits(_py, key).unwrap_or_default()
     })
 }
 
@@ -451,6 +440,11 @@ pub extern "C" fn __molt_http_molt_getattr_builtin(
     default_bits: u64,
 ) -> u64 {
     molt_getattr_builtin(obj_bits, name_bits, default_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_http_lookup_attribute(object: u64, name: u64) -> AttributeLookup {
+    crate::with_gil_entry_nopanic!(py, { lookup_attribute(py, object, name) })
 }
 
 #[unsafe(no_mangle)]

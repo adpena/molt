@@ -894,10 +894,6 @@ classifier_owned_value = [
     "contains",
     "context_enter",
     "context_exit",
-    "dataclass_get",
-    "dataclass_new_values",
-    "dataclass_set",
-    "dataclass_set_class",
     "dict_clear",
     "dict_copy",
     "dict_from_obj",
@@ -1940,11 +1936,11 @@ classifier_binding_view = [
     "frame_home_private_cell",
     "frame_home_store",
 ]
-# A successful unary binding publication returns operand 0's mathematical
-# scalar value. This transfers only already-proven scalar facts, not heap
+# A successful unary binding publication or owned alias returns operand 0's
+# mathematical scalar value. This transfers only already-proven scalar facts, not heap
 # identity, ownership, purity or the current contents of a reentrantly written
 # home. In particular, frame_home_load has no such operand/value relationship.
-classifier_scalar_value_forward = ["frame_home_store"]
+classifier_scalar_value_forward = ["frame_home_store", "binding_alias"]
 # copy_kind_is_explicit_no_heap_move: provable no-incref pure move of operand 0
 # (bare copy, the named SSA/var moves, the validate-and-pass-through guards).
 classifier_no_heap_move = [

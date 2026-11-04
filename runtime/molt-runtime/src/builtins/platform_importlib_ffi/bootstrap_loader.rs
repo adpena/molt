@@ -758,7 +758,7 @@ pub(super) fn importlib_coerce_module_name_bits(
     loader_bits: u64,
     spec_bits: u64,
 ) -> Result<u64, u64> {
-    let module_name_name = intern_runtime_static_name(_py, b"__name__");
+    let module_name_name = crate::NameId::DunderName.bits(_py);
     let publish_name = |name_bits| {
         let result = crate::molt_set_attr_name(module_bits, module_name_name, name_bits);
         dec_ref_bits(_py, result);
@@ -781,14 +781,14 @@ pub(super) fn importlib_coerce_module_name_bits(
     let mut module_spec_bits = spec_bits;
     let mut module_spec_owned = false;
     if obj_from_bits(module_spec_bits).is_none() {
-        let spec_name = intern_runtime_static_name(_py, b"__spec__");
+        let spec_name = crate::NameId::DunderSpec.bits(_py);
         if let Some(bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
             module_spec_bits = bits;
             module_spec_owned = true;
         }
     }
 
-    let name_attribute = intern_runtime_static_name(_py, b"name");
+    let name_attribute = crate::NameId::Name.bits(_py);
     if !obj_from_bits(module_spec_bits).is_none()
         && let Some(spec_name_bits) =
             match getattr_optional_bits(_py, module_spec_bits, name_attribute) {
@@ -1017,7 +1017,7 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
         inc_ref_bits(_py, sys);
         let sys = ExceptionValue::adopt(_py, sys);
         let read = |object, name: &[u8]| -> Option<ExceptionValue<'_, '_>> {
-            let key = attr_name_bits_from_bytes(_py, name)?;
+            let key = dynamic_attr_name_bits(_py, name)?;
             let key = ExceptionValue::adopt(_py, key);
             crate::builtins::attributes::get_attr_name(_py, object, key.bits())
                 .ok()
@@ -1037,7 +1037,7 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         let Some(suffixes) =
-            crate::builtins::types::module_spec_suffix_value(_py, b"BYTECODE_SUFFIXES")
+            crate::builtins::types::module_spec_suffix_value(_py, crate::NameId::BytecodeSuffixes)
         else {
             return MoltObject::none().bits();
         };

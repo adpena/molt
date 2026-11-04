@@ -32,6 +32,12 @@ impl LirRepr {
         }
     }
 
+    /// A boxed immortal may flow into an ordinary boxed slot by forgetting its
+    /// no-RC proof. The reverse would invent a producer proof and is forbidden.
+    pub fn accepts(self, actual: Self) -> bool {
+        self == actual || (self == Self::DynBox && actual == Self::Immortal64)
+    }
+
     /// True for representations whose physical carrier is a runtime reference
     /// word rather than a semantic machine scalar.
     pub fn is_runtime_reference_word(self) -> bool {

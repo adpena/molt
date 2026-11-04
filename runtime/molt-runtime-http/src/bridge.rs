@@ -16,7 +16,6 @@ unsafe extern "C" {
 
     fn __molt_http_exception_pending() -> i32;
     fn __molt_http_clear_exception();
-    fn __molt_http_clear_attribute_error_if_pending() -> i32;
     fn __molt_http_pending_exception_matches_builtin(kind_code: u16) -> i32;
     fn __molt_http_with_exception_scope(
         restore_on_success: i32,
@@ -43,10 +42,6 @@ pub fn exception_pending(_py: &CoreGilToken) -> bool {
 
 pub fn clear_exception(_py: &CoreGilToken) {
     unsafe { __molt_http_clear_exception() }
-}
-
-pub fn clear_attribute_error_if_pending(_py: &CoreGilToken) -> bool {
-    unsafe { __molt_http_clear_attribute_error_if_pending() != 0 }
 }
 
 /// Resolve the builtin target and match actual exception inheritance without
@@ -428,6 +423,10 @@ unsafe extern "C" {
     ) -> u64;
     fn __molt_http_missing_bits() -> u64;
     fn __molt_http_molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64;
+    fn __molt_http_lookup_attribute(
+        obj_bits: u64,
+        name_bits: u64,
+    ) -> molt_obj_model::AttributeLookup;
     fn __molt_http_molt_is_callable(bits: u64) -> i32;
 }
 
@@ -484,26 +483,17 @@ pub fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) ->
     unsafe { __molt_http_molt_getattr_builtin(obj_bits, name_bits, default_bits) }
 }
 
+pub fn lookup_attribute(obj_bits: u64, name_bits: u64) -> molt_obj_model::AttributeLookup {
+    unsafe { __molt_http_lookup_attribute(obj_bits, name_bits) }
+}
+
 pub fn attr_optional(_py: &CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<Option<u64>, u64> {
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = lookup_attribute(obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if value_bits != missing {
-            dec_ref_bits(_py, value_bits);
-        }
-        if clear_attribute_error_if_pending(_py) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.into_result().map_err(|()| MoltObject::none().bits())
 }
 
 pub fn molt_is_callable(bits: u64) -> bool {

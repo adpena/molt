@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import atexit
 from contextlib import chdir
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import traceback
+from typing import NoReturn
 import zipfile
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +34,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-SCHEMA = "molt.trunk-run.v1"
+SCHEMA = "molt.trunk-run.v3"
 
 
 def authorities():
@@ -59,9 +60,415 @@ def ps(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def uv_python(*argv: str) -> list[str]:
+    return ["uv", "run", "--locked", "python", "-B", *argv]
+
+
+# The apt packages the documented Linux workflow needs (docs/getting-started.md).
+LINUX_SYSTEM_PACKAGES = ("git", "curl", "clang", "lld", "cmake", "build-essential")
+# A WSL gate guest also runs systemd and udev for root UUID admission (HF-761).
+WSL_GUEST_PACKAGES = (*LINUX_SYSTEM_PACKAGES, "systemd", "systemd-sysv", "udev")
+
+
+def provision_script(host, *, repository: str, uv_version: str) -> str:
+    """The documented local workflow, with report-only system prerequisites.
+
+    Official user installers own their binaries; uv owns Python and the lock.
+    Never import Molt before uv has resolved the project's dependencies.
+    """
+    checkout = host.checkout
+    if host.is_windows:
+        return f"""$ErrorActionPreference='Stop'
+$env:UV_PROJECT_ENVIRONMENT=$null
+$env:VIRTUAL_ENV=$null
+$env:MOLT_VENV=$null
+$env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"
+foreach ($tool in @('git','cl.exe','link.exe')) {{
+ if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {{
+  throw 'Missing system toolchain; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"; then use its developer shell'
+ }}
+}}
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {{
+ Invoke-RestMethod https://astral.sh/uv/{uv_version}/install.ps1 | Invoke-Expression
+}}
+if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {{
+ $installer=Join-Path $env:TEMP ('molt-rustup-'+[guid]::NewGuid().ToString('N')+'.exe')
+ try {{
+  Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile $installer
+  & $installer -y --no-modify-path --default-toolchain none
+  $installExit=$LASTEXITCODE
+ }} finally {{
+  if (Test-Path -LiteralPath $installer) {{ Remove-Item -LiteralPath $installer }}
+ }}
+ if ($installExit) {{ exit $installExit }}
+}}
+if (-not (Test-Path -LiteralPath {ps(checkout)})) {{
+ New-Item -ItemType Directory -Force -Path {ps(host.custody_root)} | Out-Null
+ & git clone -- {ps(repository)} {ps(checkout)}
+ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+}} else {{
+ & git -C {ps(checkout)} fetch origin
+ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+}}
+Set-Location -LiteralPath {ps(checkout)}
+& rustup show active-toolchain
+if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+& uv sync --locked --group dev
+if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+& uv run --locked molt doctor --json --strict
+if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
+"""
+    system_command = (
+        "xcode-select --install; brew install cmake"
+        if host.os == authorities().HostOS.MACOS
+        else "sudo apt-get update && sudo apt-get install "
+        + " ".join(LINUX_SYSTEM_PACKAGES)
+    )
+    return f"""set -eu
+unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+for tool in git curl cc cmake; do
+ command -v "$tool" >/dev/null || {{ echo {shlex.quote("Missing system prerequisites; run: " + system_command)} >&2; exit 2; }}
+done
+if ! command -v uv >/dev/null; then
+ installer=$(mktemp)
+ trap 'rm -f "$installer"' EXIT
+ curl -LsSf https://astral.sh/uv/{uv_version}/install.sh -o "$installer"
+ sh "$installer"
+ rm "$installer"
+fi
+if ! command -v rustup >/dev/null; then
+ installer=$(mktemp)
+ trap 'rm -f "$installer"' EXIT
+ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$installer"
+ sh "$installer" -y --no-modify-path --default-toolchain none
+ rm "$installer"
+fi
+mkdir -p {shlex.quote(host.custody_root)}
+if test -e {shlex.quote(checkout)}; then
+ git -C {shlex.quote(checkout)} fetch origin
+else
+ git clone -- {shlex.quote(repository)} {shlex.quote(checkout)}
+fi
+cd {shlex.quote(checkout)}
+rustup show active-toolchain
+uv sync --locked --group dev
+uv run --locked molt doctor --json --strict
+"""
+
+
+def wsl_profile_script(host) -> str:
+    """Read registered backing-disk identity and the Windows VM profile."""
+    return f"""$ErrorActionPreference='Stop'
+$key=Get-ChildItem HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss | Where-Object {{ (Get-ItemProperty $_.PSPath).DistributionName -eq {ps(host.wsl_distribution)} }}
+if (@($key).Count -ne 1) {{ throw 'WSL distribution identity is ambiguous' }}
+$base=(Get-ItemProperty $key.PSPath).BasePath
+$actual=[IO.Path]::Combine($base,'ext4.vhdx')
+if ($actual -cne {ps(host.wsl_vhdx)}) {{ throw "WSL backing disk changed: $actual" }}
+$config=[IO.File]::ReadAllText((Join-Path $env:USERPROFILE '.wslconfig'))
+$pending=Join-Path $base '.molt-disk-maintenance'
+if ((Test-Path -LiteralPath $pending) -and ([IO.File]::ReadAllText($pending) -cne 'molt.wsl-disk-maintenance.v1')) {{ throw 'Unknown WSL disk maintenance state' }}
+[pscustomobject]@{{config=$config;vhdx=$actual;pending=(Test-Path -LiteralPath $pending)}} | ConvertTo-Json -Compress
+"""
+
+
+def admit_wsl_profile(host, transport, *, provision_disk: bool = False) -> dict:
+    profile = json.loads(transport.windows_command(wsl_profile_script(host)))
+    # A shrunk filesystem can still inhabit an oversized VHD. Query the root
+    # block device, independently of both filesystem size and physical free space.
+    profile["disk_bytes"] = int(
+        transport.shell_command(
+            'set -eu\nroot_device=$(findmnt -nro SOURCE /)\nlsblk -bdno SIZE "$root_device"'
+        )
+    )
+    import configparser
+
+    config = configparser.ConfigParser()
+    config.read_string(profile["config"])
+    expected = {
+        "memory": f"{host.wsl_memory_gb}GB",
+        "swap": f"{host.wsl_swap_gb}GB",
+        "vmIdleTimeout": "-1",
+    }
+    changes = [
+        f"{k}={v}"
+        for k, v in expected.items()
+        if config.get("wsl2", k, fallback=None) != v
+    ]
+    if changes:
+        raise ValueError(
+            "Windows settings change required; return to integrator before applying host profile: "
+            + "; ".join(changes)
+            + f" (observed disk bytes={profile['disk_bytes']}, budget GiB={host.wsl_disk_gb})"
+        )
+    # df's used blocks include the host-owned Cargo/uv caches on this root
+    # filesystem. Reserve a whole proof build before shrinking or installing.
+    used = int(transport.shell_command("df -Pk / | tail -1 | awk '{print $3}'")) * 1024
+    budget = host.wsl_disk_gb * 1024**3
+    profile["used_bytes"] = used
+    if used + host.proof_build_gb * 1024**3 > budget:
+        raise ValueError(
+            f"{host.name}: {used} used bytes plus {host.proof_build_gb} GiB proof headroom "
+            f"exceeds {host.wsl_disk_gb} GiB disk budget"
+        )
+    if profile["disk_bytes"] != budget or profile["pending"]:
+        if not provision_disk:
+            raise ValueError(
+                f"{host.name}: disk cap differs; run trunk_loop.py provision --host {host.name}"
+            )
+        # The reviewed WSL engine shrinks ext4 before its VHDX (see the owning
+        # design). Refuse unknown implementations rather than probing by mutation.
+        reviewed = str(host.wsl_engine_version)
+        version = transport.windows_command("wsl.exe --version").replace("\0", "")
+        if not re.fullmatch(
+            rf".*:\s*{re.escape(reviewed)}(?:\.0)?\s*",
+            version.splitlines()[0] if version else "",
+        ):
+            raise ValueError(
+                f"disk provisioning requires the reviewed WSL {reviewed} implementation "
+                f"(tools/cross_hosts.toml wsl_engine_version for {host.name})"
+            )
+        name = ps(host.wsl_distribution)
+        pending = ps(
+            str(PureWindowsPath(host.wsl_vhdx).parent / ".molt-disk-maintenance")
+        )
+        stopped = (
+            f"& wsl.exe --terminate {name}\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\n"
+            "$running=@(& wsl.exe --list --running --quiet)\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+            "$running=@($running | ForEach-Object { ($_.Replace([string][char]0,'')).Trim() } | Where-Object { $_ })\n"
+            "if ($running.Count) { throw ('Other WSL distributions are running; cannot release the VM for disk maintenance: '+($running -join ', ')) }\n"
+            # vmIdleTimeout=-1 retains the VM's internal disk attachment even
+            # after termination. Release only an idle VM with no running distro.
+            "& wsl.exe --shutdown\nif ($LASTEXITCODE) { exit $LASTEXITCODE }"
+        )
+        # Do not interrupt an existing farm proof. Only this distro is stopped;
+        # An idle VM release is refused if another distribution is running.
+        transport.shell_command(
+            f"set -eu\nlock={shlex.quote(host.remote_dir + '/trunk-worker.lock')}\n"
+            'if test -f "$lock"; then flock -n "$lock" true; fi'
+        )
+        if profile["disk_bytes"] != budget:
+            transport.windows_command(
+                f"$ErrorActionPreference='Stop'\n"
+                f"[IO.File]::WriteAllText({pending},'molt.wsl-disk-maintenance.v1')\n"
+                f"{stopped}\n"
+                f"& wsl.exe --manage {name} --resize {host.wsl_disk_gb}GB\n"
+                "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
+                timeout=900,
+            )
+        transport.windows_command(
+            f"$ErrorActionPreference='Stop'\n& wsl.exe -d {name} --user root -- fstrim -av\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+            f"{stopped}\n"
+            f"& wsl.exe --manage {name} --compact\nif ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\n"
+            f"Remove-Item -LiteralPath {pending} -ErrorAction Stop",
+            timeout=900,
+        )
+        return admit_wsl_profile(host, transport)
+    return profile
+
+
+def wsl_packages_script() -> str:
+    """Install only the missing declared guest packages; report what it installed."""
+    packages = " ".join(shlex.quote(package) for package in WSL_GUEST_PACKAGES)
+    return f"""set -eu
+missing=""
+for package in {packages}; do
+ dpkg-query -W -f='${{Status}}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $package"
+done
+if test -n "$missing"; then
+ export DEBIAN_FRONTEND=noninteractive
+ apt-get update >&2
+ apt-get install -y --no-install-recommends $missing >&2
+fi
+printf '{{"installed":"%s"}}\\n' "$(echo $missing)"
+"""
+
+
+def wsl_systemd_script() -> str:
+    """Preserve other guest settings; publish only a changed boot declaration."""
+    return r"""set -eu
+test -x /usr/lib/systemd/systemd && test /sbin/init -ef /usr/lib/systemd/systemd && command -v udevadm >/dev/null || {
+ echo 'molt-gate requires the systemd, systemd-sysv and udev system prerequisites' >&2; exit 2;
+}
+config=/etc/wsl.conf
+test ! -L "$config" || { echo 'Refusing symlink /etc/wsl.conf' >&2; exit 2; }
+test ! -e "$config" || test -f "$config" || { echo 'Refusing non-file /etc/wsl.conf' >&2; exit 2; }
+input=/dev/null
+test ! -e "$config" || input="$config"
+temp=$(mktemp /etc/.molt-wsl.conf.XXXXXX)
+trap 'rm -f "$temp"' EXIT
+if test -f "$config"; then cp -p -- "$config" "$temp"; else chmod 644 "$temp"; fi
+awk '
+ /^[[:space:]]*\[/ {
+   if (boot && !setting) { print "systemd=true"; setting=1 }
+   boot=(tolower($0) ~ /^[[:space:]]*\[boot\][[:space:]]*([#;].*)?$/)
+   if (boot && ++sections > 1) exit 2
+ }
+ boot && tolower($0) ~ /^[[:space:]]*systemd[[:space:]]*=/ {
+   if (++keys > 1) exit 2
+   print "systemd=true"; setting=1; next
+ }
+ { print }
+ END {
+   if (sections > 1 || keys > 1) exit 2
+   if (!sections) print "[boot]"
+   if (!setting) print "systemd=true"
+ }' "$input" > "$temp" || {
+ echo 'Ambiguous [boot] systemd declaration in /etc/wsl.conf; preserved original' >&2; exit 2;
+}
+changed=false
+if ! cmp -s "$temp" "$config"; then
+ mv -- "$temp" "$config"
+ changed=true
+fi
+restart=false
+if test "$changed" = true || test "$(cat /proc/1/comm)" != systemd; then restart=true; fi
+printf '{"changed":%s,"restart":%s}\n' "$changed" "$restart"
+"""
+
+
+def admit_wsl_guest(host, transport) -> dict:
+    """Admit the real root UUID namespace, never fabricate a device alias."""
+    return json.loads(
+        transport.shell_command(
+            r"""set -eu
+test "$(cat /proc/1/comm)" = systemd || { echo 'molt-gate requires systemd as PID 1; run trunk_loop.py provision --host molt-gate' >&2; exit 2; }
+udevadm settle --timeout=30
+root_device=$(findmnt -nro SOURCE /)
+uuid=$(findmnt -nro UUID /)
+mapping=/dev/disk/by-uuid/$uuid
+if test -z "$uuid" || ! test -b "$mapping" || ! test "$mapping" -ef "$root_device"; then
+ echo "Missing root filesystem UUID mapping: /dev/disk/by-uuid/$uuid for $root_device" >&2; exit 2
+fi
+printf '{"systemd":true,"root_uuid":"%s"}\n' "$uuid"
+"""
+        )
+    )
+
+
+def provision_wsl_guest(host, transport) -> dict:
+    # As for disk maintenance, never restart an active farm proof.
+    transport.shell_command(
+        f"set -eu\nlock={shlex.quote(host.remote_dir + '/trunk-worker.lock')}\n"
+        'if test -f "$lock"; then flock -n "$lock" true; fi'
+    )
+    # The owner approves package installation per host (its inventory record);
+    # elsewhere system packages stay an operator step.
+    installed = (
+        json.loads(transport.wsl_root_command(wsl_packages_script(), timeout=1800))[
+            "installed"
+        ].split()
+        if host.install_system_packages
+        else []
+    )
+    state = json.loads(transport.wsl_root_command(wsl_systemd_script()))
+    if state["restart"]:
+        transport.windows_command(
+            f"& wsl.exe --terminate {ps(host.wsl_distribution)}\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }"
+        )
+    return {
+        **admit_wsl_guest(host, transport),
+        "packages_installed": installed,
+        "config_changed": state["changed"],
+        "restarted": state["restart"],
+    }
+
+
+def provision_host(args, *, transport=None) -> dict:
+    cross = authorities()
+    host = next(
+        (h for h in cross.parse_inventory(args.inventory) if h.name == args.host), None
+    )
+    if host is None or host.transport != "ssh" or not host.checkout:
+        raise ValueError("provision requires an inventoried SSH proof host")
+    host_paths(host, "provision")
+    transport = transport or cross.SSHTransport(host)
+    # Report capacity BEFORE downloading a toolchain or cloning the repository.
+    if host.is_windows:
+        disk = "$d=Get-PSDrive C; [pscustomobject]@{free=$d.Free} | ConvertTo-Json -Compress"
+        free = json.loads(transport.shell_command(disk))["free"]
+    else:
+        # ext4's virtual size is not Windows' available NVMe space.
+        path = "/mnt/c" if host.wsl_distribution else host.custody_root
+        # An uncreated checkout/custody root still belongs to its existing
+        # ancestor's filesystem, which may differ from /.
+        probe = (
+            f"df -Pk {shlex.quote(path)}"
+            if host.wsl_distribution
+            else f'p={shlex.quote(path)}; while ! test -e "$p"; do p=$(dirname "$p"); done; df -Pk "$p"'
+        )
+        free = (
+            int(transport.shell_command(probe + " | tail -1 | awk '{print $4}'")) * 1024
+        )
+    if free < host.proof_build_gb * 1024**3:
+        raise ValueError(
+            f"{host.name}: {free} bytes free; needs {host.proof_build_gb} GiB proof headroom"
+        )
+    profile = (
+        admit_wsl_profile(host, transport, provision_disk=True)
+        if host.wsl_distribution
+        else None
+    )
+    guest = provision_wsl_guest(host, transport) if host.wsl_distribution else None
+    import tomllib
+
+    releases = tomllib.loads(
+        (_REPO_ROOT / "config/tool_releases.toml").read_text(encoding="utf-8")
+    )
+    repository = checked(["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"])
+    result = transport.shell_command(
+        provision_script(
+            host,
+            repository=repository,
+            uv_version=releases["tools"]["uv"]["version"],
+        ),
+        timeout=1800,
+    )
+    retention = json.loads(
+        transport.shell_command(
+            remote_argv(
+                host,
+                uv_python("-c", RETENTION_STATUS),
+                cwd=host.checkout,
+            )
+        )
+    )
+    record = {
+        "host": host.name,
+        "free_bytes": free,
+        "proof_build_gb": host.proof_build_gb,
+        "wsl": profile,
+        "guest": guest,
+        "install_log": result,
+        "retention": retention,
+    }
+    print(json.dumps(record), flush=True)
+    return record
+
+
+# Inspect only the existing maintenance owner's bounded epoch directory. No
+# sweep is launched merely to report its status; absence is explicitly unknown.
+RETENTION_STATUS = r"""
+import json
+from molt.default_paths import _default_molt_cache
+root=_default_molt_cache()
+epochs=root/'logs'/'cache_retention'/'automatic'
+latest=max(epochs.iterdir(),key=lambda p:p.stat().st_mtime,default=None) if epochs.is_dir() else None
+rc=latest/'rc' if latest is not None else None
+print(json.dumps({'cache':str(root),'epoch':str(latest) if latest else None,
+'returncode':int(rc.read_text().strip()) if rc is not None and rc.is_file() else None}))
+"""
+
+
 def remote_argv(host, argv: list[str], *, cwd: str | None = None) -> str:
     if host.is_windows:
-        prefix = "$ErrorActionPreference='Stop'; "
+        prefix = (
+            "$ErrorActionPreference='Stop'; "
+            '$env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"; '
+        )
         if cwd:
             prefix += f"Set-Location -LiteralPath {ps(cwd)}; "
         return (
@@ -70,17 +477,131 @@ def remote_argv(host, argv: list[str], *, cwd: str | None = None) -> str:
             + " ".join(ps(a) for a in argv)
             + "; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
         )
-    prefix = "" if cwd is None else f"cd {shlex.quote(cwd)} && "
+    prefix = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; '
+    if cwd is not None:
+        prefix += f"cd {shlex.quote(cwd)} && "
     return prefix + shlex.join(argv)
 
 
-def detached_script(host, argv: list[str], directory: str) -> str:
-    """The launcher acknowledges creation only; worker terminal data proves exit.
+@dataclass(frozen=True)
+class ProcessProbe:
+    """One observation of the process at a pid, as the remote OS stores it.
 
-    Windows API contract: Create returns 0 and an out ProcessId. See Microsoft's
+    ``started`` is the start stamp the kernel recorded at process creation; it
+    is never recomputed from the wall clock, so it cannot drift. On Linux,
+    ``instance`` names the PID namespace's instance: the kernel boot id and
+    PID 1's start ticks. A restarted WSL distro is a new init under the same VM
+    kernel, so its instance differs. ``instance_started_at`` is diagnostic only.
+    """
+
+    pid: int
+    state: str
+    started: str
+    instance: str
+    instance_started_at: str
+
+    @classmethod
+    def parse(cls, raw: str) -> ProcessProbe:
+        data = json.loads(raw)
+        names = {field.name for field in fields(cls)}
+        if (
+            not isinstance(data, dict)
+            or set(data) != names
+            or type(data["pid"]) is not int
+            or data["pid"] <= 0
+            or any(not isinstance(data[name], str) for name in names - {"pid"})
+        ):
+            raise ValueError(f"malformed worker identity probe: {raw!r}")
+        return cls(
+            **{k: v.strip() if isinstance(v, str) else v for k, v in data.items()}
+        )
+
+    @property
+    def identity(self) -> tuple[int, str, str] | None:
+        """A live process's identity; an absent, zombie or dead pid has none."""
+        if not self.state or self.state[0] in "ZX":
+            return None
+        return (self.pid, self.started, self.instance)
+
+
+def posix_probe(host) -> str:
+    """Define ``molt_probe PID``, which prints one ProcessProbe JSON line.
+
+    Every printed value is digits, hex, a state letter or a timestamp, so
+    printf needs no JSON escaping. A missing pid prints empty state and start.
+    """
+    if host.os == authorities().HostOS.MACOS:
+        # kern.boottime moves with sleep and clock steps: diagnostic only.
+        return r"""molt_probe() {
+ state=$(ps -o stat= -p "$1" 2>/dev/null || true)
+ started=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null || true)
+ boot=$(sysctl -n kern.boottime | sed 's/^{ sec = \([0-9]*\),.*/\1/')
+ printf '{"pid":%s,"state":"%s","started":"%s","instance":"","instance_started_at":"%s"}\n' "$1" "$(echo $state)" "$(echo $started)" "$(date -u -r "$boot" +%Y-%m-%dT%H:%M:%SZ)"
+}
+"""
+    # proc(5): the fields after the last ") " start with state; starttime is
+    # the 20th of them, in clock ticks since the kernel booted.
+    return r"""molt_probe() {
+ fields=$(sed -n 's/.*) //p' "/proc/$1/stat" 2>/dev/null || true)
+ init=$(sed -n 's/.*) //p' /proc/1/stat | cut -d' ' -f20)
+ btime=$(awk '$1 == "btime" {print $2}' /proc/stat)
+ printf '{"pid":%s,"state":"%s","started":"%s","instance":"%s/%s","instance_started_at":"%s"}\n' "$1" "${fields%% *}" "$(printf '%s\n' "$fields" | cut -d' ' -f20)" "$(cat /proc/sys/kernel/random/boot_id)" "$init" "$(date -u -d "@$((btime + init / $(getconf CLK_TCK)))" +%Y-%m-%dT%H:%M:%SZ)"
+}
+"""
+
+
+def windows_probe(pid: str) -> str:
+    """Print one ProcessProbe JSON line for a PowerShell pid expression."""
+    return (
+        f"$probePid=[int]({pid}); "
+        '$probe=Get-CimInstance Win32_Process -Filter "ProcessId=$probePid"; '
+        # LastBootUpTime is derived from the clock: diagnostic only.
+        "$boot=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime(); "
+        "[pscustomobject]@{pid=$probePid;"
+        "state=$(if ($probe) {'R'} else {''});"
+        "started=$(if ($probe) {$probe.CreationDate.ToUniversalTime().ToString('o')} else {''});"
+        "instance='';"
+        "instance_started_at=$boot.ToString(\"yyyy-MM-dd'T'HH:mm:ss'Z'\")} "
+        "| ConvertTo-Json -Compress"
+    )
+
+
+# CIM passes this command line to wsl.exe, whose --exec mode splits it with
+# CommandLineToArgvW and runs no shell. Admit only words that need no quoting.
+_WSL_WORD = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def wsl_launch_script(host, argv: list[str], directory: str, stage: str) -> str:
+    """The script wsl.exe runs: publish identity, then become the worker.
+
+    ``exec`` keeps the pid and start stamp, so the published identity is the
+    worker's own. Its exit ends the wsl.exe client that holds the instance.
+    """
+    stage_path = PurePosixPath(stage)
+    identity = shlex.quote(str(stage_path / "worker.identity"))
+    return f"""set -eu
+exec </dev/null >>{shlex.quote(str(stage_path / "worker.log"))} 2>&1
+{posix_probe(host)}molt_probe $$ > {identity}.partial
+mv -- {identity}.partial {identity}
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+cd {shlex.quote(directory)}
+exec {shlex.join(argv)}
+"""
+
+
+def detached_script(host, argv: list[str], directory: str, stage: str) -> str:
+    """Print the launcher acknowledgement, then the worker's ProcessProbe.
+
+    The worker's terminal data, never the launcher, proves completion. Windows
+    API contract: Create returns 0 and an out ProcessId. See Microsoft's
     Win32_Process.Create documentation; CIM avoids the OpenSSH session job.
     """
     cross = authorities()
+    created = (
+        "if ($result.ReturnValue -ne 0 -or $result.ProcessId -le 0) "
+        '{ throw "CIM creation refused: $($result.ReturnValue)" }; '
+        "$result | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress; "
+    )
     if host.launcher == cross.DetachedLauncher.WINDOWS_CIM:
         return (
             "$ErrorActionPreference='Stop'; "
@@ -90,23 +611,57 @@ def detached_script(host, argv: list[str], directory: str) -> str:
             + ";CurrentDirectory="
             + ps(directory)
             + "}; "
-            "if ($result.ReturnValue -ne 0 -or $result.ProcessId -le 0) "
-            '{ throw "CIM creation refused: $($result.ReturnValue)" }; '
-            "$result | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress"
+            + created
+            + windows_probe("$result.ProcessId")
+        )
+    if host.launcher == cross.DetachedLauncher.WSL_SESSION:
+        launch = str(PurePosixPath(stage) / "launch.sh")
+        identity = str(PurePosixPath(stage) / "worker.identity")
+        if not all(
+            _WSL_WORD.fullmatch(word)
+            for word in (host.wsl_distribution or "", launch, identity)
+        ):
+            raise ValueError(f"{host.name}: WSL launch words must need no quoting")
+        wsl = f"& wsl.exe -d {host.wsl_distribution} --exec"
+        # Observe the client before the identity file: once the client is gone,
+        # an identity still absent can never appear.
+        return (
+            "$ErrorActionPreference='Stop'; "
+            "$result=Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+            "-Arguments @{CommandLine="
+            + ps(f"wsl.exe -d {host.wsl_distribution} --exec /bin/sh {launch}")
+            + "}; "
+            + created
+            + "do { $alive=[bool](Get-Process -Id $result.ProcessId -ErrorAction SilentlyContinue); "
+            f"{wsl} test -s {identity}; "
+            f"if ($LASTEXITCODE -eq 0) {{ {wsl} cat {identity}; exit $LASTEXITCODE }}; "
+            "Start-Sleep -Milliseconds 250 } while ($alive)"
         )
     if host.launcher == cross.DetachedLauncher.POSIX_SESSION:
         code = (
-            "import json,subprocess,sys; "
+            "import subprocess,sys; "
             "p=subprocess.Popen(sys.argv[2:],cwd=sys.argv[1],start_new_session=True,"
             "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
-            "print(json.dumps({'ReturnValue':0,'ProcessId':p.pid}))"
+            "print(p.pid)"
         )
-        return shlex.join([host.python, "-B", "-c", code, directory, *argv])
+        launch = remote_argv(
+            host, uv_python("-c", code, directory, *argv), cwd=directory
+        )
+        return (
+            f"set -eu\n{posix_probe(host)}pid=$({launch})\n"
+            'printf \'{"ReturnValue":0,"ProcessId":%s}\\n\' "$pid"\n'
+            'molt_probe "$pid"\n'
+        )
     raise ValueError(f"{host.name}: no admitted detached launcher")
 
 
-def acknowledge(raw: str) -> int:
-    result = json.loads(raw)
+def acknowledge(raw: str) -> tuple[int, ProcessProbe | None]:
+    """The launcher's process id and the worker's launch-time identity.
+
+    No identity means the worker exited before publishing one.
+    """
+    first, _, rest = raw.strip().partition("\n")
+    result = json.loads(first)
     if (
         not isinstance(result, dict)
         or result.get("ReturnValue") != 0
@@ -114,7 +669,7 @@ def acknowledge(raw: str) -> int:
         or result["ProcessId"] <= 0
     ):
         raise ValueError("detached launcher did not acknowledge a process")
-    return result["ProcessId"]
+    return result["ProcessId"], ProcessProbe.parse(rest) if rest.strip() else None
 
 
 def checked(argv: list[str], *, cwd: Path = _REPO_ROOT, timeout: int = 180) -> str:
@@ -126,10 +681,10 @@ def checked(argv: list[str], *, cwd: Path = _REPO_ROOT, timeout: int = 180) -> s
     return result.stdout.strip()
 
 
-def exact_commit(revision: str) -> str:
+def exact_commit(revision: str, repo: Path = _REPO_ROOT) -> str:
     # Resolve before crossing a shell or using the value as an evidence path.
     commit = checked(
-        ["git", "-C", str(_REPO_ROOT), "rev-parse", "--verify", revision + "^{commit}"]
+        ["git", "-C", str(repo), "rev-parse", "--verify", revision + "^{commit}"]
     )
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("expected one full Git commit")
@@ -159,19 +714,23 @@ def host_paths(host, nonce: str) -> tuple[str, str]:
     )
 
 
-def selected_host(inventory: Path, name: str, cells: list[str]):
+def selected_host(
+    inventory: Path, name: str, cells: list[str], *, landing: bool = False
+):
     cross = authorities()
     host = next((h for h in cross.parse_inventory(inventory) if h.name == name), None)
     if host is None:
         raise ValueError(f"unknown host {name!r}")
-    if (
-        host.transport != "ssh"
-        or not host.python
-        or not host.launcher
-        or not host.proof_cells
-    ):
+    if host.transport != "ssh" or not host.launcher or not host.proof_cells:
         raise ValueError(f"{name}: no admitted SSH proof host configuration")
-    if not cells or len(set(cells)) != len(cells) or set(cells) - set(host.proof_cells):
+    if landing:
+        if host.os is not cross.HostOS.LINUX or cells != ["landing"]:
+            raise ValueError(
+                "remote landing gates require an admitted Linux proof host"
+            )
+    elif (
+        not cells or len(set(cells)) != len(cells) or set(cells) - set(host.proof_cells)
+    ):
         raise ValueError(f"{name}: select unique commands from {host.proof_cells}")
     host_paths(host, "preflight")
     if host.is_windows:
@@ -203,9 +762,10 @@ from tools.proof_plan import ProofPlan,_topological_commands
 from tools.toolchain_env import selected_toolchains
 from molt.tool_releases import tool_release,host_asset
 plan=ProofPlan.load()
-cells=sys.argv[1:]
+explicit=sys.argv[1:2]==['--toolchains']
+cells=[] if explicit else sys.argv[1:]
 commands={c.id:c for cell in cells for c in _topological_commands(plan,command_id=cell)}
-names=selected_toolchains(plan,commands=cells,family=None,matrix_cell=None,toolchains=[])
+names=sys.argv[2:] if explicit else selected_toolchains(plan,commands=cells,family=None,matrix_cell=None,toolchains=[])
 policies={p.name:p for p in plan.toolchain_policies}
 tools={}
 def release(name):
@@ -220,13 +780,23 @@ print(json.dumps({'toolchains':names,'releases':tools,'commands':{k:dict(v.data)
 """
 
 
-def describe(host, transport, checkout: str, cells: list[str]) -> dict:
+def describe(
+    host, transport, checkout: str, cells: list[str], *, toolchains=None
+) -> dict:
     raw = transport.shell_command(
-        remote_argv(host, [host.python, "-B", "-c", DESCRIBE, *cells], cwd=checkout),
+        remote_argv(
+            host,
+            uv_python(
+                "-c",
+                DESCRIBE,
+                *(cells if toolchains is None else ["--toolchains", *toolchains]),
+            ),
+            cwd=checkout,
+        ),
         timeout=180,
     )
     result = json.loads(raw)
-    if set(cells) - set(result["commands"]):
+    if toolchains is None and set(cells) - set(result["commands"]):
         raise ValueError("subject policy omitted a selected command")
     return result
 
@@ -243,6 +813,8 @@ def seed_inputs(descriptor: dict, transport, local: Path) -> list[dict]:
     )
     seeds = []
     for name, item in descriptor["releases"].items():
+        if name == "uv":
+            continue  # Official host prerequisite; never ship our own uv binary.
         asset = item["asset"]
         archive = provision_archive(
             url=asset["url"],
@@ -314,22 +886,24 @@ def prepare_checkouts(
         transport.shell_command(remote_argv(host, argv), timeout=180)
 
 
-def start(args) -> Path:
+def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path:
     cross = authorities()
-    host = selected_host(args.inventory, args.host, args.cell)
-    subject = exact_commit(args.commit)
-    controller = exact_commit("HEAD")
+    host = selected_host(
+        args.inventory, args.host, args.cell, landing=landing is not None
+    )
+    subject = exact_commit(args.commit, repo)
+    controller = exact_commit("HEAD", repo)
     # The controller must be committed: copying dirty source would make the
     # worker identity fictional. Test the clean named controller, not a tar overlay.
     if checked(
-        ["git", "-C", str(_REPO_ROOT), "status", "--porcelain", "--untracked-files=no"]
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"]
     ):
         raise ValueError("commit controller changes before a farm run")
     checked(
         [
             "git",
             "-C",
-            str(_REPO_ROOT),
+            str(repo),
             "merge-base",
             "--is-ancestor",
             subject,
@@ -337,12 +911,15 @@ def start(args) -> Path:
         ]
     )
     transport = cross.SSHTransport(host)
+    if host.wsl_distribution:
+        admit_wsl_profile(host, transport)
+        admit_wsl_guest(host, transport)
     checkout, control = host_paths(host, transport._nonce)
     from molt.dx import artifact_root
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + transport._nonce
     run_root = (
-        artifact_root(_REPO_ROOT)
+        artifact_root(repo)
         / "evidence"
         / "trunk-loop"
         / subject
@@ -369,6 +946,8 @@ def start(args) -> Path:
         "state": "preparing",
     }
     record_path = run_root / "run.json"
+    if landing is not None:
+        record["landing"] = landing
     write_json(record_path, record)
     print(f"trunk-loop: recovery record {record_path}", flush=True)
     transport.prepare()
@@ -377,13 +956,13 @@ def start(args) -> Path:
     )
     if not re.fullmatch(r"[0-9a-f]{40}", remote_head):
         raise ValueError("cannot bind canonical checkout donor")
-    checked(["git", "-C", str(_REPO_ROOT), "cat-file", "-e", remote_head + "^{commit}"])
+    checked(["git", "-C", str(repo), "cat-file", "-e", remote_head + "^{commit}"])
     bundle = run_root / "source.bundle"
     checked(
         [
             "git",
             "-C",
-            str(_REPO_ROOT),
+            str(repo),
             "bundle",
             "create",
             str(bundle),
@@ -393,29 +972,47 @@ def start(args) -> Path:
         timeout=600,
     )
     prepare_checkouts(host, transport, bundle, subject, controller, checkout, control)
-    descriptor = describe(host, transport, checkout, args.cell)
+    descriptor = (
+        describe(host, transport, checkout, args.cell, toolchains=landing["toolchains"])
+        if landing is not None
+        else describe(host, transport, checkout, args.cell)
+    )
     record["selection"] = descriptor
     record["seeds"] = seed_inputs(descriptor, transport, run_root)
     write_json(record_path, record)
     transport.push([record_path])
     path_type = PureWindowsPath if host.is_windows else PurePosixPath
-    argv = [
-        host.python,
-        "-B",
+    argv = uv_python(
         str(path_type(control) / "tools" / "trunk_loop.py"),
         "_worker",
         "--record",
         transport.remote_path("run.json"),
-    ]
-    pid = acknowledge(
-        transport.shell_command(detached_script(host, argv, transport.execution_dir))
     )
+    script = detached_script(host, argv, control, transport.execution_dir)
+    if host.launcher == cross.DetachedLauncher.WSL_SESSION:
+        launch = run_root / "launch.sh"
+        launch.write_text(
+            wsl_launch_script(host, argv, control, transport.execution_dir),
+            encoding="utf-8",
+            newline="\n",
+        )
+        transport.push([launch])
+        # A distro that must boot first delays the identity by seconds.
+        raw = transport.windows_command(script, timeout=180)
+    else:
+        raw = transport.shell_command(script)
+    pid, worker = acknowledge(raw)
     record.update(
-        state="launched", launcher_pid=pid, launched_at=datetime.now(UTC).isoformat()
+        state="launched",
+        launcher_pid=pid,
+        worker=asdict(worker) if worker is not None else None,
+        launched_at=datetime.now(UTC).isoformat(),
     )
     write_json(record_path, record)
     print(
-        f"trunk-loop: launched {host.name} pid={pid}; collect --record {record_path}",
+        f"trunk-loop: launched {host.name} pid={pid} "
+        f"worker={worker.pid if worker is not None else 'exited'}; "
+        f"collect --record {record_path}",
         flush=True,
     )
     return record_path
@@ -448,25 +1045,114 @@ def transfer_for_record(record: dict):
     return host, transport
 
 
+class WorkerVanished(RuntimeError):
+    """The worker is gone and published no terminal receipt."""
+
+
+def observe(host, transport, worker: ProcessProbe | None):
+    """One round trip: the worker's process first, then its terminal receipt.
+
+    A receipt still absent after the worker was seen gone can never appear;
+    the reverse order would race the worker's last publication.
+    """
+    marker = transport.remote_path("terminal.json")
+    if host.is_windows:
+        probe = windows_probe(str(int(worker.pid))) if worker else "'null'"
+        script = (
+            f"{probe}\nif (Test-Path -LiteralPath {ps(marker)}) "
+            f"{{ Get-Content -Raw -LiteralPath {ps(marker)} }}"
+        )
+    else:
+        probe = (
+            f"{posix_probe(host)}molt_probe {int(worker.pid)}"
+            if worker
+            else "echo null"
+        )
+        script = (
+            f"set -eu\n{probe}\n"
+            f"if test -f {shlex.quote(marker)}; then cat {shlex.quote(marker)}; fi"
+        )
+    first, _, rest = transport.shell_command(script).partition("\n")
+    current = None if first.strip() == "null" else ProcessProbe.parse(first)
+    return current, json.loads(rest) if rest.strip() else None
+
+
+def worker_vanished(
+    record_path: Path,
+    record: dict,
+    host,
+    transport,
+    launched: ProcessProbe | None,
+    current: ProcessProbe | None,
+) -> NoReturn:
+    """Record the evidence and fail at once; never wait on a vanished worker."""
+    if launched is None or launched.identity is None:
+        reason = "it exited before publishing its identity"
+    elif current is not None and current.instance != launched.instance:
+        scope = "distro" if host.wsl_distribution else "host"
+        reason = (
+            f"{scope} restarted at {current.instance_started_at} (worker launched "
+            f"under the instance started at {launched.instance_started_at})"
+        )
+    elif current is None or not current.state:
+        reason = "the process no longer exists"
+    elif current.identity is None:
+        reason = f"the process exited (state {current.state})"
+    else:
+        reason = f"the pid now names another process started {current.started}"
+    log = record_path.parent / "worker.log"
+    try:
+        transport.pull("worker.log", log)
+        retained = str(log)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        retained = f"unavailable ({exc})"
+    pid = launched.pid if launched is not None else record.get("launcher_pid")
+    record.update(
+        state="vanished",
+        vanished={
+            "observed_at": datetime.now(UTC).isoformat(),
+            "reason": reason,
+            "current": asdict(current) if current is not None else None,
+            "worker_log": retained,
+        },
+    )
+    write_json(record_path, record)
+    raise WorkerVanished(
+        f"worker {pid} on {host.name} is gone with no terminal receipt: {reason}; "
+        f"remote stage {record['stage']} retained; worker log {retained}"
+    )
+
+
 def collect(record_path: Path, *, wait: bool = True) -> int:
     record = json.loads(record_path.read_text(encoding="utf-8"))
     host, transport = transfer_for_record(record)
-    marker = transport.remote_path("terminal.json")
+    launched = (
+        ProcessProbe(**record["worker"]) if record.get("worker") is not None else None
+    )
     while True:
-        script = (
-            f"if (Test-Path -LiteralPath {ps(marker)}) {{ Get-Content -Raw -LiteralPath {ps(marker)} }}"
-            if host.is_windows
-            else f"if test -f {shlex.quote(marker)}; then cat {shlex.quote(marker)}; fi"
-        )
-        raw = transport.shell_command(script)
-        if raw:
-            terminal = json.loads(raw)
+        current, terminal = observe(host, transport, launched)
+        if terminal is not None:
             break
+        if "launcher_pid" not in record:
+            raise RuntimeError(
+                f"{record['run_id']}: launch was never acknowledged, so no worker "
+                f"identity exists and no terminal receipt was published; remote "
+                f"stage {record['stage']} retained"
+            )
+        if (
+            launched is None
+            or launched.identity is None
+            or current is None
+            or current.identity != launched.identity
+        ):
+            worker_vanished(record_path, record, host, transport, launched, current)
         if not wait:
             print("trunk-loop: completion unknown; retain stage and collect later")
             return 3
         print(
-            f"trunk-loop: {record['run_id']} waiting for terminal receipt", flush=True
+            f"trunk-loop: {record['run_id']} worker {launched.pid} alive; "
+            "waiting for terminal receipt",
+            flush=True,
         )
         time.sleep(20)
     if (
@@ -513,12 +1199,12 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
             if (
                 path.is_absolute()
                 or ".." in path.parts
-                or len(path.parts) != 2
+                or not (2 <= len(path.parts) <= (16 if "landing" in record else 2))
                 or path.parts[0] not in record["cells"]
                 or item.file_size > 512 * 1024 * 1024
             ):
                 raise ValueError(f"unexpected result archive member {item.filename}")
-            target = root / path.parts[0] / record["run_id"] / path.name
+            target = root / path.parts[0] / record["run_id"] / Path(*path.parts[1:])
             target.parent.mkdir(parents=True, exist_ok=True)
             content = archive.read(item)
             if target.exists():
@@ -560,7 +1246,9 @@ def worker_environment(record: dict) -> dict[str, str]:
         PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8"
     )
     root = Path(record["host"]["custody_root"])
-    baseline["CARGO_HOME"] = str(root / ".cargo")
+    # One reusable Cargo workspace domain per host, independent of run worktree.
+    baseline["CARGO_TARGET_DIR"] = str(root / "cache" / "cargo-workspace")
+    baseline["MOLT_DIFF_CARGO_TARGET_DIR"] = baseline["CARGO_TARGET_DIR"]
     baseline["RUSTUP_AUTO_INSTALL"] = "0"
     env = dict(
         RunContext(Path(record["checkout"])).dx_env(ProcessEnvironment(baseline))
@@ -611,7 +1299,7 @@ def fixture_roots(record: dict, env: dict[str, str]) -> dict:
     return declarations
 
 
-def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
+def provision(record: dict, stage: Path) -> dict[str, str]:
     from molt import checkout_provisioning
     from molt.dx import canonical_toolchain_root
     from molt.tool_releases import (
@@ -628,7 +1316,10 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
     tool_root = canonical_toolchain_root(checkout, env, require_exists=False)
     from molt.disk_capacity import require_build_capacity
 
-    require_build_capacity((stage, checkout, tool_root), env=env)
+    capacity_paths = [stage, checkout, tool_root]
+    if record["host"].get("wsl_distribution"):
+        capacity_paths.append(Path("/mnt/c"))
+    require_build_capacity(tuple(capacity_paths), env=env)
     for seed in record["seeds"]:
         release = tool_release(seed["name"], checkout)
         asset = host_asset(release)
@@ -659,12 +1350,18 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
     code = (
         "import json,os,pathlib,sys; from tools.proof_plan import ProofPlan,admit_toolchains; "
         "from tools.toolchain_env import selected_toolchains; p=ProofPlan.load(); "
-        "n=selected_toolchains(p,commands=sys.argv[1:],family=None,matrix_cell=None,toolchains=[]); "
+        "n=json.loads(sys.argv[1]) if sys.argv[2]=='landing' else selected_toolchains(p,commands=sys.argv[3:],family=None,matrix_cell=None,toolchains=[]); "
         "a=admit_toolchains(p.toolchain_policies,n,python_executable=pathlib.Path(sys.executable),environ=os.environ,root=pathlib.Path.cwd()); "
         "print(json.dumps({'toolchains':n,'fingerprints':a.fingerprints}))"
     )
     result = authorities()._guarded_run(
-        [str(python), "-B", "-c", code, *record["cells"]],
+        uv_python(
+            "-c",
+            code,
+            json.dumps(record["selection"]["toolchains"]),
+            "landing" if "landing" in record else "proof",
+            *record["cells"],
+        ),
         cwd=checkout,
         env=env,
         timeout=900,
@@ -686,7 +1383,7 @@ def provision(record: dict, stage: Path) -> tuple[Path, dict[str, str]]:
             "fixture_roots": roots,
         },
     )
-    return python, env
+    return env
 
 
 def worker(record_path: Path) -> int:
@@ -740,22 +1437,29 @@ def worker(record_path: Path) -> int:
                 ]
             ):
                 raise ValueError("remote source has tracked edits")
-        python, env = provision(record, stage)
+        env = provision(record, stage)
         (stage / "trunk_timings.py").write_text(TIMINGS_PLUGIN, encoding="utf-8")
         env["PYTHONPATH"] += os.pathsep + str(stage)
         status = "success"
         for cell in record["cells"]:
             directory = stage / cell
             directory.mkdir(exist_ok=False)
-            argv = [
-                str(python),
-                "-B",
+            argv = uv_python(
                 str(Path(record["checkout"]) / "tools" / "proof_plan.py"),
                 "--run-command",
                 cell,
                 "--receipt",
                 str(directory / "receipt.json"),
-            ]
+            )
+            if "landing" in record:
+                argv = uv_python(
+                    "-m",
+                    "tools.trunk_landing",
+                    "--record",
+                    str(record_path),
+                    "--output",
+                    str(directory),
+                )
             write_json(
                 directory / "cmd.json",
                 {"argv": argv, "commit": record["commit"], "cwd": record["checkout"]},
@@ -781,12 +1485,18 @@ def worker(record_path: Path) -> int:
             if (
                 receipt.get("source_commit") != record["commit"]
                 or receipt.get("source_tree_state") != "clean"
-                or cell not in {c.get("id") for c in receipt.get("commands", [])}
+                or (
+                    "landing" not in record
+                    and cell not in {c.get("id") for c in receipt.get("commands", [])}
+                )
             ):
                 raise ValueError(
                     "proof receipt does not bind the selected clean source and cell"
                 )
             cells.append({"id": cell, "returncode": returncode, "receipt": True})
+            if "landing" in record and receipt.get("status") == "infrastructure":
+                status = "infrastructure"
+                break
             if receipt.get("execution", {}).get("global_stop_triggered"):
                 status = "infrastructure"
                 break
@@ -828,9 +1538,11 @@ def publish_worker_result(record: dict, stage: Path, cells: list, status: str) -
     archive = stage / "results.zip"
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as output:
         for cell in record["cells"]:
-            for item in sorted((stage / cell).iterdir()):
+            for item in sorted((stage / cell).rglob("*")):
                 if item.is_file():
-                    output.write(item, cell + "/" + item.name)
+                    output.write(
+                        item, cell + "/" + item.relative_to(stage / cell).as_posix()
+                    )
     write_json(
         stage / "terminal.json",
         {
@@ -875,6 +1587,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--commit", required=True)
     run.add_argument("--cell", action="append", required=True)
     run.add_argument("--no-wait", action="store_true")
+    setup = sub.add_parser("provision")
+    setup.add_argument(
+        "--inventory", type=Path, default=_REPO_ROOT / "tools/cross_hosts.toml"
+    )
+    setup.add_argument("--host", required=True)
     get = sub.add_parser("collect")
     get.add_argument("--record", type=Path, required=True)
     get.add_argument("--no-wait", action="store_true")
@@ -885,6 +1602,9 @@ def main(argv: list[str] | None = None) -> int:
         return worker(args.record)
     authorities()
     try:
+        if args.action == "provision":
+            provision_host(args)
+            return 0
         if args.action == "collect":
             return collect(args.record, wait=not args.no_wait)
         record = start(args)

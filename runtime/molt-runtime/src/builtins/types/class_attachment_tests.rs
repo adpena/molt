@@ -5,7 +5,7 @@ use crate::object::accessors::{molt_object_field_get, molt_object_field_set};
 use crate::object::builders::{molt_alloc_class, molt_object_publish_initialized};
 
 unsafe fn new_class_with_base(_py: &PyToken<'_>, name: &[u8], base: u64) -> u64 {
-    let name_bits = attr_name_bits_from_bytes(_py, name).expect("class name");
+    let name_bits = dynamic_attr_name_bits(_py, name).expect("class name");
     let class_bits = molt_class_new(name_bits);
     dec_ref_bits(_py, name_bits);
     assert!(obj_from_bits(class_bits).as_ptr().is_some());
@@ -28,8 +28,8 @@ unsafe fn new_slotted_class_with_base(
     base: u64,
 ) -> u64 {
     let class_bits = unsafe { new_class_with_base(_py, name, base) };
-    let slots_name = attr_name_bits_from_bytes(_py, b"__slots__").expect("slots name");
-    let slot_name = attr_name_bits_from_bytes(_py, slot).expect("slot name");
+    let slots_name = dynamic_attr_name_bits(_py, b"__slots__").expect("slots name");
+    let slot_name = dynamic_attr_name_bits(_py, slot).expect("slot name");
     molt_set_attr_name(class_bits, slots_name, slot_name);
     dec_ref_bits(_py, slot_name);
     dec_ref_bits(_py, slots_name);
@@ -38,7 +38,7 @@ unsafe fn new_slotted_class_with_base(
 }
 
 fn set_class_via_attribute(_py: &PyToken<'_>, object_bits: u64, class_bits: u64) -> u64 {
-    let class_name = attr_name_bits_from_bytes(_py, b"__class__").expect("class attribute");
+    let class_name = dynamic_attr_name_bits(_py, b"__class__").expect("class attribute");
     let result = molt_set_attr_name(object_bits, class_name, class_bits);
     dec_ref_bits(_py, class_name);
     result
@@ -124,7 +124,7 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
     crate::with_gil_entry_nopanic!(_py, {
         let first = unsafe { new_slotted_class(_py, b"DescriptorFirst", b"value") };
         let second = unsafe { new_slotted_class(_py, b"DescriptorSecond", b"value") };
-        let class_name = attr_name_bits_from_bytes(_py, b"__class__").expect("class attribute");
+        let class_name = dynamic_attr_name_bits(_py, b"__class__").expect("class attribute");
         let none = MoltObject::none().bits();
         let property_ptr = alloc_property_obj(_py, none, none, none);
         assert!(!property_ptr.is_null());
@@ -286,10 +286,10 @@ fn tuple_sequence_descriptors_reject_other_physical_receivers() {
             MoltObject::from_int(1).bits(),
         ] {
             for (name, binary) in [
-                ("__iter__", false),
-                ("__len__", false),
-                ("__getitem__", true),
-                ("__contains__", true),
+                (crate::NameId::DunderIter, false),
+                (crate::NameId::DunderLen, false),
+                (crate::NameId::DunderGetitem, true),
+                (crate::NameId::DunderContains, true),
             ] {
                 let method = crate::builtins::containers::tuple_method_bits(py, name)
                     .expect("method lookup succeeds")
@@ -301,10 +301,13 @@ fn tuple_sequence_descriptors_reject_other_physical_receivers() {
                         crate::call_callable1(py, method, receiver)
                     }
                 };
-                assert!(obj_from_bits(result).is_none(), "{name}: invalid receiver");
+                assert!(
+                    obj_from_bits(result).is_none(),
+                    "{name:?}: invalid receiver"
+                );
                 assert!(
                     exception_pending(py),
-                    "{name}: descriptor receiver admission"
+                    "{name:?}: descriptor receiver admission"
                 );
                 let exception = crate::molt_exception_last();
                 assert!(crate::builtins::exceptions::exception_matches_kind(
@@ -333,23 +336,35 @@ fn tuple_sequence_methods_survive_runtime_reinitialization() {
                     unsafe { crate::object::builders::alloc_tuple_subclass(py, class, &[seven]) };
                 assert!(!exception_pending(py));
                 for (name, args, expected) in [
-                    ("__len__", vec![], MoltObject::from_int(1).bits()),
-                    ("__getitem__", vec![MoltObject::from_int(0).bits()], seven),
                     (
-                        "__contains__",
+                        crate::NameId::DunderLen,
+                        vec![],
+                        MoltObject::from_int(1).bits(),
+                    ),
+                    (
+                        crate::NameId::DunderGetitem,
+                        vec![MoltObject::from_int(0).bits()],
+                        seven,
+                    ),
+                    (
+                        crate::NameId::DunderContains,
                         vec![seven],
                         MoltObject::from_bool(true).bits(),
                     ),
-                    ("count", vec![seven], MoltObject::from_int(1).bits()),
                     (
-                        "index",
+                        crate::NameId::Count,
+                        vec![seven],
+                        MoltObject::from_int(1).bits(),
+                    ),
+                    (
+                        crate::NameId::Index,
                         vec![seven, missing_bits(py), missing_bits(py)],
                         MoltObject::from_int(0).bits(),
                     ),
                 ] {
-                    let name_bits = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+                    let name_bits = name.owned_bits(py).unwrap();
                     let method = crate::molt_get_attr_name(tuple, name_bits);
-                    assert!(!exception_pending(py), "{name}: lookup");
+                    assert!(!exception_pending(py), "{name:?}: lookup");
                     let result = unsafe {
                         match args.as_slice() {
                             [] => crate::call_callable0(py, method),
@@ -358,8 +373,8 @@ fn tuple_sequence_methods_survive_runtime_reinitialization() {
                             _ => unreachable!(),
                         }
                     };
-                    assert!(!exception_pending(py), "{name}: call");
-                    assert_eq!(result, expected, "{name}");
+                    assert!(!exception_pending(py), "{name:?}: call");
+                    assert_eq!(result, expected, "{name:?}");
                     for bits in [result, method, name_bits] {
                         dec_ref_bits(py, bits);
                     }
@@ -395,7 +410,7 @@ fn tuple_subclass_conversion_observes_overrides_but_explicit_base_slot_does_not(
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let class = unsafe { new_class_with_base(py, b"TupleOverride", builtin_classes(py).tuple) };
-        let name = attr_name_bits_from_bytes(py, b"__iter__").unwrap();
+        let name = dynamic_attr_name_bits(py, b"__iter__").unwrap();
         let callback = crate::builtins::functions::alloc_runtime_function_obj(
             py,
             crate::builtins::functions::runtime_fn_addr(
@@ -427,9 +442,10 @@ fn tuple_subclass_conversion_observes_overrides_but_explicit_base_slot_does_not(
             );
             dec_ref_bits(py, copied);
         }
-        let base_method = crate::builtins::containers::tuple_method_bits(py, "__iter__")
-            .expect("method lookup succeeds")
-            .unwrap();
+        let base_method =
+            crate::builtins::containers::tuple_method_bits(py, crate::NameId::DunderIter)
+                .expect("method lookup succeeds")
+                .unwrap();
         let iterator = unsafe { crate::call_callable1(py, base_method, source) };
         assert!(!exception_pending(py));
         let item = crate::molt_next_builtin(iterator, missing_bits(py));
@@ -526,7 +542,7 @@ fn native_class_reassignment_preserves_intrinsic_owner_and_live_payload() {
                 };
                 assert!(!exception_pending(py));
                 let ptr = obj_from_bits(object).as_ptr().expect("native instance");
-                let value_name = attr_name_bits_from_bytes(py, b"value").unwrap();
+                let value_name = dynamic_attr_name_bits(py, b"value").unwrap();
                 let value = MoltObject::from_int(42).bits();
                 molt_set_attr_name(object, value_name, value);
                 assert!(!exception_pending(py));
@@ -579,7 +595,7 @@ fn ordinary_shared_base_slot_siblings_remain_class_compatible() {
         let object =
             unsafe { crate::call::bind::call_bind_borrowed(py, first, None, &[], &[], &[]) };
         assert!(!exception_pending(py));
-        let name = attr_name_bits_from_bytes(py, b"value").unwrap();
+        let name = dynamic_attr_name_bits(py, b"value").unwrap();
         let value = MoltObject::from_int(42).bits();
         molt_set_attr_name(object, name, value);
         set_class_via_attribute(py, object, second);

@@ -524,6 +524,27 @@ def test_module_getattr_demands_lazy_returned_class(
         ),
         ("import types\ntypes.coroutine(lambda: None)\n", {"functools"}, set()),
         (
+            "from dataclasses import dataclass\n"
+            "@dataclass\nclass Point:\n    x: int\n    y: int = 2\n"
+            "print(Point(1).x)\n",
+            {"dataclasses"},
+            {
+                "_collections",
+                "_compatibility_errors",
+                "_weakref",
+                "atexit",
+                "collections",
+                "collections.abc",
+                "copy",
+                "functools",
+                "gc",
+                "heapq",
+                "math",
+                "re",
+                "weakref",
+            },
+        ),
+        (
             "from email.message import EmailMessage\nEmailMessage().as_string()\n",
             {"email.generator"},
             set(),

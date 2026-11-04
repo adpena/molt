@@ -1,5 +1,6 @@
 use super::task_construction::TaskConstruction;
 use super::*;
+use inkwell::values::BasicValue;
 use molt_tir::trampolines::TaskConstructorLayout;
 use std::collections::BTreeMap;
 
@@ -396,15 +397,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         custody: &mut BorrowedOperands<'ctx>,
         step: &str,
     ) {
-        let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
-        let pending = self
-            .backend
-            .builder
-            .build_call(pending_fn, &[], &format!("{}_pending", custody.label))
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
+        let pending = self.emit_exception_pending_word(&format!("{}_pending", custody.label));
         let clear = self
             .backend
             .builder
@@ -837,43 +830,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Representation authority ──
 
-    /// Effective semantic carrier type for a block argument (phi).
-    ///
-    /// The carrier is reconciled with the single `is_inline_safe_int`
-    /// representation authority (`repr_by_value`'s `RawI64Safe` view), which is
-    /// derived from the value-range proof shared with native/WASM. Two
-    /// directions, both keyed on that same authority so `value_types` can never
-    /// diverge from the `Repr` the raw-i64 lanes gate on:
-    ///
-    ///   * **Demotion** `I64 -> DynBox`: a `TirType::I64` phi the plan does NOT
-    ///     prove overflow-safe is carried `DynBox` (NaN-boxed). `type_refine`
-    ///     assigns `add(I64, I64) -> I64` with no overflow proof, so an unproven
-    ///     i64 accumulator must stay boxed across the back-edge instead of
-    ///     unboxing a runtime BigInt into a truncating 47-bit payload.
-    ///   * **Promotion** `DynBox -> I64`: a `DynBox`-declared phi the plan DOES
-    ///     prove overflow-safe is carried as a raw `I64`. This is the masked
-    ///     back-edge accumulator (`s = (s << 1) & MASK`): the value-range phi
-    ///     narrowing proves `s` fits the inline window, so `is_inline_safe_int`
-    ///     mints `RawI64Safe` for it — but `type_refine` (which runs without that
-    ///     value-range fact) left the phi `DynBox`. Without this promotion the
-    ///     phi carries boxed, so the in-loop `<<`/`&` see a `DynBox` operand and
-    ///     bail to the boxed `molt_lshift`/`molt_bit_and` runtime even though the
-    ///     raw lane was proven legal — defeating the whole narrowing. The phi
-    ///     incoming edges are reconciled by `coerce_to_tir_type`, which unboxes a
-    ///     boxed incoming (`molt_int_from_i64` / a boxed back-edge value) into the
-    ///     raw i64 the I64 phi slot expects. The promotion is sound because
-    ///     `is_inline_safe_int` is granted ONLY for values a value-range proof
-    ///     places entirely within the inline-int47 window (so a heap BigInt can
-    ///     never reach the raw slot); it is restricted to a `DynBox` declared
-    ///     type so a non-integer carrier (`Str`/`F64`/container) is never
-    ///     reinterpreted as i64.
+    /// Parameters and phis project the same producer facts as frozen linkage.
     pub(super) fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
-        let inline_safe = self.repr_facts.is_inline_safe_int(id);
-        match declared {
-            TirType::I64 if !inline_safe => TirType::DynBox,
-            TirType::DynBox if inline_safe => TirType::I64,
-            _ => declared.clone(),
-        }
+        self.repr_facts.effective_value_type(id, declared)
     }
 
     /// Resolve the specialized `len` runtime function from the operand's
@@ -997,7 +956,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
     }
 
-    /// A fixed word range for one operation (list, tuple, dataclass,
+    /// A fixed word range for one operation (list, tuple,
     /// class-definition or unpack transport). Every execution of the operation
     /// reuses this static entry-block slot; allocating where the operation runs
     /// would grow the stack on each loop iteration.
@@ -1083,6 +1042,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap_or(TirType::I64)
         };
 
+        let target_ty = self.repr_facts.effective_value_type(result_id, &target_ty);
         let unboxed = self.unbox_from_dynbox(operand, &target_ty);
         if Self::tir_type_is_dynbox_like(&target_ty)
             && !self.repr_facts.carrier_refcount_is_noop(result_id)
@@ -1898,6 +1858,279 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             fn_ty,
         );
         require_llvm_function_type(name, func, fn_ty)
+    }
+
+    /// The execution lease keeps both pointers alive for this invocation.
+    /// Materialize them in the actual LLVM entry, including a CFG trampoline.
+    fn async_poll_context(
+        &mut self,
+    ) -> (
+        inkwell::values::PointerValue<'ctx>,
+        inkwell::values::PointerValue<'ctx>,
+    ) {
+        if let Some(context) = self.poll_context {
+            return context;
+        }
+        let record_fn = self.ensure_runtime_i64_fn("molt_thread_record", 0);
+        let builder = self.entry_block_builder(&self.backend.builder);
+        let context = self.backend.context;
+        let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
+        let bits = builder
+            .build_call(record_fn, &[], "thread_record")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        let record = builder
+            .build_int_to_ptr(bits, ptr_ty, "thread_record_ptr")
+            .unwrap();
+        let field = unsafe {
+            builder
+                .build_gep(
+                    context.i8_type(),
+                    record,
+                    &[context.i64_type().const_int(
+                        molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64,
+                        false,
+                    )],
+                    "pending_work_field",
+                )
+                .unwrap()
+        };
+        let word = builder
+            .build_load(context.i64_type(), field, "pending_work_address")
+            .unwrap()
+            .into_int_value();
+        let word = builder
+            .build_int_to_ptr(word, ptr_ty, "pending_work_ptr")
+            .unwrap();
+        self.poll_context = Some((record, word));
+        (record, word)
+    }
+
+    pub(super) fn emit_async_work_poll(&mut self, payload: bool) -> BasicValueEnum<'ctx> {
+        let (record, word_ptr) = self.async_poll_context();
+        let context = self.backend.context;
+        let builder = &self.backend.builder;
+        let word = builder
+            .build_load(context.i32_type(), word_ptr, "pending_work")
+            .unwrap();
+        let load = word.as_instruction_value().unwrap();
+        load.set_alignment(4).unwrap();
+        load.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+            .unwrap();
+        load.set_volatile(true).unwrap();
+        let has_work = builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                word.into_int_value(),
+                context.i32_type().const_zero(),
+                "has_async_work",
+            )
+            .unwrap();
+        let cold = context.append_basic_block(self.llvm_fn, "async_poll_cold");
+        let fast = context.append_basic_block(self.llvm_fn, "async_poll_fast");
+        let done = context.append_basic_block(self.llvm_fn, "async_poll_done");
+        self.all_llvm_blocks.extend([cold, fast, done]);
+        let from = builder.get_insert_block().unwrap();
+        self.record_llvm_edge(from, cold);
+        self.record_llvm_edge(from, fast);
+        self.backend
+            .builder
+            .build_conditional_branch(has_work, cold, fast)
+            .unwrap();
+        self.backend.builder.position_at_end(cold);
+        let cold_fn = self.ensure_runtime_i64_fn(
+            if payload {
+                "molt_async_work_poll_and_exception_last_pending"
+            } else {
+                "molt_async_work_poll_and_exception_pending"
+            },
+            0,
+        );
+        let cold_call = self
+            .backend
+            .builder
+            .build_call(cold_fn, &[], "serviced_async_work")
+            .unwrap();
+        cold_call.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
+                0,
+            ),
+        );
+        let cold_value = cold_call.try_as_basic_value().unwrap_basic();
+        self.backend
+            .builder
+            .build_unconditional_branch(done)
+            .unwrap();
+        self.record_llvm_edge(cold, done);
+        self.backend.builder.position_at_end(fast);
+        let byte = self
+            .backend
+            .builder
+            .build_load(context.i8_type(), record, "exception_pending")
+            .unwrap()
+            .into_int_value();
+        let mut no_exception = None;
+        let fast_value = if payload {
+            let capture = context.append_basic_block(self.llvm_fn, "async_poll_capture_exception");
+            self.all_llvm_blocks.push(capture);
+            let pending = self
+                .backend
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    byte,
+                    context.i8_type().const_zero(),
+                    "has_pending_exception",
+                )
+                .unwrap();
+            self.backend
+                .builder
+                .build_conditional_branch(pending, capture, done)
+                .unwrap();
+            self.record_llvm_edge(fast, capture);
+            self.record_llvm_edge(fast, done);
+            no_exception = Some(
+                context
+                    .i64_type()
+                    .const_int(molt_codegen_abi::QNAN_TAG_NONE_I64 as u64, false),
+            );
+            self.backend.builder.position_at_end(capture);
+            let observer = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
+            self.backend
+                .builder
+                .build_call(observer, &[], "pending_exception_payload")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+        } else {
+            self.backend
+                .builder
+                .build_int_z_extend(byte, context.i64_type(), "pending_exception_word")
+                .unwrap()
+                .into()
+        };
+        let fast_exit = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(done)
+            .unwrap();
+        self.record_llvm_edge(fast_exit, done);
+        self.backend.builder.position_at_end(done);
+        let result = self
+            .backend
+            .builder
+            .build_phi(context.i64_type(), "async_poll_result")
+            .unwrap();
+        result.add_incoming(&[(&cold_value, cold), (&fast_value, fast_exit)]);
+        if let Some(none) = no_exception {
+            result.add_incoming(&[(&none, fast)]);
+        }
+        result.as_basic_value()
+    }
+
+    /// `molt_exception_pending()` as an i64 0 or 1. A function that polls
+    /// for async work already holds the thread record, so it tests the
+    /// record's pending byte inline and calls the runtime reader only when the
+    /// byte is set. The reader answers 0 at once for a clear byte, and for a
+    /// set byte it confirms it, repairing a stale task slot; the inline test
+    /// therefore returns exactly what the call returned. A function without
+    /// the record keeps the call: acquiring the record costs more than one
+    /// check.
+    pub(super) fn emit_exception_pending_word(
+        &mut self,
+        name: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
+        if !self.polls_async_work {
+            return self
+                .backend
+                .builder
+                .build_call(pending_fn, &[], name)
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_int_value();
+        }
+        let (record, _) = self.async_poll_context();
+        let context = self.backend.context;
+        let byte_ptr = unsafe {
+            self.backend
+                .builder
+                .build_gep(
+                    context.i8_type(),
+                    record,
+                    &[context.i64_type().const_int(
+                        molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as u64,
+                        false,
+                    )],
+                    &format!("{name}_byte_ptr"),
+                )
+                .unwrap()
+        };
+        let byte = self
+            .backend
+            .builder
+            .build_load(context.i8_type(), byte_ptr, &format!("{name}_byte"))
+            .unwrap()
+            .into_int_value();
+        let set = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                byte,
+                context.i8_type().const_zero(),
+                &format!("{name}_byte_set"),
+            )
+            .unwrap();
+        let confirm = context.append_basic_block(self.llvm_fn, "exception_pending_confirm");
+        let join = context.append_basic_block(self.llvm_fn, "exception_pending_join");
+        self.all_llvm_blocks.extend([confirm, join]);
+        let from = self.backend.builder.get_insert_block().unwrap();
+        self.record_llvm_edge(from, confirm);
+        self.record_llvm_edge(from, join);
+        self.backend
+            .builder
+            .build_conditional_branch(set, confirm, join)
+            .unwrap();
+        self.backend.builder.position_at_end(confirm);
+        let confirm_call = self
+            .backend
+            .builder
+            .build_call(pending_fn, &[], name)
+            .unwrap();
+        confirm_call.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
+                0,
+            ),
+        );
+        let confirmed = confirm_call
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        let confirm_exit = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(join)
+            .unwrap();
+        self.record_llvm_edge(confirm_exit, join);
+        self.backend.builder.position_at_end(join);
+        let pending = self
+            .backend
+            .builder
+            .build_phi(context.i64_type(), &format!("{name}_word"))
+            .unwrap();
+        pending.add_incoming(&[
+            (&confirmed, confirm_exit),
+            (&context.i64_type().const_zero(), from),
+        ]);
+        pending.as_basic_value().into_int_value()
     }
 
     pub(super) fn ensure_runtime_i64_fn(

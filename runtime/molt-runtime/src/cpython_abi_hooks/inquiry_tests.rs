@@ -171,7 +171,7 @@ extern "C" fn inquiry_mutating_equal(receiver: u64, needle: u64) -> u64 {
         let list =
             crate::builtins::exceptions::ExceptionValue::adopt(&py, inquiry_result(receiver));
         let class = crate::type_of_bits(&py, receiver);
-        let name = crate::attr_name_bits_from_bytes(&py, b"inquiry_action").unwrap();
+        let name = crate::dynamic_attr_name_bits(&py, b"inquiry_action").unwrap();
         let action = crate::molt_get_attr_name(receiver, name);
         dec_ref_bits(&py, name);
         let action_number = MoltObject::from_bits(action).as_int().unwrap();
@@ -195,7 +195,7 @@ extern "C" fn inquiry_mutating_equal(receiver: u64, needle: u64) -> u64 {
             _ => {}
         }
         if action_number == 4 {
-            let name = crate::attr_name_bits_from_bytes(&py, b"inquiry_error").unwrap();
+            let name = crate::dynamic_attr_name_bits(&py, b"inquiry_error").unwrap();
             let failure = crate::molt_get_attr_name(receiver, name);
             dec_ref_bits(&py, name);
             let failure = crate::builtins::exceptions::ExceptionValue::adopt(&py, failure);
@@ -1469,7 +1469,7 @@ fn c_set_discard_hashes_once_and_preserves_first_hash_failure() {
 
 extern "C" fn inquiry_result(receiver: u64) -> u64 {
     with_gil(|py| {
-        let key = crate::attr_name_bits_from_bytes(&py, b"inquiry_result").unwrap();
+        let key = crate::dynamic_attr_name_bits(&py, b"inquiry_result").unwrap();
         let result = crate::molt_get_attr_name(receiver, key);
         dec_ref_bits(&py, key);
         result
@@ -1579,7 +1579,7 @@ fn c_mapping_queries_honor_overrides_and_preserve_exact_list_identity() {
 }
 
 fn set_value(py: &crate::PyToken<'_>, class: u64, name: &[u8], value: u64) {
-    let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+    let key = crate::dynamic_attr_name_bits(py, name).unwrap();
     crate::molt_set_attr_name(class, key, value);
     dec_ref_bits(py, key);
     assert!(!crate::exception_pending(py));
@@ -1597,7 +1597,7 @@ fn set_method(py: &crate::PyToken<'_>, class: u64, name: &[u8], target: *const (
 }
 
 fn inquiry_class(py: &crate::PyToken<'_>, base: u64, special: &[u8]) -> u64 {
-    let name = crate::attr_name_bits_from_bytes(py, b"ManagedInquiry").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"ManagedInquiry").unwrap();
     let class = crate::molt_class_new(name);
     dec_ref_bits(py, name);
     crate::molt_class_set_base(class, base);

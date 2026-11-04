@@ -1,6 +1,5 @@
 use super::{ControlKind, ControlOpContext};
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use wasm_encoder::{BlockType, Function, Instruction};
 
@@ -63,13 +62,12 @@ fn emit_loop_break_if_truthy(
 }
 
 fn emit_loop_break_if_exception(context: &ControlOpContext<'_>, func: &mut Function) {
-    emit_call(
+    crate::wasm::pending_work::emit_exception_pending_test(
         func,
-        context.reloc_enabled,
+        crate::wasm::pending_work::thread_record_local(context.locals),
         context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+        context.reloc_enabled,
     );
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
     emit_loop_break_if(context, func, molt_ir::OpKind::LoopBreakIfException);
 }
 

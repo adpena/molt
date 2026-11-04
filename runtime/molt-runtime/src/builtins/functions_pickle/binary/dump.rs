@@ -63,10 +63,11 @@ fn pickle_emit_global_ref(
     state: &mut PickleDumpState,
     obj_bits: u64,
 ) -> Result<bool, u64> {
-    let Some(module_bits) = pickle_attr_optional(_py, obj_bits, b"__module__")? else {
+    let Some(module_bits) = pickle_attr_optional(_py, obj_bits, crate::NameId::DunderModule)?
+    else {
         return Ok(false);
     };
-    let Some(name_bits) = pickle_attr_optional(_py, obj_bits, b"__name__")? else {
+    let Some(name_bits) = pickle_attr_optional(_py, obj_bits, crate::NameId::DunderName)? else {
         dec_ref_bits(_py, module_bits);
         return Ok(false);
     };
@@ -333,7 +334,7 @@ fn pickle_external_buffer_to_memoryview(
     if let Ok(bits) = pickle_buffer_value_to_memoryview(_py, item_bits, "out-of-band buffer") {
         return Ok(bits);
     }
-    if let Some(raw_method_bits) = pickle_attr_optional(_py, item_bits, b"raw")? {
+    if let Some(raw_method_bits) = pickle_attr_optional(_py, item_bits, crate::NameId::Raw)? {
         let raw_bits = unsafe { call_callable0(_py, raw_method_bits) };
         dec_ref_bits(_py, raw_method_bits);
         if exception_pending(_py) {
@@ -402,16 +403,18 @@ fn pickle_extract_picklebuffer_payload(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
 ) -> Result<Option<(u64, bool)>, u64> {
-    let marker_bits = match pickle_attr_optional(_py, obj_bits, b"__molt_pickle_buffer__")? {
-        Some(bits) => bits,
-        None => return Ok(None),
-    };
+    let marker_bits =
+        match pickle_attr_optional(_py, obj_bits, crate::NameId::DunderMoltPickleBuffer)? {
+            Some(bits) => bits,
+            None => return Ok(None),
+        };
     let is_marker = is_truthy(_py, obj_from_bits(marker_bits));
     dec_ref_bits(_py, marker_bits);
     if !is_marker {
         return Ok(None);
     }
-    let raw_method_bits = pickle_attr_required(_py, PickleError::Pickling, obj_bits, b"raw")?;
+    let raw_method_bits =
+        pickle_attr_required(_py, PickleError::Pickling, obj_bits, crate::NameId::Raw)?;
     let raw_bits = unsafe { call_callable0(_py, raw_method_bits) };
     dec_ref_bits(_py, raw_method_bits);
     if exception_pending(_py) {
@@ -478,7 +481,9 @@ fn pickle_reduce_value(
     {
         return Ok(Some(reduced));
     }
-    if let Some(reduce_ex_bits) = pickle_attr_optional(_py, obj_bits, b"__reduce_ex__")? {
+    if let Some(reduce_ex_bits) =
+        pickle_attr_optional(_py, obj_bits, crate::NameId::DunderReduceEx)?
+    {
         let out_bits = unsafe {
             call_callable1(
                 _py,
@@ -492,7 +497,7 @@ fn pickle_reduce_value(
         }
         return Ok(Some(out_bits));
     }
-    if let Some(reduce_bits) = pickle_attr_optional(_py, obj_bits, b"__reduce__")? {
+    if let Some(reduce_bits) = pickle_attr_optional(_py, obj_bits, crate::NameId::DunderReduce)? {
         let out_bits = unsafe { call_callable0(_py, reduce_bits) };
         dec_ref_bits(_py, reduce_bits);
         if exception_pending(_py) {
@@ -648,7 +653,8 @@ fn pickle_dump_reduce_value(
                 PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple")
             );
         };
-        let Some(module_bits) = pickle_attr_optional(_py, obj_bits, b"__module__")? else {
+        let Some(module_bits) = pickle_attr_optional(_py, obj_bits, crate::NameId::DunderModule)?
+        else {
             return Err(
                 PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple")
             );
@@ -841,7 +847,9 @@ fn pickle_default_newobj_args(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
 ) -> Result<(u64, Option<u64>), u64> {
-    if let Some(getnewargs_ex_bits) = pickle_attr_optional(_py, obj_bits, b"__getnewargs_ex__")? {
+    if let Some(getnewargs_ex_bits) =
+        pickle_attr_optional(_py, obj_bits, crate::NameId::DunderGetnewargsEx)?
+    {
         let out_bits = unsafe { call_callable0(_py, getnewargs_ex_bits) };
         dec_ref_bits(_py, getnewargs_ex_bits);
         if exception_pending(_py) {
@@ -890,7 +898,9 @@ fn pickle_default_newobj_args(
         return Ok((args_bits, Some(kwargs_bits)));
     }
 
-    if let Some(getnewargs_bits) = pickle_attr_optional(_py, obj_bits, b"__getnewargs__")? {
+    if let Some(getnewargs_bits) =
+        pickle_attr_optional(_py, obj_bits, crate::NameId::DunderGetnewargs)?
+    {
         let args_bits = unsafe { call_callable0(_py, getnewargs_bits) };
         dec_ref_bits(_py, getnewargs_bits);
         if exception_pending(_py) {
@@ -912,9 +922,9 @@ fn pickle_default_instance_state(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
     ptr: *mut u8,
-    type_id: u32,
 ) -> Result<Option<u64>, u64> {
-    if let Some(getstate_bits) = pickle_attr_optional(_py, obj_bits, b"__getstate__")? {
+    if let Some(getstate_bits) = pickle_attr_optional(_py, obj_bits, crate::NameId::DunderGetstate)?
+    {
         let state_bits = unsafe { call_callable0(_py, getstate_bits) };
         dec_ref_bits(_py, getstate_bits);
         if exception_pending(_py) {
@@ -922,8 +932,7 @@ fn pickle_default_instance_state(
         }
         return Ok(Some(state_bits));
     }
-    if unsafe { crate::object::object_has_class_shape(ptr) } || type_id == crate::TYPE_ID_DATACLASS
-    {
+    if unsafe { crate::object::object_has_class_shape(ptr) } {
         let state = crate::object::ops_builtins::molt_object_getstate(obj_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, state);
@@ -941,10 +950,7 @@ fn pickle_dump_default_instance(
     ptr: *mut u8,
     type_id: u32,
 ) -> Result<bool, u64> {
-    if (type_id != crate::TYPE_ID_OBJECT && type_id != crate::TYPE_ID_DATACLASS)
-        || (type_id == crate::TYPE_ID_OBJECT
-            && !unsafe { crate::object::object_has_class_shape(ptr) })
-    {
+    if type_id != crate::TYPE_ID_OBJECT || !unsafe { crate::object::object_has_class_shape(ptr) } {
         return Ok(false);
     }
     let cls_bits = unsafe { object_class_bits(ptr) };
@@ -988,7 +994,7 @@ fn pickle_dump_default_instance(
         }
 
         let _ = pickle_memo_store_if_absent(state, obj_bits);
-        if let Some(state_bits) = pickle_default_instance_state(_py, obj_bits, ptr, type_id)? {
+        if let Some(state_bits) = pickle_default_instance_state(_py, obj_bits, ptr)? {
             if !obj_from_bits(state_bits).is_none() {
                 pickle_dump_obj_binary(_py, state, state_bits, true)?;
                 state.push(PICKLE_OP_BUILD);

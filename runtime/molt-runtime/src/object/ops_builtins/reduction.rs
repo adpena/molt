@@ -1,7 +1,6 @@
 //! Default object reduction: CPython 3.12 Objects/typeobject.c,
 //! object___reduce_ex___impl, _common_reduce, reduce_newobj and
 //! _PyObject_GetNewArguments. Copy and serialization consume this authority.
-use crate::builtins::attr::clear_attribute_error_if_pending;
 use crate::*;
 use molt_runtime_core::ProtectedRuntimeValue as Value;
 
@@ -22,35 +21,38 @@ fn tuple<'a>(py: &'a PyToken<'_>, fields: &[u64]) -> Result<Value<'a>, u64> {
     owned(py, MoltObject::from_ptr(ptr).bits())
 }
 
-fn attr<'a>(py: &'a PyToken<'_>, obj: u64, name: &[u8]) -> Result<Option<Value<'a>>, u64> {
-    let name = attr_name_bits_from_bytes(py, name).ok_or_else(|| MoltObject::none().bits())?;
+fn attr<'a>(py: &'a PyToken<'_>, obj: u64, name: crate::NameId) -> Result<Option<Value<'a>>, u64> {
+    let name = name
+        .owned_bits(py)
+        .ok_or_else(|| MoltObject::none().bits())?;
     let name = owned(py, name)?;
-    let bits = molt_getattr_builtin(obj, name.bits(), missing_bits(py));
-    if exception_pending(py) && clear_attribute_error_if_pending(py) {
-        return Ok(None);
-    }
-    let value = owned(py, bits)?;
-    if is_missing_bits(py, value.bits()) {
-        Ok(None)
-    } else {
-        Ok(Some(value))
+    match lookup_attribute(py, obj, name.bits()) {
+        AttributeLookup::Found(bits) => owned(py, bits).map(Some),
+        AttributeLookup::Missing => Ok(None),
+        AttributeLookup::Error => Err(MoltObject::none().bits()),
     }
 }
 
-fn required<'a>(py: &'a PyToken<'_>, obj: u64, name: &[u8]) -> Result<Value<'a>, u64> {
-    let name = attr_name_bits_from_bytes(py, name).ok_or_else(|| MoltObject::none().bits())?;
+fn required<'a>(py: &'a PyToken<'_>, obj: u64, name: crate::NameId) -> Result<Value<'a>, u64> {
+    let name = name
+        .owned_bits(py)
+        .ok_or_else(|| MoltObject::none().bits())?;
     let name = owned(py, name)?;
     owned(py, molt_getattr_builtin(obj, name.bits(), missing_bits(py)))
 }
 
-fn special<'a>(py: &'a PyToken<'_>, obj: u64, name: &[u8]) -> Result<Option<Value<'a>>, u64> {
-    unsafe { crate::builtins::attr::lookup_special_method(py, obj, name) }
+fn special<'a>(
+    py: &'a PyToken<'_>,
+    obj: u64,
+    name: crate::NameId,
+) -> Result<Option<Value<'a>>, u64> {
+    unsafe { crate::builtins::attr::lookup_special_method(py, obj, name).into_result() }
         .map_err(|()| MoltObject::none().bits())?
         .map(|bits| owned(py, bits))
         .transpose()
 }
 
-fn copyreg<'a>(py: &'a PyToken<'_>, name: &[u8]) -> Result<Value<'a>, u64> {
+fn copyreg<'a>(py: &'a PyToken<'_>, name: crate::NameId) -> Result<Value<'a>, u64> {
     use crate::builtins::module_table::{CachedModuleOutcome, ModuleImportPolicy};
     // typeobject.c import_copyreg first uses PyImport_GetModule. Reuse the
     // interpreter's public module authority, including initialization waits
@@ -105,7 +107,7 @@ fn new_arguments<'a>(
     py: &'a PyToken<'_>,
     obj: u64,
 ) -> Result<(Option<Value<'a>>, Option<Value<'a>>), u64> {
-    if let Some(method) = special(py, obj, b"__getnewargs_ex__")? {
+    if let Some(method) = special(py, obj, crate::NameId::DunderGetnewargsEx)? {
         let result = owned(py, unsafe { call_callable0(py, method.bits()) })?;
         require_kind(
             py,
@@ -145,7 +147,7 @@ fn new_arguments<'a>(
             Some(Value::retain(py.core_token(), fields[1])),
         ));
     }
-    if let Some(method) = special(py, obj, b"__getnewargs__")? {
+    if let Some(method) = special(py, obj, crate::NameId::DunderGetnewargs)? {
         let args = owned(py, unsafe { call_callable0(py, method.bits()) })?;
         require_kind(
             py,
@@ -162,8 +164,9 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
     // Construction is class metadata, like CPython's tp_new check. Reduction
     // must not observe a metaclass's __getattribute__ or bind __new__ here.
     let initial_class = Value::retain(py.core_token(), type_of_bits(py, obj));
-    let name =
-        attr_name_bits_from_bytes(py, b"__new__").ok_or_else(|| MoltObject::none().bits())?;
+    let name = crate::NameId::DunderNew
+        .owned_bits(py)
+        .ok_or_else(|| MoltObject::none().bits())?;
     let name = owned(py, name)?;
     let constructor_present = unsafe {
         crate::builtins::attr::class_attr_lookup_raw_mro(
@@ -196,9 +199,9 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
     let constructor = copyreg(
         py,
         if has_kwargs {
-            b"__newobj_ex__"
+            crate::NameId::DunderNewobjEx
         } else {
-            b"__newobj__"
+            crate::NameId::DunderNewobj
         },
     )?;
     // __getnewargs__ may have changed the receiver's class. CPython samples
@@ -237,7 +240,7 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
         || obj_from_bits(obj).as_ptr().is_some_and(|ptr| unsafe {
             crate::object::layout::dict_subclass_storage_slot(ptr).is_some()
         });
-    let getstate = required(py, obj, b"__getstate__")?;
+    let getstate = required(py, obj, crate::NameId::DunderGetstate)?;
     // CPython object_getstate identifies the native bound descriptor before
     // calling its default implementation with `required`. Overrides retain
     // ordinary call semantics, including a user-provided opaque-state recipe.
@@ -267,7 +270,7 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
         Value::retain(py.core_token(), MoltObject::none().bits())
     };
     let dictitems = if is_dict {
-        let items = required(py, obj, b"items")?;
+        let items = required(py, obj, crate::NameId::Items)?;
         let items = owned(py, unsafe { call_callable0(py, items.bits()) })?;
         owned(py, molt_iter(items.bits()))?
     } else {
@@ -290,7 +293,7 @@ fn common_reduce(py: &PyToken<'_>, obj: u64, protocol: i32) -> Result<u64, u64> 
     if protocol >= 2 {
         reduce_newobj(py, obj)
     } else {
-        let reducer = copyreg(py, b"_reduce_ex")?;
+        let reducer = copyreg(py, crate::NameId::PrivateReduceEx)?;
         Ok(owned(py, unsafe {
             call_callable2(
                 py,
@@ -317,13 +320,14 @@ pub extern "C" fn molt_object_reduce_ex(obj: u64, protocol: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let result = (|| {
-            if let Some(reduce) = attr(py, obj, b"__reduce__")? {
+            if let Some(reduce) = attr(py, obj, crate::NameId::DunderReduce)? {
                 let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
-                let class_reduce = required(py, cls.bits(), b"__reduce__")?;
+                let class_reduce = required(py, cls.bits(), crate::NameId::DunderReduce)?;
                 // The immutable object's descriptor is metadata, as in
                 // CPython's interpreter-cached objreduce. Only the receiver's
                 // class lookup above observes metaclass attribute semantics.
-                let name = attr_name_bits_from_bytes(py, b"__reduce__")
+                let name = crate::NameId::DunderReduce
+                    .owned_bits(py)
                     .ok_or_else(|| MoltObject::none().bits())?;
                 let name = owned(py, name)?;
                 let base_reduce = unsafe {
@@ -443,7 +447,7 @@ pub extern "C" fn molt_set_reduce(obj: u64) -> u64 {
         let result = (|| {
             let keys = owned(py, molt_list_builtin(obj))?;
             let args = tuple(py, &[keys.bits()])?;
-            let getter = required(py, obj, b"__getstate__")?;
+            let getter = required(py, obj, crate::NameId::DunderGetstate)?;
             let state = owned(py, unsafe { call_callable0(py, getter.bits()) })?;
             let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
             Ok(tuple(py, &[cls.bits(), args.bits(), state.bits()])?.into_bits())
@@ -461,7 +465,7 @@ fn bytearray_reduce(py: &PyToken<'_>, obj: u64, protocol: i32) -> Result<u64, u6
         TYPE_ID_BYTEARRAY,
         "bytearray reduction requires a bytearray",
     )?;
-    let getter = required(py, obj, b"__getstate__")?;
+    let getter = required(py, obj, crate::NameId::DunderGetstate)?;
     let state = owned(py, unsafe { call_callable0(py, getter.bits()) })?;
     let cls = Value::retain(py.core_token(), type_of_bits(py, obj));
     let ptr = obj_from_bits(obj).as_ptr().unwrap();

@@ -22,10 +22,10 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from types import ModuleType
-from typing import Any, assert_never
+from typing import TYPE_CHECKING, Any, assert_never
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -45,7 +45,8 @@ from tools.molt_dev_controller import (
 )  # noqa: E402
 from tools.detached_execution import launch_detached, python_command
 from tools.venv_exec import venv_python
-from tools.molt_dev_policy import LandingMode
+from tools import finding_status, git_identity
+from tools.molt_dev_policy import LandingClass, LandingMode, landing_class
 from molt.path_custody import host_path_is_within
 from molt.dx import storage_path
 from molt import process_model
@@ -61,6 +62,10 @@ from tools.driver_errors import (
 )  # noqa: E402
 from tools.molt_dev_common import _COMMANDS, _fail, _ok, _step, _warn  # noqa: E402
 
+if TYPE_CHECKING:
+    # Imported for types only: tools.molt_dev imports this module.
+    from tools.molt_dev import Git
+
 
 def _driver() -> ModuleType:
     """The canonical driver; imported late because it imports this module."""
@@ -72,8 +77,11 @@ def _driver() -> ModuleType:
 REQUEST_SCHEMA = "molt.landing-request.v2"
 RESULT_SCHEMA = "molt.landing-result.v2"
 PLAN_SCHEMA = "molt.landing-plan.v1"
-# A batch larger than this costs more in bisection than one more gate run.
-MAX_BATCH = 8
+# Batching pays only when most candidates pass: at a per-candidate pass rate p
+# a batch of k passes with probability p**k. On 2026-11-02 p was about 0.2 and
+# 24 failed batch blocks cost 7.6 h of bisection. Raise this only while p holds
+# at 0.85 or better.
+MAX_BATCH = 1
 # Retention: finished runner logs beyond the newest RUNNER_LOGS_KEPT, and
 # results older than RESULT_DAYS, retire when a runner starts.
 RUNNER_LOGS_KEPT = 20
@@ -102,9 +110,17 @@ class LandingStatus(StrEnum):
 
 
 class PostsubmitStatus(StrEnum):
+    """Main's health verdict (docs/design/landing_queue.md, HF-655).
+
+    Only RED implicates main's commits: a ``CandidateFailure``, such as a
+    gate's own failure or a failing test in this run's JUnit. A runner, guard
+    or storage stop with no such evidence is INCONCLUSIVE.
+    """
+
     GREEN = "green"
     RED = "red"
     CANCELLED = "cancelled"
+    INCONCLUSIVE = "inconclusive"
 
 
 def last_green(git) -> str | None:
@@ -154,7 +170,11 @@ def recent_postsubmit_failures(
         match PostsubmitStatus(record["status"]):
             case PostsubmitStatus.RED:
                 failed.update(dict.fromkeys(record["failing_tests"]))
-            case PostsubmitStatus.GREEN | PostsubmitStatus.CANCELLED:
+            case (
+                PostsubmitStatus.GREEN
+                | PostsubmitStatus.CANCELLED
+                | PostsubmitStatus.INCONCLUSIVE
+            ):
                 pass
             case state:
                 assert_never(state)
@@ -216,6 +236,7 @@ def _run_postsubmit_gates(
     from molt.dx import RunContext
     from tools.molt_dev_policy import select_landing_gates
     from tools.molt_dev_gates import (
+        CancelReason,
         admit_selected_output_capacity,
         gate_runs_pytest,
         run_selected_gates,
@@ -255,6 +276,7 @@ def _run_postsubmit_gates(
         receipt_kind="postsubmit",
         mode=LandingMode.POSTSUBMIT,
         cancelled=cancelled,
+        cancel_reason=CancelReason.PENDING_LANDING,
         deferred=prepared.deferred,
     )
     runtime = replace(runtime, output_dir=output, receipt_path=output / "receipt.json")
@@ -323,7 +345,9 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
         deferred = list(_run_postsubmit_gates(sandbox, head, green, cancelled, output))
         failed = _postsubmit_failures(output, sandbox.repo)
         if failed:
-            raise DriverError("passing gates contain failing pytest reports")
+            # This run's own JUnit lists failing tests: a failing test is a
+            # failure of main, even when its gate's command passed.
+            raise CandidateFailure("passing gates contain failing pytest reports")
         git.fetch(args.remote, args.branch)
         if cancelled() or git.rev_parse(f"{args.remote}/{args.branch}") != head:
             state = PostsubmitStatus.CANCELLED
@@ -334,16 +358,23 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             state = PostsubmitStatus.GREEN
     except GateCancellation as exc:
         state, error = PostsubmitStatus.CANCELLED, str(exc)
-    except (DriverError, OSError, ValueError) as exc:
+    except CandidateFailure as exc:
+        # Main's own commits decided this failure (a gate failed for its own
+        # reason, or main's gate policy is invalid).
         state, error = PostsubmitStatus.RED, str(exc)
+    except (DriverError, OSError, ValueError) as exc:
+        # A runner, guard or storage stop cannot implicate main's commits.
+        state, error = PostsubmitStatus.INCONCLUSIVE, str(exc)
     if state is not PostsubmitStatus.GREEN:
         try:
             deferred = read_deferred()
             failed = _postsubmit_failures(output, sandbox.repo)
         except (DriverError, OSError, ValueError) as exc:
+            # The receipt records the read error; the verdict stands.
             error = f"{error}; {exc}"
-            if state is not PostsubmitStatus.CANCELLED:
-                state = PostsubmitStatus.RED
+    if state is not PostsubmitStatus.RED:
+        # Only a candidate failure implicates commits or proposes reverts.
+        suspects, reverts = [], []
     _write_json(
         receipt,
         {
@@ -379,6 +410,8 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             )
         case PostsubmitStatus.CANCELLED:
             _step("postsubmit cancelled; landing takes priority")
+        case PostsubmitStatus.INCONCLUSIVE:
+            _warn(f"postsubmit inconclusive at {head}: {error}; receipt {receipt}")
         case _:
             assert_never(state)
     return state
@@ -580,13 +613,93 @@ def withdraw(paths: QueuePaths, request_id: str, *, reason: str) -> LandingReque
 # --------------------------------------------------------------------------
 
 
+def _git_reader(git: Git) -> Callable[[list[str]], str]:
+    # changed_paths reads NUL-framed stdout; Git._run raises DriverError.
+    def run_git(args: list[str]) -> str:
+        return git._run(args).stdout
+
+    return run_git
+
+
+def head_class(git: Git, upstream: str, head: str) -> LandingClass:
+    """The class of ``head``'s change since its merge base with ``upstream``.
+
+    Always computed from Git, never stored with the request.
+    """
+    run_git = _git_reader(git)
+    base = git_identity.merge_base(head, upstream, run_git=run_git)
+    return landing_class(git_identity.changed_paths(base, head, run_git=run_git))
+
+
+def head_closes_rows(git: Git, upstream: str, head: str) -> bool:
+    """Whether a row open at the merge base is not open at ``head``.
+
+    A closing ledger lane keeps its place, so it cannot overtake a code lane
+    that still cites the row. ``Git._run`` raises ``DriverError`` when the
+    ledger is missing at either revision.
+    """
+    base = git_identity.merge_base(head, upstream, run_git=_git_reader(git))
+
+    def open_keys(revision: str) -> frozenset[str]:
+        text = git._run(
+            ["show", f"{revision}:{finding_status.LEDGER_PATH.as_posix()}"]
+        ).stdout
+        return frozenset(finding_status.project(text).open_keys)
+
+    return bool(open_keys(base) - open_keys(head))
+
+
+@dataclass(frozen=True)
+class RequestOrder:
+    """How one ready request orders in ``next_batch``; computed per batch."""
+
+    landing_class: LandingClass
+    closes_rows: bool  # False for every CODE request; computed only for LEDGER
+
+
+def classify_ready(
+    git: Git, upstream: str, ready: Sequence[LandingRequest]
+) -> tuple[dict[str, RequestOrder], list[tuple[LandingRequest, DriverError]]]:
+    """The order of each ready request by id, and the requests Git could not
+    classify with their error (for example a head without history in common
+    with ``upstream``)."""
+
+    order: dict[str, RequestOrder] = {}
+    failed: list[tuple[LandingRequest, DriverError]] = []
+    for request in ready:
+        try:
+            kind = head_class(git, upstream, request.head)
+            closes = kind is LandingClass.LEDGER and head_closes_rows(
+                git, upstream, request.head
+            )
+        except DriverError as exc:
+            failed.append((request, exc))
+            continue
+        order[request.id] = RequestOrder(kind, closes)
+    return order, failed
+
+
+def _order_rank(order: RequestOrder) -> int:
+    """Non-closing ledger requests first; every other request after them."""
+    return (
+        0 if order.landing_class is LandingClass.LEDGER and not order.closes_rows else 1
+    )
+
+
 def next_batch(
-    paths: QueuePaths, ready: Sequence[LandingRequest]
+    paths: QueuePaths,
+    ready: Sequence[LandingRequest],
+    *,
+    order: Mapping[str, RequestOrder],
 ) -> list[LandingRequest]:
     """The batch to test next: the bisection plan's head, else the queue's head.
 
     The plan survives the runner's hand-off between processes. A planned id
-    that is no longer pending (landed, failed or withdrawn) drops out of it.
+    that is no longer pending (landed, failed or withdrawn) drops out of it;
+    ``order`` is never consulted for a planned batch. A fresh batch takes the
+    first request in queue order (non-closing ledger requests first, then the
+    rest, each in enqueue order) and the run of requests behind it with the
+    same ``LandingClass``, up to ``MAX_BATCH``.
     """
 
     by_id = {request.id: request for request in ready}
@@ -603,7 +716,17 @@ def next_batch(
         _write_plan(paths, groups)
         return [by_id[request_id] for request_id in groups[0]]
     paths.plan.unlink(missing_ok=True)
-    return list(ready[:MAX_BATCH])
+    # sorted() is stable, so each rank keeps enqueue order.
+    ranked = sorted(ready, key=lambda request: _order_rank(order[request.id]))
+    if not ranked:
+        return []
+    kind = order[ranked[0].id].landing_class
+    batch = [ranked[0]]
+    for request in ranked[1:MAX_BATCH]:
+        if order[request.id].landing_class is not kind:
+            break
+        batch.append(request)
+    return batch
 
 
 def _write_plan(paths: QueuePaths, groups: list[list[str]]) -> None:
@@ -799,6 +922,41 @@ def queue_paths(repo: Path) -> QueuePaths:
     return QueuePaths.of(common_dir, primary_checkout=primary_checkout)
 
 
+class LandingRefusalReason(StrEnum):
+    """Why ``land`` refuses a lane before it queues it."""
+
+    LEDGER_PENDING = "ledger-pending"
+    LEDGER_MISSING = "ledger-missing"
+
+
+class LandingRefusal(DriverError):
+    """``land`` refused the lane; nothing is queued and ``land`` exits EXIT_FAIL."""
+
+    def __init__(self, reason: LandingRefusalReason, detail: str) -> None:
+        self.reason = reason
+        super().__init__(f"{reason.value}: {detail}")
+
+
+def refuse_second_ledger_writer(
+    git: Git, paths: QueuePaths, *, upstream: str, head: str
+) -> None:
+    """Keep one ledger writer in flight: refuse a ledger lane while one waits.
+
+    Only the integrator submits ledger lanes (HF-711), so the check and the
+    enqueue take no lock. A code lane is never refused here. A pending request
+    that cannot be classified is ignored; the runner records it failed.
+    """
+    if head_class(git, upstream, head) is not LandingClass.LEDGER:
+        return
+    ledger = finding_status.LEDGER_PATH.as_posix()
+    if git._run(["cat-file", "-e", f"{head}:{ledger}"], check=False).returncode:
+        raise LandingRefusal(LandingRefusalReason.LEDGER_MISSING, head)
+    order, _unclassified = classify_ready(git, upstream, pending(paths))
+    for request_id, item in order.items():
+        if item.landing_class is LandingClass.LEDGER:
+            raise LandingRefusal(LandingRefusalReason.LEDGER_PENDING, request_id)
+
+
 def cmd_land(args: argparse.Namespace) -> int:
 
     drv = _driver()
@@ -824,25 +982,54 @@ def cmd_land(args: argparse.Namespace) -> int:
             f"{git.short(head)} is already on {args.remote}/{args.branch}; checkout retained"
         )
         return EXIT_OK
+    precheck = None
     if not already_landed and not args.no_precheck:
-        from tools.molt_dev_precheck import precheck_landing
+        from tools.molt_dev_precheck import precheck_landing, repair_landing
 
-        precheck_landing(
+        session_id = os.environ.get("MOLT_SESSION_ID", "devtool")
+        # The repair commit is the lane's new tip; the precheck and the
+        # request take it, never the stale tip.
+        head = repair_landing(
+            git, repo, head=head, upstream=upstream, session_id=session_id
+        )
+        precheck = precheck_landing(
             git,
             repo,
             head=head,
             upstream=upstream,
-            session_id=os.environ.get("MOLT_SESSION_ID", "devtool"),
+            session_id=session_id,
+            static_only=args.static_only,
         )
+    if args.static_only:
+        _ok(
+            f"{git.short(head)} is already on {args.remote}/{args.branch}; nothing to check"
+            if already_landed
+            else f"static gates passed for {git.short(head)}; no try run, nothing queued"
+        )
+        return EXIT_OK
     if args.precheck_only:
         # A worker's handoff check: the same controller, selection and gate
         # environment as a landing, and no queue state or runner.
+        if precheck is not None and not precheck.complete:
+            _fail(f"precheck incomplete for {git.short(head)}; nothing queued")
+            return EXIT_FAIL
         _ok(
             f"{git.short(head)} is already on {args.remote}/{args.branch}; nothing to check"
             if already_landed
             else f"precheck passed for {git.short(head)}; nothing queued"
         )
         return EXIT_OK
+    if args.candidate_controller and not _runner_lock_free(paths):
+        # A running runner is main's pinned controller: it would take this
+        # request and refuse the candidate's own plan, so queue nothing.
+        _fail(
+            "a landing runner holds the queue, and it would land this request "
+            "with main's controller; wait until `molt_dev.py queue status` "
+            "shows it idle, then run land --candidate-controller again"
+        )
+        return EXIT_FAIL
+    # After the repair and the precheck, and also with --no-precheck.
+    refuse_second_ledger_writer(git, paths, upstream=upstream, head=head)
     request = enqueue(paths, head=head, worktree=repo, branch=branch)
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
@@ -1109,11 +1296,16 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
         if not _after_landing(git.repo, already_landed, args, paths, upstream):
             return True
     ready = pending(paths)
+    order, unclassified = classify_ready(git, upstream, ready)
+    for request, error in unclassified:
+        record_result(paths, request, status=LandingStatus.FAILED, detail=str(error))
+        _fail(f"{request.id} failed: {error}")
+    ready = [request for request in ready if request.id in order]
     if not ready:
         # The same plan owner drops closed requests after a retirement repin.
-        next_batch(paths, ready)
+        next_batch(paths, ready, order={})
         return False
-    batch = next_batch(paths, ready)
+    batch = next_batch(paths, ready, order=order)
     sandbox = _sandbox_git(paths, git, upstream)
 
     def run_git(arguments):
@@ -1313,7 +1505,9 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
                 case PostsubmitStatus.GREEN:
                     _ok("landing queue is empty; main is green")
                     return EXIT_OK
-                case PostsubmitStatus.RED:
+                case PostsubmitStatus.RED | PostsubmitStatus.INCONCLUSIVE:
+                    # An inconclusive run waits for an explicit `queue run`;
+                    # the runner does not retry infrastructure in a loop.
                     return EXIT_FAIL
                 case PostsubmitStatus.CANCELLED:
                     # A request may have withdrawn, or upstream may have moved
@@ -1425,14 +1619,22 @@ def add_queue_arguments(
     precheck.add_argument(
         "--no-precheck",
         action="store_true",
-        help="queue without first running the lane's static gates in the lane "
+        help="queue without first repairing the lane and running its precheck "
         "(the batch still runs every gate)",
     )
     precheck.add_argument(
         "--precheck-only",
         action="store_true",
-        help="run the lane's static gates exactly as land does, then stop: "
-        "nothing is queued and no runner starts (a worker's handoff check)",
+        help="repair and precheck the lane exactly as land does, then stop: "
+        "nothing is queued and no runner starts (a worker's handoff check); "
+        "a precheck the budget cut short exits 1",
+    )
+    precheck.add_argument(
+        "--static-only",
+        action="store_true",
+        help="repair the lane and run its static gates (lint, format, generators, "
+        "registries, policy), then stop: no try run, nothing queued; the tier a "
+        "fast-path push never waives",
     )
     add_pinned_controller_arguments(p_land)
     p_land.set_defaults(func=cmd_land)

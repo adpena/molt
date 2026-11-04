@@ -1,53 +1,48 @@
 use crate::BuiltinExc;
+#[cfg(test)]
+use crate::dynamic_attr_name_bits;
 use molt_obj_model::MoltObject;
 
 use crate::call::function::function_code_execution_kind;
 use crate::object::layout::CodeExecutionKind;
 use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_list,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable1, dec_ref_bits,
-    decode_value_list, exception_pending, int_bits_from_i64, is_truthy, maybe_ptr_from_bits,
-    missing_bits, molt_dir_builtin, molt_getattr_builtin, obj_from_bits, object_type_id,
-    raise_exception, string_obj_to_owned, to_i64, type_of_bits,
+    alloc_string, alloc_tuple, call_callable1, dec_ref_bits, decode_value_list, exception_pending,
+    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, molt_dir_builtin, obj_from_bits,
+    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 fn get_attr_optional(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<Option<u64>, u64> {
     // Internal signature inspection reads the typed binder owner, not public
     // attributes with compiler-private spellings. Wrapped objects retain their
     // normal Python observation path.
-    if crate::call::function::FunctionBindingField::from_name(name).is_some()
+    if let Some(field) = crate::call::function::FunctionBindingField::ALL
+        .into_iter()
+        .find(|field| field.metadata_field().name_id() == name)
         && let Some(pointer) = obj_from_bits(obj_bits).as_ptr()
         && unsafe { object_type_id(pointer) } == TYPE_ID_FUNCTION
     {
-        let value = unsafe { crate::object::function_metadata::metadata_bits(pointer, name) };
+        let value = unsafe {
+            crate::object::function_metadata::metadata_bits(pointer, field.metadata_field())
+        };
         if let Some(bits) = value {
             crate::inc_ref_bits(_py, bits);
         }
         return Ok(value);
     }
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+    let Some(name_bits) = name.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    let result = crate::lookup_attribute(_py, obj_bits, name_bits).into_result();
     dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
+    result.map_err(|()| MoltObject::none().bits())
 }
 
-fn has_attr(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<bool, u64> {
+fn has_attr(_py: &crate::PyToken<'_>, obj_bits: u64, name: crate::NameId) -> Result<bool, u64> {
     match get_attr_optional(_py, obj_bits, name)? {
         Some(value_bits) => {
             if !obj_from_bits(value_bits).is_none() {
@@ -59,7 +54,7 @@ fn has_attr(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<bool
     }
 }
 
-fn attr_truthy(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<bool, u64> {
+fn attr_truthy(_py: &crate::PyToken<'_>, obj_bits: u64, name: crate::NameId) -> Result<bool, u64> {
     match get_attr_optional(_py, obj_bits, name)? {
         Some(value_bits) => {
             let out = is_truthy(_py, obj_from_bits(value_bits));
@@ -75,12 +70,12 @@ fn attr_truthy(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<b
 fn code_flags_from_attr(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    code_attr_name: &[u8],
+    code_attr_name: crate::NameId,
 ) -> Result<i64, u64> {
     let Some(code_bits) = get_attr_optional(_py, obj_bits, code_attr_name)? else {
         return Ok(0);
     };
-    let result = match get_attr_optional(_py, code_bits, b"co_flags")? {
+    let result = match get_attr_optional(_py, code_bits, crate::NameId::CoFlags)? {
         Some(flags_bits) => {
             let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0);
             if !obj_from_bits(flags_bits).is_none() {
@@ -122,7 +117,7 @@ fn state_string(_py: &crate::PyToken<'_>, value: &[u8]) -> u64 {
 }
 
 fn frame_lasti(_py: &crate::PyToken<'_>, frame_bits: u64) -> Result<i64, u64> {
-    let result = match get_attr_optional(_py, frame_bits, b"f_lasti")? {
+    let result = match get_attr_optional(_py, frame_bits, crate::NameId::FLasti)? {
         Some(lasti_bits) => {
             let out = to_i64(obj_from_bits(lasti_bits)).unwrap_or(-1);
             if !obj_from_bits(lasti_bits).is_none() {
@@ -161,7 +156,7 @@ fn alloc_empty_dict_bits(_py: &crate::PyToken<'_>) -> u64 {
 fn attr_i64_default(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
     default: i64,
 ) -> Result<i64, u64> {
     let value = match get_attr_optional(_py, obj_bits, name)? {
@@ -223,7 +218,7 @@ fn signature_payload_from_molt(
 ) -> Result<u64, u64> {
     let mut owned: Vec<u64> = vec![arg_names_bits];
 
-    let posonly = match attr_i64_default(_py, obj_bits, b"__molt_posonly__", 0) {
+    let posonly = match attr_i64_default(_py, obj_bits, crate::NameId::DunderMoltPosonly, 0) {
         Ok(value) => value,
         Err(err) => {
             dec_owned_bits(_py, &owned);
@@ -231,25 +226,26 @@ fn signature_payload_from_molt(
         }
     };
 
-    let kwonly_names_bits = match get_attr_optional(_py, obj_bits, b"__molt_kwonly_names__") {
-        Ok(Some(bits)) if !obj_from_bits(bits).is_none() => bits,
-        Ok(Some(bits)) => {
-            let _ = bits;
-            alloc_empty_tuple_bits(_py)
-        }
-        Ok(None) => alloc_empty_tuple_bits(_py),
-        Err(err) => {
-            dec_owned_bits(_py, &owned);
-            return Err(err);
-        }
-    };
+    let kwonly_names_bits =
+        match get_attr_optional(_py, obj_bits, crate::NameId::DunderMoltKwonlyNames) {
+            Ok(Some(bits)) if !obj_from_bits(bits).is_none() => bits,
+            Ok(Some(bits)) => {
+                let _ = bits;
+                alloc_empty_tuple_bits(_py)
+            }
+            Ok(None) => alloc_empty_tuple_bits(_py),
+            Err(err) => {
+                dec_owned_bits(_py, &owned);
+                return Err(err);
+            }
+        };
     if obj_from_bits(kwonly_names_bits).is_none() {
         dec_owned_bits(_py, &owned);
         return Ok(MoltObject::none().bits());
     }
     owned.push(kwonly_names_bits);
 
-    let vararg_bits = match get_attr_optional(_py, obj_bits, b"__molt_vararg__") {
+    let vararg_bits = match get_attr_optional(_py, obj_bits, crate::NameId::DunderMoltVararg) {
         Ok(Some(bits)) => {
             if !obj_from_bits(bits).is_none() {
                 owned.push(bits);
@@ -263,7 +259,7 @@ fn signature_payload_from_molt(
         }
     };
 
-    let varkw_bits = match get_attr_optional(_py, obj_bits, b"__molt_varkw__") {
+    let varkw_bits = match get_attr_optional(_py, obj_bits, crate::NameId::DunderMoltVarkw) {
         Ok(Some(bits)) => {
             if !obj_from_bits(bits).is_none() {
                 owned.push(bits);
@@ -277,7 +273,7 @@ fn signature_payload_from_molt(
         }
     };
 
-    let defaults_bits = match get_attr_optional(_py, obj_bits, b"__defaults__") {
+    let defaults_bits = match get_attr_optional(_py, obj_bits, crate::NameId::DunderDefaults) {
         Ok(Some(bits)) if !obj_from_bits(bits).is_none() => bits,
         Ok(Some(bits)) => {
             let _ = bits;
@@ -295,7 +291,7 @@ fn signature_payload_from_molt(
     }
     owned.push(defaults_bits);
 
-    let kwdefaults_bits = match get_attr_optional(_py, obj_bits, b"__kwdefaults__") {
+    let kwdefaults_bits = match get_attr_optional(_py, obj_bits, crate::NameId::DunderKwdefaults) {
         Ok(Some(bits)) if !obj_from_bits(bits).is_none() => bits,
         Ok(Some(bits)) => {
             let _ = bits;
@@ -333,12 +329,12 @@ fn signature_payload_from_code(
     code_bits: u64,
 ) -> Result<Option<u64>, u64> {
     let mut owned: Vec<u64> = Vec::new();
-    let posonly = attr_i64_default(_py, code_bits, b"co_posonlyargcount", 0)?;
-    let argcount = attr_i64_default(_py, code_bits, b"co_argcount", 0)?;
-    let kwonly = attr_i64_default(_py, code_bits, b"co_kwonlyargcount", 0)?;
-    let flags = attr_i64_default(_py, code_bits, b"co_flags", 0)?;
+    let posonly = attr_i64_default(_py, code_bits, crate::NameId::CoPosonlyargcount, 0)?;
+    let argcount = attr_i64_default(_py, code_bits, crate::NameId::CoArgcount, 0)?;
+    let kwonly = attr_i64_default(_py, code_bits, crate::NameId::CoKwonlyargcount, 0)?;
+    let flags = attr_i64_default(_py, code_bits, crate::NameId::CoFlags, 0)?;
 
-    let varnames_bits = match get_attr_optional(_py, code_bits, b"co_varnames") {
+    let varnames_bits = match get_attr_optional(_py, code_bits, crate::NameId::CoVarnames) {
         Ok(Some(bits)) if !obj_from_bits(bits).is_none() => bits,
         Ok(Some(bits)) => {
             let _ = bits;
@@ -414,7 +410,7 @@ fn signature_payload_from_code(
         MoltObject::none().bits()
     };
 
-    let defaults_bits = match get_attr_optional(_py, obj_bits, b"__defaults__") {
+    let defaults_bits = match get_attr_optional(_py, obj_bits, crate::NameId::DunderDefaults) {
         Ok(Some(bits)) if !obj_from_bits(bits).is_none() => bits,
         Ok(Some(bits)) => {
             let _ = bits;
@@ -432,7 +428,7 @@ fn signature_payload_from_code(
     }
     owned.push(defaults_bits);
 
-    let kwdefaults_bits = match get_attr_optional(_py, obj_bits, b"__kwdefaults__") {
+    let kwdefaults_bits = match get_attr_optional(_py, obj_bits, crate::NameId::DunderKwdefaults) {
         Ok(Some(bits)) if !obj_from_bits(bits).is_none() => bits,
         Ok(Some(bits)) => {
             let _ = bits;
@@ -929,7 +925,7 @@ fn signature_payload_from_parsed_text(
 fn signature_payload_from_text_attr(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
-    attr_name: &[u8],
+    attr_name: crate::NameId,
 ) -> Result<Option<u64>, u64> {
     let Some(attr_bits) = get_attr_optional(_py, obj_bits, attr_name)? else {
         return Ok(None);
@@ -946,7 +942,7 @@ fn signature_payload_from_text_attr(
         return Ok(None);
     };
     if parsed.implicit_receiver {
-        let receiver = get_attr_optional(_py, obj_bits, b"__self__")?;
+        let receiver = get_attr_optional(_py, obj_bits, crate::NameId::DunderSelf)?;
         let bound = receiver.is_some_and(|bits| !obj_from_bits(bits).is_none());
         if let Some(bits) = receiver {
             dec_ref_bits(_py, bits);
@@ -1058,11 +1054,14 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
         if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
             let type_id = unsafe { object_type_id(ptr) };
             if is_builtin_fn || type_id == TYPE_ID_FUNCTION || type_id == TYPE_ID_TYPE {
-                let sig_from_text =
-                    match signature_payload_from_text_attr(_py, obj_bits, b"__text_signature__") {
-                        Ok(value) => value,
-                        Err(err) => return err,
-                    };
+                let sig_from_text = match signature_payload_from_text_attr(
+                    _py,
+                    obj_bits,
+                    crate::NameId::DunderTextSignature,
+                ) {
+                    Ok(value) => value,
+                    Err(err) => return err,
+                };
                 if let Some(sig_bits) = sig_from_text {
                     return sig_bits;
                 }
@@ -1080,10 +1079,11 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
         // For Molt-defined (non-builtin) functions, prefer compiler-provided signature metadata.
         // For runtime-created builtins, do not use Molt metadata or `__code__` fallbacks.
         if !is_builtin_fn {
-            let molt_args = match get_attr_optional(_py, obj_bits, b"__molt_arg_names__") {
-                Ok(value) => value,
-                Err(err) => return err,
-            };
+            let molt_args =
+                match get_attr_optional(_py, obj_bits, crate::NameId::DunderMoltArgNames) {
+                    Ok(value) => value,
+                    Err(err) => return err,
+                };
             if let Some(arg_names_bits) = molt_args
                 && !obj_from_bits(arg_names_bits).is_none()
             {
@@ -1094,7 +1094,7 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
             }
         }
 
-        let code_bits_opt = match get_attr_optional(_py, obj_bits, b"__code__") {
+        let code_bits_opt = match get_attr_optional(_py, obj_bits, crate::NameId::DunderCode) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1141,7 +1141,7 @@ pub extern "C" fn molt_inspect_currentframe() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getdoc(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(doc_bits) = (match get_attr_optional(_py, obj_bits, b"__doc__") {
+        let Some(doc_bits) = (match get_attr_optional(_py, obj_bits, crate::NameId::DunderDoc) {
             Ok(value) => value,
             Err(err) => return err,
         }) else {
@@ -1176,26 +1176,20 @@ pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) ->
                 "dir() did not return a sequence",
             );
         };
-        let missing = missing_bits(_py);
         let mut pairs: Vec<u64> = Vec::new();
         let mut owned_pairs: Vec<u64> = Vec::new();
         for &name_bits in names.iter() {
-            let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
-            if exception_pending(_py) {
-                if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
-                    continue;
-                }
-                for bits in owned_pairs {
-                    dec_ref_bits(_py, bits);
-                }
-                if !obj_from_bits(names_bits).is_none() {
+            let value_bits = match crate::lookup_attribute(_py, obj_bits, name_bits) {
+                crate::AttributeLookup::Found(bits) => bits,
+                crate::AttributeLookup::Missing => continue,
+                crate::AttributeLookup::Error => {
+                    for bits in owned_pairs {
+                        dec_ref_bits(_py, bits);
+                    }
                     dec_ref_bits(_py, names_bits);
+                    return MoltObject::none().bits();
                 }
-                return MoltObject::none().bits();
-            }
-            if value_bits == missing {
-                continue;
-            }
+            };
             let mut keep = true;
             if !obj_from_bits(predicate_bits).is_none() {
                 let pred_bits = unsafe { call_callable1(_py, predicate_bits, value_bits) };
@@ -1264,7 +1258,7 @@ pub extern "C" fn molt_inspect_isfunction(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isclass(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let has_mro = match has_attr(_py, obj_bits, b"__mro__") {
+        let has_mro = match has_attr(_py, obj_bits, crate::NameId::DunderMro) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1275,14 +1269,14 @@ pub extern "C" fn molt_inspect_isclass(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_ismodule(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let has_dict = match has_attr(_py, obj_bits, b"__dict__") {
+        let has_dict = match has_attr(_py, obj_bits, crate::NameId::DunderDict) {
             Ok(value) => value,
             Err(err) => return err,
         };
         if !has_dict {
             return MoltObject::from_bool(false).bits();
         }
-        let has_name = match has_attr(_py, obj_bits, b"__name__") {
+        let has_name = match has_attr(_py, obj_bits, crate::NameId::DunderName) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1306,7 +1300,7 @@ pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
         if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::Coroutine).bits();
         }
-        let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
+        let flags = match code_flags_from_attr(_py, obj_bits, crate::NameId::DunderCode) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1320,7 +1314,7 @@ pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
         if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::AsyncGenerator).bits();
         }
-        let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
+        let flags = match code_flags_from_attr(_py, obj_bits, crate::NameId::DunderCode) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1334,7 +1328,7 @@ pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
         if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::Generator).bits();
         }
-        let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
+        let flags = match code_flags_from_attr(_py, obj_bits, crate::NameId::DunderCode) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1357,7 +1351,7 @@ pub extern "C" fn molt_inspect_isnativeawaitable(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let running = match attr_truthy(_py, gen_bits, b"gi_running") {
+        let running = match attr_truthy(_py, gen_bits, crate::NameId::GiRunning) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1366,12 +1360,12 @@ pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
         }
         // CPython reads the frame state through `gi_suspended`; only a
         // generator that is neither running nor suspended needs its frame.
-        match attr_truthy(_py, gen_bits, b"gi_suspended") {
+        match attr_truthy(_py, gen_bits, crate::NameId::GiSuspended) {
             Ok(true) => return state_string(_py, b"GEN_SUSPENDED"),
             Ok(false) => {}
             Err(err) => return err,
         }
-        let frame_bits = match get_attr_optional(_py, gen_bits, b"gi_frame") {
+        let frame_bits = match get_attr_optional(_py, gen_bits, crate::NameId::GiFrame) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1388,19 +1382,19 @@ pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getasyncgenstate(agen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let running = match attr_truthy(_py, agen_bits, b"ag_running") {
+        let running = match attr_truthy(_py, agen_bits, crate::NameId::AgRunning) {
             Ok(value) => value,
             Err(err) => return err,
         };
         if running {
             return state_string(_py, b"AGEN_RUNNING");
         }
-        match attr_truthy(_py, agen_bits, b"ag_suspended") {
+        match attr_truthy(_py, agen_bits, crate::NameId::AgSuspended) {
             Ok(true) => return state_string(_py, b"AGEN_SUSPENDED"),
             Ok(false) => {}
             Err(err) => return err,
         }
-        let frame_bits = match get_attr_optional(_py, agen_bits, b"ag_frame") {
+        let frame_bits = match get_attr_optional(_py, agen_bits, crate::NameId::AgFrame) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1417,7 +1411,7 @@ pub extern "C" fn molt_inspect_getasyncgenstate(agen_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let running = match attr_truthy(_py, coro_bits, b"cr_running") {
+        let running = match attr_truthy(_py, coro_bits, crate::NameId::CrRunning) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1425,7 +1419,7 @@ pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
             return state_string(_py, b"CORO_RUNNING");
         }
 
-        let frame_bits = match get_attr_optional(_py, coro_bits, b"cr_frame") {
+        let frame_bits = match get_attr_optional(_py, coro_bits, crate::NameId::CrFrame) {
             Ok(value) => value,
             Err(err) => return err,
         };
@@ -1437,14 +1431,14 @@ pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
                 Some(frame_bits)
             }
         } else {
-            let gi_running = match attr_truthy(_py, coro_bits, b"gi_running") {
+            let gi_running = match attr_truthy(_py, coro_bits, crate::NameId::GiRunning) {
                 Ok(value) => value,
                 Err(err) => return err,
             };
             if gi_running {
                 return state_string(_py, b"CORO_RUNNING");
             }
-            match get_attr_optional(_py, coro_bits, b"gi_frame") {
+            match get_attr_optional(_py, coro_bits, crate::NameId::GiFrame) {
                 Ok(value) => value,
                 Err(err) => return err,
             }
@@ -1539,7 +1533,7 @@ mod coroutine_identity_tests {
             assert!(!function.is_null());
             let bits = MoltObject::from_ptr(function).bits();
             unsafe {
-                for name in [b"cr_code".as_slice(), b"cr_frame"] {
+                for name in [crate::NameId::CrCode, crate::NameId::CrFrame] {
                     assert!(crate::call::class_init::function_set_attr_name(
                         _py,
                         function,
@@ -1626,10 +1620,10 @@ mod signature_snapshot_tests {
     fn code_signature_retains_variadic_names_through_defaults_callbacks() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let name = attr_name_bits_from_bytes(py, b"SignatureSnapshot").unwrap();
+            let name = dynamic_attr_name_bits(py, b"SignatureSnapshot").unwrap();
             let class = crate::molt_class_new(name);
             crate::molt_class_set_base(class, crate::builtin_classes(py).object);
-            let getter_name = attr_name_bits_from_bytes(py, b"__getattribute__").unwrap();
+            let getter_name = dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
                 runtime_fn_addr(

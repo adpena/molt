@@ -28,7 +28,7 @@ pub extern "C" fn molt_module_getattribute(module: u64, name: u64) -> u64 {
         if string_obj_to_owned(obj_from_bits(name)).is_none() {
             return crate::builtins::attr::raise_attr_name_type_error(py, name);
         }
-        match unsafe { crate::builtins::attr::module_attr_lookup(py, ptr, name) } {
+        match unsafe { crate::builtins::attr::module_attr_lookup(py, ptr, name).into_result() } {
             Ok(Some(value)) => return value,
             Ok(None) => {}
             Err(()) => return MoltObject::none().bits(),
@@ -52,7 +52,7 @@ pub(crate) unsafe fn raise_module_attribute_miss(
     let attribute =
         string_obj_to_owned(obj_from_bits(name)).unwrap_or_else(|| "<attr>".to_string());
     let module_bits = MoltObject::from_ptr(module).bits();
-    let label = match unsafe { module_dict_entry(py, module, b"__name__") } {
+    let label = match unsafe { module_dict_entry(py, module, crate::NameId::DunderName) } {
         Ok(Some(bits)) => {
             let label = string_obj_to_owned(obj_from_bits(bits));
             dec_ref_bits(py, bits);
@@ -65,7 +65,7 @@ pub(crate) unsafe fn raise_module_attribute_miss(
         let message = format!("module has no attribute '{attribute}'");
         return attr_error_with_obj_message(py, &message, &attribute, module_bits);
     };
-    let spec = match unsafe { module_dict_entry(py, module, b"__spec__") } {
+    let spec = match unsafe { module_dict_entry(py, module, crate::NameId::DunderSpec) } {
         Ok(spec) => spec,
         Err(()) => return none,
     };
@@ -109,7 +109,7 @@ pub(crate) unsafe fn raise_module_attribute_miss(
 unsafe fn module_dict_entry(
     py: &PyToken<'_>,
     module: *mut u8,
-    key: &[u8],
+    key: crate::NameId,
 ) -> Result<Option<u64>, ()> {
     let Some(dict) = obj_from_bits(unsafe { module_dict_bits(module) }).as_ptr() else {
         return Ok(None);
@@ -117,7 +117,7 @@ unsafe fn module_dict_entry(
     if unsafe { object_type_id(dict) } != TYPE_ID_DICT {
         return Ok(None);
     }
-    let key = attr_name_bits_from_bytes(py, key).ok_or(())?;
+    let key = key.owned_bits(py).ok_or(())?;
     let entry = unsafe { dict_get_in_place(py, dict, key) };
     dec_ref_bits(py, key);
     let entry = entry?;
@@ -130,7 +130,9 @@ unsafe fn module_dict_entry(
 /// CPython `_PyModuleSpec_IsUninitializedSubmodule`: a missing attribute is a
 /// plain miss, and any other lookup or membership error propagates.
 fn spec_lists_uninitialized_submodule(py: &PyToken<'_>, spec: u64, name: u64) -> Result<bool, ()> {
-    let key = attr_name_bits_from_bytes(py, b"_uninitialized_submodules").ok_or(())?;
+    let key = crate::NameId::PrivateUninitializedSubmodules
+        .owned_bits(py)
+        .ok_or(())?;
     let value = crate::builtins::platform::getattr_optional_bits(py, spec, key);
     dec_ref_bits(py, key);
     let Some(submodules) = value.map_err(|_| ())? else {
@@ -180,7 +182,7 @@ pub extern "C" fn molt_module_dir(module: u64) -> u64 {
                 "module.__dict__ is not a dictionary",
             );
         };
-        let Some(name) = attr_name_bits_from_bytes(py, b"__dir__") else {
+        let Some(name) = crate::NameId::DunderDir.owned_bits(py) else {
             return MoltObject::none().bits();
         };
         let hook = unsafe { dict_get_in_place(py, dict, name) };

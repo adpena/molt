@@ -100,7 +100,10 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
     let op_prefers_float_lane = |op: &OpIR| {
         scalar_fast_paths_enabled
             && !op_prefers_integer_runtime_lane(op)
-            && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+            && representation_plan
+                .op_scalar_lane(op)
+                .map(|proof| proof.kind())
+                == Some(ScalarKind::Float)
     };
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
@@ -161,8 +164,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    nbc,
-                    lhs_name,
+                    representation_plan
+                        .numeric_operand(lhs_name)
+                        .expect("producer-proven numeric operand"),
                 );
                 let rhs_f = float_value_for_mixed(
                     &mut *module,
@@ -172,8 +176,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    nbc,
-                    rhs_name,
+                    representation_plan
+                        .numeric_operand(rhs_name)
+                        .expect("producer-proven numeric operand"),
                 );
                 let zero_f = builder.ins().f64const(0.0);
                 let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);

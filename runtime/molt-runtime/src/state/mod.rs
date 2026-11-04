@@ -1,6 +1,9 @@
 pub(crate) mod cache;
 pub(crate) mod lifecycle;
 pub(crate) mod metrics;
+pub(crate) mod names;
+mod names_generated;
+pub(crate) mod pending_work;
 pub(crate) mod recursion;
 pub(crate) mod runtime_state;
 pub(crate) mod tls;

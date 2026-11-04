@@ -19,7 +19,8 @@ pub(in crate::builtins::types::dataclasses) fn dataclasses_fields_dict_bits(
     cls_bits: u64,
     missing: u64,
 ) -> Option<u64> {
-    let fields_bits = dc_getattr_default_bits(_py, cls_bits, b"__dataclass_fields__", missing)?;
+    let fields_bits =
+        dc_getattr_default_bits(_py, cls_bits, crate::NameId::DunderDataclassFields, missing)?;
     if exception_pending(_py) {
         clear_exception(_py);
         return None;
@@ -66,7 +67,12 @@ fn dataclasses_collect_fields_by_tag<'a, 'py>(
     }?;
     for (index, pair) in order.as_chunks::<2>().0.iter().enumerate() {
         let field_obj_bits = pair[1];
-        let tag_bits = dc_getattr_default_bits(_py, field_obj_bits, b"_field_type", missing)?;
+        let tag_bits = dc_getattr_default_bits(
+            _py,
+            field_obj_bits,
+            crate::NameId::PrivateFieldType,
+            missing,
+        )?;
         if exception_pending(_py) {
             return None;
         }
@@ -85,9 +91,8 @@ fn dataclasses_is_dataclass_instance(_py: &PyToken<'_>, obj_bits: u64, missing: 
         return false;
     };
     unsafe {
-        match object_type_id(obj_ptr) {
-            TYPE_ID_TYPE | TYPE_ID_LIST | TYPE_ID_TUPLE | TYPE_ID_DICT => return false,
-            _ => {}
+        if object_type_id(obj_ptr) == TYPE_ID_TYPE {
+            return false;
         }
     }
     let cls_bits = type_of_bits(_py, obj_bits);
@@ -125,27 +130,24 @@ fn dataclasses_deepcopy(_py: &PyToken<'_>, value_bits: u64) -> u64 {
         return MoltObject::none().bits();
     }
     let memo_bits = MoltObject::from_ptr(memo_ptr).bits();
-    let Some(deepcopy_name_bits) = attr_name_bits_from_bytes(_py, b"__deepcopy__") else {
+    let Some(deepcopy_name_bits) = crate::NameId::DunderDeepcopy.owned_bits(_py) else {
         dec_ref_bits(_py, memo_bits);
         return MoltObject::none().bits();
     };
-    let missing = missing_bits(_py);
-    let deepcopy_bits = molt_getattr_builtin(value_bits, deepcopy_name_bits, missing);
+    let result = crate::lookup_attribute(_py, value_bits, deepcopy_name_bits);
     dec_ref_bits(_py, deepcopy_name_bits);
-    if exception_pending(_py) {
-        if !crate::builtins::attr::clear_attribute_error_if_pending(_py) {
+    let deepcopy_bits = match result {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => {
+            dec_ref_bits(_py, memo_bits);
+            inc_ref_bits(_py, value_bits);
+            return value_bits;
+        }
+        crate::AttributeLookup::Error => {
             dec_ref_bits(_py, memo_bits);
             return MoltObject::none().bits();
         }
-        dec_ref_bits(_py, memo_bits);
-        inc_ref_bits(_py, value_bits);
-        return value_bits;
-    }
-    if deepcopy_bits == missing {
-        dec_ref_bits(_py, memo_bits);
-        inc_ref_bits(_py, value_bits);
-        return value_bits;
-    }
+    };
     let out_bits = unsafe { call_callable1(_py, deepcopy_bits, memo_bits) };
     dec_ref_bits(_py, deepcopy_bits);
     dec_ref_bits(_py, memo_bits);
@@ -224,7 +226,7 @@ fn dataclasses_asdict_inner(
         else {
             return MoltObject::none().bits();
         };
-        let Some(name_name_bits) = attr_name_bits_from_bytes(_py, b"name") else {
+        let Some(name_name_bits) = crate::NameId::Name.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
         let mut item_bits: Vec<u64> = Vec::with_capacity(field_objs.len());
@@ -371,7 +373,7 @@ fn dataclasses_astuple_inner(
         else {
             return MoltObject::none().bits();
         };
-        let Some(name_name_bits) = attr_name_bits_from_bytes(_py, b"name") else {
+        let Some(name_name_bits) = crate::NameId::Name.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
         let mut values: Vec<u64> = Vec::with_capacity(field_objs.len());
@@ -504,7 +506,7 @@ pub extern "C" fn molt_dataclasses_is_dataclass(obj_bits: u64) -> u64 {
                 return MoltObject::from_bool(false).bits();
             }
         }
-        let Some(fields_name_bits) = attr_name_bits_from_bytes(_py, b"__dataclass_fields__") else {
+        let Some(fields_name_bits) = crate::NameId::DunderDataclassFields.owned_bits(_py) else {
             return MoltObject::from_bool(false).bits();
         };
         let mut has_fields = false;
@@ -605,254 +607,95 @@ pub extern "C" fn molt_dataclasses_astuple(
     })
 }
 
+// CPython Lib/dataclasses.py: replace (3.12), _replace (3.13+).
+// Keep one algorithm for the public function and the generated class method.
+fn dataclasses_replace_impl(
+    py: &PyToken<'_>,
+    obj_bits: u64,
+    changes_bits: u64,
+    field_tag_bits: u64,
+    initvar_tag_bits: u64,
+    missing_default_bits: u64,
+) -> Result<u64, ()> {
+    use super::field_runtime::{
+        DcValue, dc_attr, dc_dict_fields, dc_repr_str, dc_result, dc_truth,
+    };
+    use crate::builtins::compatibility_error::CompatibilityError;
+    let missing = missing_bits(py);
+    if !dataclasses_is_dataclass_instance(py, obj_bits, missing) {
+        raise_exception::<()>(
+            py,
+            BuiltinExc::TypeError,
+            "replace() should be called on dataclass instances",
+        );
+        return Err(());
+    }
+    let fields = dc_attr(py, obj_bits, crate::NameId::DunderDataclassFields)?;
+    let fields = dc_dict_fields(py, fields.bits)?;
+    let changes = dc_result(py, molt_dict_from_obj(changes_bits))?;
+    let changes_ptr = obj_from_bits(changes.bits).as_ptr().ok_or(())?;
+    for pair in fields.as_chunks::<2>().0 {
+        let field = pair[1];
+        let tag = dc_attr(py, field, crate::NameId::PrivateFieldType)?;
+        if tag.bits != field_tag_bits && tag.bits != initvar_tag_bits {
+            continue;
+        }
+        let name = dc_attr(py, field, crate::NameId::Name)?;
+        let init = dc_attr(py, field, crate::NameId::Init)?;
+        let changed = unsafe { dict_get_in_place(py, changes_ptr, name.bits)? }.is_some();
+        if !dc_truth(py, init.bits)? {
+            if changed {
+                let field = string_obj_to_owned(obj_from_bits(name.bits)).ok_or(())?;
+                CompatibilityError::DataclassReplaceInitFalse { field: &field }.raise::<()>(py);
+                return Err(());
+            }
+            continue;
+        }
+        if changed {
+            continue;
+        }
+        if tag.bits == initvar_tag_bits {
+            let default = dc_attr(py, field, crate::NameId::Default)?;
+            // The compiled caller owns the canonical sentinel binding even
+            // when sys.modules no longer contains its dataclasses module.
+            if default.bits == missing_default_bits {
+                let field_repr = dc_repr_str(py, name.bits)?;
+                CompatibilityError::DataclassReplaceMissingInitVar {
+                    field_repr: &field_repr,
+                }
+                .raise::<()>(py);
+                return Err(());
+            }
+        }
+        let value = dc_result(
+            py,
+            crate::builtins::attributes::molt_get_attr_name(obj_bits, name.bits),
+        )?;
+        if !unsafe { dict_set_in_place(py, changes_ptr, name.bits, value.bits) } {
+            return Err(());
+        }
+    }
+    let cls = dc_attr(py, obj_bits, crate::NameId::DunderClass)?;
+    dc_result(py, call_with_kwargs(py, cls.bits, &[], changes.bits)).map(DcValue::into_bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dataclasses_replace(
     obj_bits: u64,
     changes_bits: u64,
     field_tag_bits: u64,
     initvar_tag_bits: u64,
+    missing_default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-        if !dataclasses_is_dataclass_instance(_py, obj_bits, missing) {
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "replace() should be called on dataclass instances",
-            );
-        }
-        let cls_bits = type_of_bits(_py, obj_bits);
-        let changes_copy_bits = molt_dict_from_obj(changes_bits);
-        if obj_from_bits(changes_copy_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let Some(changes_ptr) = obj_from_bits(changes_copy_bits).as_ptr() else {
-            dec_ref_bits(_py, changes_copy_bits);
-            return MoltObject::none().bits();
-        };
-        let values_ptr = alloc_dict_with_pairs(_py, &[]);
-        if values_ptr.is_null() {
-            dec_ref_bits(_py, changes_copy_bits);
-            return MoltObject::none().bits();
-        }
-        let values_bits = MoltObject::from_ptr(values_ptr).bits();
-        let Some(fields_dict_bits) = dataclasses_fields_dict_bits(_py, cls_bits, missing) else {
-            dec_ref_bits(_py, changes_copy_bits);
-            dec_ref_bits(_py, values_bits);
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "replace() should be called on dataclass instances",
-            );
-        };
-        let Some(fields_ptr) = obj_from_bits(fields_dict_bits).as_ptr() else {
-            dec_ref_bits(_py, changes_copy_bits);
-            dec_ref_bits(_py, values_bits);
-            return MoltObject::none().bits();
-        };
-        let Some(field_type_name_bits) = attr_name_bits_from_bytes(_py, b"_field_type") else {
-            dec_ref_bits(_py, changes_copy_bits);
-            dec_ref_bits(_py, values_bits);
-            return MoltObject::none().bits();
-        };
-        let Some(name_name_bits) = attr_name_bits_from_bytes(_py, b"name") else {
-            dec_ref_bits(_py, field_type_name_bits);
-            dec_ref_bits(_py, changes_copy_bits);
-            dec_ref_bits(_py, values_bits);
-            return MoltObject::none().bits();
-        };
-        let Some(init_name_bits) = attr_name_bits_from_bytes(_py, b"init") else {
-            dec_ref_bits(_py, name_name_bits);
-            dec_ref_bits(_py, field_type_name_bits);
-            dec_ref_bits(_py, changes_copy_bits);
-            dec_ref_bits(_py, values_bits);
-            return MoltObject::none().bits();
-        };
-
-        let Some(order) = (unsafe {
-            crate::object::ops_dict::dict_snapshot(
-                _py,
-                fields_ptr,
-                crate::object::ops_dict::DictSnapshotKind::Entries,
-            )
-        }) else {
-            dec_ref_bits(_py, init_name_bits);
-            dec_ref_bits(_py, name_name_bits);
-            dec_ref_bits(_py, field_type_name_bits);
-            dec_ref_bits(_py, changes_copy_bits);
-            dec_ref_bits(_py, values_bits);
-            return MoltObject::none().bits();
-        };
-        for pair in order.chunks(2) {
-            if pair.len() != 2 {
-                continue;
-            }
-            let field_obj_bits = pair[1];
-            let ftype_bits = molt_getattr_builtin(field_obj_bits, field_type_name_bits, missing);
-            if exception_pending(_py) || ftype_bits == missing {
-                dec_ref_bits(_py, init_name_bits);
-                dec_ref_bits(_py, name_name_bits);
-                dec_ref_bits(_py, field_type_name_bits);
-                dec_ref_bits(_py, changes_copy_bits);
-                dec_ref_bits(_py, values_bits);
-                return MoltObject::none().bits();
-            }
-            let name_bits = molt_getattr_builtin(field_obj_bits, name_name_bits, missing);
-            if exception_pending(_py) || name_bits == missing {
-                dec_ref_bits(_py, init_name_bits);
-                dec_ref_bits(_py, name_name_bits);
-                dec_ref_bits(_py, field_type_name_bits);
-                dec_ref_bits(_py, changes_copy_bits);
-                dec_ref_bits(_py, values_bits);
-                return MoltObject::none().bits();
-            }
-
-            if ftype_bits == initvar_tag_bits {
-                let ch_val = match unsafe { dict_get_in_place(_py, changes_ptr, name_bits) } {
-                    Ok(value) => value,
-                    Err(()) => {
-                        dec_ref_bits(_py, init_name_bits);
-                        dec_ref_bits(_py, name_name_bits);
-                        dec_ref_bits(_py, field_type_name_bits);
-                        dec_ref_bits(_py, changes_copy_bits);
-                        dec_ref_bits(_py, values_bits);
-                        return MoltObject::none().bits();
-                    }
-                };
-                if let Some(bits) = ch_val {
-                    let completed = unsafe {
-                        dict_set_in_place(_py, values_ptr, name_bits, bits)
-                            && dict_del_in_place(_py, changes_ptr, name_bits).is_ok()
-                    };
-                    if !completed {
-                        dec_ref_bits(_py, init_name_bits);
-                        dec_ref_bits(_py, name_name_bits);
-                        dec_ref_bits(_py, field_type_name_bits);
-                        dec_ref_bits(_py, changes_copy_bits);
-                        dec_ref_bits(_py, values_bits);
-                        return MoltObject::none().bits();
-                    }
-                } else {
-                    let name_repr_bits = molt_repr_from_obj(name_bits);
-                    let name_repr =
-                        string_obj_to_owned(obj_from_bits(name_repr_bits)).unwrap_or_default();
-                    dec_ref_bits(_py, name_repr_bits);
-                    dec_ref_bits(_py, init_name_bits);
-                    dec_ref_bits(_py, name_name_bits);
-                    dec_ref_bits(_py, field_type_name_bits);
-                    dec_ref_bits(_py, changes_copy_bits);
-                    dec_ref_bits(_py, values_bits);
-                    let msg = format!("InitVar {name_repr} must be specified with replace()");
-                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-                }
-                continue;
-            }
-            if ftype_bits != field_tag_bits {
-                continue;
-            }
-
-            let init_flag_bits = molt_getattr_builtin(field_obj_bits, init_name_bits, missing);
-            if exception_pending(_py) || init_flag_bits == missing {
-                dec_ref_bits(_py, init_name_bits);
-                dec_ref_bits(_py, name_name_bits);
-                dec_ref_bits(_py, field_type_name_bits);
-                dec_ref_bits(_py, changes_copy_bits);
-                dec_ref_bits(_py, values_bits);
-                return MoltObject::none().bits();
-            }
-            let init_enabled = is_truthy(_py, obj_from_bits(init_flag_bits));
-            if !init_enabled {
-                if match unsafe { dict_get_in_place(_py, changes_ptr, name_bits) } {
-                    Ok(value) => value.is_some(),
-                    Err(()) => {
-                        dec_ref_bits(_py, init_name_bits);
-                        dec_ref_bits(_py, name_name_bits);
-                        dec_ref_bits(_py, field_type_name_bits);
-                        dec_ref_bits(_py, changes_copy_bits);
-                        dec_ref_bits(_py, values_bits);
-                        return MoltObject::none().bits();
-                    }
-                } {
-                    let field_name =
-                        string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default();
-                    dec_ref_bits(_py, init_name_bits);
-                    dec_ref_bits(_py, name_name_bits);
-                    dec_ref_bits(_py, field_type_name_bits);
-                    dec_ref_bits(_py, changes_copy_bits);
-                    dec_ref_bits(_py, values_bits);
-                    let msg = format!(
-                        "field {field_name} is declared with init=False, it cannot be specified with replace()"
-                    );
-                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-                }
-                continue;
-            }
-
-            let changed = match unsafe { dict_get_in_place(_py, changes_ptr, name_bits) } {
-                Ok(value) => value,
-                Err(()) => {
-                    dec_ref_bits(_py, init_name_bits);
-                    dec_ref_bits(_py, name_name_bits);
-                    dec_ref_bits(_py, field_type_name_bits);
-                    dec_ref_bits(_py, changes_copy_bits);
-                    dec_ref_bits(_py, values_bits);
-                    return MoltObject::none().bits();
-                }
-            };
-            if let Some(changed_bits) = changed {
-                let completed = unsafe {
-                    dict_set_in_place(_py, values_ptr, name_bits, changed_bits)
-                        && dict_del_in_place(_py, changes_ptr, name_bits).is_ok()
-                };
-                if !completed {
-                    dec_ref_bits(_py, init_name_bits);
-                    dec_ref_bits(_py, name_name_bits);
-                    dec_ref_bits(_py, field_type_name_bits);
-                    dec_ref_bits(_py, changes_copy_bits);
-                    dec_ref_bits(_py, values_bits);
-                    return MoltObject::none().bits();
-                }
-            } else {
-                let current_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
-                if exception_pending(_py) || current_bits == missing {
-                    dec_ref_bits(_py, init_name_bits);
-                    dec_ref_bits(_py, name_name_bits);
-                    dec_ref_bits(_py, field_type_name_bits);
-                    dec_ref_bits(_py, changes_copy_bits);
-                    dec_ref_bits(_py, values_bits);
-                    return MoltObject::none().bits();
-                }
-                let stored = unsafe { dict_set_in_place(_py, values_ptr, name_bits, current_bits) };
-                if !stored {
-                    dec_ref_bits(_py, init_name_bits);
-                    dec_ref_bits(_py, name_name_bits);
-                    dec_ref_bits(_py, field_type_name_bits);
-                    dec_ref_bits(_py, changes_copy_bits);
-                    dec_ref_bits(_py, values_bits);
-                    return MoltObject::none().bits();
-                }
-            }
-        }
-
-        dec_ref_bits(_py, init_name_bits);
-        dec_ref_bits(_py, name_name_bits);
-        dec_ref_bits(_py, field_type_name_bits);
-
-        let completed = unsafe {
-            dict_update_apply(
-                _py,
-                values_bits,
-                dict_update_set_in_place,
-                changes_copy_bits,
-            )
-        };
-        dec_ref_bits(_py, changes_copy_bits);
-        if !completed {
-            dec_ref_bits(_py, values_bits);
-            return MoltObject::none().bits();
-        }
-        let out_bits = call_with_kwargs(_py, cls_bits, &[], values_bits);
-        dec_ref_bits(_py, values_bits);
-        out_bits
+    crate::with_gil_entry_nopanic!(py, {
+        dataclasses_replace_impl(
+            py,
+            obj_bits,
+            changes_bits,
+            field_tag_bits,
+            initvar_tag_bits,
+            missing_default_bits,
+        )
+        .unwrap_or_else(|()| MoltObject::none().bits())
     })
 }

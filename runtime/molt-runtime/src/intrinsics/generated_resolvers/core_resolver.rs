@@ -3,6 +3,10 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        "molt_native_callable_reduce" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_native_callable_reduce",
+            crate::molt_native_callable_reduce as *const (),
+        )),
         "molt_compatibility_error" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_compatibility_error",
             crate::molt_compatibility_error as *const (),

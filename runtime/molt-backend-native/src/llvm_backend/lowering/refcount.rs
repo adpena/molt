@@ -2,7 +2,7 @@
 //! blocks in a separate IR function leaves the caller's TIR/phi CFG intact.
 use super::*;
 use inkwell::builder::Builder;
-use inkwell::values::{BasicValue, IntValue};
+use inkwell::values::IntValue;
 use molt_codegen_abi::inline_refcount::{
     RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
 };
@@ -102,11 +102,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             function.get_nth_param(0).unwrap().into_int_value(),
             function.get_nth_param(1).unwrap().into_int_value(),
             operation,
-            if nanbox::MOLT_REFCOUNT_ATOMIC {
-                RefcountStorage::Atomic
-            } else {
-                RefcountStorage::Plain
-            },
+            RefcountStorage::for_build(nanbox::MOLT_REFCOUNT_ATOMIC),
         );
         builder.build_return(None).unwrap();
         if let Some(block) = emitter.slow_block {
@@ -169,11 +165,6 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
         let delta = self.constant(delta as u64);
         self.builder.build_int_add(value, delta, "rc_add").unwrap()
     }
-    fn shift_right(&mut self, value: Self::Word, amount: Self::Word) -> Self::Word {
-        self.builder
-            .build_right_shift(value, amount, false, "rc_shift")
-            .unwrap()
-    }
     fn compare(
         &mut self,
         comparison: RefcountComparison,
@@ -189,9 +180,6 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
             .build_int_compare(comparison, left, right, "rc_test")
             .unwrap()
     }
-    fn either(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate {
-        self.builder.build_or(left, right, "rc_either").unwrap()
-    }
     fn both(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate {
         self.builder.build_and(left, right, "rc_both").unwrap()
     }
@@ -204,13 +192,6 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
                 "rc_word",
             )
             .unwrap();
-        if offset == nanbox::HEADER_FLAGS_OFFSET && nanbox::MOLT_FLAGS_ATOMIC {
-            let instruction = value.as_instruction_value().unwrap();
-            instruction.set_alignment(4).unwrap();
-            instruction
-                .set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
-                .unwrap();
-        }
         self.builder
             .build_int_z_extend(
                 value.into_int_value(),

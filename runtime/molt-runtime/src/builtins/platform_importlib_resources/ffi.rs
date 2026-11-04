@@ -327,7 +327,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
-        let decode_name = intern_runtime_static_name(_py, b"decode");
+        let decode_name = crate::NameId::Decode.bits(_py);
         let decode_bits = match importlib_reader_lookup_callable(_py, bytes_bits, decode_name) {
             Ok(Some(bits)) => bits,
             Ok(None) => {
@@ -447,7 +447,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
         let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
-        let decode_name = intern_runtime_static_name(_py, b"decode");
+        let decode_name = crate::NameId::Decode.bits(_py);
         let decode_bits = match importlib_reader_lookup_callable(_py, bytes_bits, decode_name) {
             Ok(Some(bits)) => bits,
             Ok(None) => {

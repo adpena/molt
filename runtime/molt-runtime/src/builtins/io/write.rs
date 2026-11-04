@@ -23,11 +23,11 @@ pub(crate) extern "C" fn io_base_close(object: u64) -> u64 {
             Ok(false) => {}
         }
         let _exception_scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
-        let result = io_call_noargs(py, object, b"flush");
+        let result = io_call_noargs(py, object, crate::NameId::Flush);
         let error = crate::builtins::exceptions::take_raised(py);
         // Publish closed even after a failed flush. A user setter may itself
         // fail, in which case that error takes precedence and retains context.
-        if let Some(name) = attr_name_bits_from_bytes(py, b"__IOBase_closed") {
+        if let Some(name) = crate::NameId::PrivateIOBaseClosed.owned_bits(py) {
             let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
             molt_setattr_builtin(object, name, MoltObject::from_bool(true).bits());
         }
@@ -163,7 +163,7 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
             // raw implementation. Dispatch once after that callback, retaining
             // the already acquired input rather than exporting a second time.
             if buffered::is_writer(_py, ptr) {
-                if let Err(error) = buffered::prepare(_py, ptr, &[b"write"], false) {
+                if let Err(error) = buffered::prepare(_py, ptr, &[crate::NameId::Write], false) {
                     return error;
                 }
                 return buffered_writer::write(_py, handle_bits, ptr, input.unwrap(), input_len);
@@ -454,7 +454,11 @@ pub(super) fn file_flush(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
             return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
         }
         let reader = buffered::is_reader(_py, ptr);
-        let methods: &[&[u8]] = if reader { &[b"flush"] } else { &[b"write"] };
+        let methods: &[crate::NameId] = if reader {
+            &[crate::NameId::Flush]
+        } else {
+            &[crate::NameId::Write]
+        };
         if let Err(error) = buffered::prepare(_py, ptr, methods, false) {
             return error;
         }
@@ -528,10 +532,10 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             let reader = buffered::is_reader(_py, ptr);
-            let methods: &[&[u8]] = if reader {
-                &[b"close"]
+            let methods: &[crate::NameId] = if reader {
+                &[crate::NameId::Close]
             } else {
-                &[b"write", b"close"]
+                &[crate::NameId::Write, crate::NameId::Close]
             };
             if let Err(error) = buffered::prepare(_py, ptr, methods, true) {
                 return error;
@@ -591,7 +595,7 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
         } else if memory {
             MoltObject::none().bits()
         } else {
-            io_call_noargs(_py, handle_bits, b"flush")
+            io_call_noargs(_py, handle_bits, crate::NameId::Flush)
         };
         let flush_error = crate::builtins::exceptions::take_raised(_py);
         dec_ref_bits(_py, result);
@@ -615,7 +619,7 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
             };
             if let Some(child) = child {
                 let _child = obj_from_bits(child).as_ptr().map(PtrDropGuard::new);
-                let result = io_call_noargs(_py, child, b"close");
+                let result = io_call_noargs(_py, child, crate::NameId::Close);
                 unsafe {
                     let handle = &mut *file_handle_ptr(ptr);
                     clear_read_buffer(handle);

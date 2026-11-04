@@ -427,7 +427,7 @@ extern "C" fn member_get(descriptor: u64, instance: u64) -> u64 {
 }
 
 fn set_attr(py: &PyToken<'_>, class: *mut u8, name: &[u8], value: u64) -> bool {
-    let Some(key) = attr_name_bits_from_bytes(py, name) else {
+    let Some(key) = dynamic_attr_name_bits(py, name) else {
         return false;
     };
     let _key = owned(py, key);
@@ -1031,13 +1031,13 @@ pub extern "C" fn molt_structseq_type(
             }
         }
         for (name, address) in [
-            ("__repr__", fn_addr!(repr)),
-            ("__reduce__", fn_addr!(reduce)),
+            (crate::NameId::DunderRepr, fn_addr!(repr)),
+            (crate::NameId::DunderReduce, fn_addr!(reduce)),
         ] {
             let function = crate::builtins::methods::builtin_func_bits(
                 py,
                 NativeCallableSpec::declared(
-                    if name == "__repr__" {
+                    if name == crate::NameId::DunderRepr {
                         NativeCallableKind::WrapperDescriptor
                     } else {
                         NativeCallableKind::MethodDescriptor
@@ -1058,7 +1058,7 @@ pub extern "C" fn molt_structseq_type(
                 NativeCallableSpec::declared(
                     NativeCallableKind::MethodDescriptor,
                     bits,
-                    "__replace__",
+                    crate::NameId::DunderReplace,
                 ),
                 fn_addr!(replace),
             );

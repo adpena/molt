@@ -38,7 +38,7 @@ thread_local! {
 
 extern "C" fn capture_unraisable(args: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let key = crate::attr_name_bits_from_bytes(py, b"exc_value").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"exc_value").unwrap();
         let value = crate::molt_get_attr_name(args, key);
         REPORTED_ERROR.with(|reported| reported.set((value, reported.get().1 + 1)));
         dec_ref_bits(py, key);
@@ -48,10 +48,10 @@ extern "C" fn capture_unraisable(args: u64) -> u64 {
 }
 
 fn install_unraisable_capture(py: &crate::PyToken<'_>) {
-    let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
     let sys = crate::builtins::modules::molt_module_new(name);
     crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
-    let key = crate::attr_name_bits_from_bytes(py, b"unraisablehook").unwrap();
+    let key = crate::dynamic_attr_name_bits(py, b"unraisablehook").unwrap();
     let target = capture_unraisable as *const ();
     let hook = crate::object::builders::alloc_function_obj(
         py,
@@ -105,7 +105,7 @@ fn pending_reporting_consumes_runtime_error_and_observes_c_precedence() {
             errors::PyErr_Print();
             assert!(errors::PyErr_Occurred().is_null());
             let sys = crate::builtins::modules::interpreter_sys_module(py).unwrap();
-            let key = crate::attr_name_bits_from_bytes(py, b"last_exc").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"last_exc").unwrap();
             let last = crate::molt_get_attr_name(sys, key);
             assert_eq!(
                 last, runtime,
@@ -345,7 +345,7 @@ fn cold_exception_class_projection_failure_preserves_numeric_error_and_outputs()
     crate::with_gil_entry_nopanic!(py, {
         let name = ExceptionValue::adopt(
             py,
-            crate::attr_name_bits_from_bytes(py, b"ColdNumericConversionError").unwrap(),
+            crate::dynamic_attr_name_bits(py, b"ColdNumericConversionError").unwrap(),
         );
         let namespace = crate::alloc_dict_with_pairs(py, &[]);
         assert!(!namespace.is_null());
@@ -1417,7 +1417,7 @@ fn cold_type_publication_preserves_prior_on_success_and_selects_real_failure() {
                     ExceptionValue::adopt(py, exception_bits(py, crate::BuiltinExc::LookupError));
                 let name = ExceptionValue::adopt(
                     py,
-                    crate::attr_name_bits_from_bytes(py, b"ColdPendingPublication").unwrap(),
+                    crate::dynamic_attr_name_bits(py, b"ColdPendingPublication").unwrap(),
                 );
                 let namespace = crate::alloc_dict_with_pairs(py, &[]);
                 assert!(!namespace.is_null());
@@ -2572,7 +2572,7 @@ fn preparation_buffer_instance<'a, 'py>(
     crate::builtins::exceptions::ExceptionValue<'a, 'py>,
 ) {
     use crate::builtins::exceptions::ExceptionValue;
-    let name = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, label).unwrap());
+    let name = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, label).unwrap());
     let mut methods = Vec::new();
     for (name, target) in [
         (
@@ -2584,7 +2584,7 @@ fn preparation_buffer_instance<'a, 'py>(
             preparation_buffer_release as *const (),
         ),
     ] {
-        let key = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, name).unwrap());
+        let key = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
         let function = crate::object::builders::alloc_function_obj(
             py,
             crate::provenance::abi::expose_function_address(target),
@@ -3003,7 +3003,7 @@ fn buffer_eligibility_preparation_failure_never_selects_a_fallback_protocol() {
                 b"__iter__".as_slice()
             };
             let key =
-                ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, protocol).unwrap());
+                ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, protocol).unwrap());
             let target = preparation_buffer_forbidden_fallback as *const ();
             let function = crate::object::builders::alloc_function_obj(
                 py,

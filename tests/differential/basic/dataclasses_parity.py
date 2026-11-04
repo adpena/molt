@@ -3,6 +3,7 @@
 from dataclasses import (
     FrozenInstanceError,
     InitVar,
+    KW_ONLY,
     asdict,
     astuple,
     dataclass,
@@ -13,6 +14,201 @@ from dataclasses import (
     replace,
 )
 from typing import ClassVar
+
+# The initializer performs each factory and store in field order. Binding
+# errors happen before any factory, and Field edits do not rewrite its body.
+init_events = []
+
+
+def first_factory():
+    init_events.append("factory:first")
+    return []
+
+
+def second_factory():
+    init_events.append("factory:second")
+    return 8
+
+
+@dataclass
+class InitOrder:
+    first: list = field(default_factory=first_factory)
+    second: int = field(default_factory=second_factory)
+    required: int = field(kw_only=True)
+
+    def __setattr__(self, name, value):
+        init_events.append("store:" + name)
+        object.__setattr__(self, name, value)
+
+    def __post_init__(self):
+        init_events.append("post")
+
+
+try:
+    InitOrder()
+except TypeError as error:
+    print("init binding before factories", type(error).__name__, init_events)
+first_order = InitOrder(required=2)
+print("init order", init_events, first_order.second)
+init_events.clear()
+InitOrder.__dataclass_fields__["second"].default_factory = lambda: 999
+second_order = InitOrder(required=3)
+print("captured factory", second_order.second, first_order.first is second_order.first)
+
+
+@dataclass
+class InitDisabledDefault:
+    value: int = field(default=11, init=False)
+    fresh: list = field(default_factory=list, init=False)
+
+
+disabled = InitDisabledDefault()
+print("init disabled dictionary", sorted(vars(disabled)))
+InitDisabledDefault.value = 21
+print("class supplies default", disabled.value)
+del InitDisabledDefault.value
+print("class deletion", hasattr(disabled, "value"))
+
+
+@dataclass(slots=True)
+class InitDisabledSlot:
+    value: int = field(default=11, init=False)
+    fresh: list = field(default_factory=list, init=False)
+
+
+slot_disabled = InitDisabledSlot()
+print("init disabled slots", slot_disabled.value,
+      slot_disabled.fresh is InitDisabledSlot().fresh)
+
+
+@dataclass
+class InitBase:
+    first: int
+    context: InitVar[int]
+    tail: int = 4
+
+    def __post_init__(self, context):
+        self.total = self.first + context + self.tail
+
+
+@dataclass
+class InitChild(InitBase):
+    tail: int = 7
+
+
+child = InitChild(2, 3)
+print("inherited initializer", child.total, child.tail,
+      "context" in vars(child))
+
+
+class DirectSuper(InitBase):
+    def __init__(self, first, context):
+        super().__init__(first, context)
+
+
+print("direct super initializer", DirectSuper(5, 6).total)
+
+
+@dataclass(init=False)
+class InheritDisabled(InitBase):
+    extra: int = 30
+
+
+print("inherited init false", InheritDisabled(1, 2).total,
+      "__init__" in vars(InheritDisabled))
+
+# Reconstructed initializers retain real factory cells on both shape paths.
+from types import FunctionType
+
+RuntimeCaptured = make_dataclass("RuntimeCaptured", [
+    ("first", list, field(default_factory=first_factory)),
+    ("second", int, field(default_factory=second_factory)),
+    ("required", int, field(kw_only=True)),
+])
+for record in (InitOrder, RuntimeCaptured):
+    method = record.__init__
+    copied = FunctionType(method.__code__, method.__globals__, method.__name__,
+                          method.__defaults__, method.__closure__)
+    value = object.__new__(record)
+    copied(value, required=10)
+    print("reconstructed factories", value.first, value.second,
+          method.__code__.co_freevars)
+    cell = method.__closure__[method.__code__.co_freevars.index("__dataclass_dflt_second__")]
+    original = cell.cell_contents
+    cell.cell_contents = lambda: 81
+    print("live factory cell", record(required=11).second)
+    cell.cell_contents = original
+
+# A malformed call evaluates its arguments, then fails in the ordinary binder
+# before any factory or initializer store.
+init_events.clear()
+def argument_event():
+    init_events.append("argument")
+    return 9
+try:
+    InitOrder(1, 2, 3, required=argument_event())
+except TypeError as error:
+    print("initializer binding error", str(error), init_events)
+
+# A parameter shadows a same-named generated factory binding in ordinary Python.
+@dataclass
+class CapturedNameCollision:
+    value: object = field(default_factory=lambda: "original")
+    __dataclass_dflt_value__: object = lambda: "parameter"
+RuntimeNameCollision = make_dataclass("RuntimeNameCollision", [
+    ("value", object, field(default_factory=lambda: "original")),
+    ("__dataclass_dflt_value__", object, lambda: "parameter"),
+])
+for record in (CapturedNameCollision, RuntimeNameCollision):
+    print("factory binding collision", record().value,
+          record.__init__.__code__.co_freevars)
+
+@dataclass
+class ClassVariableSelf:
+    self: ClassVar[int] = 1
+    value: int = 2
+print("class variable receiver", ClassVariableSelf.__init__.__code__.co_varnames[:2])
+
+try:
+    @dataclass
+    class ReceiverCollision:
+        self: int
+        __dataclass_self__: int
+except SyntaxError as error:
+    print("receiver collision", str(error))
+
+# Signature validation uses sentinel identity and only runs for generated init.
+class MissingSpellingDefault:
+    def __repr__(self):
+        print("unexpected default repr")
+        return "MISSING"
+try:
+    @dataclass
+    class InvalidDefaultOrder:
+        earlier: object = MissingSpellingDefault()
+        later: int
+except TypeError as error:
+    print("default order identity", str(error))
+
+@dataclass(init=False)
+class NoInitializerOrder:
+    earlier: int = 2
+    later: int
+print("no initializer ordering", "__init__" in vars(NoInitializerOrder))
+
+try:
+    @dataclass
+    class DuplicateKeywordMarker:
+        first: KW_ONLY
+        second: KW_ONLY
+except TypeError as error:
+    print("duplicate keyword marker", str(error))
+try:
+    @dataclass
+    class ClassVariableKeyword:
+        value: ClassVar[int] = field(kw_only=False)
+except TypeError as error:
+    print("class variable keyword", str(error))
 
 # ---------- Basic dataclass with various field types ----------
 

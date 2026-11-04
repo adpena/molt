@@ -6,12 +6,13 @@ import ctypes
 import errno
 import os
 import stat
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from molt import file_deletion
+from molt import file_deletion, filesystem_mounts
 from tools import disk_guard
 
 
@@ -262,6 +263,286 @@ def test_delete_dangling_symlink(tmp_path: Path) -> None:
     link.symlink_to(tmp_path / "absent")
     assert file_deletion.delete_path(link) == (True, "")
     assert not link.is_symlink()
+
+
+@pytest.mark.parametrize("location", ["root", "descendant"])
+def test_mount_admission_preserves_tree_before_unsealing(
+    tmp_path, monkeypatch, location
+):
+    tree = tmp_path / "owned"
+    guest = tree / "guest"
+    guest.mkdir(parents=True)
+    sentinel = guest / "external-data"
+    sentinel.write_bytes(b"must not traverse the mounted directory")
+    tree.chmod(0o555)
+    point = tree if location == "root" else guest
+    monkeypatch.setattr(
+        filesystem_mounts, "_mount_points", lambda: (str(point.resolve()),)
+    )
+    try:
+        ok, error = file_deletion.delete_path(tree, owning_root=tmp_path)
+        assert not ok and "mounted filesystem" in error
+        assert sentinel.read_bytes() == b"must not traverse the mounted directory"
+        if os.name == "posix":
+            assert tree.stat().st_mode & stat.S_IWUSR == 0
+    finally:
+        if tree.exists():
+            tree.chmod(0o755)
+
+
+def test_mount_inventory_failure_cannot_authorize_deletion(tmp_path, monkeypatch):
+    tree = tmp_path / "owned"
+    tree.mkdir()
+    sentinel = tree / "preserved"
+    sentinel.write_bytes(b"unknown mount custody")
+
+    def unavailable():
+        raise OSError(errno.EIO, "mount table unavailable")
+
+    monkeypatch.setattr(filesystem_mounts, "_mount_points", unavailable)
+    ok, error = file_deletion.delete_path(tree, owning_root=tmp_path)
+    assert not ok and "mount table unavailable" in error
+    assert sentinel.read_bytes() == b"unknown mount custody"
+
+
+@pytest.mark.parametrize("root_disappeared", [False, True])
+def test_mount_inspection_distinguishes_missing_table_from_missing_root(
+    tmp_path, monkeypatch, root_disappeared
+):
+    tree = tmp_path / "owned"
+    tree.mkdir()
+    sentinel = tree / "preserved"
+    sentinel.write_bytes(b"existing root is not successful deletion")
+
+    def unavailable():
+        if root_disappeared:
+            sentinel.unlink()
+            tree.rmdir()
+        raise FileNotFoundError(errno.ENOENT, "mount table unavailable")
+
+    monkeypatch.setattr(filesystem_mounts, "_mount_points", unavailable)
+    ok, error = file_deletion.delete_path(tree)
+    if root_disappeared:
+        assert ok and not error
+        assert not tree.exists()
+    else:
+        assert not ok and "mount table unavailable" in error
+        assert sentinel.read_bytes() == b"existing root is not successful deletion"
+
+
+def test_each_recursive_deletion_observes_the_current_mount_table(
+    tmp_path, monkeypatch
+):
+    tree = tmp_path / "generation"
+    tree.mkdir()
+    mounted = False
+
+    def snapshot():
+        return (str(tree.resolve()),) if mounted else (str(tmp_path / "unrelated"),)
+
+    monkeypatch.setattr(filesystem_mounts, "_mount_points", snapshot)
+    assert file_deletion.delete_path(tree) == (True, "")
+    tree.mkdir()
+    sentinel = tree / "new-generation"
+    sentinel.write_bytes(b"new mount must not reuse old admission")
+    mounted = True
+    ok, error = file_deletion.delete_path(tree)
+    assert not ok and "mounted filesystem" in error
+    assert sentinel.read_bytes() == b"new mount must not reuse old admission"
+
+
+@pytest.mark.parametrize("kind", ["file", "missing", "symlink"])
+def test_leaf_deletion_never_inspects_mounts(tmp_path, monkeypatch, kind):
+    leaf = tmp_path / "leaf"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "external-data"
+    sentinel.write_bytes(b"preserve referent")
+    if kind == "file":
+        leaf.write_bytes(b"owned leaf")
+    elif kind == "symlink":
+        leaf.symlink_to(outside, target_is_directory=True)
+
+    def forbidden():
+        pytest.fail("leaf deletion must not query or enter a mounted referent")
+
+    monkeypatch.setattr(filesystem_mounts, "_mount_points", forbidden)
+    assert file_deletion.delete_path(leaf) == (True, "")
+    assert sentinel.read_bytes() == b"preserve referent"
+    assert not os.path.lexists(leaf)
+
+
+def test_mount_prefix_sibling_does_not_block_owned_deletion(tmp_path, monkeypatch):
+    tree = tmp_path / "owned"
+    tree.mkdir()
+    sibling = tmp_path / "owned-external"
+    sibling.mkdir()
+    sentinel = sibling / "preserved"
+    sentinel.write_bytes(b"outside tree")
+    monkeypatch.setattr(
+        filesystem_mounts, "_mount_points", lambda: (str(sibling.resolve()),)
+    )
+    assert file_deletion.delete_path(tree) == (True, "")
+    assert sentinel.read_bytes() == b"outside tree"
+
+
+def test_linux_mountinfo_preserves_same_device_bind_and_escaped_paths():
+    # Kernel field 5 is independent of st_dev: both entries below use 8:1.
+    data = (
+        b"31 1 8:1 / / rw - ext4 /dev/root rw\n"
+        b"32 31 8:1 /elsewhere /owned/guest\\040dir rw shared:1 - ext4 /dev/root rw\n"
+        b"33 31 8:1 /elsewhere /owned/tab\\011and\\134slash rw - ext4 /dev/root rw\n"
+        b"34 31 8:1 /elsewhere /owned/carriage\rform\ffeed rw - ext4 /dev/root rw\n"
+    )
+    assert filesystem_mounts._parse_linux_mountinfo(data) == (
+        "/",
+        "/owned/guest dir",
+        "/owned/tab\tand\\slash",
+        "/owned/carriage\rform\ffeed",
+    )
+
+
+def test_same_device_bind_record_blocks_traversal(tmp_path, monkeypatch):
+    tree = tmp_path / "owned"
+    guest = tree / "guest"
+    guest.mkdir(parents=True)
+    sentinel = guest / "external-data"
+    sentinel.write_bytes(b"same-device bind data")
+    assert tree.stat().st_dev == guest.stat().st_dev
+    point = (
+        os.fsencode(str(guest.resolve()))
+        .replace(b"\\", b"\\134")
+        .replace(b" ", b"\\040")
+    )
+    kernel_records = (
+        b"31 1 8:1 / / rw - ext4 /dev/root rw\n"
+        b"32 31 8:1 /external " + point + b" rw - ext4 /dev/root rw\n"
+    )
+    monkeypatch.setattr(
+        filesystem_mounts,
+        "_mount_points",
+        lambda: filesystem_mounts._parse_linux_mountinfo(kernel_records),
+    )
+    ok, error = file_deletion.delete_path(tree)
+    assert not ok and "mounted filesystem" in error
+    assert sentinel.read_bytes() == b"same-device bind data"
+
+
+def test_mount_inspection_rejects_a_replaced_deletion_root(tmp_path, monkeypatch):
+    tree = tmp_path / "owned"
+    tree.mkdir()
+    original = tree / "original"
+    original.write_bytes(b"original generation")
+    aside = tmp_path / "aside"
+
+    def replace_during_snapshot():
+        tree.rename(aside)
+        tree.mkdir()
+        (tree / "replacement").write_bytes(b"replacement generation")
+        return (str(tmp_path / "unrelated"),)
+
+    monkeypatch.setattr(filesystem_mounts, "_mount_points", replace_during_snapshot)
+    ok, error = file_deletion.delete_path(tree)
+    assert not ok and "changed during mount inspection" in error
+    assert (aside / "original").read_bytes() == b"original generation"
+    assert (tree / "replacement").read_bytes() == b"replacement generation"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"",
+        b"invalid\n",
+        b"1 0 8:1 / relative rw - ext4 /dev/root rw\n",
+        b"1 0 8:1 / /owned rw - ext4 /dev/root rw",
+        b"1 0 8:1 / /owned\\777 rw - ext4 /dev/root rw\n",
+    ],
+)
+def test_linux_mountinfo_uncertainty_fails_closed(data):
+    with pytest.raises(OSError, match="mount inspection unavailable"):
+        filesystem_mounts._parse_linux_mountinfo(data)
+
+
+def test_linux_mountinfo_size_is_bounded(monkeypatch):
+    monkeypatch.setattr(filesystem_mounts, "_MAX_MOUNTINFO_BYTES", 4)
+    with pytest.raises(OSError, match="oversized"):
+        filesystem_mounts._parse_linux_mountinfo(b"12345")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin mount ABI")
+def test_darwin_native_mount_inventory_and_firmlink_spellings(tmp_path):
+    points = filesystem_mounts._darwin_mount_points()
+    assert "/" in points
+    assert all(point.startswith("/") for point in points)
+    normal, physical = filesystem_mounts._directory_spellings(tmp_path, tmp_path.stat())
+    assert os.path.samestat(os.stat(normal), os.stat(physical))
+    assert os.path.samestat(tmp_path.stat(), os.stat(normal))
+
+
+def test_darwin_snapshot_growth_requeries_size_and_never_accepts_truncation(
+    monkeypatch,
+):
+    class Record(ctypes.Structure):
+        _fields_ = [("mntonname", ctypes.c_char * 1024)]
+
+    calls = []
+    counts = iter((1, 2))
+    fills = iter((2, 2))
+
+    def query(buffer, size, flags):
+        calls.append((buffer is None, size, flags))
+        if buffer is None:
+            return next(counts)
+        count = next(fills)
+        for index in range(count):
+            buffer[index].mntonname = b"/" if index == 0 else b"/external"
+        return count
+
+    monkeypatch.setattr(
+        filesystem_mounts, "_darwin_api", lambda: (ctypes, Record, query)
+    )
+    assert filesystem_mounts._darwin_mount_points() == ("/", "/external")
+    assert [was_size_query for was_size_query, _size, _flags in calls] == [
+        True,
+        False,
+        True,
+        False,
+    ]
+
+
+def test_darwin_repeated_snapshot_growth_fails_closed(monkeypatch):
+    class Record(ctypes.Structure):
+        _fields_ = [("mntonname", ctypes.c_char * 1024)]
+
+    def query(buffer, _size, _flags):
+        return 1 if buffer is None else 2
+
+    monkeypatch.setattr(
+        filesystem_mounts, "_darwin_api", lambda: (ctypes, Record, query)
+    )
+    with pytest.raises(OSError, match="changed during inspection"):
+        filesystem_mounts._darwin_mount_points()
+
+
+def test_windows_verbatim_mount_key_preserves_folder_boundary():
+    assert (
+        filesystem_mounts._windows_key("\\\\?\\C:\\owned\\guest\\")
+        == "c:\\owned\\guest"
+    )
+    assert (
+        filesystem_mounts._windows_key("\\\\?\\UNC\\server\\share\\owned\\")
+        == "\\\\server\\share\\owned"
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows volume APIs")
+def test_windows_native_mount_inventory():
+    import ntpath
+
+    points = filesystem_mounts._windows_mount_points()
+    drive = Path.cwd().anchor
+    assert any(ntpath.normcase(point) == ntpath.normcase(drive) for point in points)
+    assert all(ntpath.isabs(point) for point in points)
 
 
 @pytest.fixture

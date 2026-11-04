@@ -1,7 +1,6 @@
 use super::{ControlKind, ControlOpContext};
 use crate::OpIR;
 use crate::wasm_abi::TAG_EXCEPTION_INDEX;
-use crate::wasm_binary::emit_call;
 use std::borrow::Cow;
 use wasm_encoder::{BlockType, Catch, Function, Instruction, ValType};
 
@@ -62,17 +61,24 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
     // function-level exception label carried by the SimpleIR op.  Silently
     // dropping the call here would make straight-line/native-EH code immune to
     // pending calls until some unrelated later safepoint.
-    emit_call(
-        func,
-        context.reloc_enabled,
-        context.import_ids[if async_work_poll {
-            crate::wasm_abi_generated::WasmRuntimeImport::AsyncWorkPollAndExceptionPending
-        } else {
-            crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending
-        }],
-    );
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
+    if async_work_poll {
+        super::super::super::pending_work::emit_poll(
+            func,
+            context.locals,
+            context.import_ids,
+            context.reloc_enabled,
+            false,
+        );
+        func.instruction(&Instruction::I64Const(0));
+        func.instruction(&Instruction::I64Ne);
+    } else {
+        super::super::super::pending_work::emit_exception_pending_test(
+            func,
+            super::super::super::pending_work::thread_record_local(context.locals),
+            context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+            context.reloc_enabled,
+        );
+    }
     // A cleanup landing can lie inside the surrounding handler's try region.
     // Its explicit exceptional successor is the authority on every emission
     // route, exactly as in jumpful/stateful dispatch; the lexical try stack
@@ -89,6 +95,7 @@ mod tests {
     use super::*;
     use crate::representation_plan::ScalarRepresentationPlan;
     use crate::wasm::WasmFrameLocals;
+    use crate::wasm_binary::emit_call;
     use crate::wasm_import_tracking::TrackedImportIds;
     use crate::wasm_values::ConstantCache;
     use std::collections::BTreeMap;
@@ -118,7 +125,15 @@ mod tests {
         let (_, frame) =
             crate::wasm::function_frame::WasmFunctionFramePlan::for_codegen_fixture(&func_ir)
                 .into_function_and_frame();
-        let locals = WasmFrameLocals::default();
+        let mut locals = WasmFrameLocals::default();
+        let mut local_types = Vec::new();
+        let mut local_count = 0;
+        for kind in [
+            crate::wasm::WasmFrameSyntheticLocal::ThreadRecord,
+            crate::wasm::WasmFrameSyntheticLocal::PendingWorkPtr,
+        ] {
+            locals.ensure_synthetic(kind, &mut local_types, &mut local_count);
+        }
         let const_cache = ConstantCache::default();
         let scalar_plan = ScalarRepresentationPlan::default();
         let mut control_stack = if cleanup_inside_try {
@@ -146,7 +161,11 @@ mod tests {
                 molt_ir::OpKind::AsyncWorkPoll
             })
         };
-        let mut body = Function::new([]);
+        let mut body = Function::new_with_locals_types(local_types);
+        body.instruction(&Instruction::I32Const(256));
+        body.instruction(&Instruction::LocalSet(0));
+        body.instruction(&Instruction::I32Const(512));
+        body.instruction(&Instruction::LocalSet(1));
         body.instruction(&Instruction::Block(BlockType::Empty));
         if cleanup_inside_try {
             body.instruction(&Instruction::Block(BlockType::Empty));
@@ -184,6 +203,9 @@ mod tests {
             emit_call(&mut body, false, import_ids[trace_import]);
             body.instruction(&Instruction::Drop);
         } else {
+            body.instruction(&Instruction::I64Const(4));
+            emit_call(&mut body, false, import_ids[trace_import]);
+            body.instruction(&Instruction::Drop);
             body.instruction(&Instruction::End);
         }
         body.instruction(&Instruction::I64Const(0));
@@ -202,8 +224,18 @@ mod tests {
         let mut functions = FunctionSection::new();
         functions.function(0);
         module.section(&functions);
+        let mut memory = wasm_encoder::MemorySection::new();
+        memory.memory(wasm_encoder::MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        module.section(&memory);
         let mut exports = ExportSection::new();
         exports.export("run", ExportKind::Func, 2);
+        exports.export("memory", ExportKind::Memory, 0);
         module.section(&exports);
         let mut code = CodeSection::new();
         code.function(&body);
@@ -233,15 +265,51 @@ mod tests {
                     _ => None,
                 })
                 .unwrap();
-            assert!(matches!(
-                operators.get(1),
-                Some(Operator::Call { function_index: 0 })
-            ));
-            assert!(matches!(
-                operators.get(4),
-                Some(Operator::BrIf { relative_depth: 0 })
-            ));
+            let call = operators
+                .iter()
+                .position(|op| matches!(op, Operator::Call { function_index: 0 }))
+                .unwrap();
+            assert!(matches!(operators[call - 1], Operator::If { .. }));
+            assert!(matches!(operators[call + 1], Operator::Else));
+            assert!(
+                operators
+                    .iter()
+                    .any(|op| matches!(op, Operator::BrIf { relative_depth: 0 }))
+            );
         }
+    }
+
+    #[test]
+    fn inline_poll_executes_only_notified_service_and_preserves_pending_exception() {
+        use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
+        let (module, _) = plain_poll_module(false, false);
+        Validator::new().validate_all(&module).unwrap();
+        let (temp, _cleanup) = wasm_test_temp_dir();
+        let path = temp.join("inline-poll.wasm");
+        std::fs::write(&path, module).unwrap();
+        run_node_test_script(
+            &std::path::PathBuf::from("node"),
+            r#"
+const fs=require('fs'), assert=require('assert/strict');
+const module=new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+for(const [word,pending,coldError] of [[0,0,0],[8,0,0],[8,0,1],[0,1,0]]) {
+  let calls=0; const trace=[];
+  const app=new WebAssembly.Instance(module,{molt_runtime:{
+    pending:()=>{calls++;return BigInt(coldError);},
+    record:line=>{trace.push(Number(line));return 0n;}
+  }}).exports;
+  const view=new DataView(app.memory.buffer);
+  view.setUint8(256,pending); view.setUint32(512,word,true);
+  app.run();
+  assert.equal(calls,word?1:0,'an empty poll must not enter the runtime');
+  assert.deepEqual(trace,(pending||coldError)?[]:[4]);
+}
+// Positive control: published callback data alone cannot schedule a poll.
+// Suppressing its producer bit must keep the cold callback unexecuted.
+"#,
+            &[&path],
+            "inline async-work producer control",
+        );
     }
 
     #[test]
@@ -258,14 +326,20 @@ mod tests {
             r#"
 const fs = require('fs'), assert = require('assert/strict');
 const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
-for (const pending of [false, true]) {
+// The thread record (local 0, address 256) holds the pending byte the check
+// tests inline; the reader confirms a set byte. A set byte whose reader
+// repairs it (a stale task slot) is no exception.
+for (const [byte, pending] of [[0, false], [1, true], [1, false]]) {
   const events = [];
+  let reads = 0;
   const app = new WebAssembly.Instance(module, {molt_runtime: {
-    pending: () => pending ? 1n : 0n,
+    pending: () => { reads++; return pending ? 1n : 0n; },
     record: line => { events.push(Number(line)); return 0n; },
   }}).exports;
+  new Uint8Array(app.memory.buffer)[256] = byte;
   assert.equal(app.run(), 0n);
   assert.deepEqual(events, pending ? [2, 3] : [1, 3], 'explicit inner cleanup must precede the outer continuation');
+  assert.equal(reads, byte, 'the reader runs only when the pending byte is set');
 }
 "#,
             &[&path],

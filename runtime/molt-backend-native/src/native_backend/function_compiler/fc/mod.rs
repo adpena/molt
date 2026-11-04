@@ -63,7 +63,10 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
                 .all(|arg| representation_plan.name_is_integer_scalar(arg))
     });
     scalar_fast_paths_enabled
-        && (representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
+        && (representation_plan
+            .op_scalar_lane(op)
+            .map(|proof| proof.kind())
+            == Some(ScalarKind::Int)
             || (matches!(
                 op.kind,
                 OpKind::Add
@@ -98,7 +101,6 @@ pub(in crate::native_backend::function_compiler) mod const_literals;
 pub(in crate::native_backend::function_compiler) mod context_mgmt;
 pub(in crate::native_backend::function_compiler) mod control_flow;
 pub(in crate::native_backend::function_compiler) mod coroutine;
-pub(in crate::native_backend::function_compiler) mod dataclass;
 pub(in crate::native_backend::function_compiler) mod dict_ops;
 pub(in crate::native_backend::function_compiler) mod exception_control;
 pub(in crate::native_backend::function_compiler) mod exception_stack;

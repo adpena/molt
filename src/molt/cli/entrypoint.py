@@ -14,7 +14,7 @@ from molt.environment_registry import (
     EnvironmentRegistryError,
     check_process_environment,
 )
-from molt.target_python import require_frontend_python
+from molt.host_python import require_frontend_python
 
 if TYPE_CHECKING:
     from molt.cli.build_request import BuildRequest

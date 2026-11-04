@@ -922,10 +922,10 @@ fn complex_number_admitted(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
         return Ok(true);
     }
     unsafe {
-        if crate::builtins::attr::has_special_method(py, bits, b"__float__")? {
+        if crate::builtins::attr::has_special_method(py, bits, crate::NameId::DunderFloat)? {
             return Ok(true);
         }
-        crate::builtins::attr::has_special_method(py, bits, b"__index__")
+        crate::builtins::attr::has_special_method(py, bits, crate::NameId::DunderIndex)
     }
 }
 
@@ -977,7 +977,13 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
         let mut real_bits = val_bits;
         let mut real_owner = None;
         if let Some(method) = unsafe {
-            match crate::builtins::attr::lookup_special_method(py, val_bits, b"__complex__") {
+            match crate::builtins::attr::lookup_special_method(
+                py,
+                val_bits,
+                crate::NameId::DunderComplex,
+            )
+            .into_result()
+            {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }
@@ -1627,9 +1633,6 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
             TYPE_TAG_SLICE => obj
                 .as_ptr()
                 .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_SLICE }),
-            TYPE_TAG_DATACLASS => obj
-                .as_ptr()
-                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DATACLASS }),
             TYPE_TAG_BUFFER2D => obj
                 .as_ptr()
                 .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BUFFER2D }),

@@ -6,18 +6,18 @@ use crate::builtins::exceptions::{
 };
 use crate::object::payload_refs;
 use crate::{
-    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_TYPE, attr_name_bits_from_bytes, call_callable0,
-    call_callable1, call_callable3, class_dict_bits, class_mro_pinned, clear_exception,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_TYPE, call_callable0, call_callable1,
+    call_callable3, class_dict_bits, class_mro_pinned, clear_exception,
     contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
-    contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, exception_pending,
-    exception_stack_pop, exception_stack_push, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
-    is_registered_ptr, is_truthy, missing_bits, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_future_new, molt_future_poll,
-    molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_is_callable, molt_issubclass,
-    molt_raise, molt_set_attr_name, obj_from_bits, object_type_id, opaque_handle_bits,
-    path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception, release_ptr,
-    string_obj_to_owned,
+    contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, dynamic_attr_name_bits,
+    exception_pending, exception_stack_pop, exception_stack_push, header_from_obj_ptr,
+    inc_ref_bits, is_registered_ptr, is_truthy, missing_bits, molt_call_bind,
+    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new, molt_future_new,
+    molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_is_callable,
+    molt_issubclass, molt_raise, molt_set_attr_name, obj_from_bits, object_type_id,
+    opaque_handle_bits, path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
+    release_ptr, string_obj_to_owned,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -133,7 +133,7 @@ fn alloc_str_bits(_py: &PyToken<'_>, value: &str) -> Result<u64, u64> {
 fn contextlib_check_methods(
     _py: &PyToken<'_>,
     candidate_bits: u64,
-    methods: &[&[u8]],
+    methods: &[crate::NameId],
 ) -> Result<bool, u64> {
     let candidate = obj_from_bits(candidate_bits);
     let Some(candidate_ptr) = candidate.as_ptr() else {
@@ -159,7 +159,7 @@ fn contextlib_check_methods(
     };
 
     for method in methods {
-        let Some(method_name_bits) = attr_name_bits_from_bytes(_py, method) else {
+        let Some(method_name_bits) = method.owned_bits(_py) else {
             return Err(MoltObject::none().bits());
         };
         let mut found = false;
@@ -283,7 +283,7 @@ fn normalize_exit_exception(
 }
 
 fn call_next_method(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
-    let Some(next_name_bits) = attr_name_bits_from_bytes(_py, b"__next__") else {
+    let Some(next_name_bits) = crate::NameId::DunderNext.owned_bits(_py) else {
         return MoltObject::none().bits();
     };
     let missing = missing_bits(_py);
@@ -297,8 +297,8 @@ fn call_next_method(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
     out
 }
 
-fn call_method0(_py: &PyToken<'_>, obj_bits: u64, method: &[u8]) -> u64 {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, method) else {
+fn call_method0(_py: &PyToken<'_>, obj_bits: u64, method: crate::NameId) -> u64 {
+    let Some(name_bits) = method.owned_bits(_py) else {
         return MoltObject::none().bits();
     };
     let missing = missing_bits(_py);
@@ -312,8 +312,8 @@ fn call_method0(_py: &PyToken<'_>, obj_bits: u64, method: &[u8]) -> u64 {
     out
 }
 
-fn call_method1(_py: &PyToken<'_>, obj_bits: u64, method: &[u8], arg_bits: u64) -> u64 {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, method) else {
+fn call_method1(_py: &PyToken<'_>, obj_bits: u64, method: crate::NameId, arg_bits: u64) -> u64 {
+    let Some(name_bits) = method.owned_bits(_py) else {
         return MoltObject::none().bits();
     };
     let missing = missing_bits(_py);
@@ -330,12 +330,12 @@ fn call_method1(_py: &PyToken<'_>, obj_bits: u64, method: &[u8], arg_bits: u64) 
 fn call_method3(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    method: &[u8],
+    method: crate::NameId,
     arg1_bits: u64,
     arg2_bits: u64,
     arg3_bits: u64,
 ) -> u64 {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, method) else {
+    let Some(name_bits) = method.owned_bits(_py) else {
         return MoltObject::none().bits();
     };
     let missing = missing_bits(_py);
@@ -570,7 +570,7 @@ fn generator_did_not_stop(py: &PyToken<'_>, gen_bits: u64, message: &str) -> u64
     let stop_error = ExceptionValue::adopt(py, take_pending_exception(py));
     exception_stack_push();
     crate::builtins::exceptions::exception_context_set(py, stop_error.bits());
-    let closed = ExceptionValue::adopt(py, call_method0(py, gen_bits, b"close"));
+    let closed = ExceptionValue::adopt(py, call_method0(py, gen_bits, crate::NameId::Close));
     let close_error = exception_pending(py).then(|| take_pending_exception(py));
     exception_stack_pop(py);
     drop(closed);
@@ -769,7 +769,7 @@ extern "C" fn contextlib_closing_enter(payload_bits: u64) -> u64 {
 
 extern "C" fn contextlib_closing_exit(payload_bits: u64, _exc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(close_name_bits) = attr_name_bits_from_bytes(_py, b"close") else {
+        let Some(close_name_bits) = crate::NameId::Close.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
         let missing = missing_bits(_py);
@@ -807,7 +807,9 @@ pub extern "C" fn molt_contextlib_aclosing_enter(payload_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_aclosing_exit(payload_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { call_method0(_py, payload_bits, b"aclose") })
+    crate::with_gil_entry_nopanic!(_py, {
+        call_method0(_py, payload_bits, crate::NameId::Aclose)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -829,7 +831,11 @@ pub extern "C" fn molt_contextlib_abstract_aenter(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_subclasshook(candidate_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        match contextlib_check_methods(_py, candidate_bits, &[b"__enter__", b"__exit__"]) {
+        match contextlib_check_methods(
+            _py,
+            candidate_bits,
+            &[crate::NameId::DunderEnter, crate::NameId::DunderExit],
+        ) {
             Ok(true) => MoltObject::from_bool(true).bits(),
             Ok(false) => crate::molt_not_implemented(),
             Err(bits) => bits,
@@ -840,7 +846,11 @@ pub extern "C" fn molt_contextlib_abstract_subclasshook(candidate_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_abstract_async_subclasshook(candidate_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        match contextlib_check_methods(_py, candidate_bits, &[b"__aenter__", b"__aexit__"]) {
+        match contextlib_check_methods(
+            _py,
+            candidate_bits,
+            &[crate::NameId::DunderAenter, crate::NameId::DunderAexit],
+        ) {
             Ok(true) => MoltObject::from_bool(true).bits(),
             Ok(false) => crate::molt_not_implemented(),
             Err(bits) => bits,
@@ -858,7 +868,8 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
     crate::with_gil_entry_nopanic!(_py, {
         contextlib_clear_pending_exception_state(_py);
         let none_bits = MoltObject::none().bits();
-        let entered = ExceptionValue::adopt(_py, call_method0(_py, cm_bits, b"__enter__"));
+        let entered =
+            ExceptionValue::adopt(_py, call_method0(_py, cm_bits, crate::NameId::DunderEnter));
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -875,7 +886,14 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
         if !body_pending {
             let exit_out = ExceptionValue::adopt(
                 _py,
-                call_method3(_py, cm_bits, b"__exit__", none_bits, none_bits, none_bits),
+                call_method3(
+                    _py,
+                    cm_bits,
+                    crate::NameId::DunderExit,
+                    none_bits,
+                    none_bits,
+                    none_bits,
+                ),
             );
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -894,7 +912,7 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
             call_method3(
                 _py,
                 cm_bits,
-                b"__exit__",
+                crate::NameId::DunderExit,
                 raised_type.bits(),
                 raised.bits(),
                 raised_tb.bits(),
@@ -1015,7 +1033,7 @@ pub extern "C" fn molt_contextlib_generator_exit(
             Ok(bits) => bits,
             Err(bits) => return rethrow_with_owned_exception(_py, bits),
         };
-        let Some(throw_name_bits) = attr_name_bits_from_bytes(_py, b"throw") else {
+        let Some(throw_name_bits) = crate::NameId::Throw.owned_bits(_py) else {
             dec_ref_bits(_py, normalized_exc);
             return MoltObject::none().bits();
         };
@@ -1126,7 +1144,7 @@ pub extern "C" fn molt_contextlib_redirect_enter(
         let Some(stream_name) = string_obj_to_owned(obj_from_bits(stream_name_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "stream name must be str");
         };
-        let Some(name_bits) = attr_name_bits_from_bytes(_py, stream_name.as_bytes()) else {
+        let Some(name_bits) = dynamic_attr_name_bits(_py, stream_name.as_bytes()) else {
             return MoltObject::none().bits();
         };
         let missing = missing_bits(_py);
@@ -1157,7 +1175,7 @@ pub extern "C" fn molt_contextlib_redirect_exit(
         let Some(stream_name) = string_obj_to_owned(obj_from_bits(stream_name_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "stream name must be str");
         };
-        let Some(name_bits) = attr_name_bits_from_bytes(_py, stream_name.as_bytes()) else {
+        let Some(name_bits) = dynamic_attr_name_bits(_py, stream_name.as_bytes()) else {
             return MoltObject::none().bits();
         };
         let _ = molt_set_attr_name(sys_bits, name_bits, old_target_bits);
@@ -1248,34 +1266,15 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_exit(
             Ok(handle) => handle,
             Err(bits) => return bits,
         };
-        let Some(aexit_name_bits) = attr_name_bits_from_bytes(_py, b"__aexit__") else {
+        let Some(aexit_name_bits) = crate::NameId::DunderAexit.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let missing = missing_bits(_py);
-        let aexit_bits = molt_getattr_builtin(exit_bits, aexit_name_bits, missing);
+        let lookup = crate::lookup_attribute(_py, exit_bits, aexit_name_bits);
         dec_ref_bits(_py, aexit_name_bits);
-        let mut attr_missing = false;
-        if exception_pending(_py) {
-            let raised_bits = take_pending_exception(_py);
-            if crate::builtins::exceptions::exception_matches_kind(
-                _py,
-                raised_bits,
-                crate::BuiltinExc::AttributeError,
-            ) {
-                dec_ref_bits(_py, raised_bits);
-                attr_missing = true;
-            } else {
-                return rethrow_with_owned_exception(_py, raised_bits);
-            }
-        }
-
-        let callback_bits = if attr_missing || is_missing_bits(_py, aexit_bits) {
-            if !obj_from_bits(aexit_bits).is_none() {
-                dec_ref_bits(_py, aexit_bits);
-            }
-            exit_bits
-        } else {
-            aexit_bits
+        let callback_bits = match lookup {
+            crate::AttributeLookup::Found(bits) => bits,
+            crate::AttributeLookup::Missing => exit_bits,
+            crate::AttributeLookup::Error => return MoltObject::none().bits(),
         };
 
         let push_res = push_exit_callback(_py, handle, callback_bits);
@@ -1296,7 +1295,7 @@ pub extern "C" fn molt_contextlib_async_exitstack_push_exit(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let entered_bits = call_method0(_py, cm_bits, b"__enter__");
+        let entered_bits = call_method0(_py, cm_bits, crate::NameId::DunderEnter);
         if exception_pending(_py) {
             let raised_bits = take_pending_exception(_py);
             if crate::builtins::exceptions::exception_matches_kind(
@@ -1314,34 +1313,29 @@ pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_b
             return rethrow_with_owned_exception(_py, raised_bits);
         }
 
-        let Some(exit_name_bits) = attr_name_bits_from_bytes(_py, b"__exit__") else {
+        let Some(exit_name_bits) = crate::NameId::DunderExit.owned_bits(_py) else {
             if !obj_from_bits(entered_bits).is_none() {
                 dec_ref_bits(_py, entered_bits);
             }
             return MoltObject::none().bits();
         };
-        let missing = missing_bits(_py);
-        let exit_bits = molt_getattr_builtin(cm_bits, exit_name_bits, missing);
+        let lookup = crate::lookup_attribute(_py, cm_bits, exit_name_bits);
         dec_ref_bits(_py, exit_name_bits);
-        if exception_pending(_py) {
-            let raised_bits = take_pending_exception(_py);
-            if !obj_from_bits(entered_bits).is_none() {
+        let exit_bits = match lookup {
+            crate::AttributeLookup::Found(bits) => bits,
+            crate::AttributeLookup::Missing => {
                 dec_ref_bits(_py, entered_bits);
-            }
-            if crate::builtins::exceptions::exception_matches_kind(
-                _py,
-                raised_bits,
-                crate::BuiltinExc::AttributeError,
-            ) {
-                dec_ref_bits(_py, raised_bits);
                 return raise_exception::<u64>(
                     _py,
                     BuiltinExc::TypeError,
                     "object does not support the context manager protocol",
                 );
             }
-            return rethrow_with_owned_exception(_py, raised_bits);
-        }
+            crate::AttributeLookup::Error => {
+                dec_ref_bits(_py, entered_bits);
+                return MoltObject::none().bits();
+            }
+        };
 
         let push_res = {
             let handle = match exitstack_from_bits_mut(_py, handle_bits) {
@@ -1576,7 +1570,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
 
             if crate::object::object_state(obj_ptr) == 0 {
                 let agen_bits = payload_slot(payload_ptr, ASYNCGEN_ENTER_SLOT_AGEN);
-                let await_bits = call_method0(_py, agen_bits, b"__anext__");
+                let await_bits = call_method0(_py, agen_bits, crate::NameId::DunderAnext);
                 if exception_pending(_py) {
                     let raised_bits = take_pending_exception(_py);
                     if crate::builtins::exceptions::exception_matches_kind(
@@ -1653,7 +1647,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                 let tb_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_TB);
 
                 if obj_from_bits(exc_type_bits).is_none() {
-                    let await_bits = call_method0(_py, agen_bits, b"__anext__");
+                    let await_bits = call_method0(_py, agen_bits, crate::NameId::DunderAnext);
                     if exception_pending(_py) {
                         let raised_bits = take_pending_exception(_py);
                         return asyncgen_exit_handle_exception(
@@ -1689,7 +1683,8 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                     ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC,
                     normalized_exc,
                 );
-                let await_bits = call_method1(_py, agen_bits, b"athrow", normalized_exc);
+                let await_bits =
+                    call_method1(_py, agen_bits, crate::NameId::Athrow, normalized_exc);
                 if exception_pending(_py) {
                     let raised_bits = take_pending_exception(_py);
                     return asyncgen_exit_handle_exception(
@@ -1797,7 +1792,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
 
             if crate::object::object_state(obj_ptr) == 0 {
                 let cm_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_CM);
-                let await_bits = call_method0(_py, cm_bits, b"__aenter__");
+                let await_bits = call_method0(_py, cm_bits, crate::NameId::DunderAenter);
                 if exception_pending(_py) {
                     let raised_bits = take_pending_exception(_py);
                     if crate::builtins::exceptions::exception_matches_kind(
@@ -1846,28 +1841,22 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
             }
 
             let cm_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_CM);
-            let Some(exit_name_bits) = attr_name_bits_from_bytes(_py, b"__aexit__") else {
+            let Some(exit_name_bits) = crate::NameId::DunderAexit.owned_bits(_py) else {
                 return MoltObject::none().bits() as i64;
             };
-            let missing = missing_bits(_py);
-            let exit_bits = molt_getattr_builtin(cm_bits, exit_name_bits, missing);
+            let lookup = crate::lookup_attribute(_py, cm_bits, exit_name_bits);
             dec_ref_bits(_py, exit_name_bits);
-            if exception_pending(_py) {
-                let raised_bits = take_pending_exception(_py);
-                if crate::builtins::exceptions::exception_matches_kind(
-                    _py,
-                    raised_bits,
-                    crate::BuiltinExc::AttributeError,
-                ) {
-                    dec_ref_bits(_py, raised_bits);
+            let exit_bits = match lookup {
+                crate::AttributeLookup::Found(bits) => bits,
+                crate::AttributeLookup::Missing => {
                     return raise_exception::<i64>(
                         _py,
                         BuiltinExc::TypeError,
                         "object does not support the asynchronous context manager protocol",
                     );
                 }
-                return rethrow_with_owned_exception(_py, raised_bits) as i64;
-            }
+                crate::AttributeLookup::Error => return MoltObject::none().bits() as i64,
+            };
 
             let handle_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_HANDLE);
             let push_res = {

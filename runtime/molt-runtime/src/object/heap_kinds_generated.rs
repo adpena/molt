@@ -15,7 +15,6 @@ pub(crate) const TYPE_ID_BYTEARRAY: u32 = 211;
 pub(crate) const TYPE_ID_RANGE: u32 = 212;
 pub(crate) const TYPE_ID_SLICE: u32 = 213;
 pub(crate) const TYPE_ID_EXCEPTION: u32 = 214;
-pub(crate) const TYPE_ID_DATACLASS: u32 = 215;
 pub(crate) const TYPE_ID_BUFFER2D: u32 = 216;
 pub(crate) const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
 pub(crate) const TYPE_ID_FILE_HANDLE: u32 = 218;
@@ -63,7 +62,7 @@ pub(crate) const TYPE_ID_CONTEXT_COLLISION_NODE: u32 = 261;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
 pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_CONTEXT_COLLISION_NODE;
-pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 60] = [
+pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 59] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
     TYPE_ID_LIST,
@@ -79,7 +78,6 @@ pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 60] = [
     TYPE_ID_RANGE,
     TYPE_ID_SLICE,
     TYPE_ID_EXCEPTION,
-    TYPE_ID_DATACLASS,
     TYPE_ID_BUFFER2D,
     TYPE_ID_CONTEXT_MANAGER,
     TYPE_ID_FILE_HANDLE,
@@ -134,7 +132,6 @@ pub(crate) enum HeapLayoutPolicy {
     BoxedU8,
     Code,
     Dict,
-    Dynamic,
     Exception,
     FixedBits,
     Foreign,
@@ -194,7 +191,6 @@ pub(crate) enum HeapDropPolicy {
     Classmethod,
     Code,
     ContextManager,
-    Dataclass,
     Dict,
     DictView,
     Enumerate,
@@ -263,7 +259,6 @@ pub(crate) enum HeapExternalGcPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapAcyclicCapability {
-    CodeMetadata,
     IntCells,
     IntTriplet,
     None,
@@ -271,11 +266,7 @@ pub(crate) enum HeapAcyclicCapability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapAcyclicEdgeDomain {
-    BytesOrNone,
     Int,
-    Str,
-    StrOrNone,
-    StrTuple,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -284,26 +275,12 @@ pub(crate) enum HeapAcyclicSlot {
     RangeStart,
     RangeStop,
     RangeStep,
-    CodeFilename,
-    CodeName,
-    CodeLinetable,
-    CodeVarnames,
-    CodeNames,
-    CodeArgNames,
-    CodePosonly,
-    CodeKwonly,
-    CodeVararg,
-    CodeVarkw,
-    CodeFreevars,
-    CodeCellvars,
-    CodeGpuDescriptor,
-    CodeQualname,
-    CodeDoc,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapTrackProjection {
     Always,
+    CodeDynamic,
     DictDynamic,
     ForeignDynamic,
     NativeSubtype,
@@ -328,7 +305,6 @@ pub(crate) enum HeapLifecycleHandler {
     Range,
     Slice,
     Exception,
-    Dataclass,
     Buffer2d,
     ContextManager,
     FileHandle,
@@ -635,22 +611,7 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 63] = [
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
     }),
-    Some(HeapKindDescriptor {
-        type_id: TYPE_ID_DATACLASS,
-        name: "DATACLASS",
-        layout: HeapLayoutPolicy::Dynamic,
-        edges: HeapEdgePolicy::Dynamic,
-        cycle: HeapCyclePolicy::Always,
-        weakref: HeapWeakrefPolicy::Deny,
-        shape: HeapShapePolicy::Fixed,
-        drop: HeapDropPolicy::Dataclass,
-        metrics: HeapMetricsPolicy::None,
-        track: HeapTrackProjection::Always,
-        handler: HeapLifecycleHandler::Dataclass,
-        publication: HeapPublicationPolicy::Python,
-        external_gc: HeapExternalGcPolicy::None,
-        acyclic: HeapAcyclicCapability::None,
-    }),
+    None, // Retired ABI slot; never a heap kind.
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_BUFFER2D,
         name: "BUFFER2D",
@@ -1058,16 +1019,16 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 63] = [
         name: "CODE",
         layout: HeapLayoutPolicy::Code,
         edges: HeapEdgePolicy::Fixed,
-        cycle: HeapCyclePolicy::Never,
+        cycle: HeapCyclePolicy::Dynamic,
         weakref: HeapWeakrefPolicy::Allow,
         shape: HeapShapePolicy::Fixed,
         drop: HeapDropPolicy::Code,
         metrics: HeapMetricsPolicy::None,
-        track: HeapTrackProjection::Never,
+        track: HeapTrackProjection::CodeDynamic,
         handler: HeapLifecycleHandler::Code,
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
-        acyclic: HeapAcyclicCapability::CodeMetadata,
+        acyclic: HeapAcyclicCapability::None,
     }),
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_ELLIPSIS,
@@ -1393,7 +1354,6 @@ pub(crate) const fn heap_track_projection(type_id: u32) -> Option<HeapTrackProje
         TYPE_ID_RANGE => Some(HeapTrackProjection::Never),
         TYPE_ID_SLICE => Some(HeapTrackProjection::Always),
         TYPE_ID_EXCEPTION => Some(HeapTrackProjection::Always),
-        TYPE_ID_DATACLASS => Some(HeapTrackProjection::Always),
         TYPE_ID_BUFFER2D => Some(HeapTrackProjection::Never),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapTrackProjection::Always),
         TYPE_ID_FILE_HANDLE => Some(HeapTrackProjection::Always),
@@ -1419,7 +1379,7 @@ pub(crate) const fn heap_track_projection(type_id: u32) -> Option<HeapTrackProje
         TYPE_ID_ZIP => Some(HeapTrackProjection::Always),
         TYPE_ID_MAP => Some(HeapTrackProjection::Always),
         TYPE_ID_FILTER => Some(HeapTrackProjection::Always),
-        TYPE_ID_CODE => Some(HeapTrackProjection::Never),
+        TYPE_ID_CODE => Some(HeapTrackProjection::CodeDynamic),
         TYPE_ID_ELLIPSIS => Some(HeapTrackProjection::Never),
         TYPE_ID_GENERIC_ALIAS => Some(HeapTrackProjection::Always),
         TYPE_ID_ASYNC_GENERATOR => Some(HeapTrackProjection::Always),
@@ -1460,7 +1420,6 @@ pub(crate) const fn heap_drop_policy(type_id: u32) -> Option<HeapDropPolicy> {
         TYPE_ID_RANGE => Some(HeapDropPolicy::Range),
         TYPE_ID_SLICE => Some(HeapDropPolicy::Slice),
         TYPE_ID_EXCEPTION => Some(HeapDropPolicy::Exception),
-        TYPE_ID_DATACLASS => Some(HeapDropPolicy::Dataclass),
         TYPE_ID_BUFFER2D => Some(HeapDropPolicy::Buffer2d),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapDropPolicy::ContextManager),
         TYPE_ID_FILE_HANDLE => Some(HeapDropPolicy::FileHandle),
@@ -1527,7 +1486,6 @@ pub(crate) const fn heap_metrics_policy(type_id: u32) -> Option<HeapMetricsPolic
         TYPE_ID_RANGE => Some(HeapMetricsPolicy::None),
         TYPE_ID_SLICE => Some(HeapMetricsPolicy::None),
         TYPE_ID_EXCEPTION => Some(HeapMetricsPolicy::Exception),
-        TYPE_ID_DATACLASS => Some(HeapMetricsPolicy::None),
         TYPE_ID_BUFFER2D => Some(HeapMetricsPolicy::None),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapMetricsPolicy::None),
         TYPE_ID_FILE_HANDLE => Some(HeapMetricsPolicy::None),
@@ -1594,7 +1552,6 @@ pub(crate) const fn heap_weakref_policy(type_id: u32) -> Option<HeapWeakrefPolic
         TYPE_ID_RANGE => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_SLICE => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_EXCEPTION => Some(HeapWeakrefPolicy::Deny),
-        TYPE_ID_DATACLASS => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_BUFFER2D => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_FILE_HANDLE => Some(HeapWeakrefPolicy::Deny),
@@ -1661,7 +1618,6 @@ pub(crate) const fn heap_cycle_policy(type_id: u32) -> Option<HeapCyclePolicy> {
         TYPE_ID_RANGE => Some(HeapCyclePolicy::Never),
         TYPE_ID_SLICE => Some(HeapCyclePolicy::Always),
         TYPE_ID_EXCEPTION => Some(HeapCyclePolicy::Always),
-        TYPE_ID_DATACLASS => Some(HeapCyclePolicy::Always),
         TYPE_ID_BUFFER2D => Some(HeapCyclePolicy::Never),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapCyclePolicy::Always),
         TYPE_ID_FILE_HANDLE => Some(HeapCyclePolicy::Always),
@@ -1687,7 +1643,7 @@ pub(crate) const fn heap_cycle_policy(type_id: u32) -> Option<HeapCyclePolicy> {
         TYPE_ID_ZIP => Some(HeapCyclePolicy::Always),
         TYPE_ID_MAP => Some(HeapCyclePolicy::Always),
         TYPE_ID_FILTER => Some(HeapCyclePolicy::Always),
-        TYPE_ID_CODE => Some(HeapCyclePolicy::Never),
+        TYPE_ID_CODE => Some(HeapCyclePolicy::Dynamic),
         TYPE_ID_ELLIPSIS => Some(HeapCyclePolicy::Never),
         TYPE_ID_GENERIC_ALIAS => Some(HeapCyclePolicy::Always),
         TYPE_ID_ASYNC_GENERATOR => Some(HeapCyclePolicy::Always),
@@ -1728,7 +1684,6 @@ pub(crate) const fn heap_layout_policy(type_id: u32) -> Option<HeapLayoutPolicy>
         TYPE_ID_RANGE => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_SLICE => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_EXCEPTION => Some(HeapLayoutPolicy::Exception),
-        TYPE_ID_DATACLASS => Some(HeapLayoutPolicy::Dynamic),
         TYPE_ID_BUFFER2D => Some(HeapLayoutPolicy::InlineRust),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_FILE_HANDLE => Some(HeapLayoutPolicy::Boxed),
@@ -1795,7 +1750,6 @@ pub(crate) const fn heap_shape_policy(type_id: u32) -> Option<HeapShapePolicy> {
         TYPE_ID_RANGE => Some(HeapShapePolicy::Fixed),
         TYPE_ID_SLICE => Some(HeapShapePolicy::Fixed),
         TYPE_ID_EXCEPTION => Some(HeapShapePolicy::Fixed),
-        TYPE_ID_DATACLASS => Some(HeapShapePolicy::Fixed),
         TYPE_ID_BUFFER2D => Some(HeapShapePolicy::Fixed),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapShapePolicy::Fixed),
         TYPE_ID_FILE_HANDLE => Some(HeapShapePolicy::Fixed),
@@ -1862,7 +1816,6 @@ pub(crate) const fn heap_publication_policy(type_id: u32) -> Option<HeapPublicat
         TYPE_ID_RANGE => Some(HeapPublicationPolicy::Python),
         TYPE_ID_SLICE => Some(HeapPublicationPolicy::Python),
         TYPE_ID_EXCEPTION => Some(HeapPublicationPolicy::Python),
-        TYPE_ID_DATACLASS => Some(HeapPublicationPolicy::Python),
         TYPE_ID_BUFFER2D => Some(HeapPublicationPolicy::Python),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapPublicationPolicy::Python),
         TYPE_ID_FILE_HANDLE => Some(HeapPublicationPolicy::Python),
@@ -1929,7 +1882,6 @@ pub(crate) const fn heap_external_gc_policy(type_id: u32) -> Option<HeapExternal
         TYPE_ID_RANGE => Some(HeapExternalGcPolicy::None),
         TYPE_ID_SLICE => Some(HeapExternalGcPolicy::None),
         TYPE_ID_EXCEPTION => Some(HeapExternalGcPolicy::None),
-        TYPE_ID_DATACLASS => Some(HeapExternalGcPolicy::None),
         TYPE_ID_BUFFER2D => Some(HeapExternalGcPolicy::None),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapExternalGcPolicy::None),
         TYPE_ID_FILE_HANDLE => Some(HeapExternalGcPolicy::None),
@@ -1996,7 +1948,6 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_RANGE => Some(HeapAcyclicCapability::IntTriplet),
         TYPE_ID_SLICE => Some(HeapAcyclicCapability::None),
         TYPE_ID_EXCEPTION => Some(HeapAcyclicCapability::None),
-        TYPE_ID_DATACLASS => Some(HeapAcyclicCapability::None),
         TYPE_ID_BUFFER2D => Some(HeapAcyclicCapability::IntCells),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapAcyclicCapability::None),
         TYPE_ID_FILE_HANDLE => Some(HeapAcyclicCapability::None),
@@ -2022,7 +1973,7 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_ZIP => Some(HeapAcyclicCapability::None),
         TYPE_ID_MAP => Some(HeapAcyclicCapability::None),
         TYPE_ID_FILTER => Some(HeapAcyclicCapability::None),
-        TYPE_ID_CODE => Some(HeapAcyclicCapability::CodeMetadata),
+        TYPE_ID_CODE => Some(HeapAcyclicCapability::None),
         TYPE_ID_ELLIPSIS => Some(HeapAcyclicCapability::None),
         TYPE_ID_GENERIC_ALIAS => Some(HeapAcyclicCapability::None),
         TYPE_ID_ASYNC_GENERATOR => Some(HeapAcyclicCapability::None),
@@ -2052,21 +2003,6 @@ pub(crate) const fn heap_acyclic_slot_domain(slot: HeapAcyclicSlot) -> HeapAcycl
         HeapAcyclicSlot::RangeStart => HeapAcyclicEdgeDomain::Int,
         HeapAcyclicSlot::RangeStop => HeapAcyclicEdgeDomain::Int,
         HeapAcyclicSlot::RangeStep => HeapAcyclicEdgeDomain::Int,
-        HeapAcyclicSlot::CodeFilename => HeapAcyclicEdgeDomain::Str,
-        HeapAcyclicSlot::CodeName => HeapAcyclicEdgeDomain::Str,
-        HeapAcyclicSlot::CodeLinetable => HeapAcyclicEdgeDomain::BytesOrNone,
-        HeapAcyclicSlot::CodeVarnames => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeNames => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeArgNames => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodePosonly => HeapAcyclicEdgeDomain::Int,
-        HeapAcyclicSlot::CodeKwonly => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeVararg => HeapAcyclicEdgeDomain::StrOrNone,
-        HeapAcyclicSlot::CodeVarkw => HeapAcyclicEdgeDomain::StrOrNone,
-        HeapAcyclicSlot::CodeFreevars => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeCellvars => HeapAcyclicEdgeDomain::StrTuple,
-        HeapAcyclicSlot::CodeGpuDescriptor => HeapAcyclicEdgeDomain::StrOrNone,
-        HeapAcyclicSlot::CodeQualname => HeapAcyclicEdgeDomain::Str,
-        HeapAcyclicSlot::CodeDoc => HeapAcyclicEdgeDomain::StrOrNone,
     }
 }
 
@@ -2088,7 +2024,6 @@ pub(crate) const fn heap_lifecycle_handler(type_id: u32) -> Option<HeapLifecycle
         TYPE_ID_RANGE => Some(HeapLifecycleHandler::Range),
         TYPE_ID_SLICE => Some(HeapLifecycleHandler::Slice),
         TYPE_ID_EXCEPTION => Some(HeapLifecycleHandler::Exception),
-        TYPE_ID_DATACLASS => Some(HeapLifecycleHandler::Dataclass),
         TYPE_ID_BUFFER2D => Some(HeapLifecycleHandler::Buffer2d),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapLifecycleHandler::ContextManager),
         TYPE_ID_FILE_HANDLE => Some(HeapLifecycleHandler::FileHandle),
@@ -2168,7 +2103,6 @@ pub(crate) fn heap_kind_id_by_name(name: &str) -> Option<u32> {
         "RANGE" => Some(TYPE_ID_RANGE),
         "SLICE" => Some(TYPE_ID_SLICE),
         "EXCEPTION" => Some(TYPE_ID_EXCEPTION),
-        "DATACLASS" => Some(TYPE_ID_DATACLASS),
         "BUFFER2D" => Some(TYPE_ID_BUFFER2D),
         "CONTEXT_MANAGER" => Some(TYPE_ID_CONTEXT_MANAGER),
         "FILE_HANDLE" => Some(TYPE_ID_FILE_HANDLE),

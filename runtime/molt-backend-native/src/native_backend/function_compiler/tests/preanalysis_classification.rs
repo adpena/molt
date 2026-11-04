@@ -88,8 +88,18 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "integer_family_chain".to_string(),
-        params: vec!["x".to_string(), "seed".to_string()],
+        params: vec![],
         ops: vec![
+            OpIR {
+                value: Some(1_i64 << 46),
+                out: Some("x".into()),
+                ..OpIR::new(OpKind::Const)
+            },
+            OpIR {
+                value: Some(7),
+                out: Some("seed".into()),
+                ..OpIR::new(OpKind::Const)
+            },
             OpIR {
                 value: Some(374761393),
                 out: Some("_v0".to_string()),
@@ -131,7 +141,7 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
                 ..OpIR::new(OpKind::Mul)
             },
         ],
-        param_types: Some(vec!["int".to_string(), "int".to_string()]),
+        param_types: None,
         source_file: None,
         is_extern: false,
         codegen_partition: false,

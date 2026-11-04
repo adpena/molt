@@ -23,9 +23,41 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_functools_total_ordering",
             crate::molt_functools_total_ordering as *const (),
         )),
-        "molt_functools_partial" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_functools_partial",
-            crate::molt_functools_partial as *const (),
+        "molt_functools_partial_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_functools_partial_type",
+            crate::molt_functools_partial_type as *const (),
+        )),
+        "molt_functools_partial_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_functools_partial_new",
+            crate::molt_functools_partial_new as *const (),
+        )),
+        "molt_functools_partial_reduce" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_functools_partial_reduce",
+            crate::molt_functools_partial_reduce as *const (),
+        )),
+        "molt_functools_partial_setstate" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_functools_partial_setstate",
+            crate::molt_functools_partial_setstate as *const (),
+        )),
+        "molt_functools_partial_member_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_functools_partial_member_get",
+            crate::molt_functools_partial_member_get as *const (),
+        )),
+        "molt_functools_partial_dictionary_set" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_functools_partial_dictionary_set",
+                crate::molt_functools_partial_dictionary_set as *const (),
+            ))
+        }
+        "molt_functools_partial_dictionary_delete" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_functools_partial_dictionary_delete",
+                crate::molt_functools_partial_dictionary_delete as *const (),
+            ))
+        }
+        "molt_functools_partial_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_functools_partial_get",
+            crate::molt_functools_partial_get as *const (),
         )),
         "molt_functools_reduce" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_functools_reduce",

@@ -2,6 +2,25 @@
 
 import copyreg
 
+# Resolve the recipe before importing the modules that publish its callables.
+union = int | str
+union_recipe = copyreg.pickle_union(union)
+
+import copy
+import functools
+import operator
+import pickle
+import types
+
+print("union reducer", copyreg.dispatch_table[types.UnionType] is copyreg.pickle_union)
+print("complex reducer", copyreg.dispatch_table[complex] is copyreg.pickle_complex)
+print("union public identities", union_recipe[0] is functools.reduce,
+      union_recipe[1][0] is operator.or_)
+print("union arguments", union_recipe[1][1] == (int, str))
+print("union rebuild", union_recipe[0](*union_recipe[1]) == union)
+print("union copy", copy.copy(union) == union)
+print("union pickle", pickle.loads(pickle.dumps(union)) == union)
+
 
 class NewObj:
     def __new__(cls, *args):
@@ -71,3 +90,80 @@ print("reduce_len", len(res))
 print("reduce_func", res[0].__name__)
 print("reduce_args", res[1][0].__name__, res[1][1].__name__, res[1][2] is None)
 print("reduce_state", res[2])
+
+# Reduction tuples carry these public Python functions by reference. A raw
+# intrinsic can be callable yet lack the identity needed by save_global.
+for name in ("__newobj__", "__newobj_ex__", "_reconstructor", "_reduce_ex"):
+    helper = getattr(copyreg, name)
+    print(
+        "helper identity",
+        name,
+        type(helper) is types.FunctionType,
+        helper.__module__,
+        helper.__name__,
+        helper.__qualname__,
+    )
+    for protocol in (2, 3, 4, 5):
+        print(
+            "helper global",
+            name,
+            protocol,
+            pickle.loads(pickle.dumps(helper, protocol=protocol)) is helper,
+        )
+
+
+class Node:
+    def __init__(self):
+        self.child = [7]
+        self.next = self
+
+
+class KeywordNode(Node):
+    def __new__(cls, *, value):
+        obj = super().__new__(cls)
+        obj.value = value
+        return obj
+
+    def __init__(self, *, value):
+        super().__init__()
+
+    def __getnewargs_ex__(self):
+        return (), {"value": self.value}
+
+
+for obj, constructor in (
+    (Node(), copyreg.__newobj__),
+    (KeywordNode(value=9), copyreg.__newobj_ex__),
+):
+    for protocol in (2, 3, 4, 5):
+        reduced = obj.__reduce_ex__(protocol)
+        out = pickle.loads(pickle.dumps(obj, protocol=protocol))
+        print(
+            "instance global",
+            type(obj).__name__,
+            protocol,
+            reduced[0] is constructor,
+            type(out) is type(obj),
+            out is not obj,
+            out.next is out,
+            out.child == obj.child,
+            out.child is not obj.child,
+            getattr(out, "value", None),
+        )
+    shallow = copy.copy(obj)
+    deep = copy.deepcopy(obj)
+    print(
+        "instance copy",
+        type(obj).__name__,
+        type(shallow) is type(obj),
+        shallow is not obj,
+        shallow.next is obj,
+        shallow.child is obj.child,
+        type(deep) is type(obj),
+        deep is not obj,
+        deep.next is deep,
+        deep.child == obj.child,
+        deep.child is not obj.child,
+        getattr(shallow, "value", None),
+        getattr(deep, "value", None),
+    )

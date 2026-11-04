@@ -51,7 +51,8 @@ impl<'a> DeepCopy<'a, '_> {
                 }
             } else {
                 // A user may seed memo[id(memo)] with an arbitrary appendable.
-                let name = attr_name_bits_from_bytes(self.py, b"append")
+                let name = crate::NameId::Append
+                    .owned_bits(self.py)
                     .ok_or_else(|| MoltObject::none().bits())?;
                 let name = owned(self.py, name)?;
                 let append = owned(

@@ -254,7 +254,9 @@ pub(crate) fn memoryview_scalar_format(py: &PyToken<'_>, format: &str) -> Option
 pub(crate) unsafe fn memoryview_is_index_key(py: &PyToken<'_>, key: u64) -> Result<bool, ()> {
     Ok(
         crate::builtins::numbers::index_integral_payload_bits(key).is_some()
-            || unsafe { crate::builtins::attr::has_special_method(py, key, b"__index__") }?,
+            || unsafe {
+                crate::builtins::attr::has_special_method(py, key, crate::NameId::DunderIndex)
+            }?,
     )
 }
 
@@ -1717,10 +1719,10 @@ mod split_buffer_contract_tests {
     }
 
     fn releasing_scalar(py: &PyToken<'_>, protocol: &[u8]) -> u64 {
-        let name = attr_name_bits_from_bytes(py, b"ReleasingBufferScalar").unwrap();
+        let name = dynamic_attr_name_bits(py, b"ReleasingBufferScalar").unwrap();
         let class = molt_class_new(name);
         molt_class_set_base(class, builtin_classes(py).object);
-        let method = attr_name_bits_from_bytes(py, protocol).unwrap();
+        let method = dynamic_attr_name_bits(py, protocol).unwrap();
         let function = alloc_runtime_function_obj(
             py,
             runtime_fn_addr(

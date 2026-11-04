@@ -13,7 +13,7 @@ fn list_class(py: &PyToken<'_>, slots: Option<&[&[u8]]>) -> u64 {
             .map(|name| MoltObject::from_ptr(alloc_string(py, name)).bits())
             .collect();
         let declaration = MoltObject::from_ptr(crate::alloc_tuple(py, &fields)).bits();
-        let key = crate::attr_name_bits_from_bytes(py, b"__slots__").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"__slots__").unwrap();
         crate::molt_set_attr_name(class, key, declaration);
         dec_ref_bits(py, declaration);
         dec_ref_bits(py, key);
@@ -46,9 +46,9 @@ fn list_subclass_native_prefix_and_lifecycle_compose_all_owners() {
         let target = alloc_string(py, b"list owned target");
         let target_bits = MoltObject::from_ptr(target).bits();
         crate::molt_list_append(instance, target_bits);
-        let field = crate::attr_name_bits_from_bytes(py, b"field").unwrap();
+        let field = crate::dynamic_attr_name_bits(py, b"field").unwrap();
         crate::molt_set_attr_name(instance, field, target_bits);
-        let extra = crate::attr_name_bits_from_bytes(py, b"extra").unwrap();
+        let extra = crate::dynamic_attr_name_bits(py, b"extra").unwrap();
         crate::molt_set_attr_name(instance, extra, target_bits);
         assert!(!crate::exception_pending(py));
         dec_ref_bits(py, field);
@@ -141,7 +141,7 @@ fn exact_list_class_edge_does_not_admit_instance_state_or_reassignment() {
         let exact = unsafe { crate::call::class_init::alloc_instance_for_class(py, class_ptr) };
         let literal = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
         let child = list_class(py, Some(&[]));
-        let class_name = crate::attr_name_bits_from_bytes(py, b"__class__").unwrap();
+        let class_name = crate::dynamic_attr_name_bits(py, b"__class__").unwrap();
         for bits in [literal, exact] {
             let ptr = obj_from_bits(bits).as_ptr().unwrap();
             assert!(!unsafe { field_storage::allows_dictionary(py, ptr) });

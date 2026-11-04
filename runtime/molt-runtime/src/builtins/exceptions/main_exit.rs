@@ -14,10 +14,7 @@ use super::unraisable::sys_attr_bits;
 use super::*;
 use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
-use crate::{
-    attr_name_bits_from_bytes, call_callable1, call_callable3, molt_get_attr_name,
-    molt_set_attr_name,
-};
+use crate::{call_callable1, call_callable3, molt_set_attr_name};
 
 /// The exit status of a program whose main body has returned: 0 when nothing
 /// is pending; otherwise the pending exception is taken, reported as CPython's
@@ -78,12 +75,12 @@ fn report_uncaught(py: &PyToken<'_>, exc_bits: u64) -> i32 {
     } else {
         trace_bits
     };
-    set_sys_attr(py, b"last_exc", exc_bits);
-    set_sys_attr(py, b"last_type", type_bits);
-    set_sys_attr(py, b"last_value", exc_bits);
-    set_sys_attr(py, b"last_traceback", tb_bits);
+    set_sys_attr(py, crate::NameId::LastExc, exc_bits);
+    set_sys_attr(py, crate::NameId::LastType, type_bits);
+    set_sys_attr(py, crate::NameId::LastValue, exc_bits);
+    set_sys_attr(py, crate::NameId::LastTraceback, tb_bits);
 
-    let hook_bits = sys_attr_bits(py, b"excepthook");
+    let hook_bits = sys_attr_bits(py, crate::NameId::Excepthook);
     let audited = crate::builtins::sys_ext::audit_event(
         py,
         "sys.excepthook",
@@ -141,11 +138,11 @@ fn release(py: &PyToken<'_>, bits: u64) {
 
 /// Set one `sys` attribute; a failure is cleared, as `_PySys_SetAttr` failures
 /// are in `PyErr_Print`.
-fn set_sys_attr(py: &PyToken<'_>, name: &[u8], value_bits: u64) {
+fn set_sys_attr(py: &PyToken<'_>, name: crate::NameId, value_bits: u64) {
     let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(py) else {
         return;
     };
-    let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+    let Some(name_bits) = name.owned_bits(py) else {
         return;
     };
     let result = molt_set_attr_name(sys_bits, name_bits, value_bits);
@@ -159,7 +156,7 @@ fn set_sys_attr(py: &PyToken<'_>, name: &[u8], value_bits: u64) {
 /// `PySys_WriteStderr`: write through `sys.stderr`, or to the process stderr
 /// when it is missing, None, or its `write` fails.
 pub(super) fn write_sys_stderr(py: &PyToken<'_>, text: &str) {
-    let stream_bits = sys_attr_bits(py, b"stderr");
+    let stream_bits = sys_attr_bits(py, crate::NameId::Stderr);
     if !obj_from_bits(stream_bits).is_none() {
         let written = write_stream(py, stream_bits, text);
         dec_ref_bits(py, stream_bits);
@@ -171,16 +168,19 @@ pub(super) fn write_sys_stderr(py: &PyToken<'_>, text: &str) {
 }
 
 fn write_stream(py: &PyToken<'_>, stream_bits: u64, text: &str) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(py, b"write") else {
+    let Some(name_bits) = crate::NameId::Write.owned_bits(py) else {
         return false;
     };
-    let write_bits = molt_get_attr_name(stream_bits, name_bits);
+    let result = crate::lookup_attribute(py, stream_bits, name_bits);
     dec_ref_bits(py, name_bits);
-    if exception_pending(py) {
-        clear_exception(py);
-        release(py, write_bits);
-        return false;
-    }
+    let write_bits = match result {
+        crate::AttributeLookup::Found(bits) => bits,
+        crate::AttributeLookup::Missing => return false,
+        crate::AttributeLookup::Error => {
+            clear_exception(py);
+            return false;
+        }
+    };
     let text_ptr = alloc_string(py, text.as_bytes());
     if text_ptr.is_null() {
         release(py, write_bits);
@@ -202,7 +202,7 @@ fn write_stream(py: &PyToken<'_>, stream_bits: u64, text: &str) -> bool {
 /// owns; the formatted traceback goes to the process stderr only when that
 /// hook is missing or fails.
 fn display_exception(py: &PyToken<'_>, exc_bits: u64) {
-    let hook_bits = sys_attr_bits(py, b"__excepthook__");
+    let hook_bits = sys_attr_bits(py, crate::NameId::DunderExcepthook);
     if !obj_from_bits(hook_bits).is_none() {
         let type_bits = crate::type_of_bits(py, exc_bits);
         let tb_bits = obj_from_bits(exc_bits)

@@ -1353,6 +1353,19 @@ def _locked_environment_spec(
         for key, value in payload["custody"].items()
         if key != "realized_environment"
     }
+    # These publication state-machine fixtures already supply a synthetic
+    # runtime capture; keep its location observation at the same boundary.
+    # Real interpreter/uv behavior is exercised by the image freshness tests.
+    from molt import python_interpreter as interpreter
+
+    monkeypatch.setattr(
+        interpreter,
+        "observe_python_interpreter",
+        lambda *_args, **_kwargs: interpreter.RealizedPythonInterpreter(
+            Path(getattr(sys, "_base_executable", sys.executable)).resolve(),
+            str(custody["python_runtime"]["version"]),
+        ),
+    )
     return (
         root,
         python,
@@ -1468,6 +1481,39 @@ def test_source_build_environment_failed_sync_leaves_only_provisional_record(
     assert json.loads(provisioning_path.read_text(encoding="utf-8")) == (
         build_environment._provisioning_record(spec[3])
     )
+
+
+def test_source_build_environment_missing_patch_names_found_interpreter_and_fix(
+    tmp_path, monkeypatch
+):
+    from molt import python_interpreter as interpreter
+
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    wanted = str(spec[3]["python_runtime"]["version"])
+    parts = list(map(int, wanted.split(".")))
+    parts[-1] += 1
+    found = ".".join(map(str, parts))
+    executable = tmp_path / "uv-python" / found / "bin/python"
+    monkeypatch.setattr(
+        interpreter,
+        "observe_python_interpreter",
+        lambda *_args, **_kwargs: interpreter.RealizedPythonInterpreter(
+            executable, found
+        ),
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "_run_uv_sync",
+        lambda *_args, **_kwargs: pytest.fail("mismatched interpreter reached uv sync"),
+    )
+    with pytest.raises(_contract.SourceBuildEnvironmentError) as failure:
+        build_environment._provision_source_build_environment(
+            tmp_path, spec, environ={}
+        )
+    diagnostic = str(failure.value)
+    assert str(executable) in diagnostic and f"CPython {found}" in diagnostic
+    assert f"uv python install {wanted}" in diagnostic
+    assert not spec[2].exists()
 
 
 def test_source_build_environment_keeps_provisional_record_when_deletion_refuses(
@@ -1828,7 +1874,8 @@ def test_concurrent_source_build_provision_runs_one_sync(
         "--project",
         str(tmp_path.resolve()),
         "--python",
-        str(Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()),
+        str(spec[3]["python_runtime"]["version"]),
+        "--no-python-downloads",
         "--frozen",
         "--no-default-groups",
         "--group",

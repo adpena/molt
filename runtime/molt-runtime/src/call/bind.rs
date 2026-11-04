@@ -1,3 +1,4 @@
+use crate::AttributeLookup;
 use crate::BuiltinExc;
 #[cfg(test)]
 use crate::alloc_string;
@@ -10,8 +11,7 @@ use crate::call::type_policy::{
     callable_matches_runtime_symbol, resolved_new_is_default_object_new,
 };
 use crate::call::{
-    CallAttrLookup, StaticmethodCallTarget, lookup_call_attr, require_call_attr,
-    resolve_staticmethod_call_target,
+    StaticmethodCallTarget, lookup_call_attr, require_call_attr, resolve_staticmethod_call_target,
 };
 use crate::state::recursion::RecursionGuard;
 use crate::state::tls::FRAME_STACK;
@@ -32,10 +32,10 @@ use crate::{
     dict_update_set_via_store, exception_pending, function_arity, function_arity_usize,
     function_attr_bits, function_execution_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, generic_alias_origin_bits, has_capability, header_from_obj_ptr,
-    inc_ref_bits, intern_static_name, is_builtin_class_bits, is_trusted, is_truthy,
-    issubclass_bits, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
-    molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
-    molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
+    inc_ref_bits, is_builtin_class_bits, is_trusted, is_truthy, issubclass_bits,
+    maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice, molt_bytearray_decode,
+    molt_bytearray_endswith_slice, molt_bytearray_find_slice, molt_bytearray_hex,
+    molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
     molt_bytearray_rindex_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
     molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
     molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
@@ -413,7 +413,7 @@ pub(crate) unsafe fn call_bind_with_arguments(
             }
             TYPE_ID_TYPE => {
                 match lookup_call_attr(_py, call_ptr) {
-                    CallAttrLookup::Found(call_attr_bits) => {
+                    AttributeLookup::Found(call_attr_bits) => {
                         if !is_default_type_call(_py, call_attr_bits) {
                             let result = call_bind_with_arguments(_py, call_attr_bits, args);
                             dec_ref_bits(_py, call_attr_bits);
@@ -421,8 +421,8 @@ pub(crate) unsafe fn call_bind_with_arguments(
                         }
                         dec_ref_bits(_py, call_attr_bits);
                     }
-                    CallAttrLookup::Raised => return MoltObject::none().bits(),
-                    CallAttrLookup::Missing => {}
+                    AttributeLookup::Error => return MoltObject::none().bits(),
+                    AttributeLookup::Missing => {}
                 }
                 return call_type_with_arguments(_py, call_ptr, args);
             }

@@ -191,14 +191,14 @@ mod tests {
     }
 
     fn module(py: &PyToken<'_>, name: &[u8]) -> u64 {
-        let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+        let key = crate::dynamic_attr_name_bits(py, name).unwrap();
         let bits = MoltObject::from_ptr(crate::alloc_module_obj(py, key)).bits();
         dec_ref_bits(py, key);
         bits
     }
 
     fn marker(py: &PyToken<'_>, module: u64, expected: i64) {
-        let key = crate::attr_name_bits_from_bytes(py, b"sentinel").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"sentinel").unwrap();
         let result = crate::builtins::modules::molt_module_get_attr(module, key);
         assert!(!exception_pending(py));
         assert_eq!(obj_from_bits(result).as_int(), Some(expected));
@@ -228,7 +228,7 @@ mod tests {
                 BUILTINS.store(builtin, Ordering::SeqCst);
                 SYS.store(sys, Ordering::SeqCst);
                 FINALIZED.store(0, Ordering::SeqCst);
-                let key = crate::attr_name_bits_from_bytes(py, b"sentinel").unwrap();
+                let key = crate::dynamic_attr_name_bits(py, b"sentinel").unwrap();
                 crate::builtins::modules::molt_module_set_attr(
                     builtin,
                     key,
@@ -248,7 +248,7 @@ mod tests {
                 ] {
                     publish(py, name, bits);
                 }
-                let name = crate::attr_name_bits_from_bytes(py, b"NamespaceFinalizer").unwrap();
+                let name = crate::dynamic_attr_name_bits(py, b"NamespaceFinalizer").unwrap();
                 let class = crate::molt_class_new(name);
                 dec_ref_bits(py, name);
                 crate::molt_class_set_base(class, crate::builtin_classes(py).object);
@@ -260,7 +260,7 @@ mod tests {
                     1,
                 );
                 let method = MoltObject::from_ptr(method).bits();
-                let key = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+                let key = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
                 crate::molt_set_attr_name(class, key, method);
                 dec_ref_bits(py, key);
                 dec_ref_bits(py, method);
@@ -269,7 +269,7 @@ mod tests {
                 for index in 0..2 {
                     let owner = module(py, b"owner");
                     let value = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
-                    let key = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
+                    let key = crate::dynamic_attr_name_bits(py, b"value").unwrap();
                     crate::builtins::modules::molt_module_set_attr(owner, key, value);
                     dec_ref_bits(py, key);
                     dec_ref_bits(py, value);

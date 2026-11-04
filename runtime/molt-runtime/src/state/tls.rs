@@ -27,6 +27,8 @@ pub(crate) struct ExecutionTls {
     /// for the call (`THREAD_RECORD_PENDING_INVOCATION_OFFSET`,
     /// `builtins::frames::namespace`).
     pub(crate) pending_invocation: Cell<u64>,
+    /// Borrowed address of this invocation's runtime eval breaker.
+    pending_work_ptr: Cell<u64>,
     /// The Python recursion depth this thread's execution stack holds
     /// (`state::recursion`).
     pub(crate) recursion_depth: Cell<usize>,
@@ -42,6 +44,10 @@ pub(crate) struct ExecutionTls {
         Cell<Option<crate::state::runtime_state::RuntimeWorkerOrigin>>,
     /// The runtime state this thread initialized or attached to.
     pub(crate) runtime_state: Cell<*mut RuntimeState>,
+    /// The runtime state this thread's admission custody runs, resolved once
+    /// when the custody begins (`state::runtime_state::bind_execution_state`),
+    /// or null. Null is always safe: readers then resolve in full.
+    pub(crate) bound_state: Cell<*const RuntimeState>,
     /// Whether this thread ordered its destructor-bearing thread-locals.
     pub(crate) tls_guard_touched: Cell<bool>,
     /// Borrowed from the outermost terminal release until its queue drains.
@@ -52,6 +58,7 @@ pub(crate) struct ExecutionTls {
 const _: () = {
     use molt_codegen_abi::{
         THREAD_RECORD_EXCEPTION_PENDING_OFFSET, THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+        THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
     };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
@@ -63,6 +70,9 @@ const _: () = {
         offset_of!(ExecutionTls, pending_invocation) as i32
             == THREAD_RECORD_PENDING_INVOCATION_OFFSET
     );
+    assert!(
+        offset_of!(ExecutionTls, pending_work_ptr) as i32 == THREAD_RECORD_PENDING_WORK_PTR_OFFSET
+    );
 };
 
 thread_local! {
@@ -70,6 +80,7 @@ thread_local! {
         ExecutionTls {
             exception_pending: Cell::new(false),
             pending_invocation: Cell::new(0),
+            pending_work_ptr: Cell::new(0),
             recursion_depth: Cell::new(0),
             gil_depth: Cell::new(0),
             lease_depth: Cell::new(0),
@@ -77,6 +88,7 @@ thread_local! {
             #[cfg(not(target_arch = "wasm32"))]
             retained_worker_origin: Cell::new(None),
             runtime_state: Cell::new(std::ptr::null_mut()),
+            bound_state: Cell::new(std::ptr::null()),
             tls_guard_touched: Cell::new(false),
             terminal_release: Cell::new(std::ptr::null()),
         }
@@ -100,7 +112,12 @@ pub(crate) fn execution_tls() -> &'static ExecutionTls {
 /// the record lives as long as the thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_thread_record() -> u64 {
-    std::ptr::from_ref(execution_tls()) as u64
+    let tls = execution_tls();
+    let state = super::runtime_state::admitted_runtime_state_in(tls)
+        .expect("compiled thread record requires an attached runtime");
+    tls.pending_work_ptr
+        .set(state.pending_work.word_ptr() as u64);
+    std::ptr::from_ref(tls) as u64
 }
 
 thread_local! {

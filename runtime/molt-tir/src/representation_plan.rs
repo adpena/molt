@@ -4,18 +4,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
 use crate::tir::function::TirFunction;
-use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir_for_target;
-use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
 use crate::tir::op_kinds_generated::{
     SimpleIrReturnShape, kind_to_opcode_table, simpleir_integer_semantics_table,
     simpleir_return_shape,
 };
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::passes::typed_slot_access::{self, TypedSlotStoreMode};
 use crate::tir::simple_def_use::simple_ir_binding;
 use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
+use crate::tir::type_refine::{ExactScalarWitness, exact_scalar_witnesses};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -23,47 +22,87 @@ pub use molt_passes::representation_facts::{
     native_projectable_scalar_reprs_for, repr_by_value_for, value_range_for,
 };
 
-/// Freeze the exact target-neutral parameter carriers used at independently
+/// Freeze the exact target-neutral parameter and return carriers used at independently
 /// compiled native-object boundaries.
 ///
 /// This is deliberately outside the LLVM feature: batch planning runs in every
 /// native build, and all consumers must serialize the same carrier decision
 /// before provider bodies are partitioned away.
-pub fn native_linkage_param_types(tir_func: &TirFunction) -> Vec<TirType> {
-    let value_range = value_range_for(tir_func);
-    let repr_by_value = repr_by_value_for(tir_func, Some(&value_range));
-    effective_param_types_from_repr(tir_func, &repr_by_value)
+pub fn native_linkage_types(tir_func: &TirFunction) -> (Vec<TirType>, TirType) {
+    let plan = ProducerCarrierPlan::build(tir_func);
+    (
+        plan.effective_param_types(tir_func),
+        plan.effective_return_type(tir_func),
+    )
 }
 
-fn effective_param_types_from_repr(
+fn effective_value_type_from_repr(
+    id: ValueId,
+    declared: &TirType,
+    repr_by_value: &HashMap<ValueId, Repr>,
+) -> TirType {
+    repr_by_value
+        .get(&id)
+        .copied()
+        .unwrap_or_else(|| Repr::default_for(declared))
+        .carrier_type(declared)
+}
+
+pub(crate) fn effective_param_types_from_repr(
     tir_func: &TirFunction,
     repr_by_value: &HashMap<ValueId, Repr>,
 ) -> Vec<TirType> {
-    let entry_args = &tir_func.blocks[&tir_func.entry_block].args;
+    let entry_args = tir_func
+        .blocks
+        .get(&tir_func.entry_block)
+        .map(|block| block.args.as_slice())
+        .unwrap_or(&[]);
     tir_func
         .param_types
         .iter()
         .enumerate()
         .map(|(index, declared)| {
-            let proven_safe = entry_args.get(index).is_some_and(|argument| {
-                repr_by_value
-                    .get(&argument.id)
-                    .is_some_and(|repr| repr.is_raw_i64_safe())
-            });
-            if matches!(declared, TirType::I64) && !proven_safe {
-                TirType::DynBox
-            } else {
-                declared.clone()
-            }
+            entry_args.get(index).map_or_else(
+                || Repr::default_for(declared).carrier_type(declared),
+                |argument| effective_value_type_from_repr(argument.id, declared, repr_by_value),
+            )
         })
         .collect()
+}
+
+/// A return slot has no ValueId. Join the carriers of its executable producers,
+/// rather than using a semantic return annotation as a machine ABI. In
+/// particular, a raw integer return and a boxed integer return must join boxed.
+pub(crate) fn effective_return_type_from_repr(
+    tir_func: &TirFunction,
+    repr_by_value: &HashMap<ValueId, Repr>,
+) -> TirType {
+    let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
+    let mut result = TirType::Never;
+    for block in tir_func
+        .blocks
+        .values()
+        .filter(|block| reachable.contains(&block.id))
+    {
+        if let crate::tir::blocks::Terminator::Return { values } = &block.terminator {
+            let carrier = values.first().map_or(TirType::None, |id| {
+                effective_value_type_from_repr(*id, &tir_func.return_type, repr_by_value)
+            });
+            result = result.meet(&carrier);
+        }
+    }
+    if result == TirType::Never {
+        TirType::None
+    } else {
+        result
+    }
 }
 
 mod indexed_facts;
 pub(crate) use indexed_facts::tir_container_storage_facts;
 
 use indexed_facts::{
-    FunctionFactIndex, IndexedFunctionFactIndex, alias_source_name, is_cold_module_chunk_function,
+    FunctionFactIndex, IndexedFunctionFactIndex, is_cold_module_chunk_function,
     simple_op_produces_non_scalar_value, store_var_targets_all_sources_where,
     tir_container_storage_needs_repr,
 };
@@ -71,23 +110,16 @@ use indexed_facts::{
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ScalarRepresentationFact {
     pub(crate) ty: TirType,
-    pub(crate) repr: LirRepr,
+    producer: Option<ExactScalarWitness>,
 }
 
 impl ScalarRepresentationFact {
     fn is_dynbox_top(&self) -> bool {
-        matches!(self.ty, TirType::DynBox) && self.repr == LirRepr::DynBox
+        matches!(self.ty, TirType::DynBox) && self.producer.is_none()
     }
 
     fn scalar_kind(&self) -> Option<ScalarKind> {
-        match (&self.ty, self.repr) {
-            (TirType::I64, LirRepr::I64) => Some(ScalarKind::Int),
-            (TirType::Bool, LirRepr::Bool1) => Some(ScalarKind::Bool),
-            (TirType::F64, LirRepr::F64) => Some(ScalarKind::Float),
-            (TirType::Str, _) => Some(ScalarKind::Str),
-            (TirType::None, _) => Some(ScalarKind::NoneValue),
-            _ => None,
-        }
+        self.producer.map(ExactScalarWitness::kind)
     }
 
     fn container_kind(&self) -> Option<ContainerKind> {
@@ -113,9 +145,9 @@ pub struct ScalarRepresentationPlan {
     facts_by_name: HashMap<String, ScalarRepresentationFact>,
     conflicted_names: HashSet<String>,
     /// Names whose current fact came from a SYNTHETIC (canonical fallback)
-    /// name — `_v{N}` / `_bb{N}_arg{I}` from the internal re-lift. Weak facts
+    /// name — `_v{N}` / `_bb{N}_arg{I}` from the SSA projection. Weak facts
     /// yield to explicit-stream-name facts instead of conflicting them out
-    /// (see [`Self::insert_lir_value_weak`]).
+    /// (see [`Self::insert_weak_fact`]).
     weak_fact_names: HashSet<String>,
     non_scalar_names: HashSet<String>,
     integer_family_names: HashSet<String>,
@@ -154,9 +186,54 @@ pub struct ScalarPrimaryNameSets {
     pub immortal: BTreeSet<String>,
 }
 
-/// Per-function representation facts consumed by the LLVM backend.
+/// A native operation lane justified by producer witnesses for its operands.
+/// Only the representation planner may construct it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScalarLaneWitness {
+    kind: ScalarKind,
+}
+
+impl ScalarLaneWitness {
+    pub fn kind(self) -> ScalarKind {
+        self.kind
+    }
+}
+
+/// A named projection of an exact numeric SSA producer, safe to read as f64.
+/// Boxed integers of unknown magnitude are excluded: bit-unboxing a BigInt
+/// pointer is invalid and conversion/overflow belongs to generic dispatch.
+#[derive(Clone, Copy, Debug)]
+pub struct NumericOperand<'a> {
+    name: &'a str,
+    producer: ExactScalarWitness,
+}
+
+impl<'a> NumericOperand<'a> {
+    pub fn name(self) -> &'a str {
+        self.name
+    }
+    pub fn kind(self) -> ScalarKind {
+        self.producer.kind()
+    }
+}
+
+/// Producer-proven operands whose conversion to f64 preserves comparison.
+/// Arithmetic may round an integer operand; Python comparisons may not.
+#[derive(Clone, Copy, Debug)]
+pub struct FloatComparisonOperands<'a> {
+    lhs: NumericOperand<'a>,
+    rhs: NumericOperand<'a>,
+}
+
+impl<'a> FloatComparisonOperands<'a> {
+    pub fn operands(self) -> (NumericOperand<'a>, NumericOperand<'a>) {
+        (self.lhs, self.rhs)
+    }
+}
+
+/// Shared producer-proven physical carriers for a TIR function.
 ///
-/// The LLVM backend lowers `TirFunction` (SSA `ValueId`s) directly. This struct
+/// Backends lower `TirFunction` (SSA `ValueId`s) directly. This plan
 /// carries the same value-keyed representation proof the WASM/LIR path consumes:
 /// every backend decision here is derived from the post-pipeline TIR function
 /// being lowered.
@@ -167,8 +244,7 @@ pub struct ScalarPrimaryNameSets {
 /// I64` with no overflow proof, so unbounded integer arithmetic must stay
 /// boxed/runtime-backed until a range proof exists).
 #[derive(Clone, Debug, Default)]
-#[cfg(feature = "llvm")]
-pub struct LlvmReprFacts {
+pub struct ProducerCarrierPlan {
     /// The representation lattice element per TIR `ValueId`: the value-keyed
     /// source of truth. Exact scalar provenance authorizes Bool/Float carriers;
     /// annotations alone stay boxed. Inline-int47 carriers raise to
@@ -183,8 +259,7 @@ pub struct LlvmReprFacts {
     pub repr_by_value: HashMap<ValueId, Repr>,
 }
 
-#[cfg(feature = "llvm")]
-impl LlvmReprFacts {
+impl ProducerCarrierPlan {
     pub fn carrier_refcount_is_noop(&self, value: ValueId) -> bool {
         self.repr_by_value
             .get(&value)
@@ -195,8 +270,7 @@ impl LlvmReprFacts {
             .get(&value)
             .is_some_and(|repr| repr.boxed_refcount_is_noop())
     }
-    /// Build the LLVM representation facts from the post-pipeline TIR function
-    /// the LLVM backend is about to lower.
+    /// Build carrier facts from the exact TIR function being lowered.
     pub fn build(tir_func: &TirFunction) -> Self {
         let vr = value_range_for(tir_func);
         let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
@@ -226,22 +300,19 @@ impl LlvmReprFacts {
             .is_some_and(|repr| repr.is_raw_i64_carrier())
     }
 
-    /// The **effective** parameter carrier types `tir_func`'s callers must
-    /// coerce arguments to, per this function's own value-range proof.
-    ///
-    /// A declared `int` parameter (`TirType::I64`) is a *semantic* int with no
-    /// representation proof attached; it is sound as a raw-i64 carrier only when
-    /// the value-range analysis proves its entire range fits the 47-bit inline
-    /// payload (`is_inline_safe_int`). An unproven `int` param can receive a
-    /// heap BigInt and therefore MUST be carried `DynBox` (NaN-boxed) across the
-    /// call boundary: the caller passes the boxed value unchanged and the callee
-    /// body uses it boxed. This is the parameter-ABI twin of
-    /// [`FunctionLowering::effective_block_arg_type`] (which makes the same
-    /// decision for loop-carried phis), and the SAME `repr_by_value` proof feeds
-    /// both, so the caller's coercion target and the callee's entry-param carrier
-    /// can never disagree. Non-`I64` declared types pass through unchanged.
+    /// The same producer-fact projection owns parameters, phis and explicit
+    /// materialization. No annotation alone selects any raw scalar kind.
+    pub fn effective_value_type(&self, id: ValueId, declared: &TirType) -> TirType {
+        effective_value_type_from_repr(id, declared, &self.repr_by_value)
+    }
+
+    /// Caller and provider use the same frozen producer-fact projection.
     pub fn effective_param_types(&self, tir_func: &TirFunction) -> Vec<TirType> {
         effective_param_types_from_repr(tir_func, &self.repr_by_value)
+    }
+
+    pub fn effective_return_type(&self, tir_func: &TirFunction) -> TirType {
+        effective_return_type_from_repr(tir_func, &self.repr_by_value)
     }
 }
 
@@ -323,7 +394,6 @@ impl ScalarRepresentationPlan {
             &names,
             optimized_tir_func.as_ref(),
             optimized_names.as_ref(),
-            false,
             None,
         )
     }
@@ -377,7 +447,7 @@ impl ScalarRepresentationPlan {
         );
         func_ir.ops = ops;
         let emitted_names = names.into_emission_facts();
-        Self::extract_typed_facts(func_ir, tir_func, &emitted_names, None, None, true, repr)
+        Self::extract_typed_facts(func_ir, tir_func, &emitted_names, None, None, repr)
     }
 
     fn extract_typed_facts(
@@ -386,7 +456,6 @@ impl ScalarRepresentationPlan {
         names: &SimpleValueNames,
         optimized_tir_func: Option<&TirFunction>,
         optimized_names: Option<&SimpleValueNames>,
-        final_emission: bool,
         final_repr: Option<&HashMap<ValueId, Repr>>,
     ) -> Self {
         let trace = backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
@@ -412,16 +481,9 @@ impl ScalarRepresentationPlan {
             .needs_indexed_name_graph()
             .then(|| IndexedFunctionFactIndex::for_function_facts(&fact_index));
         trace_stage("after_fact_index");
-        // Fact extraction uses the semantic type floor. Raw-int carrier homes
-        // are projected from `repr_by_value_for` after the LIR facts have been
-        // named, so this extraction step never becomes a second carrier proof.
-        // Projection also sees the optimized TIR view because the canonical TIR
-        // pipeline exposes loop phis and promoted store/load slots that the
-        // backend lowers as raw value carriers.
-        trace_stage("before_semantic_floor");
-        let lir_func = lower_function_to_lir_for_repr_fact_extraction(tir_func);
-        trace_stage("after_semantic_floor");
-
+        // Project the final SSA facts directly. Lowering another LIR body here
+        // would repeat range/provenance analysis and invent synthetic producers.
+        let producers = exact_scalar_witnesses(tir_func);
         trace_stage("before_value_facts");
         let needs_carriers = needs_primary || needs_direct_numeric;
         let derived_repr;
@@ -450,16 +512,11 @@ impl ScalarRepresentationPlan {
             });
         trace_stage("after_value_facts");
 
-        let value_count = lir_func
+        let value_count = tir_func
             .blocks
             .values()
             .map(|block| {
-                block.args.len()
-                    + block
-                        .ops
-                        .iter()
-                        .map(|op| op.result_values.len())
-                        .sum::<usize>()
+                block.args.len() + block.ops.iter().map(|op| op.results.len()).sum::<usize>()
             })
             .sum();
         let mut plan = Self::with_capacity(value_count);
@@ -471,51 +528,51 @@ impl ScalarRepresentationPlan {
         plan.container_storage_conflicted_names
             .extend(names.ambiguous_source_names().map(str::to_string));
         plan.typed_slot_store_modes = Self::project_typed_slot_store_modes(func_ir, tir_func);
-        trace_stage("before_storage_and_floor_projection");
+        trace_stage("before_storage_and_producer_projection");
         plan.seed_container_storage_from_tir(tir_func, names, repr);
         plan.seed_exact_builtin_lists(tir_func, names);
-        let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
+        let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
         for block_id in block_ids {
-            let block = &lir_func.blocks[&block_id];
+            let block = &tir_func.blocks[&block_id];
             for (index, arg) in block.args.iter().enumerate() {
-                // Both arg-name forms are synthetic fallbacks (a re-lift
-                // renumbers ValueIds and BlockIds), so they insert WEAK facts:
-                // an explicit stream name carried by a `_simple_out` /
-                // `_simple_result_N` override must win over a colliding
-                // canonical name, not be conflicted out by it.
-                plan.insert_lir_value_weak(names.source_or_value_name(arg.id), arg);
-                plan.insert_lir_value_weak(names.block_arg_slot(block.id, index), arg);
+                let producer = producers.get(&arg.id).copied();
+                let fact = ScalarRepresentationFact {
+                    ty: producer.map_or_else(|| arg.ty.clone(), ExactScalarWitness::ty),
+                    producer,
+                };
+                plan.insert_weak_fact(names.source_or_value_name(arg.id), fact.clone());
+                plan.insert_weak_fact(names.block_arg_slot(block.id, index), fact);
             }
             for op in &block.ops {
-                let checked_i64_arithmetic = matches!(
-                    op.tir_op.attrs.get("lir.checked_overflow"),
-                    Some(AttrValue::Bool(true))
-                );
-                for (index, result) in op.result_values.iter().enumerate() {
-                    if checked_i64_arithmetic && index == 0 && !final_emission {
-                        // A fresh source analysis may need the weak canonical
-                        // fallback. Final emission already has exact injective
-                        // identities and must never invent another spelling.
-                        plan.insert_lir_value_weak(
-                            SimpleValueNames::canonical_value_name(result.id),
-                            result,
-                        );
-                    } else if let Some(source) = names.source_value_name(result.id) {
-                        plan.insert_lir_value(source.to_string(), result);
+                for &id in &op.results {
+                    let producer = producers.get(&id).copied();
+                    let fact = ScalarRepresentationFact {
+                        ty: producer.map_or_else(
+                            || {
+                                tir_func
+                                    .value_types
+                                    .get(&id)
+                                    .cloned()
+                                    .unwrap_or(TirType::DynBox)
+                            },
+                            ExactScalarWitness::ty,
+                        ),
+                        producer,
+                    };
+                    if let Some(source) = names.source_value_name(id) {
+                        if fact.is_dynbox_top() {
+                            plan.insert_weak_fact(source.to_string(), fact);
+                        } else {
+                            plan.insert_fact(source.to_string(), fact);
+                        }
                     } else {
-                        plan.insert_lir_value_weak(names.value_name(result.id), result);
+                        plan.insert_weak_fact(names.value_name(id), fact);
                     }
-                }
-                if checked_i64_arithmetic
-                    && let Some(result) = op.result_values.first()
-                    && let Some(source) = names.source_value_name(result.id)
-                {
-                    plan.insert_lir_value(source.to_string(), result);
                 }
             }
         }
-        trace_stage("after_storage_and_floor_projection");
+        trace_stage("after_storage_and_producer_projection");
         trace_stage("before_alias_joins");
         if fact_index.has_scalar_alias_or_store_edges()
             && let Some(indexed_fact_index) = indexed_fact_index.as_ref()
@@ -767,8 +824,9 @@ impl ScalarRepresentationPlan {
             .unwrap_or_default()
     }
 
-    pub fn op_scalar_lane(&self, op: &OpIR) -> Option<ScalarKind> {
+    pub fn op_scalar_lane(&self, op: &OpIR) -> Option<ScalarLaneWitness> {
         self.infer_scalar_lane(op)
+            .map(|kind| ScalarLaneWitness { kind })
     }
 
     pub(crate) fn name_container_storage_kind(&self, name: &str) -> Option<ContainerStorageKind> {
@@ -806,34 +864,6 @@ impl ScalarRepresentationPlan {
                 args.get(1)
                     .is_some_and(|key| self.name_is_integer_family(key))
             })
-    }
-
-    fn insert_lir_value(&mut self, name: String, value: &LirValue) {
-        let fact = ScalarRepresentationFact {
-            ty: value.ty.clone(),
-            repr: value.repr,
-        };
-        if fact.is_dynbox_top() {
-            self.insert_weak_fact(name, fact);
-        } else {
-            self.insert_fact(name, fact);
-        }
-    }
-
-    /// Insert a fact under a SYNTHETIC (canonical fallback) name — `_v{N}` /
-    /// `_bb{N}_arg{I}` from the plan's internal re-lift, whose numbering does
-    /// NOT match the emitted stream's. Weak facts never displace or conflict
-    /// out an explicit-stream-name (strong) fact: a canonical name colliding
-    /// with a different value's explicit name previously blacklisted BOTH,
-    /// silently demoting the explicitly-named value to the boxed lane (found
-    /// via the overflow_peel flag chain, where `_v43`-style emitted names
-    /// collided with the re-lift's canonical `_v43`).
-    fn insert_lir_value_weak(&mut self, name: String, value: &LirValue) {
-        let fact = ScalarRepresentationFact {
-            ty: value.ty.clone(),
-            repr: value.repr,
-        };
-        self.insert_weak_fact(name, fact);
     }
 
     fn insert_weak_fact(&mut self, name: String, fact: ScalarRepresentationFact) {
@@ -1003,57 +1033,18 @@ impl ScalarRepresentationPlan {
     fn propagate_integer_family(
         &mut self,
         func_ir: &FunctionIR,
-        fact_index: &FunctionFactIndex<'_>,
+        _fact_index: &FunctionFactIndex<'_>,
     ) {
         self.non_scalar_names = self.non_scalar_simple_outputs(func_ir);
-        self.integer_family_names.extend(
-            self.facts_by_name
-                .iter()
-                .filter(|(name, fact)| {
-                    !self.non_scalar_names.contains(*name)
-                        && (matches!(fact.ty, TirType::I64) && fact.repr == LirRepr::I64
-                            || matches!(fact.ty, TirType::BigInt))
-                })
-                .map(|(name, _)| name.clone()),
-        );
-
-        let mut changed = true;
-        while changed {
-            changed = false;
-            changed |= self.propagate_integer_store_targets(fact_index);
-            for (out, source) in fact_index.alias_edges() {
-                if self.integer_family_names.contains(source)
-                    && self.integer_family_names.insert(out.to_string())
-                {
-                    changed = true;
-                }
-            }
-            for op in &fact_index.data_ops {
-                let Some(out) = op.out.as_ref() else {
-                    continue;
-                };
-                if self.integer_family_names.contains(out) {
-                    continue;
-                }
-                let inserted = if let Some(source) = alias_source_name(op) {
-                    self.integer_family_names.contains(source)
-                } else if simpleir_integer_semantics_table(op.kind).integer_only_result() {
-                    true
-                } else if simpleir_integer_semantics_table(op.kind)
-                    .integer_result_when_operands_integer()
-                {
-                    op.args.as_ref().is_some_and(|args| {
-                        !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
-                    })
-                } else {
-                    false
-                };
-                if inserted {
-                    self.integer_family_names.insert(out.clone());
-                    changed = true;
-                }
-            }
-        }
+        self.integer_family_names = self
+            .facts_by_name
+            .iter()
+            .filter(|(name, fact)| {
+                !self.non_scalar_names.contains(*name)
+                    && fact.scalar_kind() == Some(ScalarKind::Int)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
     }
 
     fn non_scalar_simple_outputs(&self, func_ir: &FunctionIR) -> HashSet<String> {
@@ -1068,27 +1059,44 @@ impl ScalarRepresentationPlan {
         names
     }
 
-    fn propagate_integer_store_targets(&mut self, fact_index: &FunctionFactIndex<'_>) -> bool {
-        let mut targets: HashMap<&str, bool> =
-            HashMap::with_capacity(fact_index.store_count().saturating_add(1));
-        for (target, source) in fact_index.store_edges() {
-            let source_is_integer =
-                source.is_some_and(|source| self.integer_family_names.contains(source));
-            targets
-                .entry(target)
-                .and_modify(|all_sources_integer| {
-                    *all_sources_integer &= source_is_integer;
-                })
-                .or_insert(source_is_integer);
-        }
-
-        let mut changed = false;
-        for (target, all_sources_integer) in targets {
-            if all_sources_integer && self.integer_family_names.insert(target.to_string()) {
-                changed = true;
+    pub fn numeric_operand<'a>(&self, name: &'a str) -> Option<NumericOperand<'a>> {
+        let producer = self.name_scalar_witness(name)?;
+        match producer.kind() {
+            ScalarKind::Float | ScalarKind::Bool => Some(NumericOperand { name, producer }),
+            ScalarKind::Int if self.is_raw_int_carrier_name(name) => {
+                Some(NumericOperand { name, producer })
             }
+            _ => None,
         }
-        changed
+    }
+
+    pub fn float_comparison_operands<'a>(
+        &self,
+        op: &'a OpIR,
+    ) -> Option<FloatComparisonOperands<'a>> {
+        let args = op.args.as_ref()?;
+        let [lhs, rhs] = args.as_slice() else {
+            return None;
+        };
+        let lhs = self.numeric_operand(lhs)?;
+        let rhs = self.numeric_operand(rhs)?;
+        // Reuse the canonical inline-int47 proof, which lies wholly inside
+        // f64's exact integer range. Full-i64 carriers need exact runtime
+        // comparison; converting 2**53 + 1 would silently round it down.
+        if [lhs, rhs].iter().any(|operand| {
+            operand.kind() == ScalarKind::Int && !self.is_inline_safe_int_name(operand.name())
+        }) {
+            return None;
+        }
+        (lhs.kind() == ScalarKind::Float || rhs.kind() == ScalarKind::Float)
+            .then_some(FloatComparisonOperands { lhs, rhs })
+    }
+
+    pub fn name_scalar_witness(&self, name: &str) -> Option<ExactScalarWitness> {
+        let fact = self.facts_by_name.get(name)?;
+        (!self.non_scalar_names.contains(name) && fact.scalar_kind().is_some())
+            .then_some(fact.producer)
+            .flatten()
     }
 
     pub fn name_scalar_kind(&self, name: &str) -> Option<ScalarKind> {
@@ -1164,7 +1172,7 @@ impl ScalarRepresentationPlan {
     }
 
     pub fn name_is_numeric_scalar(&self, name: &str) -> bool {
-        self.name_is_integer_scalar(name) || self.name_is_float_scalar(name)
+        self.numeric_operand(name).is_some()
     }
 
     pub fn name_is_bool_scalar(&self, name: &str) -> bool {
@@ -1560,7 +1568,7 @@ impl ScalarRepresentationPlan {
         match repr {
             Repr::BoxedImmortal => true,
             Repr::RawI64Safe | Repr::RawI64FullDeopt => {
-                matches!(self.name_scalar_kind(name), None | Some(ScalarKind::Int))
+                matches!(self.name_scalar_kind(name), Some(ScalarKind::Int))
             }
             Repr::Bool => {
                 self.name_scalar_kind(name) == Some(ScalarKind::Bool)
@@ -1752,6 +1760,7 @@ impl ScalarRepresentationPlan {
         let args_any = |pred: &dyn Fn(&str) -> bool| args.iter().any(|arg| pred(arg));
         let has_kind = |name: &str, kind| self.name_has_scalar_kind(name, kind);
         let is_float = |name: &str| has_kind(name, ScalarKind::Float);
+        let is_numeric = |name: &str| self.numeric_operand(name).is_some();
         let is_str = |name: &str| has_kind(name, ScalarKind::Str);
         let is_int =
             |name: &str| has_kind(name, ScalarKind::Int) || has_kind(name, ScalarKind::Bool);
@@ -1774,26 +1783,16 @@ impl ScalarRepresentationPlan {
             | molt_ir::OpKind::CopyVar
             | molt_ir::OpKind::LoadVar
             | molt_ir::OpKind::IdentityAlias
-            | molt_ir::OpKind::BindingAlias => alias_source_name(op).and_then(|src| {
-                if has_kind(src, ScalarKind::Int) {
-                    Some(ScalarKind::Int)
-                } else if has_kind(src, ScalarKind::Bool) {
-                    Some(ScalarKind::Bool)
-                } else if has_kind(src, ScalarKind::Float) {
-                    Some(ScalarKind::Float)
-                } else if has_kind(src, ScalarKind::Str) {
-                    Some(ScalarKind::Str)
-                } else {
-                    None
-                }
-            }),
+            | molt_ir::OpKind::BindingAlias => {
+                op.out.as_deref().and_then(|out| self.name_scalar_kind(out))
+            }
             molt_ir::OpKind::Lt
             | molt_ir::OpKind::Le
             | molt_ir::OpKind::Gt
             | molt_ir::OpKind::Ge
             | molt_ir::OpKind::Eq
-            | molt_ir::OpKind::Ne
-            | molt_ir::OpKind::Is => Some(ScalarKind::Bool),
+            | molt_ir::OpKind::Ne => op.out.as_deref().and_then(|out| self.name_scalar_kind(out)),
+            molt_ir::OpKind::Is => Some(ScalarKind::Bool),
             molt_ir::OpKind::Bool
             | molt_ir::OpKind::CastBool
             | molt_ir::OpKind::BuiltinBool
@@ -1818,9 +1817,7 @@ impl ScalarRepresentationPlan {
             molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => {
                 if args_all(&is_str) {
                     Some(ScalarKind::Str)
-                } else if args_all(&is_float)
-                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
-                {
+                } else if args_all(&is_float) || (args_any(&is_float) && args_all(&is_numeric)) {
                     Some(ScalarKind::Float)
                 } else if args_all(&is_int) {
                     Some(ScalarKind::Int)
@@ -1843,9 +1840,7 @@ impl ScalarRepresentationPlan {
             | molt_ir::OpKind::InplaceBitAnd
             | molt_ir::OpKind::InplaceBitOr
             | molt_ir::OpKind::InplaceBitXor => {
-                if args_all(&is_float)
-                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
-                {
+                if args_all(&is_float) || (args_any(&is_float) && args_all(&is_numeric)) {
                     Some(ScalarKind::Float)
                 } else if args_all(&is_int) {
                     Some(ScalarKind::Int)
@@ -1854,19 +1849,14 @@ impl ScalarRepresentationPlan {
                 }
             }
             molt_ir::OpKind::Pow | molt_ir::OpKind::InplacePow => {
-                if (args.len() >= 2 && is_float(&args[1]))
-                    || args_all(&is_float)
-                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
-                {
+                if args_all(&is_float) || (args_any(&is_float) && args_all(&is_numeric)) {
                     Some(ScalarKind::Float)
                 } else {
                     None
                 }
             }
             molt_ir::OpKind::Div | molt_ir::OpKind::InplaceDiv => {
-                if args_all(&is_float)
-                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
-                {
+                if args_all(&is_float) || (args_any(&is_float) && args_all(&is_numeric)) {
                     Some(ScalarKind::Float)
                 } else {
                     None
@@ -1885,7 +1875,9 @@ impl ScalarRepresentationPlan {
                 }
             }
             molt_ir::OpKind::Neg
+            | molt_ir::OpKind::UnaryNeg
             | molt_ir::OpKind::Pos
+            | molt_ir::OpKind::UnaryPos
             | molt_ir::OpKind::Abs
             | molt_ir::OpKind::BuiltinAbs => first_source().and_then(|src| {
                 if has_kind(src, ScalarKind::Float) {

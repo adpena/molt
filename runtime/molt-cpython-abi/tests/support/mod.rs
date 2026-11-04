@@ -301,6 +301,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             type_dict_borrowed,
             type_metadata,
             type_lookup_borrowed,
+            type_modified,
             builtin_slot_owner,
             inc_ref,
             dec_ref,

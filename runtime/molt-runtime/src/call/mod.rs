@@ -8,8 +8,8 @@ pub(crate) mod type_policy;
 use crate::builtins::attr::{class_attr_lookup_raw_mro, descriptor_bind};
 use crate::{
     MoltObject, PyToken, TYPE_ID_STATICMETHOD, TYPE_ID_TYPE, builtin_classes, dec_ref_bits,
-    inc_ref_bits, intern_static_name, obj_from_bits, object_class_bits, object_type_id,
-    raise_exception, raise_not_callable, runtime_state, staticmethod_func_bits,
+    inc_ref_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    raise_not_callable, staticmethod_func_bits,
 };
 
 /// Preserve the caller's handler-stack baseline across every runtime invocation.
@@ -57,12 +57,7 @@ pub(crate) fn discard_owned_call_result(_py: &PyToken<'_>, result_bits: u64) {
     dec_ref_bits(_py, result_bits);
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CallAttrLookup {
-    Found(u64),
-    Missing,
-    Raised,
-}
+use crate::AttributeLookup;
 
 /// A builtin `staticmethod.__call__` transparently forwards to its wrapped
 /// object. The owned target keeps the wrapper chain's recursion charge alive
@@ -228,10 +223,10 @@ unsafe fn call_class_ptr(obj_ptr: *mut u8) -> Option<*mut u8> {
     (unsafe { object_type_id(class_ptr) } == TYPE_ID_TYPE).then_some(class_ptr)
 }
 
-pub(crate) unsafe fn lookup_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> CallAttrLookup {
+pub(crate) unsafe fn lookup_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> AttributeLookup {
     unsafe {
         let Some(class_ptr) = call_class_ptr(obj_ptr) else {
-            return CallAttrLookup::Missing;
+            return AttributeLookup::Missing;
         };
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
@@ -240,18 +235,17 @@ pub(crate) unsafe fn lookup_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> Ca
         // arbitrary user code and drop their original owners.
         inc_ref_bits(_py, class_bits);
         inc_ref_bits(_py, obj_bits);
-        let call_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
+        let call_name_bits = crate::NameId::DunderCall.bits(_py);
         let result = match class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits) {
             Ok(Some(raw_bits)) => {
                 match descriptor_bind(_py, raw_bits, Some(class_bits), Some(obj_bits)) {
-                    Ok(Some(bits)) => CallAttrLookup::Found(bits),
-                    Ok(None) => CallAttrLookup::Missing,
-                    Err(()) => CallAttrLookup::Raised,
+                    Ok(Some(bits)) => AttributeLookup::Found(bits),
+                    Ok(None) => AttributeLookup::Missing,
+                    Err(()) => AttributeLookup::Error,
                 }
             }
-            Ok(None) => CallAttrLookup::Missing,
-            Err(()) => CallAttrLookup::Raised,
+            Ok(None) => AttributeLookup::Missing,
+            Err(()) => AttributeLookup::Error,
         };
         dec_ref_bits(_py, obj_bits);
         dec_ref_bits(_py, class_bits);
@@ -266,9 +260,9 @@ pub(crate) unsafe fn require_call_attr(
 ) -> Result<u64, u64> {
     unsafe {
         match lookup_call_attr(_py, obj_ptr) {
-            CallAttrLookup::Found(bits) => Ok(bits),
-            CallAttrLookup::Missing => Err(raise_not_callable(_py, obj)),
-            CallAttrLookup::Raised => Err(MoltObject::none().bits()),
+            AttributeLookup::Found(bits) => Ok(bits),
+            AttributeLookup::Missing => Err(raise_not_callable(_py, obj)),
+            AttributeLookup::Error => Err(MoltObject::none().bits()),
         }
     }
 }
@@ -282,8 +276,7 @@ pub(crate) unsafe fn has_type_call_attr(_py: &PyToken<'_>, obj_ptr: *mut u8) -> 
         // currently derive presence from their declaration namespace; dispatch
         // separately owns fallible descriptor binding.
         molt_cpython_abi::api::errors::with_preserved_error(|| {
-            let call_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
+            let call_name_bits = crate::NameId::DunderCall.bits(_py);
             matches!(
                 class_attr_lookup_raw_mro(_py, class_ptr, call_name_bits),
                 Ok(Some(_))

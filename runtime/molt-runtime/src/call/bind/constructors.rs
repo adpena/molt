@@ -19,11 +19,7 @@ pub(crate) unsafe fn dispatch_init_subclass_hooks(
             Ok(arguments) => arguments,
             Err(_) => return false,
         };
-        let init_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.init_subclass_name,
-            b"__init_subclass__",
-        );
+        let init_name_bits = crate::NameId::DunderInitSubclass.bits(_py);
         if exception_pending(_py) {
             return false;
         }
@@ -138,8 +134,7 @@ pub(super) unsafe fn call_type_with_arguments(
             // `type.__new__` (intrinsic `molt_type_new`); use the fast
             // path that also runs `__init_subclass__` and class slot
             // setup inline.  Otherwise dispatch to the user's override.
-            let new_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
+            let new_name_bits = crate::NameId::DunderNew.bits(_py);
             let new_lookup = match class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
                 Ok(value) => value,
                 Err(()) => {
@@ -203,8 +198,7 @@ pub(super) unsafe fn call_type_with_arguments(
                 // Call Meta.__init__(new_class, name, bases, namespace, **kwds).
                 // `class_attr_lookup_raw_mro` returns borrowed bits — do
                 // not dec-ref.
-                let init_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
+                let init_name_bits = crate::NameId::DunderInit.bits(_py);
                 let init = match class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) {
                     Ok(value) => value,
                     Err(()) => {

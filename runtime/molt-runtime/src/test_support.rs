@@ -46,7 +46,7 @@ static PROCESS_GLOBAL_TEST_STATE: Mutex<()> = Mutex::new(());
 /// The caller retains its handle; the returned instance is a new owned value.
 pub(crate) fn declared_array_buffer_instance(py: &crate::PyToken<'_>, handle: u64) -> u64 {
     use crate::{MoltObject, dec_ref_bits, exception_pending, obj_from_bits};
-    let name = crate::attr_name_bits_from_bytes(py, b"BufferContractArray").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"BufferContractArray").unwrap();
     let namespace = crate::alloc_dict_with_pairs(py, &[]);
     assert!(!namespace.is_null());
     let namespace = MoltObject::from_ptr(namespace).bits();
@@ -67,7 +67,7 @@ pub(crate) fn declared_array_buffer_instance(py: &crate::PyToken<'_>, handle: u6
     let instance =
         unsafe { crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap()) };
     assert!(!obj_from_bits(instance).is_none());
-    let name = crate::attr_name_bits_from_bytes(py, b"_handle").unwrap();
+    let name = crate::dynamic_attr_name_bits(py, b"_handle").unwrap();
     let result = crate::molt_set_attr_name(instance, name, handle);
     assert!(!exception_pending(py));
     dec_ref_bits(py, result);
@@ -1066,7 +1066,7 @@ impl EmptyImportResolver {
         } else {
             sys_snapshot =
                 Some(crate::builtins::module_table::InterpreterSysTestSnapshot::detach(py));
-            let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
             let pointer = crate::object::builders::alloc_module_obj(py, name);
             assert!(!pointer.is_null());
             let sys = MoltObject::from_ptr(pointer).bits();
@@ -1078,14 +1078,14 @@ impl EmptyImportResolver {
         let defaults_snapshot = sys_snapshot
             .is_none()
             .then(|| crate::builtins::platform::ImportDefaultsTestSnapshot::detach(py));
-        let meta_key = crate::attr_name_bits_from_bytes(py, b"meta_path").unwrap();
+        let meta_key = crate::dynamic_attr_name_bits(py, b"meta_path").unwrap();
         let dictionary = unsafe { crate::module_dict_bits(crate::ptr_from_bits(sys)) };
         let previous_meta_path = unsafe {
             crate::dict_get_in_place(py, crate::ptr_from_bits(dictionary), meta_key)
                 .expect("snapshot sys.meta_path")
         }
         .inspect(|bits| inc_ref_bits(py, *bits));
-        let name = crate::attr_name_bits_from_bytes(py, b"_molt_empty_import_finder").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"_molt_empty_import_finder").unwrap();
         let pointer = crate::object::builders::alloc_module_obj(py, name);
         assert!(!pointer.is_null());
         let finder = MoltObject::from_ptr(pointer).bits();
@@ -1099,7 +1099,7 @@ impl EmptyImportResolver {
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        let key = crate::attr_name_bits_from_bytes(py, b"find_spec").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"find_spec").unwrap();
         crate::builtins::modules::molt_module_set_attr(finder, key, function);
         let meta_path = crate::alloc_list(py, &[finder]);
         assert!(!meta_path.is_null());
@@ -1121,7 +1121,7 @@ impl EmptyImportResolver {
 impl Drop for EmptyImportResolver {
     fn drop(&mut self) {
         crate::with_gil_entry_nopanic!(py, {
-            let key = crate::attr_name_bits_from_bytes(py, b"meta_path").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"meta_path").unwrap();
             let dictionary = unsafe { crate::module_dict_bits(crate::ptr_from_bits(self.sys)) };
             if let Some(bits) = self.previous_meta_path.take() {
                 assert!(unsafe {
@@ -1159,7 +1159,7 @@ pub(crate) struct NativeProviderTestNamespace {
 
 impl NativeProviderTestNamespace {
     pub(crate) fn new(py: &crate::PyToken<'_>, provider: &str) -> Self {
-        let name = crate::attr_name_bits_from_bytes(py, provider.as_bytes()).unwrap();
+        let name = crate::dynamic_attr_name_bits(py, provider.as_bytes()).unwrap();
         let previous = crate::molt_module_cache_get(name);
         crate::clear_exception(py);
         crate::molt_module_cache_del(name);
@@ -1467,4 +1467,21 @@ fn runtime_test_transactions_preserve_terminal_failures() {
             "{mode}: {stderr}"
         );
     }
+}
+
+/// Own the actual public class while a low-level constructor ownership proof runs.
+pub(crate) fn with_public_type_class(
+    getter: extern "C" fn() -> u64,
+    body: impl FnOnce(u64) -> u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let class = getter();
+        let owner = unsafe {
+            molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), class)
+        };
+        if crate::exception_pending(py) || crate::obj_from_bits(class).as_ptr().is_none() {
+            return crate::MoltObject::none().bits();
+        }
+        body(owner.bits())
+    })
 }

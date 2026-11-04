@@ -1,6 +1,7 @@
 """Prevent in-tree and FFI itertools class construction from drifting apart."""
 
 from pathlib import Path
+from molt.rust_source_scan import rust_delimiter_end
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,9 +17,10 @@ def test_itertools_class_construction_has_one_runtime_authority() -> None:
     canonical_class = canonical.split(
         "pub(crate) fn alloc_itertools_class(", maxsplit=1
     )[1].split("#[cfg(test)]", maxsplit=1)[0]
-    direct_class = direct.split("pub fn alloc_itertools_class(", maxsplit=1)[1].split(
-        "pub fn alloc_kwd_mark(", maxsplit=1
-    )[0]
+    opening = direct.index("{", direct.index("pub fn alloc_itertools_class("))
+    ending = rust_delimiter_end(direct, opening)
+    assert ending is not None
+    direct_class = direct[opening:ending]
     ffi_class = ffi.split('pub extern "C" fn molt_itertools_alloc_class(', maxsplit=1)[
         1
     ].split("#[unsafe(no_mangle)]", maxsplit=1)[0]

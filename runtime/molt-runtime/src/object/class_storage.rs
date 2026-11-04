@@ -454,8 +454,11 @@ pub(crate) enum ClassReferenceSlot {
     /// Captured native creation module; zero for ordinary Python heap classes.
     /// Static classes also use it for their immutable public module metadata.
     NativeModule = 13,
+    /// An unpublished initializer candidate, consumed by the dataclass transform.
+    /// Never projected into the Python class namespace or inherited.
+    DataclassInitTemplate = 16,
     /// Conditional tail after the definition (14) and native-next (15) scalars.
-    StructSequence = 16,
+    StructSequence = 17,
 }
 
 /// Capture the native constructor module before publication. Static types retire
@@ -472,7 +475,7 @@ pub(crate) unsafe fn class_capture_native_module<'a, 'py>(
         let dictionary = crate::obj_from_bits(dictionary_bits).as_ptr().unwrap();
         inc_ref_bits(py, dictionary_bits);
         let _dictionary = crate::PtrDropGuard::preserving(dictionary);
-        let name = crate::attr_name_bits_from_bytes(py, b"__module__").ok_or(())?;
+        let name = crate::NameId::DunderModule.owned_bits(py).ok_or(())?;
         let _name = crate::PtrDropGuard::preserving(crate::obj_from_bits(name).as_ptr().unwrap());
         let hash = ops::dict_key_hash(py, name).ok_or(())?;
         let entry = ops::dict_find_entry_kv_with_hash(py, dictionary, name, hash)?;
@@ -591,7 +594,7 @@ pub(crate) unsafe fn class_module_bits(
         let dictionary = crate::obj_from_bits(crate::class_dict_bits(class))
             .as_ptr()
             .unwrap();
-        let key = crate::attr_name_bits_from_bytes(py, b"__module__").ok_or(())?;
+        let key = crate::NameId::DunderModule.owned_bits(py).ok_or(())?;
         let _key = crate::PtrDropGuard::preserving(crate::obj_from_bits(key).as_ptr().unwrap());
         crate::dict_get_in_place(py, dictionary, key)
     }
@@ -647,7 +650,7 @@ pub(crate) enum ClassReferenceRelease {
 }
 
 impl ClassReferenceSlot {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Name,
         Self::Bases,
         Self::Mro,
@@ -658,6 +661,7 @@ impl ClassReferenceSlot {
         Self::InstanceDictionary,
         Self::CreationDoc,
         Self::NativeModule,
+        Self::DataclassInitTemplate,
         Self::StructSequence,
     ];
 
@@ -669,7 +673,10 @@ impl ClassReferenceSlot {
     /// namespaces and annotation callbacks can close arbitrary cycles.
     const fn released_by(self, phase: ClassReferenceRelease) -> bool {
         match self {
-            Self::Mro | Self::Dictionary | Self::InstanceDictionary => true,
+            Self::Mro
+            | Self::Dictionary
+            | Self::InstanceDictionary
+            | Self::DataclassInitTemplate => true,
             Self::Name
             | Self::Qualname
             | Self::Bases
@@ -1067,6 +1074,9 @@ impl RuntimeClassRetirement {
                         ClassReferenceSlot::StructSequence => {
                             crate::builtins::structseq::assert_spec_shape(bits);
                         }
+                        ClassReferenceSlot::DataclassInitTemplate => {
+                            panic!("native retirement cohort contains a Python dataclass template");
+                        }
                         ClassReferenceSlot::FieldLayout => {
                             self.assert_exact_metadata(py, bits, crate::TYPE_ID_TUPLE);
                             let (map, rows) = super::class_layout::projection_parts(bits);
@@ -1200,7 +1210,7 @@ mod tests {
     }
 
     fn set_annotations(py: &PyToken<'_>, class: u64, value: Option<u64>) {
-        let name = crate::attr_name_bits_from_bytes(py, b"__annotations__").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"__annotations__").unwrap();
         match value {
             Some(value) => {
                 crate::molt_set_attr_name(class, name, value);
@@ -1236,7 +1246,7 @@ mod tests {
     }
 
     fn user_class(py: &PyToken<'_>, name: &[u8]) -> u64 {
-        let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+        let name = crate::dynamic_attr_name_bits(py, name).unwrap();
         let class = crate::molt_class_new(name);
         crate::molt_class_set_base(class, crate::builtin_classes(py).object);
         let ptr = crate::obj_from_bits(class).as_ptr().unwrap();
@@ -1248,7 +1258,7 @@ mod tests {
 
     fn callback_class(py: &PyToken<'_>) -> u64 {
         let class = user_class(py, b"ClassReferenceReleaseObserver");
-        let key = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let function = alloc_runtime_function_obj(
             py,
             runtime_fn_addr(
@@ -1323,7 +1333,7 @@ mod tests {
             let observer_class = callback_class(py);
             let annotation = callback_instance(py, observer_class);
             let namespace = callback_instance(py, observer_class);
-            let key = crate::attr_name_bits_from_bytes(py, b"payload").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"payload").unwrap();
             crate::molt_set_attr_name(owner, key, namespace);
             set_annotations(py, owner, Some(annotation));
             dec_ref_bits(py, annotation);
@@ -1357,7 +1367,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
-                let key = crate::attr_name_bits_from_bytes(py, b"generic_payload").unwrap();
+                let key = crate::dynamic_attr_name_bits(py, b"generic_payload").unwrap();
                 for is_static in [false, true] {
                     let owner = user_class(py, b"GenericDictionaryOwner");
                     let ptr = crate::obj_from_bits(owner).as_ptr().unwrap();
@@ -1460,7 +1470,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
-                let key = crate::attr_name_bits_from_bytes(py, b"__module__").unwrap();
+                let key = crate::dynamic_attr_name_bits(py, b"__module__").unwrap();
                 let declaration =
                     MoltObject::from_ptr(crate::alloc_string(py, b"declared.owner")).bits();
                 let owner = user_class(py, b"UnqualifiedStatic");
@@ -1624,7 +1634,7 @@ mod tests {
             assert_eq!(fixture.words[last], 0x9ab1_3476);
             assert_eq!(super::super::layout::CLASS_DEFINITION_WORD, 14);
             assert_eq!(super::super::layout::CLASS_NATIVE_NEXT_WORD, 15);
-            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 16);
+            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 17);
             assert_eq!(
                 ClassReferenceSlot::StructSequence as usize,
                 super::super::layout::CLASS_PAYLOAD_WORDS

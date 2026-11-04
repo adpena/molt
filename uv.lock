@@ -14,29 +14,11 @@ resolution-markers = [
 exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
-[options.exclude-newer-package]
-certifi = "2026-10-20T02:24:17Z"
-filelock = "2026-10-19T01:57:52Z"
-hypothesis = "2026-10-20T00:53:38Z"
-platformdirs = "2026-10-19T01:02:12Z"
-python-discovery = "2026-10-19T01:45:15Z"
-setuptools = "2026-10-20T19:01:38Z"
-ty = "2026-10-20T14:25:20Z"
-virtualenv = "2026-10-22T20:10:17Z"
-
 [manifest]
 constraints = [
-    { name = "certifi", specifier = "==2026.10.19" },
     { name = "certifi", specifier = ">=2026.10.19" },
-    { name = "filelock", specifier = "==4.2.4" },
-    { name = "hypothesis", specifier = "==6.170.5" },
     { name = "pip", specifier = ">=26.2.2" },
-    { name = "platformdirs", specifier = "==4.13.5" },
-    { name = "python-discovery", specifier = "==1.6.4" },
-    { name = "setuptools", specifier = "==84.2.1" },
     { name = "sqlparse", specifier = ">=0.6.0" },
-    { name = "ty", specifier = "==0.0.90" },
-    { name = "virtualenv", specifier = "==21.14.13" },
     { name = "virtualenv", specifier = ">=21.14.13" },
 ]
 
@@ -924,6 +906,10 @@ bench = [
     { name = "pyperformance" },
     { name = "setuptools" },
 ]
+controller = [
+    { name = "pytest" },
+    { name = "pytest-xdist" },
+]
 demo = [
     { name = "django" },
     { name = "gunicorn" },
@@ -993,6 +979,10 @@ provides-extras = ["accel"]
 bench = [
     { name = "pyperformance", specifier = "==1.14.0" },
     { name = "setuptools", specifier = ">=84.2.1" },
+]
+controller = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
 ]
 demo = [
     { name = "django", specifier = ">=6.1.1" },

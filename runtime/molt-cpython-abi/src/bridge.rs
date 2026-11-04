@@ -2302,15 +2302,28 @@ pub unsafe fn molt_foreign_getattr(
     let result = unsafe {
         match access {
             crate::hooks::AttributeAccess::Normal => {
-                crate::api::object::native_get_attr(obj, name_obj)
+                crate::api::object::native_lookup_attr(obj, name_obj)
             }
             crate::hooks::AttributeAccess::Generic => {
-                crate::api::object::PyObject_GenericGetAttr(obj, name_obj)
+                crate::api::object::generic_lookup_with_optional_dict(
+                    obj,
+                    name_obj,
+                    std::ptr::null_mut(),
+                    0,
+                )
             }
         }
     };
     unsafe { crate::api::errors::release_preserving_error(&[name_obj]) };
-    unsafe { owned_native_result_to_runtime(result) }
+    match result {
+        molt_lang_obj_model::AttributeLookup::Found(value) => unsafe {
+            owned_native_result_to_runtime(value.into_ptr())
+        },
+        molt_lang_obj_model::AttributeLookup::Missing => crate::hooks::OwnedHandleResult::missing(),
+        molt_lang_obj_model::AttributeLookup::Error => unsafe {
+            owned_native_result_to_runtime(std::ptr::null_mut())
+        },
+    }
 }
 
 /// Read a foreign sequence through its native sq_item and owned-result boundary.

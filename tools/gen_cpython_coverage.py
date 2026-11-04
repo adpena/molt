@@ -16,12 +16,9 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.generator_io import generator_main  # noqa: E402
-from molt.source_admission import repository_source_paths  # noqa: E402
+from molt.source_admission import admitted_source_files  # noqa: E402
 from tools.scan_records import ScanRecords, decoded_text, scan_result  # noqa: E402
-
-_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_GENERATOR")
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "cpython_coverage.toml"
@@ -201,12 +198,6 @@ def _render_doc(config: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _read_source_git(cwd: Path, arguments: list[str]) -> bytes:
-    return _COMMANDS.run(
-        ["git", *arguments], cwd=cwd, capture_output=True, timeout=30, check=True
-    ).stdout
-
-
 def _audit_sources(bases: tuple[Path, ...]) -> list[Path]:
     """Git-admitted sources under each of ``bases``, in configuration order.
 
@@ -215,11 +206,7 @@ def _audit_sources(bases: tuple[Path, ...]) -> list[Path]:
     generates the same rows.
     """
     admitted = [
-        path
-        for path in repository_source_paths(
-            ROOT, run_git=_read_source_git, include_untracked=True
-        )
-        if path.suffix in AUDIT_SUFFIXES
+        path for path in admitted_source_files(bases) if path.suffix in AUDIT_SUFFIXES
     ]
     # Each path's ancestors are built once. Path.is_relative_to rebuilds them
     # for every (base, path) pair; set membership keeps its equality rule.

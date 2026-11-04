@@ -19,6 +19,7 @@ mod module_abi;
 mod module_registry;
 mod op_loop;
 mod refcount;
+mod pending_work;
 mod state_dispatch;
 mod task_runtime;
 #[cfg(test)]

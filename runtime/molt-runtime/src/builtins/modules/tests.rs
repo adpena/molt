@@ -1,5 +1,5 @@
 use super::*;
-use crate::BuiltinExc;
+use crate::{BuiltinExc, missing_bits};
 use std::sync::atomic::Ordering;
 
 #[test]
@@ -204,7 +204,7 @@ impl Drop for ModuleCacheRestore {
 fn module_cache_restore_preserves_exact_public_membership() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let name = attr_name_bits_from_bytes(py, b"_molt_cache_restore_membership").unwrap();
+        let name = dynamic_attr_name_bits(py, b"_molt_cache_restore_membership").unwrap();
         let _restore = ModuleCacheRestore::new(py, name);
         let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
         let pointer = ptr_from_bits(dictionary);
@@ -270,7 +270,7 @@ fn assert_pending_module_not_found_metadata(
     ));
     clear_exception(py);
     let read = |field: &[u8]| {
-        let key = attr_name_bits_from_bytes(py, field).unwrap();
+        let key = dynamic_attr_name_bits(py, field).unwrap();
         let value = crate::builtins::attributes::get_attr_name(py, exception.bits(), key)
             .expect("public exception attribute");
         dec_ref_bits(py, key);
@@ -341,17 +341,6 @@ fn modules_runtime_state_is_owned_and_clearable() {
                 .load(Ordering::Acquire),
             0
         );
-        let import_name =
-            intern_static_name(_py, &state.modules.runpy_import_dunder_name, b"__import__");
-        assert_ne!(import_name, 0);
-        assert_ne!(
-            state
-                .modules
-                .runpy_import_dunder_name
-                .load(Ordering::Acquire),
-            0
-        );
-
         modules_clear_runtime_state(_py, state);
 
         for slot in state.modules.object_slots() {
@@ -528,6 +517,7 @@ fn raw_module_allocation_seeds_public_name_metadata() {
             assert!(!name_key_ptr.is_null());
             let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
             let found_name_bits = module_attr_lookup(_py, module_ptr, name_key_bits)
+                .into_result()
                 .expect("module name lookup succeeds")
                 .expect("module __name__ exists");
             let found_name = string_obj_to_owned(obj_from_bits(found_name_bits));
@@ -566,8 +556,8 @@ fn generated_native_providers_own_self_and_public_aliases_own_lookup() {
                 obj_from_bits(module_dict_bits(obj_from_bits(io.bits()).as_ptr().unwrap()))
                     .as_ptr()
                     .unwrap();
-            let open_name = attr_name_bits_from_bytes(py, b"open").unwrap();
-            let self_name = attr_name_bits_from_bytes(py, b"__self__").unwrap();
+            let open_name = dynamic_attr_name_bits(py, b"open").unwrap();
+            let self_name = dynamic_attr_name_bits(py, b"__self__").unwrap();
             assert!(
                 dict_get_in_place(py, builtin_dict, open_name)
                     .expect("dictionary lookup succeeds")
@@ -1079,10 +1069,10 @@ fn sys_module_cache_set_does_not_leave_pending_exception() {
 fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
+        let sys_name = dynamic_attr_name_bits(py, b"sys").unwrap();
         let _sys_restore = ModuleCacheRestore::new(py, sys_name);
         let text = "_molt_public_cache_outcome_probe";
-        let name = attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
+        let name = dynamic_attr_name_bits(py, text.as_bytes()).unwrap();
         let _name_restore = ModuleCacheRestore::new(py, name);
         let bootstrap = molt_module_new(name);
         molt_module_cache_set(name, bootstrap);
@@ -1167,7 +1157,7 @@ fn catalog_lookup_uses_actual_image_membership_and_public_cache_precedence() {
         // This name can designate a user backport. A name-only stdlib
         // availability table cannot turn an unregistered image miss into
         // a different provider/dependency failure before execution.
-        let name = attr_name_bits_from_bytes(py, b"msilib.schema").unwrap();
+        let name = dynamic_attr_name_bits(py, b"msilib.schema").unwrap();
         let _restore = ModuleCacheRestore::new(py, name);
         assert!(matches!(catalog_import_attempt(name),
             Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib.schema"));
@@ -1198,7 +1188,7 @@ fn catalog_lookup_uses_actual_image_membership_and_public_cache_precedence() {
 fn import_attempt_preserves_pending_failure_even_when_its_text_names_the_target() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let name = attr_name_bits_from_bytes(_py, b"pkg.child").unwrap();
+        let name = dynamic_attr_name_bits(_py, b"pkg.child").unwrap();
         crate::builtins::exceptions::exception_stack_push();
         let raised = raise_exception::<u64>(
             _py,
@@ -1230,7 +1220,7 @@ fn canonical_module_dictionary_preserves_none_and_arbitrary_public_values() {
             let previous_sys = crate::builtins::module_table::module_lookup(py, "sys").unwrap();
             let resolver = crate::test_support::EmptyImportResolver::new(py);
             let text = "_molt_single_store_arbitrary_values";
-            let name = attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
+            let name = dynamic_attr_name_bits(py, text.as_bytes()).unwrap();
             let _restore = ModuleCacheRestore::new(py, name);
             let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
             let pointer = ptr_from_bits(dictionary);
@@ -1394,7 +1384,7 @@ fn sys_module_cache_set_populates_bootstrap_metadata() {
                     .is_some_and(|value| !value.is_empty()),
                 "sys.platform must be a non-empty string"
             );
-            let abiflags_key = crate::attr_name_bits_from_bytes(_py, b"abiflags").unwrap();
+            let abiflags_key = crate::dynamic_attr_name_bits(_py, b"abiflags").unwrap();
             let abiflags =
                 dict_get_in_place(_py, dict_ptr, abiflags_key).expect("dictionary lookup succeeds");
             assert_eq!(

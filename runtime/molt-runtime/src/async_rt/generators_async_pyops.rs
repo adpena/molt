@@ -49,8 +49,12 @@ pub(crate) fn asyncio_exception_escapes_callback(py: &PyToken<'_>, exception: u6
     )
 }
 
-unsafe fn asyncio_required_method(py: &PyToken<'_>, object: u64, name: &[u8]) -> Option<u64> {
-    let name = attr_name_bits_from_bytes(py, name)?;
+unsafe fn asyncio_required_method(
+    py: &PyToken<'_>,
+    object: u64,
+    name: crate::NameId,
+) -> Option<u64> {
+    let name = name.owned_bits(py)?;
     // Use ordinary required lookup for every receiver and preserve the exact
     // descriptor failure or canonical missing-attribute name/object payload.
     let method = crate::builtins::attributes::get_attr_name(py, object, name);
@@ -58,7 +62,11 @@ unsafe fn asyncio_required_method(py: &PyToken<'_>, object: u64, name: &[u8]) ->
     method.ok()
 }
 
-pub(crate) unsafe fn asyncio_call_method0(_py: &PyToken<'_>, obj_bits: u64, method: &[u8]) -> u64 {
+pub(crate) unsafe fn asyncio_call_method0(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    method: crate::NameId,
+) -> u64 {
     unsafe {
         let Some(method_bits) = asyncio_required_method(_py, obj_bits, method) else {
             return MoltObject::none().bits();
@@ -72,7 +80,7 @@ pub(crate) unsafe fn asyncio_call_method0(_py: &PyToken<'_>, obj_bits: u64, meth
 pub(crate) unsafe fn asyncio_call_method1(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    method: &[u8],
+    method: crate::NameId,
     arg_bits: u64,
 ) -> u64 {
     unsafe {
@@ -89,7 +97,7 @@ pub(crate) unsafe fn asyncio_call_method1(
 pub(crate) unsafe fn asyncio_call_method2(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    method: &[u8],
+    method: crate::NameId,
     arg0_bits: u64,
     arg1_bits: u64,
 ) -> u64 {
@@ -107,7 +115,7 @@ pub(crate) unsafe fn asyncio_call_method2(
 pub(crate) unsafe fn asyncio_call_method3(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    method: &[u8],
+    method: crate::NameId,
     arg0_bits: u64,
     arg1_bits: u64,
     arg2_bits: u64,
@@ -145,7 +153,7 @@ pub(crate) unsafe fn asyncio_call_with_args(
 pub(crate) unsafe fn asyncio_call_method0_allow_missing(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    method: &[u8],
+    method: crate::NameId,
 ) -> Result<Option<u64>, ()> {
     unsafe {
         let Some(method_bits) = asyncio_attr_lookup_allow_missing(_py, obj_bits, method)? else {
@@ -168,17 +176,16 @@ pub(crate) unsafe fn asyncio_call_method0_allow_missing(
 pub(crate) unsafe fn asyncio_attr_lookup_allow_missing(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    name: &[u8],
+    name: crate::NameId,
 ) -> Result<Option<u64>, ()> {
-    unsafe {
-        let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
-            return Ok(None);
-        };
-        let name_bits = attr_name_bits_from_bytes(_py, name).ok_or(())?;
-        let result = attr_lookup_ptr_allow_missing(_py, obj_ptr, name_bits);
-        dec_ref_bits(_py, name_bits);
-        result
-    }
+    let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
+        return Ok(None);
+    };
+    let name_bits = name.owned_bits(_py).ok_or(())?;
+    let result =
+        lookup_attribute(_py, MoltObject::from_ptr(obj_ptr).bits(), name_bits).into_result();
+    dec_ref_bits(_py, name_bits);
+    result
 }
 
 #[cfg(molt_net)]
@@ -191,7 +198,7 @@ pub(crate) unsafe fn asyncio_take_pending_exception_bits(_py: &PyToken<'_>) -> u
 pub(crate) unsafe fn asyncio_method_truthy(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    method: &[u8],
+    method: crate::NameId,
 ) -> Option<bool> {
     unsafe {
         let bits = asyncio_call_method0(_py, obj_bits, method);
@@ -210,11 +217,14 @@ pub(crate) unsafe fn asyncio_method_truthy(
 
 pub(crate) unsafe fn asyncio_waiters_pop_front(_py: &PyToken<'_>, waiters_bits: u64) -> u64 {
     unsafe {
-        match asyncio_call_method0_allow_missing(_py, waiters_bits, b"popleft") {
+        match asyncio_call_method0_allow_missing(_py, waiters_bits, crate::NameId::Popleft) {
             Ok(Some(bits)) => bits,
-            Ok(None) => {
-                asyncio_call_method1(_py, waiters_bits, b"pop", MoltObject::from_int(0).bits())
-            }
+            Ok(None) => asyncio_call_method1(
+                _py,
+                waiters_bits,
+                crate::NameId::Pop,
+                MoltObject::from_int(0).bits(),
+            ),
             Err(()) => MoltObject::none().bits(),
         }
     }
@@ -319,7 +329,7 @@ mod exception_dispatch_tests {
                 .bits();
             let none = MoltObject::none().bits();
             let descriptor = crate::builtins::types::molt_property_new(getter, none, none);
-            let name = attr_name_bits_from_bytes(py, b"probe").unwrap();
+            let name = dynamic_attr_name_bits(py, b"send").unwrap();
             crate::molt_set_attr_name(class, name, descriptor);
             assert!(!exception_pending(py));
             let instance = unsafe {
@@ -328,10 +338,17 @@ mod exception_dispatch_tests {
             for arity in 0..=3 {
                 let result = unsafe {
                     match arity {
-                        0 => asyncio_call_method0(py, instance, b"probe"),
-                        1 => asyncio_call_method1(py, instance, b"probe", none),
-                        2 => asyncio_call_method2(py, instance, b"probe", none, none),
-                        _ => asyncio_call_method3(py, instance, b"probe", none, none, none),
+                        0 => asyncio_call_method0(py, instance, crate::NameId::Send),
+                        1 => asyncio_call_method1(py, instance, crate::NameId::Send, none),
+                        2 => asyncio_call_method2(py, instance, crate::NameId::Send, none, none),
+                        _ => asyncio_call_method3(
+                            py,
+                            instance,
+                            crate::NameId::Send,
+                            none,
+                            none,
+                            none,
+                        ),
                     }
                 };
                 assert_eq!(result, none);
@@ -362,16 +379,25 @@ mod exception_dispatch_tests {
                 crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
             };
             let none = MoltObject::none().bits();
-            let name_field = attr_name_bits_from_bytes(py, b"name").unwrap();
-            let object_field = attr_name_bits_from_bytes(py, b"obj").unwrap();
+            let name_field = dynamic_attr_name_bits(py, b"name").unwrap();
+            let object_field = dynamic_attr_name_bits(py, b"obj").unwrap();
             for receiver in [instance, MoltObject::from_int(17).bits(), none] {
                 for arity in 0..=3 {
                     let result = unsafe {
                         match arity {
-                            0 => asyncio_call_method0(py, receiver, b"probe"),
-                            1 => asyncio_call_method1(py, receiver, b"probe", none),
-                            2 => asyncio_call_method2(py, receiver, b"probe", none, none),
-                            _ => asyncio_call_method3(py, receiver, b"probe", none, none, none),
+                            0 => asyncio_call_method0(py, receiver, crate::NameId::Send),
+                            1 => asyncio_call_method1(py, receiver, crate::NameId::Send, none),
+                            2 => {
+                                asyncio_call_method2(py, receiver, crate::NameId::Send, none, none)
+                            }
+                            _ => asyncio_call_method3(
+                                py,
+                                receiver,
+                                crate::NameId::Send,
+                                none,
+                                none,
+                                none,
+                            ),
                         }
                     };
                     assert_eq!(result, none);
@@ -389,9 +415,10 @@ mod exception_dispatch_tests {
                     let actual_object =
                         crate::builtins::attributes::get_attr_name(py, exception, object_field)
                             .unwrap();
+                    // The payload names the requested method (typed NameId, HF-653).
                     assert_eq!(
                         string_obj_to_owned(obj_from_bits(actual_name)).as_deref(),
-                        Some("probe")
+                        Some("send")
                     );
                     assert_eq!(actual_object, receiver);
                     for bits in [actual_name, actual_object, exception] {
@@ -458,11 +485,11 @@ mod exception_dispatch_tests {
             let _descriptor_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), descriptor)
             };
-            let popleft = attr_name_bits_from_bytes(py, b"popleft").unwrap();
+            let popleft = dynamic_attr_name_bits(py, b"popleft").unwrap();
             let _popleft_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), popleft)
             };
-            let pop = attr_name_bits_from_bytes(py, b"pop").unwrap();
+            let pop = dynamic_attr_name_bits(py, b"pop").unwrap();
             let _pop_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), pop)
             };
@@ -475,17 +502,14 @@ mod exception_dispatch_tests {
             let _instance_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), instance)
             };
-            let missing =
-                unsafe { asyncio_attr_lookup_allow_missing(py, instance, b"not_present") }.map(
-                    |value| {
-                        value.map(|bits| unsafe {
-                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
-                                py.core_token(),
-                                bits,
-                            )
-                        })
-                    },
-                );
+            let missing = unsafe {
+                asyncio_attr_lookup_allow_missing(py, instance, crate::NameId::DunderAbs)
+            }
+            .map(|value| {
+                value.map(|bits| unsafe {
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits)
+                })
+            });
             assert!(matches!(missing, Ok(None)));
             assert!(!exception_pending(py));
             FALLBACK_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);

@@ -112,8 +112,8 @@ only the targets a BUILD-file edit changes for the same reason.
    costs O(log N) extra runs and the others still land.
 5. **Receipts.** Every candidate leaves one receipt: each command's cell,
    host, duration, peak RSS and result. Longest-first ordering reads it.
-6. **Main health receipts.** Postsubmit records green, red or cancelled in the
-   existing integration evidence store. Failure records order later presubmits;
+6. **Main health receipts.** Postsubmit records green, red, cancelled or
+   inconclusive in the existing integration evidence store. Failure records order later presubmits;
    no verdict reuse or action-record store is implemented here.
 7. **Integration custody.** The existing integration lock, source fences and
    exact-commit push confirmation remain authoritative. No new pre-push hook or
@@ -142,6 +142,18 @@ error. The runner then services the request, and postsubmit selects the newest
 head. A passing run re-fetches main before `git update-ref refs/molt/last-green
 <head> <old>`; an absent old ref uses Git's zero object ID. A changed head cancels
 the result, and a failed compare-and-swap cannot overwrite another writer.
+
+`PostsubmitStatus` is the verdict authority. RED requires a
+`CandidateFailure`: a gate failed for its own reason, this run's own JUnit lists
+a failing test (even when its gate's command passed), or main's own gate policy
+is invalid. Any other driver, guard or storage stop, with no evidence of a
+candidate failure, is INCONCLUSIVE, with its error in the receipt; so is a
+failed last-green compare-and-swap. CANCELLED
+requires a closed cancellation. Only RED lists suspects and restoration
+commands, and only RED orders later presubmits. An inconclusive run exits
+unsuccessfully and waits for an explicit `queue run`. LUCI Buildbucket makes
+the same split: FAILURE for the input, INFRA_FAILURE for the infrastructure
+(https://chromium.googlesource.com/infra/luci/luci-go/+/ad07866c5533/buildbucket/proto/common.proto).
 
 Red receipts list every commit since the previous green as suspect. Restoration
 commands walk first parents newest first, using `git revert --no-edit -m 1` for
@@ -177,8 +189,11 @@ The code that decides whether a change lands is never the change.
   the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
   and `.python-version` extracts into
   `<artifact-root>/molt-state/controllers/<repository>/<key>`, where the key is the digest of
-  those tree and blob ids. `uv sync --frozen --no-dev` builds the
-  controller's environment from main's lock, and the driver runs there as
+  those tree and blob ids. `uv sync --frozen --no-dev --group controller`
+  builds the controller's environment from main's lock. The `controller`
+  group holds pytest and pytest-xdist: gate selection reads pytest arguments
+  with pytest's own parser and installed plugin options (HF-179, HF-655). A
+  source from before that group syncs without it. The driver runs there as
   `python -I`, so no module, dependency version or `PYTHON*` setting comes
   from the candidate. The candidate still supplies its declared data: gate
   selection from its `tools/proof_plan.toml`, and its tests. A change to the
@@ -217,6 +232,17 @@ The code that decides whether a change lands is never the change.
 ### 2. Declarative checkout provisioning
 
 A checkout's inputs come from its lock files, on demand, as `uv run` does.
+Managed Python freshness, including the landing sandbox, follows the
+[managed image contract](foundation/56_dx_buildspeed_tooling.md#managed-python-images).
+Gate preparation and generated-merge regeneration both call canonical `ensure`,
+including explicit `UV_PROJECT_ENVIRONMENT` selections. Neither a valid recipe
+nor a stored selection can call an interpreter current after its patch changes.
+The runner clears inherited environment selectors before selecting its own
+sandbox, so ensure can delete an idle drifted generation in place and rebuild
+it with an exact patch request. An explicit caller selection instead refuses
+replacement, and live reader locks preserve the old image. The pinned
+controller owns the implementation of ensure; existing immutable controllers
+are refreshed from landed main, never patched in place.
 
 - **Prior art.** `uv run` syncs the environment from `uv.lock` before each
   run. rustup installs the toolchain that `rust-toolchain.toml` names on first
@@ -373,15 +399,31 @@ One runner owns main. Agents enqueue and continue.
   Scale", EuroSys 2019) ranks speculative builds by their chance to land.
 - **Design.** `molt_dev.py land` checks the lane, runs its precheck, and
   writes one request under `<git-common-dir>/molt/landing-queue/`, then
-  returns. The precheck runs, in the lane, the selected gates that only read
-  the candidate's files (`SelectedGate.precheck`: toolchains within
-  `PRECHECK_TOOLCHAINS`, not a pytest session; `tools/molt_dev_precheck.py`),
-  so a lint, format, generator or policy failure costs that lane alone instead
-  of a batch bisection; GitHub's merge queue likewise admits only changes whose
-  required checks passed, and Zuul runs its check pipeline before its gate
-  pipeline. `--no-precheck` skips it; the batch still runs every gate.
+  returns. It first applies the lane plan's `repair` steps and commits what
+  they change, so a stale projection never reaches a gate. The precheck then
+  runs, in the lane, the selected gates that only read the candidate's files
+  (`SelectedGate.static`: toolchains within `PRECHECK_TOOLCHAINS`, not a
+  pytest session) and the try run (`SelectedGate.try_run`: the dependency
+  graph's presubmit cohorts and the gates of `precheck = true` rules, such as
+  changed-crate Clippy; `tools/molt_dev_precheck.py`) within
+  `PRECHECK_BUDGET` (the static gates run to their verdict outside it; the
+  budget clock starts with the try run; repairs are unbounded and outside the
+  15-minute claim), so a lint, format, generator, policy or direct-reader
+  test failure costs that lane alone instead of a batch run; GitHub's merge
+  queue likewise admits only changes whose required checks passed, Zuul runs
+  its check pipeline before its gate pipeline, and Chromium's commit queue and
+  Google's TAP run a fast presubmit of affected targets. The budget cancels
+  what is still running, names every refused gate and queues the lane, as a
+  disk-capacity refusal of the try run does; the batch still runs every gate.
+  The repair commit runs the installed hooks, takes only the lane's own diff
+  and declared generator outputs, and is refused for a branch that a pending
+  request pins. `--no-precheck` skips repairs and precheck.
   `--precheck-only` runs it and stops: nothing is queued and no runner
-  starts, so a worker proves its handoff on the landing path itself. It
+  starts, so a worker proves its handoff on the landing path itself.
+  `--static-only` repairs and runs only the static gates, the cheap
+  deterministic tier (rustc's `x.py test tidy`, Chromium's upload
+  presubmit): a fast-path push runs it and never waives it, and names the
+  try run it waives in its commit. It
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
@@ -490,6 +532,54 @@ itself is the explicit coordinator; no background process or installed hook is
 involved. Git's [binary merge contract](https://git-scm.com/docs/gitattributes#_performing_a_three_way_merge)
 defines the deferral boundary. Tests in `tests/tools/test_ledger_merge.py`
 exercise real temporary repositories and the committed generated bytes.
+
+### 8. Ledger lanes first, one ledger writer in flight (HF-711)
+
+- **Problem.** Ledger-only lanes are cheap but waited behind code lanes in one
+  FIFO queue. On 2026-11-02 `ledger-cut-20261102` landed in 13 min and
+  `dag-current-20261102` in 16 min of gate time, while `ledger-20261102` sat
+  behind code lanes whose attempts take 47 to 268 min. Concurrent ledger
+  writers also caused 4 ledger conflicts that day.
+- **Prior art.** bors-ng takes a priority with each approval (`r+ p=N`) and
+  tests higher priorities first; Zuul gives each pipeline a `precedence` for
+  its resource requests. Both keep one queue and change its order.
+- **Design.** The class of a lane head is computed from Git, never stored:
+  `head_class` (`tools/molt_dev_queue.py`) diffs the head against its merge
+  base with main (`git_identity.merge_base`, `changed_paths`), and
+  `landing_class` (`tools/molt_dev_policy.py`) returns `LEDGER` when every
+  changed path is in `LEDGER_PATHS` and there is at least one, else `CODE`.
+  `head_closes_rows` is true when a row open at the merge base is not open at
+  the head (`finding_status.project`); a missing ledger at either revision
+  raises `DriverError`. Before each batch the runner classifies the ready
+  requests (`classify_ready`). Queue order: `LEDGER` requests that close no
+  row first, then every other request (`CODE` and closing `LEDGER`), each in
+  enqueue order. A closing request keeps its place, so it cannot overtake a
+  code request that still cites the row, and no citation scan is needed. A
+  fresh batch is the first request in this order and the contiguous run of
+  same-class requests behind it, up to `MAX_BATCH`; a bisection plan's group
+  never consults the order. `next_batch` stays free of Git: it takes the
+  precomputed `RequestOrder` map.
+- **One writer.** Only the integrator writes ledger-only lanes; a code lane
+  that fixes a finding still closes its own row in the same change. `land`
+  refuses, immediately before it queues (also with `--no-precheck`), a
+  `LEDGER` head without the ledger (`ledger-missing`), then a `LEDGER` head
+  while a `LEDGER` request is pending (`ledger-pending`). The check and the
+  enqueue take no lock: two concurrent `land` runs could both pass, which the
+  one-integrator rule accepts. The ledger merge driver stays for code lanes
+  that close rows.
+- **Failure handling.** Only a `DriverError` from classification is caught:
+  that request records `failed` with Git's error and leaves the queue, and
+  the rest still run; if none remain, the runner returns without building a
+  candidate. Any other error propagates as before. A host-wide Git failure
+  records every ready request `failed`; they are landed again after the host
+  is fixed.
+- **Checks.** A ledger lane runs the always gates (among them `python
+  tools/finding_coverage.py --check`) plus the rule `finding-ids-static`
+  (`python -m ty check src tests/findings`), so a closed row fails every
+  finding test that still cites it.
+- **Cost.** One `merge-base` and one `diff` per ready request per batch, plus
+  two ledger reads and projections for each `LEDGER` request (about 14 ms per
+  projection of the 1.7 MB ledger, measured 2026-11-02).
 
 ## Costs
 

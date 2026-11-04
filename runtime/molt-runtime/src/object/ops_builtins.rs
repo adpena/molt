@@ -1275,7 +1275,7 @@ mod direct_call_tests {
                 }
                 assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 1);
 
-                let vararg_name = attr_name_bits_from_bytes(py, b"__molt_vararg__").unwrap();
+                let vararg_name = dynamic_attr_name_bits(py, b"__molt_vararg__").unwrap();
                 assert!(crate::call::class_init::function_set_attr_bits(
                     py,
                     function,
@@ -1631,7 +1631,9 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
 pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
-        if let Some(result) = super::ops_arith::unary_subtype_result(_py, obj, b"__abs__") {
+        if let Some(result) =
+            super::ops_arith::unary_subtype_result(_py, obj, crate::NameId::DunderAbs)
+        {
             return result;
         }
         if let Some(i) = index_i64_integral_bits(obj.bits()) {
@@ -1654,7 +1656,13 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
             return float_result_bits(_py, value.re.hypot(value.im));
         }
         if let Some(method) = unsafe {
-            match crate::builtins::attr::lookup_special_method(_py, val_bits, b"__abs__") {
+            match crate::builtins::attr::lookup_special_method(
+                _py,
+                val_bits,
+                crate::NameId::DunderAbs,
+            )
+            .into_result()
+            {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
             }
@@ -1678,8 +1686,8 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             _py,
             lhs,
             rhs,
-            b"__divmod__",
-            b"__rdivmod__",
+            crate::NameId::DunderDivmod,
+            crate::NameId::DunderRdivmod,
             "divmod()",
         ) {
             return result;
@@ -1830,20 +1838,16 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
             // re-entrant and uses the existing token.
             return crate::molt_locals_builtin();
         }
-        let dict_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
-        let dict_bits = molt_get_attr_name_default(obj_bits, dict_name_bits, missing);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if dict_bits == missing {
-            return raise_exception::<_>(
+        let dict_name_bits = crate::NameId::DunderDict.bits(_py);
+        match lookup_attribute(_py, obj_bits, dict_name_bits) {
+            AttributeLookup::Found(bits) => bits,
+            AttributeLookup::Error => MoltObject::none().bits(),
+            AttributeLookup::Missing => raise_exception::<_>(
                 _py,
                 BuiltinExc::TypeError,
                 "vars() argument must have __dict__ attribute",
-            );
+            ),
         }
-        dict_bits
     })
 }
 
@@ -1860,7 +1864,7 @@ fn object_getstate_default(_py: &crate::PyToken<'_>, _self_bits: u64, required: 
         return MoltObject::none().bits();
     };
     let type_id = unsafe { object_type_id(ptr) };
-    if required && !matches!(type_id, crate::TYPE_ID_OBJECT | crate::TYPE_ID_DATACLASS) {
+    if required && !matches!(type_id, crate::TYPE_ID_OBJECT) {
         return crate::raise_exception::<u64>(
             _py,
             crate::BuiltinExc::TypeError,
@@ -1872,7 +1876,6 @@ fn object_getstate_default(_py: &crate::PyToken<'_>, _self_bits: u64, required: 
     }
     if !unsafe { crate::object::object_has_class_shape(ptr) }
         && !unsafe { crate::object::native_instance::has_fields(ptr) }
-        && type_id != crate::TYPE_ID_DATACLASS
     {
         return MoltObject::none().bits();
     }
@@ -1957,14 +1960,11 @@ fn object_getstate_slot_state(py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u
         }
         let mut owner = crate::PtrDropGuard::new(state);
         for &name in names.iter() {
-            let value = crate::molt_get_attr_name(object, name);
-            if exception_pending(py) {
-                dec_ref_bits(py, value);
-                if crate::builtins::attr::clear_attribute_error_if_pending(py) {
-                    continue;
-                }
-                return None;
-            }
+            let value = match lookup_attribute(py, object, name) {
+                AttributeLookup::Found(value) => value,
+                AttributeLookup::Missing => continue,
+                AttributeLookup::Error => return None,
+            };
             let completed = dict_set_in_place(py, state, name, value);
             dec_ref_bits(py, value);
             if !completed {
@@ -2103,7 +2103,8 @@ pub(crate) fn object_getattribute(
                 || crate::builtins::attributes::is_numeric_scalar_attr_receiver(_py, obj_bits)
             {
                 if let Some(val) =
-                    crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, &attr_name)?
+                    crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, name_bits)
+                        .into_result()?
                 {
                     return Ok(Some(val));
                 }
@@ -2128,15 +2129,14 @@ pub(crate) fn object_getattribute(
                         obj_ptr,
                         name_bits,
                         molt_cpython_abi::hooks::AttributeAccess::Generic,
-                    ),
+                    )
+                    .into_result(),
                     type_id if crate::object::heap_kind_has_class_shape(type_id) => {
                         crate::builtins::attr::object_attr_lookup_with_policy(
                             _py, obj_ptr, name_bits, suppress,
                         )
+                        .into_result()
                     }
-                    TYPE_ID_DATACLASS => crate::builtins::attr::dataclass_attr_lookup_inner(
-                        _py, obj_ptr, name_bits, None, suppress,
-                    ),
                     TYPE_ID_TYPE => {
                         // Generic lookup sees the physical object dictionary:
                         // heap types alias their own namespace; static types
@@ -2145,10 +2145,12 @@ pub(crate) fn object_getattribute(
                         crate::builtins::attr::object_attr_lookup_with_policy(
                             _py, obj_ptr, name_bits, suppress,
                         )
+                        .into_result()
                     }
                     _ => crate::builtins::attributes::attr_lookup_ptr_default_with_suppression(
                         _py, obj_ptr, name_bits, suppress,
-                    ),
+                    )
+                    .into_result(),
                 };
                 if let Some(val) = found? {
                     return Ok(Some(val));
@@ -2156,45 +2158,7 @@ pub(crate) fn object_getattribute(
                 if suppress {
                     return Ok(None);
                 }
-                if type_id == TYPE_ID_DATACLASS {
-                    let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                    if !desc_ptr.is_null() && (*desc_ptr).slots && !(*desc_ptr).allows_dict {
-                        let name = &(*desc_ptr).name;
-                        let type_label = if name.is_empty() {
-                            "dataclass"
-                        } else {
-                            name.as_str()
-                        };
-                        return {
-                            let _ = attr_error_with_obj(
-                                _py,
-                                type_label,
-                                &attr_name,
-                                MoltObject::from_ptr(obj_ptr).bits(),
-                            );
-                            Err(())
-                        };
-                    }
-                    let type_label = if !desc_ptr.is_null() {
-                        let name = &(*desc_ptr).name;
-                        if name.is_empty() {
-                            "dataclass"
-                        } else {
-                            name.as_str()
-                        }
-                    } else {
-                        "dataclass"
-                    };
-                    return {
-                        let _ = attr_error_with_obj(
-                            _py,
-                            type_label,
-                            &attr_name,
-                            MoltObject::from_ptr(obj_ptr).bits(),
-                        );
-                        Err(())
-                    };
-                }
+
                 if type_id == TYPE_ID_TYPE {
                     let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
                         .unwrap_or_default();
@@ -2248,7 +2212,8 @@ pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
                 }
                 let found = crate::builtins::attributes::type_attr_lookup_ptr_default(
                     _py, obj_ptr, name_bits,
-                );
+                )
+                .into_result();
                 match found {
                     Ok(Some(val)) => return val,
                     Err(()) => return MoltObject::none().bits(),
@@ -2337,7 +2302,7 @@ pub extern "C" fn molt_object_eq(self_bits: u64, other_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_ne(self_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+        let name = crate::NameId::DunderEq.bits(_py);
         let outcome = crate::object::ops_compare::rich_compare_method_value(
             _py,
             obj_from_bits(self_bits),
@@ -2401,7 +2366,7 @@ pub extern "C" fn molt_print_builtin(
         }
 
         fn write_piece(_py: &PyToken<'_>, file: u64, value: u64) -> bool {
-            let name = intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+            let name = crate::NameId::Write.bits(_py);
             if exception_pending(_py) {
                 return false;
             }
@@ -2458,8 +2423,7 @@ pub extern "C" fn molt_print_builtin(
                 }
                 stdout
             } else {
-                let name =
-                    intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
+                let name = crate::NameId::Stdout.bits(_py);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -2496,7 +2460,7 @@ pub extern "C" fn molt_print_builtin(
             return MoltObject::none().bits();
         }
         if do_flush {
-            let name = intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+            let name = crate::NameId::Flush.bits(_py);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -2637,8 +2601,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         };
         inc_ref_bits(_py, sys_bits);
 
-        let stdout_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
+        let stdout_name_bits = crate::NameId::Stdout.bits(_py);
         let stdout_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, sys_bits);
@@ -2666,8 +2629,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         if stdout_is_handle {
             let _ = molt_file_write(stdout_bits, prompt_str_bits);
         } else {
-            let write_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+            let write_name_bits = crate::NameId::Write.bits(_py);
             let write_method_bits = molt_get_attr_name(stdout_bits, write_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, prompt_str_bits);
@@ -2691,8 +2653,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
             let _ = molt_file_flush(stdout_bits);
         } else {
             let missing = missing_bits(_py);
-            let flush_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+            let flush_name_bits = crate::NameId::Flush.bits(_py);
             let flush_bits = molt_getattr_builtin(stdout_bits, flush_name_bits, missing);
             if exception_pending(_py) {
                 dec_ref_bits(_py, prompt_str_bits);
@@ -2729,8 +2690,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         dec_ref_bits(_py, prompt_str_bits);
         dec_ref_bits(_py, stdout_bits);
 
-        let stdin_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.stdin_name, b"stdin");
+        let stdin_name_bits = crate::NameId::Stdin.bits(_py);
         let stdin_bits = molt_module_get_attr(sys_bits, stdin_name_bits);
         dec_ref_bits(_py, sys_bits);
         if exception_pending(_py) {
@@ -2749,8 +2709,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         let line_bits = if stdin_is_handle {
             molt_file_readline(stdin_bits, MoltObject::from_int(-1).bits())
         } else {
-            let readline_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.readline_name, b"readline");
+            let readline_name_bits = crate::NameId::Readline.bits(_py);
             let method_bits = molt_get_attr_name(stdin_bits, readline_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, stdin_bits);
