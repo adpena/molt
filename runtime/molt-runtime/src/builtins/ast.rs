@@ -1,4 +1,6 @@
 use crate::BuiltinExc;
+#[cfg(test)]
+use crate::missing_bits;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt as NumBigInt;
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
@@ -7,8 +9,8 @@ use crate::builtins::exceptions::clear_exception;
 use crate::{
     TYPE_ID_STRING, alloc_string, alloc_tuple, call_callable0, call_callable1, call_callable2,
     call_callable3, dec_ref_bits, decode_value_list, dynamic_attr_name_bits, ellipsis_bits,
-    exception_pending, inc_ref_bits, int_bits_from_bigint, missing_bits, obj_from_bits,
-    object_type_id, raise_exception, string_obj_to_owned,
+    exception_pending, inc_ref_bits, int_bits_from_bigint, obj_from_bits, object_type_id,
+    raise_exception, string_obj_to_owned,
 };
 
 struct AstParseCtors<'a, 'py> {
@@ -894,26 +896,16 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
                 "expected an AST node, got None",
             );
         }
-        let missing = missing_bits(_py);
         let Some(fields_key) = crate::NameId::PrivateFields.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let fields_bits = match crate::lookup_attribute(_py, node_bits, fields_key) {
-            crate::AttributeLookup::Found(bits) => bits,
-            crate::AttributeLookup::Missing => missing,
-            crate::AttributeLookup::Error => MoltObject::none().bits(),
-        };
+        // _fields itself is required; only an absent named field is skipped.
+        let fields = crate::builtins::attributes::get_attr_name(_py, node_bits, fields_key);
         dec_if_heap(_py, fields_key);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            dec_if_heap(_py, fields_bits);
-            let list_ptr = crate::alloc_list(_py, &[]);
-            return if list_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(list_ptr).bits()
-            };
-        }
+        let fields_bits = match fields {
+            Ok(bits) => bits,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let mut result_entries: Vec<u64> = Vec::new();
         let out = (|| {
             let Some(fields_values) = decode_value_list(_py, obj_from_bits(fields_bits)) else {
@@ -945,9 +937,8 @@ pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
                 };
                 dec_if_heap(_py, attr_key);
                 if exception_pending(_py) {
-                    clear_exception(_py);
                     dec_if_heap(_py, val_bits);
-                    continue;
+                    return MoltObject::none().bits();
                 }
                 let name_ptr = alloc_string(_py, field_name.as_bytes());
                 if name_ptr.is_null() {
@@ -1012,26 +1003,16 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
                 "expected an AST node, got None",
             );
         }
-        let missing = missing_bits(_py);
         let Some(fields_key) = crate::NameId::PrivateFields.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let fields_bits = match crate::lookup_attribute(_py, node_bits, fields_key) {
-            crate::AttributeLookup::Found(bits) => bits,
-            crate::AttributeLookup::Missing => missing,
-            crate::AttributeLookup::Error => MoltObject::none().bits(),
-        };
+        // _fields itself is required; only an absent named field is skipped.
+        let fields = crate::builtins::attributes::get_attr_name(_py, node_bits, fields_key);
         dec_if_heap(_py, fields_key);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            dec_if_heap(_py, fields_bits);
-            let list_ptr = crate::alloc_list(_py, &[]);
-            return if list_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(list_ptr).bits()
-            };
-        }
+        let fields_bits = match fields {
+            Ok(bits) => bits,
+            Err(()) => return MoltObject::none().bits(),
+        };
         let mut children: Vec<u64> = Vec::new();
         let out = (|| {
             let Some(fields_values) = decode_value_list(_py, obj_from_bits(fields_bits)) else {
@@ -1062,9 +1043,8 @@ pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
                 };
                 dec_if_heap(_py, attr_key);
                 if exception_pending(_py) {
-                    clear_exception(_py);
                     dec_if_heap(_py, val_bits);
-                    continue;
+                    return MoltObject::none().bits();
                 }
                 let completed = (|| {
                     let val_obj = obj_from_bits(val_bits);
