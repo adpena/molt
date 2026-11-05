@@ -122,13 +122,14 @@ def _render_rs_unformatted(data: dict) -> str:
         "/// Structural/forwarding producers, shared with the frontend's auto-check authority.\n"
     )
     out.append(
-        "pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {\n    match kind {\n"
+        "pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {\n"
     )
+    deferred = []
     for kind in sorted(registered_simpleir_kinds(data)):
         frontend = frontend_kinds_for_wire_kind(data, kind)
         if frontend and all(name in skip for name in frontend):
-            out.append(f"        {_wire.kind_ref(kind)} => true,\n")
-    out.append("        _ => false,\n    }\n}\n")
+            deferred.append(_wire.kind_ref(kind))
+    out.append(f"    matches!(kind, {' | '.join(deferred)})\n}}\n")
     out.append(_render_simpleir_control_facts(data))
     out.append("\n\n")
     out.append(_render_simpleir_field_roles(data))

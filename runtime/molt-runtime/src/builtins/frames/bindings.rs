@@ -568,11 +568,11 @@ pub(crate) fn frame_bindings_observe(py: &PyToken<'_>, index: usize) -> Result<u
         let payload = frame_bindings_attach_activation(py, task, true)?;
         FRAME_STACK.with(|stack| {
             let mut stack = stack.borrow_mut();
-            if let Some(entry) = stack.get_mut(index) {
-                if entry.bindings.payload_bits == 0 {
-                    inc_ref_bits(py, payload);
-                    entry.bindings.payload_bits = payload;
-                }
+            if let Some(entry) = stack.get_mut(index)
+                && entry.bindings.payload_bits == 0
+            {
+                inc_ref_bits(py, payload);
+                entry.bindings.payload_bits = payload;
             }
         });
         return Ok(payload);

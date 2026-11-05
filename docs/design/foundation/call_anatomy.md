@@ -582,9 +582,9 @@ if it cannot distinguish frame-observation memory. Optimizers may coalesce adjac
 publications only when every incoming path already carries the required location; they cannot
 move a publication across an observation, failure or terminator. An exceptional check preserves
 the known location on its normal fallthrough, so an identical fallthrough store is redundant.
-Its exceptional target publishes at its own label, where location knowledge resets. Other
-control-flow boundaries reset that knowledge conservatively. Backend-generated exits retain
-their originating source terminator's location.
+Its exceptional target resets location knowledge; the first observing operation publishes
+its source site. Other control-flow boundaries reset that knowledge conservatively.
+Backend-generated exits retain their originating source terminator's location.
 
 Region labels, jumps, try markers and non-callback exception-state transport do not
 publish a new source site. Their structural adjacency is part of the region model.

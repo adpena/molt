@@ -3849,82 +3849,82 @@ impl ExceptionEdgeKind {
 }
 /// Structural/forwarding producers, shared with the frontend's auto-check authority.
 pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {
-    match kind {
-        OpKind::BindingAlias => true,
-        OpKind::Borrow => true,
-        OpKind::BrIf => true,
-        OpKind::CheckException => true,
-        OpKind::ClassSetDefinition => true,
-        OpKind::ClassmethodNew => true,
-        OpKind::CodeNew => true,
-        OpKind::CodeSlotSet => true,
-        OpKind::Const => true,
-        OpKind::ConstBool => true,
-        OpKind::ConstEllipsis => true,
-        OpKind::ConstFloat => true,
-        OpKind::ConstNone => true,
-        OpKind::ConstNotImplemented => true,
-        OpKind::ContextExit => true,
-        OpKind::Copy => true,
-        OpKind::DecRef => true,
-        OpKind::DeleteVar => true,
-        OpKind::Else => true,
-        OpKind::EndIf => true,
-        OpKind::ExceptionClear => true,
-        OpKind::ExceptionContextSet => true,
-        OpKind::ExceptionFinallyPendingObserver => true,
-        OpKind::ExceptionLast => true,
-        OpKind::ExceptionLastPending => true,
-        OpKind::ExceptionMatchBuiltin => true,
-        OpKind::ExceptionNewBuiltin => true,
-        OpKind::ExceptionNewBuiltinEmpty => true,
-        OpKind::ExceptionNewBuiltinOne => true,
-        OpKind::ExceptionPop => true,
-        OpKind::ExceptionPush => true,
-        OpKind::ExceptionSetLast => true,
-        OpKind::ExceptionStackClear => true,
-        OpKind::ExceptionStackDepth => true,
-        OpKind::ExceptionStackEnter => true,
-        OpKind::ExceptionStackExit => true,
-        OpKind::ExceptionStackSetDepth => true,
-        OpKind::FrameHomeCell => true,
-        OpKind::FrameHomeClear => true,
-        OpKind::FrameHomePrivateCell => true,
-        OpKind::FuncNew => true,
-        OpKind::If => true,
-        OpKind::IncRef => true,
-        OpKind::Is => true,
-        OpKind::IsNot => true,
-        OpKind::Jump => true,
-        OpKind::Label => true,
-        OpKind::Line => true,
-        OpKind::LoopBreak => true,
-        OpKind::LoopBreakIfException => true,
-        OpKind::LoopBreakIfFalse => true,
-        OpKind::LoopBreakIfTrue => true,
-        OpKind::LoopContinue => true,
-        OpKind::LoopEnd => true,
-        OpKind::LoopIndexNext => true,
-        OpKind::LoopIndexStart => true,
-        OpKind::LoopStart => true,
-        OpKind::Missing => true,
-        OpKind::Phi => true,
-        OpKind::PropertyNew => true,
-        OpKind::Raise => true,
-        OpKind::Release => true,
-        OpKind::Reraise => true,
-        OpKind::Ret => true,
-        OpKind::StateLabel => true,
-        OpKind::StateSet => true,
-        OpKind::StateTransition => true,
-        OpKind::StateYield => true,
-        OpKind::StaticmethodNew => true,
-        OpKind::TraceEnterSlot => true,
-        OpKind::TraceExit => true,
-        OpKind::TryEnd => true,
-        OpKind::TryStart => true,
-        _ => false,
-    }
+    matches!(
+        kind,
+        OpKind::BindingAlias
+            | OpKind::Borrow
+            | OpKind::BrIf
+            | OpKind::CheckException
+            | OpKind::ClassSetDefinition
+            | OpKind::ClassmethodNew
+            | OpKind::CodeNew
+            | OpKind::CodeSlotSet
+            | OpKind::Const
+            | OpKind::ConstBool
+            | OpKind::ConstEllipsis
+            | OpKind::ConstFloat
+            | OpKind::ConstNone
+            | OpKind::ConstNotImplemented
+            | OpKind::ContextExit
+            | OpKind::Copy
+            | OpKind::DecRef
+            | OpKind::DeleteVar
+            | OpKind::Else
+            | OpKind::EndIf
+            | OpKind::ExceptionClear
+            | OpKind::ExceptionContextSet
+            | OpKind::ExceptionFinallyPendingObserver
+            | OpKind::ExceptionLast
+            | OpKind::ExceptionLastPending
+            | OpKind::ExceptionMatchBuiltin
+            | OpKind::ExceptionNewBuiltin
+            | OpKind::ExceptionNewBuiltinEmpty
+            | OpKind::ExceptionNewBuiltinOne
+            | OpKind::ExceptionPop
+            | OpKind::ExceptionPush
+            | OpKind::ExceptionSetLast
+            | OpKind::ExceptionStackClear
+            | OpKind::ExceptionStackDepth
+            | OpKind::ExceptionStackEnter
+            | OpKind::ExceptionStackExit
+            | OpKind::ExceptionStackSetDepth
+            | OpKind::FrameHomeCell
+            | OpKind::FrameHomeClear
+            | OpKind::FrameHomePrivateCell
+            | OpKind::FuncNew
+            | OpKind::If
+            | OpKind::IncRef
+            | OpKind::Is
+            | OpKind::IsNot
+            | OpKind::Jump
+            | OpKind::Label
+            | OpKind::Line
+            | OpKind::LoopBreak
+            | OpKind::LoopBreakIfException
+            | OpKind::LoopBreakIfFalse
+            | OpKind::LoopBreakIfTrue
+            | OpKind::LoopContinue
+            | OpKind::LoopEnd
+            | OpKind::LoopIndexNext
+            | OpKind::LoopIndexStart
+            | OpKind::LoopStart
+            | OpKind::Missing
+            | OpKind::Phi
+            | OpKind::PropertyNew
+            | OpKind::Raise
+            | OpKind::Release
+            | OpKind::Reraise
+            | OpKind::Ret
+            | OpKind::StateLabel
+            | OpKind::StateSet
+            | OpKind::StateTransition
+            | OpKind::StateYield
+            | OpKind::StaticmethodNew
+            | OpKind::TraceEnterSlot
+            | OpKind::TraceExit
+            | OpKind::TryEnd
+            | OpKind::TryStart
+    )
 }
 impl OpKind {
     /// Whether a SimpleIR kind is consumed as a structural CFG/SSA marker before kind_to_opcode.
