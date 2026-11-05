@@ -502,3 +502,146 @@ def test_merge_rewrites_row_edges_and_close_satisfies_named_prerequisites(
         active=True, task="engine-owner", payload={"dispatch": {"family": "A"}}
     )
     assert dag_dispatch.plan_dispatch(status, [engine], ["HF-3"]).waits == {"HF-3": ()}
+
+
+def _ledger(root: Path) -> str:
+    return (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+
+
+def test_v01_set_creates_the_table_and_restates_a_row(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    # No v0.1 table: every open row is unclassified, so every one holds 0.x.
+    assert _status(root).v01_classes == {}
+    assert _status(root).v01_holding_keys == ("HF-1", "HF-2")
+
+    assert ledger_edit.main(["v01", "set", "HF-2", "tier2"], root=root) == 0
+    status = _status(root)
+    assert status.problems == ()
+    assert status.v01_classes == {"HF-2": finding_status.V01Class.TIER2}
+    assert status.v01_holding_keys == ("HF-1",)
+    assert "| Row | v0.1 class |" in _ledger(root)
+
+    assert ledger_edit.main(["v01", "set", "HF-2", "v0_1_blocking"], root=root) == 0
+    assert ledger_edit.main(["v01", "set", "HF-1", "post_v0_1"], root=root) == 0
+    status = _status(root)
+    assert status.v01_classes == {
+        "HF-1": finding_status.V01Class.POST_V0_1,
+        "HF-2": finding_status.V01Class.V0_1_BLOCKING,
+    }
+    assert status.v01_holding_keys == ("HF-2",)
+    # The table stays in canonical finding order after an insertion.
+    table = _ledger(root).split("| Row | v0.1 class |")[1]
+    assert table.index("| HF-1 |") < table.index("| HF-2 |")
+
+
+def test_v01_refuses_a_closed_row_and_an_unknown_class(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    assert ledger_edit.main(["v01", "set", "HF-0", "tier2"], root=root) == 2
+    data = tmp_path / "classes.json"
+    data.write_text(
+        '{"schema": "molt.v01-classification.v1", "rows": {"HF-1": "maybe"}}',
+        encoding="utf-8",
+    )
+    assert ledger_edit.main(["v01", "apply", str(data)], root=root) == 2
+    assert _status(root).v01_classes == {}
+
+
+def test_v01_apply_writes_every_row_once(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    data = tmp_path / "classes.json"
+    data.write_text(
+        '{"schema": "molt.v01-classification.v1",'
+        ' "rows": {"HF-2": "tier2", "HF-1": "v0_1_blocking"}}',
+        encoding="utf-8",
+    )
+    assert ledger_edit.main(["v01", "apply", str(data)], root=root) == 0
+    status = _status(root)
+    assert status.problems == ()
+    assert status.v01_classes == {
+        "HF-1": finding_status.V01Class.V0_1_BLOCKING,
+        "HF-2": finding_status.V01Class.TIER2,
+    }
+
+
+def test_close_and_merge_clear_the_v01_class_and_merge_keeps_the_stricter(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+    assert ledger_edit.main(["v01", "set", "HF-1", "v0_1_blocking"], root=root) == 0
+    assert ledger_edit.main(["v01", "set", "HF-2", "tier2"], root=root) == 0
+    assert ledger_edit.main(["merge", "HF-1", "--into", "HF-2"], root=root) == 0
+    status = _status(root)
+    assert status.problems == ()
+    # HF-1 blocked v0.1, so the row that absorbed it now blocks too.
+    assert status.v01_classes == {"HF-2": finding_status.V01Class.V0_1_BLOCKING}
+    assert ledger_edit.main(["close", "HF-2", "--fix", "Fixed."], root=root) == 0
+    status = _status(root)
+    assert status.problems == ()
+    assert status.v01_classes == {}
+
+
+def test_merge_of_an_unclassified_row_holds_like_blocking(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    assert ledger_edit.main(["v01", "set", "HF-2", "post_v0_1"], root=root) == 0
+    assert ledger_edit.main(["merge", "HF-1", "--into", "HF-2"], root=root) == 0
+    assert _status(root).v01_classes == {
+        "HF-2": finding_status.V01Class.V0_1_BLOCKING
+    }
+
+
+def test_open_accepts_a_v01_class(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    status = ledger_edit.main(
+        [
+            "open",
+            "HF-3",
+            "--v1-class",
+            "post_1_0",
+            "--v01-class",
+            "tier2",
+            "--family",
+            "B",
+            "--section",
+            "Open: release blockers",
+            "--defect",
+            "Three.",
+            "--evidence",
+            "E3.",
+            "--next",
+            "N3.",
+        ],
+        root=root,
+    )
+    assert status == 0
+    assert _status(root).v01_classes == {"HF-3": finding_status.V01Class.TIER2}
+
+
+def test_projection_reports_duplicate_unknown_and_closed_v01_classes() -> None:
+    table = "\n| Row | v0.1 class |\n| --- | --- |\n"
+    duplicate = finding_status.project(
+        _LEDGER.replace(
+            "| HF-2 | release_blocking |\n",
+            "| HF-2 | release_blocking |\n"
+            + table
+            + "| HF-1 | tier2 |\n| HF-1 | v0_1_blocking |\n",
+        )
+    )
+    assert any("duplicate" in problem for problem in duplicate.problems)
+    unknown = finding_status.project(
+        _LEDGER.replace(
+            "| HF-2 | release_blocking |\n",
+            "| HF-2 | release_blocking |\n" + table + "| HF-1 | soon |\n",
+        )
+    )
+    assert any("unknown class 'soon'" in problem for problem in unknown.problems)
+    closed = finding_status.project(
+        _LEDGER.replace(
+            "| HF-2 | release_blocking |\n",
+            "| HF-2 | release_blocking |\n" + table + "| HF-0 | tier2 |\n",
+        )
+    )
+    assert closed.problems == ()
+    assert any(
+        "v0.1 class on closed or unknown row HF-0" in problem
+        for problem in finding_status.dependency_problems(closed)
+    )

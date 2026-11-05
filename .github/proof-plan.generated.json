@@ -735,6 +735,7 @@
         "tests/tools/test_install_git_hooks.py/**",
         "tests/tools/test_landing_receipt.py/**",
         "tests/tools/test_ledger_edit.py/**",
+        "tests/tools/test_known_issues.py/**",
         "tests/tools/test_ledger_merge.py/**",
         "tests/tools/test_subagent_contract.py/**"
       ],
@@ -3929,6 +3930,7 @@
         "tests/tools/test_install_git_hooks.py",
         "tests/tools/test_landing_receipt.py",
         "tests/tools/test_ledger_edit.py",
+        "tests/tools/test_known_issues.py",
         "tests/tools/test_ledger_merge.py",
         "tests/tools/test_subagent_contract.py"
       ],

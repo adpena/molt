@@ -120,6 +120,32 @@ class V1Membership:
     line: int
 
 
+class V01Class(StrEnum):
+    """A row's place in the v0.1 release (owner decision 2026-11-05).
+
+    A row blocks v0.1 if it fails in a Tier 1 cell (``config/release_targets.toml``),
+    is a safety defect, blocks Tier 1 installed delivery or guards a public
+    performance claim. ``tier2`` rows fail only in Tier 2 cells; ``post_v0_1``
+    rows are other work. An open row with no class holds a 0.x release.
+    """
+
+    V0_1_BLOCKING = "v0_1_blocking"
+    TIER2 = "tier2"
+    POST_V0_1 = "post_v0_1"
+
+
+# A merge keeps the stricter class; an unclassified side ranks with blocking.
+V01_STRICTNESS = (V01Class.V0_1_BLOCKING, V01Class.TIER2, V01Class.POST_V0_1)
+V01_MEMBERSHIP_HEADER = ("Row", "v0.1 class")
+
+
+@dataclass(frozen=True, slots=True)
+class V01Membership:
+    key: str
+    classification: V01Class
+    line: int
+
+
 @dataclass(frozen=True, slots=True)
 class FindingStatus:
     """Every finding row of one ledger text, plus its structural defects."""
@@ -133,10 +159,26 @@ class FindingStatus:
     prose_order_lines: tuple[int, ...] = ()
     v1_membership: tuple[V1Membership, ...] = ()
     edge_table_lines: tuple[int, ...] = ()
+    v01_membership: tuple[V01Membership, ...] = ()
 
     @property
     def classes(self) -> dict[str, V1Class]:
         return {entry.key: entry.classification for entry in self.v1_membership}
+
+    @property
+    def v01_classes(self) -> dict[str, V01Class]:
+        """Each classified row's v0.1 class; ``project`` refuses duplicates."""
+        return {entry.key: entry.classification for entry in self.v01_membership}
+
+    @property
+    def v01_holding_keys(self) -> tuple[str, ...]:
+        """The open rows that hold a 0.x release: blocking or unclassified."""
+        classes = self.v01_classes
+        return tuple(
+            key
+            for key in self.open_keys
+            if classes.get(key, V01Class.V0_1_BLOCKING) is V01Class.V0_1_BLOCKING
+        )
 
     @property
     def open_keys(self) -> tuple[str, ...]:
@@ -191,6 +233,7 @@ def project(text: str) -> FindingStatus:
     edges: list[DependencyEdge] = []
     prose_order: list[int] = []
     membership: list[V1Membership] = []
+    v01_membership: list[V01Membership] = []
     edge_tables: list[int] = []
     dependency_table = ""
     section = ""
@@ -233,7 +276,32 @@ def project(text: str) -> FindingStatus:
             if row_cells == ["Row", "V1 class"]:
                 dependency_table = "membership"
                 continue
+            if tuple(row_cells) == V01_MEMBERSHIP_HEADER:
+                dependency_table = "v01"
+                continue
             family = _DEPENDENCY_FAMILY_RE.match(row_cells[0]) if row_cells else None
+            if dependency_table == "v01" and row_cells:
+                if len(row_cells) != 2:
+                    problems.append(
+                        f"v0.1 membership line {line_number} needs Row and v0.1 class"
+                    )
+                    continue
+                try:
+                    v01_class = V01Class(row_cells[1])
+                except ValueError:
+                    problems.append(
+                        f"v0.1 membership {row_cells[0]} (line {line_number}) has unknown class {row_cells[1]!r}"
+                    )
+                    continue
+                if any(entry.key == row_cells[0] for entry in v01_membership):
+                    problems.append(
+                        f"v0.1 membership {row_cells[0]} (line {line_number}) is a duplicate"
+                    )
+                    continue
+                v01_membership.append(
+                    V01Membership(row_cells[0], v01_class, line_number)
+                )
+                continue
             if dependency_table == "membership" and row_cells:
                 if len(row_cells) != 2:
                     problems.append(
@@ -342,6 +410,7 @@ def project(text: str) -> FindingStatus:
         tuple(prose_order),
         tuple(membership),
         tuple(edge_tables),
+        tuple(v01_membership),
     )
 
 
@@ -443,6 +512,11 @@ def dependency_problems(status: FindingStatus) -> list[str]:
             problems.append(
                 f"open finding {key} has {count} v1 classes; needs exactly one"
             )
+    problems.extend(
+        f"v0.1 class on closed or unknown row {entry.key} (line {entry.line})"
+        for entry in status.v01_membership
+        if entry.key not in open_keys
+    )
     problems.extend(_dependency_edge_problems(status))
     return problems
 
