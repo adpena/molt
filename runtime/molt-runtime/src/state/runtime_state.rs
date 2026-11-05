@@ -1685,6 +1685,13 @@ fn runtime_exit(code_bits: u64) -> u64 {
         };
         if let Some(ptr) = ptr {
             let state = unsafe { &*ptr };
+            // Process exit may retain its caller's admitted lease. Ready
+            // unpublication cleared that lease's binding; resolve it against
+            // the now-published Finalizing owner before teardown callbacks.
+            // A caller without a lease is bound by shutdown-drain admission.
+            if current_thread_holds_runtime_execution_lease() {
+                bind_execution_state(crate::state::execution_tls());
+            }
             let py = gil.token();
             runtime_teardown_for_process_exit(&py, state);
             // Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
@@ -2877,6 +2884,54 @@ mod tests {
             assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
             assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
         });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn process_exit_retains_compiled_callback_custody() {
+        const MODE: &str = "MOLT_TEST_EXIT_COMPILED_CUSTODY";
+        const TEST: &str =
+            "state::runtime_state::tests::process_exit_retains_compiled_callback_custody";
+        unsafe extern "C" fn clear(context: u64, _ptr: *mut u8) {
+            let py = unsafe { crate::PyToken::from_attached_context(context) };
+            let _scope = crate::concurrency::execution::CompiledScopeGuard::enter(py);
+            use std::io::Write;
+            println!("process-exit compiled callback completed");
+            std::io::stdout().flush().unwrap();
+        }
+        if std::env::var_os(MODE).is_some() {
+            assert_eq!(molt_runtime_init(), 1);
+            let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+            let py = entry.token();
+            runtime_extension_state_get_or_init(
+                runtime_state(py),
+                b"exit-compiled-callback",
+                test_extension_init,
+                clear,
+                test_extension_drop,
+            );
+            molt_runtime_exit(0);
+            unreachable!("process exit returned");
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .env(MODE, "1");
+        let output = crate::test_support::captured_runtime_children::capture(
+            &mut command,
+            "process-exit",
+            "compiled-callback",
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("process-exit compiled callback completed")
+        );
     }
 
     #[test]

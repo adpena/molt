@@ -521,6 +521,9 @@ It never derives identity by stripping a suffix; the generated ABI table owns th
 Unsuffixed attached exports are rejected, and the content-addressed projection is revision 4.
 Declared public C-API boundaries retain their separately generated entry signatures; their raw
 exports never satisfy admission of the corresponding attached runtime callable.
+Process exit may retain its caller's ordinary lease after closing Ready admission. After
+publishing Finalizing, it rebinds that retained lease to the finalizing owner before any cleanup
+callback; callers without a lease acquire the ordinary shutdown-drain binding instead.
 Split-WASM admission compares the application's required schema with the runtime's offered schema
 before any application initializer executes. Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
