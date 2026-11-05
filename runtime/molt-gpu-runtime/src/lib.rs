@@ -1928,7 +1928,7 @@ fn dispatch_metal_kernel(
             args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
         }
     }
-    let prepared_outputs = PreparedKernelOutputs::new(&descriptor, &args_map)?;
+    let prepared_outputs = PreparedKernelOutputs::new(_py, &descriptor, &args_map)?;
     let _admitted_bindings = descriptor_admission::admit(
         _py,
         callable_bits,
@@ -2065,7 +2065,7 @@ fn dispatch_webgpu_kernel(
             args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
         }
     }
-    let prepared_outputs = PreparedKernelOutputs::new(&descriptor, &args_map)?;
+    let prepared_outputs = PreparedKernelOutputs::new(_py, &descriptor, &args_map)?;
     let _admitted_bindings = descriptor_admission::admit(
         _py,
         callable_bits,
@@ -2188,7 +2188,7 @@ fn dispatch_webgpu_kernel(
             args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
         }
     }
-    let prepared_outputs = PreparedKernelOutputs::new(&descriptor, &args_map)?;
+    let prepared_outputs = PreparedKernelOutputs::new(_py, &descriptor, &args_map)?;
     let _admitted_bindings = descriptor_admission::admit(
         _py,
         callable_bits,

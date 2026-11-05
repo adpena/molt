@@ -509,7 +509,7 @@ pub(super) unsafe fn bound_kernel_arguments(
     py: &PyToken,
     callable: u64,
     builder: u64,
-) -> Result<seq_access::PinnedSequenceSnapshot, u64> {
+) -> Result<seq_access::PinnedSequenceSnapshot<'_>, u64> {
     let bound = unsafe {
         OwnedRuntimeValue::from_owned_bits(
             py,
