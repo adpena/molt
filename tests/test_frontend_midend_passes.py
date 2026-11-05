@@ -6067,7 +6067,7 @@ def test_midend_policy_budget_ms_does_not_gate_on_wall_clock(
 @pytest.mark.parametrize("op_count", [600, 900, 1300])
 @pytest.mark.parametrize("stdlib", [False, True])
 @pytest.mark.parametrize("profile", ["dev", "release"])
-def test_midend_optimizes_large_and_stdlib_bodies(
+def test_midend_large_user_bodies_and_stdlib_cost_policy(
     op_count: int,
     stdlib: bool,
     profile: str,
@@ -6091,14 +6091,49 @@ def test_midend_optimizes_large_and_stdlib_bodies(
     expected = _eval_simple_ops(ops)
     optimized = gen._run_ir_midend_passes(ops)
     assert _eval_simple_ops(optimized) == expected == op_count - 1
-    assert len(optimized) < 10
+    assert len(optimized) == len(ops) if stdlib else len(optimized) < 10
     # Exercise serialization's independent original-op denominator too.
     gen.map_ops_to_json(ops, function_name="large_body")
     coverage = gen.midend_policy_outcomes_by_function["large_body"]["coverage"]
-    assert coverage["status"] == "full"
+    assert coverage["status"] == ("skipped" if stdlib else "full")
     assert coverage["input_ops"] == len(ops)
-    assert coverage["output_ops"] < 10
-    assert coverage["reasons"] == []
+    if stdlib:
+        assert coverage["output_ops"] == len(ops)
+        assert coverage["reasons"] == ["stdlib_cost_policy"]
+        assert gen.midend_pass_stats_by_function == {}
+    else:
+        assert coverage["output_ops"] < 10
+        assert coverage["reasons"] == []
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_stdlib_cost_policy_counts_skips_without_starting_pass_profiler(
+    monkeypatch, empty: bool
+) -> None:
+    from molt.frontend.lowering import midend_telemetry
+
+    monkeypatch.setenv("MOLT_MIDEND_STATS", "1")
+    monkeypatch.setattr(
+        midend_telemetry,
+        "MidendMemoryProfiler",
+        lambda: pytest.fail("skipped stdlib function started a pass observer"),
+    )
+    gen = SimpleTIRGenerator(
+        module_name="collections",
+        source_path=toolchain_logical_path(("stdlib", "collections.py")),
+    )
+    ops = [] if empty else [MoltOp("CONST", [42], MoltValue("answer"))]
+    for name in ("first", "second"):
+        gen.map_ops_to_json(ops, function_name=name)
+        coverage = gen.midend_policy_outcomes_by_function[name]["coverage"]
+        assert coverage == {
+            "status": "skipped",
+            "input_ops": len(ops),
+            "output_ops": len(ops),
+            "reasons": ["stdlib_cost_policy"],
+        }
+    assert gen.midend_stats["midend_module_skips"] == 2
+    assert gen.midend_pass_stats_by_function == {}
 
 
 def test_midend_monolith_pressure_preserves_cold_function_coverage() -> None:

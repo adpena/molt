@@ -55,6 +55,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
             "fixed_point_fail_fast": 0,
             "cfg_structural_failures": 0,
             "cfg_structural_canonicalizations": 0,
+            "midend_module_skips": 0,
             "sccp_iteration_cap_hits": 0,
             "cse_dce_fp_cap_hits": 0,
             "sccp_branch_prunes": 0,
@@ -688,7 +689,12 @@ class MidendPolicyMixin(GeneratorMixinBase):
             status = "fallback"
         elif reasons or outcome.get("degraded"):
             status = "degraded"
-        if not outcome.get("round_snapshots") and input_ops:
+        if self.midend_stats["midend_module_skips"] > counter_baseline.get(
+            "midend_module_skips", 0
+        ):
+            status = "skipped"
+            reasons.add("stdlib_cost_policy")
+        elif not outcome.get("round_snapshots") and input_ops:
             status = "skipped"
             reasons.add("missing_outcome")
         coverage: MidendCoverage = {

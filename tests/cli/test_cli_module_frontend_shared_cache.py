@@ -510,15 +510,23 @@ def test_lowering_product_identity_separates_each_midend_setting(
     assert MC._module_lowering_context_digest(diagnostic_only) == old_digest
 
 
-def test_optimized_lowering_product_restores_metadata_and_coverage(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("stdlib", [False, True])
+def test_lowering_product_restores_metadata_and_coverage(
+    tmp_path, monkeypatch, stdlib: bool
 ):
     import ast
     from molt.cli.frontend_worker import _module_frontend_payload
+    from molt.logical_source_paths import toolchain_logical_path
 
     path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
     lease = _ModuleSourceLease.path_backed(path)
-    gen = MC.SimpleTIRGenerator(module_name="m", known_modules={"m"})
+    gen = MC.SimpleTIRGenerator(
+        module_name="m",
+        known_modules={"m"},
+        source_path=toolchain_logical_path(("stdlib", "collections.py"))
+        if stdlib
+        else str(path),
+    )
     gen.visit(ast.parse(path.read_text(encoding="utf-8")))
     ir = gen.to_json(scope="module")
     product = _module_frontend_payload(
@@ -531,7 +539,14 @@ def test_optimized_lowering_product_restores_metadata_and_coverage(
     )
     assert product["functions"] and product["function_metadata"]
     assert product["midend_policy_outcomes_by_function"]
-    assert product["midend_pass_stats_by_function"]
+    if stdlib:
+        assert product["midend_pass_stats_by_function"] == {}
+        for outcome in product["midend_policy_outcomes_by_function"].values():
+            assert outcome["coverage"]["status"] == "skipped"
+            assert outcome["coverage"]["reasons"] == ["stdlib_cost_policy"]
+            assert outcome["coverage"]["input_ops"] == outcome["coverage"]["output_ops"]
+    else:
+        assert product["midend_pass_stats_by_function"]
     context = MC._module_lowering_context_payload(
         "m",
         path,

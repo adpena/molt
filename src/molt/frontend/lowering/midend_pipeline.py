@@ -48,6 +48,14 @@ class MidendPipelineMixin(GeneratorMixinBase):
         # (SCCP non-propagation, DCE protection, definite-assignment hardening)
         # are now in place.  MOLT_MIDEND_DEV_ENABLE is no longer
         # required — mid-end runs for both dev and release profiles.
+        # Measured cost policy, not a correctness gate (HF-773): round 2
+        # grew math_numeric/colorsys/binary_trees cold builds 1.5–2.2x for
+        # 0–3.4% fewer instructions. Keep stdlib on the Rust TIR optimizer;
+        # HF-773 owns moving the remaining Python fact families there.
+        # Evidence: logs/agents/lane-hf572-midend-coverage/artifacts/round-2/report.md
+        if self._source_is_stdlib_module:
+            self.midend_stats["midend_module_skips"] += 1
+            return ops
         ops = self._coalesce_check_exception_ops(ops)
         ops, structural_rewrites = self._ensure_structural_cfg_validity(
             ops, stage="midend_entry"

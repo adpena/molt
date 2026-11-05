@@ -93,7 +93,10 @@ def profile_midend_function(function: Callable[P, R]) -> Callable[P, R]:
     @wraps(function)
     def measured(*args: P.args, **kwargs: P.kwargs) -> R:
         owner = cast(Any, args[0])
-        if os.environ.get("MOLT_MIDEND_STATS") is None:
+        if (
+            os.environ.get("MOLT_MIDEND_STATS") is None
+            or owner._source_is_stdlib_module
+        ):
             return function(*args, **kwargs)
         previous = owner._midend_memory_profiler
         profiler = MidendMemoryProfiler()
