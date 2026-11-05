@@ -6472,6 +6472,43 @@ def test_cse_retains_local_substitutions_and_future_expression_reuse(
     assert literals[ret.args[0].name] is None
 
 
+def test_cse_preserves_scalar_facts_of_a_dead_available_representative() -> None:
+    class CheckedFacts(SimpleTIRGenerator):
+        def _canonicalize_block_with_state(self, ops, in_state, **kwargs):
+            if any(op.kind == "ADD" for op in ops):
+                # The original producer is dead in value liveness, but is
+                # still the available expression's exact scalar representative.
+                assert in_state["const_int_values"].get("first") == 7
+            return super()._canonicalize_block_with_state(ops, in_state, **kwargs)
+
+    gen = CheckedFacts()
+    first, alias, later, result = (
+        MoltValue(name) for name in ("first", "alias", "later", "result")
+    )
+    ops = [
+        MoltOp("CONST", [7], first),
+        MoltOp("LABEL", [1], MoltValue("none")),
+        MoltOp("CONST", [7], alias),
+        MoltOp("LABEL", [2], MoltValue("none")),
+        MoltOp("CONST", [7], later),
+        MoltOp("ADD", [alias, later], result),
+        MoltOp("ret", [result], MoltValue("none")),
+    ]
+    candidate, _ = gen._run_cse_canonicalization_round(
+        ops,
+        allow_cross_block_const_dedupe=True,
+    )
+    assert gen._verify_definite_assignment_in_ops(candidate) == []
+    literals = {op.result.name: op.args[0] for op in candidate if op.kind == "CONST"}
+    values = dict(literals)
+    for op in candidate:
+        if op.kind == "ADD":
+            values[op.result.name] = values[op.args[0].name] + values[op.args[1].name]
+    ret = next(op for op in candidate if op.kind == "ret")
+    assert values[ret.args[0].name] == 7 + 7
+    assert sum(value == 7 for value in literals.values()) == 1
+
+
 def test_missing_taint_propagates_through_phi_to_call() -> None:
     """A PHI that collapses to a single MISSING-tainted input must be flagged.
 

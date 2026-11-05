@@ -66,6 +66,10 @@ plus one local substitution per defining operation, instead of copying every
 earlier eliminated definition through every later block. Available expressions
 remain a separate fact: a dead representative may eliminate a future repeated
 computation. Their removal cannot be justified by value liveness alone.
+Scalar and type facts propagate for live values, live alias targets and all
+available representatives; dead eliminated aliases do not retain duplicate
+facts in every later block. This projects the existing fact domain without
+dropping expression availability or changing effect invalidation.
 
 Frontend dominance queries use intervals and retained tree storage is linear.
 The CHK construction itself has a quadratic worst case: a chain whose final

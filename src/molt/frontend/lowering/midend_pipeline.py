@@ -199,6 +199,26 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     for name, value in out_state["aliases"].items()
                     if name in live_out_names[block_id]
                 }
+                # Eliminated aliases also left duplicate scalar/type facts in
+                # every later block. Future transfers can consume a fact via
+                # an original live operand, its alias target, or an available
+                # expression representative. Preserve all three, including
+                # representatives dead in the original value graph.
+                needed = (
+                    live_out_names[block_id]
+                    | {value.name for value in out_state["aliases"].values()}
+                    | {value.name for value in out_state["available_values"].values()}
+                )
+                out_state["const_int_values"] = {
+                    name: value
+                    for name, value in out_state["const_int_values"].items()
+                    if name in needed
+                }
+                out_state["value_type_tags"] = {
+                    name: value
+                    for name, value in out_state["value_type_tags"].items()
+                    if name in needed
+                }
                 self._invalidate_canonicalization_state_signature(out_state)
                 if self._canonicalization_state_signature(
                     out_state
