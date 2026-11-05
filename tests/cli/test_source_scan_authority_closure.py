@@ -1787,6 +1787,7 @@ def test_materialized_namespace_package_identity_matches_cpython(
         "importlib/__init__.py",
         "importlib/util.py",
         "importlib/machinery.py",
+        "zipimport.py",
         "_warnings.py",
     ):
         _source(tmp_path / "stdlib" / name, "pass\n")

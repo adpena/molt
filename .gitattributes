@@ -76,6 +76,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-runtime/src/builtins/compatibility_error.rs" merge=binary
 "/runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs" merge=binary
 "/runtime/molt-runtime/src/builtins/functools/public_types_generated.rs" merge=binary
+"/runtime/molt-runtime/src/builtins/types/dataclasses/initializer_spec_generated.rs" merge=binary
 "/runtime/molt-runtime/src/intrinsics/generated.rs" merge=binary
 "/runtime/molt-runtime/src/intrinsics/public_objects_generated.rs" merge=binary
 "/runtime/molt-runtime/src/object/heap_kinds_generated.rs" merge=binary

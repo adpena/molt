@@ -581,6 +581,130 @@ def test_public_stdlib_deferred_demand_graph(
 
 @pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
+    ("use", "required"),
+    [
+        ("api.__dict__", set()),
+        ("getattr(api, '__dict__')", set()),
+        ("api.__dict__['callback']()", {"live_leaf"}),
+        ("api.__dict__.get('callback')()", {"live_leaf"}),
+        ("dict.get(api.__dict__, 'callback')()", {"live_leaf"}),
+        ("api.__dict__.copy()['callback']()", {"live_leaf"}),
+        ("read(api)['callback']()", {"live_leaf"}),
+        ("read(api)", set()),
+    ],
+)
+def test_namespace_acquisition_selects_values_without_calling_the_hook(
+    tmp_path, monkeypatch, use, required
+):
+    import json
+    import sys
+
+    sources = {
+        "entry": "import api\nfrom _intrinsics import require_intrinsic\n"
+        "read = require_intrinsic('molt_dataclasses_init_globals')\n" + use + "\n",
+        "api": "def callback():\n    import live_leaf\n"
+        "def unused():\n    import dead_leaf\n"
+        "def __getattr__(name):\n    import hook_leaf\n    raise AttributeError(name)\n",
+        "live_leaf": "pass\n",
+        "dead_leaf": "pass\n",
+        "hook_leaf": "pass\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys,types\n"
+            "intrinsics=types.ModuleType('_intrinsics')\n"
+            "intrinsics.require_intrinsic=lambda name: lambda owner: getattr(owner, '__dict__')\n"
+            "sys.modules['_intrinsics']=intrinsics\n"
+            "sys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps(sorted(set(sys.modules)&{'live_leaf','dead_leaf','hook_leaf'})))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert set(json.loads(observed.stdout)) == required
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-view",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    for _ in range(2):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            stdlib,
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert required <= result.graph.keys()
+        assert ({"live_leaf", "dead_leaf", "hook_leaf"} - required).isdisjoint(
+            result.graph
+        )
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+def test_namespace_view_survives_a_partial_module_and_late_publication(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    sources = {
+        "entry": "import api\nimport cycle\ncycle.later()\n",
+        "api": "def __getattr__(name):\n    import hook_leaf\n    raise AttributeError(name)\n"
+        "import cycle\ndef callback():\n    import live_leaf\n",
+        "cycle": "import api\nnamespace = api.__dict__\ndef later():\n    namespace['callback']()\n",
+        "live_leaf": "pass\n",
+        "hook_leaf": "pass\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0,sys.argv[1]); import entry; assert 'live_leaf' in sys.modules; assert 'hook_leaf' not in sys.modules",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.returncode == 0
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-cycle",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        tmp_path,
+        set(),
+        full_scan_roots=True,
+    )
+    assert "live_leaf" in result.graph
+    assert "hook_leaf" not in result.graph
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
     ("hook", "use", "required", "excluded"),
     [
         (
@@ -2450,3 +2574,275 @@ def test_full_runtime_owner_promotion_retires_prior_partial_body_jobs(
     assert set(premises[0].opaque_activation_sources) <= {python_node_source_key(run)}
     assert premises[-1].opaque_activation_sources == (python_node_source_key(run),)
     assert state.scan_sources["owner"].namespace_premise.foreign_writes is None
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    ("post", "capture", "stores", "inputs", "invoke", "required", "excluded"),
+    [
+        (
+            "def __post_init__(self, callback): callback()",
+            "()",
+            "()",
+            "(('callback', 1),)",
+            "Point(callback)",
+            {"live_leaf"},
+            {"dead_leaf"},
+        ),
+        (
+            "def __post_init__(self, *callbacks): callbacks[0]()",
+            "()",
+            "()",
+            "(('callback', 1),)",
+            "Point(callback=callback)",
+            {"live_leaf"},
+            {"dead_leaf"},
+        ),
+        (
+            "def __post_init__(self, callback): callback()",
+            "()",
+            "()",
+            "(('callback', 1),)",
+            "Point.__init__.__call__(Point.__new__(Point), callback)",
+            {"live_leaf"},
+            {"dead_leaf"},
+        ),
+        (
+            "pass",
+            "(callback, unused)",
+            "(('value', -1, -1, 0, True),)",
+            "()",
+            "Point()",
+            {"live_leaf"},
+            {"dead_leaf"},
+        ),
+        (
+            "pass",
+            "(unused,)",
+            "(('value', -1, -1, 0, False),)",
+            "()",
+            "Point()",
+            set(),
+            {"live_leaf", "dead_leaf"},
+        ),
+        (
+            "def __post_init__(self, callback): callback()",
+            "()",
+            "()",
+            "(('callback', -1),)",
+            "Point()",
+            {"live_leaf"},
+            {"dead_leaf"},
+        ),
+        (
+            "def __post_init__(self, callback): callback()",
+            "()",
+            "()",
+            "(('callback', 1),)",
+            "Point()",
+            {"live_leaf"},
+            {"dead_leaf"},
+        ),
+        (
+            "def __post_init__(self, callback): callback()",
+            "()",
+            "()",
+            "(('builtin_callback', -1),)",
+            "Point()",
+            {"builtin_leaf"},
+            {"live_leaf", "dead_leaf"},
+        ),
+    ],
+)
+def test_native_initializer_uses_plan_selected_callbacks(
+    tmp_path, monkeypatch, post, capture, stores, inputs, invoke, required, excluded
+):
+    # The public CPython dataclass oracle is independent of the private native
+    # metadata representation. A factory invokes its binding; a stored default
+    # remains a value, and InitVar values flow to positional or variadic consumers.
+    import dataclasses
+
+    observed = []
+    if "True" in stores:
+
+        @dataclasses.dataclass
+        class Oracle:
+            value: object = dataclasses.field(
+                default_factory=lambda: observed.append("live_leaf")
+            )
+
+        Oracle()
+    elif "False" in stores:
+
+        @dataclasses.dataclass
+        class Oracle:
+            value: object = lambda: observed.append("dead_leaf")
+
+        Oracle()
+    elif "builtin_callback" in inputs:
+        namespace = {
+            "__builtins__": {
+                "builtin_callback": lambda: observed.append("builtin_leaf")
+            }
+        }
+        exec("def oracle(): builtin_callback()", namespace)
+        namespace["oracle"]()
+    else:
+        Oracle = dataclasses.make_dataclass(
+            "Oracle",
+            [("callback", dataclasses.InitVar[object])],
+            namespace={"__post_init__": lambda self, *callbacks: callbacks[0]()},
+        )
+        Oracle(lambda: observed.append("live_leaf"))
+    assert set(observed) == required
+
+    import ast
+
+    capture_names = tuple(
+        f"capture{index}"
+        for index, _ in enumerate(ast.parse(capture, mode="eval").body.elts)
+    )
+    parameters = ("self", "callback") if " 1)" in inputs else ("self",)
+    schema = ((), False, post != "pass", False, False)
+    defaults = "(callback,)" if len(parameters) == 2 and invoke == "Point()" else "()"
+    sources = {
+        "entry": "from _intrinsics import require_intrinsic\nimport api, builtin_api\n"
+        "make = require_intrinsic('molt_dataclasses_init')\n"
+        "def callback():\n    import live_leaf\n"
+        "def unused():\n    import dead_leaf\n"
+        "class Point:\n    "
+        + post
+        + "\n"
+        + f"spec = ({parameters!r}, {len(parameters)}, {defaults}, {{}}, {capture_names!r}, "
+        + capture
+        + ", "
+        + stores
+        + ", "
+        + inputs
+        + ", (-1, -1), (-1, -1), {}, api.__dict__, 'entry', builtin_api)\n"
+        + f"Point.__init__ = make(Point, {schema!r}, spec)\n"
+        + invoke
+        + "\n",
+        "api": "def callback():\n    import live_leaf\n",
+        "builtin_api": "def builtin_callback():\n    import builtin_leaf\n",
+        "builtin_leaf": "pass\n",
+        "live_leaf": "pass\n",
+        "dead_leaf": "pass\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "native-plan-callbacks",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    for _ in range(2):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            stdlib,
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert required <= result.graph.keys()
+        assert excluded.isdisjoint(result.graph)
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+def test_namespace_clear_preserves_contained_destructor(tmp_path, monkeypatch):
+    import sys
+
+    sources = {
+        "entry": "import api\napi.__dict__.clear()\n",
+        "api": "from values import Payload\nvalue = Payload()\ndel Payload\n",
+        "values": "class Payload:\n    def __del__(self):\n        import cleanup_leaf\n",
+        "cleanup_leaf": "pass\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import entry; assert 'cleanup_leaf' in sys.modules",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.returncode == 0
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-cleanup",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        tmp_path,
+        set(),
+        full_scan_roots=True,
+    )
+    assert "cleanup_leaf" in result.graph
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "api.__dict__.popitem()[1]()",
+        "key, callback = api.__dict__.popitem(); callback()",
+    ],
+)
+def test_namespace_popitem_keeps_returned_tuple_value(tmp_path, monkeypatch, selection):
+    import sys
+
+    for name, source in {
+        "entry": "import api\n" + selection + "\n",
+        "api": "def callback():\n    import live_leaf\n",
+        "live_leaf": "pass\n",
+    }.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import entry; assert 'live_leaf' in sys.modules",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert observed.returncode == 0
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-popitem",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    for _ in range(2):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            stdlib,
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert "live_leaf" in result.graph

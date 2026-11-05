@@ -39,6 +39,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     ANY_CANONICAL_MODULE_IDENTITY,
     BUILTIN_IDENTITIES,
     BUILTIN_SHAPE_IDENTITIES,
+    BUILTIN_SHAPE_NAMES_BY_IDENTITY,
     CANONICAL_FROM_IMPORT_IDENTITIES,
     CANONICAL_IMPORT_IDENTITIES,
     CANONICAL_MEMBER_IDENTITIES,
@@ -46,6 +47,10 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     CANONICAL_WILDCARD_WRITES,
     INTRINSIC_CALLABLE_IDENTITIES,
     INTRINSIC_TARGET_PROPERTIES,
+    INTRINSIC_ATTRIBUTE_READS,
+    INTRINSIC_NATIVE_INITIALIZERS,
+    PythonNativeInitializer,
+    DataclassInitSpecField,
     IdentityMask,
     MemberMask,
     NO_IDENTITIES,
@@ -72,6 +77,8 @@ from molt.compiler_analysis.python_source_keys import (
 from molt.compiler_analysis.python_binding_facts import (
     PythonBindingFacts,
     PythonSourceCall,
+    PythonNativeInitializerSource,
+    PythonSourceClass,
     PythonSourceParameters,
     PythonBindingIndex,
     PythonBindingTelemetry,
@@ -239,7 +246,8 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 64
+_ANALYSIS_SCHEMA: Final = 65
+_BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -2264,13 +2272,24 @@ def _operand_dispatch_deferred(
     return legacy | sources
 
 
+def _owned_iterable_display(iterable: ast.expr) -> bool:
+    """A list, tuple or set display in a loop or comprehension header.
+
+    The header builds it fresh and holds the only reference, so no body write
+    can change which elements it yields; a write can still change a mutable
+    element's contents, which expression_result_without_mutable_contents
+    expires. Any other iterable may alias what the body writes.
+    """
+    return isinstance(iterable, (ast.List, ast.Tuple, ast.Set))
+
+
 def _result_after_retained_boundary(
     result: StaticExpressionResult, boundary: EffectMask
 ) -> StaticExpressionResult:
     """Drop alias-sensitive facts when a retained value can be exposed."""
 
     return (
-        expression_result_for_publication(result)
+        expression_result_without_mutable_contents(result)
         if boundary & _CALLEE_ELISION_FORBIDDEN_EFFECTS
         else result
     )
@@ -2604,6 +2623,10 @@ class _Analyzer:
         ] = {}
         self.source_elements: dict[PythonSourceKey, PythonSourceElement] = {}
         self.source_calls: dict[PythonSourceKey, PythonSourceCall] = {}
+        self.source_native_initializers: dict[
+            PythonSourceKey, PythonNativeInitializerSource
+        ] = {}
+        self.source_classes: dict[PythonSourceKey, PythonSourceClass] = {}
         self.source_callables: dict[PythonSourceKey, IdentityMask] = {}
         self.source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
         self.source_parameters: dict[PythonSourceKey, PythonSourceParameters] = {}
@@ -3033,6 +3056,17 @@ class _Analyzer:
         assert self.module_scope is not None
         return self.module_scope.slots.get(name)
 
+    def _builtins_mapping_rebindable(self) -> bool:
+        """This module's own code or a named foreign writer binds ``__builtins__``.
+
+        An open premise (no foreign-writer list) already invalidates builtin
+        reads after every callback; it does not change pristine entry reads.
+        """
+        foreign = self.policy.foreign_namespace_writes
+        return self._module_slot("__builtins__") is not None or (
+            foreign is not None and "__builtins__" in foreign
+        )
+
     def _module_metadata_borrowing_snapshot(
         self, state_id: int, scope: _Scope
     ) -> PythonModuleMetadataProof:
@@ -3299,6 +3333,12 @@ class _Analyzer:
                 if declaration is not None
                 else OTHER_IDENTITY | UNBOUND_IDENTITY
             )
+            if self._builtins_mapping_rebindable():
+                # A frame's builtins come from globals["__builtins__"] when the
+                # function or module frame is created (CPython
+                # _PyEval_BuiltinsFromGlobals). A writer of that key selects
+                # another mapping, so the canonical member proves nothing.
+                fallback |= OTHER_IDENTITY
             static_value, result = _join_binding_payloads(
                 (
                     (value, static_value, result),
@@ -3445,6 +3485,7 @@ class _Analyzer:
         selected: StaticExpressionResult,
         *,
         protocol: PythonElementProtocol,
+        key: str | None = None,
     ) -> StaticExpressionResult:
         # Exact tuple/list projections already carry their selected element.
         # Unknown source-call values need a typed contents projection rather
@@ -3464,6 +3505,7 @@ class _Analyzer:
             protocol,
             owner.source_origins
             | (previous.origins if previous is not None else frozenset()),
+            key if previous is None or previous.key == key else None,
         )
         return replace(selected, source_origins=frozenset({source}))
 
@@ -3998,6 +4040,53 @@ class _Analyzer:
         if isinstance(node.func, ast.Attribute):
             receiver_node = node.func.value
             receiver_result = self._known_expression_result(receiver_node)
+            if (
+                receiver_result.identities == int(PythonIdentity.BUILTIN_DICT)
+                and node.func.attr == "get"
+                and not node.keywords
+                and len(node.args) in {2, 3}
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            ):
+                # The evaluated immutable builtin descriptor bypasses subclass
+                # overrides. On a normal return its explicit receiver is a dict.
+                owner = argument_results[0]
+                normalized = ast.Call(func=node.func, args=node.args[1:], keywords=[])
+                shape = builtin_method_call_shape(
+                    replace(owner, kind="dict"), "get", normalized, argument_results[1:]
+                )
+                assert shape is not None
+                selected = python_source_projection_key(
+                    node, PythonSourceProjection.CALL_MAPPING_VALUE
+                )
+                key = (
+                    argument_results[1].value
+                    if argument_results[1].value_known
+                    and type(argument_results[1].value) is str
+                    else None
+                )
+                prior = self.source_elements.get(selected)
+                self.source_elements[selected] = PythonSourceElement(
+                    selected,
+                    PythonElementProtocol.SUBSCRIPT,
+                    owner.source_origins | (prior.origins if prior else frozenset()),
+                    key if prior is None or prior.key == key else None,
+                )
+                value = replace(
+                    shape.result,
+                    source_origins=shape.result.source_origins | {selected},
+                )
+                if len(argument_results) == 3:
+                    value = join_static_expression_results((value, argument_results[2]))
+                return _CallSemantics(
+                    value.identities,
+                    shape.invocation_effects,
+                    self._apply_effects(state_id, shape.invocation_effects),
+                    value,
+                    shape.specialization_valid,
+                    shape.argument_effects,
+                    argument_protocol_indices=frozenset({0, 1}),
+                    source_result_projected=True,
+                )
             receiver_boundary = (
                 WRITES_OBJECT_STATE
                 | EXECUTES_ARBITRARY_PYTHON
@@ -4123,6 +4212,177 @@ class _Analyzer:
             )
             result = int(PythonIdentity.INERT_VALUE)
             effects |= ALLOCATES | RAISES
+        elif (
+            (attribute_read := INTRINSIC_ATTRIBUTE_READS.get(callee)) is not None
+            and not node.keywords
+            and len(node.args) == len(argument_results) == 1
+            and not isinstance(node.args[0], ast.Starred)
+        ):
+            owner = argument_results[attribute_read[0]]
+            selected = python_source_projection_key(
+                node, PythonSourceProjection.CALL_ATTRIBUTE
+            )
+            previous = self.source_attributes.get(selected)
+            self.source_attributes[selected] = (
+                attribute_read[1],
+                owner.source_origins | (previous[1] if previous else frozenset()),
+            )
+            source_result_projected = True
+            result_fact = StaticExpressionResult(source_origins=frozenset({selected}))
+            effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
+            argument_protocol_indices = frozenset()
+            selected_deferred = self._attribute_dispatch(owner, effects)
+        elif (
+            INTRINSIC_NATIVE_INITIALIZERS.get(callee)
+            is PythonNativeInitializer.DATACLASS
+            and not node.keywords
+            and len(node.args) == len(argument_results) == 3
+            and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            and argument_results[2].kind == "tuple"
+            and (items := argument_results[2].items) is not None
+            and len(items) == len(DataclassInitSpecField)
+            and not any(item.expanded for item in items)
+        ):
+            # Construction retains function metadata. The returned plan owns
+            # invocation callbacks; an environment dictionary is not a callback.
+            selected = python_source_projection_key(
+                node, PythonSourceProjection.CALL_NATIVE_INITIALIZER
+            )
+            builtins = python_source_projection_key(
+                node, PythonSourceProjection.CALL_NATIVE_BUILTINS
+            )
+            prior_builtins = self.source_attributes.get(builtins)
+            self.source_attributes[builtins] = (
+                "__dict__",
+                items[DataclassInitSpecField.BUILTINS].result.source_origins
+                | (prior_builtins[1] if prior_builtins else frozenset()),
+            )
+            attributes = (
+                (
+                    "__builtins__",
+                    frozenset({builtins})
+                    | items[DataclassInitSpecField.BUILTINS].result.source_origins,
+                ),
+                (
+                    "__globals__",
+                    items[DataclassInitSpecField.GLOBALS].result.source_origins,
+                ),
+                (
+                    "__defaults__",
+                    items[
+                        DataclassInitSpecField.DEFAULTS
+                    ].result.exposed_source_origins,
+                ),
+                (
+                    "__kwdefaults__",
+                    items[
+                        DataclassInitSpecField.KWDEFAULTS
+                    ].result.exposed_source_origins,
+                ),
+                (
+                    "__annotations__",
+                    items[
+                        DataclassInitSpecField.ANNOTATIONS
+                    ].result.exposed_source_origins,
+                ),
+                (
+                    "__closure__",
+                    items[
+                        DataclassInitSpecField.CAPTURES
+                    ].result.exposed_source_origins,
+                ),
+            )
+
+            def tuple_values(result):
+                if (
+                    result.kind != "tuple"
+                    or result.items is None
+                    or any(item.expanded for item in result.items)
+                ):
+                    return None
+                return tuple(item.result for item in result.items)
+
+            def literal(result, kind):
+                return (
+                    result.value if result.kind == kind and result.value_known else None
+                )
+
+            params = tuple_values(items[DataclassInitSpecField.PARAMETERS].result)
+            captures = tuple_values(items[DataclassInitSpecField.CAPTURES].result)
+            stores = tuple_values(items[DataclassInitSpecField.STORES].result)
+            post = tuple_values(items[DataclassInitSpecField.POST_INIT_INPUTS].result)
+            store_rows = (
+                None if stores is None else tuple(tuple_values(row) for row in stores)
+            )
+            post_rows = (
+                None if post is None else tuple(tuple_values(row) for row in post)
+            )
+            projection = PythonNativeInitializerSource(
+                selected,
+                argument_results[0].source_origins,
+                items[DataclassInitSpecField.CAPTURES].result.exposed_source_origins,
+                attributes,
+                tuple(str(value.value) for value in params)
+                if params is not None
+                and all(value.kind == "str" and value.value_known for value in params)
+                else None,
+                tuple(
+                    (value.source_origins, value.exposed_source_origins)
+                    for value in captures
+                )
+                if captures is not None
+                else None,
+                tuple(
+                    (
+                        literal(row[0], "str"),
+                        literal(row[1], "int"),
+                        literal(row[2], "int"),
+                        literal(row[3], "int"),
+                        literal(row[4], "bool"),
+                    )
+                    for row in store_rows
+                )
+                if store_rows is not None
+                and all(row is not None and len(row) == 5 for row in store_rows)
+                else None,
+                tuple(
+                    (literal(row[0], "str"), literal(row[1], "int"))
+                    for row in post_rows
+                )
+                if post_rows is not None
+                and all(row is not None and len(row) == 2 for row in post_rows)
+                else None,
+            )
+            previous = self.source_native_initializers.get(selected)
+            if previous is not None:
+                projection = projection._replace(
+                    receiver=projection.receiver | previous.receiver,
+                    captures=projection.captures | previous.captures,
+                    attributes=tuple(
+                        (name, origins | prior[1])
+                        for (name, origins), prior in zip(
+                            attributes, previous.attributes, strict=True
+                        )
+                    ),
+                    parameters=projection.parameters
+                    if projection.parameters == previous.parameters
+                    else None,
+                    capture_values=projection.capture_values
+                    if projection.capture_values == previous.capture_values
+                    else None,
+                    stores=projection.stores
+                    if projection.stores == previous.stores
+                    else None,
+                    post_inputs=projection.post_inputs
+                    if projection.post_inputs == previous.post_inputs
+                    else None,
+                )
+            self.source_native_initializers[selected] = projection
+            source_result_projected = True
+            result_fact = StaticExpressionResult(source_origins=frozenset({selected}))
+            # Preserve construction/factory, failure and retirement effects.
+            effects |= UNKNOWN_EFFECTS
+            argument_protocol_indices = frozenset()
         elif builtin_name is not None:
             shape = builtin_call_shape(builtin_name, node, argument_results)
             result_fact = shape.result
@@ -4264,8 +4524,9 @@ class _Analyzer:
                 member,
                 owner.source_origins | (previous[1] if previous else frozenset()),
             )
-            argument_protocol_indices = frozenset({0, 1})
+            argument_protocol_indices = frozenset()
             effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
+            selected_deferred = self._attribute_dispatch(owner, effects)
             if callee == int(PythonIdentity.BUILTIN_GETATTR):
                 result = self._member_value(state_id, owner.identities, member, owner)
                 result_fact = StaticExpressionResult(
@@ -4284,7 +4545,7 @@ class _Analyzer:
                         state_id, owner.identities, member
                     )
                     result_fact = StaticExpressionResult.scalar(None)
-                    selected_deferred = frozenset(
+                    selected_deferred |= frozenset(
                         {DeferredExecution(selected, "release")}
                     ) | frozenset(
                         DeferredExecution(source, "mutate")
@@ -4292,7 +4553,12 @@ class _Analyzer:
                     )
                 else:
                     result_fact = StaticExpressionResult(kind="bool")
-                    selected_deferred = frozenset({DeferredExecution(selected, "read")})
+                    selected_deferred |= frozenset(
+                        {
+                            DeferredExecution(selected, "read"),
+                            DeferredExecution(selected, "release"),
+                        }
+                    )
         elif exact and callee == int(PythonIdentity.BUILTIN_SETATTR):
             effects |= (
                 WRITES_OBJECT_STATE
@@ -4342,6 +4608,21 @@ class _Analyzer:
             argument_escape_indices=argument_escape_indices,
             deferred_execution=selected_deferred,
             source_result_projected=source_result_projected,
+        )
+
+    @staticmethod
+    def _attribute_dispatch(
+        owner: StaticExpressionResult, effects: EffectMask
+    ) -> frozenset[DeferredExecution]:
+        # Source owners dispatch lookup hooks. Legacy unknown-value provenance
+        # keeps its conservative transfer; it is not proof of a module object.
+        legacy = replace(
+            owner, source_origins=frozenset(), exposed_source_origins=frozenset()
+        )
+        return _operand_dispatch_deferred(
+            effects, legacy, reaches_contents=True
+        ) | frozenset(
+            DeferredExecution(source, "descriptor") for source in owner.source_origins
         )
 
     def _expression_identity(self, node: ast.AST) -> IdentityMask:
@@ -4544,6 +4825,9 @@ class _Analyzer:
                         assignment_target.owner_result,
                         shape.result,
                         protocol=PythonElementProtocol.SUBSCRIPT,
+                        key=assignment_target.static_index
+                        if type(assignment_target.static_index) is str
+                        else None,
                     )
                 )
                 if assignment_target.is_exact_globals_dict:
@@ -4777,6 +5061,25 @@ class _Analyzer:
                         else NO_IDENTITIES
                     ),
                     source_arguments,
+                    tuple(
+                        result.value
+                        if result.value_known and type(result.value) is str
+                        else None
+                        for result in argument_results
+                    )
+                    if previous_call is None
+                    else tuple(
+                        result.value
+                        if result.value_known
+                        and type(result.value) is str
+                        and result.value == prior
+                        else None
+                        for result, prior in zip(
+                            argument_results,
+                            previous_call.argument_strings,
+                            strict=True,
+                        )
+                    ),
                 )
                 result_override = replace(
                     result_override, source_origins=frozenset({call_source})
@@ -5024,6 +5327,23 @@ class _Analyzer:
             effects = evaluation_effects | invocation_effects | cleanup_effects
             key = self._node_key(node)
             previous_call = self.calls.get(key)
+            builtin_specializations = NO_IDENTITIES
+            candidates = callee_result.identities & _BUILTIN_SHAPE_IDENTITY_MASK
+            while candidates:
+                identity = candidates & -candidates
+                candidates ^= identity
+                if (
+                    call_semantics.specialization_valid
+                    if callee_result.identities == identity
+                    else builtin_call_shape(
+                        BUILTIN_SHAPE_NAMES_BY_IDENTITY[identity],
+                        node,
+                        argument_results,
+                    ).specialization_valid
+                ):
+                    builtin_specializations |= identity
+            if previous_call is not None:
+                builtin_specializations &= previous_call.builtin_specializations
             after = self.states.get(state_id)
             self.calls[key] = PythonCallSiteFact(
                 key,
@@ -5081,6 +5401,7 @@ class _Analyzer:
                 else metadata_at_invocation.intersect(
                     previous_call.module_metadata_at_invocation
                 ),
+                builtin_specializations=builtin_specializations,
             )
         elif isinstance(node, ast.NamedExpr):
             if self._target_may_write_import_metadata(node.target):
@@ -5523,7 +5844,7 @@ class _Analyzer:
             if publishes:
                 for retained_index in range(publication_cursor, len(retained)):
                     index, expression, result = retained[retained_index]
-                    result = expression_result_for_publication(result)
+                    result = expression_result_without_mutable_contents(result)
                     retained[retained_index] = (index, expression, result)
                     evaluated[index] = result
                     crossed_boundaries.add(index)
@@ -5841,12 +6162,15 @@ class _Analyzer:
                 if iteration.empty:
                     return current, header_flow.without_normal()
                 strings, element = iteration.element_strings, iteration.element_result
-                if self.states.get(current).taint_epoch != entry_epoch:
-                    if iteration.mutable:
+                tainted = self.states.get(current).taint_epoch != entry_epoch
+                if tainted or retained_boundary & WRITES_OBJECT_STATE:
+                    if iteration.mutable and (
+                        tainted or not _owned_iterable_display(generator.iter)
+                    ):
                         strings = None
                         element = expression_result_without_value_facts(element)
                     else:
-                        element = expression_result_for_publication(element)
+                        element = expression_result_without_mutable_contents(element)
                 current, assigned = self.assign_target(
                     generator.target,
                     element.identities,
@@ -7324,6 +7648,43 @@ class _Analyzer:
                     if self.states.binding(class_state, slot) != UNBOUND_IDENTITY
                 }
                 owner_key = python_node_source_key(node)
+                plain_attributes = tuple(
+                    sorted(
+                        name
+                        for name, value in namespace.items()
+                        if value.kind
+                        in {
+                            "none",
+                            "bool",
+                            "int",
+                            "float",
+                            "complex",
+                            "str",
+                            "bytes",
+                            "tuple",
+                            "list",
+                            "dict",
+                            "set",
+                            "frozenset",
+                        }
+                        or value.identities
+                        in {
+                            int(PythonIdentity.USER_FUNCTION),
+                            int(PythonIdentity.RETAINED_CALLABLE_WRAPPER),
+                        }
+                    )
+                )
+                prior_class = self.source_classes.get(owner_key)
+                self.source_classes[owner_key] = PythonSourceClass(
+                    owner_key,
+                    plain_preparation
+                    and (prior_class is None or prior_class.plain_metaclass),
+                    tuple(
+                        name
+                        for name in plain_attributes
+                        if prior_class is None or name in prior_class.plain_attributes
+                    ),
+                )
                 source_namespace = self.source_namespaces.setdefault(owner_key, {})
                 for name, result in namespace.items():
                     source_namespace[name] = (
@@ -7622,14 +7983,17 @@ class _Analyzer:
                 assert iteration is not None
                 strings = iteration.element_strings
                 element_result = iteration.element_result
-                if self.states.get(body_entry).taint_epoch != entry_epoch:
-                    if iteration.mutable:
+                tainted = self.states.get(body_entry).taint_epoch != entry_epoch
+                if tainted or retained_boundary & WRITES_OBJECT_STATE:
+                    if iteration.mutable and (
+                        tainted or not _owned_iterable_display(node.iter)
+                    ):
                         strings = None
                         element_result = expression_result_without_value_facts(
                             element_result
                         )
                     else:
-                        element_result = expression_result_for_publication(
+                        element_result = expression_result_without_mutable_contents(
                             element_result
                         )
                 body_entry, target_effects = self.assign_target(
@@ -8199,9 +8563,11 @@ class _Analyzer:
         return self.states.set_bindings(state_id, updates)
 
     def _project_builtin_guard_bits(self) -> Iterator[PythonExpressionFact]:
-        """Attach a guard bit to each builtin read the module never binds.
+        """Attach a guard bit to each unproved builtin read the module never binds.
 
-        A function's read of `len` is a live lookup. When no module statement,
+        A function's read of `len` is a live lookup. When the closed writer
+        premise proves the read selects the builtin, it needs no guard: no code
+        in the graph can rebind it. Otherwise, when no module statement,
         `global` declaration or literal reflective write binds `len`, the
         compiler may specialize the read behind a runtime binding guard; the
         guard, not this projection, proves the binding at run time. A name the
@@ -8210,7 +8576,11 @@ class _Analyzer:
         assert self.module_scope is not None
         for key, fact in self.expressions.items():
             name = self._builtin_guard_reads.get(key)
-            if name is None or self._module_slot(name) is not None:
+            if (
+                name is None
+                or self._module_slot(name) is not None
+                or fact.exact_builtin_name() == name
+            ):
                 yield fact
             else:
                 yield replace(fact, builtin_guard_bit=BUILTIN_BINDING_GUARD_BITS[name])
@@ -8385,6 +8755,12 @@ class _Analyzer:
                 value for _owner, value in sorted(self.source_elements.items())
             ),
             source_calls=tuple(value for _, value in sorted(self.source_calls.items())),
+            source_native_initializers=tuple(
+                value for _, value in sorted(self.source_native_initializers.items())
+            ),
+            source_classes=tuple(
+                value for _, value in sorted(self.source_classes.items())
+            ),
             source_callables=tuple(sorted(self.source_callables.items())),
             source_parameters=tuple(
                 value for _, value in sorted(self.source_parameters.items())

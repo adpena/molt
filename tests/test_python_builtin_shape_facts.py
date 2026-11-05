@@ -27,6 +27,7 @@ from molt.compiler_analysis.python_builtin_shapes import (
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
     EXECUTES_ARBITRARY_PYTHON,
+    INVOKES_COMPARISON_CALLBACK,
     INVOKES_ITERATION_CALLBACK,
     RAISES,
     RELEASES_REFERENCE,
@@ -752,7 +753,8 @@ def test_bytearray_publication_retains_recursive_release_safety() -> None:
     )
     published_tuple = expression_result_for_publication(containing_tuple)
     assert published_tuple.kind == "tuple"
-    assert published_tuple.items is None
+    assert published_tuple.items is not None
+    assert published_tuple.items[0].result == published
     assert not published_tuple.release_may_call
     assert expression_result_for_publication(published_tuple) is published_tuple
 
@@ -774,6 +776,73 @@ def test_publication_safe_tuple_alias_chain_retains_release_proof() -> None:
         fact = index.statement_fact(replacement)
         assert fact is not None
         assert not fact.effects & (RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK)
+
+
+@pytest.mark.parametrize("container", ["[]", "{}", "set()"])
+def test_nested_published_mutable_leaf_release_has_cpython_finalizer_witness(
+    container: str,
+) -> None:
+    source = (
+        "def run(callback):\n"
+        f"    value = (({container},),)\n"
+        "    callback(value[0][0])\n"
+        "    alias = value[0]\n"
+        "    value = None\n"
+        "    alias = None\n"
+    )
+    events: list[str] = []
+
+    class Finalizer:
+        def __del__(self) -> None:
+            events.append("released")
+
+    def fill(leaf):
+        if isinstance(leaf, list):
+            leaf.append(Finalizer())
+        elif isinstance(leaf, dict):
+            leaf["payload"] = Finalizer()
+        else:
+            leaf.add(Finalizer())
+
+    namespace = {}
+    exec(compile(source, "<nested-release-oracle>", "exec"), namespace)
+    namespace["run"](fill)
+    assert events == ["released"]
+
+    tree = ast.parse(source)
+    replacement = tree.body[0].body[-1]
+    fact = analyze_python_source_bindings(source).statement_fact(replacement)
+    assert fact is not None
+    assert fact.effects & (RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK) == (
+        RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+    )
+
+
+def test_frozenset_member_release_has_cpython_finalizer_witness() -> None:
+    source = (
+        "def run(make):\n"
+        "    value = (frozenset((make(),)),)\n"
+        "    alias = value[0]\n"
+        "    value = None\n"
+        "    alias = None\n"
+    )
+    events: list[str] = []
+
+    class Finalizer:
+        def __del__(self) -> None:
+            events.append("released")
+
+    namespace = {}
+    exec(compile(source, "<frozenset-release-oracle>", "exec"), namespace)
+    namespace["run"](Finalizer)
+    assert events == ["released"]
+
+    tree = ast.parse(source)
+    fact = analyze_python_source_bindings(source).statement_fact(tree.body[0].body[-1])
+    assert fact is not None
+    assert fact.effects & (RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK) == (
+        RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+    )
 
 
 def test_value_selectors_transport_publication_release_proof() -> None:
@@ -1026,9 +1095,15 @@ def test_unstable_nested_immutable_publication_widens_release_custody() -> None:
 
     assert published.kind == "tuple"
     assert published.truth is True
-    assert published.items is None
+    assert published.items is not None
+    child = published.items[0].result
+    assert child.kind == "list"
+    assert child.items is None and child.length is None and child.truth is None
+    assert not child.fresh_container
+    assert child.release_may_call
     assert published.length == 1
     assert published.release_may_call
+    assert expression_result_for_publication(published) is published
 
 
 def test_result_joins_preserve_common_kind_without_cross_kind_invention() -> None:
@@ -1116,8 +1191,18 @@ def test_deep_shared_mutable_leaf_is_cached_as_publication_unstable() -> None:
     published = expression_result_for_publication(result)
 
     assert published.kind == "tuple"
-    assert published.items is None
     assert published.release_may_call
+    current = published
+    for _ in range(1_500):
+        assert current.items is not None and len(current.items) == 2
+        assert current.items[0].result is current.items[1].result
+        assert current.release_may_call
+        current = current.items[0].result
+    assert current.items is not None and len(current.items) == 1
+    leaf = current.items[0].result
+    assert leaf.kind == "list" and leaf.items is None
+    assert leaf.release_may_call and not leaf.fresh_container
+    assert expression_result_for_publication(published) is published
 
 
 def test_result_equality_checks_children_after_cached_hash_collisions() -> None:
@@ -2013,6 +2098,118 @@ def test_comprehension_transports_iteration_target_and_result_element() -> None:
     assert index.expression_result(assignment.value).element_result is not None
     assert index.expression_result(assignment.value).element_result.kind == "int"
     assert result_iteration.element_result.kind == "int"
+
+
+@pytest.mark.parametrize("comprehension", [False, True])
+def test_immutable_iteration_cannot_restore_mutable_leaf_release_safety(
+    comprehension: bool,
+) -> None:
+    source = "def exercise(fill):\n    leaf = [0]\n" + (
+        "    return [(child.pop(), fill(leaf)) for child in (leaf, leaf)]\n"
+        if comprehension
+        else "    for child in (leaf, leaf):\n"
+        "        child.pop()\n"
+        "        fill(leaf)\n"
+        "        del child\n"
+    )
+    events: list[str] = []
+
+    class Finalizer:
+        def __del__(self) -> None:
+            events.append("released")
+
+    def fill(leaf):
+        events.append("fill")
+        leaf.append(Finalizer())
+
+    namespace = {}
+    exec(compile(source, "<iteration-release-oracle>", "exec"), namespace)
+    result = namespace["exercise"](fill)
+    assert (result is not None) is comprehension
+    assert events == (
+        ["fill", "fill", "released"]
+        if comprehension
+        else ["fill", "released", "fill", "released"]
+    )
+    result = None
+    assert events.count("released") == 2
+
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    pop = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "pop"
+    )
+    assert index.expression_result(pop).release_may_call
+    if not comprehension:
+        statement = tree.body[0].body[1].body[0]
+        fact = index.statement_fact(statement)
+        assert fact is not None
+        assert fact.effects & (RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK) == (
+            RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+        )
+
+
+@pytest.mark.parametrize("comprehension", [False, True])
+def test_immutable_iteration_expires_descendants_after_direct_writes(
+    comprehension: bool,
+) -> None:
+    source = "leaf = [0]\n" + (
+        "seen = [(item, leaf.clear(), leaf.append('changed'))[0] "
+        "for (item,) in (leaf, leaf)]\n"
+        if comprehension
+        else "for (item,) in (leaf, leaf):\n    seen = item\n    leaf[0] = 'changed'\n"
+    )
+    namespace = {}
+    exec(compile(source, "<iteration-write-oracle>", "exec"), namespace)
+    assert namespace["seen"] == ([0, "changed"] if comprehension else "changed")
+
+    tree = ast.parse(source)
+    selected = tree.body[1].value.elt if comprehension else tree.body[1].body[0].value
+    result = analyze_python_source_bindings(source).expression_result(selected)
+    assert not result.value_known
+    assert result.kind not in {"int", "str"}
+
+
+def test_later_argument_expires_retained_mapping_key_callback_proof() -> None:
+    source = "result = dict.get(((mapping := {'x': 0}),)[0], (fill(mapping), 'x')[1])\n"
+    events: list[str] = []
+
+    class Key:
+        def __hash__(self) -> int:
+            return hash("x")
+
+        def __eq__(self, other) -> bool:
+            events.append("comparison")
+            return False
+
+    def fill(mapping):
+        mapping.clear()
+        mapping[Key()] = 0
+
+    namespace = {"fill": fill}
+    exec(compile(source, "<retained-mapping-oracle>", "exec"), namespace)
+    assert namespace["result"] is None
+    assert "comparison" in events
+
+    tree = ast.parse(source)
+    call = tree.body[0].value
+    fact = analyze_python_source_bindings(
+        source,
+        # The oracle callback mutates only its argument. Allocate that argument
+        # after callee capture so descriptor acquisition cannot mask this defect.
+        policy=PythonBindingPolicy(
+            foreign_namespace_writes=(), callback_member_writes=0
+        ),
+    ).call_fact(call)
+    assert fact is not None
+    # Aggregate effects already include fill; only the invocation distinguishes
+    # a stale scalar-key proof from the actual colliding-key protocol.
+    assert fact.invocation_effects & EXECUTES_ARBITRARY_PYTHON
+    assert fact.invocation_effects & INVOKES_COMPARISON_CALLBACK
 
 
 @pytest.mark.parametrize(

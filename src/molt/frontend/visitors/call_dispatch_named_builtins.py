@@ -64,11 +64,11 @@ class CallNamedBuiltinDispatchMixin(
         fact = index.call_fact(node) if index is not None else None
         name = fact.exact_builtin_name() if fact is not None else None
         elision_safe = fact is not None and fact.callee_elision_safe
-        if self._builtin_guard_covers(node.func):
-            # The enclosing guard proved the binding where Python loads it, and
-            # a builtin callable's lifetime is unobservable (HF-79).
-            assert isinstance(node.func, ast.Name)
-            name = node.func.id if node.func.id in BUILTIN_SHAPE_NAMES else None
+        if self._builtin_read_replaces_guard(node.func) is not None:
+            # A closed-world proof or the enclosing guard proved the binding
+            # where Python loads it, and a builtin callable's lifetime is
+            # unobservable (HF-79). The call fact proves the argument shape.
+            name = self._proven_shape_builtin_call(node)
             elision_safe = True
         if name is None and not (
             isinstance(node.func, ast.Name) and node.func.id in BUILTIN_SHAPE_NAMES
@@ -228,6 +228,7 @@ class CallNamedBuiltinDispatchMixin(
             return self._emit_dynamic_call(node, callee)
         if (
             func_id in {"pow", "round"}
+            or self._named_builtin_unproved(node, func_id)
             or any(isinstance(arg, ast.Starred) for arg in node.args)
             or any(keyword.arg is None for keyword in node.keywords)
         ):
