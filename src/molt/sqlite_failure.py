@@ -1,8 +1,9 @@
 """The one classification of SQLite failures that Molt's stores act on.
 
 SQLite reports an extended result code; its low eight bits are the primary
-category. Each store keeps its own policy for each class, but every store reads
-the class here and never matches message text.
+category. The file digest cache, source-record maintenance and the proof queue
+read the class here, never message text, and each keeps its own policy per
+class.
 """
 
 from __future__ import annotations

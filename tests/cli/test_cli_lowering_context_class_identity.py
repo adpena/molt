@@ -175,3 +175,18 @@ def test_dataclass_initializer_projection_round_trips_through_the_cache_codec() 
     hydrated = _round_trip(classes)
     assert hydrated[record_id]["dataclass_init_projection"] == projection
     assert _digest(hydrated) == fresh
+
+
+def test_a_malformed_dataclass_projection_payload_is_refused() -> None:
+    """A bad record must not decode into a plain dict; the lowering read path turns
+    the ValueError into a cache miss."""
+    import pytest
+
+    for schema in (
+        ["name", True, False, False, 3],
+        ["name", True, False, False],
+        [1, True, False, False, 0],
+        "name",
+    ):
+        with pytest.raises(ValueError, match="malformed dataclass initializer field"):
+            MC._decode_cached_json_value({"__dataclass_init_field__": schema})

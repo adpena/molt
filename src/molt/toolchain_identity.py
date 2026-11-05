@@ -848,14 +848,20 @@ class FileDigestCache:
         self._recorded: dict[str, tuple[StatToken, str, int] | None] = {}
         self._pending: dict[str, tuple[StatToken, str]] = {}
         # Set when the shared store reports contention (SqliteFailure.CONTENTION:
-        # SQLITE_BUSY past the timeout, SQLITE_PROTOCOL from WAL-index races).
+        # SQLITE_BUSY past the timeout, SQLITE_PROTOCOL from WAL-index races) or
+        # a stale snapshot when a flush begins its write.
         # The store only saves rehashing: every miss is hashed, so identities do
         # not change, and this process stops adding load to a contended store.
         # Every other SQLite failure, a statement defect included, stays loud.
         self._unavailable = False
 
     def _contended(self, error: sqlite3.OperationalError) -> None:
-        if classify_sqlite_failure(error) is not SqliteFailure.CONTENTION:
+        # A stale snapshot is cured by a new transaction, and this cache never
+        # retries one, so it is a miss here exactly as contention is.
+        if classify_sqlite_failure(error) not in (
+            SqliteFailure.CONTENTION,
+            SqliteFailure.STALE_SNAPSHOT,
+        ):
             raise error
         self._unavailable = True
         print(

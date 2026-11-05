@@ -96,3 +96,23 @@ def test_a_real_busy_writer_is_contention(tmp_path: Path) -> None:
         waiter.close()
         holder.execute("ROLLBACK")
         holder.close()
+
+
+def test_source_record_maintenance_treats_contention_and_stale_snapshots_as_busy() -> (
+    None
+):
+    from molt.cli import source_record_store as records
+
+    for code in (
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_PROTOCOL,
+        sqlite3.SQLITE_BUSY_SNAPSHOT,
+    ):
+        refused = records._maintenance_error(
+            _error(sqlite3.OperationalError, "contended", code)
+        )
+        assert isinstance(refused, records.SourceRecordBusy), code
+    other = records._maintenance_error(
+        _error(sqlite3.OperationalError, "no such column: x", sqlite3.SQLITE_ERROR)
+    )
+    assert type(other) is records.SourceRecordUnavailable
