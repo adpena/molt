@@ -525,7 +525,10 @@ Process exit may retain its caller's ordinary lease after closing Ready admissio
 publishing Finalizing, it rebinds that retained lease to the finalizing owner before any cleanup
 callback; callers without a lease acquire the ordinary shutdown-drain binding instead.
 Split-WASM admission compares the application's required schema with the runtime's offered schema
-before any application initializer executes. Preserve `pending_work_ptr` and its Arc lifetime;
+before any application initializer executes. Function admission uses the split-runtime ABI
+signature authority for physical exports, including the leading attached context and the distinct
+public C prototypes; direct inspection and cached artifact facts share that decision.
+Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
 The runtime-state binding publishes that word's address together with the resolved state for
 every lease, drain, retained worker and runtime switch; terminal unbinding clears both borrows.

@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from molt._wasm_abi_generated import runtime_execution_abi
 from molt.capability_manifest import CapabilityManifest
 from molt.cli.python_source_closure import LocalPythonSourceClosure
 from molt.cli.runtime_identity_schema import (
@@ -90,6 +91,13 @@ from tests.runtime_build_identity_helper import (
     runtime_cargo_plan,
     native_runtime_staticlib_identity,
 )
+
+
+def _physical(logical: str) -> str:
+    abi = runtime_execution_abi(logical)
+    assert abi is not None, logical
+    return abi.physical_symbol
+
 
 _COMMON = dict(
     cargo_profile="release",
@@ -389,7 +397,9 @@ def test_codegen_pair_retains_public_abi_without_enabling_unrequested_domains(
         reloc=True,
         **common,
     )
-    assert "link-arg=--export-if-defined=molt_add" in reloc.runtime_exports
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_add')}" in reloc.runtime_exports
+    )
     assert "link-arg=--export-if-defined=PyTuple_New" in reloc.runtime_exports
     assert reloc.runtime_exports == shared.runtime_exports
     assert "stdlib_crypto" not in reloc.fingerprint_features
@@ -902,7 +912,7 @@ def test_native_plan_is_the_pre_staging_runtime_export_authority(
     ]
     for spec in specs:
         assert "stdlib_crypto" in spec.fingerprint_features
-        for symbol in plan.runtime_export_symbols():
+        for symbol in {"PyTuple_New", "PyExc_TypeError", _physical("molt_hash_new")}:
             assert f"link-arg=--export-if-defined={symbol}" in spec.runtime_exports
     assert specs[0].fingerprint_features == specs[1].fingerprint_features
 
@@ -1027,7 +1037,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert linked and linked[0][0] == staticlib
-    assert "--export-if-defined=molt_typing_get_origin" in linked[0][1]
+    assert f"--export-if-defined={_physical('molt_typing_get_origin')}" in linked[0][1]
 
 
 def test_relocation_root_feature_closure_reports_one_cargo_compile(
@@ -2335,7 +2345,8 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
     prefix = WASM_RESERVED_RUNTIME_CALLABLE_BASE + 2 * len(
         WASM_RESERVED_RUNTIME_CALLABLES
     )
-    signature = b"\x01\x60\x02\x7e\x7e\x01\x7e"
+    # Physical add takes the attached context and both boxed operands.
+    signature = b"\x01\x60\x03\x7e\x7e\x7e\x01\x7e"
     code = b"\x01\x04\x00\x42\x00\x0b"
     shared.write_bytes(
         _build_wasm_sections(
@@ -2343,7 +2354,7 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
                 (1, signature),
                 (2, imports),
                 (3, b"\x01\x00"),
-                (7, b"\x01" + _wasm_string("molt_add") + b"\x00\x00"),
+                (7, b"\x01" + _wasm_string(_physical("molt_add")) + b"\x00\x00"),
                 (9, b"\x01\x00\x41\x01\x0b" + _wasm_u32(prefix) + bytes(prefix)),
                 (10, code),
             ]
@@ -2366,7 +2377,7 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
         b"\x01\x00"
         + _wasm_u32(flags)
         + _wasm_u32(symbol_index)
-        + _wasm_string("molt_add")
+        + _wasm_string(_physical("molt_add"))
     )
     linking = _wasm_string("linking") + b"\x02\x08" + _wasm_u32(len(symbol)) + symbol
     reloc.write_bytes(
@@ -2409,7 +2420,9 @@ def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
     )
     assert report.accepted is accepted
     assert report.shared_missing_exports == ()
-    assert report.reloc_missing_symbols == (() if accepted else ("molt_add",))
+    assert report.reloc_missing_symbols == (
+        () if accepted else (_physical("molt_add"),)
+    )
     selected = ctx.accept_generation(observed_generation=generation)
     assert (selected is generation) is accepted
     assert ctx.generation_rejection_details() == report.details()
@@ -2475,7 +2488,7 @@ def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_parsing(
     )
     assert reads == [generation.shared, generation.reloc]
     assert structural == [generation.shared, generation.reloc]
-    assert linking == [{"molt_add": "function"}]
+    assert linking == [{_physical("molt_add"): "function"}]
 
 
 @pytest.mark.parametrize("consumer", ["facts", "linking", "structure"])
@@ -2496,7 +2509,7 @@ def test_runtime_fact_caches_reject_changed_content_with_matching_metadata(
     elif consumer == "linking":
 
         def consume():
-            return generation.linking_names({"molt_add": "function"})
+            return generation.linking_names({_physical("molt_add"): "function"})
 
         field = "reloc_member_identity"
     else:
@@ -2596,7 +2609,7 @@ def test_reloc_link_executes_captured_publication_action(
     plan = reloc.cargo_plan
     assert plan is not None and plan.wasi_c_abi is not None
     action = runtime_wasm_build_support.runtime_reloc_publication_action(
-        ("-C", "link-arg=--export-if-defined=molt_add"),
+        ("-C", f"link-arg=--export-if-defined={_physical('molt_add')}"),
         module_name="selected-runtime.wasm",
         executor=publication_executor(RuntimePublicationTransform.RELOC),
     )
@@ -2623,7 +2636,7 @@ def test_reloc_link_executes_captured_publication_action(
         assert command[1] == "-r"
         assert (
             Path(command[2][1:]).read_text(encoding="utf-8").strip()
-            == "--export-if-defined=molt_add"
+            == f"--export-if-defined={_physical('molt_add')}"
         )
         expected_archives = [
             str(plan.wasi_c_abi.path("libc")),
