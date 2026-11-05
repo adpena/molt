@@ -661,15 +661,17 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// binds the generated attached-context schema, hidden machine argument and
 /// permanent context header. Physical callable bindings additionally qualify
 /// each archive member's individual call/entry ABI under dead stripping.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V8: u64 = 0x845bfb944946eaf2;
+/// Revision 9 corrects raw buffer-close/native-completion classification in
+/// the attached schema; older context bindings must fail link admission.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V9: u64 = 0x4456aa36cc8a68d0;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V8,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V9,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_845bfb944946eaf2_gil_v8";
+    "molt_generated_object_abi_4456aa36cc8a68d0_gil_v9";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_845bfb944946eaf2_free_threaded_v8";
+    "molt_generated_object_abi_4456aa36cc8a68d0_free_threaded_v9";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1664,14 +1666,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V8
+            GENERATED_OBJECT_ABI_FINGERPRINT_V9
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V8,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V9,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1679,13 +1681,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V8);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V9);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v8"), "{symbol}");
+            assert!(symbol.ends_with("_v9"), "{symbol}");
         }
     }
 
