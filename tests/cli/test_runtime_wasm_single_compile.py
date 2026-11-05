@@ -846,8 +846,8 @@ def test_app_import_allowlist_has_live_link_only_custody(tmp_path: Path) -> None
             (argument.removeprefix("link-arg=") + "\n").encode()
         )
     before = plan.link_resources.content_identity()
-    original = path.read_text()
-    path.write_text("\n".join(original.splitlines()[1:]) + "\n")
+    original = path.read_text(encoding="utf-8")
+    path.write_text("\n".join(original.splitlines()[1:]) + "\n", encoding="utf-8")
     with pytest.raises(ValueError):
         plan.link_resources.verify()
     current = CargoResourceCustody.capture(plan.link_resources.roots)

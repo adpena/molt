@@ -150,7 +150,9 @@ def test_app_resolved_runtime_declarations_have_physical_linker_identities(
     omitted = next(iter(sorted(expected)))
     restricted.write_text(
         "\n".join(
-            name for name in allowed_path.read_text().splitlines() if name != omitted
+            name
+            for name in allowed_path.read_text(encoding="utf-8").splitlines()
+            if name != omitted
         )
         + "\n",
         encoding="ascii",
