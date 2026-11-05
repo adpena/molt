@@ -2701,7 +2701,7 @@ def test_native_initializer_uses_plan_selected_callbacks(
         "dead_leaf": "pass\n",
     }
     for name, source in sources.items():
-        (tmp_path / f"{name}.py").write_text(source)
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
     monkeypatch.setattr(
         module_graph_cache,
         "_frontend_semantic_tooling_fingerprint",
@@ -2734,7 +2734,7 @@ def test_namespace_clear_preserves_contained_destructor(tmp_path, monkeypatch):
         "cleanup_leaf": "pass\n",
     }
     for name, source in sources.items():
-        (tmp_path / f"{name}.py").write_text(source)
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
     result = run_guarded_test_process(
         [
             sys.executable,
