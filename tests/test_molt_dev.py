@@ -6954,7 +6954,9 @@ def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
     batch = SelectedGate("cargo test -p a", ("cargo",))
     (tmp_path / "s").mkdir()
     (tmp_path / "t").mkdir()
-    (tmp_path / "s" / "gate-001.stdout.log").write_text("All checks passed!\n")
+    (tmp_path / "s" / "gate-001.stdout.log").write_text(
+        "All checks passed!\n", encoding="utf-8"
+    )
     summary = {
         "schema": SCHEMA,
         "status": "passed",
@@ -6967,9 +6969,12 @@ def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
     (tmp_path / "t" / "gate-001.stdout.log").write_text(
         "changed-crate-tests: unverified: decoy text\n"
         "test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; "
-        "finished in 0.01s\n" + json.dumps(summary, sort_keys=True) + "\n"
+        "finished in 0.01s\n" + json.dumps(summary, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
-    (tmp_path / "t" / "gate-002.stdout.log").write_text("3 passed in 0.10s\n")
+    (tmp_path / "t" / "gate-002.stdout.log").write_text(
+        "3 passed in 0.10s\n", encoding="utf-8"
+    )
     precheck = PrecheckResult(
         (static, crates, readers),
         None,
