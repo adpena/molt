@@ -25,6 +25,22 @@ class DataclassInitField:
     def schema(self) -> tuple[str, bool, bool, bool, int]:
         return self.name, self.init, self.kw_only, self.initvar, self.default
 
+    @classmethod
+    def from_schema(cls, schema: object) -> DataclassInitField:
+        """The inverse of ``schema``; a malformed schema raises ValueError."""
+        if (
+            not isinstance(schema, (list, tuple))
+            or len(schema) != 5
+            or not isinstance(schema[0], str)
+            or not all(type(flag) is bool for flag in schema[1:4])
+            or type(schema[4]) is not int
+            or schema[4] not in (0, 1, 2)
+        ):
+            raise ValueError(
+                f"malformed dataclass initializer field schema: {schema!r}"
+            )
+        return cls(schema[0], schema[1], schema[2], schema[3], schema[4])
+
 
 def initializer_template(
     fields: tuple[DataclassInitField, ...],
