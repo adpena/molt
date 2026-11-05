@@ -1001,6 +1001,27 @@ class GateConfig:
             ] = {}
             for target in pytest_targets:
                 cohorts.setdefault(assignments[target], []).append(target)
+            # A direct reader the graph selects that a matched rule already
+            # runs is still a direct reader: in presubmit it forms its own
+            # try-run cohort, and the rest of the rule cohort stays with the
+            # batch, which runs both (HF-701: the lane's own tests were
+            # waived when a rule curated them).
+            readers = (
+                {
+                    target.partition("::")[0]
+                    for envelope in selection.run.values()
+                    for target in envelope.targets
+                }
+                if selection is not None and mode is LandingMode.PRESUBMIT
+                else set()
+            )
+            parts: list[tuple[tuple, list[str], bool]] = []
+            for key, targets in cohorts.items():
+                direct = [t for t in targets if t.partition("::")[0] in readers]
+                rest = [t for t in targets if t.partition("::")[0] not in readers]
+                parts.extend(
+                    (key, part, part is direct) for part in (direct, rest) if part
+                )
             # Keep add()'s command indices valid until every deduplication and
             # prerequisite union is complete. Only newly appended cohorts move.
             before_cohorts = len(selected)
@@ -1008,7 +1029,7 @@ class GateConfig:
                 cohort_tools,
                 cohort_access,
                 cohort_assets,
-            ), targets in cohorts.items():
+            ), targets, reads_change in parts:
                 command = local_pytest_argv(
                     targets, memory_units=self.pytest_memory_units
                 )
@@ -1021,6 +1042,7 @@ class GateConfig:
                     cargo_target_access=cohort_access,
                     pytest=True,
                     pinned_assets=cohort_assets,
+                    try_run=reads_change,
                     collection_command=(
                         local_pytest_collection_argv(
                             local_pytest_argv(
