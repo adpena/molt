@@ -2908,7 +2908,7 @@ def _compatibility_source_policy_fixture(tmp_path):
     receipt = tmp_path / SA.compatibility_errors.SOURCE_RECEIPTS
     if not receipt.exists():
         authority = json.loads(
-            (ROOT / SA.compatibility_errors.SOURCE_RECEIPTS).read_text()
+            (ROOT / SA.compatibility_errors.SOURCE_RECEIPTS).read_text(encoding="utf-8")
         )
         receipt.parent.mkdir(parents=True, exist_ok=True)
         receipt.write_text(
@@ -2918,7 +2918,8 @@ def _compatibility_source_policy_fixture(tmp_path):
                     "aot_boundaries": authority["aot_boundaries"],
                     "sources": [],
                 }
-            )
+            ),
+            encoding="utf-8",
         )
     for relative in (
         "config/verified_subset.toml",
@@ -3062,7 +3063,7 @@ def test_compatibility_aot_outcomes_reject_invalid_contracts(field, value):
     import json
 
     protocol = SA.compatibility_errors
-    data = json.loads((ROOT / protocol.SOURCE_RECEIPTS).read_text())
+    data = json.loads((ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"))
     data["aot_boundaries"]["MarshalCodeObject"][field] = value
     with pytest.raises(ValueError, match="invalid AOT compatibility outcome"):
         protocol._parse_aot_boundaries(data)

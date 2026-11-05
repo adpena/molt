@@ -6,7 +6,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 69
+- `authority-routed` files: 70
 - `operational-tooling` files: 76
 - `scattered-assumption` files: 356
 
@@ -343,6 +343,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/gpu_runtime_tests.rs` | 30 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/intrinsics/public_objects.toml` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/itertools_class.rs` | 1 | scattered-assumption | `3.14` |
+| `runtime/molt-runtime/src/marshal/tests.rs` | 2 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/math_bridge.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/object/code_layout/tests.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/gc.rs` | 7 | authority-routed | `3.12` |
@@ -447,7 +448,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/compile_progress.py` | 2 | scattered-assumption | `3.12` |
 | `tools/correctness_dashboard.py` | 3 | operational-tooling | `3.12` |
 | `tools/cpython_census/public_objects.py` | 1 | operational-tooling | `sys.version_info` |
-| `tools/cpython_regrtest.py` | 13 | authority-routed | `3.12` |
+| `tools/cpython_regrtest.py` | 3 | authority-routed | `3.12` |
 | `tools/cross_hosts.toml` | 1 | scattered-assumption | `3.0` |
 | `tools/cross_run.py` | 3 | scattered-assumption | `3.12` |
 | `tools/dashboard_delta.py` | 1 | operational-tooling | `3.12` |
