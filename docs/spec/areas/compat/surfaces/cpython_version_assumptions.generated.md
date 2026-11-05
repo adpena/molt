@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 69
 - `operational-tooling` files: 76
-- `scattered-assumption` files: 356
+- `scattered-assumption` files: 357
 
 ## Files
 
@@ -45,6 +45,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/frontend/lowering/condition_flow.py` | 2 | authority-routed | `3.14` |
 | `src/molt/frontend/lowering/generator_state.py` | 3 | authority-routed | `3.14` |
 | `src/molt/frontend/lowering/local_bindings.py` | 3 | authority-routed | `3.13` |
+| `src/molt/frontend/lowering/midend_pipeline.py` | 1 | scattered-assumption | `3.4` |
 | `src/molt/frontend/lowering/string_formatting.py` | 2 | scattered-assumption | `3.14` |
 | `src/molt/frontend/lowering/type_annotations.py` | 2 | authority-routed | `3.13` |
 | `src/molt/frontend/sema/constenv.py` | 1 | operational-tooling | `sys.version_info` |
