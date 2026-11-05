@@ -14,7 +14,7 @@ dependencies = [
     "msgspec>=0.22.0",
     "packaging>=26.2",
     "rich>=15.0.0",
-    "ty>=0.0.83",
+    "ty>=0.0.94",
 ]
 
 [project.scripts]
@@ -247,32 +247,32 @@ bench = [
 # selection reads pytest arguments with pytest's own parser, including
 # installed plugin options such as xdist's `-n` (tools/molt_dev_controller.py).
 controller = [
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
     "pytest-xdist>=3.8.0",
 ]
 dev = [
     "ninja==1.13.2",
     "cbor2>=6.1.4",
     "markdown-it-py>=4.2.0",
-    "msgpack>=1.2.2",
+    "msgpack>=1.2.4",
     "pre-commit>=4.6.2",
-    "pytest>=9.1.1",
-    "ruff>=0.16.8",
-    "ty>=0.0.83",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "ty>=0.0.94",
     "setuptools>=84.2.1",
     "django>=6.1.1",
     "idna>=3.20",
     "stdlib-list>=0.12.0",
-    "coverage>=7.16.1",
+    "coverage>=7.17.0",
     "py-spy>=0.4.2",
-    "hypothesis>=6.168.0",
+    "hypothesis>=6.170.13",
     "urllib3>=2.8.0",
     "pytest-xdist>=3.8.0",
 ]
 demo = [
     "django>=6.1.1",
     "gunicorn>=26.0.0",
-    "msgpack>=1.2.2",
+    "msgpack>=1.2.4",
     "uvicorn>=0.49.0",
 ]
 release = [
@@ -283,28 +283,28 @@ release = [
     "wheel==0.48.0",
 ]
 deployment = [
-    "modal==1.6.2",
+    "modal==1.6.3",
 ]
 # Locked oracle environment for the Pact witness lanes: their CPython
 # reference numerics run inside the attested environment provisioned from
 # this group (tools/pact_witness_acceptance.py, tools/pact_witness_oracle.py).
 pact-witness = [
-    "numpy==2.5.1",
-    "scipy==1.18.0",
+    "numpy==2.5.4",
+    "scipy==1.18.1",
 ]
 source-build-numpy = [
     "Cython==3.2.9",
-    "meson-python==0.21.1",
+    "meson-python==0.22.1",
     "ninja==1.13.2",
 ]
 source-build-scipy = [
     "Cython==3.2.9",
-    "meson-python==0.21.1",
+    "meson-python==0.22.1",
     "ninja==1.13.2",
-    "numpy==2.5.1",
+    "numpy==2.5.4",
     "pkgconf==3.0.7.post0",
-    "pybind11==3.0.4",
-    "pythran==0.18.1",
+    "pybind11==3.1.0",
+    "pythran==0.19.0",
 ]
 
 [tool.setuptools]
@@ -312,7 +312,7 @@ packages = {find = {where = ["src"], exclude = ["tests*"]}}
 
 [project.optional-dependencies]
 accel = [
-    "msgpack>=1.2.2",
+    "msgpack>=1.2.4",
 ]
 
 [tool.setuptools.package-data]
