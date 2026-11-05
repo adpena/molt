@@ -186,10 +186,10 @@ def test_guest_packages_script_installs_only_missing_packages(tmp_path):
         encoding="utf-8",
     )
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {"installed": "cmake udev"}
+    assert json.loads(completed.stdout) == {"installed": "udev"}
     assert log.read_text(encoding="utf-8").splitlines() == [
         "update",
-        "install -y --no-install-recommends cmake udev",
+        "install -y --no-install-recommends udev",
     ]
 
 
@@ -576,14 +576,14 @@ def test_inventory_rejects_invalid_wsl_custody(tmp_path, field, value):
         cross_run.parse_inventory(inventory)
 
 
-def test_inventory_scopes_package_approval_to_wsl_guests_and_macos(tmp_path):
+def test_inventory_scopes_package_approval_to_a_wsl_guest(tmp_path):
     text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
-    # bat00 is a Windows host, neither a WSL guest nor macOS: refused there.
+    # bat00 is a Windows host, not a WSL guest: refused there.
     start = text.index('name = "bat00"')
     widened = text[:start] + "install_system_packages = true\n" + text[start:]
     inventory = tmp_path / "hosts.toml"
     inventory.write_text(widened, encoding="utf-8")
-    with pytest.raises(ValueError, match="WSL gate guest or a macOS host"):
+    with pytest.raises(ValueError, match="WSL gate guest only"):
         cross_run.parse_inventory(inventory)
     inventory.write_text(
         text.replace(
@@ -618,8 +618,12 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
     bin_dir = root / ".local/bin"
     bin_dir.mkdir(parents=True)
     log = root / "calls"
-    for command in ("uv", "rustup", "git", "curl", "cc", "cmake"):
+    for command in ("uv", "rustup", "git", "curl", "cc", "cmake", "xcode-select"):
         executable = bin_dir / command
+        if command == "xcode-select":
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+            continue
         executable.write_text(
             "#!/bin/sh\n"
             '[ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}${MOLT_VENV:-}" ] || exit 93\n'
@@ -669,15 +673,14 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
     )
 
 
-@pytest.mark.parametrize(
-    ("approved", "has_brew"), [(True, True), (False, True), (True, False)]
-)
+@pytest.mark.parametrize("has_command_line_tools", [True, False])
 @pytest.mark.skipif(os.name == "nt", reason="POSIX bootstrap script execution")
-def test_macos_provision_installs_missing_brew_package_and_pins_uv(
-    tmp_path, approved, has_brew
+def test_macos_provision_needs_no_package_manager_and_pins_uv(
+    tmp_path, has_command_line_tools
 ):
-    """2026-11-04: the Mac mini lacked cmake and ran uv 0.10.9, which cannot
-    install the pinned Python; the owner approved provisioning it."""
+    """2026-11-04: the Intel Mac mini has no Homebrew bottles (Tier 3) and ran
+    uv 0.10.9. No proof cell needs CMake, so provision needs only the Command
+    Line Tools, then installs the pinned uv."""
     from tests.process_guard_common import run_custody_subject_process
 
     root = tmp_path / "host"
@@ -695,6 +698,8 @@ def test_macos_provision_installs_missing_brew_package_and_pins_uv(
             )
         if command == "curl":
             body += 'for a; do last=$a; done; : > "$last"\n'
+        if command == "xcode-select":
+            body = "exit 0\n" if has_command_line_tools else "exit 2\n"
         if command == "sh":
             # The installer replaces uv with the pinned release.
             body += (
@@ -703,27 +708,13 @@ def test_macos_provision_installs_missing_brew_package_and_pins_uv(
             )
         executable.write_text("#!/bin/sh\n" + body, encoding="utf-8")
         executable.chmod(0o755)
-    brew = root / "brew"
-    brew.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "brew $*" >> "$HOME/calls"\n'
-        'printf "#!/bin/sh\\n" > "$HOME/.local/bin/cmake"; chmod +x "$HOME/.local/bin/cmake"\n',
-        encoding="utf-8",
-    )
-    brew.chmod(0o755)
     host = replace(
-        host_named("macmini"),
-        custody_root=str(root),
-        checkout=str(checkout),
-        install_system_packages=approved,
+        host_named("macmini"), custody_root=str(root), checkout=str(checkout)
     )
     script = trunk_loop.provision_script(
         host, repository="https://example.test/repo.git", uv_version="0.13.6"
-    ).replace(
-        "/opt/homebrew/bin/brew /usr/local/bin/brew",
-        str(brew) if has_brew else str(root / "no-brew"),
     )
-    # Hide this machine's own Homebrew tools from the script under test.
-    script = script.replace("/opt/homebrew/bin:/usr/local/bin:$PATH", "$PATH")
+    assert "brew" not in script and "cmake" not in script
     result = run_custody_subject_process(
         ["/bin/sh"],
         input=script,
@@ -732,17 +723,44 @@ def test_macos_provision_installs_missing_brew_package_and_pins_uv(
         env=dict(os.environ, HOME=str(root), PATH=f"{bin_dir}:/usr/bin:/bin"),
     )
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
-    if not approved or not has_brew:
+    if not has_command_line_tools:
         assert result.returncode == 2
-        # Only the missing tool is named, with its own fix.
-        assert "cmake: run brew install cmake" in result.stderr
-        assert "xcode-select" not in result.stderr
-        assert not any(call.startswith("brew") for call in calls)
+        assert "cc: run xcode-select --install" in result.stderr
+        assert not any(call.startswith("curl ") for call in calls)
         return
     assert result.returncode == 0, result.stderr
-    assert calls[0] == "brew install cmake"
     # The installed uv is not the pinned one, so the pinned installer runs.
     assert any(
         call.startswith("curl ") and "astral.sh/uv/0.13.6/install.sh" in call
         for call in calls
+    )
+
+
+def test_farm_hosts_run_no_command_that_needs_a_runner_image_toolchain():
+    """`hosted-*` toolchains (the GitHub runner image's CMake and clang-cl) do not
+    exist on farm hosts, so provisioning never installs them: no farm host may be
+    assigned a command that declares one (2026-11-04 review of the farm
+    prerequisites; portability.headers.windows is such a command)."""
+    import tomllib
+
+    plan = tomllib.loads(
+        (cross_run.DEFAULT_INVENTORY.parent / "proof_plan.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    toolchains = {
+        command["id"]: set(command.get("toolchains", ())) for command in plan["command"]
+    }
+    inventory = cross_run.parse_inventory(cross_run.DEFAULT_INVENTORY)
+    hosts = inventory.values() if isinstance(inventory, dict) else inventory
+    checked = 0
+    for host in hosts:
+        for cell in host.proof_cells:
+            assert cell in toolchains, f"{host.name}: unknown command {cell}"
+            hosted = sorted(t for t in toolchains[cell] if t.startswith("hosted-"))
+            assert not hosted, f"{host.name} runs {cell}, which needs {hosted}"
+            checked += 1
+    assert checked >= 4
+    assert any(
+        t.startswith("hosted-") for t in toolchains["portability.headers.windows"]
     )
