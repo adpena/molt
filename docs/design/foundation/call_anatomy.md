@@ -580,12 +580,17 @@ Rust backend captures no Origin.
    contract today. Its finalizer sees the frame's last surviving publication.
 2. A frame-home store or clear (`frame_home_store`, `frame_home_clear`) whose previous binding is
    proven finalizer-free: unbound or an exact builtin scalar. A forward slot-content analysis in
-   the pass proves it. A fresh synchronous frame starts with every home unbound (the arena
-   zeroes them); a stateful or inherited frame starts unknown. A store records whether its value
-   is an exact scalar. A synchronous read (a call that may run Python) makes every slot unknown,
-   because a callback can rebind a local through a PEP 667 proxy. A poll does not: compiled
-   code keeps local bindings in SSA across a poll and does not re-read its homes there, so a
-   poll callback's rebinding is already outside the compiled contract.
+   the pass proves it. The activation's own entry (`trace_enter_slot`) starts a fresh
+   synchronous frame with every home unbound (the arena zeroes them); a stateful or inherited
+   frame starts unknown. A store records whether its value is an exact scalar; a clear or take
+   leaves the home unbound; `frame_locals_set` makes every home unknown. Only those operations
+   write this activation's homes.
+
+   The second boundary: a callback that rebinds a local through a PEP 667 proxy does not clear
+   these facts. A finalizer of a value injected that way, released by a later compiled rebinding,
+   sees the last surviving publication. Clearing the facts at every callback is not affordable:
+   `range(n)` converts its bound with `operator.index`, which may call Python, so every counted
+   loop would keep a store before its first rebinding of the loop variable, in every iteration.
 
 Every other release keeps its read: rebinding or `del` of a value not proven finalizer-free
 (`ResourceWarning` lines depend on it), `DeleteVar` and `DelBoundary`. The classification is
@@ -613,10 +618,23 @@ operations `exception_source = unwind`, which the event verifier accepts: they p
 event. Non-simple targets stay outside the scope, as in base. A frontend test pins the absence
 of checks in that machinery.
 
+**M4. Two typed facts the placement pass needs in that loop** (found when M2 first ran: it kept
+two publications per iteration).
+
+1. The header `lt` compares the index with the `operator_index` result. TIR had no exact type for
+   that result, so `lt` could call Python and stayed a read. `operator.index` returns an exact
+   `int` (CPython 3.10+, `PyNumber_Index`). `op_kinds.toml` now lists
+   `exact_int_result_copy_kinds = ["operator_index"]`; the exact scalar solver gives the result
+   `BigInt`, an exact int of any magnitude with a boxed carrier, as it does for `ConstBigInt`.
+   The representation plan floors integer names to `MaybeBigInt`, so no consumer unboxes it
+   without a range proof.
+2. `binding_alias` only retains its operand (+1). It joins `callback_free_copy_kinds`.
+
 **Invariants.**
 
 1. At every read, the word holds the value the conservative stream held there (M2 liveness),
-   except a finalizer of a release that M2.1 exempts, which sees the last surviving publication.
+   except a finalizer of a release that M2.1 exempts or of a value injected through a PEP 667
+   proxy, which sees the last surviving publication.
 2. An Origin capture records the failing site's own LocationId on native, LLVM and WASM when one
    publication reaches its check, and otherwise reads the preserved word (M1).
 3. Measured gate, per backend: the normal path of a loop whose operations cannot call Python,
@@ -626,8 +644,9 @@ of checks in that machinery.
 4. A target without `cold_origin_frame_location` runs no placement pass.
 
 **Consumers.** SimpleIR schema and transport (`ir.rs`, `ir_schema.rs`, SSA lift,
-`lower_to_simple`, `addressed_program.rs`); `op_kinds.toml` and the generators (two lists);
-`target_info.rs` (feature); the pass and its pipeline slot; native `exception_control.rs`,
+`lower_to_simple`, `addressed_program.rs`); `op_kinds.toml` and the generators (three new lists, one `callback_free_copy_kinds` entry);
+`target_info.rs` (feature); the exact scalar solver (`exact_int_result_copy_kinds`); the pass
+and its pipeline slot; native `exception_control.rs`,
 `scalar_carriers.rs` and the frame-home lend predicate; LLVM `op_dispatch.rs`,
 `value_materialization.rs` and the lend predicate; WASM `emission.rs`, `pending_work.rs`, both
 check emitters and the lend predicate; frontend `loop_lowering.py` (M3). A function whose last
@@ -638,7 +657,8 @@ keeps its publication; a release-only store of a finalizer-free binding does not
 a call does; `Return`, a state-machine opcode, an Origin check reached by two different
 publications, and an Unwind edge into an observing handler each keep the reaching publication;
 an Origin check reached by one publication gets that `frame_location`. A frontend test: the
-counted range loop's header and latch emit no exceptional check. The nine core cells (frame
+counted range loop's header and latch emit no exceptional check. A differential case with
+`range()` bounds beyond 64 bits guards M4.1. The nine core cells (frame
 fields, lifecycle, event adversaries on native, LLVM and WASM), the whole
 `tests/test_python_execution_frame.py` and the frontend location witnesses stay green. Cost:
 loop and recursion instructions-retired A/B against `origin/main`, N=1,000,000, five pairs, and
@@ -654,7 +674,8 @@ memory location whose loads it can see.
 blockers and six majors. Adopted: every frame-retiring path is a read (c); entry is a write and
 the runtime initializes the word; fail-closed reads; the inliner fact; `frame_location` computed
 in the pass, not copied from the frontend; M2.1 narrowed from all releases to temporaries and
-proven finalizer-free bindings; M3 made concrete; Invariant 3 made a measured gate. Not adopted:
+proven finalizer-free bindings, with the PEP 667 boundary stated; M3 made concrete; Invariant 3
+made a measured gate. Not adopted:
 passing the LocationId to `molt_exception_frame_origin` as an argument. It is the same constant
 in a register, so it neither removes the hoisting risk nor the poll-path store, and it changes
 the runtime ABI of five backends.

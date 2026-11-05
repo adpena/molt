@@ -68,6 +68,11 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
             context.import_ids,
             context.reloc_enabled,
             false,
+            |func| {
+                if let Some(location) = op.frame_location {
+                    context.frame.emit_frame_location(func, location);
+                }
+            },
         );
         func.instruction(&Instruction::I64Const(0));
         func.instruction(&Instruction::I64Ne);
@@ -90,9 +95,12 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
     match op.exception_edge.expect("verified exceptional edge kind") {
         molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
             func.instruction(&Instruction::If(BlockType::Empty));
-            context
-                .frame
-                .emit_exception_origin(func, context.import_ids, context.reloc_enabled);
+            context.frame.emit_exception_origin(
+                func,
+                context.import_ids,
+                context.reloc_enabled,
+                op.frame_location,
+            );
             func.instruction(&Instruction::Br(depth + 1));
             func.instruction(&Instruction::End);
         }

@@ -30209,7 +30209,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
-        | OpKind::BindingAlias
         | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
@@ -30708,7 +30707,8 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => false,
-        OpKind::CallAsync
+        OpKind::BindingAlias
+        | OpKind::CallAsync
         | OpKind::GuardBool
         | OpKind::GuardFloat
         | OpKind::GuardInt
@@ -30721,6 +30721,1081 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Missing
         | OpKind::Nop
         | OpKind::PrintNewline => true,
+    }
+}
+
+#[inline]
+pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
+    match kind {
+        OpKind::MAnd
+        | OpKind::Abs
+        | OpKind::Add
+        | OpKind::Aiter
+        | OpKind::All
+        | OpKind::Alloc
+        | OpKind::AllocClass
+        | OpKind::AllocClassStatic
+        | OpKind::AllocClassTrusted
+        | OpKind::AllocInstance
+        | OpKind::AllocTask
+        | OpKind::And
+        | OpKind::Anext
+        | OpKind::Any
+        | OpKind::AsciiFromObj
+        | OpKind::AsyncForEnd
+        | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPoll
+        | OpKind::AsyncgenNew
+        | OpKind::Band
+        | OpKind::BindingAlias
+        | OpKind::Binop
+        | OpKind::BinopAdd
+        | OpKind::BinopFloorDiv
+        | OpKind::BinopMod
+        | OpKind::BinopMul
+        | OpKind::BinopPow
+        | OpKind::BinopSub
+        | OpKind::BitAnd
+        | OpKind::BitNot
+        | OpKind::BitOr
+        | OpKind::BitXor
+        | OpKind::Bool
+        | OpKind::BoolConst
+        | OpKind::Bor
+        | OpKind::Borrow
+        | OpKind::BoundMethodNew
+        | OpKind::Box
+        | OpKind::BoxFromRawInt
+        | OpKind::BrIf
+        | OpKind::Branch
+        | OpKind::BranchFalse
+        | OpKind::BranchTrue
+        | OpKind::BuildDict
+        | OpKind::BuildList
+        | OpKind::BuildSet
+        | OpKind::BuildSlice
+        | OpKind::BuildTuple
+        | OpKind::BuiltinAbs
+        | OpKind::BuiltinAll
+        | OpKind::BuiltinAny
+        | OpKind::BuiltinBool
+        | OpKind::BuiltinFloat
+        | OpKind::BuiltinFunc
+        | OpKind::BuiltinInt
+        | OpKind::BuiltinLen
+        | OpKind::BuiltinPrint
+        | OpKind::BuiltinRange
+        | OpKind::BuiltinReversed
+        | OpKind::BuiltinSorted
+        | OpKind::BuiltinStr
+        | OpKind::BuiltinSum
+        | OpKind::BuiltinType
+        | OpKind::Bxor
+        | OpKind::BytearrayCount
+        | OpKind::BytearrayCountSlice
+        | OpKind::BytearrayEndswith
+        | OpKind::BytearrayEndswithSlice
+        | OpKind::BytearrayFillRange
+        | OpKind::BytearrayFind
+        | OpKind::BytearrayFindSlice
+        | OpKind::BytearrayFromObj
+        | OpKind::BytearrayFromStr
+        | OpKind::BytearrayReplace
+        | OpKind::BytearraySplit
+        | OpKind::BytearraySplitMax
+        | OpKind::BytearrayStartswith
+        | OpKind::BytearrayStartswithSlice
+        | OpKind::BytesCount
+        | OpKind::BytesCountSlice
+        | OpKind::BytesEndswith
+        | OpKind::BytesEndswithSlice
+        | OpKind::BytesFind
+        | OpKind::BytesFindSlice
+        | OpKind::BytesFromObj
+        | OpKind::BytesFromStr
+        | OpKind::BytesReplace
+        | OpKind::BytesSplit
+        | OpKind::BytesSplitMax
+        | OpKind::BytesStartswith
+        | OpKind::BytesStartswithSlice
+        | OpKind::Call
+        | OpKind::CallAsync
+        | OpKind::CallBind
+        | OpKind::CallBuiltin
+        | OpKind::CallFunc
+        | OpKind::CallFunction
+        | OpKind::CallGuarded
+        | OpKind::CallIndirect
+        | OpKind::CallInternal
+        | OpKind::CallLoadedMethod
+        | OpKind::CallMethod
+        | OpKind::CallargsExpandKwstar
+        | OpKind::CallargsExpandStar
+        | OpKind::CallargsNew
+        | OpKind::CallargsPushKw
+        | OpKind::CallargsPushMethodReceiver
+        | OpKind::CallargsPushPos
+        | OpKind::Cast
+        | OpKind::CastBool
+        | OpKind::CastFloat
+        | OpKind::CastInt
+        | OpKind::CastStr
+        | OpKind::CheckException
+        | OpKind::CheckedAdd
+        | OpKind::CheckedMul
+        | OpKind::Chr
+        | OpKind::ClassDef
+        | OpKind::ClassLayoutFieldCount
+        | OpKind::ClassLayoutSlotCount
+        | OpKind::ClassSetDefinition
+        | OpKind::ClassmethodNew
+        | OpKind::ClosureLoad
+        | OpKind::ClosureStore
+        | OpKind::CmpEq
+        | OpKind::CmpGe
+        | OpKind::CmpGt
+        | OpKind::CmpLe
+        | OpKind::CmpLt
+        | OpKind::CmpNe
+        | OpKind::CodeNew
+        | OpKind::CodeSlotSet
+        | OpKind::CodeSlotsInit
+        | OpKind::Compare
+        | OpKind::ComplexFromObj
+        | OpKind::Const
+        | OpKind::ConstBigint
+        | OpKind::ConstBool
+        | OpKind::ConstBytes
+        | OpKind::ConstEllipsis
+        | OpKind::ConstFloat
+        | OpKind::ConstInt
+        | OpKind::ConstNone
+        | OpKind::ConstNotImplemented
+        | OpKind::ConstStr
+        | OpKind::Contains
+        | OpKind::ContextEnter
+        | OpKind::ContextExit
+        | OpKind::Copy
+        | OpKind::CopyVar
+        | OpKind::DecRef
+        | OpKind::DelAttr
+        | OpKind::DelAttrGenericObj
+        | OpKind::DelAttrGenericPtr
+        | OpKind::DelAttrName
+        | OpKind::DelBoundary
+        | OpKind::DelIndex
+        | OpKind::DelItem
+        | OpKind::DeleteVar
+        | OpKind::DictClear
+        | OpKind::DictCopy
+        | OpKind::DictFromObj
+        | OpKind::DictGet
+        | OpKind::DictItems
+        | OpKind::DictKeys
+        | OpKind::DictNew
+        | OpKind::DictPop
+        | OpKind::DictPopitem
+        | OpKind::DictSet
+        | OpKind::DictSetdefault
+        | OpKind::DictSetdefaultEmptyList
+        | OpKind::DictStrIntInc
+        | OpKind::DictUnpack
+        | OpKind::DictUpdate
+        | OpKind::DictUpdateKwstar
+        | OpKind::DictUpdateMissing
+        | OpKind::DictValues
+        | OpKind::Div
+        | OpKind::DropInserted
+        | OpKind::Else
+        | OpKind::EndFor
+        | OpKind::EndIf
+        | OpKind::Enumerate
+        | OpKind::Eq
+        | OpKind::ExceptEnd
+        | OpKind::ExceptStart
+        | OpKind::ExceptionActive
+        | OpKind::ExceptionClass
+        | OpKind::ExceptionClear
+        | OpKind::ExceptionContextSet
+        | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFinallyPendingObserver
+        | OpKind::ExceptionLast
+        | OpKind::ExceptionLastPending
+        | OpKind::ExceptionMatchBuiltin
+        | OpKind::ExceptionNew
+        | OpKind::ExceptionNewBuiltin
+        | OpKind::ExceptionNewBuiltinEmpty
+        | OpKind::ExceptionNewBuiltinOne
+        | OpKind::ExceptionNewFromClass
+        | OpKind::ExceptionPending
+        | OpKind::ExceptionPop
+        | OpKind::ExceptionPush
+        | OpKind::ExceptionRegionDropsInserted
+        | OpKind::ExceptionSetLast
+        | OpKind::ExceptionStackClear
+        | OpKind::ExceptionStackDepth
+        | OpKind::ExceptionStackEnter
+        | OpKind::ExceptionStackExit
+        | OpKind::ExceptionStackSetDepth
+        | OpKind::ExceptiongroupCombine
+        | OpKind::ExceptiongroupMatch
+        | OpKind::FinallyEnd
+        | OpKind::FinallyStart
+        | OpKind::Float
+        | OpKind::FloatFromObj
+        | OpKind::FloorDiv
+        | OpKind::Floordiv
+        | OpKind::ForIter
+        | OpKind::ForIterEnd
+        | OpKind::ForIterStart
+        | OpKind::ForRange
+        | OpKind::FormatString
+        | OpKind::FrameContextSet
+        | OpKind::FrameHomeCell
+        | OpKind::FrameHomeLoad
+        | OpKind::FrameHomePrivateCell
+        | OpKind::FrameHomeTake
+        | OpKind::FrameLocals
+        | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
+        | OpKind::Free
+        | OpKind::FrozensetAdd
+        | OpKind::FrozensetNew
+        | OpKind::FuncNew
+        | OpKind::FuncNewClosure
+        | OpKind::FunctionClosureBits
+        | OpKind::FunctionDefaultsVersion
+        | OpKind::Ge
+        | OpKind::GenClose
+        | OpKind::GenSend
+        | OpKind::GenThrow
+        | OpKind::GetAttr
+        | OpKind::GetAttrGenericObj
+        | OpKind::GetAttrGenericPtr
+        | OpKind::GetAttrName
+        | OpKind::GetAttrNameDefault
+        | OpKind::GetAttrSpecialObj
+        | OpKind::GetItem
+        | OpKind::GetIter
+        | OpKind::Getframe
+        | OpKind::Goto
+        | OpKind::GpuBarrier
+        | OpKind::GpuBlockDim
+        | OpKind::GpuBlockId
+        | OpKind::GpuGridDim
+        | OpKind::GpuThreadId
+        | OpKind::Gt
+        | OpKind::GuardBool
+        | OpKind::GuardFloat
+        | OpKind::GuardInt
+        | OpKind::GuardLayout
+        | OpKind::GuardNone
+        | OpKind::GuardStr
+        | OpKind::GuardTag
+        | OpKind::GuardType
+        | OpKind::GuardedFieldGet
+        | OpKind::GuardedFieldSet
+        | OpKind::GuardedLoad
+        | OpKind::HasAttrName
+        | OpKind::Id
+        | OpKind::IdentityAlias
+        | OpKind::If
+        | OpKind::IfNot
+        | OpKind::Import
+        | OpKind::ImportFrom
+        | OpKind::ImportName
+        | OpKind::In
+        | OpKind::IncRef
+        | OpKind::Index
+        | OpKind::IndexSet
+        | OpKind::InitInstance
+        | OpKind::InplaceAdd
+        | OpKind::InplaceBitAnd
+        | OpKind::InplaceBitOr
+        | OpKind::InplaceBitXor
+        | OpKind::InplaceDiv
+        | OpKind::InplaceFloordiv
+        | OpKind::InplaceLshift
+        | OpKind::InplaceMatmul
+        | OpKind::InplaceMod
+        | OpKind::InplaceMul
+        | OpKind::InplacePow
+        | OpKind::InplaceRshift
+        | OpKind::InplaceSub
+        | OpKind::InstanceGetField
+        | OpKind::InstanceHasField
+        | OpKind::InstanceSetField
+        | OpKind::Int
+        | OpKind::IntFromObj
+        | OpKind::IntFromStrOfObj
+        | OpKind::Invert
+        | OpKind::InvokeFfi
+        | OpKind::Is
+        | OpKind::IsBoundMethod
+        | OpKind::IsCallable
+        | OpKind::IsGenerator
+        | OpKind::IsNativeAwaitable
+        | OpKind::IsNot
+        | OpKind::IsPending
+        | OpKind::Isinstance
+        | OpKind::Issubclass
+        | OpKind::Iter
+        | OpKind::IterNext
+        | OpKind::IterNextUnboxed
+        | OpKind::Jump
+        | OpKind::Label
+        | OpKind::Le
+        | OpKind::Len
+        | OpKind::Line
+        | OpKind::ListAppend
+        | OpKind::ListClear
+        | OpKind::ListCopy
+        | OpKind::ListCount
+        | OpKind::ListExtend
+        | OpKind::ListFillNew
+        | OpKind::ListFromRange
+        | OpKind::ListIndex
+        | OpKind::ListIndexRange
+        | OpKind::ListInsert
+        | OpKind::ListIntNew
+        | OpKind::ListNew
+        | OpKind::ListPop
+        | OpKind::ListRemove
+        | OpKind::ListReverse
+        | OpKind::Load
+        | OpKind::LoadAttr
+        | OpKind::LoadConst
+        | OpKind::LoadLocal
+        | OpKind::LoadMethod
+        | OpKind::LoadSuperMethod
+        | OpKind::LoadVar
+        | OpKind::LoopBreak
+        | OpKind::LoopBreakIfException
+        | OpKind::LoopBreakIfFalse
+        | OpKind::LoopBreakIfTrue
+        | OpKind::LoopCarryInit
+        | OpKind::LoopCarryUpdate
+        | OpKind::LoopContinue
+        | OpKind::LoopEnd
+        | OpKind::LoopIndexEnd
+        | OpKind::LoopIndexNext
+        | OpKind::LoopIndexStart
+        | OpKind::LoopStart
+        | OpKind::Lshift
+        | OpKind::Lt
+        | OpKind::Matmul
+        | OpKind::Missing
+        | OpKind::Mod
+        | OpKind::Mod_
+        | OpKind::ModuleCacheDel
+        | OpKind::ModuleCacheGet
+        | OpKind::ModuleCacheSet
+        | OpKind::ModuleDelGlobal
+        | OpKind::ModuleDelGlobalIfPresent
+        | OpKind::ModuleGetAttr
+        | OpKind::ModuleGetGlobal
+        | OpKind::ModuleGetName
+        | OpKind::ModuleImport
+        | OpKind::ModuleImportFrom
+        | OpKind::ModuleImportStar
+        | OpKind::ModuleLoadCached
+        | OpKind::ModuleNew
+        | OpKind::ModuleSetAttr
+        | OpKind::ModuleSlot
+        | OpKind::Modulo
+        | OpKind::Mul
+        | OpKind::Ne
+        | OpKind::Neg
+        | OpKind::NoneConst
+        | OpKind::Nop
+        | OpKind::Not
+        | OpKind::NotIn
+        | OpKind::ObjectNew
+        | OpKind::ObjectNewBound
+        | OpKind::OperatorIndex
+        | OpKind::Or
+        | OpKind::Ord
+        | OpKind::OrdAt
+        | OpKind::PcallWrapBegin
+        | OpKind::PcallWrapEnd
+        | OpKind::Phi
+        | OpKind::Pos
+        | OpKind::Pow
+        | OpKind::PowMod
+        | OpKind::Print
+        | OpKind::PrintNewline
+        | OpKind::PropertyNew
+        | OpKind::Raise
+        | OpKind::RaiseFrom
+        | OpKind::Range
+        | OpKind::RangeNew
+        | OpKind::Release
+        | OpKind::ReprFromObj
+        | OpKind::Reraise
+        | OpKind::Ret
+        | OpKind::RetVoid
+        | OpKind::Reversed
+        | OpKind::Round
+        | OpKind::Rshift
+        | OpKind::SetAdd
+        | OpKind::SetAddProbe
+        | OpKind::SetAttr
+        | OpKind::SetAttrGenericObj
+        | OpKind::SetAttrGenericPtr
+        | OpKind::SetAttrName
+        | OpKind::SetClear
+        | OpKind::SetDifferenceUpdate
+        | OpKind::SetDiscard
+        | OpKind::SetIntersectionUpdate
+        | OpKind::SetItem
+        | OpKind::SetNew
+        | OpKind::SetPop
+        | OpKind::SetRemove
+        | OpKind::SetSymdiffUpdate
+        | OpKind::SetUpdate
+        | OpKind::Shl
+        | OpKind::Shr
+        | OpKind::Slice
+        | OpKind::SliceNew
+        | OpKind::Sorted
+        | OpKind::StackAlloc
+        | OpKind::StateBlockEnd
+        | OpKind::StateBlockStart
+        | OpKind::StateLabel
+        | OpKind::StateSet
+        | OpKind::StateSwitch
+        | OpKind::StateTransition
+        | OpKind::StateYield
+        | OpKind::StatefulLocalsRegister
+        | OpKind::StaticmethodNew
+        | OpKind::Store
+        | OpKind::StoreAttr
+        | OpKind::StoreFast
+        | OpKind::StoreIndex
+        | OpKind::StoreLocal
+        | OpKind::StoreSubscript
+        | OpKind::StoreVar
+        | OpKind::Str
+        | OpKind::StrFromObj
+        | OpKind::StringCapitalize
+        | OpKind::StringConcat
+        | OpKind::StringConst
+        | OpKind::StringCount
+        | OpKind::StringCountSlice
+        | OpKind::StringEndswith
+        | OpKind::StringEndswithSlice
+        | OpKind::StringEq
+        | OpKind::StringFind
+        | OpKind::StringFindSlice
+        | OpKind::StringFormat
+        | OpKind::StringIndex
+        | OpKind::StringIndexSlice
+        | OpKind::StringJoin
+        | OpKind::StringLower
+        | OpKind::StringLstrip
+        | OpKind::StringPartition
+        | OpKind::StringRepeat
+        | OpKind::StringReplace
+        | OpKind::StringRfind
+        | OpKind::StringRfindSlice
+        | OpKind::StringRindex
+        | OpKind::StringRindexSlice
+        | OpKind::StringRpartition
+        | OpKind::StringRstrip
+        | OpKind::StringSplit
+        | OpKind::StringSplitField
+        | OpKind::StringSplitFieldEnd
+        | OpKind::StringSplitFieldEq
+        | OpKind::StringSplitFieldIsAscii
+        | OpKind::StringSplitFieldLen
+        | OpKind::StringSplitFieldLenFromBounds
+        | OpKind::StringSplitFieldOrdAtBounds
+        | OpKind::StringSplitFieldStart
+        | OpKind::StringSplitFieldToInt
+        | OpKind::StringSplitMax
+        | OpKind::StringSplitSepDictInc
+        | OpKind::StringSplitValidate
+        | OpKind::StringSplitWsDictInc
+        | OpKind::StringSplitlines
+        | OpKind::StringStartswith
+        | OpKind::StringStartswithSlice
+        | OpKind::StringStrip
+        | OpKind::StringUpper
+        | OpKind::Sub
+        | OpKind::Subscript
+        | OpKind::Sum
+        | OpKind::TaskWait
+        | OpKind::TraceEnterSlot
+        | OpKind::TraceExit
+        | OpKind::TrueDiv
+        | OpKind::Trunc
+        | OpKind::TryEnd
+        | OpKind::TryStart
+        | OpKind::TupleCount
+        | OpKind::TupleFromList
+        | OpKind::TupleIndex
+        | OpKind::TupleNew
+        | OpKind::TypeGuard
+        | OpKind::TypeOf
+        | OpKind::UnaryInvert
+        | OpKind::UnaryNeg
+        | OpKind::UnaryNot
+        | OpKind::UnaryOp
+        | OpKind::UnaryPos
+        | OpKind::Unbox
+        | OpKind::UnboxToRawInt
+        | OpKind::UnpackSequence
+        | OpKind::Unreachable
+        | OpKind::VecMax
+        | OpKind::VecMin
+        | OpKind::VecProd
+        | OpKind::VecSum
+        | OpKind::WarnStderr
+        | OpKind::WhileEnd
+        | OpKind::WhileStart
+        | OpKind::Widen
+        | OpKind::Yield
+        | OpKind::YieldFrom
+        | OpKind::Zip => false,
+        OpKind::FrameHomeClear | OpKind::FrameHomeStore => true,
+    }
+}
+
+#[inline]
+pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
+    match kind {
+        OpKind::MAnd
+        | OpKind::Abs
+        | OpKind::Add
+        | OpKind::Aiter
+        | OpKind::All
+        | OpKind::Alloc
+        | OpKind::AllocClass
+        | OpKind::AllocClassStatic
+        | OpKind::AllocClassTrusted
+        | OpKind::AllocInstance
+        | OpKind::AllocTask
+        | OpKind::And
+        | OpKind::Anext
+        | OpKind::Any
+        | OpKind::AsciiFromObj
+        | OpKind::AsyncForEnd
+        | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPoll
+        | OpKind::AsyncgenNew
+        | OpKind::Band
+        | OpKind::BindingAlias
+        | OpKind::Binop
+        | OpKind::BinopAdd
+        | OpKind::BinopFloorDiv
+        | OpKind::BinopMod
+        | OpKind::BinopMul
+        | OpKind::BinopPow
+        | OpKind::BinopSub
+        | OpKind::BitAnd
+        | OpKind::BitNot
+        | OpKind::BitOr
+        | OpKind::BitXor
+        | OpKind::Bool
+        | OpKind::BoolConst
+        | OpKind::Bor
+        | OpKind::Borrow
+        | OpKind::BoundMethodNew
+        | OpKind::Box
+        | OpKind::BoxFromRawInt
+        | OpKind::BrIf
+        | OpKind::Branch
+        | OpKind::BranchFalse
+        | OpKind::BranchTrue
+        | OpKind::BuildDict
+        | OpKind::BuildList
+        | OpKind::BuildSet
+        | OpKind::BuildSlice
+        | OpKind::BuildTuple
+        | OpKind::BuiltinAbs
+        | OpKind::BuiltinAll
+        | OpKind::BuiltinAny
+        | OpKind::BuiltinBool
+        | OpKind::BuiltinFloat
+        | OpKind::BuiltinFunc
+        | OpKind::BuiltinInt
+        | OpKind::BuiltinLen
+        | OpKind::BuiltinPrint
+        | OpKind::BuiltinRange
+        | OpKind::BuiltinReversed
+        | OpKind::BuiltinSorted
+        | OpKind::BuiltinStr
+        | OpKind::BuiltinSum
+        | OpKind::BuiltinType
+        | OpKind::Bxor
+        | OpKind::BytearrayCount
+        | OpKind::BytearrayCountSlice
+        | OpKind::BytearrayEndswith
+        | OpKind::BytearrayEndswithSlice
+        | OpKind::BytearrayFillRange
+        | OpKind::BytearrayFind
+        | OpKind::BytearrayFindSlice
+        | OpKind::BytearrayFromObj
+        | OpKind::BytearrayFromStr
+        | OpKind::BytearrayReplace
+        | OpKind::BytearraySplit
+        | OpKind::BytearraySplitMax
+        | OpKind::BytearrayStartswith
+        | OpKind::BytearrayStartswithSlice
+        | OpKind::BytesCount
+        | OpKind::BytesCountSlice
+        | OpKind::BytesEndswith
+        | OpKind::BytesEndswithSlice
+        | OpKind::BytesFind
+        | OpKind::BytesFindSlice
+        | OpKind::BytesFromObj
+        | OpKind::BytesFromStr
+        | OpKind::BytesReplace
+        | OpKind::BytesSplit
+        | OpKind::BytesSplitMax
+        | OpKind::BytesStartswith
+        | OpKind::BytesStartswithSlice
+        | OpKind::Call
+        | OpKind::CallAsync
+        | OpKind::CallBind
+        | OpKind::CallBuiltin
+        | OpKind::CallFunc
+        | OpKind::CallFunction
+        | OpKind::CallGuarded
+        | OpKind::CallIndirect
+        | OpKind::CallInternal
+        | OpKind::CallLoadedMethod
+        | OpKind::CallMethod
+        | OpKind::CallargsExpandKwstar
+        | OpKind::CallargsExpandStar
+        | OpKind::CallargsNew
+        | OpKind::CallargsPushKw
+        | OpKind::CallargsPushMethodReceiver
+        | OpKind::CallargsPushPos
+        | OpKind::Cast
+        | OpKind::CastBool
+        | OpKind::CastFloat
+        | OpKind::CastInt
+        | OpKind::CastStr
+        | OpKind::CheckException
+        | OpKind::CheckedAdd
+        | OpKind::CheckedMul
+        | OpKind::Chr
+        | OpKind::ClassDef
+        | OpKind::ClassLayoutFieldCount
+        | OpKind::ClassLayoutSlotCount
+        | OpKind::ClassSetDefinition
+        | OpKind::ClassmethodNew
+        | OpKind::ClosureLoad
+        | OpKind::ClosureStore
+        | OpKind::CmpEq
+        | OpKind::CmpGe
+        | OpKind::CmpGt
+        | OpKind::CmpLe
+        | OpKind::CmpLt
+        | OpKind::CmpNe
+        | OpKind::CodeNew
+        | OpKind::CodeSlotSet
+        | OpKind::CodeSlotsInit
+        | OpKind::Compare
+        | OpKind::ComplexFromObj
+        | OpKind::Const
+        | OpKind::ConstBigint
+        | OpKind::ConstBool
+        | OpKind::ConstBytes
+        | OpKind::ConstEllipsis
+        | OpKind::ConstFloat
+        | OpKind::ConstInt
+        | OpKind::ConstNone
+        | OpKind::ConstNotImplemented
+        | OpKind::ConstStr
+        | OpKind::Contains
+        | OpKind::ContextEnter
+        | OpKind::ContextExit
+        | OpKind::Copy
+        | OpKind::CopyVar
+        | OpKind::DecRef
+        | OpKind::DelAttr
+        | OpKind::DelAttrGenericObj
+        | OpKind::DelAttrGenericPtr
+        | OpKind::DelAttrName
+        | OpKind::DelBoundary
+        | OpKind::DelIndex
+        | OpKind::DelItem
+        | OpKind::DeleteVar
+        | OpKind::DictClear
+        | OpKind::DictCopy
+        | OpKind::DictFromObj
+        | OpKind::DictGet
+        | OpKind::DictItems
+        | OpKind::DictKeys
+        | OpKind::DictNew
+        | OpKind::DictPop
+        | OpKind::DictPopitem
+        | OpKind::DictSet
+        | OpKind::DictSetdefault
+        | OpKind::DictSetdefaultEmptyList
+        | OpKind::DictStrIntInc
+        | OpKind::DictUnpack
+        | OpKind::DictUpdate
+        | OpKind::DictUpdateKwstar
+        | OpKind::DictUpdateMissing
+        | OpKind::DictValues
+        | OpKind::Div
+        | OpKind::DropInserted
+        | OpKind::Else
+        | OpKind::EndFor
+        | OpKind::EndIf
+        | OpKind::Enumerate
+        | OpKind::Eq
+        | OpKind::ExceptEnd
+        | OpKind::ExceptStart
+        | OpKind::ExceptionActive
+        | OpKind::ExceptionClass
+        | OpKind::ExceptionClear
+        | OpKind::ExceptionContextSet
+        | OpKind::ExceptionCurrent
+        | OpKind::ExceptionFinallyPendingObserver
+        | OpKind::ExceptionLast
+        | OpKind::ExceptionLastPending
+        | OpKind::ExceptionMatchBuiltin
+        | OpKind::ExceptionNew
+        | OpKind::ExceptionNewBuiltin
+        | OpKind::ExceptionNewBuiltinEmpty
+        | OpKind::ExceptionNewBuiltinOne
+        | OpKind::ExceptionNewFromClass
+        | OpKind::ExceptionPending
+        | OpKind::ExceptionPop
+        | OpKind::ExceptionPush
+        | OpKind::ExceptionRegionDropsInserted
+        | OpKind::ExceptionSetLast
+        | OpKind::ExceptionStackClear
+        | OpKind::ExceptionStackDepth
+        | OpKind::ExceptionStackEnter
+        | OpKind::ExceptionStackExit
+        | OpKind::ExceptionStackSetDepth
+        | OpKind::ExceptiongroupCombine
+        | OpKind::ExceptiongroupMatch
+        | OpKind::FinallyEnd
+        | OpKind::FinallyStart
+        | OpKind::Float
+        | OpKind::FloatFromObj
+        | OpKind::FloorDiv
+        | OpKind::Floordiv
+        | OpKind::ForIter
+        | OpKind::ForIterEnd
+        | OpKind::ForIterStart
+        | OpKind::ForRange
+        | OpKind::FormatString
+        | OpKind::FrameContextSet
+        | OpKind::FrameHomeCell
+        | OpKind::FrameHomeClear
+        | OpKind::FrameHomeLoad
+        | OpKind::FrameHomePrivateCell
+        | OpKind::FrameHomeStore
+        | OpKind::FrameHomeTake
+        | OpKind::FrameLocals
+        | OpKind::FrameLocalsSet
+        | OpKind::FrameSetLocation
+        | OpKind::Free
+        | OpKind::FrozensetAdd
+        | OpKind::FrozensetNew
+        | OpKind::FuncNew
+        | OpKind::FuncNewClosure
+        | OpKind::FunctionClosureBits
+        | OpKind::FunctionDefaultsVersion
+        | OpKind::Ge
+        | OpKind::GenClose
+        | OpKind::GenSend
+        | OpKind::GenThrow
+        | OpKind::GetAttr
+        | OpKind::GetAttrGenericObj
+        | OpKind::GetAttrGenericPtr
+        | OpKind::GetAttrName
+        | OpKind::GetAttrNameDefault
+        | OpKind::GetAttrSpecialObj
+        | OpKind::GetItem
+        | OpKind::GetIter
+        | OpKind::Getframe
+        | OpKind::Goto
+        | OpKind::GpuBarrier
+        | OpKind::GpuBlockDim
+        | OpKind::GpuBlockId
+        | OpKind::GpuGridDim
+        | OpKind::GpuThreadId
+        | OpKind::Gt
+        | OpKind::GuardBool
+        | OpKind::GuardFloat
+        | OpKind::GuardInt
+        | OpKind::GuardLayout
+        | OpKind::GuardNone
+        | OpKind::GuardStr
+        | OpKind::GuardTag
+        | OpKind::GuardType
+        | OpKind::GuardedFieldGet
+        | OpKind::GuardedFieldSet
+        | OpKind::GuardedLoad
+        | OpKind::HasAttrName
+        | OpKind::Id
+        | OpKind::IdentityAlias
+        | OpKind::If
+        | OpKind::IfNot
+        | OpKind::Import
+        | OpKind::ImportFrom
+        | OpKind::ImportName
+        | OpKind::In
+        | OpKind::IncRef
+        | OpKind::Index
+        | OpKind::IndexSet
+        | OpKind::InitInstance
+        | OpKind::InplaceAdd
+        | OpKind::InplaceBitAnd
+        | OpKind::InplaceBitOr
+        | OpKind::InplaceBitXor
+        | OpKind::InplaceDiv
+        | OpKind::InplaceFloordiv
+        | OpKind::InplaceLshift
+        | OpKind::InplaceMatmul
+        | OpKind::InplaceMod
+        | OpKind::InplaceMul
+        | OpKind::InplacePow
+        | OpKind::InplaceRshift
+        | OpKind::InplaceSub
+        | OpKind::InstanceGetField
+        | OpKind::InstanceHasField
+        | OpKind::InstanceSetField
+        | OpKind::Int
+        | OpKind::IntFromObj
+        | OpKind::IntFromStrOfObj
+        | OpKind::Invert
+        | OpKind::InvokeFfi
+        | OpKind::Is
+        | OpKind::IsBoundMethod
+        | OpKind::IsCallable
+        | OpKind::IsGenerator
+        | OpKind::IsNativeAwaitable
+        | OpKind::IsNot
+        | OpKind::IsPending
+        | OpKind::Isinstance
+        | OpKind::Issubclass
+        | OpKind::Iter
+        | OpKind::IterNext
+        | OpKind::IterNextUnboxed
+        | OpKind::Jump
+        | OpKind::Label
+        | OpKind::Le
+        | OpKind::Len
+        | OpKind::Line
+        | OpKind::ListAppend
+        | OpKind::ListClear
+        | OpKind::ListCopy
+        | OpKind::ListCount
+        | OpKind::ListExtend
+        | OpKind::ListFillNew
+        | OpKind::ListFromRange
+        | OpKind::ListIndex
+        | OpKind::ListIndexRange
+        | OpKind::ListInsert
+        | OpKind::ListIntNew
+        | OpKind::ListNew
+        | OpKind::ListPop
+        | OpKind::ListRemove
+        | OpKind::ListReverse
+        | OpKind::Load
+        | OpKind::LoadAttr
+        | OpKind::LoadConst
+        | OpKind::LoadLocal
+        | OpKind::LoadMethod
+        | OpKind::LoadSuperMethod
+        | OpKind::LoadVar
+        | OpKind::LoopBreak
+        | OpKind::LoopBreakIfException
+        | OpKind::LoopBreakIfFalse
+        | OpKind::LoopBreakIfTrue
+        | OpKind::LoopCarryInit
+        | OpKind::LoopCarryUpdate
+        | OpKind::LoopContinue
+        | OpKind::LoopEnd
+        | OpKind::LoopIndexEnd
+        | OpKind::LoopIndexNext
+        | OpKind::LoopIndexStart
+        | OpKind::LoopStart
+        | OpKind::Lshift
+        | OpKind::Lt
+        | OpKind::Matmul
+        | OpKind::Missing
+        | OpKind::Mod
+        | OpKind::Mod_
+        | OpKind::ModuleCacheDel
+        | OpKind::ModuleCacheGet
+        | OpKind::ModuleCacheSet
+        | OpKind::ModuleDelGlobal
+        | OpKind::ModuleDelGlobalIfPresent
+        | OpKind::ModuleGetAttr
+        | OpKind::ModuleGetGlobal
+        | OpKind::ModuleGetName
+        | OpKind::ModuleImport
+        | OpKind::ModuleImportFrom
+        | OpKind::ModuleImportStar
+        | OpKind::ModuleLoadCached
+        | OpKind::ModuleNew
+        | OpKind::ModuleSetAttr
+        | OpKind::ModuleSlot
+        | OpKind::Modulo
+        | OpKind::Mul
+        | OpKind::Ne
+        | OpKind::Neg
+        | OpKind::NoneConst
+        | OpKind::Nop
+        | OpKind::Not
+        | OpKind::NotIn
+        | OpKind::ObjectNew
+        | OpKind::ObjectNewBound
+        | OpKind::Or
+        | OpKind::Ord
+        | OpKind::OrdAt
+        | OpKind::PcallWrapBegin
+        | OpKind::PcallWrapEnd
+        | OpKind::Phi
+        | OpKind::Pos
+        | OpKind::Pow
+        | OpKind::PowMod
+        | OpKind::Print
+        | OpKind::PrintNewline
+        | OpKind::PropertyNew
+        | OpKind::Raise
+        | OpKind::RaiseFrom
+        | OpKind::Range
+        | OpKind::RangeNew
+        | OpKind::Release
+        | OpKind::ReprFromObj
+        | OpKind::Reraise
+        | OpKind::Ret
+        | OpKind::RetVoid
+        | OpKind::Reversed
+        | OpKind::Round
+        | OpKind::Rshift
+        | OpKind::SetAdd
+        | OpKind::SetAddProbe
+        | OpKind::SetAttr
+        | OpKind::SetAttrGenericObj
+        | OpKind::SetAttrGenericPtr
+        | OpKind::SetAttrName
+        | OpKind::SetClear
+        | OpKind::SetDifferenceUpdate
+        | OpKind::SetDiscard
+        | OpKind::SetIntersectionUpdate
+        | OpKind::SetItem
+        | OpKind::SetNew
+        | OpKind::SetPop
+        | OpKind::SetRemove
+        | OpKind::SetSymdiffUpdate
+        | OpKind::SetUpdate
+        | OpKind::Shl
+        | OpKind::Shr
+        | OpKind::Slice
+        | OpKind::SliceNew
+        | OpKind::Sorted
+        | OpKind::StackAlloc
+        | OpKind::StateBlockEnd
+        | OpKind::StateBlockStart
+        | OpKind::StateLabel
+        | OpKind::StateSet
+        | OpKind::StateSwitch
+        | OpKind::StateTransition
+        | OpKind::StateYield
+        | OpKind::StatefulLocalsRegister
+        | OpKind::StaticmethodNew
+        | OpKind::Store
+        | OpKind::StoreAttr
+        | OpKind::StoreFast
+        | OpKind::StoreIndex
+        | OpKind::StoreLocal
+        | OpKind::StoreSubscript
+        | OpKind::StoreVar
+        | OpKind::Str
+        | OpKind::StrFromObj
+        | OpKind::StringCapitalize
+        | OpKind::StringConcat
+        | OpKind::StringConst
+        | OpKind::StringCount
+        | OpKind::StringCountSlice
+        | OpKind::StringEndswith
+        | OpKind::StringEndswithSlice
+        | OpKind::StringEq
+        | OpKind::StringFind
+        | OpKind::StringFindSlice
+        | OpKind::StringFormat
+        | OpKind::StringIndex
+        | OpKind::StringIndexSlice
+        | OpKind::StringJoin
+        | OpKind::StringLower
+        | OpKind::StringLstrip
+        | OpKind::StringPartition
+        | OpKind::StringRepeat
+        | OpKind::StringReplace
+        | OpKind::StringRfind
+        | OpKind::StringRfindSlice
+        | OpKind::StringRindex
+        | OpKind::StringRindexSlice
+        | OpKind::StringRpartition
+        | OpKind::StringRstrip
+        | OpKind::StringSplit
+        | OpKind::StringSplitField
+        | OpKind::StringSplitFieldEnd
+        | OpKind::StringSplitFieldEq
+        | OpKind::StringSplitFieldIsAscii
+        | OpKind::StringSplitFieldLen
+        | OpKind::StringSplitFieldLenFromBounds
+        | OpKind::StringSplitFieldOrdAtBounds
+        | OpKind::StringSplitFieldStart
+        | OpKind::StringSplitFieldToInt
+        | OpKind::StringSplitMax
+        | OpKind::StringSplitSepDictInc
+        | OpKind::StringSplitValidate
+        | OpKind::StringSplitWsDictInc
+        | OpKind::StringSplitlines
+        | OpKind::StringStartswith
+        | OpKind::StringStartswithSlice
+        | OpKind::StringStrip
+        | OpKind::StringUpper
+        | OpKind::Sub
+        | OpKind::Subscript
+        | OpKind::Sum
+        | OpKind::TaskWait
+        | OpKind::TraceEnterSlot
+        | OpKind::TraceExit
+        | OpKind::TrueDiv
+        | OpKind::Trunc
+        | OpKind::TryEnd
+        | OpKind::TryStart
+        | OpKind::TupleCount
+        | OpKind::TupleFromList
+        | OpKind::TupleIndex
+        | OpKind::TupleNew
+        | OpKind::TypeGuard
+        | OpKind::TypeOf
+        | OpKind::UnaryInvert
+        | OpKind::UnaryNeg
+        | OpKind::UnaryNot
+        | OpKind::UnaryOp
+        | OpKind::UnaryPos
+        | OpKind::Unbox
+        | OpKind::UnboxToRawInt
+        | OpKind::UnpackSequence
+        | OpKind::Unreachable
+        | OpKind::VecMax
+        | OpKind::VecMin
+        | OpKind::VecProd
+        | OpKind::VecSum
+        | OpKind::WarnStderr
+        | OpKind::WhileEnd
+        | OpKind::WhileStart
+        | OpKind::Widen
+        | OpKind::Yield
+        | OpKind::YieldFrom
+        | OpKind::Zip => false,
+        OpKind::OperatorIndex => true,
     }
 }
 
@@ -40375,6 +41450,131 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::TryEnd => false,
         OpCode::StateBlockStart => true,
         OpCode::StateBlockEnd => true,
+        OpCode::ModuleSlot => false,
+        OpCode::ConstInt => false,
+        OpCode::ConstBigInt => false,
+        OpCode::ConstFloat => false,
+        OpCode::ConstStr => false,
+        OpCode::ConstBool => false,
+        OpCode::ConstNone => false,
+        OpCode::ConstBytes => false,
+        OpCode::Copy => false,
+        OpCode::Import => false,
+        OpCode::ImportFrom => false,
+        OpCode::ModuleCacheGet => false,
+        OpCode::ModuleCacheSet => false,
+        OpCode::ModuleCacheDel => false,
+        OpCode::ModuleGetAttr => false,
+        OpCode::ModuleImportFrom => false,
+        OpCode::ModuleGetGlobal => false,
+        OpCode::ModuleGetName => false,
+        OpCode::ModuleSetAttr => false,
+        OpCode::ModuleDelGlobal => false,
+        OpCode::ModuleDelGlobalIfPresent => false,
+        OpCode::WarnStderr => false,
+        OpCode::ScfIf => false,
+        OpCode::ScfFor => false,
+        OpCode::ScfWhile => false,
+        OpCode::ScfYield => false,
+    }
+}
+
+/// Whether an opcode's only Python callback is finalizing a temporary that
+/// drop insertion releases at its last use. Frame-location placement does
+/// not treat that finalizer as a location read. EXHAUSTIVE over OpCode.
+#[inline]
+pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
+    match opcode {
+        OpCode::FrameSetLocation => false,
+        OpCode::Add => false,
+        OpCode::Sub => false,
+        OpCode::Mul => false,
+        OpCode::CheckedAdd => false,
+        OpCode::CheckedMul => false,
+        OpCode::InplaceAdd => false,
+        OpCode::InplaceSub => false,
+        OpCode::InplaceMul => false,
+        OpCode::Div => false,
+        OpCode::FloorDiv => false,
+        OpCode::Mod => false,
+        OpCode::Pow => false,
+        OpCode::Neg => false,
+        OpCode::Pos => false,
+        OpCode::Eq => false,
+        OpCode::Ne => false,
+        OpCode::Lt => false,
+        OpCode::Le => false,
+        OpCode::Gt => false,
+        OpCode::Ge => false,
+        OpCode::Is => false,
+        OpCode::IsNot => false,
+        OpCode::In => false,
+        OpCode::NotIn => false,
+        OpCode::BitAnd => false,
+        OpCode::BitOr => false,
+        OpCode::BitXor => false,
+        OpCode::BitNot => false,
+        OpCode::Shl => false,
+        OpCode::Shr => false,
+        OpCode::And => false,
+        OpCode::Or => false,
+        OpCode::Not => false,
+        OpCode::Bool => false,
+        OpCode::Alloc => false,
+        OpCode::StackAlloc => false,
+        OpCode::ObjectNewBound => false,
+        OpCode::Free => false,
+        OpCode::LoadAttr => false,
+        OpCode::StoreAttr => false,
+        OpCode::DelAttr => false,
+        OpCode::Index => false,
+        OpCode::StoreIndex => false,
+        OpCode::DelIndex => false,
+        OpCode::DeleteVar => false,
+        OpCode::Call => false,
+        OpCode::CallMethod => false,
+        OpCode::LoadMethod => false,
+        OpCode::LoadSuperMethod => false,
+        OpCode::CallLoadedMethod => false,
+        OpCode::CallargsPushMethodReceiver => false,
+        OpCode::CallBuiltin => false,
+        OpCode::OrdAt => false,
+        OpCode::BoxVal => false,
+        OpCode::UnboxVal => false,
+        OpCode::TypeGuard => false,
+        OpCode::IncRef => false,
+        OpCode::DecRef => true,
+        OpCode::DelBoundary => false,
+        OpCode::BuildList => false,
+        OpCode::BuildDict => false,
+        OpCode::BuildTuple => false,
+        OpCode::BuildSet => false,
+        OpCode::BuildSlice => false,
+        OpCode::GetIter => false,
+        OpCode::IterNext => false,
+        OpCode::IterNextUnboxed => false,
+        OpCode::UnpackSequence => false,
+        OpCode::ForIter => false,
+        OpCode::AllocTask => false,
+        OpCode::StateSwitch => false,
+        OpCode::StateTransition => false,
+        OpCode::StateSet => false,
+        OpCode::IsPending => false,
+        OpCode::TaskWait => false,
+        OpCode::StateYield => false,
+        OpCode::ClosureLoad => false,
+        OpCode::FrameContextSet => false,
+        OpCode::ClosureStore => false,
+        OpCode::Yield => false,
+        OpCode::YieldFrom => false,
+        OpCode::Raise => false,
+        OpCode::CheckException => false,
+        OpCode::ExceptionPending => false,
+        OpCode::FunctionDefaultsVersion => false,
+        OpCode::TryStart => false,
+        OpCode::TryEnd => false,
+        OpCode::StateBlockStart => false,
+        OpCode::StateBlockEnd => false,
         OpCode::ModuleSlot => false,
         OpCode::ConstInt => false,
         OpCode::ConstBigInt => false,

@@ -443,14 +443,60 @@ class LoopLoweringMixin(GeneratorMixinBase):
 
         def emit_range_loop_body() -> None:
             if step_const is not None and step_const != 0:
+                with self._suppress_check_exception(emit_on_exit=False):
+                    self.emit(
+                        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
+                    )
+                    idx = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+                    cond = MoltValue(self.next_var(), type_hint="bool")
+                    if step_const > 0:
+                        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+                    else:
+                        self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+                    self.emit(
+                        MoltOp(
+                            kind="LOOP_BREAK_IF_FALSE",
+                            args=[cond],
+                            result=MoltValue("none"),
+                        )
+                    )
+                    if simple_name_target:
+                        self._emit_assign_target(target, idx, None)
+                if not simple_name_target:
+                    self._emit_assign_target(target, idx, None)
+                scope = self._visit_loop_body(
+                    node.body, None, loop_break_flag=loop_break_flag
+                )
+                if scope.needs_latch:
+                    with self._suppress_check_exception(emit_on_exit=False):
+                        next_idx = MoltValue(self.next_var(), type_hint="int")
+                        self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+                        self.emit(
+                            MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx)
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="LOOP_CONTINUE", args=[], result=MoltValue("none")
+                            )
+                        )
+                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+                self._emit_loop_exit(scope)
+                return None
+            with self._suppress_check_exception(emit_on_exit=False):
+                one = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                zero = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+                step_pos = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
+            self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
+            with self._suppress_check_exception(emit_on_exit=False):
                 self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
                 idx = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
                 cond = MoltValue(self.next_var(), type_hint="bool")
-                if step_const > 0:
-                    self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-                else:
-                    self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+                self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
                 self.emit(
                     MoltOp(
                         kind="LOOP_BREAK_IF_FALSE",
@@ -460,12 +506,13 @@ class LoopLoweringMixin(GeneratorMixinBase):
                 )
                 if simple_name_target:
                     self._emit_assign_target(target, idx, None)
-                if not simple_name_target:
-                    self._emit_assign_target(target, idx, None)
-                scope = self._visit_loop_body(
-                    node.body, None, loop_break_flag=loop_break_flag
-                )
-                if scope.needs_latch:
+            if not simple_name_target:
+                self._emit_assign_target(target, idx, None)
+            scope = self._visit_loop_body(
+                node.body, None, loop_break_flag=loop_break_flag
+            )
+            if scope.needs_latch:
+                with self._suppress_check_exception(emit_on_exit=False):
                     next_idx = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
                     self.emit(
@@ -474,76 +521,47 @@ class LoopLoweringMixin(GeneratorMixinBase):
                     self.emit(
                         MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                     )
-                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-                self._emit_loop_exit(scope)
-                return None
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            step_pos = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
-            self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
-            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
-            cond = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE",
-                    args=[cond],
-                    result=MoltValue("none"),
-                )
-            )
-            if simple_name_target:
-                self._emit_assign_target(target, idx, None)
-            if not simple_name_target:
-                self._emit_assign_target(target, idx, None)
-            scope = self._visit_loop_body(
-                node.body, None, loop_break_flag=loop_break_flag
-            )
-            if scope.needs_latch:
-                next_idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-                self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             self._emit_loop_exit(scope)
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            step_neg = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
+            with self._suppress_check_exception(emit_on_exit=False):
+                step_neg = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
             self.emit(MoltOp(kind="IF", args=[step_neg], result=MoltValue("none")))
-            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-            idx_neg = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
-            cond_neg = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE",
-                    args=[cond_neg],
-                    result=MoltValue("none"),
+            with self._suppress_check_exception(emit_on_exit=False):
+                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+                idx_neg = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
+                cond_neg = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_BREAK_IF_FALSE",
+                        args=[cond_neg],
+                        result=MoltValue("none"),
+                    )
                 )
-            )
-            if simple_name_target:
-                self._emit_assign_target(target, idx_neg, None)
+                if simple_name_target:
+                    self._emit_assign_target(target, idx_neg, None)
             if not simple_name_target:
                 self._emit_assign_target(target, idx_neg, None)
             scope = self._visit_loop_body(
                 node.body, None, loop_break_flag=loop_break_flag
             )
             if scope.needs_latch:
-                next_idx_neg = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
-                self.emit(
-                    MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg)
-                )
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
+                with self._suppress_check_exception(emit_on_exit=False):
+                    next_idx_neg = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(
+                        MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg)
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg
+                        )
+                    )
+                    self.emit(
+                        MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                    )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             self._emit_loop_exit(scope)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))

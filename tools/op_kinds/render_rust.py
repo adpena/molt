@@ -479,6 +479,18 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, state_machine_opcodes))
     out.append("    }\n}\n\n")
 
+    temporary_release_opcodes = list(data.get("temporary_release_opcodes", []))
+    out.append(
+        "/// Whether an opcode's only Python callback is finalizing a temporary that\n"
+        "/// drop insertion releases at its last use. Frame-location placement does\n"
+        "/// not treat that finalizer as a location read. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, temporary_release_opcodes))
+    out.append("    }\n}\n\n")
+
     out.append(_render_module_slot_promotion_roles(opcodes, data))
     out.append("\n")
     out.append(_render_residual_tir_semantic_roles(opcodes, data))
@@ -1399,6 +1411,8 @@ def _render_observation_kind_predicates(data: dict) -> str:
         _wire.boolean(data, name, data.get(table, []))
         for name, table in (
             ("copy_kind_is_callback_free_table", "callback_free_copy_kinds"),
+            ("copy_kind_is_binding_release_table", "binding_release_copy_kinds"),
+            ("copy_kind_has_exact_int_result_table", "exact_int_result_copy_kinds"),
             (
                 "simpleir_kind_requires_async_work_poll_after",
                 "async_work_poll_after_kinds",

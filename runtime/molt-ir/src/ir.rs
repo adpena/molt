@@ -501,6 +501,11 @@ pub struct OpIR {
     pub exception_edge: Option<crate::tir::op_kinds_generated::ExceptionEdgeKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exception_source: Option<crate::tir::op_kinds_generated::ExceptionEdgeKind>,
+    /// LocationId an Origin check's taken edge (and a poll's service path)
+    /// stores before capture. Only the frame-location placement pass sets it,
+    /// and only on an Origin check that one publication reaches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_location: Option<i64>,
     /// Exact saved-state -> control-label projection of TIR StateDispatch.
     /// Only state_switch carries it. Empty Some is an explicit empty map;
     /// None belongs to source IR before the canonical CFG/SSA lift.
@@ -633,6 +638,7 @@ impl OpIR {
             kind,
             value: Default::default(),
             exception_source: None,
+            frame_location: None,
             exception_edge: kind
                 .is_exception_check()
                 .then_some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin),
@@ -2101,6 +2107,7 @@ mod json_parse_tests {
             kind: crate::OpKind::Nop,
             exception_edge: None,
             exception_source: None,
+            frame_location: None,
             value: Some(7),
             f_value: Some(1.25),
             s_value: Some("symbol".to_string()),

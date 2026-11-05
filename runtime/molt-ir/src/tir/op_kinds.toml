@@ -262,6 +262,9 @@ primitive_operator_effect_cases = [
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
 #                  inliner or module-slot promotion.
+#   - temporary_release_opcodes - opcode-only callback-cause fact: the only
+#                  Python callback is finalizing a drop-inserted temporary.
+#                  Frame-location placement does not treat it as a read.
 #   - inliner_numeric_raw_lane_consumer_opcodes - opcode-only fact for direct
 #                  call results that feed scalar numeric consumers. The inliner
 #                  owns call/result shape and safety gates; this registry owns
@@ -662,12 +665,25 @@ simpleir_host_capability_semantics_kinds = [
 # Independent callback contracts for preserved primitives. Physical guards and
 # source-location updates do not dispatch; lifetime releases are explicit in
 # finalized TIR. Trace frame lifecycle operations are deliberately absent.
-# call_async only constructs an unstarted task; print_newline writes host stdout.
+# call_async only constructs an unstarted task; print_newline writes host stdout;
+# binding_alias only retains its operand (+1) and releases nothing.
 callback_free_copy_kinds = [
-    "call_async", "guard_bool", "guard_float", "guard_int",
+    "binding_alias", "call_async", "guard_bool", "guard_float", "guard_int",
     "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
     "line", "missing", "nop", "print_newline",
 ]
+
+# Preserved primitives whose successful result is an exact `int` of any
+# magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact
+# int on every supported target (PyNumber_Index). The exact scalar solver reads
+# this.
+exact_int_result_copy_kinds = ["operator_index"]
+
+# Preserved primitives whose only Python callback is releasing the previous
+# binding of frame home `value` (a finalizer). Frame-location placement treats
+# that release as a location read only when the slot's previous binding is not
+# proven finalizer-free (call_anatomy.md, "Location publication cost", M2.1).
+binding_release_copy_kinds = ["frame_home_clear", "frame_home_store"]
 
 async_work_poll_after_kinds = [
     "builtin_func",
@@ -1280,6 +1296,13 @@ generator_fusion_iter_use_roles = [
 # inlining/promotion even though it is not side_effecting for DCE. Generated
 # exhaustively over OpCode so a new suspension/control opcode cannot silently
 # become inlinable or promotable through a default-false hand-set.
+# temporary_release_opcodes: opcodes whose only Python callback is finalizing
+# a temporary that drop insertion releases at its last use. That point is not
+# a CPython release point, so frame-location placement does not treat the
+# finalizer as a location read (call_anatomy.md, "Location publication cost",
+# M2.1). Every member must have may_call_python = true.
+temporary_release_opcodes = ["DecRef"]
+
 state_machine_opcodes = [
     "AllocTask",
     "StateBlockEnd",

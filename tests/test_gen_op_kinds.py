@@ -1039,6 +1039,7 @@ def test_call_sites_share_effect_authority() -> None:
     ):
         assert not rows[name]["may_call_python"], name
     assert data["callback_free_copy_kinds"] == [
+        "binding_alias",
         "call_async",
         "guard_bool",
         "guard_float",

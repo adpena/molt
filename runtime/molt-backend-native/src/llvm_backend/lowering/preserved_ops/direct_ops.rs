@@ -307,7 +307,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
                 let result = if op.is_async_work_poll() {
-                    self.emit_async_work_poll(true)
+                    self.emit_async_work_poll(true, None)
                 } else {
                     let last_fn = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
                     self.backend

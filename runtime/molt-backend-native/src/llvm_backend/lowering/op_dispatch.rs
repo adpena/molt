@@ -511,7 +511,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return;
                 };
                 let result = if op.is_async_work_poll() {
-                    self.emit_async_work_poll(false)
+                    self.emit_async_work_poll(false, op.frame_location())
                 } else {
                     self.emit_exception_pending_word("check_exc").into()
                 };
@@ -572,6 +572,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         self.synthetic_block_counter += 1;
                         self.all_llvm_blocks.push(origin);
                         self.backend.builder.position_at_end(origin);
+                        if let Some(location) = op.frame_location() {
+                            // The site's own LocationId; the normal path stores nothing.
+                            self.store_frame_location(location);
+                        }
                         let homes = if let Some(slot) = self.frame_homes {
                             self.backend
                                 .builder

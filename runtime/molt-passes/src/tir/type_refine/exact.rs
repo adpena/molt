@@ -140,6 +140,13 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                     vec![TirType::DynBox; op.results.len()]
                 } else if let Some(source) = scalar_source {
                     vec![facts.get(&source).cloned().unwrap_or(TirType::DynBox)]
+                } else if op.opcode == OpCode::Copy
+                    && op.origin.is_some_and(
+                        crate::tir::op_kinds_generated::copy_kind_has_exact_int_result_table,
+                    )
+                {
+                    // An exact int of any magnitude: the carrier stays boxed.
+                    vec![TirType::BigInt; op.results.len()]
                 } else if let Some(result_type) = instance.and_then(|facts| facts.result_type) {
                     vec![result_type; op.results.len()]
                 } else if let Some(ty) =

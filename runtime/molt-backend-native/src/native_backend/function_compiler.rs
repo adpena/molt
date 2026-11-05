@@ -891,10 +891,12 @@ impl SimpleBackend {
             .max()
             .map(|slot| slot + 1)
             .or_else(|| {
+                // A publication or a check's cold `frame_location` store
+                // needs the location word, even with no binding homes.
                 func_ir
                     .ops
                     .iter()
-                    .any(|op| op.kind == OpKind::FrameSetLocation)
+                    .any(|op| op.kind == OpKind::FrameSetLocation || op.frame_location.is_some())
                     .then_some(0)
             });
         let enters_later = leading_frame_code_owner.is_none()
@@ -902,14 +904,20 @@ impl SimpleBackend {
                 .ops
                 .iter()
                 .any(|op| op.kind == OpKind::TraceEnterSlot);
+        let cold_frame_homes = frame_home_slots.map(|_| {
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
+        });
         let frame_homes = frame_home_slots.map(|slots| {
             let homes = builder.declare_var(types::I64);
+            let cold_homes = cold_frame_homes.expect("created with the homes");
             if enters_later {
                 let unlent = builder.ins().iconst(types::I64, 0);
                 builder.def_var(homes, unlent);
+                builder.ins().stack_store(types::I64, unlent, cold_homes, 0);
             } else {
                 let base = fc::funcobj::emit_frame_homes_lend(
                     homes,
+                    cold_homes,
                     slots,
                     &mut self.module,
                     &mut self.import_ids,
@@ -1648,6 +1656,7 @@ impl SimpleBackend {
                         op_idx,
                         owned_frame_entered,
                         frame_homes,
+                        cold_frame_homes,
                         leading_frame_entry_op_idx,
                         is_block_filled,
                         rc_authority,
@@ -1901,7 +1910,7 @@ impl SimpleBackend {
                         local_dec_ref_obj,
                         local_exc_pending_fast,
                         exc_flag_ptr_slot,
-                        frame_homes.map(|(homes, _)| homes),
+                        cold_frame_homes,
                         pending_work_slots,
                         &maybe_debug_seal,
                         &nbc,

@@ -735,6 +735,16 @@ def load_table(table_path: Path = TABLE) -> dict:
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    callback_free_releases = sorted(
+        name
+        for name in data.get("temporary_release_opcodes", [])
+        if not opcodes_by_name[name]["may_call_python"]
+    )
+    if callback_free_releases:
+        raise OpKindTableError(
+            "temporary_release_opcodes classifies a callback cause; members must "
+            f"have may_call_python = true: {callback_free_releases}"
+        )
     _validate_opcode_rule_rows(
         data,
         "boxed_allocation_layout_rules",
@@ -970,6 +980,34 @@ def load_table(table_path: Path = TABLE) -> dict:
     ):
         raise OpKindTableError(
             "callback_free_copy_kinds requires unique registered spellings"
+        )
+    exact_int = data.get("exact_int_result_copy_kinds")
+    if (
+        not isinstance(exact_int, list)
+        or any(
+            not isinstance(kind, str)
+            or kind not in registered
+            or kind in mapper_opcode_by_spelling
+            and mapper_opcode_by_spelling[kind] != "Copy"
+            for kind in exact_int
+        )
+        or len(set(exact_int)) != len(exact_int)
+    ):
+        raise OpKindTableError(
+            "exact_int_result_copy_kinds requires unique registered Copy-carrier spellings"
+        )
+    binding_release = data.get("binding_release_copy_kinds")
+    if (
+        not isinstance(binding_release, list)
+        or any(
+            not isinstance(kind, str) or kind not in registered or kind in callback_free
+            for kind in binding_release
+        )
+        or len(set(binding_release)) != len(binding_release)
+    ):
+        raise OpKindTableError(
+            "binding_release_copy_kinds requires unique registered spellings "
+            "outside callback_free_copy_kinds"
         )
     _validate_ssa_attr_transport(data, seen_opcodes, mapper_opcode_by_spelling)
     # -- [[consuming_kind]] operand-ownership overrides per wire-kind spelling --

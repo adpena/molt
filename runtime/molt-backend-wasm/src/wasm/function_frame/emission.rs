@@ -275,12 +275,18 @@ impl WasmFunctionFrame {
         }
     }
 
+    /// The taken Origin edge: store the site's own LocationId when the
+    /// placement pass proved one, then capture this activation.
     pub(in crate::wasm) fn emit_exception_origin(
         &self,
         func: &mut Function,
         import_ids: &TrackedImportIds,
         reloc_enabled: bool,
+        frame_location: Option<i64>,
     ) {
+        if let Some(location) = frame_location {
+            self.emit_frame_location(func, location);
+        }
         self.emit_origin_homes(func);
         emit_call(
             func,

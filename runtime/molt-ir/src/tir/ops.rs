@@ -496,6 +496,9 @@ fn deserialize_op_attrs<'de, D: serde::Deserializer<'de>>(
 /// Canonical TIR marker for an exception observation that must also service
 /// pending calls and the eval breaker at a Python asynchronous-work boundary.
 pub const ASYNC_WORK_POLL_ATTR: &str = "async_work_poll";
+/// LocationId that an Origin check's cold edge stores before capture
+/// (call_anatomy.md, "Location publication cost", M1).
+pub const FRAME_LOCATION_ATTR: &str = "frame_location";
 
 /// Attribute projection of a call's typed per-operand custody: the
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with
@@ -627,6 +630,19 @@ impl TirOp {
     pub fn set_exception_edge_kind(&mut self, kind: super::op_kinds_generated::ExceptionEdgeKind) {
         self.attrs
             .insert("exception_edge".into(), AttrValue::Int(kind as i64));
+    }
+
+    /// The site LocationId an Origin check materializes on its cold edges.
+    pub fn frame_location(&self) -> Option<i64> {
+        match self.attrs.get(FRAME_LOCATION_ATTR) {
+            Some(AttrValue::Int(location)) => Some(*location),
+            _ => None,
+        }
+    }
+
+    pub fn set_frame_location(&mut self, location: i64) {
+        self.attrs
+            .insert(FRAME_LOCATION_ATTR.into(), AttrValue::Int(location));
     }
 
     pub fn with_origin(mut self, origin: crate::OpKind) -> Self {

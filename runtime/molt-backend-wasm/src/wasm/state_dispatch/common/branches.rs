@@ -88,6 +88,11 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
             context.import_ids,
             context.reloc_enabled,
             false,
+            |func| {
+                if let Some(location) = op.frame_location {
+                    context.frame.emit_frame_location(func, location);
+                }
+            },
         );
         func.instruction(&Instruction::I64Const(0));
         func.instruction(&Instruction::I64Ne);
@@ -102,9 +107,12 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     func.instruction(&Instruction::If(BlockType::Empty));
     match op.exception_edge.expect("verified exceptional edge kind") {
         molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
-            context
-                .frame
-                .emit_exception_origin(func, context.import_ids, context.reloc_enabled);
+            context.frame.emit_exception_origin(
+                func,
+                context.import_ids,
+                context.reloc_enabled,
+                op.frame_location,
+            );
         }
         molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {}
     }

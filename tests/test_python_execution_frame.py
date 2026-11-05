@@ -100,6 +100,38 @@ def test_location_tables_do_not_replace_shared_none_metadata():
             assert definitions[code["args"][3]]["kind"] == "const_bytes"
 
 
+def test_counted_range_loop_index_machinery_emits_no_exception_check():
+    # range() bounds are exact ints (operator.index results since CPython 3.10),
+    # so the counted loop's index start, bound compare, simple-name binding and
+    # increment cannot raise and own no Origin event. Each exceptional check
+    # there would be a pending read per iteration (call_anatomy.md, "Location
+    # publication cost", M3). The authored body keeps its own checks.
+    source = (
+        "def run(n):\n"
+        "    total = 0\n"
+        "    for i in range(n):\n"
+        "        total += i\n"
+        "    return total\n"
+    )
+    _, ir = compile_source(source, (3, 12))
+    ops = next(f for f in ir["functions"] if f["name"].endswith("__run"))["ops"]
+    start = next(i for i, op in enumerate(ops) if op["kind"] == "loop_index_start")
+    body = next(i for i in range(start, len(ops)) if ops[i]["kind"] == "line")
+    step = next(i for i in range(body, len(ops)) if ops[i]["kind"] == "loop_index_next")
+    latch = next(
+        i for i in range(step, body, -1) if ops[i].get("out") == ops[step]["args"][0]
+    )
+    end = next(i for i in range(step, len(ops)) if ops[i]["kind"] == "loop_continue")
+    machinery = ops[start:body] + ops[latch : end + 1]
+    assert {op["kind"] for op in machinery} >= {"lt", "frame_home_store", "add"}
+    assert [op for op in machinery if op["kind"] == "check_exception"] == []
+    authored = ops[body:latch]
+    assert any(
+        op["kind"] == "check_exception" and op["exception_edge"] == "origin"
+        for op in authored
+    ), "the body's own operations keep their Origin checks"
+
+
 def compile_source(source, target=(3, 14)):
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(ast.parse(source))

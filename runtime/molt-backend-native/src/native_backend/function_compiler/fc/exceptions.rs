@@ -156,6 +156,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                     record,
                     local_callee,
                     Some(fast),
+                    None,
                 )
             } else {
                 let call = builder.ins().call(local_callee, &[]);

@@ -50,7 +50,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     local_dec_ref_obj: FuncRef,
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
-    frame_homes: Option<Variable>,
+    cold_frame_homes: Option<cranelift_codegen::ir::StackSlot>,
     pending_work_slots: Option<(
         cranelift_codegen::ir::StackSlot,
         cranelift_codegen::ir::StackSlot,
@@ -244,8 +244,20 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 let callee = module.declare_func_in_func(callee, builder.func);
                 let (word, record) =
                     pending_work_slots.expect("async poll requires an execution record");
-                let result =
-                    emit_async_work_poll(builder, sealed_blocks, word, record, callee, None);
+                let cold_location = op.frame_location.map(|location| {
+                    let homes =
+                        cold_frame_homes.expect("a check's frame_location requires lent homes");
+                    (homes, location)
+                });
+                let result = emit_async_work_poll(
+                    builder,
+                    sealed_blocks,
+                    word,
+                    record,
+                    callee,
+                    None,
+                    cold_location,
+                );
                 builder.ins().icmp_imm_s(IntCC::NotEqual, result, 0)
             } else {
                 emit_exception_pending_condition(
@@ -266,9 +278,17 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     brif_block(builder, cond, origin, &[], fallthrough, &[]);
                     crate::switch_to_block_tracking(builder, origin, is_block_filled);
                     seal_block_once(builder, sealed_blocks, origin);
-                    let homes = frame_homes
-                        .map(|homes| builder.use_var(homes))
+                    let homes = cold_frame_homes
+                        .map(|slot| builder.ins().stack_load(types::I64, types::I64, slot, 0))
                         .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                    if let Some(location) = op.frame_location {
+                        // The site's own LocationId; the normal path stores nothing.
+                        assert!(
+                            cold_frame_homes.is_some(),
+                            "a check's frame_location requires lent homes"
+                        );
+                        emit_frame_location_store(builder, homes, location);
+                    }
                     let service = SimpleBackend::import_func_id_split(
                         module,
                         import_ids,

@@ -95,8 +95,12 @@ fn metadata_target_signature(
 /// the frame entry failed (its exception pending) or the frame has fewer
 /// homes (`SystemError` raised). Callers route 0 through an exception edge.
 #[cfg(feature = "native-backend")]
+/// Lend the frame's homes into `homes` and into its cold stack copy. Cold
+/// paths (an Origin capture, a check's cold `frame_location` store) read the
+/// copy, so their rare uses do not keep the hot value live into cold blocks.
 pub(in crate::native_backend::function_compiler) fn emit_frame_homes_lend(
     homes: Variable,
+    cold_homes: cranelift_codegen::ir::StackSlot,
     slots: i64,
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -114,6 +118,7 @@ pub(in crate::native_backend::function_compiler) fn emit_frame_homes_lend(
     let call = builder.ins().call(local_callee, &[slots_val]);
     let base = builder.inst_results(call)[0];
     builder.def_var(homes, base);
+    builder.ins().stack_store(types::I64, base, cold_homes, 0);
     base
 }
 
@@ -237,6 +242,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     op_idx: usize,
     owned_frame_entered: Option<Variable>,
     frame_homes: Option<(Variable, i64)>,
+    cold_frame_homes: Option<cranelift_codegen::ir::StackSlot>,
     leading_frame_entry_preemitted: Option<usize>,
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
@@ -877,7 +883,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 // the entry's adjacent exception check, which leaves for the
                 // entry-failure label when the lend is 0.
                 if let Some((homes, slots)) = frame_homes {
-                    emit_frame_homes_lend(homes, slots, module, import_ids, builder);
+                    let cold_homes = cold_frame_homes.expect("lent homes keep a cold stack copy");
+                    emit_frame_homes_lend(homes, cold_homes, slots, module, import_ids, builder);
                 }
             }
         }
@@ -1191,15 +1198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         OpKind::FrameSetLocation => {
             let (homes, _) = frame_homes.expect("location publication requires a lent frame");
             let address = builder.use_var(homes);
-            let location = builder
-                .ins()
-                .iconst(types::I64, op.value.expect("admitted location index"));
-            builder.ins().store(
-                MemFlagsData::trusted(),
-                location,
-                address,
-                molt_codegen_abi::FRAME_LOCATION_OFFSET,
-            );
+            emit_frame_location_store(builder, address, op.value.expect("admitted location index"));
         }
         OpKind::Line => {
             // Inside active loops, skip line tracking entirely.

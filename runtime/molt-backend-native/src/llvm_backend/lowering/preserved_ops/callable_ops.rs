@@ -60,7 +60,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .blocks
                     .values()
                     .flat_map(|block| &block.ops)
-                    .any(|op| op.opcode == OpCode::FrameSetLocation)
+                    .any(|op| {
+                        op.opcode == OpCode::FrameSetLocation || op.frame_location().is_some()
+                    })
                     .then_some(0)
             })
     }
@@ -146,6 +148,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.backend.builder.position_at_end(fail_bb);
         self.build_empty_return();
         self.backend.builder.position_at_end(lent_bb);
+    }
+
+    /// Store `location` into the frame's location word: the one LLVM
+    /// publication primitive, shared by `frame_set_location` and the cold
+    /// stores of a check's `frame_location`.
+    pub(in crate::llvm_backend::lowering) fn store_frame_location(&mut self, location: i64) {
+        let address = self
+            .frame_home_word(0, molt_codegen_abi::FRAME_LOCATION_OFFSET)
+            .expect("location publication requires a lent frame");
+        let i64_ty = self.backend.context.i64_type();
+        self.backend
+            .builder
+            .build_store(address, i64_ty.const_int(location as u64, false))
+            .unwrap();
     }
 
     /// The address of one slot's home word at `offset` within it.
@@ -885,16 +901,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             OpKind::FrameSetLocation => {
-                let address = self
-                    .frame_home_word(0, molt_codegen_abi::FRAME_LOCATION_OFFSET)
-                    .expect("location publication requires a lent frame");
                 let Some(AttrValue::Int(location)) = op.attrs.get("value") else {
                     panic!("admitted location index");
                 };
-                self.backend
-                    .builder
-                    .build_store(address, i64_ty.const_int(*location as u64, false))
-                    .unwrap();
+                self.store_frame_location(*location);
                 true
             }
             OpKind::Line => {

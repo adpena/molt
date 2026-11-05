@@ -638,6 +638,18 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
             stats.name = "block_arg_prune_post_drop";
             stats
         }),
+        // Last: it sees final types and inserted releases. `OpsOnly`: it
+        // deletes publications and adds check attrs, never edges.
+        pass("frame_location_placement", OpsOnly, |f, _am, tti| {
+            if tti.lowering.cold_origin_frame_location {
+                passes::frame_location_placement::run(f)
+            } else {
+                PassStats {
+                    name: "frame_location_placement",
+                    ..Default::default()
+                }
+            }
+        }),
     ];
     PassManager::new(passes, target_info)
 }
@@ -957,9 +969,10 @@ mod tests {
     }
 
     /// The RC drop-insertion pipeline (round-7) is the two design-20 passes plus
-    /// the post-drop block-argument cleanup, in
-    /// order. It is a SEPARATE terminal phase run after the module transforms;
-    /// the default pipeline above must NOT contain either pass.
+    /// the post-drop block-argument cleanup, in order, then frame-location
+    /// placement, which must see final types and inserted releases. It is a
+    /// SEPARATE terminal phase run after the module transforms; the default
+    /// pipeline above must NOT contain either RC pass.
     #[test]
     fn drop_pipeline_is_rc_then_block_arg_cleanup() {
         let pm = build_drop_pipeline(TargetInfo::native_release_fast());
@@ -968,7 +981,8 @@ mod tests {
             vec![
                 "drop_insertion",
                 "refcount_elim_post",
-                "block_arg_prune_post_drop"
+                "block_arg_prune_post_drop",
+                "frame_location_placement"
             ]
         );
 
